@@ -1005,7 +1005,7 @@ pub mod lives {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "live.Watch";
         pub const KEY: &'static str = "events.Watch";
-        pub const SUBJECT: &'static str = "live.v1.events.Watch";
+        pub const SUBJECT: &'static str = "live.v1.route.events.Watch";
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.events@v1::observe"];
     }
     impl trellis_rs::generated::LiveDescriptor for Watch {

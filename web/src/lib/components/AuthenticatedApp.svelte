@@ -7,15 +7,15 @@
     completeNavigation,
     currentNavigationToken,
   } from "../browser_telemetry";
-  import {
-    getVisibleNavSections,
-    type NavSection,
-  } from "../control-panel.ts";
+  import { getVisibleNavSections, type NavSection } from "../control-panel.ts";
   import {
     ConsoleAuthority,
     provideConsoleAuthority,
   } from "../console/authority.svelte";
-  import { NotificationsController, setNotifications } from "../notifications.svelte";
+  import {
+    NotificationsController,
+    setNotifications,
+  } from "../notifications.svelte";
   import { getConnection, getTrellis, type ConnectionStatus } from "../trellis";
   import AppShell from "./AppShell.svelte";
 
@@ -36,7 +36,9 @@
   const authority = new ConsoleAuthority(trellis);
   provideConsoleAuthority(authority);
 
-  const connectionStatus = $derived<ConnectionStatus["phase"]>(connection.status.phase);
+  const connectionStatus = $derived<ConnectionStatus["phase"]>(
+    connection.status.phase,
+  );
   const snapshot = $derived(authority.snapshot);
   const navSections = $derived<NavSection[]>(
     getVisibleNavSections(snapshot.authority),
@@ -54,10 +56,17 @@
   async function signOut(): Promise<void> {
     try {
       await trellis.logout();
-    } finally {
-      authority.clear();
-      window.location.href = buildConsoleLoginUrl({ redirectTo: "/profile" });
+    } catch (error) {
+      notifications.error(
+        error instanceof Error
+          ? error.message
+          : "Could not revoke this app session.",
+        "Sign out failed",
+      );
+      return;
     }
+    authority.clear();
+    window.location.href = buildConsoleLoginUrl({ redirectTo: "/profile" });
   }
 
   function finishAuthorityLoad(
@@ -82,12 +91,16 @@
     if (wasConnected) return;
     wasConnected = true;
     const token = currentNavigationToken();
-    void authority.reload().then((result) => finishAuthorityLoad(token, result));
+    void authority
+      .reload()
+      .then((result) => finishAuthorityLoad(token, result));
   });
 
   function retryAuthority(): void {
     const token = currentNavigationToken();
-    void authority.reload().then((result) => finishAuthorityLoad(token, result));
+    void authority
+      .reload()
+      .then((result) => finishAuthorityLoad(token, result));
   }
 
   onDestroy(() => {
@@ -104,7 +117,7 @@
   {navSections}
   {connectionStatus}
   authFailure={snapshot.state === "error"
-    ? snapshot.failure?.message ?? "Could not verify your session."
+    ? (snapshot.failure?.message ?? "Could not verify your session.")
     : null}
   onSignOut={signOut}
   onRetryAuthority={retryAuthority}

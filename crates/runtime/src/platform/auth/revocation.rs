@@ -32,6 +32,7 @@ pub(crate) struct Attachment {
     pub(crate) authorization_session_id: String,
     pub(crate) context_digest: String,
     pub(crate) ephemeral_nkey: String,
+    pub(crate) broker_user_nkey: String,
     pub(crate) transport_policy_digest: String,
 }
 
@@ -245,7 +246,7 @@ fn session_scope(scope: &EnforcementScope) -> (&'static str, Option<&str>) {
         EnforcementScope::Identity(key)=>("s.identity_key_id=?1",Some(key)),
         EnforcementScope::Client(key)=>("s.oauth_grant_id IN (SELECT oauth_grant_id FROM auth_oauth_grants WHERE client_id=?1)",Some(key)),
         EnforcementScope::OidcProvider(key)=>("s.oauth_grant_id IN (SELECT g.oauth_grant_id FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE l.provider_id=?1)",Some(key)),
-        EnforcementScope::Role(key)=>("(s.principal_id IN (SELECT principal_id FROM auth_role_assignments WHERE role_id=?1) OR s.oauth_grant_id IN (SELECT g.oauth_grant_id FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) JOIN auth_oidc_role_mappings m ON m.provider_id=l.provider_id WHERE m.role_id=?1))",Some(key)),
+        EnforcementScope::Role(key)=>("(s.principal_id IN (SELECT principal_id FROM auth_role_assignments WHERE role_id=?1) OR s.oauth_grant_id IN (SELECT g.oauth_grant_id FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) JOIN auth_oidc_role_mappings m ON m.provider_id=l.provider_id JOIN auth_oidc_mapping_roles mr ON mr.mapping_id=m.mapping_id WHERE mr.role_id=?1))",Some(key)),
         EnforcementScope::Capability(key)=>("(EXISTS(SELECT 1 FROM json_each(s.approved_capabilities_json) WHERE json_extract(value,'$.capabilityId')=?1))",Some(key)),
         EnforcementScope::Api(key)=>("(EXISTS(SELECT 1 FROM auth_session_authorities a,json_each(a.api_snapshots_json) j WHERE a.authorization_session_id=s.authorization_session_id AND json_extract(j.value,'$.apiId')=?1))",Some(key)),
         EnforcementScope::Deployment(key)=>("s.identity_key_id IN (SELECT identity_key_id FROM auth_provisioned_identities WHERE deployment_id=?1)",Some(key)),
@@ -256,6 +257,78 @@ fn session_scope(scope: &EnforcementScope) -> (&'static str, Option<&str>) {
 }
 
 impl SqliteAuthorizationStore {
+    /// Verify the CONNECT credential and commit the exact admitted ACL with its
+    /// logical authority before returning anything that can admit the socket.
+    pub(crate) fn admit_connection(
+        &self,
+        credential: &[u8],
+        ephemeral_nkey: &str,
+        broker_user_nkey: &str,
+        server_id: &str,
+        broker_client_id: u64,
+        now: i64,
+    ) -> Result<(Attachment, trellis_protocol::TransportAuthorizationV1), AuthError> {
+        if credential.is_empty() || credential.len() > 64 * 1024 || broker_client_id == 0 {
+            return Err(AuthError::Denied);
+        }
+        let (kind, key) = nkeys::from_public_key(ephemeral_nkey).map_err(|_| AuthError::Denied)?;
+        if nkeys::KeyPairType::from(kind) != nkeys::KeyPairType::User {
+            return Err(AuthError::Denied);
+        }
+        use base64::Engine as _;
+        let public = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key);
+        let inbox = trellis_protocol::admission_inbox_prefix(&public)?;
+        let selector: Value = serde_json::from_slice(credential)?;
+        self.transaction(|connection| {
+            let identity = match selector.pointer("/credential/format").and_then(Value::as_str) {
+                Some(trellis_protocol::OAUTH_ADMISSION_FORMAT_V1) => self.oauth_admission_identity_in(connection, credential, ephemeral_nkey, &inbox, now)?,
+                Some(trellis_protocol::PROVISIONED_ADMISSION_FORMAT_V1) => self.provisioned_admission_identity_in(connection, credential, ephemeral_nkey, &inbox, now)?,
+                _ => return Err(AuthError::Denied),
+            };
+            let issued = match self.issue_authority_in_transaction(connection, &identity, None, now)? {
+                Ok(issued) => issued,
+                Err(error) => return Ok(Err(error)),
+            };
+            let policy = self.compile_transport(connection, &issued.authority.unsigned)?;
+            let attachment = Attachment {
+                attachment_id: id(), server_id: server_id.into(), broker_client_id,
+                authorization_session_id: issued.authority.unsigned.authorization_session_id.clone(),
+                context_digest: issued.digest, ephemeral_nkey: ephemeral_nkey.into(),
+                broker_user_nkey:broker_user_nkey.into(),
+                transport_policy_digest: policy.digest()?,
+            };
+            // Check the complete signed bootstrap response before admitting a
+            // socket. An oversized resource/catalog projection rolls back both
+            // authority issuance and attachment creation, not just ContextGet.
+            let registry=self.attachment_registry(connection,&issued.authority.unsigned,&policy,&policy,&attachment.attachment_id)?;
+            trellis_protocol::sign_admission_context(trellis_protocol::AdmissionContext {
+                format:trellis_protocol::ADMISSION_GET_DOMAIN_V1.into(),issuer_key_id:self.issuer().key_id,
+                trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),
+                runtime_id:issued.authority.unsigned.runtime_id.clone(),
+                request_nonce:base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8;16]),
+                request_subject:trellis_protocol::admission_get_subject(&issued.authority.unsigned.session_public_key)?,reply_subject:format!("{}.{}",issued.authority.unsigned.inbox_prefix,"x".repeat(512usize.saturating_sub(issued.authority.unsigned.inbox_prefix.len()+1))),
+                session_authority:json(&issued.authority)?,registry,issued_at:now,expires_at:issued.authority.unsigned.expires_at.min(now.saturating_add(30)),
+            },&self.signer)?;
+            connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,context_digest,ephemeral_nkey,broker_user_nkey,transport_policy_digest,transport_policy_json,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'admitted',?10,?10)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.context_digest,attachment.ephemeral_nkey,broker_user_nkey,attachment.transport_policy_digest,json(&policy)?,now])?;
+            Ok(Ok((attachment, policy)))
+        })?
+    }
+
+    /// A disconnect closes only the exact server/CID/key association. A reused
+    /// broker CID belonging to another ephemeral key is never affected.
+    pub(crate) fn disconnect_attachment(
+        &self,
+        server: &str,
+        cid: u64,
+        nkey: &str,
+        now: i64,
+    ) -> Result<(), AuthError> {
+        self.transaction(|connection| {
+            connection.execute("UPDATE auth_attachments SET state='closed',closed_at=?1 WHERE server_id=?2 AND broker_client_id=?3 AND (broker_user_nkey=?4 OR ?4='trellis.auth.v1:'||attachment_id) AND state IN ('pending','admitted')", params![now,server,cid,nkey])?;
+            Ok(())
+        })
+    }
+
     /// Reauthorize in the attachment transaction so a delayed worker or offline
     /// broker cannot admit a retired logical ID after a policy commit.
     pub(crate) fn admit_attachment(
@@ -272,9 +345,13 @@ impl SqliteAuthorizationStore {
             if nkeys::KeyPairType::from(prefix)!=nkeys::KeyPairType::User || base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)!=session_key {return Err(AuthError::Denied);}
             let current=evaluate(connection,&session_credential(connection,&attachment.authorization_session_id)?,now);
             let reduced=match &current {Ok(current)=>!current.required_missing.is_empty() || loses_authority(connection,&attachment.authorization_session_id,current,now)?,Err(AuthError::Denied|AuthError::RequiredMissing|AuthError::NotFound)=>true,Err(_)=>false};
-            if reduced {retire_session(self,connection,&attachment.authorization_session_id,"admission_reduction",false,None,now)?;return Ok(Err(AuthError::Retired));}
+            if reduced {let hard=matches!(&current,Err(AuthError::Denied|AuthError::NotFound));retire_session(self,connection,&attachment.authorization_session_id,if hard {"credential_unavailable"} else {"admission_reduction"},hard,None,now)?;return Ok(Err(AuthError::Retired));}
             current?;
-            connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,context_digest,ephemeral_nkey,transport_policy_digest,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'admitted',?8,?8)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.context_digest,attachment.ephemeral_nkey,attachment.transport_policy_digest,now])?;
+            let bytes:Vec<u8>=connection.query_row("SELECT signed_bytes FROM auth_session_authorities WHERE context_digest=?1 AND authorization_session_id=?2 AND not_before<=?3 AND expires_at>?3",params![attachment.context_digest,attachment.authorization_session_id,now],|row|row.get(0))?;
+            let authority=trellis_protocol::parse_session_authority(&bytes,trellis_protocol::MAX_SESSION_AUTHORITY_BYTES)?;
+            let policy=self.compile_transport(connection,&authority.unsigned)?;
+            if policy.digest()?!=attachment.transport_policy_digest {return Err(AuthError::Denied);}
+            connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,context_digest,ephemeral_nkey,broker_user_nkey,transport_policy_digest,transport_policy_json,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'admitted',?10,?10)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.context_digest,attachment.ephemeral_nkey,attachment.broker_user_nkey,attachment.transport_policy_digest,json(&policy)?,now])?;
             Ok(Ok(()))
         })?;
         outcome
@@ -290,10 +367,11 @@ impl SqliteAuthorizationStore {
             let (predicate,key)=session_scope(&scope);
             let sql=format!("SELECT s.authorization_session_id FROM auth_authorization_sessions s WHERE s.state='active' AND ({predicate}) AND s.authorization_session_id>?2 ORDER BY s.authorization_session_id LIMIT ?3");
             let sessions=connection.prepare(&sql)?.query_map(params![key,cursor.as_deref().unwrap_or(""),self.settings.enforcement_page_size as u64],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let hard=matches!(scope,EnforcementScope::Session(_)|EnforcementScope::Issuer(_));
+            let scope_hard=matches!(scope,EnforcementScope::Session(_)|EnforcementScope::Issuer(_));
             let mut retired=0;
             for session in &sessions {
                 let current=evaluate(connection,&session_credential(connection,session)?,now);
+                let hard=scope_hard || matches!(&current,Err(AuthError::Denied|AuthError::NotFound));
                 let should_retire=if hard {true} else {match current {
                     Ok(current)=>!current.required_missing.is_empty() || loses_authority(connection,session,&current,now)?,
                     Err(AuthError::Denied|AuthError::RequiredMissing|AuthError::NotFound)=>true,
@@ -375,8 +453,26 @@ impl SqliteAuthorizationStore {
         scope: &EnforcementScope,
         now: i64,
     ) -> Result<String, AuthError> {
-        self.mutate(identity,"root.revoke",scope,now,|connection| {
-            Self::require_privilege(connection,&identity.actor,if matches!(scope, EnforcementScope::Issuer(_)) {"privileges.manage"} else {"principals.manage"})?;
+        self.transaction(|connection| {
+            self.revoke_root_in_transaction(connection, identity, scope, now)
+        })
+    }
+
+    /// Reuse root revocation inside a typed RPC result/replay transaction.
+    pub(super) fn revoke_root_in_transaction(
+        &self,
+        connection: &Connection,
+        identity: &Mutation,
+        scope: &EnforcementScope,
+        now: i64,
+    ) -> Result<String, AuthError> {
+        self.mutate_in_transaction(connection,identity,"root.revoke",scope,now,|connection| {
+            let owned = match scope {
+                EnforcementScope::Login(login) => connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_login_sessions WHERE login_session_id=?1 AND principal_id=?2)",params![login,identity.actor],|row|row.get::<_,bool>(0))?,
+                EnforcementScope::Grant(grant) => connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_grants WHERE oauth_grant_id=?1 AND principal_id=?2)",params![grant,identity.actor],|row|row.get::<_,bool>(0))?,
+                _ => false,
+            };
+            if !owned {Self::require_privilege(connection,&identity.actor,if matches!(scope, EnforcementScope::Issuer(_)) {"privileges.manage"} else {"principals.manage"})?;}
             let changed=match scope {
                 EnforcementScope::Grant(grant)=> {
                     connection.execute("UPDATE auth_oauth_families SET revoked_at=coalesce(revoked_at,?1),revision=revision+1 WHERE oauth_grant_id=?2 AND revoked_at IS NULL",params![now,grant])?;
@@ -401,15 +497,12 @@ impl SqliteAuthorizationStore {
         })
     }
 
-    /// Only expired transient artifacts are pruned. Authority, certificate,
-    /// cutoff, key and audit history remains available for historical events.
+    /// Prune expired API reviews, retaining immutable authorization history.
+    /// OAuth artifacts belong to OAuthStorage's family-aware cleanup: generic
+    /// expiry deletion could erase refresh-reuse evidence for a live family.
     pub(crate) fn prune_expired_artifacts(&self, now: i64) -> Result<usize, AuthError> {
         self.transaction(|connection| {
-            connection.execute("DELETE FROM auth_api_reviews WHERE expires_at<=?1", [now])?;
-            Ok(connection.execute(
-                "DELETE FROM auth_oauth_artifacts WHERE expires_at<=?1",
-                [now],
-            )?)
+            Ok(connection.execute("DELETE FROM auth_api_reviews WHERE expires_at<=?1", [now])?)
         })
     }
 }

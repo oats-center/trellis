@@ -7,33 +7,12 @@ use trellis_jobs_runtime::{
     JobResourceResolver, JobsAdminResources, JobsProjectorHandle, JobsQuery,
     SqliteJobResourceResolver, SqliteJobsStore, WorkerPresenceProjectorHandle,
 };
-use trellis_rs::service::{
-    internal::run_builtin_authenticated_router, RequestValidator, ServerError,
-};
-use trellis_runtime_apis::apis::trellis_jobs_v1::{lives, rpc};
+use trellis_rs::service::{internal::run_builtin_authenticated_router, ServerError};
 
 use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};
 use crate::{StorageBackend, SubsystemName};
 
-/// Exact public Subjects the Jobs runtime serves on its provider connection.
-///
-/// The provider transport grants each implemented action exactly; wide
-/// wildcards would exceed the materialized grants and are denied fail-closed.
-const JOBS_SUBJECTS: &[&str] = &[
-    rpc::Cancel::SUBJECT,
-    rpc::DismissDLQ::SUBJECT,
-    rpc::GetKey::SUBJECT,
-    rpc::Inspect::SUBJECT,
-    rpc::ListDLQ::SUBJECT,
-    rpc::ListServices::SUBJECT,
-    rpc::Metrics::SUBJECT,
-    rpc::Query::SUBJECT,
-    rpc::ReplayDLQ::SUBJECT,
-    rpc::Retry::SUBJECT,
-    rpc::Summary::SUBJECT,
-    lives::Watch::SUBJECT,
-];
 const JOBS_API_ID: &str = "trellis.jobs@v1";
 
 fn runtime_error(error: ServerError) -> RuntimeError {
@@ -106,8 +85,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let owner = context.owner(crate::ownership::OwnerGroup::Jobs)?;
     let stop = StopHandle::new();
     let task_stop = stop.clone();
-    let mut validator_join =
-        crate::platform::auth::verifier::ensure_read_only(context, task_stop.clone()).await?;
     let StorageBackend::Sqlite(storage) = context
         .config
         .jobs_storage_backend()
@@ -132,10 +109,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         jobs_runtime.clone(),
         resources.jobs_stream.clone(),
     );
-    let validator: Arc<dyn RequestValidator> =
-        Arc::new(context.platform_verifier.get().cloned().ok_or_else(|| {
-            RuntimeError::Platform("local authorization verifier is not ready".to_owned())
-        })?);
     let sampler_store = store.clone();
     let loops = RuntimeLoops::start(jobs_runtime, &resources, store).await?;
     let sampler_nats = context.trellis_nats.clone();
@@ -162,41 +135,22 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             };
             let mut router = router;
             router.set_live_owner(owner.clone());
-            run_builtin_authenticated_router(owner, JOBS_API_ID, JOBS_SUBJECTS, router, validator)
-                .await
+            let validator = owner.runtime_validator(JOBS_API_ID);
+            run_builtin_authenticated_router(owner, router, validator).await
         };
         tokio::pin!(api_loop);
         let result = {
-            let validator_exit = async {
-                match validator_join.as_mut() {
-                    Some(join) => match join.await {
-                        Ok(Ok(())) => Err(RuntimeError::Platform(
-                            "authorization validator cache exited unexpectedly".to_owned(),
-                        )),
-                        Ok(Err(error)) => Err(error),
-                        Err(error) => Err(RuntimeError::Platform(format!(
-                            "authorization validator cache task failed: {error}"
-                        ))),
-                    },
-                    None => std::future::pending().await,
-                }
-            };
-            tokio::pin!(validator_exit);
             tokio::select! {
                 biased;
                 () = task_stop.stopped() => Ok(()),
                 result = &mut api_loop => result.map_err(runtime_error),
                 result = loops.wait_for_failure() => result,
-                result = &mut validator_exit => result,
             }
         };
         task_stop.stop();
         // Telemetry samplers own their tasks and never own business lifetime.
         samplers.stop().await;
         loops.stop().await;
-        if let Some(join) = validator_join {
-            let _ = join.await;
-        }
         result
     }));
 

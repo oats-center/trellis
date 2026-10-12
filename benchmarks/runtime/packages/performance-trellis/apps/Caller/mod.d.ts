@@ -69,6 +69,22 @@ export declare const request: AppRequestDescriptor & {
 		}];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly actionNames: {
+		readonly ["performance-trellis.performance@v1:rpc:Download"]: "Download";
+		readonly ["performance-trellis.performance@v1:rpc:Echo"]: "Echo";
+		readonly ["performance-trellis.performance@v1:rpc:PutRecord"]: "PutRecord";
+		readonly ["performance-trellis.performance@v1:rpc:ReadRecord"]: "ReadRecord";
+		readonly ["performance-trellis.performance@v1:operation:AwaitCancellation"]: "AwaitCancellation";
+		readonly ["performance-trellis.performance@v1:operation:AwaitObject"]: "AwaitObject";
+		readonly ["performance-trellis.performance@v1:operation:QueueKeyed"]: "QueueKeyed";
+		readonly ["performance-trellis.performance@v1:operation:QueueWork"]: "QueueWork";
+		readonly ["performance-trellis.performance@v1:operation:Upload"]: "Upload";
+		readonly ["performance-trellis.performance@v1:operation:Work"]: "Work";
+		readonly ["performance-trellis.performance@v1:event:Changed"]: "Changed";
+		readonly ["performance-trellis.performance@v1:event:Changed"]: "Changed";
+		readonly ["performance-trellis.performance@v1:event:Delivered"]: "Delivered";
+		readonly ["performance-trellis.performance@v1:live:Watch"]: "Watch";
+	};
 	readonly states: {
 		readonly saved: {
 			readonly kind: "state";

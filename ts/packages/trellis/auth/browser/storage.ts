@@ -1,5 +1,22 @@
 import { err, isErr, ok, type Result } from "@oatscenter/result";
 import { AuthError } from "../../errors/AuthError.ts";
+import { z } from "zod";
+import {
+  SessionAuthorityOwner,
+  type RuntimeAuthorizationTrust,
+} from "../authority.ts";
+import { base64urlDecode, base64urlEncode, sha256 } from "../utils.ts";
+
+const trustSchema = z.object({
+  instanceId: z.string().min(1),
+  account: z.string().min(1),
+  issuer: z.object({
+    keyId: z.string().min(1),
+    publicKey: z.string().min(1),
+    state: z.literal("active"),
+  }),
+  rotationSequence: z.string().regex(/^(0|[1-9][0-9]*)$/),
+});
 
 /** Exact ordinary-app and runtime identity owning one browser OAuth record. */
 export interface BrowserOAuthScope {
@@ -28,6 +45,7 @@ interface OAuthRecord {
   ciphertext?: ArrayBuffer;
   grant?: Omit<BrowserOAuthGrant, "refreshToken">;
   recoveryRequired?: boolean;
+  trust: RuntimeAuthorizationTrust;
 }
 
 function requestValue<T>(request: IDBRequest<T>): Promise<T> {
@@ -84,6 +102,7 @@ export class BrowserSessionStore {
   /** Open or create custody for this ordinary app, without temporary fallback. */
   static async open(
     scope: BrowserOAuthScope,
+    initialTrust: RuntimeAuthorizationTrust,
   ): Promise<Result<BrowserSessionStore, AuthError>> {
     if (scope.browserOrigin !== globalThis.location.origin) {
       return err(new AuthError({ reason: "InvalidCredential" }));
@@ -96,10 +115,13 @@ export class BrowserSessionStore {
       return err(new AuthError({ reason: "UnsupportedCredentialStorage" }));
     }
     if (
-      !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(scope.credentialHandle) ||
-      [scope.issuer, scope.instanceId, scope.account, scope.clientId].some(
-        (value) => !value || value.length > 4096,
-      )
+      [
+        scope.issuer,
+        scope.instanceId,
+        scope.account,
+        scope.clientId,
+        scope.credentialHandle,
+      ].some((value) => !value || value.length > 4096)
     )
       return err(new AuthError({ reason: "InvalidCredential" }));
     const identity = JSON.stringify([
@@ -143,12 +165,40 @@ export class BrowserSessionStore {
               store.get(identity),
             );
             if (!winner) {
-              winner = { id: identity, revision: 0, dpop, wrapping };
+              winner = {
+                id: identity,
+                revision: 0,
+                dpop,
+                wrapping,
+                trust: {
+                  ...initialTrust,
+                  issuer: { ...initialTrust.issuer },
+                },
+              };
               await requestValue(store.add(winner));
             }
             return winner;
           },
         );
+      }
+      // Pre-release records without a durable pin cannot reuse their refresh
+      // token under newly discovered keys. Never silently migrate by repinning.
+      const trust = trustSchema.safeParse(record.trust);
+      if (!trust.success) {
+        database.close();
+        return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+      }
+      const publicKey = base64urlDecode(trust.data.issuer.publicKey);
+      if (
+        trust.data.instanceId !== scope.instanceId ||
+        trust.data.account !== scope.account ||
+        publicKey.length !== 32 ||
+        base64urlEncode(publicKey) !== trust.data.issuer.publicKey ||
+        base64urlEncode(await sha256(publicKey)) !== trust.data.issuer.keyId ||
+        BigInt(trust.data.rotationSequence) > 18446744073709551615n
+      ) {
+        database.close();
+        return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
       }
       if (
         record.id !== identity ||
@@ -173,6 +223,46 @@ export class BrowserSessionStore {
   /** Non-extractable signing handles for the standards client's DPoP adapter. */
   get dpop(): Readonly<CryptoKeyPair> {
     return { ...this.#record.dpop };
+  }
+
+  /** Retained issuer pin and monotonic floor, never replaced by fresh discovery. */
+  get trust(): RuntimeAuthorizationTrust {
+    return Object.freeze({
+      ...this.#record.trust,
+      issuer: Object.freeze({ ...this.#record.trust.issuer }),
+    });
+  }
+
+  /** Grant identity already committed under the credential's durable key. */
+  get grant(): Readonly<OAuthRecord["grant"]> {
+    return this.#record.grant && Object.freeze({ ...this.#record.grant });
+  }
+
+  /** Persist only a successor authenticated from this record's retained pin. */
+  async retainTrust(owner: SessionAuthorityOwner): Promise<void> {
+    const trust = SessionAuthorityOwner.prototype.trustForCredential.call(
+      owner,
+      this.trust,
+    );
+    const replacement = await recordTransaction(
+      this.#database,
+      "readwrite",
+      async (store) => {
+        const current: OAuthRecord | undefined = await requestValue(
+          store.get(this.#scope),
+        );
+        if (!current || current.revision !== this.#record.revision)
+          throw new AuthError({ reason: "Conflict" });
+        const replacement = {
+          ...current,
+          revision: current.revision + 1,
+          trust,
+        };
+        await requestValue(store.put(replacement));
+        return replacement;
+      },
+    );
+    this.#record = replacement;
   }
 
   /** Decrypt this exact scope's refresh credential into transient SDK memory. */
@@ -247,6 +337,7 @@ export class BrowserSessionStore {
             ciphertext,
             grant,
             recoveryRequired,
+            trust: current.trust,
           };
           await requestValue(store.put(replacement));
           return replacement;
@@ -304,6 +395,7 @@ export class BrowserSessionStore {
       token: string,
       dpop: Readonly<CryptoKeyPair>,
     ) => Promise<Result<{ value: T; refreshToken: string }, AuthError>>,
+    install: (value: T) => Promise<void>,
   ): Promise<Result<T, AuthError>> {
     try {
       return await navigator.locks.request(this.#scope, async () => {
@@ -328,6 +420,8 @@ export class BrowserSessionStore {
         if (!rotated.refreshToken) {
           return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
         }
+        // Authenticate first own authority before committing a rotated secret.
+        await install(rotated.value);
         const saved = await this.#saveRefreshToken(rotated.refreshToken);
         if (saved.isErr()) return err(saved.error);
         return ok(rotated.value);
@@ -337,8 +431,10 @@ export class BrowserSessionStore {
     }
   }
 
-  /** Clear this family under the same lock used by competing refresh owners. */
-  async clear(): Promise<Result<void, AuthError>> {
+  /** Clear this family under the refresh lock, optionally revoking its latest token first. */
+  async clear(
+    revoke?: (token: string) => Promise<Result<void, AuthError>>,
+  ): Promise<Result<void, AuthError>> {
     try {
       return await navigator.locks.request(this.#scope, async () => {
         const current: OAuthRecord | undefined = await recordTransaction(
@@ -350,6 +446,14 @@ export class BrowserSessionStore {
           return err(new AuthError({ reason: "InvalidCredential" }));
         }
         this.#record = current;
+        if (revoke) {
+          const token = (await this.refreshToken()).take();
+          if (isErr(token)) return err(token.error);
+          if (token) {
+            const revoked = await revoke(token);
+            if (revoked.isErr()) return revoked;
+          }
+        }
         return await this.#saveRefreshToken(undefined, undefined, true);
       });
     } catch {

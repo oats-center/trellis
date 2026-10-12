@@ -448,7 +448,7 @@ pub mod lives {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "live.Watch";
         pub const KEY: &'static str = "performance.Watch";
-        pub const SUBJECT: &'static str = "live.v1.performance.Watch";
+        pub const SUBJECT: &'static str = "live.v1.route.performance.Watch";
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
             "performance-trellis.performance@v1::workloads",
         ];

@@ -7,6 +7,7 @@ const __api = apiDescriptor({
 	actions: { "rpc:Create": {
 		kind: "rpc",
 		descriptorName: "rpc:Create",
+		subject: "rpc.v1.orders.Create",
 		input: Types0.CreateOrderRequestCodec,
 		output: Types0.CreateOrderResponseCodec,
 		errors: [],

@@ -436,6 +436,7 @@ pub fn generate_local_trellis_bootstrap(
         trellis_out.join("session.seed"),
         format!("{}\n", generate_session_seed()),
     )?;
+    generate_local_live_provider_seeds(&trellis_out.join("live-providers"))?;
     let manifest = build_trellis_manifest(options, nats_manifest);
     fs::write(
         options.out.join("manifest.json"),
@@ -1117,6 +1118,49 @@ pub fn generate_session_seed() -> String {
     URL_SAFE_NO_PAD.encode(seed)
 }
 
+/// Provision built-in provider identities during fresh initialization only.
+/// Existing files are never replaced; normal runtime startup only reads them.
+pub fn generate_local_live_provider_seeds(directory: &Path) -> Result<(), LocalBootstrapError> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    match builder.create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = fs::symlink_metadata(directory)?;
+            if !metadata.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "provider seed directory must be a real directory",
+                )
+                .into());
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "provider seed directory must be private",
+                    )
+                    .into());
+                }
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+    for role in ["platform", "health", "jobs", "events"] {
+        write_secret(
+            &directory.join(format!("{role}.seed")),
+            &generate_session_seed(),
+        )?;
+    }
+    Ok(())
+}
+
 /// Generate a private online authorization-context issuer seed without trust files.
 pub fn generate_local_authorization_issuer(directory: &Path) -> Result<(), LocalBootstrapError> {
     fs::create_dir_all(directory)?;
@@ -1154,6 +1198,35 @@ fn trim_trailing_slashes(value: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn fresh_provider_custody_refuses_replacement_and_unsafe_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let providers = directory.path().join("live-providers");
+        super::generate_local_live_provider_seeds(&providers).unwrap();
+        let platform = providers.join("platform.seed");
+        let saved = std::fs::read(&platform).unwrap();
+        assert!(super::generate_local_live_provider_seeds(&providers).is_err());
+        assert_eq!(std::fs::read(&platform).unwrap(), saved);
+        std::fs::write(&platform, "corrupt custody").unwrap();
+        assert!(super::generate_local_live_provider_seeds(&providers).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&platform).unwrap(),
+            "corrupt custody"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{symlink, PermissionsExt as _};
+            let linked = directory.path().join("linked");
+            symlink(&providers, &linked).unwrap();
+            assert!(super::generate_local_live_provider_seeds(&linked).is_err());
+            let exposed = directory.path().join("exposed");
+            std::fs::create_dir(&exposed).unwrap();
+            std::fs::set_permissions(&exposed, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(super::generate_local_live_provider_seeds(&exposed).is_err());
+            assert!(!exposed.join("platform.seed").exists());
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -267,15 +267,24 @@ staticPasswords:
     authority
         .register_oidc_provider(&mutation(&f.admin, &registration), &registration, NOW)
         .unwrap();
-    authority
-        .link_oidc_identity(
-            &mutation(&f.admin, &(&f.principal, &provider, &subject)),
-            &f.principal,
-            &provider,
-            &subject,
-            NOW,
-        )
-        .unwrap();
+    let account = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
+        username: "alice".to_string().into(),
+        display_name: "Alice".to_string().into(),
+        password: Some("initial alice password".to_string().into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    f.principal = super::super::rpc_users::create_user(
+        &authority,
+        &mutation(&f.admin, &account),
+        &account,
+        NOW,
+    )
+    .unwrap()
+    .user
+    .principal
+    .principal_id
+    .to_string();
     let group_role = id();
     let role = PolicyMutation::RolePut {
         role_id: group_role.clone(),
@@ -287,12 +296,24 @@ staticPasswords:
     authority
         .apply_policy(&mutation(&f.admin, &role), &role, NOW)
         .unwrap();
+    let reader_role = id();
+    let reader = PolicyMutation::RolePut {
+        role_id: reader_role.clone(),
+        title: "Upstream readers".into(),
+        description: String::new(),
+        capabilities: vec![f.read.clone()],
+        expected_revision: 0,
+    };
+    authority
+        .apply_policy(&mutation(&f.admin, &reader), &reader, NOW)
+        .unwrap();
+    let mapping_id = id();
     let mapping = PolicyMutation::OidcMappingPut {
-        mapping_id: id(),
+        mapping_id: mapping_id.clone(),
         provider_id: provider.clone(),
         claim_name: "/groups".into(),
         claim_value: "team-a".into(),
-        role_id: group_role,
+        role_ids: vec![group_role, reader_role],
         expected_revision: 0,
     };
     authority
@@ -314,6 +335,293 @@ staticPasswords:
         super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]),
         shutdown.clone(),
     ));
+    // Exercise the actual account-link forms and the same verified OIDC callback,
+    // not a manufactured ID token or a trusted-context injection.
+    let portal = url::Url::parse(&origin).unwrap();
+    let current = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    for (actor, username, password, success) in [
+        (&f.principal, "alice", "initial alice password", true),
+        (&f.admin, "admin", "a strong bootstrap password", false),
+    ] {
+        let request = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
+            provider_id: provider.parse().unwrap(),
+            idempotency_key: id().into(),
+            extra: Default::default(),
+        };
+        let created = super::super::oauth::account::create_link(
+            engine.server.store(),
+            &mutation(actor, &request),
+            &request,
+            current,
+        )
+        .unwrap();
+        let page = http.get(&created.authorization_url).send().await.unwrap();
+        assert!(page.status().is_success());
+        let cookies = jar.cookies(&portal).unwrap();
+        let csrf = cookies
+            .to_str()
+            .unwrap()
+            .split("; ")
+            .find_map(|value| value.strip_prefix("__Host-trellis-portal-csrf="))
+            .unwrap()
+            .to_owned();
+        let token = url::Url::parse(&created.authorization_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .unwrap()
+            .1
+            .into_owned();
+        {
+            let login = http
+                .post(format!("{origin}/portal/account/login"))
+                .header("Origin", &origin)
+                .form(&[
+                    ("token", token.as_str()),
+                    ("csrf", csrf.as_str()),
+                    ("username", username),
+                    ("password", password),
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(login.status(), reqwest::StatusCode::SEE_OTHER);
+            let wrong = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
+                provider_id: provider.parse().unwrap(),
+                idempotency_key: id().into(),
+                extra: Default::default(),
+            };
+            let wrong = super::super::oauth::account::create_link(
+                engine.server.store(),
+                &mutation(if success { &f.admin } else { &f.principal }, &wrong),
+                &wrong,
+                current,
+            )
+            .unwrap();
+            assert_eq!(
+                http.get(wrong.authorization_url)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::BAD_REQUEST
+            );
+        }
+        let denied = http
+            .post(format!("{origin}/portal/account/link"))
+            .header("Origin", "https://attacker.example")
+            .form(&[("token", token.as_str()), ("csrf", csrf.as_str())])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), reqwest::StatusCode::BAD_REQUEST);
+        let begin = http
+            .post(format!("{origin}/portal/account/link"))
+            .header("Origin", &origin)
+            .form(&[("token", token.as_str()), ("csrf", csrf.as_str())])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(begin.status(), reqwest::StatusCode::SEE_OTHER);
+        let authorization = url::Url::parse(begin.headers()["location"].to_str().unwrap()).unwrap();
+        assert!(authorization
+            .query_pairs()
+            .any(|(name, value)| name == "prompt" && value == "login"));
+        let callback_url = dex_login(&http, authorization, &issuer, &callback).await;
+        let completed = http.get(callback_url.clone()).send().await.unwrap();
+        if success {
+            assert!(completed.status().is_success());
+            assert_eq!(
+                http.get(&created.authorization_url)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::BAD_REQUEST
+            );
+            assert_eq!(
+                http.get(callback_url).send().await.unwrap().status(),
+                reqwest::StatusCode::BAD_REQUEST
+            );
+            let linked: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
+            assert_eq!(linked, f.principal);
+        } else {
+            assert_eq!(completed.status(), reqwest::StatusCode::BAD_REQUEST);
+            let unchanged: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
+            assert_eq!(unchanged, f.principal);
+            // Reset uses a real admitted administrative session, the native HTTP
+            // form, and real Argon2 credentials, not a fake verified context.
+            let client = super::super::lifecycle::ClientRegistration {
+                client_id: "native-client".into(),
+                kind: "native".into(),
+                display_name: "Native client".into(),
+                redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
+                development: false,
+                implied_capabilities: vec![],
+                eligible_privileges: vec![trellis_protocol::PlatformPrivilege::PrincipalsManage],
+                metadata: serde_json::json!({}),
+                expected_revision: 1,
+            };
+            authority
+                .register_client(&mutation(&f.admin, &client), &client, current)
+                .unwrap();
+            let cookies = jar.cookies(&portal).unwrap();
+            let cookie = cookies
+                .to_str()
+                .unwrap()
+                .split("; ")
+                .find_map(|value| value.strip_prefix("__Host-trellis-portal="))
+                .unwrap();
+            let login = authority.portal_login(cookie, &csrf, current).unwrap();
+            let mut approval = grant_request(&f.admin, &login.login_session_id, "", "", current);
+            approval.selection.required.clear();
+            approval.selection.optional.clear();
+            approval.approved.clear();
+            approval.privileges = vec![trellis_protocol::PlatformPrivilege::PrincipalsManage];
+            approval.required_privileges = approval.privileges.clone();
+            approval.remember = false;
+            let grant = authority
+                .approve_grant(&mutation(&f.admin, &approval), &approval, current)
+                .unwrap();
+            let admitted = authority
+                .issue_authority(
+                    &AdmissionIdentity {
+                        refresh_family_id: Some(super::oauth_family(
+                            &authority,
+                            &grant,
+                            current,
+                            current + 86400,
+                        )),
+                        credential: Credential::OAuthGrant(grant),
+                        runtime_id: URL_SAFE_NO_PAD.encode([22; 16]),
+                        session_public_key: URL_SAFE_NO_PAD.encode(
+                            ed25519_dalek::SigningKey::from_bytes(&[52; 32])
+                                .verifying_key()
+                                .as_bytes(),
+                        ),
+                        inbox_prefix: "_INBOX.resetHttp".into(),
+                    },
+                    None,
+                    current,
+                )
+                .unwrap();
+            let reset_request =
+                trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateRequest {
+                    user_id: f.principal.parse().unwrap(),
+                    idempotency_key: id().into(),
+                    extra: Default::default(),
+                };
+            let reset = super::super::oauth::account::create_reset(
+                engine.server.store(),
+                &mutation(&f.admin, &reset_request),
+                &reset_request,
+                &admitted.authority.unsigned.authorization_session_id,
+                current,
+            )
+            .unwrap();
+            let before = authority.create_portal_session(current).unwrap();
+            authority
+                .portal_local_login(
+                    &before.cookie,
+                    &before.csrf,
+                    &"r".repeat(43),
+                    "alice",
+                    "initial alice password",
+                    &id(),
+                    current,
+                )
+                .unwrap();
+            assert!(http
+                .get(format!("{origin}/account/reset?token={}", reset.token))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .is_success());
+            let reset_form = [
+                ("token", reset.token.as_str()),
+                ("csrf", csrf.as_str()),
+                ("password", "updated alice password"),
+            ];
+            assert_eq!(
+                http.post(format!("{origin}/portal/account/reset"))
+                    .header("Origin", "https://attacker.example")
+                    .form(&reset_form)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::BAD_REQUEST
+            );
+            assert_eq!(
+                http.post(format!("{origin}/portal/account/reset"))
+                    .header("Origin", &origin)
+                    .form(&[
+                        ("token", reset.token.as_str()),
+                        ("csrf", "wrong csrf"),
+                        ("password", "updated alice password")
+                    ])
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::BAD_REQUEST
+            );
+            assert!(http
+                .post(format!("{origin}/portal/account/reset"))
+                .header("Origin", &origin)
+                .form(&reset_form)
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .is_success());
+            assert_eq!(
+                http.post(format!("{origin}/portal/account/reset"))
+                    .header("Origin", &origin)
+                    .form(&reset_form)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::BAD_REQUEST
+            );
+            assert!(authority
+                .portal_login(&"r".repeat(43), &before.csrf, current + 1)
+                .is_err());
+            let after = authority.create_portal_session(current).unwrap();
+            assert!(authority
+                .portal_local_login(
+                    &after.cookie,
+                    &after.csrf,
+                    &"s".repeat(43),
+                    "alice",
+                    "updated alice password",
+                    &id(),
+                    current
+                )
+                .is_ok());
+        }
+        let cookies = jar.cookies(&portal).unwrap();
+        let csrf = cookies
+            .to_str()
+            .unwrap()
+            .split("; ")
+            .find_map(|value| value.strip_prefix("__Host-trellis-portal-csrf="))
+            .unwrap();
+        assert!(http
+            .post(format!("{origin}/portal/logout"))
+            .header("Origin", &origin)
+            .form(&[("csrf", csrf), ("request_id", id().as_str())])
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success());
+    }
     let key = EcdsaP256Key::generate("upstream-native-client");
     let verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
     let mut authorization = url::Url::parse(&format!("{origin}/authorize")).unwrap();
@@ -338,6 +646,28 @@ staticPasswords:
                 .to_string(),
         ),
     ]);
+    let browser = tokio::process::Command::new("node")
+        .args(["--test", "ts/browser/oauth_upstream.browser_test.ts"])
+        .env(
+            "TRELLIS_TEST_OAUTH_AUTHORIZATION_URI",
+            authorization.as_str(),
+        )
+        .env("TRELLIS_TEST_OIDC_ISSUER", issuer.as_str())
+        .env("TRELLIS_TEST_OIDC_CAPABILITY", &f.write)
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .kill_on_drop(true)
+        .output();
+    let result = tokio::time::timeout(Duration::from_secs(45), browser)
+        .await
+        .expect("Chromium upstream flow deadline")
+        .expect("Node and producer-installed Playwright Chromium are required");
+    assert!(
+        result.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    );
+
     let initial = http.get(authorization).send().await.unwrap();
     assert_eq!(initial.status(), reqwest::StatusCode::SEE_OTHER);
     let login_url = url::Url::parse(&origin)
@@ -401,6 +731,7 @@ staticPasswords:
         .header("Origin", &origin)
         .form(&[
             ("transaction", transaction.as_str()),
+            ("presentation", consent["presentationId"].as_str().unwrap()),
             ("csrf", csrf),
             ("decision", "approve"),
             ("approved", f.write.as_str()),
@@ -421,21 +752,40 @@ staticPasswords:
     let proof =
         super::oauth_engine_tests::dpop(&key, &runtime, &ephemeral, &format!("{origin}/token"))
             .await;
-    let token = http
-        .post(format!("{origin}/token"))
+    let token_request = http.post(format!("{origin}/token")).form(&[
+        ("grant_type", "authorization_code"),
+        ("client_id", "native-client"),
+        ("code", code.as_str()),
+        ("redirect_uri", "http://127.0.0.1:9123/callback"),
+        ("code_verifier", verifier),
+        ("trellis_runtime_id", runtime.as_str()),
+        ("trellis_session_nkey", ephemeral.public_key().as_str()),
+    ]);
+    let challenge = token_request
+        .try_clone()
+        .unwrap()
         .header("DPoP", proof)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("client_id", "native-client"),
-            ("code", code.as_str()),
-            ("redirect_uri", "http://127.0.0.1:9123/callback"),
-            ("code_verifier", verifier),
-            ("trellis_runtime_id", runtime.as_str()),
-            ("trellis_session_nkey", ephemeral.public_key().as_str()),
-        ])
         .send()
         .await
         .unwrap();
+    assert_eq!(challenge.status(), reqwest::StatusCode::BAD_REQUEST);
+    let nonce = challenge.headers()["DPoP-Nonce"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        challenge.json::<serde_json::Value>().await.unwrap()["error"],
+        "use_dpop_nonce"
+    );
+    let proof = super::oauth_engine_tests::dpop_with_nonce(
+        &key,
+        &runtime,
+        &ephemeral,
+        &format!("{origin}/token"),
+        Some(&nonce),
+    )
+    .await;
+    let token = token_request.header("DPoP", proof).send().await.unwrap();
     assert_eq!(token.status(), reqwest::StatusCode::OK);
     let tokens = token
         .json::<super::super::oauth::TrellisTokenResponse>()
@@ -463,6 +813,41 @@ staticPasswords:
             .map(|capability| capability.capability_id.as_str())
             .collect::<Vec<_>>(),
         vec![f.write.as_str()]
+    );
+    // Both mapped roles contribute only through claims verified by the real IdP flow.
+    let login: String = authority.transaction(|connection| Ok(connection.query_row("SELECT login_session_id FROM auth_login_sessions WHERE principal_id=?1 AND provider_id=?2 ORDER BY observation_order DESC LIMIT 1", rusqlite::params![f.principal,provider], |row| row.get(0))?)).unwrap();
+    let access = authority
+        .effective_access(&f.principal, Some(&login), now)
+        .unwrap();
+    assert!(access.contains_key(&f.read));
+    assert!(access.contains_key(&f.write));
+    let delete = trellis_runtime_apis::__types::trellis::AuthOIDCRoleMappingDeleteRequest {
+        mapping_id: mapping_id.parse().unwrap(),
+        expected_revision: trellis_runtime_apis::__types::trellis::AuthRevision(1.into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let delete_identity = mutation(&f.admin, &delete);
+    let deleted = crate::platform::auth::rpc_users::delete_mapping(
+        &authority,
+        &delete_identity,
+        &delete,
+        now,
+    )
+    .unwrap();
+    assert!(authority
+        .effective_access(&f.principal, Some(&login), now)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        crate::platform::auth::rpc_users::delete_mapping(
+            &authority,
+            &delete_identity,
+            &delete,
+            now + 1
+        )
+        .unwrap(),
+        deleted
     );
     shutdown.cancel();
     server.await.unwrap().unwrap();

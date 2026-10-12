@@ -1243,10 +1243,9 @@ export declare const AuthOIDCRoleMappingsListResponseCodec: {
 	encode(value: AuthOIDCRoleMappingsListResponse): unknown;
 };
 export type AuthPackageEvidence = {
-	readonly dependencies: Array<AuthPackageEvidence>;
-	readonly packageName: AuthName;
-	readonly packageVersion: AuthShortName;
-	readonly sources: Array<AuthPackageSourceEvidence>;
+	readonly packages: Array<AuthPackageSourceEvidence>;
+	readonly rootDigest: AuthDigest;
+	readonly rootPackage: AuthName;
 	readonly [key: string]: unknown;
 };
 export declare const AuthPackageEvidenceCodec: {
@@ -1254,9 +1253,10 @@ export declare const AuthPackageEvidenceCodec: {
 	encode(value: AuthPackageEvidence): unknown;
 };
 export type AuthPackageSourceEvidence = {
-	readonly alias: AuthShortName;
-	readonly path: AuthPath;
+	readonly digest: AuthDigest;
+	readonly name: AuthName;
 	readonly source: string;
+	readonly version: AuthShortName;
 	readonly [key: string]: unknown;
 };
 export declare const AuthPackageSourceEvidenceCodec: {
@@ -1485,14 +1485,14 @@ export declare const AuthPublicKeyCodec: {
 	encode(value: AuthPublicKey): unknown;
 };
 export type AuthResourceBinding = {
-	readonly deploymentId: ReturnType<typeof codecs.ulid.decode>;
 	readonly kind: AuthResourceKind;
 	readonly localName: string;
+	readonly ownerId: ReturnType<typeof codecs.ulid.decode>;
+	readonly ownerKind: AuthResourceOwnerKind;
 	readonly participantId: string;
-	readonly principalId: ReturnType<typeof codecs.ulid.decode>;
-	readonly ready: boolean;
-	readonly resourceId: ReturnType<typeof codecs.ulid.decode>;
+	readonly resourceId: AuthDigest;
 	readonly revision: AuthRevision;
+	readonly state: AuthResourceState;
 	readonly [key: string]: unknown;
 };
 export declare const AuthResourceBindingCodec: {
@@ -1500,7 +1500,7 @@ export declare const AuthResourceBindingCodec: {
 	encode(value: AuthResourceBinding): unknown;
 };
 export type AuthResourceGetRequest = {
-	readonly resourceId: ReturnType<typeof codecs.ulid.decode>;
+	readonly resourceId: AuthDigest;
 	readonly [key: string]: unknown;
 };
 export declare const AuthResourceGetRequestCodec: {
@@ -1522,24 +1522,39 @@ export declare const AuthResourceKindCodec: {
 	decode(value: unknown): AuthResourceKind;
 	encode(value: AuthResourceKind): unknown;
 };
+export type AuthResourceOwnerKind = "deployment" | "user" | (string & {
+	readonly __openEnum?: never;
+});
+export declare const AuthResourceOwnerKindCodec: {
+	decode(value: unknown): AuthResourceOwnerKind;
+	encode(value: AuthResourceOwnerKind): unknown;
+};
 export type AuthResourceRemoveRequest = {
 	readonly expectedRevision: AuthRevision;
 	readonly idempotencyKey: AuthIdempotencyKey;
-	readonly resourceId: ReturnType<typeof codecs.ulid.decode>;
+	readonly resourceId: AuthDigest;
 	readonly [key: string]: unknown;
 };
 export declare const AuthResourceRemoveRequestCodec: {
 	decode(value: unknown): AuthResourceRemoveRequest;
 	encode(value: AuthResourceRemoveRequest): unknown;
 };
+export type AuthResourceState = "destroying" | "detached" | "failed" | "pending" | "ready" | (string & {
+	readonly __openEnum?: never;
+});
+export declare const AuthResourceStateCodec: {
+	decode(value: unknown): AuthResourceState;
+	encode(value: AuthResourceState): unknown;
+};
 export type AuthResourcesListRequest = {
-	readonly deploymentId?: ReturnType<typeof codecs.ulid.decode>;
+	readonly ownerId?: ReturnType<typeof codecs.ulid.decode>;
+	readonly ownerKind?: AuthResourceOwnerKind;
 	readonly page?: {
 		readonly cursor?: string;
 		readonly limit?: number;
 		readonly [key: string]: unknown;
 	};
-	readonly principalId?: ReturnType<typeof codecs.ulid.decode>;
+	readonly state?: AuthResourceState;
 	readonly [key: string]: unknown;
 };
 export declare const AuthResourcesListRequestCodec: {

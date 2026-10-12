@@ -12,6 +12,7 @@ export const request = {
 		actions: [],
 		optionalCapabilities: []
 	}],
+	actionNames: {},
 	states: {}
 };
 export default request;

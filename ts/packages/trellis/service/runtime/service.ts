@@ -11,9 +11,6 @@ import {
   observeTrellisConnection,
   type TrellisAvailability,
 } from "../../connection.ts";
-import {
-  TransportAuthorizationState,
-} from "../../auth/authorization/transport_state.ts";
 import { TypedKV } from "../../kv.ts";
 import {
   type StoreOperationError,
@@ -25,23 +22,11 @@ import {
   TrellisServiceRuntime,
   type TrellisServiceRuntimeFor,
 } from "./core.ts";
-import {
-  base64urlEncode,
-  createAuth,
-  type TrellisAuth as SessionAuth,
-} from "../../auth.ts";
-import {
-  AuthorizationContextCache,
-  AuthorizationContextRefreshError,
-  AuthorizationProviderCache,
-  startAuthorizationContextRefresh,
-} from "../../auth/authorization_context.ts";
-import {
-  type AuthorizationCandidateSnapshot,
-  installAuthorizationRefresh,
-} from "../../auth/authorization/install_refresh.ts";
-import { TrellisHttpError } from "../../auth/http_error.ts";
-import { transportAuthorizationDigestWasm } from "../../auth/protocol_wasm.ts";
+import type { TrellisAuth as SessionAuth } from "../../auth/session_auth.ts";
+import { connectProvisioned } from "../../auth/connection.ts";
+import { discoverNativeOAuth } from "../../native/oauth.ts";
+import { Type } from "typebox";
+import { ContractResourceBindingsSchema } from "../../participant_runtime/schemas.ts";
 import {
   fixedTransportProvider,
   TransportGenerationManager,
@@ -60,12 +45,9 @@ import type {
 } from "../../participant_runtime/metadata.ts";
 import type { ContractEventConsumers } from "../../participant_runtime/schemas.ts";
 import {
-  bindApiRoutes,
   type GeneratedParticipant,
   getParticipantRuntime,
   participantAvailability,
-  participantEvidence,
-  refreshApiRoutes,
 } from "../../participant_runtime/participant.ts";
 import {
   type ConnectedActionName,
@@ -85,7 +67,7 @@ import {
   type ServiceHealthInfoFn,
   ServiceHealthRuntime,
 } from "./health.ts";
-import { publishHealthHeartbeatSample } from "../../health_transport.ts";
+import { createHealthHeartbeatPublisher } from "../../health_transport.ts";
 import type { EventDesc } from "../../participant.ts";
 import type {
   ActiveEventFacade,
@@ -131,6 +113,7 @@ import {
 } from "../../runtime_transport.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
 import {
+  AuthError,
   type TransferError,
   TransportError,
   UnexpectedError,
@@ -211,11 +194,13 @@ import {
   SqlOutboxRepository,
   type SqlOutboxTables,
 } from "../outbox_inbox.ts";
-import {
-  closeFailedServiceBootstrapConnection,
-  fetchServiceBootstrapInfo,
-  loadDefaultServiceRuntimeDeps,
-} from "./bootstrap.ts";
+import { loadDefaultServiceRuntimeDeps } from "./bootstrap.ts";
+
+const ServiceSignedAuthorizationSchema = Type.Object({
+  participantId: Type.String(),
+  participantDigest: Type.String(),
+  resourceRuntime: ContractResourceBindingsSchema,
+});
 
 type ResourceBindingJobsQueue = {
   queueType: string;
@@ -322,10 +307,14 @@ type ResourceBindingEventConsumer = {
 };
 
 type RpcMethodName<TA extends RuntimeApi> = keyof TA["rpc"] & string;
-type RpcMethodInput<TA extends RuntimeApi, M extends RpcMethodName<TA>> =
-  InferSchemaType<TA["rpc"][M]["input"]>;
-type RpcMethodOutput<TA extends RuntimeApi, M extends RpcMethodName<TA>> =
-  InferSchemaType<TA["rpc"][M]["output"]>;
+type RpcMethodInput<
+  TA extends RuntimeApi,
+  M extends RpcMethodName<TA>,
+> = InferSchemaType<TA["rpc"][M]["input"]>;
+type RpcMethodOutput<
+  TA extends RuntimeApi,
+  M extends RpcMethodName<TA>,
+> = InferSchemaType<TA["rpc"][M]["output"]>;
 type TrellisServiceRuntimeCreateOpts<
   TOwnedApi extends RuntimeApi,
   TTrellisApi extends RuntimeApi | undefined = TOwnedApi,
@@ -333,7 +322,6 @@ type TrellisServiceRuntimeCreateOpts<
   log?: LoggerLike | false;
   timeout?: number;
   stream?: string;
-  noResponderRetry?: { maxAttempts?: number; baseDelayMs?: number };
   api: TOwnedApi;
   trellisApi?: TTrellisApi;
   version?: string;
@@ -348,13 +336,12 @@ export type TrellisServiceRuntimeOpts = {
   log?: LoggerLike | false;
   timeout?: number;
   stream?: string;
-  noResponderRetry?: { maxAttempts?: number; baseDelayMs?: number };
   version?: string;
   health?: TrellisServiceHealthOpts;
 };
 
 function resolveServiceLogger(log?: LoggerLike | false): LoggerLike {
-  return log === false ? noopLogger : log ?? serviceRuntimeLogger;
+  return log === false ? noopLogger : (log ?? serviceRuntimeLogger);
 }
 
 function surfaceGroupName(key: string): string {
@@ -571,11 +558,16 @@ export type TrellisServiceConnectOpts<
   TOwnedApi extends RuntimeApi = RuntimeApi,
   TTrellisApi extends RuntimeApi | undefined = TOwnedApi,
 > = {
+  /** Trellis HTTPS origin, or literal loopback HTTP origin for local development. */
   trellisUrl: string;
   participant: GeneratedServiceParticipant<TOwnedApi, TTrellisApi>;
   name?: string;
   /** Immutable provisioned service identity. */
   seed: string;
+  /** Discovery and connection timeout in milliseconds. */
+  timeout?: number;
+  /** Cancels discovery and connection establishment. */
+  signal?: AbortSignal;
   /** Controls automatic telemetry initialization. Enabled by default. */
   telemetry?: TrellisServiceConnectTelemetryOpts;
   /** Configures the connected service runtime. */
@@ -583,10 +575,12 @@ export type TrellisServiceConnectOpts<
 };
 
 /** Controls automatic telemetry initialization for `TrellisService.connect()`. */
-export type TrellisServiceConnectTelemetryOpts = false | {
-  /** Whether automatic telemetry initialization is enabled. Defaults to `true`. */
-  enabled?: boolean;
-};
+export type TrellisServiceConnectTelemetryOpts =
+  | false
+  | {
+      /** Whether automatic telemetry initialization is enabled. Defaults to `true`. */
+      enabled?: boolean;
+    };
 
 type ServiceKvFacade<TKv extends ParticipantKvMetadata> = {
   [K in keyof TKv]: TKv[K]["required"] extends false
@@ -608,16 +602,21 @@ export type Trellis<
   TTrellisApi extends RuntimeApi,
   TKv extends ParticipantKvMetadata = ParticipantKvMetadata,
   TJobs extends ParticipantJobsMetadata = ParticipantJobsMetadata,
-> =
-  & HandlerTrellis<TTrellisApi>
-  & ServiceHandlerResources<TKv, TJobs, TTrellisApi>;
+> = HandlerTrellis<TTrellisApi> &
+  ServiceHandlerResources<TKv, TJobs, TTrellisApi>;
 
 export type GeneratedServiceParticipant<
   TOwnedApi extends RuntimeApi,
   TTrellisApi extends RuntimeApi | undefined,
   TJobs extends ParticipantJobsMetadata = ParticipantJobsMetadata,
   TKv extends ParticipantKvMetadata = ParticipantKvMetadata,
-> = GeneratedParticipant & {
+> = Omit<
+  GeneratedParticipant,
+  "companion" | "kind" | "requiredCapabilities"
+> & {
+  readonly kind: "service";
+  readonly requiredCapabilities: readonly string[];
+  readonly optionalCapabilities: readonly string[];
   readonly __runtimeTypes?: {
     ownedApi: TOwnedApi;
     api: TTrellisApi;
@@ -634,7 +633,8 @@ type ParticipantOwnedApi<
   >,
 > = TContract extends {
   readonly __runtimeTypes?: { ownedApi: infer TOwnedApi };
-} ? Extract<TOwnedApi, RuntimeApi>
+}
+  ? Extract<TOwnedApi, RuntimeApi>
   : RuntimeApi;
 
 type ParticipantTrellisApi<
@@ -645,7 +645,8 @@ type ParticipantTrellisApi<
   >,
 > = TContract extends {
   readonly __runtimeTypes?: { api: infer TApi };
-} ? Extract<TApi, RuntimeApi>
+}
+  ? Extract<TApi, RuntimeApi>
   : ParticipantOwnedApi<TContract>;
 
 type ParticipantJobsOf<
@@ -747,15 +748,15 @@ export type RpcHandler<
   client: ServiceHandlerClient<TContract>;
 }) =>
   | Promise<
-    Result<
+      Result<
+        RpcMethodOutput<ParticipantOwnedApi<TContract>, M>,
+        RpcHandlerErrorOf<ParticipantOwnedApi<TContract>, M>
+      >
+    >
+  | Result<
       RpcMethodOutput<ParticipantOwnedApi<TContract>, M>,
       RpcHandlerErrorOf<ParticipantOwnedApi<TContract>, M>
-    >
-  >
-  | Result<
-    RpcMethodOutput<ParticipantOwnedApi<TContract>, M>,
-    RpcHandlerErrorOf<ParticipantOwnedApi<TContract>, M>
-  >;
+    >;
 
 /** Typed event listener function for an extracted Trellis service listener. */
 export type ServiceEventHandler<
@@ -766,13 +767,11 @@ export type ServiceEventHandler<
     ParticipantKvMetadata
   >,
   E extends ParticipantEventName<TContract>,
-> = (
-  args: {
-    event: ServiceEventOf<ParticipantTrellisApi<TContract>, E>;
-    context: EventListenerContext;
-    client: ServiceHandlerClient<TContract>;
-  },
-) => MaybeAsync<void, BaseError>;
+> = (args: {
+  event: ServiceEventOf<ParticipantTrellisApi<TContract>, E>;
+  context: EventListenerContext;
+  client: ServiceHandlerClient<TContract>;
+}) => MaybeAsync<void, BaseError>;
 
 /** Typed operation handler function for an extracted Trellis service handler. */
 export type OperationHandler<
@@ -784,18 +783,16 @@ export type OperationHandler<
   >,
   O extends ContractOperationName<TContract>,
 > = (
-  args:
-    & OperationHandlerContext<
-      InferSchemaType<ParticipantOwnedApi<TContract>["operations"][O]["input"]>,
-      OperationProgressOf<ParticipantOwnedApi<TContract>, O>,
-      OperationOutputOf<ParticipantOwnedApi<TContract>, O>,
-      OperationTransferContextOf<ParticipantOwnedApi<TContract>, O>,
-      OperationHandlerErrorOf<ParticipantOwnedApi<TContract>, O>,
-      OperationUpdateOf<ParticipantOwnedApi<TContract>, O>
-    >
-    & {
-      client: ServiceHandlerClient<TContract>;
-    },
+  args: OperationHandlerContext<
+    InferSchemaType<ParticipantOwnedApi<TContract>["operations"][O]["input"]>,
+    OperationProgressOf<ParticipantOwnedApi<TContract>, O>,
+    OperationOutputOf<ParticipantOwnedApi<TContract>, O>,
+    OperationTransferContextOf<ParticipantOwnedApi<TContract>, O>,
+    OperationHandlerErrorOf<ParticipantOwnedApi<TContract>, O>,
+    OperationUpdateOf<ParticipantOwnedApi<TContract>, O>
+  > & {
+    client: ServiceHandlerClient<TContract>;
+  },
 ) => unknown | Promise<unknown>;
 
 /** Typed live handler function for an extracted Trellis service handler. */
@@ -808,12 +805,10 @@ export type LiveHandler<
   >,
   F extends ContractLiveName<TContract>,
 > = (
-  context:
-    & LiveHandlerContext<
-      LiveInputOf<ParticipantOwnedApi<TContract>, F>,
-      LiveEventOf<ParticipantOwnedApi<TContract>, F>
-    >
-    & { client: ServiceHandlerClient<TContract> },
+  context: LiveHandlerContext<
+    LiveInputOf<ParticipantOwnedApi<TContract>, F>,
+    LiveEventOf<ParticipantOwnedApi<TContract>, F>
+  > & { client: ServiceHandlerClient<TContract> },
 ) => unknown | Promise<unknown>;
 
 /** Typed job handler function for an extracted Trellis service job. */
@@ -879,11 +874,10 @@ export type ServiceJobsFacadeOf<
 };
 
 type ServiceEventName<TA extends RuntimeApi> = keyof TA["events"] & string;
-type ServiceEventOf<
-  TA extends RuntimeApi,
-  E extends ServiceEventName<TA>,
-> = TA["events"][E] extends EventDesc<infer TEvent> ? InferSchemaType<TEvent>
-  : never;
+type ServiceEventOf<TA extends RuntimeApi, E extends ServiceEventName<TA>> =
+  TA["events"][E] extends EventDesc<infer TEvent>
+    ? InferSchemaType<TEvent>
+    : never;
 type ServiceEventPayloadOf<
   TA extends RuntimeApi,
   E extends ServiceEventName<TA>,
@@ -891,9 +885,10 @@ type ServiceEventPayloadOf<
 
 /** Runs SQL outbox work inside a caller-owned service database transaction. */
 export type SqlOutboxTransactionRunner<TTx> = <TResult>(
-  work: (context: { tx: TTx; executor: SqlExecutor }) =>
-    | Promise<TResult>
-    | TResult,
+  work: (context: {
+    tx: TTx;
+    executor: SqlExecutor;
+  }) => Promise<TResult> | TResult,
 ) => Promise<TResult>;
 
 /** Options shared by all Trellis SQL outbox service bindings. */
@@ -908,8 +903,7 @@ export type TrellisServiceSqlOutboxCommonOptions = {
 
 /** Options for binding a Trellis service to generic caller-owned SQL storage. */
 export type TrellisServiceSqlOutboxExecutorOptions<TTx> =
-  & TrellisServiceSqlOutboxCommonOptions
-  & {
+  TrellisServiceSqlOutboxCommonOptions & {
     /** Non-transactional executor used by the process-local dispatcher. */
     readonly executor: SqlExecutor;
     /** Service-owned transaction runner for handler-scoped work. */
@@ -983,9 +977,9 @@ export type SqlOutbox<
    * transaction, notifying the dispatcher once after a successful commit.
    */
   transaction<TResult>(
-    work: (context: SqlOutboxTransactionContext<TTx, TEventApi, TJobs>) =>
-      | Promise<TResult>
-      | TResult,
+    work: (
+      context: SqlOutboxTransactionContext<TTx, TEventApi, TJobs>,
+    ) => Promise<TResult> | TResult,
   ): AsyncResult<TResult, ValidationError | UnexpectedError>;
   /** Returns the durable queue-admission outcome once a job submission dispatches. */
   jobSubmissionOutcome(
@@ -1007,9 +1001,10 @@ type ManagedJobsFacade<
   [MANAGED_JOB_WORKERS]: ManagedJobWorkers;
 };
 
-type ServiceHandleOperationLeaf =
-  & ((handler: (context: unknown) => unknown) => Promise<void>)
-  & Pick<
+type ServiceHandleOperationLeaf = ((
+  handler: (context: unknown) => unknown,
+) => Promise<void>) &
+  Pick<
     RootOperationRegistration<unknown, unknown, unknown, undefined, BaseError>,
     "control" | "reconcile"
   >;
@@ -1076,9 +1071,14 @@ type SurfaceGroupName<T extends string> = T extends `${infer Head}.${string}`
 type SurfaceLeafName<T extends string> = T extends `${string}.${infer Tail}`
   ? ConnectedActionName<Tail>
   : ConnectedActionName<T>;
-type SurfaceKeysForGroup<TKeys extends string, TGroup extends string> =
-  TKeys extends string ? SurfaceGroupName<TKeys> extends TGroup ? TKeys : never
-    : never;
+type SurfaceKeysForGroup<
+  TKeys extends string,
+  TGroup extends string,
+> = TKeys extends string
+  ? SurfaceGroupName<TKeys> extends TGroup
+    ? TKeys
+    : never
+  : never;
 
 type TypedServiceHandleFacade<
   TOwnedApi extends RuntimeApi,
@@ -1119,13 +1119,7 @@ type TypedServiceHandleFacade<
           keyof TOwnedApi["operations"] & string,
           TGroup
         > as SurfaceLeafName<O>
-      ]: OperationHandleFn<
-        TOwnedApi,
-        TTrellisApi,
-        O,
-        TKv,
-        TJobs
-      >;
+      ]: OperationHandleFn<TOwnedApi, TTrellisApi, O, TKv, TJobs>;
     };
   };
 };
@@ -1142,8 +1136,8 @@ type RpcHandleFn<
   client: Trellis<TTrellisApi, TKv, TJobs>;
 }) =>
   | Promise<
-    Result<RpcMethodOutput<TOwnedApi, M>, RpcHandlerErrorOf<TOwnedApi, M>>
-  >
+      Result<RpcMethodOutput<TOwnedApi, M>, RpcHandlerErrorOf<TOwnedApi, M>>
+    >
   | Result<RpcMethodOutput<TOwnedApi, M>, RpcHandlerErrorOf<TOwnedApi, M>>;
 
 type LiveHandleFn<
@@ -1168,20 +1162,17 @@ type OperationHandleFn<
   O extends keyof TOwnedApi["operations"] & string,
   TKv extends ParticipantKvMetadata,
   TJobs extends ParticipantJobsMetadata,
-> =
-  & OperationControlRegistration<TOwnedApi, O>
-  & ((
+> = OperationControlRegistration<TOwnedApi, O> &
+  ((
     handler: (
-      context:
-        & OperationHandlerContext<
-          InferSchemaType<TOwnedApi["operations"][O]["input"]>,
-          OperationProgressOf<TOwnedApi, O>,
-          OperationOutputOf<TOwnedApi, O>,
-          OperationTransferContextOf<TOwnedApi, O>,
-          OperationHandlerErrorOf<TOwnedApi, O>,
-          OperationUpdateOf<TOwnedApi, O>
-        >
-        & { client: Trellis<TTrellisApi, TKv, TJobs> },
+      context: OperationHandlerContext<
+        InferSchemaType<TOwnedApi["operations"][O]["input"]>,
+        OperationProgressOf<TOwnedApi, O>,
+        OperationOutputOf<TOwnedApi, O>,
+        OperationTransferContextOf<TOwnedApi, O>,
+        OperationHandlerErrorOf<TOwnedApi, O>,
+        OperationUpdateOf<TOwnedApi, O>
+      > & { client: Trellis<TTrellisApi, TKv, TJobs> },
     ) => unknown | Promise<unknown>,
   ) => Promise<void>);
 
@@ -1210,16 +1201,14 @@ type ServiceOperationRegistration<
 > = OperationControlRegistration<TOwnedApi, O> & {
   handle(
     handler: (
-      args:
-        & OperationHandlerContext<
-          InferSchemaType<TOwnedApi["operations"][O]["input"]>,
-          OperationProgressOf<TOwnedApi, O>,
-          OperationOutputOf<TOwnedApi, O>,
-          OperationTransferContextOf<TOwnedApi, O>,
-          OperationHandlerErrorOf<TOwnedApi, O>,
-          OperationUpdateOf<TOwnedApi, O>
-        >
-        & { client: Trellis<TTrellisApi, TKv, TJobs> },
+      args: OperationHandlerContext<
+        InferSchemaType<TOwnedApi["operations"][O]["input"]>,
+        OperationProgressOf<TOwnedApi, O>,
+        OperationOutputOf<TOwnedApi, O>,
+        OperationTransferContextOf<TOwnedApi, O>,
+        OperationHandlerErrorOf<TOwnedApi, O>,
+        OperationUpdateOf<TOwnedApi, O>
+      > & { client: Trellis<TTrellisApi, TKv, TJobs> },
     ) => unknown | Promise<unknown>,
   ): Promise<void>;
 };
@@ -1236,9 +1225,8 @@ export type OperationRegistration<
     ParticipantKvMetadata
   >,
   O extends ContractOperationName<TContract>,
-> =
-  & ((handler: OperationHandler<TContract, O>) => Promise<void>)
-  & OperationControlRegistration<ParticipantOwnedApi<TContract>, O>;
+> = ((handler: OperationHandler<TContract, O>) => Promise<void>) &
+  OperationControlRegistration<ParticipantOwnedApi<TContract>, O>;
 
 export type LiveRegistration<
   TOwnedApi extends RuntimeApi,
@@ -1253,11 +1241,16 @@ export type TrellisServiceConnectArgs<
     ParticipantKvMetadata
   >,
 > = {
+  /** Trellis HTTPS origin, or literal loopback HTTP origin for local development. */
   trellisUrl: string;
   participant: TContract;
   name?: string;
   /** Immutable provisioned service identity. */
   seed: string;
+  /** Discovery and connection timeout in milliseconds. */
+  timeout?: number;
+  /** Cancels discovery and connection establishment. */
+  signal?: AbortSignal;
   /** Controls automatic telemetry initialization. Enabled by default. */
   telemetry?: TrellisServiceConnectTelemetryOpts;
   /** Configures the connected service runtime. */
@@ -1331,7 +1324,6 @@ export function createConnectedService<
     instanceId: string;
     deploymentId: string;
   };
-  authorizationProviderCache?: AuthorizationProviderCache;
   /** Additional raw-transport hook for application-level bookkeeping. @internal */
   onTransportEvent?: (event: unknown) => void;
   /** Process-local connection handle started before the transport connected. @internal */
@@ -1341,41 +1333,39 @@ export function createConnectedService<
   const liveBindings = args.liveBindings ?? (() => args.bindings);
   // Resource handles follow the logical connection's current generation; a
   // runtime without a generation manager wraps its single connection.
-  const serviceTransport: TrellisTransportProvider = args.transport ??
-    fixedTransportProvider(args.nc);
+  const serviceTransport: TrellisTransportProvider =
+    args.transport ?? fixedTransportProvider(args.nc);
   const acquireTimeoutMs = args.runtime.timeout ?? 30_000;
   const onTransportEvent = (event: unknown) => {
-    args.authorizationProviderCache?.observeTransportEvent(event);
     args.onTransportEvent?.(event);
   };
   const connection = args.transport
     ? observeTrellisConnection({
-      kind: "service",
-      transport: args.transport,
-      availability: args.availability,
-      onTransportEvent,
-      log: false,
-      lifecycleLog: {
-        log: resolvedLog,
-        context: { service: args.name },
-      },
-      ...(args.telemetry ? { telemetry: args.telemetry } : {}),
-    })
+        kind: "service",
+        transport: args.transport,
+        availability: args.availability,
+        onTransportEvent,
+        log: false,
+        lifecycleLog: {
+          log: resolvedLog,
+          context: { service: args.name },
+        },
+        ...(args.telemetry ? { telemetry: args.telemetry } : {}),
+      })
     : observeNatsTrellisConnection({
-      kind: "service",
-      nc: args.nc,
-      availability: args.availability,
-      onTransportEvent,
-      log: false,
-      lifecycleLog: {
-        log: resolvedLog,
-        context: { service: args.name },
-      },
-      ...(args.telemetry ? { telemetry: args.telemetry } : {}),
-    });
-  const currentApi = (args.runtime.trellisApi ?? args.runtime.api) as
-    & TOwnedApi
-    & TTrellisApi;
+        kind: "service",
+        nc: args.nc,
+        availability: args.availability,
+        onTransportEvent,
+        log: false,
+        lifecycleLog: {
+          log: resolvedLog,
+          context: { service: args.name },
+        },
+        ...(args.telemetry ? { telemetry: args.telemetry } : {}),
+      });
+  const currentApi = (args.runtime.trellisApi ??
+    args.runtime.api) as TOwnedApi & TTrellisApi;
   const runtimeApi = currentApi as TOwnedApi & TTrellisApi;
 
   const runtime = TrellisServiceRuntime.create(
@@ -1385,13 +1375,12 @@ export function createConnectedService<
       sessionKey: args.auth.sessionKey,
       sign: args.auth.sign,
       contextDigest: args.contextDigest,
-      authorizationProviderCache: args.auth.authorizationProviderCache,
+      authorityOwner: args.auth.authorityOwner,
     },
     {
       log: resolvedLog,
       timeout: args.runtime.timeout,
       stream: args.runtime.stream,
-      noResponderRetry: args.runtime.noResponderRetry,
       api: runtimeApi,
       contractId: args.contractId,
       contractDigest: args.contractDigest,
@@ -1417,13 +1406,12 @@ export function createConnectedService<
       sessionKey: args.auth.sessionKey,
       sign: args.auth.sign,
       contextDigest: args.contextDigest,
-      authorizationProviderCache: args.auth.authorizationProviderCache,
+      authorityOwner: args.auth.authorityOwner,
     },
     {
       log: resolvedLog,
       timeout: args.runtime.timeout,
       stream: args.runtime.stream,
-      noResponderRetry: args.runtime.noResponderRetry,
       api: runtimeApi,
       contractId: args.contractId,
       contractDigest: args.contractDigest,
@@ -1432,7 +1420,6 @@ export function createConnectedService<
         metadata: args.contractEventConsumers,
         bindings: args.bindings.eventConsumers,
       },
-      apiBindings: args.apiBindings,
       ephemeralEventNeeds: args.ephemeralEventNeeds ?? new Set(),
       ...(args.transport ? { transport: args.transport } : {}),
       connection,
@@ -1491,10 +1478,10 @@ export function createConnectedService<
     publishIntervalMs: args.runtime.health?.publishIntervalMs ?? 30_000,
   });
   health.add("nats", () => ({
-    status: serviceTransport.isClosed() ||
-        serviceTransport.currentNats().isClosed()
-      ? "failed"
-      : "ok",
+    status:
+      serviceTransport.isClosed() || serviceTransport.currentNats().isClosed()
+        ? "failed"
+        : "ok",
     ...(serviceTransport.isClosed()
       ? { summary: "NATS connection closed" }
       : {}),
@@ -1503,13 +1490,18 @@ export function createConnectedService<
   const heartbeatEnabled = args.healthIdentity !== undefined;
   let healthPublishTimer: ReturnType<typeof setInterval> | undefined;
   const healthPublishingAbort = new AbortController();
+  const publishHealthSample = createHealthHeartbeatPublisher({
+    nc: args.nc,
+    auth: args.auth,
+    transport: serviceTransport,
+    inboxPrefix: args.inboxPrefix,
+  });
   let publishingHeartbeat: Promise<void> | undefined;
   const publishHealthHeartbeat = (): Promise<void> => {
     if (!args.healthIdentity || healthPublishingAbort.signal.aborted) {
       return Promise.resolve();
     }
     if (publishingHeartbeat) return publishingHeartbeat;
-    const identity = args.healthIdentity;
     publishingHeartbeat = (async () => {
       let lease: TransportLease | undefined;
       try {
@@ -1521,18 +1513,7 @@ export function createConnectedService<
         const sample = await health.sample();
         if (healthPublishingAbort.signal.aborted) return;
         // Pin the admitted generation through sampling and the JetStream PubAck.
-        await publishHealthHeartbeatSample({
-          nc: lease.nc,
-          identity: {
-            sessionKey: args.auth.sessionKey,
-            participantKind: "service",
-            contractId: health.contractId,
-            contractDigest: health.contractDigest,
-            deploymentId: identity.deploymentId,
-            instanceId: health.instanceId,
-          },
-          sample,
-        });
+        await publishHealthSample(sample);
       } catch (error) {
         resolvedLog.warn(
           { error },
@@ -1582,9 +1563,8 @@ export function createConnectedService<
     ),
     ...(args.healthIdentity
       ? {
-        operationStagingBucket:
-          `trellis_operation_staging_${args.healthIdentity.deploymentId}`,
-      }
+          operationStagingBucket: `trellis_operation_staging_${args.healthIdentity.deploymentId}`,
+        }
       : {}),
   });
 
@@ -1620,10 +1600,9 @@ export function createConnectedService<
     healthPublishTimer = setInterval(() => {
       void publishHealthHeartbeat();
     }, health.publishIntervalMs);
-    void serviceTransport.closed().then(
-      stopHealthPublishing,
-      stopHealthPublishing,
-    );
+    void serviceTransport
+      .closed()
+      .then(stopHealthPublishing, stopHealthPublishing);
   }
 
   return Promise.resolve(service);
@@ -1672,28 +1651,27 @@ function createSqlOutboxEventEnqueueFacade<TEventApi extends RuntimeApi>(args: {
   onEnqueued(): void;
 }): SqlOutboxEventEnqueueFacade<TEventApi> {
   const facade: Record<string, Record<string, SqlOutboxEventEnqueueLeaf>> = {};
-  const source = args.event as Record<
-    string,
-    Record<string, ServiceEventLeaf>
-  >;
+  const source = args.event as Record<string, Record<string, ServiceEventLeaf>>;
 
   for (const [groupName, leaves] of Object.entries(source)) {
     const group: Record<string, SqlOutboxEventEnqueueLeaf> = {};
     for (const [leafName, leaf] of Object.entries(leaves)) {
       group[leafName] = {
         enqueue: (payload) =>
-          AsyncResult.from((async () => {
-            const prepared = leaf.prepare(payload).take();
-            if (isErr(prepared)) return Result.err(prepared.error);
-            const record = preparedTrellisEventToOutboxRecord(prepared);
-            try {
-              const message = await args.repository.enqueue(record);
-              args.onEnqueued();
-              return Result.ok(message);
-            } catch (cause) {
-              return Result.err(toUnexpectedError(cause));
-            }
-          })()),
+          AsyncResult.from(
+            (async () => {
+              const prepared = leaf.prepare(payload).take();
+              if (isErr(prepared)) return Result.err(prepared.error);
+              const record = preparedTrellisEventToOutboxRecord(prepared);
+              try {
+                const message = await args.repository.enqueue(record);
+                args.onEnqueued();
+                return Result.ok(message);
+              } catch (cause) {
+                return Result.err(toUnexpectedError(cause));
+              }
+            })(),
+          ),
       };
     }
     Object.defineProperty(facade, groupName, {
@@ -1706,19 +1684,19 @@ function createSqlOutboxEventEnqueueFacade<TEventApi extends RuntimeApi>(args: {
   return facade as SqlOutboxEventEnqueueFacade<TEventApi>;
 }
 
-function createSqlOutboxJobEnqueueFacade<TJobs extends ParticipantJobsMetadata>(
-  args: {
-    contractJobs: TJobs;
-    jobsBinding?: ResourceBindingJobs;
-    repository: SqlOutboxRepository;
-    onEnqueued(): void;
-  },
-): SqlOutboxJobEnqueueFacade<TJobs> {
+function createSqlOutboxJobEnqueueFacade<
+  TJobs extends ParticipantJobsMetadata,
+>(args: {
+  contractJobs: TJobs;
+  jobsBinding?: ResourceBindingJobs;
+  repository: SqlOutboxRepository;
+  onEnqueued(): void;
+}): SqlOutboxJobEnqueueFacade<TJobs> {
   const facade: Record<string, Record<string, unknown>> = {};
 
-  for (
-    const queueType of Object.keys(args.contractJobs as Record<string, unknown>)
-  ) {
+  for (const queueType of Object.keys(
+    args.contractJobs as Record<string, unknown>,
+  )) {
     const jobsBinding = args.jobsBinding;
     const queueBinding = jobsBinding?.queues[queueType];
     const queue = queueType;
@@ -1727,10 +1705,12 @@ function createSqlOutboxJobEnqueueFacade<TJobs extends ParticipantJobsMetadata>(
         if (!queueBinding) {
           return AsyncResult.err(
             new ValidationError({
-              errors: [{
-                path: "/",
-                message: `Jobs binding unavailable for queue '${queue}'`,
-              }],
+              errors: [
+                {
+                  path: "/",
+                  message: `Jobs binding unavailable for queue '${queue}'`,
+                },
+              ],
             }),
           );
         }
@@ -1754,36 +1734,40 @@ function createSqlOutboxJobEnqueueFacade<TJobs extends ParticipantJobsMetadata>(
           payload: JSON.stringify(submission),
           headers: {
             "request-id": submission.context.requestId,
-            "traceparent": submission.context.traceparent,
+            traceparent: submission.context.traceparent,
             ...(submission.context.tracestate
-              ? { "tracestate": submission.context.tracestate }
+              ? { tracestate: submission.context.tracestate }
               : {}),
           },
         };
 
-        return AsyncResult.from((async () => {
-          try {
-            await args.repository.enqueue(record);
-            args.onEnqueued();
-            return Result.ok({
-              submissionId,
-              jobId,
-              queue,
-              mode: "create",
-            });
-          } catch (cause) {
-            return Result.err(toUnexpectedError(cause));
-          }
-        })());
+        return AsyncResult.from(
+          (async () => {
+            try {
+              await args.repository.enqueue(record);
+              args.onEnqueued();
+              return Result.ok({
+                submissionId,
+                jobId,
+                queue,
+                mode: "create",
+              });
+            } catch (cause) {
+              return Result.err(toUnexpectedError(cause));
+            }
+          })(),
+        );
       },
       submit: (payload: unknown) => {
         if (!queueBinding) {
           return AsyncResult.err(
             new ValidationError({
-              errors: [{
-                path: "/",
-                message: `Jobs binding unavailable for queue '${queue}'`,
-              }],
+              errors: [
+                {
+                  path: "/",
+                  message: `Jobs binding unavailable for queue '${queue}'`,
+                },
+              ],
             }),
           );
         }
@@ -1807,27 +1791,29 @@ function createSqlOutboxJobEnqueueFacade<TJobs extends ParticipantJobsMetadata>(
           payload: JSON.stringify(submission),
           headers: {
             "request-id": submission.context.requestId,
-            "traceparent": submission.context.traceparent,
+            traceparent: submission.context.traceparent,
             ...(submission.context.tracestate
-              ? { "tracestate": submission.context.tracestate }
+              ? { tracestate: submission.context.tracestate }
               : {}),
           },
         };
 
-        return AsyncResult.from((async () => {
-          try {
-            await args.repository.enqueue(record);
-            args.onEnqueued();
-            return Result.ok({
-              submissionId,
-              jobId,
-              queue,
-              mode: "submit",
-            });
-          } catch (cause) {
-            return Result.err(toUnexpectedError(cause));
-          }
-        })());
+        return AsyncResult.from(
+          (async () => {
+            try {
+              await args.repository.enqueue(record);
+              args.onEnqueued();
+              return Result.ok({
+                submissionId,
+                jobId,
+                queue,
+                mode: "submit",
+              });
+            } catch (cause) {
+              return Result.err(toUnexpectedError(cause));
+            }
+          })(),
+        );
       },
     };
   }
@@ -1848,22 +1834,31 @@ function okVoid(): Result<void, never> {
 }
 
 function wrapVoidTask(task: () => Promise<void>): AsyncResult<void, BaseError> {
-  return AsyncResult.from((async () => {
-    try {
-      await task();
-      return okVoid();
-    } catch (cause) {
-      return Result.err(toUnexpectedError(cause));
-    }
-  })());
+  return AsyncResult.from(
+    (async () => {
+      try {
+        await task();
+        return okVoid();
+      } catch (cause) {
+        return Result.err(toUnexpectedError(cause));
+      }
+    })(),
+  );
 }
 
 function isTerminalJobState(
   state: string,
 ): state is TerminalJob<unknown, unknown>["state"] {
-  return state === "completed" || state === "failed" || state === "cancelled" ||
-    state === "expired" || state === "skipped" || state === "stale" ||
-    state === "dead" || state === "dismissed";
+  return (
+    state === "completed" ||
+    state === "failed" ||
+    state === "cancelled" ||
+    state === "expired" ||
+    state === "skipped" ||
+    state === "stale" ||
+    state === "dead" ||
+    state === "dismissed"
+  );
 }
 
 function isTerminalJobSnapshot<TPayload, TResult>(
@@ -1878,9 +1873,12 @@ function operationOutputsEqual(left: unknown, right: unknown): boolean {
     return false;
   }
   if (Array.isArray(left) || Array.isArray(right)) {
-    return Array.isArray(left) && Array.isArray(right) &&
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
       left.length === right.length &&
-      left.every((value, index) => operationOutputsEqual(value, right[index]));
+      left.every((value, index) => operationOutputsEqual(value, right[index]))
+    );
   }
   if (typeof left === "object") {
     if (Object.getPrototypeOf(left) !== Object.prototype) return false;
@@ -1889,11 +1887,14 @@ function operationOutputsEqual(left: unknown, right: unknown): boolean {
     const rightRecord = right as Record<string, unknown>;
     const leftKeys = Object.keys(leftRecord);
     const rightKeys = Object.keys(rightRecord);
-    return leftKeys.length === rightKeys.length &&
-      leftKeys.every((key) =>
-        Object.hasOwn(rightRecord, key) &&
-        operationOutputsEqual(leftRecord[key], rightRecord[key])
-      );
+    return (
+      leftKeys.length === rightKeys.length &&
+      leftKeys.every(
+        (key) =>
+          Object.hasOwn(rightRecord, key) &&
+          operationOutputsEqual(leftRecord[key], rightRecord[key]),
+      )
+    );
   }
   return false;
 }
@@ -1929,8 +1930,11 @@ function subjectMatchesLifecycleEvent(
   if (!subject.startsWith(prefix)) return false;
 
   const suffix = subject.slice(prefix.length).split(".");
-  return suffix.length === 2 && suffix[0] === event.jobId &&
-    suffix[1] === event.eventType;
+  return (
+    suffix.length === 2 &&
+    suffix[0] === event.jobId &&
+    suffix[1] === event.eventType
+  );
 }
 
 function snapshotFromLifecycleEvent<TPayload, TResult>(
@@ -1938,7 +1942,8 @@ function snapshotFromLifecycleEvent<TPayload, TResult>(
   event: InternalJobEvent<TPayload, TResult>,
 ): JobSnapshot<TPayload, TResult> {
   if (
-    event.service !== current.service || event.jobType !== current.type ||
+    event.service !== current.service ||
+    event.jobType !== current.type ||
     event.jobId !== current.id
   ) {
     return current;
@@ -1961,36 +1966,44 @@ function snapshotFromLifecycleEvent<TPayload, TResult>(
   switch (event.eventType) {
     case "created":
     case "retried":
-      return event.payload === undefined ? base : {
-        ...base,
-        payload: event.payload,
-      };
+      return event.payload === undefined
+        ? base
+        : {
+            ...base,
+            payload: event.payload,
+          };
     case "started":
       return { ...base, startedAt: event.timestamp };
     case "progress":
-      return event.progress === undefined ? base : {
-        ...base,
-        progress: event.progress,
-      };
+      return event.progress === undefined
+        ? base
+        : {
+            ...base,
+            progress: event.progress,
+          };
     case "logged":
-      return event.logs === undefined ? base : {
-        ...base,
-        logs: [...(current.logs ?? []), ...event.logs],
-      };
+      return event.logs === undefined
+        ? base
+        : {
+            ...base,
+            logs: [...(current.logs ?? []), ...event.logs],
+          };
     case "waiting": {
       if (event.waitEdge === undefined) return base;
-      const waitingOn = (current.waitingOn ?? []).filter((edge) =>
-        edge.id !== event.waitEdge?.id
+      const waitingOn = (current.waitingOn ?? []).filter(
+        (edge) => edge.id !== event.waitEdge?.id,
       );
       return { ...base, waitingOn: [...waitingOn, event.waitEdge] };
     }
     case "resumed":
-      return event.waitEdge === undefined ? base : {
-        ...base,
-        waitingOn: (current.waitingOn ?? []).filter((edge) =>
-          edge.id !== event.waitEdge?.id
-        ),
-      };
+      return event.waitEdge === undefined
+        ? base
+        : {
+            ...base,
+            waitingOn: (current.waitingOn ?? []).filter(
+              (edge) => edge.id !== event.waitEdge?.id,
+            ),
+          };
     case "completed":
       return {
         ...base,
@@ -2005,10 +2018,12 @@ function snapshotFromLifecycleEvent<TPayload, TResult>(
     case "staleCompletionIgnored":
     case "dead":
     case "dismissed":
-      return event.error === undefined ? base : {
-        ...base,
-        lastError: event.error,
-      };
+      return event.error === undefined
+        ? base
+        : {
+            ...base,
+            lastError: event.error,
+          };
   }
 
   return base;
@@ -2074,8 +2089,7 @@ function createJobLifecycleTracker(nc: NatsConnection): JobLifecycleTracker {
     const key = jobLifecycleKey(event.service, event.jobType, event.jobId);
     attempts.set(key, Math.max(attempts.get(key) ?? 0, event.tries));
     const current = snapshots.get(key) as
-      | JobSnapshot<TPayload, TResult>
-      | undefined;
+      JobSnapshot<TPayload, TResult> | undefined;
     if (!current) return undefined;
 
     const next = snapshotFromLifecycleEvent(current, event);
@@ -2097,11 +2111,8 @@ function createJobLifecycleTracker(nc: NatsConnection): JobLifecycleTracker {
           for await (const msg of subscription) {
             const event = parseJobLifecycleEvent(msg.data);
             if (
-              !event || !subjectMatchesLifecycleEvent(
-                msg.subject,
-                queueBinding,
-                event,
-              )
+              !event ||
+              !subjectMatchesLifecycleEvent(msg.subject, queueBinding, event)
             ) {
               continue;
             }
@@ -2119,8 +2130,7 @@ function createJobLifecycleTracker(nc: NatsConnection): JobLifecycleTracker {
       const key = jobLifecycleKey(snapshot.service, snapshot.type, snapshot.id);
       attempts.set(key, Math.max(attempts.get(key) ?? 0, snapshot.tries));
       const current = snapshots.get(key) as
-        | JobSnapshot<TPayload, TResult>
-        | undefined;
+        JobSnapshot<TPayload, TResult> | undefined;
       if (current && isTerminalJobState(current.state)) return;
       snapshots.set(key, snapshot as JobSnapshot<unknown, unknown>);
       notify(key, snapshot as JobSnapshot<unknown, unknown>);
@@ -2143,15 +2153,14 @@ function createJobLifecycleTracker(nc: NatsConnection): JobLifecycleTracker {
       this.seed(snapshot);
       const key = jobLifecycleKey(snapshot.service, snapshot.type, snapshot.id);
       const current = snapshots.get(key) as
-        | JobSnapshot<TPayload, TResult>
-        | undefined;
+        JobSnapshot<TPayload, TResult> | undefined;
       if (current && isTerminalJobSnapshot(current)) {
         return Promise.resolve(current);
       }
       if (stopped) {
-        return Promise.reject(toUnexpectedError(
-          new Error("job lifecycle tracker stopped"),
-        ));
+        return Promise.reject(
+          toUnexpectedError(new Error("job lifecycle tracker stopped")),
+        );
       }
 
       return new Promise((resolve, reject) => {
@@ -2203,50 +2212,53 @@ function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
       current: JobSnapshot<TPayload, TResult>,
     ) => Promise<T>,
   ): AsyncResult<T, BaseError> =>
-    AsyncResult.from((async () => {
-      let lease: TransportLease | undefined;
-      let observer: JobLifecycleTracker | undefined;
-      try {
-        lease = await args.acquireTransport?.();
-        const nc = lease?.nc ?? args.nc;
-        let current = args.seed;
-        if (lease) {
-          if (observe) {
-            observer = createJobLifecycleTracker(nc);
-            observer.seed(args.seed);
-            observer.watch(args.queueBinding, args.seed.id);
-            await nc.flush();
-          }
-          const jsm = await jetstreamManager(nc);
-          const event = await getLatestLifecycleEvent(
-            jsm.direct,
-            "JOBS",
-            args.queueBinding.publishPrefix,
-            args.seed,
-          );
-          if (event) {
-            current = snapshotFromLifecycleEvent(
+    AsyncResult.from(
+      (async () => {
+        let lease: TransportLease | undefined;
+        let observer: JobLifecycleTracker | undefined;
+        try {
+          lease = await args.acquireTransport?.();
+          const nc = lease?.nc ?? args.nc;
+          let current = args.seed;
+          if (lease) {
+            if (observe) {
+              observer = createJobLifecycleTracker(nc);
+              observer.seed(args.seed);
+              observer.watch(args.queueBinding, args.seed.id);
+              await nc.flush();
+            }
+            const jsm = await jetstreamManager(nc);
+            const event = await getLatestLifecycleEvent(
+              jsm.direct,
+              "JOBS",
+              args.queueBinding.publishPrefix,
               args.seed,
-              event as InternalJobEvent<TPayload, TResult>,
             );
+            if (event) {
+              current = snapshotFromLifecycleEvent(
+                args.seed,
+                event as InternalJobEvent<TPayload, TResult>,
+              );
+            }
+          } else {
+            current =
+              args.lifecycle.get<TPayload, TResult>({
+                service: args.seed.service,
+                jobType: args.queueType,
+                id: args.seed.id,
+              }) ?? args.seed;
           }
-        } else {
-          current = args.lifecycle.get<TPayload, TResult>({
-            service: args.seed.service,
-            jobType: args.queueType,
-            id: args.seed.id,
-          }) ?? args.seed;
+          return Result.ok(await run(nc, observer ?? args.lifecycle, current));
+        } catch (cause) {
+          return Result.err(
+            cause instanceof BaseError ? cause : toUnexpectedError(cause),
+          );
+        } finally {
+          observer?.stop();
+          lease?.release();
         }
-        return Result.ok(await run(nc, observer ?? args.lifecycle, current));
-      } catch (cause) {
-        return Result.err(
-          cause instanceof BaseError ? cause : toUnexpectedError(cause),
-        );
-      } finally {
-        observer?.stop();
-        lease?.release();
-      }
-    })());
+      })(),
+    );
 
   return new JobRef<TPayload, TResult, TUpdate>(
     {
@@ -2286,7 +2298,7 @@ function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
           if (args.acquireTransport) await nc.flush();
           return args.acquireTransport
             ? snapshotFromLifecycleEvent(current, event)
-            : lifecycle.apply(event) ?? current;
+            : (lifecycle.apply(event) ?? current);
         }),
       updates: args.updates,
     },
@@ -2306,17 +2318,21 @@ function subscribeToJobUpdates(args: {
   return AsyncResult.from(
     Promise.resolve().then(() => {
       if (!args.queue.update || !args.queue.updatesPrefix) {
-        return Result.err(toUnexpectedError(
-          new Error("Job updates are not configured for this queue"),
-        ));
+        return Result.err(
+          toUnexpectedError(
+            new Error("Job updates are not configured for this queue"),
+          ),
+        );
       }
       if (!/^[^.>*\s]+$/u.test(args.jobId)) {
         return Result.err(
           new ValidationError({
-            errors: [{
-              path: "/jobId",
-              message: "Job id must be one NATS token",
-            }],
+            errors: [
+              {
+                path: "/jobId",
+                message: "Job id must be one NATS token",
+              },
+            ],
           }),
         );
       }
@@ -2358,11 +2374,12 @@ function subscribeToJobUpdates(args: {
                 parsed = parseSchema(args.updateSchema, envelope.update).take();
               }
               if (isErr(parsed)) continue;
-              const lifecycleAttempt = args.lifecycle.attempt({
-                service: args.service,
-                jobType: args.queue.queueType,
-                id: args.jobId,
-              }) ?? 0;
+              const lifecycleAttempt =
+                args.lifecycle.attempt({
+                  service: args.service,
+                  jobType: args.queue.queueType,
+                  id: args.jobId,
+                }) ?? 0;
               if (lifecycleAttempt > attempt) {
                 attempt = lifecycleAttempt;
                 sequence = 0;
@@ -2413,10 +2430,13 @@ function createJobsFacade<
   jobsBinding?: ResourceBindingJobs;
   workStream?: string;
 }): ManagedJobsFacade<TJobs, TClient> {
-  const handlers = new Map<string, {
-    handler: RegisteredJobHandler<unknown, unknown>;
-    concurrency: number;
-  }>();
+  const handlers = new Map<
+    string,
+    {
+      handler: RegisteredJobHandler<unknown, unknown>;
+      concurrency: number;
+    }
+  >();
   const jobsFacade: Record<string, unknown> = {};
   const lifecycle = createJobLifecycleTracker(args.nc);
   const updateSubscriptions = new Set<Subscription>();
@@ -2439,8 +2459,7 @@ function createJobsFacade<
   };
   let activeHost: JobWorkerHostAdapter | undefined;
   let startupPromise:
-    | Promise<Result<JobWorkerHostAdapter, BaseError>>
-    | undefined;
+    Promise<Result<JobWorkerHostAdapter, BaseError>> | undefined;
   let stopPromise: Promise<Result<void, BaseError>> | undefined;
   const startupCancellation = new AbortController();
   const startingHosts = new Set<{ stop(reason?: unknown): Promise<void> }>();
@@ -2453,9 +2472,11 @@ function createJobsFacade<
 
     const updates = (jobId: string, options?: JobUpdatesOptions) => {
       if (!queueBinding || !updateSchema) {
-        return AsyncResult.err(toUnexpectedError(
-          new Error(`Job updates are unavailable for queue '${queueType}'`),
-        ));
+        return AsyncResult.err(
+          toUnexpectedError(
+            new Error(`Job updates are unavailable for queue '${queueType}'`),
+          ),
+        );
       }
       return subscribeToJobUpdates({
         nc: args.nc,
@@ -2472,129 +2493,145 @@ function createJobsFacade<
     jobsFacade[queueType] = {
       updates,
       create: (payload) =>
-        AsyncResult.from((async () => {
-          let lease: TransportLease | undefined;
-          try {
-            if (!jobsBinding) {
-              return Result.err(
-                toUnexpectedError(new Error("Jobs bindings are unavailable")),
-              );
-            }
-            const queueBinding = jobsBinding.queues[queueType];
-            if (!queueBinding) {
-              return Result.err(toUnexpectedError(
-                new Error(
-                  `Jobs binding for queue '${queueType}' is unavailable`,
-                ),
-              ));
-            }
+        AsyncResult.from(
+          (async () => {
+            let lease: TransportLease | undefined;
+            try {
+              if (!jobsBinding) {
+                return Result.err(
+                  toUnexpectedError(new Error("Jobs bindings are unavailable")),
+                );
+              }
+              const queueBinding = jobsBinding.queues[queueType];
+              if (!queueBinding) {
+                return Result.err(
+                  toUnexpectedError(
+                    new Error(
+                      `Jobs binding for queue '${queueType}' is unavailable`,
+                    ),
+                  ),
+                );
+              }
 
-            lease = await acquireSubmissionTransport();
-            const submissionManager = lease
-              ? manager.withTransport(
-                jetstream(lease.nc),
-                createNatsJobKeyCoordinator(lease.nc),
-              )
-              : manager;
-            const created = await submissionManager.create(queueType, payload);
-            return Result.ok(createJobRef({
-              nc: args.nc,
-              acquireTransport:
-                args.transport instanceof TransportGenerationManager
-                  ? acquireSubmissionTransport
-                  : undefined,
-              queueType,
-              jobsBinding,
-              queueBinding,
-              seed: created as JobSnapshot<unknown, unknown>,
-              lifecycle,
-              updates: (options) => updates(created.id, options),
-            }));
-          } catch (cause) {
-            if (
-              cause instanceof JobNotEnqueuedError ||
-              cause instanceof TransportError
-            ) {
-              return Result.err(cause);
+              lease = await acquireSubmissionTransport();
+              const submissionManager = lease
+                ? manager.withTransport(
+                    jetstream(lease.nc),
+                    createNatsJobKeyCoordinator(lease.nc),
+                  )
+                : manager;
+              const created = await submissionManager.create(
+                queueType,
+                payload,
+              );
+              return Result.ok(
+                createJobRef({
+                  nc: args.nc,
+                  acquireTransport:
+                    args.transport instanceof TransportGenerationManager
+                      ? acquireSubmissionTransport
+                      : undefined,
+                  queueType,
+                  jobsBinding,
+                  queueBinding,
+                  seed: created as JobSnapshot<unknown, unknown>,
+                  lifecycle,
+                  updates: (options) => updates(created.id, options),
+                }),
+              );
+            } catch (cause) {
+              if (
+                cause instanceof JobNotEnqueuedError ||
+                cause instanceof TransportError
+              ) {
+                return Result.err(cause);
+              }
+              return Result.err(toUnexpectedError(cause));
+            } finally {
+              lease?.release();
             }
-            return Result.err(toUnexpectedError(cause));
-          } finally {
-            lease?.release();
-          }
-        })()),
+          })(),
+        ),
       submit: (payload) =>
-        AsyncResult.from((async () => {
-          let lease: TransportLease | undefined;
-          try {
-            if (!jobsBinding) {
-              return Result.err(
-                toUnexpectedError(new Error("Jobs bindings are unavailable")),
-              );
-            }
-            const queueBinding = jobsBinding.queues[queueType];
-            if (!queueBinding) {
-              return Result.err(toUnexpectedError(
-                new Error(
-                  `Jobs binding for queue '${queueType}' is unavailable`,
-                ),
-              ));
-            }
+        AsyncResult.from(
+          (async () => {
+            let lease: TransportLease | undefined;
+            try {
+              if (!jobsBinding) {
+                return Result.err(
+                  toUnexpectedError(new Error("Jobs bindings are unavailable")),
+                );
+              }
+              const queueBinding = jobsBinding.queues[queueType];
+              if (!queueBinding) {
+                return Result.err(
+                  toUnexpectedError(
+                    new Error(
+                      `Jobs binding for queue '${queueType}' is unavailable`,
+                    ),
+                  ),
+                );
+              }
 
-            lease = await acquireSubmissionTransport();
-            const submissionManager = lease
-              ? manager.withTransport(
-                jetstream(lease.nc),
-                createNatsJobKeyCoordinator(lease.nc),
-              )
-              : manager;
-            const outcome = await submissionManager.submit(queueType, payload);
-            if (outcome.kind === "accepted") {
-              return Result.ok({
-                kind: "accepted",
-                key: outcome.key,
-                ref: createJobRef({
-                  nc: args.nc,
-                  acquireTransport:
-                    args.transport instanceof TransportGenerationManager
-                      ? acquireSubmissionTransport
-                      : undefined,
-                  queueType,
-                  jobsBinding,
-                  queueBinding,
-                  seed: outcome.job as JobSnapshot<unknown, unknown>,
-                  lifecycle,
-                  updates: (options) => updates(outcome.job.id, options),
-                }),
-              });
+              lease = await acquireSubmissionTransport();
+              const submissionManager = lease
+                ? manager.withTransport(
+                    jetstream(lease.nc),
+                    createNatsJobKeyCoordinator(lease.nc),
+                  )
+                : manager;
+              const outcome = await submissionManager.submit(
+                queueType,
+                payload,
+              );
+              if (outcome.kind === "accepted") {
+                return Result.ok({
+                  kind: "accepted",
+                  key: outcome.key,
+                  ref: createJobRef({
+                    nc: args.nc,
+                    acquireTransport:
+                      args.transport instanceof TransportGenerationManager
+                        ? acquireSubmissionTransport
+                        : undefined,
+                    queueType,
+                    jobsBinding,
+                    queueBinding,
+                    seed: outcome.job as JobSnapshot<unknown, unknown>,
+                    lifecycle,
+                    updates: (options) => updates(outcome.job.id, options),
+                  }),
+                });
+              }
+              if (outcome.kind === "replaced") {
+                return Result.ok({
+                  kind: "replaced",
+                  key: outcome.key,
+                  replaced: outcome.replaced,
+                  ref: createJobRef({
+                    nc: args.nc,
+                    acquireTransport:
+                      args.transport instanceof TransportGenerationManager
+                        ? acquireSubmissionTransport
+                        : undefined,
+                    queueType,
+                    jobsBinding,
+                    queueBinding,
+                    seed: outcome.job as JobSnapshot<unknown, unknown>,
+                    lifecycle,
+                    updates: (options) => updates(outcome.job.id, options),
+                  }),
+                });
+              }
+              return Result.ok(outcome);
+            } catch (cause) {
+              if (cause instanceof TransportError) return Result.err(cause);
+              return Result.err(toUnexpectedError(cause));
+            } finally {
+              lease?.release();
             }
-            if (outcome.kind === "replaced") {
-              return Result.ok({
-                kind: "replaced",
-                key: outcome.key,
-                replaced: outcome.replaced,
-                ref: createJobRef({
-                  nc: args.nc,
-                  acquireTransport:
-                    args.transport instanceof TransportGenerationManager
-                      ? acquireSubmissionTransport
-                      : undefined,
-                  queueType,
-                  jobsBinding,
-                  queueBinding,
-                  seed: outcome.job as JobSnapshot<unknown, unknown>,
-                  lifecycle,
-                  updates: (options) => updates(outcome.job.id, options),
-                }),
-              });
-            }
-            return Result.ok(outcome);
-          } catch (cause) {
-            if (cause instanceof TransportError) return Result.err(cause);
-            return Result.err(toUnexpectedError(cause));
-          } finally {
-            lease?.release();
-          }
-        })()),
+          })(),
+        ),
       handle: (handler, options) => {
         if (handlers.has(queueType)) {
           throw new Error(
@@ -2643,11 +2680,13 @@ function createJobsFacade<
         }
 
         if (!jobsBinding || !args.workStream) {
-          return Result.err(toUnexpectedError(
-            new Error(
-              "Jobs infrastructure bindings are unavailable for this service",
+          return Result.err(
+            toUnexpectedError(
+              new Error(
+                "Jobs infrastructure bindings are unavailable for this service",
+              ),
             ),
-          ));
+          );
         }
 
         const workStream = args.workStream;
@@ -2667,11 +2706,13 @@ function createJobsFacade<
               options?: JobUpdatesOptions,
             ) => {
               if (!updateSchema) {
-                return AsyncResult.err(toUnexpectedError(
-                  new Error(
-                    `Job updates are unavailable for queue '${queueType}'`,
+                return AsyncResult.err(
+                  toUnexpectedError(
+                    new Error(
+                      `Job updates are unavailable for queue '${queueType}'`,
+                    ),
                   ),
-                ));
+                );
               }
               return subscribeToJobUpdates({
                 nc,
@@ -2701,11 +2742,13 @@ function createJobsFacade<
               manager,
               heartbeatPublisher: args.nc,
               getProjectedJob: (job) =>
-                Promise.resolve(lifecycle.get({
-                  service: job.service,
-                  jobType: job.type,
-                  id: job.id,
-                })),
+                Promise.resolve(
+                  lifecycle.get({
+                    service: job.service,
+                    jobType: job.type,
+                    id: job.id,
+                  }),
+                ),
               handler: async (
                 job: InternalActiveJob<unknown, unknown>,
                 session: JobReceivingSession<unknown>,
@@ -2749,25 +2792,29 @@ function createJobsFacade<
                       AsyncResult.from(
                         Promise.resolve().then(() => {
                           if (!attemptActive) {
-                            return Result.err(toUnexpectedError(
-                              new Error("Job attempt is no longer active"),
-                            ));
+                            return Result.err(
+                              toUnexpectedError(
+                                new Error("Job attempt is no longer active"),
+                              ),
+                            );
                           }
                           if (
                             !queueBinding.update ||
                             !queueBinding.updatesPrefix ||
                             !updateSchema
                           ) {
-                            return Result.err(toUnexpectedError(
-                              new Error(
-                                `Job updates are unavailable for queue '${queueType}'`,
+                            return Result.err(
+                              toUnexpectedError(
+                                new Error(
+                                  `Job updates are unavailable for queue '${queueType}'`,
+                                ),
                               ),
-                            ));
+                            );
                           }
                           let encoded = value;
                           if (
                             typeof Reflect.get(updateSchema, "encode") ===
-                              "function"
+                            "function"
                           ) {
                             try {
                               encoded = (updateSchema as Codec<unknown>).encode(
@@ -2780,17 +2827,19 @@ function createJobsFacade<
                           if (!isJsonValue(encoded)) {
                             return Result.err(
                               new ValidationError({
-                                errors: [{
-                                  path: "/",
-                                  message:
-                                    "Job update must be JSON-serializable",
-                                }],
+                                errors: [
+                                  {
+                                    path: "/",
+                                    message:
+                                      "Job update must be JSON-serializable",
+                                  },
+                                ],
                               }),
                             );
                           }
                           const parsed =
                             typeof Reflect.get(updateSchema, "encode") ===
-                                "function"
+                            "function"
                               ? encoded
                               : parseSchema(updateSchema, encoded).take();
                           if (isErr(parsed)) return parsed;
@@ -2798,13 +2847,15 @@ function createJobsFacade<
                           try {
                             receivingNc.publish(
                               `${queueBinding.updatesPrefix}.${job.job().id}`,
-                              new TextEncoder().encode(JSON.stringify({
-                                jobId: job.job().id,
-                                attempt: job.job().tries + 1,
-                                sequence: updateSequence,
-                                timestamp: new Date().toISOString(),
-                                update: parsed,
-                              })),
+                              new TextEncoder().encode(
+                                JSON.stringify({
+                                  jobId: job.job().id,
+                                  attempt: job.job().tries + 1,
+                                  sequence: updateSequence,
+                                  timestamp: new Date().toISOString(),
+                                  update: parsed,
+                                }),
+                              ),
                             );
                             return Result.ok(undefined);
                           } catch (cause) {
@@ -2836,12 +2887,11 @@ function createJobsFacade<
                     cause,
                     jobErrorContext,
                   );
-                  const signal = annotatedError instanceof RetryJobError
-                    ? InternalJobProcessError.retryable
-                    : InternalJobProcessError.failed;
-                  throw signal(
-                    serializeJobHandlerError(annotatedError),
-                  );
+                  const signal =
+                    annotatedError instanceof RetryJobError
+                      ? InternalJobProcessError.retryable
+                      : InternalJobProcessError.failed;
+                  throw signal(serializeJobHandlerError(annotatedError));
                 } finally {
                   attemptActive = false;
                   if (receivingLifecycle !== lifecycle) {
@@ -2853,36 +2903,41 @@ function createJobsFacade<
                     handled.error,
                     jobErrorContext,
                   );
-                  const signal = annotatedError instanceof RetryJobError
-                    ? InternalJobProcessError.retryable
-                    : InternalJobProcessError.failed;
-                  throw signal(
-                    serializeJobHandlerError(annotatedError),
-                  );
+                  const signal =
+                    annotatedError instanceof RetryJobError
+                      ? InternalJobProcessError.retryable
+                      : InternalJobProcessError.failed;
+                  throw signal(serializeJobHandlerError(annotatedError));
                 }
                 return handled;
               },
             };
             startupCancellation.signal.throwIfAborted();
             if (args.transport instanceof TransportGenerationManager) {
-              const host = startManagedJobWorkerHost({
-                jobs: jobsBinding,
-                workStream,
-              }, {
-                ...workerOptions,
-                transport: args.transport,
-                intakeOwner: args.intakeOwner,
-                queueType,
-                cancellationRegistry,
-              });
+              const host = startManagedJobWorkerHost(
+                {
+                  jobs: jobsBinding,
+                  workStream,
+                },
+                {
+                  ...workerOptions,
+                  transport: args.transport,
+                  intakeOwner: args.intakeOwner,
+                  queueType,
+                  cancellationRegistry,
+                },
+              );
               hosts.push(host);
               startingHosts.add(host);
               await host.ready;
             } else {
-              const host = await startNatsWorkerHostFromBinding({
-                jobs: jobsBinding,
-                workStream,
-              }, workerOptions);
+              const host = await startNatsWorkerHostFromBinding(
+                {
+                  jobs: jobsBinding,
+                  workStream,
+                },
+                workerOptions,
+              );
               hosts.push(host);
               startingHosts.add(host);
             }
@@ -2892,8 +2947,9 @@ function createJobsFacade<
             hosts.map((host) => host.stop()),
           );
           const stopErrors = stopResults
-            .filter((result): result is PromiseRejectedResult =>
-              result.status === "rejected"
+            .filter(
+              (result): result is PromiseRejectedResult =>
+                result.status === "rejected",
             )
             .map((result) => result.reason);
           if (stopErrors.length > 0) {
@@ -2935,7 +2991,7 @@ function createJobsFacade<
         startupCancellation.abort();
         const stoppingStartupHosts = Promise.allSettled(
           [...startingHosts].map((host) =>
-            host.stop(startupCancellation.signal.reason)
+            host.stop(startupCancellation.signal.reason),
           ),
         );
         const startup = startupPromise;
@@ -3007,552 +3063,151 @@ export function connectTrellisServiceWithRuntimeDeps<
     ParticipantJobsOf<TContract>,
     ParticipantKvOf<TContract>
   >,
-  TransportError | UnexpectedError
+  AuthError | TransportError | UnexpectedError
 > {
-  return AsyncResult.from((async () => {
-    const totalStartedAt = performance.now();
-    try {
-      type TOwnedApi = ParticipantOwnedApi<TContract>;
-      type TTrellisApi = ParticipantTrellisApi<TContract>;
-
-      const runtimeDeps = {
-        ...(await loadDefaultServiceRuntimeDeps()),
-        ...deps,
-      } satisfies TrellisServiceRuntimeDeps;
-      const serviceName = args.name ?? args.participant.identity;
-      if (args.telemetry !== false && args.telemetry?.enabled !== false) {
-        // Await the single owner before the first instrument starts.
-        await runtimeDeps.initTelemetry?.(serviceName);
-      }
-      const identityAuth = await createAuth({
-        sessionKeySeed: args.seed,
-      });
-      const sessionAuth = await createAuth({
-        sessionKeySeed: base64urlEncode(
-          crypto.getRandomValues(new Uint8Array(32)),
-        ),
-      });
-      const bootstrapLog = resolveServiceLogger(args.runtime?.log);
-      const bootstrapStartedAt = performance.now();
-      const bootstrap = await fetchServiceBootstrapInfo({
-        trellisUrl: args.trellisUrl,
-        serviceName,
-        name: args.name,
-        contractId: args.participant.identity,
-        contractDigest: participantEvidence(args.participant).packageDigest,
-        contract: args.participant,
-        identityAuth,
-        sessionAuth,
-        log: bootstrapLog,
-      });
-      recordTrellisDuration(
-        "trellis.connect.duration",
-        performance.now() - bootstrapStartedAt,
-        {
-          phase: "bootstrap",
-          participantKind: "service",
-          outcome: "ok",
-        },
-      );
-      const authorizationContexts = new AuthorizationContextCache(
-        args.trellisUrl,
-      );
-      authorizationContexts.setServerClockOffsetMs(
-        bootstrap.serverClockOffsetMs,
-      );
-      const inboxPrefix = `_INBOX.${bootstrap.connectInfo.connectionId}`;
-      await authorizationContexts.install(
-        bootstrap.connectInfo.authorizationContext,
-        {
-          bootstrapJwt: bootstrap.connectInfo.jwt,
-          bootstrapJwtExpiresAt: bootstrap.connectInfo.jwtExpiresAt,
-        },
-        authorizationContexts.correctedNowSeconds(),
-        () => true,
-        {
-          connectionId: bootstrap.connectInfo.connectionId,
-          loginSessionId: null,
-          participantId: bootstrap.connectInfo.participantId,
-          inboxPrefix,
-          transports: bootstrap.connectInfo.transports,
-        },
-      );
-      const verifiedContext = authorizationContexts.current();
-      if (verifiedContext.context.participantId !== args.participant.identity) {
-        throw new Error(
-          "service authorization context belongs to another participant",
-        );
-      }
-      if (
-        !verifiedContext.context.deploymentId ||
-        !verifiedContext.context.instanceId
-      ) {
-        throw new Error(
-          "service authorization context is missing its deployment assignment",
-        );
-      }
-      let nc: NatsConnection | undefined;
-      let initialPrepared: TransportGenerationPrepared | undefined;
-      let authorizationProviderCache: AuthorizationProviderCache | undefined;
-      let stopContextRefresh: (() => void) | undefined;
-      const connectionTelemetry = startConnectionTelemetry("service");
-      /**
-       * Logical provider core handoff: installed on each admitted generation by
-       * the generation manager, never re-registered by application code.
-       */
-      let serviceFacade: ServiceProviderIngress | undefined;
-      /**
-       * Capture immutable CONNECT material for the newest desired service
-       * context. Generation 1 and every automatic generation use this one path
-       * so a candidate can only CONNECT with the exact context it reports.
-       */
-      const prepareServiceConnect = async (
-        verified: AuthorizationCandidateSnapshot["verified"],
-        runtime: AuthorizationCandidateSnapshot["runtime"],
-        routingJwt: string,
-      ): Promise<TransportGenerationPrepared> => {
-        if (!runtime) {
-          throw new Error("authorization runtime metadata is unavailable");
-        }
-        const policy = verified.context.transportAuthorization;
-        const servers = selectRuntimeTransportServers(runtime.transports);
-        const policyDigest = await transportAuthorizationDigestWasm(policy);
-        const {
-          authenticator: preparedAuthenticator,
-          inboxPrefix: preparedInbox,
-        } = await sessionAuth.natsConnectOptions({
-          inboxPrefix: `_INBOX.${bootstrap.connectInfo.connectionId}`,
-          contextDigest: () => verified.contextDigest,
-          jwt: () => routingJwt,
-          authorizationUsable: () =>
-            authorizationProviderCache?.transportUsable() ?? true,
-        });
-        return {
-          contextDigest: verified.contextDigest,
-          policy,
-          policyDigest,
-          connect: {
-            servers,
-            authenticators: Array.isArray(preparedAuthenticator)
-              ? preparedAuthenticator
-              : [preparedAuthenticator],
-            inboxPrefix: preparedInbox,
-            maxReconnectAttempts: GENERATION_MAX_RECONNECT_ATTEMPTS,
-            waitOnFirstConnect: DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
-          },
-        };
-      };
-      const prepareServiceGeneration = (): Promise<
-        TransportGenerationPrepared | undefined
-      > => {
-        try {
-          return prepareServiceConnect(
-            authorizationContexts.current(),
-            authorizationContexts.runtimeBinding(),
-            authorizationContexts.routingJwt(),
-          );
-        } catch {
-          authorizationContexts.requestRefresh();
-          return Promise.resolve(undefined);
-        }
-      };
-      const generationManager = new TransportGenerationManager({
-        kind: "service",
-        nowSeconds: () => authorizationContexts.correctedNowSeconds(),
-        desiredPolicy: () => {
-          // Installed own authority the provider cache has withdrawn as unusable
-          // (revoked or suspended) must not drive generation reconciliation or a
-          // normal default connection: the retained signed bytes are
-          // known-unusable. The existing healthy carrier and accepted work stay
-          // intact while a private refresh candidate is verified and promoted;
-          // promotion schedules adoption through `authorizationPromoted`.
-          if (!authorizationProviderCache?.ownUsable()) return undefined;
-          try {
-            return authorizationContexts.current().context
-              .transportAuthorization;
-          } catch {
-            return undefined;
-          }
-        },
-        prepare: prepareServiceGeneration,
-        open: (connect) =>
-          runtimeDeps.connect({
-            servers: connect.servers,
-            maxReconnectAttempts: connect.maxReconnectAttempts ??
-              GENERATION_MAX_RECONNECT_ATTEMPTS,
-            ignoreAuthErrorAbort: true,
-            waitOnFirstConnect: connect.waitOnFirstConnect ??
-              DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
-            inboxPrefix: connect.inboxPrefix,
-            authenticator: connect.authenticators,
-          }),
-        onPreActivate: async (generation) => {
-          await serviceFacade?.install({
-            id: generation.id,
-            nc: generation.nc,
-            contextDigest: generation.contextDigest,
-            // Lease the exact admitted candidate directly; a lookup-by-id would
-            // miss it because it is not yet published as the default.
-            lease: () => generation.lease(),
-            // Push each owning ingress's cleanup scope into the manager before
-            // any install async work.
-            registerDisposal: (handle) => generation.registerDisposal(handle),
-          });
-        },
-        onDrain: (generation) => {
-          serviceFacade?.retireIntake(generation.id);
-        },
-        onActivate: () => {
-          // Recompute the admitted-transport gate from the new default.
-          void applyServiceAdmission().catch(() => undefined);
-        },
-        log: bootstrapLog,
-      });
+  return AsyncResult.from(
+    (async () => {
+      let connected: Awaited<ReturnType<typeof connectProvisioned>> | undefined;
+      const telemetry = startConnectionTelemetry("service");
       try {
-        const natsStartedAt = performance.now();
-        initialPrepared = await prepareServiceGeneration();
-        if (!initialPrepared) {
-          throw new Error("no current authorization context to connect with");
-        }
-        nc = await runtimeDeps.connect({
-          servers: initialPrepared.connect.servers,
-          maxReconnectAttempts: initialPrepared.connect.maxReconnectAttempts ??
-            GENERATION_MAX_RECONNECT_ATTEMPTS,
-          ignoreAuthErrorAbort: true,
-          waitOnFirstConnect: initialPrepared.connect.waitOnFirstConnect ??
-            DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
-          inboxPrefix: initialPrepared.connect.inboxPrefix,
-          authenticator: initialPrepared.connect.authenticators,
+        const runtimeDeps = {
+          ...(await loadDefaultServiceRuntimeDeps()),
+          ...deps,
+        };
+        const name = args.name ?? args.participant.identity;
+        if (args.telemetry !== false && args.telemetry?.enabled !== false)
+          await runtimeDeps.initTelemetry?.(name);
+        let ingress: ServiceProviderIngress | undefined;
+        const discovered = await discoverNativeOAuth(args.trellisUrl, {
+          signal: args.signal,
         });
-        const connectedNats = nc;
-        authorizationProviderCache = await AuthorizationProviderCache.attach(
-          connectedNats,
-          authorizationContexts.bundle().authorizationRegistry,
-          inboxPrefix,
-          authorizationContexts,
-        );
-        authorizationProviderCache.start();
-        await authorizationProviderCache.waitReady();
-        await authorizationProviderCache.retainOwnContext();
-        // The provider cache is a logical-connection resource, not a property of
-        // the first physical generation. The initial attachment may be reaped on
-        // a rollover; stopping the cache then would block every later
-        // authenticator, so bind its lifetime to the logical transport.
-        void generationManager.closed().then(
-          () => {
-            stopContextRefresh?.();
-            authorizationProviderCache?.stop();
-          },
-          () => {
-            stopContextRefresh?.();
-            authorizationProviderCache?.stop();
-          },
-        );
-        recordTrellisDuration(
-          "trellis.connect.duration",
-          performance.now() - natsStartedAt,
+        if (isErr(discovered)) throw discovered.error;
+        const server = discovered.unwrapOrElse(() => {
+          throw new Error("Native discovery result narrowed incorrectly");
+        });
+        const provisioned = {
+          servers: [...server.natsServers],
+          trellisInstanceId: server.trust.instanceId,
+          audienceNatsAccount: server.trust.account,
+          issuers: [server.trust.issuer],
+          rotationSequence: server.trust.rotationSequence,
+          seed: args.seed,
+          timeout: args.timeout,
+          signal: args.signal,
+        };
+        connected = await connectProvisioned(
+          provisioned,
+          "service",
           {
-            phase: "nats_connect",
-            participantKind: "service",
-            outcome: "ok",
+            onPreActivate: async (generation) => {
+              await ingress?.install({
+                id: generation.id,
+                nc: generation.nc,
+                contextDigest: generation.contextDigest,
+                lease: () => generation.lease(),
+                registerDisposal: (handle) =>
+                  generation.registerDisposal(handle),
+              });
+            },
+            onDrain: (generation) => ingress?.retireIntake(generation.id),
           },
+          { connect: runtimeDeps.connect },
         );
-      } catch (cause) {
-        connectionTelemetry.dispose();
-        authorizationProviderCache?.stop();
-        stopContextRefresh?.();
-        if (nc && !nc.isClosed()) await nc.close();
-        throw new TransportError({
-          code: "trellis.runtime.connect_failed",
-          message: "Trellis could not open the service runtime connection.",
-          hint:
-            "Retry the connection. If it keeps failing, check Trellis transport availability.",
-          cause,
-          context: {
-            trellisUrl: args.trellisUrl,
-            contractId: args.participant.identity,
-            contractDigest: bootstrap.connectInfo.participantDigest,
-          },
-        });
-      }
-
-      if (!nc || !authorizationProviderCache) {
-        throw new Error(
-          "Trellis service runtime connection was not established",
+        const own = connected.owner.own();
+        const binding = own.authority.binding;
+        own.release();
+        if (binding.kind !== "service")
+          throw new Error("ServiceBindingRequired");
+        const authorization = Value.Parse(
+          ServiceSignedAuthorizationSchema,
+          connected.context.registry.authorization,
         );
-      }
-      const serviceAuth: SessionAuth = {
-        ...sessionAuth,
-        authorizationProviderCache,
-      };
-      const transportState = new TransportAuthorizationState();
-      let liveResourceBindings: ResourceBindings = bootstrap.binding.resources;
-      const applyServiceAdmission = async (): Promise<void> => {
-        if (authorizationContexts.storedContextDigest() === undefined) return;
-        const generation = generationManager.currentGeneration();
-        if (!generation || !generation.ready) {
-          transportState.markDisconnected();
-          return;
-        }
-        // The admitted-transport projection tracks the current generation's exact
-        // verified admission rather than a fresh broker read of one socket.
-        await transportState.recordAdmission({
-          contextDigest: generation.contextDigest,
-          policy: generation.admittedPolicy,
-          allowed:
-            authorizationContexts.current().context.transportAuthorization,
-          nowUnixSeconds: authorizationContexts.correctedNowSeconds(),
-        });
-      };
-
-      try {
-        const contractRuntime = getParticipantRuntime(args.participant);
-        const runtime = {
-          ...(args.runtime ?? {}),
-          api: bindApiRoutes(
-            contractRuntime.ownedApi,
-            bootstrap.binding.apiBindings,
-          ) as TOwnedApi,
-          trellisApi: bindApiRoutes(
-            contractRuntime.api,
-            bootstrap.binding.apiBindings,
-          ) as TTrellisApi,
-          operationDeploymentId: verifiedContext.context.deploymentId,
-          operationConnectionId: verifiedContext.context.connectionId,
-        };
-
+        if (
+          binding.participantId !== args.participant.identity ||
+          authorization.participantId !== binding.participantId ||
+          authorization.participantDigest !== args.participant.digest
+        )
+          throw new Error("ServiceImplementationMismatch");
+        const contract = getParticipantRuntime(args.participant);
+        const manager = connected.manager;
+        const owner = connected.owner;
         const service = await createConnectedService<
-          TOwnedApi,
-          TTrellisApi,
+          ParticipantOwnedApi<TContract>,
+          ParticipantTrellisApi<TContract>,
           ParticipantJobsOf<TContract>,
           ParticipantKvOf<TContract>
         >({
-          name: serviceName,
-          auth: serviceAuth,
-          nc,
-          telemetry: connectionTelemetry,
-          inboxPrefix,
-          contextDigest: () => authorizationContexts.current().contextDigest,
-          operationConnectionId: verifiedContext.context.connectionId,
-          contractId: args.participant.identity,
-          contractDigest: bootstrap.connectInfo.participantDigest,
-          participantDigest: bootstrap.connectInfo.participantDigest,
-          contractJobs: contractRuntime.jobs as ParticipantJobsOf<
-            TContract
-          >,
-          contractKv: contractRuntime.kv as ParticipantKvOf<
-            TContract
-          >,
-          contractEventConsumers: contractRuntime.eventConsumers,
-          apiBindings: bootstrap.binding.apiBindings,
+          name,
+          nc: manager.currentNats(),
+          auth: connected.auth,
+          inboxPrefix: connected.inboxPrefix,
+          contextDigest: () => owner.ownDigest ?? "",
+          operationConnectionId: connected.context.runtimeId,
+          contractId: binding.participantId,
+          contractDigest: authorization.participantDigest,
+          participantDigest: authorization.participantDigest,
+          contractJobs: contract.jobs as ParticipantJobsOf<TContract>,
+          contractKv: contract.kv as ParticipantKvOf<TContract>,
+          contractEventConsumers: contract.eventConsumers,
           ephemeralEventNeeds: participantEphemeralEventNeeds(args.participant),
-          onTransportEvent: (event) => {
-            const type = (event as { type?: unknown } | null)?.type;
-            if (
-              type === "disconnect" || type === "disconnected" ||
-              type === "reconnecting" || type === "forceReconnect"
-            ) {
-              transportState.markDisconnected();
-            } else if (type === "reconnect") {
-              void applyServiceAdmission().catch(() => undefined);
-            }
+          runtime: {
+            ...args.runtime,
+            api: contract.ownedApi as ParticipantOwnedApi<TContract>,
+            trellisApi: contract.api as ParticipantTrellisApi<TContract>,
           },
-          runtime,
-          bindings: bootstrap.binding.resources,
-          liveBindings: () => liveResourceBindings,
+          bindings: {
+            ...authorization.resourceRuntime,
+            kv: authorization.resourceRuntime.kv ?? {},
+            store: authorization.resourceRuntime.store ?? {},
+          },
+          liveBindings: () => {
+            const resources = Value.Parse(
+              ServiceSignedAuthorizationSchema,
+              connected!.context.registry.authorization,
+            ).resourceRuntime;
+            return {
+              ...resources,
+              kv: resources.kv ?? {},
+              store: resources.store ?? {},
+            };
+          },
           availability: participantAvailability(
             args.participant,
-            bootstrap.binding.apiBindings,
-            bootstrap.binding.resources,
-            verifiedContext.context.grants.permissions,
+            {},
+            authorization.resourceRuntime,
+            [],
           ),
           healthIdentity: {
-            instanceId: verifiedContext.context.instanceId,
-            deploymentId: verifiedContext.context.deploymentId,
+            instanceId: binding.instanceId,
+            deploymentId: binding.deploymentId,
           },
-          authorizationProviderCache,
-          transport: generationManager,
-          // The initial heartbeat may run before generation 1 is activated, so
-          // fall back to the connection that was just admitted.
-          activeNats: () => {
-            try {
-              return generationManager.currentNats();
-            } catch {
-              return nc;
-            }
-          },
+          transport: manager,
+          activeNats: () => manager.currentNats(),
+          telemetry,
         });
-        serviceFacade = service[SERVICE_PROVIDER_INGRESS];
-        if (!initialPrepared) {
-          throw new Error("missing prepared service generation");
-        }
-        await generationManager.initialize(nc, initialPrepared);
-        // Bind the logical cache to the manager's published current transport
-        // only after the initial generation is adopted: its first retained
-        // publication pins existing fixed-mode coverage to that exact
-        // generation, even though the socket identity is unchanged.
-        authorizationProviderCache.followTransport(generationManager);
-        service[SERVICE_TRANSPORT_LIFETIME] = generationManager;
-        let installedAvailability = participantAvailability(
-          args.participant,
-          bootstrap.binding.apiBindings,
-          bootstrap.binding.resources,
-          verifiedContext.context.grants.permissions,
-        );
-        await applyServiceAdmission();
-        authorizationProviderCache.onOwnInvalidated((reason) => {
-          transitionConnectionAvailability(
-            service.connection,
-            false,
-            reason,
-          );
-          installConnectionAvailability(
-            service.connection,
-            participantAvailability(args.participant, {}, {}, []),
-          );
+        ingress = service[SERVICE_PROVIDER_INGRESS];
+        const generation = manager.currentGeneration();
+        if (!generation) throw new Error("AdmissionUnavailable");
+        await ingress.install({
+          id: generation.id,
+          nc: generation.nc,
+          contextDigest: generation.contextDigest,
+          lease: () => generation.lease(),
+          registerDisposal: (handle) => generation.registerDisposal(handle),
         });
-        authorizationProviderCache.onOwnResumed(() => {
-          if (service.connection.status.phase === "connected") {
-            transitionConnectionAvailability(
-              service.connection,
-              true,
-              "resumed",
-            );
-          }
-          installConnectionAvailability(
-            service.connection,
-            installedAvailability,
-          );
-        });
-        if (
-          authorizationProviderCache.ownUsable() &&
-          service.connection.status.phase === "connected"
-        ) {
-          transitionConnectionAvailability(
-            service.connection,
-            true,
-            "connected",
-          );
-        }
-        stopContextRefresh = startAuthorizationContextRefresh({
-          trellisUrl: args.trellisUrl,
-          credential: {
-            loginSessionId: bootstrap.connectInfo.connectionId,
-            proofAuth: sessionAuth,
-          },
-          runtime: { auth: sessionAuth },
-          cache: authorizationContexts,
-          refresh: async (shouldInstall) => {
-            try {
-              const next = await fetchServiceBootstrapInfo({
-                trellisUrl: args.trellisUrl,
-                serviceName,
-                name: args.name,
-                contractId: args.participant.identity,
-                contractDigest: bootstrap.connectInfo.participantDigest,
-                contract: args.participant,
-                identityAuth,
-                sessionAuth,
-                log: bootstrapLog,
-                connectionId: bootstrap.connectInfo.connectionId,
-              });
-              authorizationContexts.setServerClockOffsetMs(
-                next.serverClockOffsetMs,
-              );
-              const context = await authorizationContexts.prepare(
-                next.connectInfo.authorizationContext,
-                {
-                  bootstrapJwt: next.connectInfo.jwt,
-                  bootstrapJwtExpiresAt: next.connectInfo.jwtExpiresAt,
-                },
-                next.serverNow,
-                shouldInstall,
-                {
-                  connectionId: next.connectInfo.connectionId,
-                  loginSessionId: null,
-                  participantId: next.connectInfo.participantId,
-                  inboxPrefix,
-                  transports: next.connectInfo.transports,
-                },
-                (verified) => () => {
-                  liveResourceBindings = next.binding.resources;
-                  installedAvailability = participantAvailability(
-                    args.participant,
-                    next.binding.apiBindings,
-                    next.binding.resources,
-                    verified.context.grants.permissions,
-                  );
-                  installConnectionAvailability(
-                    service.connection,
-                    installedAvailability,
-                  );
-                  refreshApiRoutes(runtime.api, next.binding.apiBindings);
-                  refreshApiRoutes(
-                    runtime.trellisApi,
-                    next.binding.apiBindings,
-                  );
-                },
-              );
-              return context;
-            } catch (error) {
-              if (error instanceof TrellisHttpError) {
-                throw new AuthorizationContextRefreshError(
-                  error.status,
-                  error.code,
-                );
-              }
-              throw error;
-            }
-          },
-          onRefresh: async (context) => {
-            await installAuthorizationRefresh({
-              provider: authorizationProviderCache,
-              origin: context,
-              prepareConnect: (snapshot) =>
-                prepareServiceConnect(
-                  snapshot.verified,
-                  snapshot.runtime,
-                  snapshot.routing.bootstrapJwt,
-                ),
-              onPromoted: () => generationManager.authorizationPromoted(),
-            });
-            await transportState.recompute(
-              context.context.transportAuthorization,
-              authorizationContexts.correctedNowSeconds(),
-            );
-            // The generation manager opens a new generation when the promoted
-            // policy needs it; routine renewal leaves the attachment untouched.
-          },
-          onTerminalFailure: async (error) => {
-            // The authorization controller only reports an authoritative
-            // terminal cause; carry the typed error into the logical lifetime so
-            // `closed()` preserves it instead of a bare close.
-            await generationManager.terminate(toUnexpectedError(error)).catch(
-              () => undefined,
-            );
-            if (!nc.isClosed()) await nc.close();
-          },
-        });
-        recordTrellisDuration(
-          "trellis.connect.duration",
-          performance.now() - totalStartedAt,
-          {
-            phase: "total",
-            participantKind: "service",
-            outcome: "ok",
-          },
-        );
+        service[SERVICE_TRANSPORT_LIFETIME] = manager;
         return Result.ok(service);
       } catch (cause) {
-        await closeFailedServiceBootstrapConnection(nc);
-        throw cause;
+        telemetry.dispose();
+        await connected?.manager.close();
+        return Result.err(
+          cause instanceof AuthError || cause instanceof TransportError
+            ? cause
+            : toUnexpectedError(cause),
+        );
       }
-    } catch (cause) {
-      return Result.err(
-        cause instanceof TransportError ? cause : toUnexpectedError(cause),
-      );
-    }
-  })());
+    })(),
+  );
 }
 
 /**
@@ -3573,7 +3228,8 @@ function participantEphemeralEventNeeds(
       const descriptorName = Reflect.get(action as object, "descriptorName");
       const direction = Reflect.get(action as object, "direction");
       if (
-        direction === "subscribe" && typeof descriptorName === "string" &&
+        direction === "subscribe" &&
+        typeof descriptorName === "string" &&
         descriptorName.startsWith("event:")
       ) {
         needs.add(descriptorName);
@@ -3602,10 +3258,7 @@ export class TrellisServiceSession<
   readonly event: ActiveEventFacade<TTrellisApi>;
   readonly kv: ServiceKvFacade<TKv>;
   readonly store: Record<string, StoreHandle>;
-  readonly jobs: ServiceJobsFacadeOf<
-    TJobs,
-    Trellis<TTrellisApi, TKv, TJobs>
-  >;
+  readonly jobs: ServiceJobsFacadeOf<TJobs, Trellis<TTrellisApi, TKv, TJobs>>;
   readonly health: ServiceHealth;
   readonly handle: TypedServiceHandleFacade<TOwnedApi, TTrellisApi, TKv, TJobs>;
   /** Framework-neutral lifecycle handle for the service runtime connection. */
@@ -3668,9 +3321,7 @@ export class TrellisServiceSession<
     this.event = event;
     this.kv = kv;
     this.store = Object.fromEntries(
-      Object.entries(storeBindings).map((
-        [alias, binding],
-      ) => [
+      Object.entries(storeBindings).map(([alias, binding]) => [
         alias,
         new InternalStoreHandle(
           transport,
@@ -3681,10 +3332,7 @@ export class TrellisServiceSession<
       ]),
     );
     this.#operationTransfer = operationTransfer;
-    const jobs = createJobsFacade<
-      TJobs,
-      Trellis<TTrellisApi, TKv, TJobs>
-    >({
+    const jobs = createJobsFacade<TJobs, Trellis<TTrellisApi, TKv, TJobs>>({
       serviceName: name,
       contractId: health.contractId,
       contractDigest: health.contractDigest,
@@ -3738,31 +3386,31 @@ export class TrellisServiceSession<
           method,
           async ({ input, context }) =>
             await Promise.resolve(
-              (handler as (
-                args: unknown,
-              ) =>
-                | Promise<Result<unknown, BaseError>>
-                | Result<unknown, BaseError>)({
-                  input,
-                  context,
-                  client: this.#handlerTrellis,
-                }),
+              (
+                handler as (
+                  args: unknown,
+                ) =>
+                  | Promise<Result<unknown, BaseError>>
+                  | Result<unknown, BaseError>
+              )({
+                input,
+                context,
+                client: this.#handlerTrellis,
+              }),
             ),
-        ));
+        ),
+      );
     }
 
     const live: ServiceHandleFacade["live"] = {};
     for (const liveName of Object.keys(this.#runtime.api.lives ?? {})) {
-      addSurfaceLeaf(
-        live,
-        liveName,
-        (handler) =>
-          this.#runtime.liveHandle(liveName).handle((context) =>
-            (handler as (args: unknown) => unknown | Promise<unknown>)({
-              ...context,
-              client: this.#handlerTrellis,
-            })
-          ),
+      addSurfaceLeaf(live, liveName, (handler) =>
+        this.#runtime.liveHandle(liveName).handle((context) =>
+          (handler as (args: unknown) => unknown | Promise<unknown>)({
+            ...context,
+            client: this.#handlerTrellis,
+          }),
+        ),
       );
     }
 
@@ -3770,9 +3418,9 @@ export class TrellisServiceSession<
       string,
       Record<string, ServiceHandleOperationLeaf>
     > = {};
-    for (
-      const operationName of Object.keys(this.#runtime.api.operations ?? {})
-    ) {
+    for (const operationName of Object.keys(
+      this.#runtime.api.operations ?? {},
+    )) {
       const registration = this.#operation(
         operationName as keyof TOwnedApi["operations"] & string,
       );
@@ -3782,7 +3430,7 @@ export class TrellisServiceSession<
             handler({
               ...context,
               client: this.#handlerTrellis,
-            })
+            }),
           ),
         { control: registration.control, reconcile: registration.reconcile },
       );
@@ -3792,9 +3440,7 @@ export class TrellisServiceSession<
     return { rpc, live, operation };
   }
 
-  #createSqlOutboxBinding<TTx>(
-    options: TrellisServiceSqlOutboxOptions<TTx>,
-  ): {
+  #createSqlOutboxBinding<TTx>(options: TrellisServiceSqlOutboxOptions<TTx>): {
     readonly dialect: SqlDialect;
     readonly tables: SqlOutboxTables;
     readonly transaction: SqlOutboxTransactionRunner<TTx>;
@@ -3812,108 +3458,110 @@ export class TrellisServiceSession<
       publishPreparedEvent: (event) =>
         this.#handlerTrellis.publishPrepared(event),
       dispatchJobSubmission: (message) =>
-        AsyncResult.from((async () => {
-          try {
-            if (!this.#jobsBinding) {
-              return Result.ok({
-                kind: "invalid",
-                error: "Jobs bindings are unavailable",
-              });
-            }
-            const jobsBinding = normalizeResourceJobsBinding(this.#jobsBinding);
-            const queueBinding = jobsBinding.queues[message.name];
-            if (!queueBinding) {
-              return Result.ok({
-                kind: "invalid",
-                error:
-                  `Jobs binding for queue '${message.name}' is unavailable`,
-              });
-            }
-
-            let submission: InternalPreparedJobSubmission;
+        AsyncResult.from(
+          (async () => {
             try {
-              submission = Value.Parse(
-                PreparedJobSubmissionSchema,
-                JSON.parse(message.payload),
+              if (!this.#jobsBinding) {
+                return Result.ok({
+                  kind: "invalid",
+                  error: "Jobs bindings are unavailable",
+                });
+              }
+              const jobsBinding = normalizeResourceJobsBinding(
+                this.#jobsBinding,
               );
+              const queueBinding = jobsBinding.queues[message.name];
+              if (!queueBinding) {
+                return Result.ok({
+                  kind: "invalid",
+                  error: `Jobs binding for queue '${message.name}' is unavailable`,
+                });
+              }
+
+              let submission: InternalPreparedJobSubmission;
+              try {
+                submission = Value.Parse(
+                  PreparedJobSubmissionSchema,
+                  JSON.parse(message.payload),
+                );
+              } catch (cause) {
+                return Result.ok({
+                  kind: "invalid",
+                  error: cause instanceof Error ? cause.message : String(cause),
+                });
+              }
+              const expectedMode =
+                message.kind === "job.create" ? "create" : "submit";
+              const expectedSubject = `${queueBinding.publishPrefix}.${submission.jobId}.created`;
+              if (
+                submission.submissionId !== message.id ||
+                submission.mode !== expectedMode ||
+                submission.service !== jobsBinding.serviceName ||
+                submission.queue !== message.name ||
+                message.subject !== expectedSubject ||
+                message.headers["request-id"] !==
+                  submission.context.requestId ||
+                message.headers.traceparent !==
+                  submission.context.traceparent ||
+                message.headers.tracestate !== submission.context.tracestate
+              ) {
+                return Result.ok({
+                  kind: "invalid",
+                  error: "Outbox job submission metadata is inconsistent",
+                });
+              }
+
+              const manager = new InternalJobManager<unknown, unknown>({
+                nc: jetstream(this.#nc),
+                jobs: jobsBinding,
+                keyCoordinator: createNatsJobKeyCoordinator(this.#nc),
+              });
+              if (submission.mode === "create") {
+                const job = await manager.createPrepared(submission);
+                return Result.ok({ kind: "accepted", jobId: job.id });
+              }
+
+              const outcome = await manager.submitPrepared(submission);
+              if (outcome.kind === "accepted") {
+                return Result.ok({
+                  kind: outcome.kind,
+                  jobId: outcome.job.id,
+                  ...(outcome.key ? { key: outcome.key } : {}),
+                });
+              }
+              if (outcome.kind === "replaced") {
+                return Result.ok({
+                  kind: outcome.kind,
+                  jobId: outcome.job.id,
+                  key: outcome.key,
+                  replaced: outcome.replaced,
+                });
+              }
+              return Result.ok(outcome);
             } catch (cause) {
-              return Result.ok({
-                kind: "invalid",
-                error: cause instanceof Error ? cause.message : String(cause),
-              });
+              if (cause instanceof JobNotEnqueuedError) {
+                return Result.ok({
+                  kind: "rejected",
+                  reason: cause.reason,
+                  key: cause.key,
+                  active: cause.active,
+                  queued: cause.queued,
+                  limit: cause.limit,
+                  ...(cause.existingJobId
+                    ? { existingJobId: cause.existingJobId }
+                    : {}),
+                });
+              }
+              if (cause instanceof ValidationError) {
+                return Result.ok({ kind: "invalid", error: cause.message });
+              }
+              if (cause instanceof UnexpectedError) {
+                return Result.err(cause);
+              }
+              return Result.err(toUnexpectedError(cause));
             }
-            const expectedMode = message.kind === "job.create"
-              ? "create"
-              : "submit";
-            const expectedSubject =
-              `${queueBinding.publishPrefix}.${submission.jobId}.created`;
-            if (
-              submission.submissionId !== message.id ||
-              submission.mode !== expectedMode ||
-              submission.service !== jobsBinding.serviceName ||
-              submission.queue !== message.name ||
-              message.subject !== expectedSubject ||
-              message.headers["request-id"] !==
-                submission.context.requestId ||
-              message.headers.traceparent !== submission.context.traceparent ||
-              message.headers.tracestate !== submission.context.tracestate
-            ) {
-              return Result.ok({
-                kind: "invalid",
-                error: "Outbox job submission metadata is inconsistent",
-              });
-            }
-
-            const manager = new InternalJobManager<unknown, unknown>({
-              nc: jetstream(this.#nc),
-              jobs: jobsBinding,
-              keyCoordinator: createNatsJobKeyCoordinator(this.#nc),
-            });
-            if (submission.mode === "create") {
-              const job = await manager.createPrepared(submission);
-              return Result.ok({ kind: "accepted", jobId: job.id });
-            }
-
-            const outcome = await manager.submitPrepared(submission);
-            if (outcome.kind === "accepted") {
-              return Result.ok({
-                kind: outcome.kind,
-                jobId: outcome.job.id,
-                ...(outcome.key ? { key: outcome.key } : {}),
-              });
-            }
-            if (outcome.kind === "replaced") {
-              return Result.ok({
-                kind: outcome.kind,
-                jobId: outcome.job.id,
-                key: outcome.key,
-                replaced: outcome.replaced,
-              });
-            }
-            return Result.ok(outcome);
-          } catch (cause) {
-            if (cause instanceof JobNotEnqueuedError) {
-              return Result.ok({
-                kind: "rejected",
-                reason: cause.reason,
-                key: cause.key,
-                active: cause.active,
-                queued: cause.queued,
-                limit: cause.limit,
-                ...(cause.existingJobId
-                  ? { existingJobId: cause.existingJobId }
-                  : {}),
-              });
-            }
-            if (cause instanceof ValidationError) {
-              return Result.ok({ kind: "invalid", error: cause.message });
-            }
-            if (cause instanceof UnexpectedError) {
-              return Result.err(cause);
-            }
-            return Result.err(toUnexpectedError(cause));
-          }
-        })()),
+          })(),
+        ),
     };
     const dispatcher = new OutboxDispatcher(
       repository,
@@ -3939,79 +3587,87 @@ export class TrellisServiceSession<
   }): SqlOutbox<TTx, TTrellisApi, TJobs> {
     return {
       jobSubmissionOutcome: (submissionId: string) =>
-        AsyncResult.from((async () => {
-          try {
-            const message = await binding.repository.get(submissionId);
-            if (message?.state !== "dispatched") {
-              return Result.ok(undefined);
+        AsyncResult.from(
+          (async () => {
+            try {
+              const message = await binding.repository.get(submissionId);
+              if (message?.state !== "dispatched") {
+                return Result.ok(undefined);
+              }
+              const outcome = message.outcome;
+              if (
+                !outcome ||
+                typeof outcome !== "object" ||
+                !("kind" in outcome) ||
+                typeof outcome.kind !== "string"
+              ) {
+                return Result.err(
+                  toUnexpectedError(
+                    new Error(
+                      `Outbox job submission '${submissionId}' has no valid outcome`,
+                    ),
+                  ),
+                );
+              }
+              return Result.ok({ ...outcome, kind: outcome.kind });
+            } catch (cause) {
+              return Result.err(toUnexpectedError(cause));
             }
-            const outcome = message.outcome;
-            if (
-              !outcome || typeof outcome !== "object" ||
-              !("kind" in outcome) || typeof outcome.kind !== "string"
-            ) {
-              return Result.err(toUnexpectedError(
-                new Error(
-                  `Outbox job submission '${submissionId}' has no valid outcome`,
-                ),
-              ));
-            }
-            return Result.ok({ ...outcome, kind: outcome.kind });
-          } catch (cause) {
-            return Result.err(toUnexpectedError(cause));
-          }
-        })()),
+          })(),
+        ),
       transaction: <TResult>(
         work: (
           context: SqlOutboxTransactionContext<TTx, TTrellisApi, TJobs>,
         ) => Promise<TResult> | TResult,
       ) =>
-        AsyncResult.from((() => {
-          let enqueued = 0;
-          const toResultError = (
-            cause: unknown,
-          ): Result<TResult, ValidationError | UnexpectedError> => {
-            if (
-              cause instanceof ValidationError ||
-              cause instanceof UnexpectedError
-            ) {
-              return Result.err(cause);
+        AsyncResult.from(
+          (() => {
+            let enqueued = 0;
+            const toResultError = (
+              cause: unknown,
+            ): Result<TResult, ValidationError | UnexpectedError> => {
+              if (
+                cause instanceof ValidationError ||
+                cause instanceof UnexpectedError
+              ) {
+                return Result.err(cause);
+              }
+              return Result.err(toUnexpectedError(cause));
+            };
+            let transaction: Promise<TResult>;
+            try {
+              transaction = binding.transaction<TResult>(({ tx, executor }) => {
+                const repository = new SqlOutboxRepository(
+                  executor,
+                  binding.dialect,
+                  binding.tables,
+                );
+                const event = createSqlOutboxEventEnqueueFacade({
+                  event: this.event,
+                  repository,
+                  onEnqueued: () => {
+                    enqueued += 1;
+                  },
+                });
+                const job = createSqlOutboxJobEnqueueFacade({
+                  contractJobs: this.#contractJobs,
+                  jobsBinding: this.#jobsBinding,
+                  repository,
+                  onEnqueued: () => {
+                    enqueued += 1;
+                  },
+                });
+                return work({ tx, event, job });
+              });
+            } catch (cause) {
+              return Promise.resolve(toResultError(cause));
             }
-            return Result.err(toUnexpectedError(cause));
-          };
-          let transaction: Promise<TResult>;
-          try {
-            transaction = binding.transaction<TResult>(({ tx, executor }) => {
-              const repository = new SqlOutboxRepository(
-                executor,
-                binding.dialect,
-                binding.tables,
-              );
-              const event = createSqlOutboxEventEnqueueFacade({
-                event: this.event,
-                repository,
-                onEnqueued: () => {
-                  enqueued += 1;
-                },
-              });
-              const job = createSqlOutboxJobEnqueueFacade({
-                contractJobs: this.#contractJobs,
-                jobsBinding: this.#jobsBinding,
-                repository,
-                onEnqueued: () => {
-                  enqueued += 1;
-                },
-              });
-              return work({ tx, event, job });
-            });
-          } catch (cause) {
-            return Promise.resolve(toResultError(cause));
-          }
-          return transaction.then((result) => {
-            if (enqueued > 0) binding.dispatcher.notify();
-            return Result.ok(result);
-          }, toResultError);
-        })()),
+            return transaction.then((result) => {
+              if (enqueued > 0) binding.dispatcher.notify();
+              return Result.ok(result);
+            }, toResultError);
+          })(),
+        ),
     };
   }
 
@@ -4055,29 +3711,30 @@ export class TrellisServiceSession<
     operationId: string,
     output: unknown,
   ): AsyncResult<unknown, BaseError> {
-    return AsyncResult.from((async () => {
-      const completed = await this.#runtime.operations.complete(
-        operationId,
-        output,
-      ).take();
-      if (!isErr(completed)) return Result.ok(completed);
+    return AsyncResult.from(
+      (async () => {
+        const completed = await this.#runtime.operations
+          .complete(operationId, output)
+          .take();
+        if (!isErr(completed)) return Result.ok(completed);
 
-      const current = await this.#runtime.operations.get(operationId).take();
-      if (!isErr(current) && current.state === "completed") {
-        if (!operationOutputsEqual(current.output, output)) {
-          return Result.err(
-            new UnexpectedError({
-              cause: new Error(
-                "operation already completed with different output",
-              ),
-            }),
-          );
+        const current = await this.#runtime.operations.get(operationId).take();
+        if (!isErr(current) && current.state === "completed") {
+          if (!operationOutputsEqual(current.output, output)) {
+            return Result.err(
+              new UnexpectedError({
+                cause: new Error(
+                  "operation already completed with different output",
+                ),
+              }),
+            );
+          }
+          return Result.ok(current);
         }
-        return Result.ok(current);
-      }
 
-      return Result.err(completed.error);
-    })());
+        return Result.err(completed.error);
+      })(),
+    );
   }
 
   static connect<
@@ -4091,18 +3748,20 @@ export class TrellisServiceSession<
     args: TrellisServiceConnectArgs<TContract>,
   ): AsyncResult<
     ConnectedTrellisService<TContract>,
-    TransportError | UnexpectedError
+    AuthError | TransportError | UnexpectedError
   > {
-    return AsyncResult.from((async () => {
-      const connected = await connectTrellisServiceWithRuntimeDeps(args, {});
-      if (isErr(connected)) {
-        return connected;
-      }
-      const service = connected.unwrapOrElse(() => {
-        throw new Error("Connected service result narrowed incorrectly");
-      });
-      return Result.ok(createProviderRuntime(service, args.participant));
-    })());
+    return AsyncResult.from(
+      (async () => {
+        const connected = await connectTrellisServiceWithRuntimeDeps(args, {});
+        if (isErr(connected)) {
+          return connected;
+        }
+        const service = connected.unwrapOrElse(() => {
+          throw new Error("Connected service result narrowed incorrectly");
+        });
+        return Result.ok(createProviderRuntime(service, args.participant));
+      })(),
+    );
   }
 
   async wait(): Promise<void> {
@@ -4182,22 +3841,20 @@ export class TrellisServiceSession<
       reconcile: (operationId) => registration.reconcile(operationId),
       handle: (
         handler: (
-          args:
-            & OperationHandlerContext<
-              InferSchemaType<TOwnedApi["operations"][O]["input"]>,
-              OperationProgressOf<TOwnedApi, O>,
-              OperationOutputOf<TOwnedApi, O>,
-              OperationTransferContextOf<TOwnedApi, O>,
-              BaseError
-            >
-            & { client: Trellis<TTrellisApi, TKv, TJobs> },
+          args: OperationHandlerContext<
+            InferSchemaType<TOwnedApi["operations"][O]["input"]>,
+            OperationProgressOf<TOwnedApi, O>,
+            OperationOutputOf<TOwnedApi, O>,
+            OperationTransferContextOf<TOwnedApi, O>,
+            BaseError
+          > & { client: Trellis<TTrellisApi, TKv, TJobs> },
         ) => unknown | Promise<unknown>,
       ) =>
         registration.handle((context) =>
           handler({
             ...context,
             client: this.#handlerTrellis,
-          })
+          }),
         ),
     };
   }
@@ -4219,7 +3876,7 @@ export class TrellisService {
     args: TrellisServiceConnectArgs<TContract>,
   ): AsyncResult<
     ConnectedTrellisService<TContract>,
-    TransportError | UnexpectedError
+    AuthError | TransportError | UnexpectedError
   > {
     return TrellisServiceSession.connect(args);
   }

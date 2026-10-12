@@ -1,12 +1,12 @@
 import { apis } from "trellis-web-generated";
 
-type Connection = apis.auth.SessionsMeOutput["connection"];
+import type { OwnAuthoritySnapshot } from "@oatscenter/trellis";
 
-/** Participant-scoped authority retained from the live Trellis connection. */
-export type Authority = Pick<Connection, "platformPrivileges" | "grants">;
-
-/** Platform privilege that gates Trellis Auth administration. */
-export const PLATFORM_ADMIN = "trellis.auth::admin";
+/** Advisory actions and privileges from the verified promoted installation. */
+export type Authority = Pick<
+  OwnAuthoritySnapshot,
+  "authorityDigest" | "platformPrivileges" | "actions"
+>;
 
 const HEALTH_API = apis.health.API.identity;
 const EVENTS_API = apis.events.API.identity;
@@ -15,18 +15,19 @@ const JOBS_API = apis.jobs.API.identity;
 /** One exact API-surface permission atom required by a route or action. */
 export type ExactPermission = {
   api: string;
-  surface: string;
+  surface: OwnAuthoritySnapshot["actions"][number]["action"]["kind"] | "feed";
   name: string;
-  action: string;
+  action: OwnAuthoritySnapshot["actions"][number]["action"]["direction"];
 };
 
 type Requirement = {
+  administrative?: boolean;
   privilege?: string;
   permission?: ExactPermission;
 };
 
 type DisplayProfile = {
-  name?: string | null;
+  displayName?: string | null;
 };
 
 export const routeTitles = {
@@ -38,6 +39,7 @@ export const routeTitles = {
   "/admin/sessions": "Sessions",
   "/admin/services": "Services",
   "/admin/devices": "Devices",
+  "/admin/resources": "Resources",
   "/admin/sessions/revoke": "Revoke Session",
   "/admin/sessions/kick": "Kick Connection",
   "/admin/services/new": "Create Service Deployment",
@@ -45,27 +47,14 @@ export const routeTitles = {
   "/admin/devices/profiles/disable": "Disable Device Deployment",
   "/admin/devices/instances/provision": "Provision Device Instance",
   "/admin/devices/instances/disable": "Disable Device Instance",
-  "/admin/devices/activations/revoke": "Revoke Device Activation",
-  "/admin/devices/reviews/decide": "Decide Device Review",
   "/admin/health-events": "Health",
   "/admin/events": "Events",
   "/admin/jobs": "Jobs",
-  "/admin/grants": "Grants",
-  "/admin/grants/new": "Edit Portal Grant Policy",
-  "/admin/apps": "User Grants",
-  "/admin/apps/revoke": "Revoke User Grant",
-  "/admin/capability-groups": "Capability Groups",
-  "/admin/capability-groups/edit": "Edit Capability Group",
-  "/admin/capability-groups/new": "New Capability Group",
-  "/admin/portals": "Portals",
-  "/admin/portals/new": "Create Portal",
-  "/admin/portals/edit": "Edit Portal",
-  "/admin/portals/login": "Portal Policy",
-  "/admin/portals/login/default": "Built-In Login Portal",
-  "/admin/portals/login/selection": "Portal Routes",
-  "/admin/portals/devices": "Device Portal Policy",
-  "/admin/portals/devices/default": "Default Device Portal",
-  "/admin/portals/devices/selection": "Device Portal Selection",
+  "/admin/apps": "Delegations",
+  "/admin/apps/revoke": "Revoke Delegation",
+  "/admin/roles": "Roles",
+  "/admin/roles/edit": "Edit Role",
+  "/admin/roles/new": "New Role",
 } as const;
 
 /**
@@ -94,7 +83,7 @@ export type NavSection = {
   items: NavItem[];
 };
 
-const ADMIN_ONLY: readonly Requirement[] = [{ privilege: PLATFORM_ADMIN }];
+const ADMIN_ONLY: readonly Requirement[] = [{ administrative: true }];
 
 const navSections: NavSection[] = [
   {
@@ -162,21 +151,15 @@ const navSections: NavSection[] = [
         ],
       },
       {
-        href: "/admin/grants",
-        label: "Grants",
+        href: "/admin/apps",
+        label: "Delegations",
         icon: "key",
         requires: ADMIN_ONLY,
       },
       {
-        href: "/admin/capability-groups",
-        label: "Capability Groups",
+        href: "/admin/roles",
+        label: "Roles",
         icon: "key",
-        requires: ADMIN_ONLY,
-      },
-      {
-        href: "/admin/portals",
-        label: "Portals",
-        icon: "database",
         requires: ADMIN_ONLY,
       },
     ],
@@ -184,6 +167,22 @@ const navSections: NavSection[] = [
   {
     title: "Manage",
     items: [
+      {
+        href: "/admin/resources",
+        label: "Resources",
+        icon: "database",
+        requires: [
+          {
+            privilege: "principals.manage",
+            permission: {
+              api: apis.auth.API.identity,
+              surface: "rpc",
+              name: "Resources.List",
+              action: "call",
+            },
+          },
+        ],
+      },
       {
         href: "/admin/services",
         label: "Services",
@@ -206,64 +205,42 @@ const navSections: NavSection[] = [
   },
 ];
 
-type GrantTarget = {
-  kind?: unknown;
-  api?: unknown;
-  surface?: unknown;
-  name?: unknown;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function permissionTarget(
-  permission: Connection["grants"]["permissions"][number],
-): GrantTarget {
-  if (!(permission.target instanceof Uint8Array)) return {};
-  try {
-    const parsed: unknown = JSON.parse(
-      new TextDecoder().decode(permission.target),
-    );
-    if (!isRecord(parsed)) return {};
-    return parsed;
-  } catch {
-    return {};
-  }
-}
-
-/** True when the current exact GrantSet contains the required permission atom. */
+/** True when the owner authorized the exact action through its verified accepted catalog. */
 export function hasExactPermission(
   authority: Authority,
   required: ExactPermission,
 ): boolean {
-  return authority.grants.permissions.some((permission) => {
-    if (permission.action !== required.action) return false;
-    const target = permissionTarget(permission);
-    return target.kind === "apiSurface" &&
-      target.api === required.api &&
-      target.surface === required.surface &&
-      target.name === required.name;
-  });
+  return authority.actions.some(
+    ({ apiId, action }) =>
+      apiId === required.api &&
+      action.kind ===
+        (required.surface === "feed" ? "live" : required.surface) &&
+      action.name === required.name &&
+      action.direction === required.action,
+  );
 }
 
-/** True when the connection carries the platform administration privilege. */
+/** Human-facing operator classification from finite delegated administrative privileges. */
 export function hasPlatformAdmin(
   authority: Pick<Authority, "platformPrivileges"> | null,
 ): boolean {
-  return authority?.platformPrivileges.includes(PLATFORM_ADMIN) ?? false;
+  return (authority?.platformPrivileges.length ?? 0) > 0;
 }
 
 function meetsRequirements(
   authority: Authority | null,
   requirements: readonly Requirement[],
 ): boolean {
-  return requirements.every((requirement) =>
-    (requirement.privilege === undefined ||
-      authority?.platformPrivileges.includes(requirement.privilege) === true) &&
-    (requirement.permission === undefined ||
-      (authority !== null &&
-        hasExactPermission(authority, requirement.permission)))
+  return requirements.every(
+    (requirement) =>
+      (!requirement.administrative || hasPlatformAdmin(authority)) &&
+      (requirement.privilege === undefined ||
+        authority?.platformPrivileges.some(
+          (privilege) => privilege === requirement.privilege,
+        ) === true) &&
+      (requirement.permission === undefined ||
+        (authority !== null &&
+          hasExactPermission(authority, requirement.permission))),
   );
 }
 
@@ -272,13 +249,17 @@ export function canAccessRoute(
   authority: Authority | null,
 ): boolean {
   if (!pathname.startsWith("/admin")) return true;
-  const item = navSections.flatMap((section) => section.items)
-    .filter((candidate) =>
-      pathname === candidate.href || pathname.startsWith(`${candidate.href}/`)
+  const item = navSections
+    .flatMap((section) => section.items)
+    .filter(
+      (candidate) =>
+        pathname === candidate.href ||
+        pathname.startsWith(`${candidate.href}/`),
     )
     .sort((left, right) => right.href.length - left.href.length)[0];
-  return item !== undefined &&
-    meetsRequirements(authority, item.requires ?? []);
+  return (
+    item !== undefined && meetsRequirements(authority, item.requires ?? [])
+  );
 }
 
 export function requiresAdministrativeRoute(pathname: string): boolean {
@@ -292,7 +273,7 @@ export function getVisibleNavSections(
     .map((section) => ({
       ...section,
       items: section.items.filter((item) =>
-        meetsRequirements(authority, item.requires ?? [])
+        meetsRequirements(authority, item.requires ?? []),
       ),
     }))
     .filter((section) => section.items.length > 0);
@@ -304,8 +285,9 @@ function hasRouteTitle(pathname: string): pathname is keyof typeof routeTitles {
 
 export function getPageTitle(pathname: string): string {
   if (hasRouteTitle(pathname)) return routeTitles[pathname];
-  const detail = detailRouteTitles.find(([prefix]) =>
-    pathname.startsWith(prefix) && pathname.length > prefix.length
+  const detail = detailRouteTitles.find(
+    ([prefix]) =>
+      pathname.startsWith(prefix) && pathname.length > prefix.length,
   );
   return detail?.[1] ?? "Trellis";
 }
@@ -319,11 +301,13 @@ export function getRoleLabel(
 export function getInitials(
   profile: DisplayProfile | null | undefined,
 ): string {
-  const name = profile?.name?.trim();
+  const name = profile?.displayName?.trim();
   if (!name) return "TR";
 
   const parts = name.split(/\s+/).filter(Boolean);
-  const initials = parts.slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "")
+  const initials = parts
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
     .join("");
   return initials || name.slice(0, 2).toUpperCase();
 }

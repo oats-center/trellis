@@ -5911,7 +5911,10 @@ dependencies = [
  "tracing",
  "trellis-protocol",
  "trellis-rs",
+ "trellis-runtime",
  "trellis-runtime-apis",
+ "trellis-testkit",
+ "ulid",
 ]
 
 [[package]]
@@ -6072,6 +6075,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "jsonschema",
+ "libc",
  "nats-jwt-rs",
  "nkeys",
  "oauth-as",
@@ -6157,11 +6161,14 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-util",
  "toml",
  "trellis-bootstrap",
+ "trellis-idl",
  "trellis-local-nats",
+ "trellis-protocol",
  "trellis-rs",
  "trellis-runtime",
  "trellis-runtime-apis",

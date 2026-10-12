@@ -32,6 +32,11 @@ export const request = {
 		],
 		optionalCapabilities: []
 	}],
+	actionNames: {
+		["runtime-trellis.events@v1:rpc:DropAlpha"]: "DropAlpha",
+		["runtime-trellis.events@v1:rpc:Observed"]: "Observed",
+		["runtime-trellis.events@v1:event:Alpha"]: "Alpha"
+	},
 	states: {}
 };
 export default request;

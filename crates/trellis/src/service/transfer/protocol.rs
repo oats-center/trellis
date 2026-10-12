@@ -2,6 +2,7 @@ use super::super::{ServerError, ServiceResourceBindings};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future};
 use tokio::{sync::oneshot, task::JoinHandle};
+use trellis_protocol::{transfer::TransferOrigin, CatalogActionIdentity};
 
 pub use crate::client::FileInfo as FileTransferInfo;
 
@@ -28,6 +29,8 @@ pub struct UploadTransferGrant {
     pub direction: String,
     /// Owning service.
     pub service: String,
+    /// Authenticated action that admitted this streaming session.
+    pub origin: TransferOrigin,
     /// Runtime-generated high entropy session id.
     pub transfer_id: String,
     /// Absolute RFC3339 expiry.
@@ -71,6 +74,8 @@ pub struct DownloadTransferGrant {
     pub direction: String,
     /// Owning service.
     pub service: String,
+    /// Authenticated action that admitted this streaming session.
+    pub origin: TransferOrigin,
     /// Runtime-generated high entropy session id.
     pub transfer_id: String,
     /// Absolute RFC3339 expiry.
@@ -187,6 +192,28 @@ pub struct DownloadTransferGrantPlan {
     pub store: String,
     /// Installed backend object limit.
     pub max_object_bytes: Option<u64>,
+}
+
+pub(crate) fn transfer_origin(
+    admission: &super::super::RequestContext,
+) -> Result<TransferOrigin, ServerError> {
+    if admission.caller.is_none() {
+        return Err(super::wire::error(
+            "transfer admission has no authenticated caller",
+        ));
+    }
+    let route = admission
+        .required_permission
+        .as_ref()
+        .ok_or_else(|| super::wire::error("transfer admission action missing"))?;
+    Ok(TransferOrigin {
+        api_id: route.api.clone(),
+        action: CatalogActionIdentity {
+            kind: route.surface,
+            name: route.name.clone(),
+            direction: route.action,
+        },
+    })
 }
 
 pub(super) type UploadTransferCompletionResult = (

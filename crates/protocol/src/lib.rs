@@ -27,9 +27,8 @@ pub use admission::{
     sign_oauth_admission, sign_provisioned_admission, verify_admission_context,
     verify_admission_get, verify_oauth_admission, verify_provisioned_admission, AdmissionContext,
     AdmissionGet, OAuthAdmission, OAuthAdmissionBinding, ProvisionedAdmission,
-    ProvisionedImplementation, SignedAdmissionContext, SignedAdmissionGet, SignedOAuthAdmission,
-    SignedProvisionedAdmission, MAX_ADMISSION_RESPONSE_BYTES, OAUTH_ADMISSION_FORMAT_V1,
-    PROVISIONED_ADMISSION_FORMAT_V1,
+    SignedAdmissionContext, SignedAdmissionGet, SignedOAuthAdmission, SignedProvisionedAdmission,
+    MAX_ADMISSION_RESPONSE_BYTES, OAUTH_ADMISSION_FORMAT_V1, PROVISIONED_ADMISSION_FORMAT_V1,
 };
 pub use authorization::{
     parse_session_authority, session_event_signing_digest, session_request_signing_digest,
@@ -42,8 +41,9 @@ pub use authorization::{
     SessionRequestProof, SessionRequestVerificationInput, SignedSessionAuthority,
     UnsignedSessionAuthority, VerifiedSessionAuthority, VerifiedSessionEvent,
     VerifiedSessionRequest, ADMISSION_GET_DOMAIN_V1, ISSUER_METADATA_DOMAIN_V1,
-    LIVE_PROOF_DOMAIN_V1, MESSAGE_EVENT_DOMAIN_V1, MESSAGE_REQUEST_DOMAIN_V1,
-    MESSAGE_RESPONSE_DOMAIN_V1, SESSION_AUTHORITY_FORMAT_V1, TRANSFER_PROOF_DOMAIN_V1,
+    LIVE_PROOF_DOMAIN_V1, MAX_SESSION_AUTHORITY_BYTES, MESSAGE_EVENT_DOMAIN_V1,
+    MESSAGE_REQUEST_DOMAIN_V1, MESSAGE_RESPONSE_DOMAIN_V1, SESSION_AUTHORITY_FORMAT_V1,
+    TRANSFER_PROOF_DOMAIN_V1,
 };
 pub use canonical::{canonicalize_json, digest_json, sha256_base64url};
 pub use catalog::{
@@ -57,6 +57,7 @@ pub use identifiers::validate_api_id;
 pub use issuer_metadata::{
     sign_issuer_metadata, verify_issuer_metadata, IssuerMetadata, IssuerMetadataQuery,
     IssuerMetadataRequest, IssuerMetadataResult, SignedIssuerMetadata, VerifiedIssuerMetadata,
+    ISSUER_METADATA_SUBJECT,
 };
 pub use live::{
     build_live_server_proof_input, derive_live_data_subject, derive_live_observe_subject,

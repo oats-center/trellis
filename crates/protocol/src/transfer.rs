@@ -691,10 +691,22 @@ pub enum TransferGrantKind {
     TransferGrant,
 }
 
+/// Originating authorization coordinates retained by an established transfer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct TransferOrigin {
+    /// API that authorized opening the transfer, not a storage backend name.
+    pub api_id: String,
+    /// Generated action whose caller and provider authority must remain usable.
+    pub action: crate::CatalogActionIdentity,
+}
+
 /// Caller-to-provider grant payload; direction is owned by [`TransferGrant`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TransferSendGrant {
+    /// Authenticated originating API/action retained across owner-directed frames.
+    pub origin: TransferOrigin,
     /// Exact protocol version.
     pub format: TransferFormat,
     /// Literal TransferGrant.
@@ -757,6 +769,8 @@ where
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TransferReceiveGrant {
+    /// Authenticated originating API/action retained across owner-directed frames.
+    pub origin: TransferOrigin,
     /// Exact protocol version.
     pub format: TransferFormat,
     /// Literal TransferGrant.
@@ -801,6 +815,12 @@ pub enum TransferGrant {
 impl TransferGrant {
     /// Validate exact session coordinates and logical transfer bounds.
     pub fn validate(&self) -> Result<(), ProtocolError> {
+        let origin = match self {
+            Self::Send(grant) => &grant.origin,
+            Self::Receive(grant) => &grant.origin,
+        };
+        crate::validate_api_id(&origin.api_id)?;
+        crate::identifiers::validate_logical_name(&origin.action.name)?;
         let (
             service,
             id,
@@ -1379,6 +1399,7 @@ mod tests {
         let consumer_key =
             URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes());
         let mut send = json!({
+            "origin": {"apiId":"trellis.files@v1", "action":{"kind":"rpc", "name":"Upload", "direction":"call"}},
             "format": TRANSFER_VERSION, "type": "TransferGrant", "direction": "send", "service": "files",
             "transferId": id(), "expiresAt": "2026-10-04T12:00:00Z",
             "provider": {"connectionId": "provider", "sessionKey": provider_key},

@@ -66,6 +66,7 @@ declare const __api: {
 		readonly "rpc:Cancel": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Cancel";
+			readonly subject: "rpc.v1.jobs.Cancel";
 			readonly input: typeof Types0.JobsCancelRequestCodec;
 			readonly output: typeof Types0.JobsCancelResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -75,6 +76,7 @@ declare const __api: {
 		readonly "rpc:DismissDLQ": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:DismissDLQ";
+			readonly subject: "rpc.v1.jobs.DismissDLQ";
 			readonly input: typeof Types0.JobsDismissDLQRequestCodec;
 			readonly output: typeof Types0.JobsDismissDLQResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -84,6 +86,7 @@ declare const __api: {
 		readonly "rpc:GetKey": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:GetKey";
+			readonly subject: "rpc.v1.jobs.GetKey";
 			readonly input: typeof Types0.JobsGetKeyRequestCodec;
 			readonly output: typeof Types0.JobsGetKeyResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -93,6 +96,7 @@ declare const __api: {
 		readonly "rpc:Inspect": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Inspect";
+			readonly subject: "rpc.v1.jobs.Inspect";
 			readonly input: typeof Types0.JobsInspectRequestCodec;
 			readonly output: typeof Types0.JobsInspectResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -102,6 +106,7 @@ declare const __api: {
 		readonly "rpc:ListDLQ": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ListDLQ";
+			readonly subject: "rpc.v1.jobs.ListDLQ";
 			readonly input: typeof Types0.JobsListDLQRequestCodec;
 			readonly output: typeof Types0.JobsListDLQResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -111,6 +116,7 @@ declare const __api: {
 		readonly "rpc:ListServices": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ListServices";
+			readonly subject: "rpc.v1.jobs.ListServices";
 			readonly input: typeof Types0.JobsListServicesRequestCodec;
 			readonly output: typeof Types0.JobsListServicesResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -120,6 +126,7 @@ declare const __api: {
 		readonly "rpc:Metrics": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Metrics";
+			readonly subject: "rpc.v1.jobs.Metrics";
 			readonly input: typeof Types0.JobsMetricsRequestCodec;
 			readonly output: typeof Types0.JobsMetricsResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -129,6 +136,7 @@ declare const __api: {
 		readonly "rpc:Query": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Query";
+			readonly subject: "rpc.v1.jobs.Query";
 			readonly input: typeof Types0.JobsQueryRequestCodec;
 			readonly output: typeof Types0.JobsQueryResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -138,6 +146,7 @@ declare const __api: {
 		readonly "rpc:ReplayDLQ": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ReplayDLQ";
+			readonly subject: "rpc.v1.jobs.ReplayDLQ";
 			readonly input: typeof Types0.JobsReplayDLQRequestCodec;
 			readonly output: typeof Types0.JobsReplayDLQResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -147,6 +156,7 @@ declare const __api: {
 		readonly "rpc:Retry": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Retry";
+			readonly subject: "rpc.v1.jobs.Retry";
 			readonly input: typeof Types0.JobsRetryRequestCodec;
 			readonly output: typeof Types0.JobsRetryResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -156,6 +166,7 @@ declare const __api: {
 		readonly "rpc:Summary": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Summary";
+			readonly subject: "rpc.v1.jobs.Summary";
 			readonly input: typeof Types0.JobsSummaryRequestCodec;
 			readonly output: typeof Types0.JobsSummaryResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -165,6 +176,7 @@ declare const __api: {
 		readonly "live:Watch": {
 			readonly kind: "live";
 			readonly descriptorName: "live:Watch";
+			readonly subject: "live.v1.route.jobs.Watch";
 			readonly input: typeof Types0.JobsWatchRequestCodec;
 			readonly event: typeof Types0.JobsWatchFrameCodec;
 		};

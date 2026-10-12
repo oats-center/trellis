@@ -1,0 +1,123 @@
+import { assertEquals } from "@std/assert";
+import { ulid } from "ulid";
+import { trellisCrypto } from "./crypto.ts";
+import { createProof, createResponseProof } from "./proof.ts";
+import {
+  sessionRequestSigningDigestWasm,
+  sessionResponseSigningDigestWasm,
+  type SessionRequest,
+  type SessionResponse,
+} from "./protocol_wasm.ts";
+import { base64urlDecode, base64urlEncode, toArrayBuffer } from "./utils.ts";
+
+Deno.test(
+  "TypeScript signatures bind Rust/WASM request bytes and provider error correlation",
+  async () => {
+    const backend = await trellisCrypto();
+    const signer = await backend.signerFromSeed(backend.randomBytes(32));
+    const key = await crypto.subtle.importKey(
+      "raw",
+      toArrayBuffer(base64urlDecode(signer.publicKey)),
+      "Ed25519",
+      false,
+      ["verify"],
+    );
+    const verify = (signature: string, digest: Uint8Array) =>
+      crypto.subtle.verify(
+        "Ed25519",
+        key,
+        toArrayBuffer(base64urlDecode(signature)),
+        toArrayBuffer(digest),
+      );
+    const authorityDigest = base64urlEncode(
+      await backend.sha256(new TextEncoder().encode("signed authority")),
+    );
+    const request: SessionRequest = {
+      authorityDigest,
+      apiId: "example.orders@v1",
+      apiGeneration: "1",
+      acceptedRevision: "2",
+      action: "Create",
+      subject: "rpc.v1.orders.deployment.Create",
+      replySubject: "_INBOX.bound.reply",
+      requestId: ulid(),
+      issuedAt: Math.floor(Date.now() / 1000),
+    };
+    const bytes = new TextEncoder().encode('{"amount":5,"extension":"bound"}');
+    const signed = await createProof(signer, request, bytes);
+    assertEquals(
+      await verify(
+        signed.proof,
+        await sessionRequestSigningDigestWasm(request, bytes),
+      ),
+      true,
+    );
+    assertEquals(
+      await verify(
+        signed.proof,
+        await sessionRequestSigningDigestWasm(
+          request,
+          new TextEncoder().encode('{"amount":5,"extension":"changed"}'),
+        ),
+      ),
+      false,
+    );
+    assertEquals(
+      await verify(
+        signed.proof,
+        await sessionRequestSigningDigestWasm(
+          { ...request, acceptedRevision: "3" },
+          bytes,
+        ),
+      ),
+      false,
+    );
+
+    const response: SessionResponse = {
+      trellisInstanceId: ulid(),
+      audienceNatsAccount: "trellis",
+      providerAuthorityDigest: authorityDigest,
+      providerCertificateDigest: authorityDigest,
+      apiId: request.apiId,
+      apiGeneration: request.apiGeneration,
+      action: request.action,
+      requestAuthorityDigest: authorityDigest,
+      requestId: request.requestId,
+      requestProofDigest: base64urlEncode(signed.requestProofDigest),
+      subject: request.replySubject!,
+      kind: "error",
+      issuedAt: request.issuedAt,
+    };
+    const errorBytes = new TextEncoder().encode(
+      '{"type":"OrderRejected","message":"rejected"}',
+    );
+    const proof = await createResponseProof(signer, response, errorBytes);
+    assertEquals(
+      await verify(
+        proof,
+        await sessionResponseSigningDigestWasm(response, errorBytes),
+      ),
+      true,
+    );
+    assertEquals(
+      await verify(
+        proof,
+        await sessionResponseSigningDigestWasm(
+          { ...response, requestId: ulid() },
+          errorBytes,
+        ),
+      ),
+      false,
+    );
+    assertEquals(
+      await verify(
+        proof,
+        await sessionResponseSigningDigestWasm(
+          { ...response, kind: "success" },
+          errorBytes,
+        ),
+      ),
+      false,
+    );
+  },
+);

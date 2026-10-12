@@ -140,24 +140,34 @@ where
         .authorization_context
         .as_deref()
         .ok_or_else(|| error("upload admission context missing"))?;
-    let permission = admission
-        .required_permission
-        .as_ref()
-        .ok_or_else(|| error("upload admission permission missing"))?
-        .permission_atom()
-        .map_err(error)?;
+    let origin = transfer_origin(admission)?;
+    if origin != grant.origin {
+        return Err(error("upload grant admission mismatch"));
+    }
+    let action = crate::live::authority::LiveAction {
+        api_id: origin.api_id,
+        identity: origin.action,
+    };
     let peer = TransferPeer::retain(
-        client.authorization_provider(),
+        client.authorization_owner(),
+        lease.nats(),
         digest,
         &grant.consumer,
-        Some(permission),
+        &action,
+        false,
     )
     .await?;
     let local = TransferPeer::retain(
-        client.authorization_provider(),
-        &client.authorization_context_digest().map_err(error)?,
+        client.authorization_owner(),
+        lease.nats(),
+        client
+            .authorization_owner()
+            .own_authority()
+            .map_err(error)?
+            .digest(),
         &grant.provider,
-        None,
+        &action,
+        true,
     )
     .await?;
     let mut changes = peer.guard.subscribe_changes();
@@ -375,6 +385,7 @@ pub fn plan_upload_transfer_grant(
             type_name: "TransferGrant".into(),
             direction: "send".into(),
             service: args.service_name.into(),
+            origin: transfer_origin(args.admission)?,
             transfer_id: args.transfer_id.into(),
             expires_at: args.expires_at.into(),
             provider,
@@ -440,6 +451,7 @@ pub fn plan_download_transfer_grant(
             type_name: "TransferGrant".into(),
             direction: "receive".into(),
             service: args.service_name.into(),
+            origin: transfer_origin(args.admission)?,
             transfer_id: args.transfer_id.into(),
             expires_at: args.expires_at.into(),
             provider: TransferIdentity {

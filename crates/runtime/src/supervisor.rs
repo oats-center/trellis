@@ -19,7 +19,6 @@ const NATS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::leases::{LeaseError, LeaseKey};
 use crate::ownership::{OwnerContext, OwnerGroup, RuntimeOwnership};
-use crate::platform::auth::verifier::RuntimeAuthVerifier;
 use crate::resources::{stream_is_compatible, ExpectedRuntimeResources};
 use crate::shutdown::StopHandle;
 use crate::storage::{RuntimeStores, StoreError};
@@ -237,103 +236,93 @@ pub async fn check(
         ),
     }
     if expected_resources.requires(SubsystemName::Platform) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?
-            .as_secs();
-        let now = i64::try_from(now)
-            .map_err(|_| RuntimeError::Platform("current time exceeds i64 seconds".to_owned()))?;
+        let keys = crate::platform::callout_keys(&config, &nats)?;
         let authorization = config.resolve_authorization()?;
-        let trust = match crate::platform::auth::context::trust::VerifiedTrustMaterial::load(
-            authorization,
-            now,
-        ) {
-            Ok(trust) => {
-                report.push(
-                    "authorization.issuer_file",
-                    RuntimeCheckStatus::Ok,
-                    "configured issuer signing material is valid",
-                );
-                trust
-            }
-            Err(error) => {
-                let detail = error.to_string();
-                let status = if detail.contains("expired") {
-                    RuntimeCheckStatus::Expired
-                } else {
-                    RuntimeCheckStatus::Error
-                };
-                report.push("authorization.issuer_file", status, detail);
-                return Ok(report);
-            }
-        };
+        if let Err(error) =
+            crate::platform::auth::read_custody_key(&authorization.issuer_signing_seed_file)
+        {
+            report.push(
+                "authorization.issuer_file",
+                RuntimeCheckStatus::Error,
+                error.to_string(),
+            );
+            return Ok(report);
+        }
+        report.push(
+            "authorization.issuer_file",
+            RuntimeCheckStatus::Ok,
+            "configured issuer signing material is valid",
+        );
+        let custody = config
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.oauth_storage_key_file.as_deref())
+            .ok_or_else(|| {
+                RuntimeError::Platform("auth.oauth_storage_key_file is required".into())
+            })?;
+        if let Err(error) = crate::platform::auth::read_custody_key(custody) {
+            report.push(
+                "authorization.oauth_custody",
+                RuntimeCheckStatus::Error,
+                error.to_string(),
+            );
+            return Ok(report);
+        }
+        report.push(
+            "authorization.oauth_custody",
+            RuntimeCheckStatus::Ok,
+            "configured OAuth storage custody is valid",
+        );
         if stores.platform()?.exists() {
             let auth_store = crate::platform::auth::SqliteAuthorizationStore::open_read_only(
                 stores.platform()?,
+                &config,
+                keys.target_account(),
             )?;
-            match auth_store
-                .get_issuer_key(
-                    trust.issuer.key_id.clone(),
-                    now.checked_mul(1_000).ok_or_else(|| {
-                        RuntimeError::Platform("issuer check time overflow".to_owned())
-                    })?,
-                )
-                .await
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?
-            {
-                Some(key) if key == trust.issuer => report.push(
+            match auth_store.runtime_authorization_trust() {
+                Ok(_) => report.push(
                     "authorization.issuer_record",
                     RuntimeCheckStatus::Ok,
                     "configured public issuer key is retained and active",
                 ),
-                Some(_) => report.push(
+                Err(crate::platform::auth::AuthError::Denied) => report.push(
                     "authorization.issuer_record",
                     RuntimeCheckStatus::Incompatible,
-                    "configured issuer is retired, revoked, or has different public material",
+                    "configured issuer is not the active retained signing key",
                 ),
-                None => report.push(
+                Err(error) => report.push(
                     "authorization.issuer_record",
-                    RuntimeCheckStatus::Missing,
-                    "configured issuer has not been installed",
+                    RuntimeCheckStatus::Error,
+                    error.to_string(),
                 ),
             }
         }
-        match crate::platform::auth::NatsAuthEphemeralRepository::check(trellis_nats.clone()).await
-        {
-            Ok(()) => report.push(
-                "nats.auth_kv",
-                RuntimeCheckStatus::Ok,
-                "all required auth KV buckets exist with compatible limits",
-            ),
-            Err(error) => {
-                let detail = error.to_string();
-                let status = if detail.contains("missing") {
-                    RuntimeCheckStatus::Missing
-                } else {
-                    RuntimeCheckStatus::Incompatible
-                };
-                report.push("nats.auth_kv", status, detail);
-            }
-        }
-        match crate::platform::auth::context::AuthorizationContextRegistry::check(
-            trellis_nats.clone(),
-            authorization,
-        )
-        .await
-        {
-            Ok(()) => report.push(
-                "authorization.context_registry",
-                RuntimeCheckStatus::Ok,
-                "context and revocation registry settings match configuration",
-            ),
-            Err(error) => {
-                let detail = error.to_string();
-                let status = if detail.contains("does not exist") || detail.contains("not found") {
-                    RuntimeCheckStatus::Missing
-                } else {
-                    RuntimeCheckStatus::Incompatible
-                };
-                report.push("authorization.context_registry", status, detail);
+        for name in [
+            crate::platform::auth::MATERIAL_BUCKET,
+            crate::platform::auth::REVOCATION_BUCKET,
+        ] {
+            let check = format!("authorization.registry.{name}");
+            match jetstream.get_key_value(name).await {
+                Ok(bucket) => match bucket.status().await {
+                    Ok(status)
+                        if status.info.config.storage
+                            == async_nats::jetstream::stream::StorageType::File
+                            && status.max_age().is_zero() =>
+                    {
+                        report.push(
+                            &check,
+                            RuntimeCheckStatus::Ok,
+                            "durable nonexpiring verification evidence is retained",
+                        )
+                    }
+                    Ok(_) => report.push(
+                        &check,
+                        RuntimeCheckStatus::Incompatible,
+                        "verification evidence requires durable nonexpiring storage",
+                    ),
+                    Err(error) => report.push(&check, RuntimeCheckStatus::Error, error.to_string()),
+                },
+                Err(error) => report.push(&check, RuntimeCheckStatus::Missing, error.to_string()),
             }
         }
         for (name, credentials) in [
@@ -563,9 +552,9 @@ pub(crate) struct RuntimeContext {
     /// Fixed owner contexts for selected runtime subsystems.
     owners: BTreeMap<OwnerGroup, OwnerContext>,
     http_router: std::sync::Mutex<axum::Router>,
-    /// Runtime-local Auth verifier installed by the platform subsystem once the
-    /// validator cache is ready; absent in platform-less modes (fail closed).
-    pub(crate) platform_verifier: Arc<tokio::sync::OnceCell<RuntimeAuthVerifier>>,
+    /// Platform-owned aggregate store; other modes may only read provisioned identity.
+    pub(crate) authorization_store:
+        std::sync::OnceLock<Arc<crate::platform::auth::SqliteAuthorizationStore>>,
     /// Per-role delivery slots for built-in live provider owners.
     pub(crate) live_providers: crate::platform::LiveProviderSlots,
 }
@@ -762,7 +751,7 @@ async fn run_owned(
         trellis_nats,
         owners: ownership.contexts(),
         http_router: std::sync::Mutex::new(axum::Router::new()),
-        platform_verifier: Arc::new(tokio::sync::OnceCell::new()),
+        authorization_store: std::sync::OnceLock::new(),
         live_providers: crate::platform::LiveProviderSlots::new(),
     };
     let primary = supervise_owned(&context, ownership, stop).await;
@@ -931,24 +920,79 @@ fn preserve_run_primary(
 }
 
 /// Bound on one built-in live provider's ordinary native bootstrap.
-const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 30_000;
+const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 35_000;
 
 /// Connect every built-in live provider role selected by the runtime mode.
 ///
-/// This runs after the bootstrap HTTP listener begins serving so a built-in
-/// provider authenticates through the ordinary native service bootstrap and
-/// Auth Callout. Each connected owner is delivered to the subsystem that
+/// Providers authenticate through native Callout and signed own-context, without
+/// HTTP bootstrap. Each connected owner is delivered to the subsystem that
 /// serves its live routes; a role whose subsystem is selected but whose owner
 /// cannot be connected fails startup before any live router serves traffic.
 async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), RuntimeError> {
-    let trellis_url = context.public_origin();
+    let nats = context
+        .config
+        .resolve_nats_runtime_with(
+            context
+                .nats_override
+                .as_ref()
+                .map(|value| value.runtime_servers.as_str()),
+        )
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let read_only;
+    let (store, provision) = match context.authorization_store.get() {
+        Some(store) => (store, true),
+        None => {
+            let keys = crate::platform::callout_keys(&context.config, &nats)?;
+            read_only = Arc::new(
+                crate::platform::auth::SqliteAuthorizationStore::open_read_only(
+                    context.stores.platform()?,
+                    &context.config,
+                    keys.target_account(),
+                )?,
+            );
+            (&read_only, false)
+        }
+    };
     for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
         let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
+        let deployment = if provision {
+            crate::platform::prepare_builtin_live_provider(
+                role,
+                store,
+                &context.trellis_nats,
+                &identity_seed,
+            )
+            .await?
+        } else {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+                .ok_or_else(|| {
+                    RuntimeError::Platform("current time is outside the supported range".into())
+                })?;
+            crate::platform::read_builtin_live_provider(role, store, &identity_seed, now)
+                .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        };
+        let trust = store
+            .runtime_authorization_trust()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let client = crate::platform::connect_builtin_live_provider(
             role,
             &identity_seed,
             crate::platform::BuiltinLiveProviderConnectOptions {
-                trellis_url: &trellis_url,
+                nats_servers: nats
+                    .servers
+                    .split(',')
+                    .map(|server| server.trim().to_owned())
+                    .collect(),
+                trust,
+                expected_principal_id: deployment.principal_id,
+                expected_binding: trellis_protocol::SessionBinding::Service {
+                    participant_id: deployment.participant_id,
+                    deployment_id: deployment.deployment_id,
+                    instance_id: deployment.instance_id,
+                },
                 timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
             },
         )

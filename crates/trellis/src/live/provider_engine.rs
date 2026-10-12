@@ -196,10 +196,11 @@ impl ProviderSessionRecord {
             .await
             .map_err(|_| LiveErrorCode::PermissionDenied)?;
         let manager = self.manager()?;
-        let digest = manager
-            .contexts_handle()
-            .context_digest()
+        let authority = manager
+            .authorization_owner()
+            .own_authority()
             .map_err(|_| LiveErrorCode::AuthorizationUnavailable)?;
+        let digest = authority.digest();
         if digest.is_empty() {
             return Err(LiveErrorCode::AuthorizationUnavailable);
         }
@@ -211,7 +212,7 @@ impl ProviderSessionRecord {
         )
         .map_err(|_| LiveErrorCode::AuthorizationUnavailable)?;
         let mut headers = async_nats::HeaderMap::new();
-        headers.insert("authorization-context", digest.as_str());
+        headers.insert("authorization-context", digest);
         headers.insert("session-key", manager.auth_handle().session_key.as_str());
         headers.insert("trellis-live-proof", proof.as_str());
         Ok(headers)
@@ -246,15 +247,15 @@ impl ProviderSessionRecord {
                 connection_id: provider.connection_id.clone(),
                 session_key: trellis_protocol::encode_subject_token(&provider.session_key),
                 principal_id: provider.principal_id.clone(),
-                participant_id: provider.participant_id.clone(),
-                deployment_id: provider.deployment_id.clone().unwrap_or_default(),
-                instance_id: provider.instance_id.clone().unwrap_or_default(),
+                participant_id: provider.participant_id().to_owned(),
+                deployment_id: provider.deployment_id().unwrap_or_default().to_owned(),
+                instance_id: provider.instance_id().unwrap_or_default().to_owned(),
             },
             consumer: trellis_protocol::LiveOfferConsumer {
                 connection_id: consumer.connection_id.clone(),
                 session_key: trellis_protocol::encode_subject_token(&consumer.session_key),
                 principal_id: consumer.principal_id.clone(),
-                participant_id: consumer.participant_id.clone(),
+                participant_id: consumer.participant_id().to_owned(),
             },
             limits,
         };

@@ -392,23 +392,18 @@ impl DeliveryReporter {
             header("Trellis-Event-Time"),
             header("Trellis-Event-Descriptor"),
         ) {
-            (
-                Some(session_key),
-                Some(proof),
-                Some(context),
-                Some(event_id),
-                Some(event_time),
-                Some(descriptor_identity),
-            ) => {
+            (Some(_), Some(_), Some(_), Some(_), Some(_), Some(_)) => {
                 match (self.verifier)(EventAuthorizationInput {
                     subject: raw.subject.to_string(),
-                    descriptor_identity,
                     payload: raw.payload.to_vec(),
-                    session_key,
-                    proof,
-                    authorization_context: context,
-                    event_id,
-                    event_time,
+                    headers: Some(raw.headers.clone()),
+                    original_publication: trellis_protocol::OriginalEventPublication {
+                        published_at: raw
+                            .time
+                            .format(&time::format_description::well_known::Rfc3339)
+                            .map_err(|error| DeliveryReportError::Unavailable(error.to_string()))?,
+                        stream_sequence: trellis_protocol::U64s::new(raw.sequence),
+                    },
                 })
                 .await
                 {

@@ -21,6 +21,10 @@ pub(crate) enum AuthError {
     Denied,
     #[error("required authority unavailable")]
     RequiredMissing,
+    #[error("displayed consent changed")]
+    ConsentChanged,
+    #[error("provisional client budget exhausted")]
+    ResourceLimit,
     #[error("authorization session retired")]
     Retired,
     #[error("invalid authored input: {0}")]
@@ -88,7 +92,134 @@ pub(super) fn id() -> String {
     ulid::Ulid::new().to_string()
 }
 
+pub(crate) fn read_custody_key(
+    path: &std::path::Path,
+) -> Result<[u8; 32], crate::supervisor::RuntimeError> {
+    use crate::supervisor::RuntimeError;
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+        RuntimeError::Platform(format!(
+            "cannot inspect custody key '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(RuntimeError::Platform(format!(
+            "custody key '{}' must be a regular file",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(RuntimeError::Platform(format!(
+                "custody key '{}' must not be group/world accessible",
+                path.display()
+            )));
+        }
+    }
+    let encoded = std::fs::read_to_string(path).map_err(|error| {
+        RuntimeError::Platform(format!(
+            "cannot read custody key '{}': {error}",
+            path.display()
+        ))
+    })?;
+    let encoded = encoded.trim();
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| RuntimeError::Platform(format!("invalid custody key '{}'", path.display())))?;
+    if URL_SAFE_NO_PAD.encode(&bytes) != encoded {
+        return Err(RuntimeError::Platform(format!(
+            "noncanonical custody key '{}'",
+            path.display()
+        )));
+    }
+    bytes.try_into().map_err(|_| {
+        RuntimeError::Platform(format!(
+            "custody key '{}' must contain exactly 32 bytes",
+            path.display()
+        ))
+    })
+}
+
 impl SqliteAuthorizationStore {
+    pub(crate) fn jetstream_identity(&self) -> Result<(String, bool), AuthError> {
+        self.transaction(|connection| {
+            Ok(connection.query_row(
+                "SELECT jetstream_id,jetstream_bound FROM trellis_platform_store_marker WHERE id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+    }
+
+    pub(crate) fn mark_jetstream_bound(&self, identity: &str) -> Result<(), AuthError> {
+        self.transaction(|connection| {
+            if connection.execute("UPDATE trellis_platform_store_marker SET jetstream_bound=1 WHERE id=1 AND jetstream_id=?1",[identity])?!=1 {return Err(AuthError::Conflict);}
+            Ok(())
+        })
+    }
+
+    /// Open the normally migrated platform database using provisioned custody.
+    /// Startup never creates signing or OAuth-storage keys.
+    pub(crate) fn open(
+        store: &crate::storage::SqliteStore,
+        config: &crate::RuntimeConfig,
+        account: &str,
+    ) -> Result<Self, crate::supervisor::RuntimeError> {
+        Self::from_configured_connection(store.open()?, config, account)
+    }
+
+    pub(crate) fn open_read_only(
+        store: &crate::storage::SqliteStore,
+        config: &crate::RuntimeConfig,
+        account: &str,
+    ) -> Result<Self, crate::supervisor::RuntimeError> {
+        Self::from_configured_connection(store.open_read_only()?, config, account)
+    }
+
+    fn from_configured_connection(
+        connection: Connection,
+        config: &crate::RuntimeConfig,
+        account: &str,
+    ) -> Result<Self, crate::supervisor::RuntimeError> {
+        use crate::supervisor::RuntimeError;
+        let authorization = config
+            .resolve_authorization()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        let oauth = config
+            .resolve_oauth_listener()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        let instance_id = config
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.instance_id.clone())
+            .ok_or_else(|| RuntimeError::Platform("auth.instance_id is required".into()))?;
+        let signer =
+            SigningKey::from_bytes(&read_custody_key(&authorization.issuer_signing_seed_file)?);
+        let settings = AuthSettings {
+            instance_id,
+            account: account.into(),
+            oauth_origin: oauth.origin.clone(),
+            upstream_tls_roots_pem: Vec::new(),
+            authority_lifetime_seconds: u32::try_from(authorization.context_lifetime_seconds)
+                .map_err(|_| {
+                    RuntimeError::Platform("authorization lifetime exceeds supported range".into())
+                })?,
+            clock_skew_seconds: u32::try_from(authorization.allowed_clock_skew_seconds).map_err(
+                |_| {
+                    RuntimeError::Platform(
+                        "authorization clock skew exceeds supported range".into(),
+                    )
+                },
+            )?,
+            login_lifetime_seconds: 86_400,
+            enforcement_page_size: 128,
+        };
+        Self::from_connection(connection, signer, settings)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))
+    }
+
     /// Takes an ordinarily initialized platform connection. Initialization and
     /// schema checks remain owned by the normal storage migration runner.
     pub(crate) fn from_connection(
@@ -137,6 +268,24 @@ impl SqliteAuthorizationStore {
         }
     }
 
+    /// Capture the configured native trust pin and its persisted rotation position.
+    pub(crate) fn runtime_authorization_trust(
+        &self,
+    ) -> Result<trellis_rs::client::RuntimeAuthorizationTrust, AuthError> {
+        let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        let issuer = self.issuer();
+        let (current,rotation_sequence):(bool,u64)=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_issuers WHERE key_id=?1 AND public_key=?2 AND is_current=1 AND state='active' AND revoked_at IS NULL), coalesce((SELECT max(sequence) FROM auth_issuer_rotations WHERE trellis_instance_id=?3 AND audience_nats_account=?4),0)",params![issuer.key_id,issuer.public_key,self.settings.instance_id,self.settings.account],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        if !current {
+            return Err(AuthError::Denied);
+        }
+        Ok(trellis_rs::client::RuntimeAuthorizationTrust {
+            instance_id: self.settings.instance_id.clone(),
+            account: self.settings.account.clone(),
+            issuer,
+            rotation_sequence,
+        })
+    }
+
     pub(super) fn transaction<T>(
         &self,
         operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
@@ -164,27 +313,41 @@ impl SqliteAuthorizationStore {
         now: i64,
         operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
     ) -> Result<T, AuthError> {
+        self.transaction(|connection| {
+            self.mutate_in_transaction(connection, identity, purpose, input, now, operation)
+        })
+    }
+
+    pub(super) fn mutate_in_transaction<T: Serialize + DeserializeOwned>(
+        &self,
+        connection: &Connection,
+        identity: &Mutation,
+        purpose: &str,
+        input: &impl Serialize,
+        now: i64,
+        operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
+    ) -> Result<T, AuthError> {
         if identity.actor.is_empty()
             || ulid::Ulid::from_string(&identity.request_id).is_err()
             || identity.request_digest != digest(input)?
         {
             return Err(AuthError::Invalid("invalid mutation identity".into()));
         }
-        self.transaction(|connection| {
-            let previous: Option<(String, String)> = connection.query_row(
+        let previous: Option<(String, String)> = connection.query_row(
                 "SELECT request_digest,result_json FROM auth_idempotency_results WHERE purpose=?1 AND signer_id=?2 AND request_id=?3",
                 params![purpose, identity.actor, identity.request_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
-            if let Some((previous_digest, result)) = previous {
-                if previous_digest != identity.request_digest { return Err(AuthError::Conflict); }
-                return decode(&result);
+        if let Some((previous_digest, result)) = previous {
+            if previous_digest != identity.request_digest {
+                return Err(AuthError::Conflict);
             }
-            let result = operation(connection)?;
-            connection.execute("INSERT INTO auth_idempotency_results(scope_key,purpose,signer_id,request_id,request_digest,result_json,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            return decode(&result);
+        }
+        let result = operation(connection)?;
+        connection.execute("INSERT INTO auth_idempotency_results(scope_key,purpose,signer_id,request_id,request_digest,result_json,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![digest(&(purpose, &identity.actor, &identity.request_id))?,purpose,identity.actor,identity.request_id,identity.request_digest,json(&result)?,now,now.saturating_add(2_592_000)])?;
-            connection.execute("INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,target_id,data_json,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
+        connection.execute("INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,target_id,data_json,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
                 params![id(),identity.actor,purpose,identity.request_id,json(input)?,now])?;
-            Ok(result)
-        })
+        Ok(result)
     }
 
     /// Trusted startup initializes only a new key. An existing pin cannot be

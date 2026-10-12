@@ -125,6 +125,23 @@ Historical contexts remain stored after ordinary rotation.
 - device review list/decide operations; and
 - resource evidence and portal-policy operations retained by the contract.
 
+### Resource administration
+
+`Resources.List/Get` expose all catalog allocations, including detached resources,
+with digest resource IDs, explicit `user`/`deployment` owner kind and owner ID,
+participant, local name, kind, revision, and lifecycle state. List supports direct
+owner filters without joining only active deployments. The finite
+`principals.manage` privilege is required in addition to the route capability.
+
+Deployment omission, Disable, and Remove detach resources and remove binding
+authority while retaining physical data. No lifecycle path automatically destroys
+an allocation. `Resources.Remove` is an explicit permanent deletion choice for a
+detached owned KV at its expected revision. Its typed idempotent result fences a
+durable manual intent before the ownership-checked broker deletion. The same
+manual request can retry after failure; no startup cleaner or automatic omission
+job consumes that intent. Reattachment uses a compatible retained allocation;
+retention reductions fail rather than purge or recreate data.
+
 Deployment Apply is the direct mutation path. There is no proposal, plan,
 approve, reconcile, or materialized-authority RPC family.
 
@@ -150,16 +167,26 @@ Accounts without a local login establish one through an account flow, not a
 profile update.
 
 `Auth.Users.PasswordReset.Create` accepts a target `userId` and returns a
-time-limited, one-use account-flow link. Creating the link does not itself
-change the password. Completing it changes the target account's credential and
-revokes its existing user sessions.
+five-minute, one-use token. Open `/account/reset?token=...` on the isolated OAuth
+origin to complete it with an Origin-checked, CSRF-protected native form. Creating
+the token does not change the password. Completion checks credential CAS, the
+target's protected-administrator status, and the requester's still-active logical
+authorization session and current accepted `principals.manage` privilege. It
+atomically changes the credential, consumes the action, and revokes existing
+logins, OAuth grants, and refresh families. Bootstrap administrators cannot use
+this RPC reset path; their existing local recovery path remains authoritative.
+Replay responses keep the same bearer token under existing OAuth sealing custody;
+replaying creation never makes a consumed action usable again.
 
 `Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
-`Auth.Users.IdentityLink.Create` accept optional `userId`. Omission targets the
-caller; targeting another user requires platform administration. Unlinking still
-enforces the last-sign-in-method and protected-administrator checks. An
-identity-link flow is bound to its selected target user, not the administrator
-who generated the link.
+`Auth.Users.IdentityLink.Create` target the current user in the current generated
+contract. Identities have persisted ULIDs. Unlinking enforces owner isolation,
+last-sign-in-method and protected-administrator checks. Link creation returns a
+five-minute isolated portal URL. The portal requires the exact initiating user to
+be signed in, then starts fresh upstream authentication with server-owned state,
+nonce, and PKCE through the ordinary verified OIDC callback. Completion rechecks
+the portal session and provider revision/state, rejects identities owned by
+another user, and atomically inserts the identity and consumes the account action.
 
 `Auth.Connections.List` supports `principalId` to inspect only the selected
 principal's physical connections. User-session revocation and connection kicks

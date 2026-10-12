@@ -36,6 +36,14 @@ export declare const request: AppRequestDescriptor & {
 		}];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly actionNames: {
+		readonly ["runtime-trellis.runtime@v1:rpc:Echo"]: "Echo";
+		readonly ["runtime-trellis.runtime@v1:operation:Upload"]: "Upload";
+		readonly ["runtime-trellis.runtime@v1:operation:Work"]: "Work";
+		readonly ["runtime-trellis.runtime@v1:event:Changed"]: "Changed";
+		readonly ["runtime-trellis.runtime@v1:event:Changed"]: "Changed";
+		readonly ["runtime-trellis.runtime@v1:live:Watch"]: "Watch";
+	};
 	readonly states: {};
 };
 export type Request = typeof request;

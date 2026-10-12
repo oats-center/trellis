@@ -27,28 +27,37 @@ where
 {
     let grant = &plan.grant;
     let observation = super::telemetry::observation(TransferDirection::Receive, "provider");
-    let permission = plan
-        .admission
-        .required_permission
-        .as_ref()
-        .ok_or_else(|| error("download admission permission missing"))?
-        .permission_atom()
-        .map_err(error)?;
+    let origin = super::transfer_origin(&plan.admission)?;
+    if origin != grant.origin {
+        return Err(error("download grant admission mismatch"));
+    }
+    let action = crate::live::authority::LiveAction {
+        api_id: origin.api_id,
+        identity: origin.action,
+    };
     let peer = TransferPeer::retain(
-        client.authorization_provider(),
+        client.authorization_owner(),
+        lease.nats(),
         plan.admission
             .authorization_context
             .as_deref()
             .ok_or_else(|| error("download admission context missing"))?,
         &grant.consumer,
-        Some(permission),
+        &action,
+        false,
     )
     .await?;
     let local = TransferPeer::retain(
-        client.authorization_provider(),
-        &client.authorization_context_digest().map_err(error)?,
+        client.authorization_owner(),
+        lease.nats(),
+        client
+            .authorization_owner()
+            .own_authority()
+            .map_err(error)?
+            .digest(),
         &grant.provider,
-        None,
+        &action,
+        true,
     )
     .await?;
     let mut changes = peer.guard.subscribe_changes();

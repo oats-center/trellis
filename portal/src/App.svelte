@@ -21,6 +21,7 @@
 
   interface Consent {
     transaction: string;
+    presentationId: string;
     principalId: string;
     username: string | null;
     clientId: string;
@@ -184,13 +185,11 @@
       <section aria-label="Company sign-in">
         <h2>Company account</h2>
         {#each providers as provider (provider.providerId)}
-          <form
-            method="get"
-            action={`/portal/oidc/${encodeURIComponent(provider.providerId)}/begin`}
+          <a
+            href={`/portal/oidc/${encodeURIComponent(provider.providerId)}/begin?transaction=${encodeURIComponent(transaction)}`}
           >
-            <input type="hidden" name="transaction" value={transaction} />
-            <button type="submit">Continue with {provider.displayName}</button>
-          </form>
+            Continue with {provider.displayName}
+          </a>
         {/each}
       </section>
       <h2>Local Trellis account</h2>
@@ -228,6 +227,12 @@
   </main>
 {:else if view}
   <main>
+    {#if query.get("error") === "consent_changed"}
+      <p class="unavailable" role="alert">
+        The requested access changed while you were reviewing it. Review the
+        current information below before making a new decision.
+      </p>
+    {/if}
     <p class="muted">Signed in as {view.username ?? view.principalId}</p>
     <h1>Allow {view.clientName ?? view.clientId} to access Trellis?</h1>
     <section class="identity" aria-label="Application identity">
@@ -251,6 +256,7 @@
     <form method="post" action="/portal/approve">
       <input type="hidden" name="csrf" value={csrf} />
       <input type="hidden" name="transaction" value={transaction} />
+      <input type="hidden" name="presentation" value={view.presentationId} />
       {#if view.deviceUserCode}
         <label class="remember"
           ><input

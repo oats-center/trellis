@@ -14,7 +14,10 @@ sub-selection.
 Acceptance persists one deployment-scoped record before reply. The caller
 creates a stable invocation ULID. A digest binds Operation identity, canonical
 typed input, and initiating principal/participant. Repeating the same ID/digest
-returns the existing operation; different content conflicts. Callers may admit
+within that deployment returns the existing operation; different content conflicts.
+Deduplication does not span deployments. An uncertain start must not be
+automatically retried through the canonical API queue: another deployment could
+accept a second operation with the same invocation ID. Callers may admit
 that same ID/input with `cancellationRequested: true`, requiring both Invoke and
 Cancel authority before any durable write. An absent invocation persists
 cancellation intent before owner admission; an existing matching nonterminal
@@ -78,11 +81,19 @@ opening digest, a local stop or observation signal is observation-only
 cancellation that never dispatches a business cancel, and an executor may
 continue or finish with zero observers.
 
-Provider routing binds an API to a deployment; the selected provider deployment
-comes from the installed binding, and routine admission compiles delivery
-permissions from the participant evidence rather than from context atoms. Queue
-groups derive only from the actual subscription subject. Live cancellation uses
-owner-specific authenticated control routing, not the queued open subject.
+New starts use canonical generated API subjects and the logical API's shared
+request queue, without caller selection of a service or deployment. Every
+serialized Operation reference requires `id`, `service`, `operation`, and
+`deploymentId`. The accepting provider supplies the durable record's deployment;
+the SDK verifies it against the signed acceptance and certified provider identity.
+Get, watch, wait, cancel, and signals route internally to that reference's
+deployment. Restoration requires the complete reference, never just an ID.
+This routing metadata is not authority: receivers still validate caller identity,
+capability, and durable operation ownership. Instance IDs do not identify durable
+owners; replicas within the owning deployment use the existing leases and CAS
+fences for takeover. Live cancellation retains authenticated owner-specific
+session control routing, not the queued open subject. No global routing directory
+or persistent caller-to-provider selection is involved.
 
 Upload/download staging is platform-managed rather than mapped to a participant
 Store. Committed staged bytes survive executor replacement. An interrupted

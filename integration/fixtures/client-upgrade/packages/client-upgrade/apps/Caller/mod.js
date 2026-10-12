@@ -20,6 +20,10 @@ export const request = {
 		}],
 		optionalCapabilities: []
 	}],
+	actionNames: {
+		["client-upgrade-fixture.upgrade@v1:rpc:Echo"]: "Echo",
+		["client-upgrade-fixture.upgrade@v1:rpc:Extra"]: "Extra"
+	},
 	states: {}
 };
 export default request;

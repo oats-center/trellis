@@ -16,6 +16,7 @@ export const request = {
 		}],
 		optionalCapabilities: []
 	}],
+	actionNames: { ["acme-orders.orders@v1:rpc:Create"]: "Create" },
 	states: {}
 };
 export default request;

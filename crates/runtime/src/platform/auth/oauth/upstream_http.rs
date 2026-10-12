@@ -55,12 +55,6 @@ pub(super) async fn start(
         Ok(form) => form,
         Err(response) => return error(response.error),
     };
-    let Some(transaction) = form
-        .get("transaction")
-        .filter(|transaction| ulid::Ulid::from_string(transaction).is_ok())
-    else {
-        return error(ErrorCode::InvalidRequest);
-    };
     let (Some(cookie), Some(csrf)) = (
         portal_cookie(&headers, "__Host-trellis-portal"),
         portal_cookie(&headers, "__Host-trellis-portal-csrf"),
@@ -78,20 +72,55 @@ pub(super) async fn start(
         Ok(session) => session,
         Err(_) => return error(ErrorCode::AccessDenied),
     };
-    let authorization = match engine
-        .server
-        .store()
-        .authorization(transaction, &session, now)
-    {
-        Ok(flow) => flow,
-        Err(_) => return error(ErrorCode::InvalidRequest),
-    };
-    if authority.portal_login(&cookie, &csrf, now).is_ok() {
-        return Redirect::to(&format!("/consent?transaction={transaction}")).into_response();
-    }
-    let intent = match engine.consent_intent(&authorization.request).await {
-        Ok(intent) => intent,
-        Err(response) => return error(response.error),
+    let (transaction, deadline, client_id, account_token) = if let Some(token) = form.get("link") {
+        if !super::http::portal_origin(&engine, &headers) {
+            return error(ErrorCode::InvalidRequest);
+        }
+        let action = match super::account::link_session(
+            engine.server.store(),
+            token,
+            &cookie,
+            &csrf,
+            &provider,
+            now,
+        ) {
+            Ok(action) => action,
+            Err(_) => return error(ErrorCode::AccessDenied),
+        };
+        (
+            action.id,
+            action.expires,
+            "account-link".to_owned(),
+            Some(token.clone()),
+        )
+    } else {
+        let Some(transaction) = form
+            .get("transaction")
+            .filter(|transaction| ulid::Ulid::from_string(transaction).is_ok())
+        else {
+            return error(ErrorCode::InvalidRequest);
+        };
+        let authorization = match engine
+            .server
+            .store()
+            .authorization(transaction, &session, now)
+        {
+            Ok(flow) => flow,
+            Err(_) => return error(ErrorCode::InvalidRequest),
+        };
+        if authority.portal_login(&cookie, &csrf, now).is_ok() {
+            return Redirect::to(&format!("/consent?transaction={transaction}")).into_response();
+        }
+        let intent = match engine.consent_intent(&authorization.request).await {
+            Ok(intent) => intent,
+            Err(response) => return error(response.error),
+        };
+        (
+            transaction.clone(),
+            authorization.expires_at,
+            intent.client_id.as_str().to_owned(),
+            None,
+        )
     };
     let configured = match authority.upstream_provider(&provider) {
         Ok(provider) => provider,
@@ -132,6 +161,9 @@ pub(super) async fn start(
             Nonce::new_random,
         )
         .set_pkce_challenge(challenge);
+    if account_token.is_some() {
+        request = request.add_extra_param("prompt", "login");
+    }
     for scope in configured
         .scopes
         .into_iter()
@@ -143,18 +175,19 @@ pub(super) async fn start(
     }
     let (url, state, nonce) = request.url();
     let flow = UpstreamFlow {
+        account_token,
         session_id: session,
         authorization_transaction: transaction.clone(),
         provider: snapshot.identity,
         nonce: nonce.secret().clone(),
         pkce_verifier: verifier.secret().clone(),
-        expires_at: authorization.expires_at.min(now + 600),
+        expires_at: deadline.min(now + 300),
         request_id: super::super::sqlite::id(),
     };
     if engine
         .server
         .store()
-        .store_upstream(state.secret(), &flow, intent.client_id.as_str())
+        .store_upstream(state.secret(), &flow, &client_id)
         .is_err()
     {
         return error(ErrorCode::ServerError);
@@ -198,11 +231,12 @@ pub(super) async fn callback(
         Ok(flow) => flow,
         Err(_) => return error(ErrorCode::InvalidRequest),
     };
-    if engine
-        .server
-        .store()
-        .authorization(&flow.authorization_transaction, &session, now)
-        .is_err()
+    if flow.account_token.is_none()
+        && engine
+            .server
+            .store()
+            .authorization(&flow.authorization_transaction, &session, now)
+            .is_err()
     {
         return error(ErrorCode::InvalidRequest);
     }
@@ -213,6 +247,9 @@ pub(super) async fn callback(
         return error(ErrorCode::InvalidRequest);
     }
     if form.contains_key("error") {
+        if flow.account_token.is_some() {
+            return error(ErrorCode::AccessDenied);
+        }
         return Redirect::to(&format!(
             "/login?transaction={}&error=upstream_login_failed",
             flow.authorization_transaction
@@ -290,6 +327,22 @@ pub(super) async fn callback(
     else {
         return error(ErrorCode::ServerError);
     };
+    if flow.account_token.is_some() {
+        return match super::account::complete_link(
+            engine.server.store(),
+            &flow,
+            &identity,
+            &cookie,
+            &csrf,
+            now,
+        ) {
+            Ok(()) => super::account::html(
+                "Identity linked",
+                "<p>You can now sign in using this identity provider.</p>",
+            ),
+            Err(_) => error(ErrorCode::AccessDenied),
+        };
+    }
     let mut replacement = [0; 32];
     if getrandom::fill(&mut replacement).is_err() {
         return error(ErrorCode::ServerError);

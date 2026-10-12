@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use tokio_util::task::AbortOnDropHandle;
 use trellis_local_nats::{LocalNats, LocalNatsError, LocalNatsPorts, NatsBinarySource, NatsOutput};
-use trellis_rs::generated::ParticipantDescriptor;
+use trellis_rs::generated::{AppRequestDescriptor, ParticipantDescriptor};
 use trellis_runtime::shutdown::StopHandle;
 use trellis_runtime::{
     NatsEndpointOverride, RuntimeConfig, RuntimeError, RuntimeMode, RuntimeOptions,
@@ -14,7 +14,7 @@ use trellis_runtime::{
 
 use crate::admin::{AdminSession, ADMIN_USERNAME};
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
-use crate::identity::{InstalledParticipant, TestClientIdentity, TestServiceIdentity};
+use crate::identity::{TestClientIdentity, TestServiceIdentity};
 use crate::sandbox::{ensure_supported_platform, PortLease, Sandbox, WorkdirRetention};
 
 const MAX_STARTUP_ATTEMPTS: usize = 3;
@@ -344,6 +344,7 @@ async fn start_once(
     let lease = PortLease::reserve().map_err(|error| (error, false))?;
     let ports = lease.ports().map_err(|error| (error, false))?;
     let public_origin = format!("http://127.0.0.1:{}", ports.http);
+    let oauth_origin = format!("http://127.0.0.1:{}", ports.oauth);
     let config_dir = infrastructure
         .sandbox
         .as_ref()
@@ -355,6 +356,8 @@ async fn start_once(
     options.runtime.nats_server_url = format!("nats://127.0.0.1:{}", ports.nats);
     options.runtime.nats_websocket_url = format!("ws://127.0.0.1:{}", ports.websocket);
     options.runtime.public_origin = public_origin.clone();
+    options.runtime.oauth.origin = oauth_origin.clone();
+    options.runtime.oauth.port = ports.oauth;
     options.runtime.extra_origins = extra_origins.to_vec();
     options.nats.nats_port = ports.nats;
     options.nats.monitor_port = ports.monitor;
@@ -476,7 +479,7 @@ async fn start_once(
                 nats_override: Some(NatsEndpointOverride {
                     runtime_servers: nats_url.clone(),
                     advertised_native: Some(vec![nats_url.clone()]),
-                    advertised_websocket: Some(vec![websocket_url.clone()]),
+                    advertised_websocket: Some(Vec::new()),
                 }),
             },
             Some(stop),
@@ -494,14 +497,20 @@ async fn start_once(
         }
         return Err((error, retryable));
     }
-    let admin = AdminSession::connect(&public_origin, username, password)
-        .await
-        .map_err(|error| (error, false))?;
+    let admin = AdminSession::connect(
+        &oauth_origin,
+        &workdir.join("credentials/admin"),
+        username,
+        password,
+    )
+    .await
+    .map_err(|error| (error, false))?;
     admin.verify().await.map_err(|error| (error, false))?;
     infrastructure.starting = false;
     Ok(TrellisTestRuntime {
         workdir,
         trellis_url: public_origin,
+        oauth_origin,
         nats_url,
         websocket_url,
         monitor_url: format!("http://127.0.0.1:{}", ports.monitor),
@@ -510,8 +519,6 @@ async fn start_once(
         username: username.to_owned(),
         password: password.to_owned(),
         names: Vec::new(),
-        participants: Vec::new(),
-        revisions: Vec::new(),
         timeouts,
         stopped: false,
     })
@@ -584,6 +591,7 @@ fn nats_error(error: LocalNatsError, stage: TrellisTestStage) -> TrellisTestErro
 pub struct TrellisTestRuntime {
     workdir: PathBuf,
     trellis_url: String,
+    oauth_origin: String,
     nats_url: String,
     websocket_url: String,
     monitor_url: String,
@@ -592,8 +600,6 @@ pub struct TrellisTestRuntime {
     username: String,
     password: String,
     names: Vec<String>,
-    participants: Vec<(String, String)>,
-    revisions: Vec<(String, u64)>,
     timeouts: TestTimeouts,
     stopped: bool,
 }
@@ -608,6 +614,11 @@ impl TrellisTestRuntime {
     #[must_use]
     pub fn trellis_url(&self) -> &str {
         &self.trellis_url
+    }
+    /// Isolated OAuth issuer and portal origin, distinct from the application listener.
+    #[must_use]
+    pub fn oauth_origin(&self) -> &str {
+        &self.oauth_origin
     }
     /// Native URL of the real managed NATS server.
     #[must_use]
@@ -638,6 +649,43 @@ impl TrellisTestRuntime {
     #[must_use]
     pub fn admin_password(&self) -> &str {
         &self.password
+    }
+
+    /// Log in to the ordinary portal and explicitly approve a pending native
+    /// device flow. The caller retains its own SDK custody and token exchange.
+    /// Only available consent items are approved; unavailable required items fail.
+    pub async fn approve_device_login(
+        &mut self,
+        client_id: &str,
+        user_code: &str,
+    ) -> Result<(), TrellisTestError> {
+        self.ensure_running()?;
+        let result = tokio::time::timeout(
+            self.timeouts.request,
+            crate::admin::approve_device(
+                &self.oauth_origin,
+                client_id,
+                user_code,
+                &self.username,
+                &self.password,
+            ),
+        )
+        .await;
+        match result {
+            Ok(result) => {
+                if result.is_err() {
+                    self.mark_failed();
+                }
+                result
+            }
+            Err(_) => {
+                self.mark_failed();
+                Err(request_timeout(
+                    "approving native device login",
+                    TrellisTestStage::ClientLogin,
+                ))
+            }
+        }
     }
 
     fn admin(&self) -> Result<&AdminSession, TrellisTestError> {
@@ -694,72 +742,6 @@ impl TrellisTestRuntime {
         Ok(())
     }
 
-    /// Installs `P`, idempotently for an identical digest.
-    ///
-    /// # Errors
-    /// Returns an error when installation fails or conflicts with an installed digest.
-    pub async fn install_participant<P: ParticipantDescriptor>(
-        &mut self,
-    ) -> Result<InstalledParticipant, TrellisTestError> {
-        self.ensure_running()?;
-        match tokio::time::timeout(self.timeouts.request, self.install_participant_inner::<P>())
-            .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                self.mark_failed();
-                Err(request_timeout(
-                    "installing a participant",
-                    TrellisTestStage::ParticipantInstallation,
-                ))
-            }
-        }
-    }
-    async fn install_participant_inner<P: ParticipantDescriptor>(
-        &mut self,
-    ) -> Result<InstalledParticipant, TrellisTestError> {
-        let evidence = P::package_evidence();
-        let digest = evidence.root_digest().to_owned();
-        if let Some((installed_id, installed_digest)) =
-            self.participants.iter().find(|(id, _)| id == P::ID)
-        {
-            if installed_digest == &digest {
-                return Ok(InstalledParticipant {
-                    participant_id: installed_id.clone(),
-                    installed_revision: self.installed_revision(P::ID),
-                });
-            }
-            return Err(TrellisTestError::new(
-                TrellisTestErrorKind::ParticipantConflict,
-                TrellisTestStage::ParticipantInstallation,
-                format!(
-                    "participant {} is already installed with a different digest",
-                    P::ID
-                ),
-            ));
-        }
-        let revision = match self.admin()?.install_participant::<P>().await {
-            Ok(revision) => revision,
-            Err(error) => {
-                self.mark_failed();
-                return Err(error);
-            }
-        };
-        self.participants.push((P::ID.to_owned(), digest));
-        self.revisions.push((P::ID.to_owned(), revision));
-        Ok(InstalledParticipant {
-            participant_id: P::ID.to_owned(),
-            installed_revision: revision,
-        })
-    }
-    fn installed_revision(&self, id: &str) -> u64 {
-        self.revisions
-            .iter()
-            .find(|(participant, _)| participant == id)
-            .map(|(_, revision)| *revision)
-            .unwrap_or(0)
-    }
-
     /// Registers `P` as a service in its own deployment and provisions an instance.
     ///
     /// # Errors
@@ -798,13 +780,10 @@ impl TrellisTestRuntime {
         &mut self,
         name: &str,
     ) -> Result<TestServiceIdentity, TrellisTestError> {
-        self.install_participant_inner::<P>().await?;
         let admin = self.admin()?;
-        let deployment_id = admin.create_deployment(name).await?;
-        admin.apply_participant::<P>(&deployment_id).await?;
-        let (instance_id, seed) = admin
-            .provision_service_instance(&deployment_id, P::ID)
-            .await?;
+        admin.accept_apis::<P>().await?;
+        let deployment_id = admin.create_deployment::<P>(name).await?;
+        let (instance_id, seed) = admin.provision_service_instance(&deployment_id).await?;
         Ok(TestServiceIdentity {
             name: name.to_owned(),
             participant_id: P::ID.to_owned(),
@@ -812,25 +791,26 @@ impl TrellisTestRuntime {
             instance_id,
             seed,
             trellis_url: self.trellis_url.clone(),
+            nats_servers: admin.nats_servers.clone(),
+            trust: admin.trust.clone(),
             timeout_ms: request_ms(&self.timeouts),
         })
     }
 
-    /// Registers `P` as an app/agent caller and completes participant-bound login.
+    /// Registers a native OAuth client and approves the generated application's request.
     ///
     /// # Errors
-    /// Returns an error when `P` is not an app/agent or login fails.
-    pub async fn register_client<P: ParticipantDescriptor>(
+    /// Returns an error for browser requests, unavailable authority, or failed login.
+    pub async fn register_client<P: AppRequestDescriptor>(
         &mut self,
         name: &str,
     ) -> Result<TestClientIdentity, TrellisTestError> {
-        use trellis_rs::generated::ParticipantKind;
         self.ensure_running()?;
-        if !matches!(P::KIND, ParticipantKind::App | ParticipantKind::Agent) {
+        if P::KIND != trellis_rs::generated::AppKind::Native {
             return Err(TrellisTestError::new(
                 TrellisTestErrorKind::UnsupportedParticipantKind,
                 TrellisTestStage::Validation,
-                format!("{} is not an app or agent participant", P::ID),
+                format!("{} is not a native application request", P::ID),
             ));
         }
         self.reserve_name(name)?;
@@ -851,24 +831,25 @@ impl TrellisTestRuntime {
         }
         result
     }
-    async fn register_client_inner<P: ParticipantDescriptor>(
+    async fn register_client_inner<P: AppRequestDescriptor>(
         &mut self,
         name: &str,
     ) -> Result<TestClientIdentity, TrellisTestError> {
-        self.install_participant_inner::<P>().await?;
-        let session = crate::admin::login_client(
-            &self.trellis_url,
-            P::ID,
+        let client_id = self.admin()?.register_native_client(name).await?;
+        let (session, nats_servers) = crate::admin::login_client(
+            &self.oauth_origin,
+            &self.workdir.join("credentials").join(&client_id),
+            &client_id,
+            &serde_json::json!([{"type":"trellis_capabilities","required":P::REQUIRED_CAPABILITIES,"optional":P::OPTIONAL_CAPABILITIES}]),
             &self.username,
             &self.password,
-            self.admin()?,
         )
         .await?;
         Ok(TestClientIdentity {
             name: name.to_owned(),
-            participant_id: P::ID.to_owned(),
-            login_session_id: session.login_session_id,
-            session_seed: session.session_seed,
+            client_id,
+            session,
+            nats_servers,
             trellis_url: self.trellis_url.clone(),
             timeout_ms: request_ms(&self.timeouts),
         })

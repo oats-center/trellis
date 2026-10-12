@@ -1,11 +1,48 @@
 # Trellis Consumer Guide
 
+Provisioned services/devices automatically publish the native Health.Heartbeat
+event using ordinary SessionEvent signatures. Auth assigns only the runtime-owned
+trellis.health@v1::selfReport capability through native provisioning; users/apps
+cannot acquire this right. The collector verifies whole catalog authority,
+broker chronology, retirement cutoff and signed deployment/instance identity.
+The signed trellis.nativeParticipant.v1 extension supplies installed revision and
+participant digest, never payload claims. No health declaration is needed in
+service contracts. Initial publication is asynchronous, not a connection gate.
+
+Fresh administrator initialization explicitly grants only current accepted
+Trellis-owned Auth/Core/State/Health/Jobs/Events capabilities. These grants,
+finite platform privileges, and Console/CLI registration commit atomically.
+Replay neither grants future capabilities nor rewrites clients. Domain API
+access remains explicitly granted; app authority still requires selection,
+consent, and client privilege eligibility. `Issuers.Rotate` currently reports
+`issuer_custody_required` without successor signing custody. OAuth sessions retain
+their original verified refresh family; CONNECT, Authority.Renew, OwnContextGet,
+and Admission.Renew consult that exact family's revocation and absolute deadline.
+A different live family of the same grant cannot replace it, and rotation never
+extends it. Admission.Renew uses the live caller's session-key proof and own
+context digest to return same-key signed OAuth admission, at most 300 seconds
+and bounded by the candidate authority/family, without rotating refresh tokens.
+Invalid roots retire the session and enqueue cutoff/kicks. Provisioned admission
+still needs the client's identity signature (`provisioned_signature_required`).
+
 For services, apps, agents, and devices consuming Trellis. Read the
 [TypeScript](llms-typescript.txt), [Rust](llms-rust.txt), or
 [Svelte](llms-svelte.txt) guide for language-specific usage. Use the guide from
 the same release or checkout as the CLI and libraries.
 
 ## What Trellis Owns
+
+Own-context bootstrap signs the exact physical socket's broker `attachmentId`
+and verifies its echoed signed registry ID; overlapping sockets never select
+the newest attachment as a fallback.
+
+Public verification metadata uses the dedicated `trellis.auth.metadata.get`
+bootstrap for already admitted connections without an admin capability. Existing
+IssuerMetadataRequest/SignedIssuerMetadata messages resolve only requested
+authority material, logical status/cutoff, or pinned issuer rotation chains.
+Clients verify signatures, retained nonce/subject/reply/scope and freshness using
+pinned trust; Missing/Unavailable never clears revocation or grants authority.
+Administrative Authority.Status remains a separate protected typed RPC.
 
 Revision 7 Auth unions valid entitlements and intersects them with declared
 selection and approved consent in one authoritative transaction. Signed logical
@@ -26,12 +63,92 @@ keys and cross-tab refresh ownership; native custody uses owner-only files and
 a cross-process family lock. Dex is an upstream OIDC integration-test
 dependency only, never a required Trellis deployment component.
 
+Provisioned native connections receive explicit broker endpoints and pinned
+runtime trust from initialization or authenticated provisioning. CONNECT proves
+credential possession without asserting a deployment or API. Rust native
+applications supply a verified OAuth session to the SDK, which retains custody
+and renews admission using the same runtime identity/key and authenticated issuer
+pin. Credential-recovery failure closes transport without erasing the durable
+record; full production acceptance remains in progress.
+
+Node native applications import `@oatscenter/trellis/native`, discover the selected
+issuer, and open `NativeOAuthClient` with explicit scope, trust and a private
+POSIX custody directory. Resume existing credentials or start Device Code with
+the generated native request, then connect through `connectNativeClient`.
+The Node/npm-only entrypoint uses SQLite for exclusive custody and durable
+spent-token markers. A successful connection owns custody until it closes;
+closing an earlier session reference cannot release that ownership. Discovery
+cannot repin existing credentials; trust advances only through authenticated
+issuer rotation. Browser applications retain IndexedDB and Web Locks.
+Live authority requires an applied initial revocation snapshot and continuing
+coverage. Epoch fencing prevents old watchers from changing successor coverage.
+
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
 affected sessions. A shortened effective authorization deadline is a reduction
 unless another entitlement path preserves the outstanding authority.
+Consent approval binds the current server-owned presentation and the selected
+optional capabilities; stale forms require a fresh presentation. Signed session
+authority has a shared 64 KiB issuer, verification, and parsing budget.
+Explicitly initialized or administrator-registered development clients may be
+eligible for platform privileges. Registration requires clients.manage;
+configuring privilege eligibility also requires privileges.manage. Delegation
+requires the authenticated user to hold and explicitly approve each privilege.
+
+Finite administrative privilege requests belong to OAuth configuration, not
+native IDL or generated application metadata. Browser apps supply
+`auth.platformPrivileges: { required, optional }` to their connection. Selecting
+an administrative API capability alone grants no finite privilege, and optional
+requests remain subject to registration eligibility, user authority, and consent.
+Localhost/development mode establishes no trust, and CIMD clients remain
+ineligible. Application and OAuth origins remain isolated.
+
+Provisional CIMD client intake shares a 128-client/16 MiB budget and a five-minute
+lifetime; live decisions and approved refresh lifecycles are retained. Exhaustion
+returns `temporarily_unavailable`, not administrative registration or authority.
 Deadlines on newly gained rights bound new contexts, not older narrower contexts
 or the logical-session root.
+
+Revision 7's breaking routing cutover uses canonical generated API/action
+subjects for RPC, Operation starts, and Live openings. Providers sharing a
+logical API share request queues and must be suitable alternatives; identical
+IDL does not make independent databases or physical devices interchangeable.
+Signed provider identity, generation/action checks, and service-owned resources
+remain separate from caller capabilities. Established Live/Transfer traffic
+and existing Operation controls retain owner-directed routing. There is no
+persisted caller-to-deployment selection or automatic retry of potentially
+executed requests. This decision is still being integrated on this branch.
+
+Complete serialized Operation references require `deploymentId`, verified against
+certified signed acceptance. SDKs route get/watch/wait/cancel/signals to that
+deployment and restore only complete references, never IDs alone. Replicas in
+that deployment retain existing executor leases and CAS fencing. The reference
+is routing metadata, not authority. Invocation deduplication is deployment-scoped;
+an uncertain canonical start must not automatically retry into another deployment.
+No cross-deployment idempotency is promised.
+
+Provisioned services/devices prove possession of their identity key and a fresh
+runtime/session key for the configured installation/account. Auth derives their
+deployment, instance, participant, and implementation authority from current
+provisioning records; clients never assert those bindings during CONNECT.
+Provisioning still supplies broker endpoints and pinned installation/issuer trust.
+Immediate ServiceInstances.Provision and Devices.Provision require identityPublicKey
+from a client-owned Ed25519 key. Trellis never stores or returns its private seed.
+Missing identityPublicKey returns identity_public_key_required without provisioning
+or consuming the idempotency key. provisioningSecret is null; activation-token
+provisioning is not implemented. CONNECT proves possession of the registered key.
+ServiceInstances.Provision awaits the ordinary native resource producer before
+success (empty declarations and KV supported; other declarations fail explicitly).
+Retry the same request after broker failure; retained allocations are never destroyed.
+
+Auth.Resources.List/Get include all allocation states, including detached, with
+digest resourceId, ownerKind (user/deployment), ownerId, and explicit state.
+Deployment version omission, Disable, and Remove detach and retain resource data;
+there is no automatic resource deletion. Compatible re-add reuses retained data.
+Explicit admin Resources.Remove permanently deletes only the selected detached
+owned KV at expectedRevision after checking its physical ownership marker. Retry
+the same manual request after broker failure; startup never resumes deletion.
+KV history/TTL reductions that could lose retained data are rejected.
 
 Trellis owns native contract compilation, generated APIs, authenticated
 communication, connection lifecycle, and declared runtime resources. It does not
@@ -244,10 +361,15 @@ is rejected without changing the binding. `Auth.Users.Update` accepts optional
 preserving the user ID and password; uniqueness conflicts roll back the
 accompanying profile edits. Accounts without a local login establish one through
 an account flow. `Auth.Users.PasswordReset.Create` targets `userId` and returns
-a time-limited, one-use link; completing it revokes the target's existing
-sessions. `Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
-`Auth.Users.IdentityLink.Create` accept optional `userId`; omission targets the
-caller, while cross-user actions require platform administration.
+a five-minute, one-use token for `/account/reset?token=...` on the OAuth origin.
+Completion checks Origin/CSRF, credential CAS, and the requester's original active
+logical session and current accepted `principals.manage`, then atomically changes
+the password and revokes login/grant families. Bootstrap administrators use local
+recovery instead. `Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
+`Auth.Users.IdentityLink.Create` target the current user. Linking returns a
+five-minute portal URL, requires exact current-user continuity and fresh verified
+upstream OIDC with nonce/PKCE, and rejects provider changes and identity collisions.
+Creation replay keeps the original sealed response and never revives an action.
 Last-sign-in-method and protected-administrator checks remain.
 `Auth.Connections.List` accepts `principalId` to filter physical connections.
 
@@ -298,6 +420,13 @@ generation/revision, actual subject, message identity, and exact payload bytes.
 The signed authority supplies the originating session public key; message
 headers do not establish another identity or carry permission lists.
 
+Provider-owned event publication is authorized by the exact issuer-verified
+event-publish action in the certificate bound to the signed native authority,
+deployment, instance, implementation, API generation, and action introduction
+revision. It does not require consumer capabilities. Delegated publication uses
+whole-capability membership. Provider certificates cannot grant RPC caller or
+event-consumption rights.
+
 Historical event verification requires both the signed event timestamp and
 trusted original JetStream publication metadata (`published` and
 `stream_sequence`). Both timestamps must fall within the publisher authority's
@@ -306,7 +435,8 @@ revocation cutoff. A consumer's read time is not publication evidence; a
 backdated signature cannot authenticate a new publication after expiry or
 revocation. Current permission to read remains separate from past publisher
 authenticity. Applications do not implement their own verifier or inspect
-Trellis's internal authorization KV registry.
+Trellis's internal authorization KV registry. Certified publication additionally
+requires both timestamps within the provider certificate's validity window.
 
 ## Choose A Surface
 

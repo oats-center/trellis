@@ -1,280 +1,225 @@
 <script lang="ts">
   import { ulid } from "ulid";
-  import { isErr } from "@oatscenter/result";
-  import { type apis } from "trellis-web-generated";
+  import { apis } from "trellis-web-generated";
   import { page } from "$app/state";
   import { beforeNavigate } from "$app/navigation";
-  import { resolve } from "$lib/console_paths";
   import { onDestroy, untrack } from "svelte";
+  import { resolve } from "$lib/console_paths";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { captureIntent, MutationController } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
+  import { canPerform } from "$lib/console/operations.ts";
+  import CopyButton from "$lib/components/CopyButton.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import AccessGrants from "$lib/components/AccessGrants.svelte";
   import UserSecurity from "$lib/components/UserSecurity.svelte";
-  import CopyButton from "$lib/components/CopyButton.svelte";
-  import { canPerform } from "$lib/console/operations.ts";
-  import { getNotifications } from "$lib/notifications.svelte";
+  import UserAccess from "$lib/components/UserAccess.svelte";
   import { getTrellis } from "$lib/trellis";
 
-  type UserView = apis.auth.UsersGetOutput["user"];
-
   const trellis = getTrellis();
-  const notifications = getNotifications();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("user-edit");
-  type UpdateInput = Parameters<typeof trellis.usersUpdate>[0];
-  const mutation = new MutationController<UpdateInput, apis.auth.UsersUpdateOutput>((state) => savePending = state.busy);
-
+  const mutation = new MutationController<
+    apis.auth.UsersUpdateInput,
+    apis.auth.UsersUpdateOutput
+  >();
   const requestedUserId = $derived(page.url.searchParams.get("userId") ?? "");
-
+  let user = $state.raw<apis.auth.UsersGetOutput["user"] | null>(null);
   let loading = $state(true);
-  let error = $state<{ message: string; code?: string; id?: string } | null>(null);
-  /** True when the requested user is genuinely absent. */
-  let notFound = $state(false);
-  let targetUser = $state.raw<UserView | null>(null);
-  let savePending = $state(false);
+  let saving = $state(false);
+  let displayName = $state("");
+  let enabled = $state(true);
+  let error = $state<string | null>(null);
+  let saved = $state(false);
+  const dirty = $derived(
+    user !== null &&
+      (displayName !== user.displayName || enabled !== user.principal.enabled),
+  );
 
-  // Editable fields are a copy of the loaded record, never a live view of it.
-  let name = $state<string | null>(null);
-  let email = $state<string | null>(null);
-  let image = $state<string | null>(null);
-  let username = $state("");
-  let active = $state(true);
-  let revoked = $state(false);
-
-  /** A revoked account is retained read-only and cannot be reactivated here. */
-  const readOnly = $derived(revoked);
-  const dirty = $derived(targetUser !== null && (name !== targetUser.name || email !== targetUser.email || image !== targetUser.image || username !== (targetUser.username ?? "") || active !== (targetUser.state === "active")));
   beforeNavigate((navigation) => {
-    if (dirty && !savePending && !window.confirm("Leave without saving this user's profile changes?")) navigation.cancel();
+    if (
+      dirty &&
+      !saving &&
+      !window.confirm("Leave without saving this user's profile changes?")
+    )
+      navigation.cancel();
   });
 
-  function failureFrom(cause: unknown): { message: string; code?: string; id?: string } {
-    const projected = projectConsoleError(cause);
-    return {
-      message: projected.message,
-      ...(projected.code === undefined ? {} : { code: projected.code }),
-      ...(projected.id === undefined ? {} : { id: projected.id }),
-    };
-  }
-
-  function applyUser(user: UserView): void {
-    targetUser = user;
-    name = user.name;
-    email = user.email;
-    image = user.image;
-    username = user.username ?? "";
-    active = user.state === "active";
-    revoked = user.state === "revoked";
-  }
-
-  async function load(userId: string, preserveDraft = false): Promise<void> {
+  async function load(userId: string): Promise<void> {
     const token = scope.begin();
-    const keepDraft = preserveDraft && targetUser?.userId === userId;
     loading = true;
     error = null;
-    notFound = false;
-    if (!keepDraft) targetUser = null;
+    user = null;
     try {
-      if (userId === "") return;
-      // Exact target through Users.Get, never a first-page list scan.
-      const response = await trellis.usersGet({ userId }).take();
+      if (!userId) return;
+      const input = apis.auth.API.actions["rpc:Users.Get"].input.decode({
+        userId,
+      });
+      const response = await trellis.usersGet(input).orThrow();
       if (!scope.isCurrent(token)) return;
-      if (isErr(response)) {
-        error = failureFrom(response);
-        notFound = error.code === "not_found";
-        targetUser = null;
-        return;
-      }
-      if (response.user.userId !== userId) {
-        error = { message: "User lookup returned a different identity." };
-        return;
-      }
-      if (keepDraft) {
-        targetUser = response.user;
-        revoked = response.user.state === "revoked";
-      } else {
-        applyUser(response.user);
-      }
+      if (response.user.principal.principalId !== userId)
+        throw new Error("User lookup returned a different identity.");
+      user = response.user;
+      displayName = user.displayName;
+      enabled = user.principal.enabled;
     } catch (cause) {
-      if (!scope.isCurrent(token)) return;
-      error = failureFrom(cause);
+      if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
     } finally {
       if (scope.settle(token)) loading = false;
     }
   }
 
-  async function saveUser(): Promise<void> {
-    if (targetUser === null || readOnly || loading || savePending || error) return;
-    if (targetUser.userId !== requestedUserId) return;
+  async function save(): Promise<void> {
+    if (
+      !user ||
+      loading ||
+      saving ||
+      error ||
+      !canPerform(authority.authority, "usersUpdate")
+    )
+      return;
     const key = ulid();
-    const intent = captureIntent<UpdateInput>({
-      operation: "usersUpdate", targetId: targetUser.userId, label: targetUser.username ?? targetUser.name ?? targetUser.email ?? targetUser.userId,
+    const input: apis.auth.UsersUpdateInput = {
+      userId: user.principal.principalId,
+      displayName: displayName.trim(),
+      enabled,
+      expectedRevision: user.principal.revision,
       idempotencyKey: key,
-      input: {
-        userId: targetUser.userId,
-        ...(targetUser.username === null ? {} : { username: username.trim() }),
-        email: email?.trim() ? email.trim() : null,
-        expectedVersion: targetUser.version,
-        idempotencyKey: key,
-        image: image?.trim() ? image.trim() : null,
-        name: name?.trim() ? name.trim() : null,
-        state: active ? "active" : "disabled",
-      },
+    };
+    const intent = captureIntent({
+      operation: "usersUpdate",
+      targetId: input.userId,
+      label: user.username,
+      idempotencyKey: key,
+      input,
       scope: { routeKey: scope.key },
     });
     if (!mutation.begin(intent)) return;
-    error = null;
+    saving = true;
+    saved = false;
     const outcome = await mutation.send({
-      isStillValid: () => scope.key === intent.scope.routeKey && !loading && !readOnly &&
-
-        targetUser?.userId === intent.targetId && targetUser.version === intent.input.expectedVersion && requestedUserId === intent.targetId,
-
+      isStillValid: () =>
+        scope.key === intent.scope.routeKey &&
+        user?.principal.principalId === input.userId &&
+        user.principal.revision === input.expectedRevision,
       dispatch: async ({ input }) => await trellis.usersUpdate(input).orThrow(),
     });
+    saving = false;
     if (!outcome || scope.key !== intent.scope.routeKey) return;
     if (outcome.kind === "succeeded") {
-      // Apply the returned record/version so a second save uses it.
-      applyUser(outcome.value.user);
-      notifications.success(`Updated ${outcome.value.user.username ?? outcome.value.user.name ?? outcome.value.user.userId}.`, "Updated");
-    } else if (outcome.kind === "unknown") {
-      error = { message: "Outcome unknown; the update may have completed. Reload this user before submitting another change." };
-    } else {
-      error = failureFrom(outcome.error);
-    }
+      user = outcome.value.user;
+      displayName = user.displayName;
+      enabled = user.principal.enabled;
+      saved = true;
+    } else
+      error =
+        outcome.kind === "unknown"
+          ? "Outcome unknown; reload this user before submitting another change."
+          : projectConsoleError(outcome.error).message;
   }
 
   $effect(() => {
-    const userId = requestedUserId;
-    scope.setKey(JSON.stringify([userId]));
+    const id = requestedUserId;
+    scope.setKey(id);
     mutation.cancel();
-    untrack(() => void load(userId));
+    untrack(() => void load(id));
     return () => scope.invalidate();
   });
   onDestroy(() => scope.dispose());
 </script>
 
 <section class="space-y-4">
-  <PageToolbar title={targetUser?.username ?? targetUser?.name ?? "Edit user"} description="Manage profile, application access, sign-in methods, and active sessions.">
-    {#snippet actions()}
-      <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Back to users</a>
-    {/snippet}
+  <PageToolbar
+    title={user?.username ?? "Edit user"}
+    description="Manage the user's display name, sign-in availability, and authorization sessions."
+  >
+    {#snippet actions()}<a
+        class="btn btn-ghost btn-sm"
+        href={resolve("/admin/users")}>Back to users</a
+      >{/snippet}
   </PageToolbar>
-
-  {#if error}
-    <Notice variant="error">
-      {error.message}
-      {#if error.id}<span class="ml-1 text-xs opacity-70">Reference: {error.id}</span>{/if}
-      {#if !notFound}
-        <button class="btn btn-ghost btn-xs ml-2" type="button" onclick={() => void load(requestedUserId, targetUser !== null)}>{targetUser ? "Refresh version (keep draft)" : "Retry"}</button>
-      {/if}
-    </Notice>
-  {/if}
-
-  {#if loading && targetUser === null}
-    <div class="border-y border-base-300 bg-base-100 px-4 py-5">
-      <LoadingState label="Loading user" />
-    </div>
-  {:else if error && targetUser === null && !notFound}
-    <div class="border-y border-base-300 bg-base-100 px-4 py-5">User lookup did not complete. Retry before editing.</div>
-  {:else if requestedUserId === ""}
-    <EmptyState title="Choose a user" description="Open the Users table and choose Edit from the user's row actions.">
-      {#snippet actions()}
-        <a class="btn btn-outline btn-sm" href={resolve("/admin/users")}>Back to users</a>
-      {/snippet}
-    </EmptyState>
-  {:else if targetUser === null}
-    <EmptyState
+  {#if error}<Notice variant="error"
+      >{error}<button
+        class="btn btn-ghost btn-xs ml-2"
+        onclick={() => void load(requestedUserId)}>Reload user</button
+      ></Notice
+    >{/if}
+  {#if saved}<Notice variant="success">Profile updated.</Notice>{/if}
+  {#if loading}<LoadingState label="Loading user" />
+  {:else if !user}<EmptyState
       title="User unavailable"
-      description={`No user matches '${requestedUserId}'. It may have been removed, access may be denied, or the link may be stale.`}
-    >
-      {#snippet actions()}
-        <a class="btn btn-outline btn-sm" href={resolve("/admin/users")}>Back to users</a>
-        <button class="btn btn-ghost btn-sm" type="button" onclick={() => void load(requestedUserId)}>Retry</button>
-      {/snippet}
-    </EmptyState>
+      description="Choose an existing user from the Users table. A failed lookup cannot be edited."
+    />
   {:else}
-    <form class="divide-y divide-base-300 border-y border-base-300 bg-base-100" onsubmit={(event) => { event.preventDefault(); void saveUser(); }}>
+    <form
+      class="divide-y divide-base-300 border-y border-base-300 bg-base-100"
+      onsubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
       <section class="px-5 py-3">
-        <p class="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-base-content/45">User</p>
-        <div class="mt-1 flex min-w-0 flex-wrap items-end justify-between gap-3">
-          <div class="min-w-0">
-            <h2 class="truncate text-base font-bold leading-tight">{targetUser.username ?? targetUser.name ?? targetUser.userId}</h2>
-            <p class="trellis-metadata mt-1">{targetUser.email ?? "No email"}</p>
-            <p class="trellis-identifier mt-1 break-all text-base-content/60">{targetUser.userId}<CopyButton value={targetUser.userId} label="Copy user ID" /></p>
-            {#if targetUser.bootstrapAdministrator}<p class="trellis-metadata mt-1">Protected bootstrap administrator</p>{/if}
-          </div>
-          <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Cancel</a>
-        </div>
+        <h2 class="text-base font-bold">{user.username}</h2>
+        <p class="trellis-identifier mt-1">
+          {user.principal.principalId}<CopyButton
+            value={user.principal.principalId}
+            label="Copy user ID"
+          />
+        </p>
+        <p class="trellis-metadata mt-1">Revision {user.principal.revision}</p>
       </section>
-
-      {#if revoked}
-        <section class="px-5 py-3">
-          <Notice variant="warning">
-            This account is revoked. Its profile is retained read-only; a revoked account
-            cannot be made active again from this form.
-          </Notice>
-        </section>
-      {/if}
-
       <label class="flex items-center justify-between gap-4 px-5 py-3">
-        <span class="min-w-0">
-          <span class="block text-sm font-medium">Active</span>
-          <span class="trellis-field-help block">Controls whether this user can authenticate.</span>
-        </span>
-        <input class="toggle toggle-sm" type="checkbox" bind:checked={active} disabled={savePending || readOnly || targetUser.bootstrapAdministrator} />
+        <span
+          ><span class="block text-sm font-medium">Enabled</span><span
+            class="trellis-field-help block"
+            >Controls whether this user can authenticate.</span
+          ></span
+        >
+        <input
+          class="toggle toggle-sm"
+          type="checkbox"
+          bind:checked={enabled}
+          disabled={saving}
+        />
       </label>
-
-      <section class="px-5 py-3">
-        <div class="grid gap-3 md:grid-cols-2">
-          <label class="form-control">
-            <span class="trellis-field-label">Username</span>
-            <input class="input input-bordered input-sm mt-1" autocomplete="off" bind:value={username} required={targetUser.username !== null} disabled={savePending || readOnly || targetUser.username === null} />
-            <span class="trellis-field-help">{targetUser.username === null ? "No local password login. Generate a password-reset link below to establish one." : "Used for password sign-in. Changing it preserves the user's password and ID."}</span>
-          </label>
-          <label class="form-control">
-            <span class="trellis-field-label">Name</span>
-            <input class="input input-bordered input-sm mt-1" bind:value={name} disabled={savePending || readOnly} />
-          </label>
-          <label class="form-control">
-            <span class="trellis-field-label">Email</span>
-            <input class="input input-bordered input-sm mt-1" type="email" bind:value={email} disabled={savePending || readOnly} />
-          </label>
-          <label class="form-control">
-            <span class="trellis-field-label">Image URL</span>
-            <input class="input input-bordered input-sm mt-1 font-mono" bind:value={image} disabled={savePending || readOnly} />
-          </label>
-        </div>
-        <dl class="mt-3 grid grid-cols-2 gap-3 text-xs text-base-content/60">
-          <div>
-            <dt class="uppercase tracking-wide">State</dt>
-            <dd>
-              <span class="badge badge-sm {targetUser.state === "active" ? "badge-success" : "badge-neutral"}">
-                {targetUser.state}
-              </span>
-            </dd>
-          </div>
-          <div>
-            <dt class="uppercase tracking-wide">Version</dt>
-            <dd class="trellis-identifier">{targetUser.version}</dd>
-          </div>
-        </dl>
+      <section class="grid gap-3 px-5 py-3 md:grid-cols-2">
+        <label class="form-control"
+          ><span class="trellis-field-label">Username</span><input
+            class="input input-bordered input-sm mt-1"
+            value={user.username}
+            readonly
+          /></label
+        >
+        <label class="form-control"
+          ><span class="trellis-field-label">Display name</span><input
+            class="input input-bordered input-sm mt-1"
+            bind:value={displayName}
+            required
+            disabled={saving}
+          /></label
+        >
       </section>
-
       <div class="flex justify-end gap-2 px-5 py-3">
-        <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Cancel</a>
-        <button class="btn btn-outline btn-sm" type="submit" disabled={savePending || readOnly || !!error || !canPerform(authority.authority, "usersUpdate")}>
-          {savePending ? "Saving…" : "Save profile"}
-        </button>
+        <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Cancel</a
+        ><button
+          class="btn btn-outline btn-sm"
+          type="submit"
+          disabled={saving ||
+            !!error ||
+            !dirty ||
+            !canPerform(authority.authority, "usersUpdate")}
+          >{saving ? "Saving…" : "Save profile"}</button
+        >
       </div>
     </form>
-    {#if dirty}<p class="trellis-field-help">Unsaved profile changes. Access and security actions save independently.</p>{/if}
-    <AccessGrants ownerId={targetUser.userId} ownerLabel={targetUser.username ?? targetUser.name ?? targetUser.userId} disabled={readOnly || savePending || loading} bootstrapAdministrator={targetUser.bootstrapAdministrator} />
-    <UserSecurity userId={targetUser.userId} userLabel={targetUser.username ?? targetUser.name ?? targetUser.userId} disabled={readOnly || savePending || loading} version={targetUser.version} />
+    <UserAccess principalId={user.principal.principalId} />
+    <UserSecurity
+      userId={user.principal.principalId}
+      userLabel={user.username}
+      disabled={saving || loading}
+    />
   {/if}
 </section>

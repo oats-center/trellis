@@ -162,7 +162,7 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
     let mut options = trellis_options(temp.path());
     options.runtime.name = "Acme Trellis".to_string();
     options.runtime.trellis_port = 4242;
-    options.runtime.nats_server_url = "nats://nats.example.test:4222".to_string();
+    options.runtime.nats_server_url = "tls://nats.example.test:4222".to_string();
     options.runtime.nats_websocket_url = "wss://nats.example.test/ws".to_string();
     options.runtime.public_origin = "https://trellis.example.test/".to_string();
     options.runtime.extra_origins = vec!["http://localhost:5174".to_string()];

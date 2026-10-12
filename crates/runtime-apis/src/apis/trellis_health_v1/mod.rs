@@ -1,6 +1,6 @@
 //! Generated API `trellis.health@v1`.
 pub const API_ID: &str = "trellis.health@v1";
-pub const API_DIGEST: &str = "37s4Q1UVkqnYoqozMvVqBI8vSLaGuYo53ATVlKLO4eE";
+pub const API_DIGEST: &str = "I_VJVrR7wYFWYfuz9hjvlwJLLQ860Zi-LXLOrasI22M";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -319,6 +319,30 @@ pub mod rpc {
 }
 pub mod operations {}
 pub mod events {
+    pub type HeartbeatEvent = crate::__types::trellis::HealthHeartbeatSample;
+    pub struct Heartbeat;
+    impl Heartbeat {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "event.Heartbeat";
+        pub const KEY: &'static str = "health.Heartbeat";
+        pub const SUBJECT: &'static str = "events.v1.dHJlbGxpcy5oZWFsdGhAdjE.Heartbeat";
+        pub const SUBSCRIBE_SUBJECT: &'static str = "events.v1.dHJlbGxpcy5oZWFsdGhAdjE.Heartbeat";
+        pub const PUBLISH_CAPABILITIES: &'static [&'static str] =
+            &["trellis.health@v1::selfReport"];
+        pub const DELEGATED_PUBLISH: bool = true;
+        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[];
+    }
+    impl trellis_rs::generated::EventDescriptor for Heartbeat {
+        type Event = HeartbeatEvent;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const SUBSCRIBE_SUBJECT: &'static str = Self::SUBSCRIBE_SUBJECT;
+        const PUBLISH_CAPABILITIES: &'static [&'static str] = Self::PUBLISH_CAPABILITIES;
+        const DELEGATED_PUBLISH: bool = Self::DELEGATED_PUBLISH;
+        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
+    }
     pub type StatusChangedEvent = crate::__types::trellis::HealthStatusChangedEvent;
     pub struct StatusChanged;
     impl StatusChanged {
@@ -353,7 +377,7 @@ pub mod lives {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "live.Watch";
         pub const KEY: &'static str = "health.Watch";
-        pub const SUBJECT: &'static str = "live.v1.health.Watch";
+        pub const SUBJECT: &'static str = "live.v1.route.health.Watch";
         pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &["trellis.health@v1::observe"];
     }
     impl trellis_rs::generated::LiveDescriptor for Watch {
@@ -495,6 +519,24 @@ impl Client {
         input: &rpc::SummaryInput,
     ) -> Result<rpc::SummaryOutput, trellis_rs::client::CallError<rpc::SummaryError>> {
         self.inner.call::<rpc::Summary>(input).await
+    }
+    pub async fn publish_heartbeat(
+        &self,
+        event: &events::HeartbeatEvent,
+    ) -> Result<(), trellis_rs::client::TrellisClientError> {
+        self.inner.publish::<events::Heartbeat>(event).await
+    }
+    pub async fn subscribe_heartbeat(
+        &self,
+        options: trellis_rs::client::EventSubscribeOptions,
+    ) -> Result<
+        futures_util::stream::BoxStream<
+            'static,
+            Result<events::HeartbeatEvent, trellis_rs::client::TrellisClientError>,
+        >,
+        trellis_rs::client::TrellisClientError,
+    > {
+        self.inner.subscribe::<events::Heartbeat>(options).await
     }
     pub async fn publish_status_changed(
         &self,

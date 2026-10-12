@@ -316,8 +316,19 @@ impl BoundStateResourceClient {
         action: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value, super::TrellisClientError> {
-        let subject = self.client.bound_api_subject("rpc", STATE_API_ID, action)?;
-        self.client.request_json_value(&subject, &body).await
+        let subject = trellis_protocol::derive_rpc_subject("v1", &format!("state.{action}"))?;
+        self.client
+            .request_json_value(
+                STATE_API_ID,
+                trellis_protocol::CatalogActionIdentity {
+                    kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                    name: action.to_owned(),
+                    direction: trellis_protocol::PermissionAction::Call,
+                },
+                &subject,
+                &body,
+            )
+            .await
     }
 }
 

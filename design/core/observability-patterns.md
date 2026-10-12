@@ -28,15 +28,17 @@ must document the guarantees callers need to use it safely.
 
 ## Service Observability
 
-The service runtime publishes baseline heartbeat samples through the private
-Trellis health transport. Its logging and telemetry are configurable;
+The service runtime publishes baseline samples through the native Health
+`Heartbeat` event with ordinary SessionEvent signatures. Its logging and telemetry are configurable;
 application logging and tracing outside that runtime remain application-owned. A
 service can declare its own health or statistics RPCs if useful, but those
 domain surfaces are not automatically added to its API or required by Trellis.
 
-Activated devices publish through the same private health transport. Heartbeat
-publishing is a runtime protocol grant, not a contract dependency or event
-surface, so contract authors do not declare it.
+Provisioned devices use the same event. Auth assigns the runtime-owned
+`trellis.health@v1::selfReport` capability through ordinary instance provisioning
+and requires it during native credential selection. Contract authors need not
+declare this internal runtime dependency. Users and application OAuth grants
+cannot select this publishing right, even through administrative assignment.
 
 Example payload for an application-declared health RPC:
 
@@ -69,8 +71,8 @@ Heartbeat behavior:
 - `service.health.setInfo(...)` and `service.health.add(...)` extend service
   heartbeat payloads at publish time using callback-based state snapshots; the
   same helper surface is also available on device connections
-- heartbeat samples are not Trellis events and are not exposed as a public live
-  live; Console reads the Rust-owned health projection through `Health.Query`,
+- heartbeat samples are signed native events, not a raw monitoring channel;
+  Console reads the Rust-owned health projection through `Health.Query`,
   `Health.Inspect`, and `Health.Metrics`, then uses `Health.Watch` as a
   post-commit invalidation live
 
@@ -110,16 +112,23 @@ run `trellis-server health` for health projection and may omit
 
 Health subsystem rules:
 
-- publishers send samples to
-  `health.v1.heartbeat.<kind>.<contract>.<digest>.<deployment>.<instance>.<session>`;
-  identity components other than kind and session are unpadded base64url UTF-8
-  tokens
-- Auth grants each authenticated service or device exactly one matching publish
-  subject. The projector treats this subject identity as authoritative and
-  rejects payload identity mismatches.
-- `TRELLIS_HEALTH` captures `health.v1.heartbeat.>` with file storage, limits
+- publishers use the generated native Health `Heartbeat` descriptor and ordinary
+  signed-event publication. The complete payload is integrity-bound.
+- Auth grants only the exact Heartbeat publish action automatically, never
+  arbitrary Health or domain actions. Catalog remapping of the automatic
+  capability fails closed.
+- the collector verifies whole-capability/catalog evidence, publisher signature,
+  original broker chronology and signed retirement cutoff through the shared
+  authorization owner. It accepts only provisioned service/device bindings and
+  matches payload identity against authenticated deployment/instance identity.
+  `trellis.nativeParticipant.v1` in the signed authority extensions retains the
+  authoritative participant ID, installed revision and digest; payload claims
+  do not establish contract identity.
+- `TRELLIS_HEALTH` sources only the generated Heartbeat subject from the ordinary
+  raw event stream, avoiding overlapping NATS subject capture. It uses file storage, limits
   retention, a default 24-hour maximum age, a default 1 GiB maximum size, and no
-  inactive threshold on projector durables
+  inactive threshold on projector durables. Health-only mode owns the raw stream
+  but does not require an Events SQL store or Events projector.
 - JetStream ingress time is canonical for freshness. Publisher sample time is
   retained only as diagnostic data. A participant becomes offline at
   `observedAt + 2 * publishIntervalMs`.

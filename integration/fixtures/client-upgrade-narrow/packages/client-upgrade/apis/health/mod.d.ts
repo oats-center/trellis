@@ -44,6 +44,7 @@ export type QueryInput = Types1.HealthQueryRequest;
 export type QueryOutput = Types1.HealthQueryResponse;
 export type SummaryInput = Types1.HealthSummaryRequest;
 export type SummaryOutput = Types1.HealthSummaryResponse;
+export type HeartbeatEvent = Types1.HealthHeartbeatSample;
 export type StatusChangedEvent = Types1.HealthStatusChangedEvent;
 export type WatchInput = Types1.HealthWatchRequest;
 export type WatchEvent = Types1.HealthWatchFrame;
@@ -53,6 +54,7 @@ declare const __api: {
 		readonly "rpc:Inspect": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Inspect";
+			readonly subject: "rpc.v1.health.Inspect";
 			readonly input: typeof Types1.HealthInspectRequestCodec;
 			readonly output: typeof Types1.HealthInspectResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -62,6 +64,7 @@ declare const __api: {
 		readonly "rpc:Metrics": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Metrics";
+			readonly subject: "rpc.v1.health.Metrics";
 			readonly input: typeof Types1.HealthMetricsRequestCodec;
 			readonly output: typeof Types1.HealthMetricsResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -71,6 +74,7 @@ declare const __api: {
 		readonly "rpc:Query": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Query";
+			readonly subject: "rpc.v1.health.Query";
 			readonly input: typeof Types1.HealthQueryRequestCodec;
 			readonly output: typeof Types1.HealthQueryResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -80,21 +84,31 @@ declare const __api: {
 		readonly "rpc:Summary": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Summary";
+			readonly subject: "rpc.v1.health.Summary";
 			readonly input: typeof Types1.HealthSummaryRequestCodec;
 			readonly output: typeof Types1.HealthSummaryResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
+		readonly "event:Heartbeat": {
+			readonly kind: "event";
+			readonly descriptorName: "event:Heartbeat";
+			readonly subject: "events.v1.dHJlbGxpcy5oZWFsdGhAdjE.Heartbeat";
+			readonly payload: typeof Types1.HealthHeartbeatSampleCodec;
+			readonly parameters: readonly [];
+		};
 		readonly "event:StatusChanged": {
 			readonly kind: "event";
 			readonly descriptorName: "event:StatusChanged";
+			readonly subject: "events.v1.dHJlbGxpcy5oZWFsdGhAdjE.StatusChanged";
 			readonly payload: typeof Types1.HealthStatusChangedEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "live:Watch": {
 			readonly kind: "live";
 			readonly descriptorName: "live:Watch";
+			readonly subject: "live.v1.route.health.Watch";
 			readonly input: typeof Types1.HealthWatchRequestCodec;
 			readonly event: typeof Types1.HealthWatchFrameCodec;
 		};
@@ -102,5 +116,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "37s4Q1UVkqnYoqozMvVqBI8vSLaGuYo53ATVlKLO4eE";
+export declare const API_DIGEST: "I_VJVrR7wYFWYfuz9hjvlwJLLQ860Zi-LXLOrasI22M";
 export {};

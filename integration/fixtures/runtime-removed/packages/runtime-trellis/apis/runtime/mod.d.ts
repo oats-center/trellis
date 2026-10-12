@@ -15,6 +15,7 @@ declare const __api: {
 		readonly "rpc:Echo": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Echo";
+			readonly subject: "rpc.v1.runtime.Echo";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly errors: readonly [];
@@ -24,6 +25,7 @@ declare const __api: {
 		readonly "operation:Upload": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:Upload";
+			readonly subject: "operations.v1.runtime.Upload";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly progress: undefined;
@@ -35,6 +37,7 @@ declare const __api: {
 		readonly "operation:Work": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:Work";
+			readonly subject: "operations.v1.runtime.Work";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly progress: undefined;
@@ -46,12 +49,14 @@ declare const __api: {
 		readonly "event:Changed": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Changed";
+			readonly subject: "events.v1.cnVudGltZS10cmVsbGlzLnJ1bnRpbWVAdjE.Changed";
 			readonly payload: typeof Types0.ValueCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "live:Watch": {
 			readonly kind: "live";
 			readonly descriptorName: "live:Watch";
+			readonly subject: "live.v1.route.runtime.Watch";
 			readonly input: typeof Types0.EmptyCodec;
 			readonly event: typeof Types0.ValueCodec;
 		};

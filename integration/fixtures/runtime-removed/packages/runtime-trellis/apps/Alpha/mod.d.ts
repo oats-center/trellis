@@ -24,6 +24,11 @@ export declare const request: AppRequestDescriptor & {
 		}];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly actionNames: {
+		readonly ["runtime-trellis.events@v1:rpc:DropAlpha"]: "DropAlpha";
+		readonly ["runtime-trellis.events@v1:rpc:Observed"]: "Observed";
+		readonly ["runtime-trellis.events@v1:event:Alpha"]: "Alpha";
+	};
 	readonly states: {};
 };
 export type Request = typeof request;

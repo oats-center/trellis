@@ -6,7 +6,10 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { ulid } from "ulid";
 
-import { deriveDeviceConfirmationCode, deriveDeviceIdentity } from "../auth.ts";
+import {
+  deriveDeviceConfirmationCode,
+  deriveDeviceIdentity,
+} from "../auth/device_activation.ts";
 import type {
   TrellisDeviceActivatedActivationState,
   TrellisDeviceActivationArgs,
@@ -105,9 +108,9 @@ export type TrellisDeviceActivationRequiredStatus = {
   activationUrl: string;
   /** Device-local code the activating user must confirm in the portal. */
   confirmationCode: string;
-  waitForOnlineApproval(
-    opts?: { signal?: AbortSignal },
-  ): Promise<TrellisDeviceActivatedStatus>;
+  waitForOnlineApproval(opts?: {
+    signal?: AbortSignal;
+  }): Promise<TrellisDeviceActivatedStatus>;
   acceptConfirmationCode(code: string): Promise<TrellisDeviceActivatedStatus>;
 };
 
@@ -261,9 +264,9 @@ async function resolveDeviceActivationStatePath(
   const { publicIdentityKey } = await deriveStoreIdentity(args);
   const origin = new URL(args.trellisUrl).origin;
   const originHash = await hashOrigin(origin);
-  const fileName = `activation-state-v1-${originHash}-${
-    encodeURIComponent(args.participantId)
-  }-${publicIdentityKey}.json`;
+  const fileName = `activation-state-v1-${originHash}-${encodeURIComponent(
+    args.participantId,
+  )}-${publicIdentityKey}.json`;
 
   return join(args.stateDir ?? defaultActivationStateDir(), fileName);
 }
@@ -311,8 +314,7 @@ async function openDeviceActivationStateStore(
       });
       await mkdir(dirname(statePath), { recursive: true });
       const nextText =
-        JSON.stringify({ version: 1, localState: state }, null, 2) +
-        "\n";
+        JSON.stringify({ version: 1, localState: state }, null, 2) + "\n";
       const nextPath = tempStatePath(statePath);
       try {
         await writeFile(nextPath, nextText, "utf8");
@@ -364,8 +366,7 @@ function activatedStatus(): TrellisDeviceActivatedStatus {
 
 function createActivatedLocalState(
   localState:
-    | TrellisDevicePendingActivationState
-    | TrellisDeviceActivatedActivationState,
+    TrellisDevicePendingActivationState | TrellisDeviceActivatedActivationState,
 ): TrellisDeviceActivatedActivationState {
   return {
     ...localState,
@@ -380,20 +381,27 @@ async function createActivationRequiredStatus<
   store: DeviceActivationStateStore;
   localState: TrellisDeviceLocalActivationState | null;
 }): Promise<TrellisDeviceActivationRequiredStatus> {
-  const session = args.localState?.status === "pending"
-    ? await resumeDeviceActivationWithDeps({
-      trellisUrl: args.checkArgs.trellisUrl,
-      participant: args.checkArgs.participant,
-      provisioningSecret: args.checkArgs.provisioningSecret,
-      rootSecret: args.checkArgs.rootSecret,
-      localState: args.localState,
-    }, { now: () => Date.now() })
-    : await startDeviceActivationWithDeps({
-      trellisUrl: args.checkArgs.trellisUrl,
-      participant: args.checkArgs.participant,
-      provisioningSecret: args.checkArgs.provisioningSecret,
-      rootSecret: args.checkArgs.rootSecret,
-    }, { now: () => Date.now() });
+  const session =
+    args.localState?.status === "pending"
+      ? await resumeDeviceActivationWithDeps(
+          {
+            trellisUrl: args.checkArgs.trellisUrl,
+            participant: args.checkArgs.participant,
+            provisioningSecret: args.checkArgs.provisioningSecret,
+            rootSecret: args.checkArgs.rootSecret,
+            localState: args.localState,
+          },
+          { now: () => Date.now() },
+        )
+      : await startDeviceActivationWithDeps(
+          {
+            trellisUrl: args.checkArgs.trellisUrl,
+            participant: args.checkArgs.participant,
+            provisioningSecret: args.checkArgs.provisioningSecret,
+            rootSecret: args.checkArgs.rootSecret,
+          },
+          { now: () => Date.now() },
+        );
 
   if (args.localState?.status !== "pending") {
     await args.store.save(session.localState);

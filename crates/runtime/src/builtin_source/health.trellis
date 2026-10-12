@@ -434,6 +434,9 @@ api health@v1 {
     output HealthSummaryResponse;
     errors [UnexpectedError, ValidationError];
   }
+  event Heartbeat {
+    payload HealthHeartbeatSample;
+  }
   event StatusChanged {
     payload HealthStatusChangedEvent;
   }
@@ -442,6 +445,13 @@ api health@v1 {
     event HealthWatchFrame;
   }
   capabilities {
+    capability selfReport {
+      title "Report own native participant health";
+      description "Publish health samples for the authenticated provisioned service or device instance.";
+      consequence "The runtime records operational health for the publisher's signed native identity only.";
+      consent_revision 1;
+      allows { publish event Heartbeat; }
+    }
     capability query {
       title "Query health";
       description "Find participants matching health filters.";

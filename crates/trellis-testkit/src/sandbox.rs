@@ -43,11 +43,13 @@ pub(crate) fn ensure_supported_platform() -> Result<(), TrellisTestError> {
     }
 }
 
-/// The four loopback ports reserved for one startup attempt.
+/// The five loopback ports reserved for one startup attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PortSet {
     /// Trellis HTTP listener.
     pub http: u16,
+    /// Isolated OAuth listener.
+    pub oauth: u16,
     /// Managed NATS native listener.
     pub nats: u16,
     /// Managed NATS monitoring listener.
@@ -56,16 +58,17 @@ pub(crate) struct PortSet {
     pub websocket: u16,
 }
 
-/// Four live kernel-assigned loopback reservations.
+/// Five live kernel-assigned loopback reservations.
 pub(crate) struct PortLease {
     http: TcpListener,
+    oauth: TcpListener,
     nats: TcpListener,
     monitor: TcpListener,
     websocket: TcpListener,
 }
 
 impl PortLease {
-    /// Reserves four distinct loopback ports, holding every listener open.
+    /// Reserves distinct loopback ports, holding every listener open.
     pub(crate) fn reserve() -> Result<Self, TrellisTestError> {
         let bind = |role: &str| -> Result<TcpListener, TrellisTestError> {
             TcpListener::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).map_err(|error| {
@@ -78,6 +81,7 @@ impl PortLease {
         };
         Ok(Self {
             http: bind("HTTP")?,
+            oauth: bind("OAuth")?,
             nats: bind("NATS")?,
             monitor: bind("monitor")?,
             websocket: bind("WebSocket")?,
@@ -100,6 +104,7 @@ impl PortLease {
         };
         Ok(PortSet {
             http: port_of(&self.http, "HTTP")?,
+            oauth: port_of(&self.oauth, "OAuth")?,
             nats: port_of(&self.nats, "NATS")?,
             monitor: port_of(&self.monitor, "monitor")?,
             websocket: port_of(&self.websocket, "WebSocket")?,
@@ -109,6 +114,7 @@ impl PortLease {
     /// Closes every reservation in one narrow step just before broker startup.
     pub(crate) fn release_for_spawn(self) {
         drop(self.http);
+        drop(self.oauth);
         drop(self.nats);
         drop(self.monitor);
         drop(self.websocket);
@@ -360,7 +366,7 @@ mod tests {
     fn port_lease_holds_and_releases_its_loopback_listeners() {
         let lease = PortLease::reserve().expect("reserve loopback ports");
         let set = lease.ports().expect("read reserved ports");
-        let ports = [set.http, set.nats, set.monitor, set.websocket];
+        let ports = [set.http, set.oauth, set.nats, set.monitor, set.websocket];
         for port in ports {
             assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
         }

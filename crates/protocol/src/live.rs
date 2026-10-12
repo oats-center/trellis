@@ -1514,14 +1514,13 @@ pub fn derive_live_observe_wildcard_subject(
     Ok(format!("{base_subject}.observe.{provider}.*"))
 }
 
-/// Validate that one base subject is a deployment-bound standalone live or
-/// Operation route.
+/// Validate a canonical Live opening or an owner-directed Operation observation.
 ///
 /// # Errors
 ///
 /// Returns [`ProtocolError::Live`] unless the subject is exactly
-/// `live.v1.route.<token>.<token>.<action>` or
-/// `operation.v1.<token>.<token>.<action>` with a valid logical action.
+/// `live.v1.route.<logical-name>`, `operations.v1.<logical-name>`, or
+/// `operation.v1.<api-token>.<deployment-token>.<action>`.
 pub fn validate_base_subject(
     base_subject: &str,
     tokens: impl IntoIterator<Item = &'static str> + Clone,
@@ -1530,12 +1529,18 @@ pub fn validate_base_subject(
         live_error(
             LiveProtocolErrorCode::InvalidSubjectToken,
             tokens.clone(),
-            "base subject must be a canonical deployment-bound live or Operation route",
+            "base subject must be a canonical Live or Operation route",
         )
     };
+    if let Some(action) = base_subject
+        .strip_prefix("live.v1.route.")
+        .or_else(|| base_subject.strip_prefix("operations.v1."))
+    {
+        validate_logical_name(action).map_err(|_| invalid())?;
+        return Ok(base_subject);
+    }
     let parts = base_subject.split('.').collect::<Vec<_>>();
     let prefix_len = match parts.first() {
-        Some(&"live") if parts.get(1) == Some(&"v1") && parts.get(2) == Some(&"route") => 3,
         Some(&"operation") if parts.get(1) == Some(&"v1") => 2,
         _ => return Err(invalid()),
     };
@@ -1795,8 +1800,8 @@ pub struct LogicalOpenIdentity {
     pub consumer_session_key: String,
     /// Consumer principal id.
     pub consumer_principal_id: String,
-    /// Consumer participant id.
-    pub consumer_participant_id: String,
+    /// Authenticated browser, native, service or device binding.
+    pub consumer_binding: crate::SessionBinding,
     /// Consumer's advertised NATS payload limit.
     pub receive_max_payload_bytes: u64,
     /// Native Live input, when this is a Live open.
@@ -1820,7 +1825,6 @@ pub fn logical_open_hash(identity: &LogicalOpenIdentity) -> Result<String, Proto
     validate_logical_identity(&identity.consumer_connection_id, "consumerConnectionId")?;
     validate_subject_token(&identity.consumer_session_key, ["consumerSessionKey"])?;
     validate_logical_identity(&identity.consumer_principal_id, "consumerPrincipalId")?;
-    validate_logical_identity(&identity.consumer_participant_id, "consumerParticipantId")?;
     if identity.kind == LiveSessionKind::Standalone && identity.live_input.is_none() {
         return Err(live_error(
             LiveProtocolErrorCode::InvalidFormat,
@@ -1847,7 +1851,7 @@ pub fn logical_open_hash(identity: &LogicalOpenIdentity) -> Result<String, Proto
             "connectionId": identity.consumer_connection_id,
             "sessionKey": identity.consumer_session_key,
             "principalId": identity.consumer_principal_id,
-            "participantId": identity.consumer_participant_id,
+            "binding": identity.consumer_binding,
         },
         "input": identity.live_input,
         "operationId": identity.operation_id,
@@ -1931,16 +1935,18 @@ mod tests {
             derive_live_data_subject(provider, consumer, &session).unwrap(),
             format!("live.v1.data.{provider_token}.{consumer_token}.{session}")
         );
-        let base = "live.v1.route.YWNtZS5oZWFsdGhAdjE.ZGVwLTAx.Watch";
+        let base = crate::derive_live_subject("v1", "Health.Watch").unwrap();
         assert_eq!(
-            derive_live_observe_subject(base, provider, &session).unwrap(),
+            derive_live_observe_subject(&base, provider, &session).unwrap(),
             format!("{base}.observe.{provider_token}.{session}")
         );
         assert_eq!(
-            derive_live_observe_wildcard_subject(base, provider).unwrap(),
+            derive_live_observe_wildcard_subject(&base, provider).unwrap(),
             format!("{base}.observe.{provider_token}.*")
         );
         assert!(derive_live_data_subject("", consumer, &session).is_err());
+        validate_live_subject(&derive_live_observe_subject(&base, provider, &session).unwrap())
+            .unwrap();
         assert!(derive_live_observe_subject("events.v1.X.Watch", provider, &session).is_err());
     }
 
@@ -2161,7 +2167,10 @@ mod tests {
             consumer_connection_id: "01JYCONNECTION0000000000".into(),
             consumer_session_key: URL_SAFE_NO_PAD.encode([2u8; 32]),
             consumer_principal_id: "01JYPRINCIPAL00000000000".into(),
-            consumer_participant_id: "app.console@v1".into(),
+            consumer_binding: crate::SessionBinding::Browser {
+                client_id: "trellis.console".into(),
+                origin: "https://console.example.com".into(),
+            },
             receive_max_payload_bytes: 1_048_576,
             live_input: Some(serde_json::json!({ "site": "north" })),
             operation_id: None,
@@ -2177,6 +2186,20 @@ mod tests {
 
         let mut changed = identity.clone();
         changed.consumer_connection_id = "01JYOTHER00000000000000".into();
+        assert_ne!(first, logical_open_hash(&changed).unwrap());
+
+        // Reusing an open nonce from another app binding must not replay the
+        // original app's reservation, including users without participants.
+        let mut changed = identity.clone();
+        changed.consumer_binding = crate::SessionBinding::Browser {
+            client_id: "trellis.console".into(),
+            origin: "https://other.example.com".into(),
+        };
+        assert_ne!(first, logical_open_hash(&changed).unwrap());
+        changed.consumer_binding = crate::SessionBinding::Native {
+            client_id: "trellis.console".into(),
+            durable_dpop_jkt: URL_SAFE_NO_PAD.encode([4u8; 32]),
+        };
         assert_ne!(first, logical_open_hash(&changed).unwrap());
 
         let mut missing_input = identity.clone();

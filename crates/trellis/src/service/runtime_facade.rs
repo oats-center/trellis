@@ -72,7 +72,7 @@ struct SharedDurableEventListener {
 struct EventRegistration {
     event_api_id: String,
     event_name: String,
-    descriptor_identity: String,
+    publish_action: trellis_protocol::CatalogActionIdentity,
     handlers: BTreeMap<u64, SharedEventHandler>,
 }
 
@@ -188,8 +188,10 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 5_000;
 /// High-level options for connecting a generated Rust service runtime.
 #[derive(Clone)]
 pub struct ServiceConnectOptions<'a> {
-    /// Base Trellis runtime URL used for HTTP bootstrap.
-    trellis_url: &'a str,
+    /// Broker endpoints supplied by provisioning.
+    nats_servers: Vec<String>,
+    /// Installation, account, and issuer pin supplied by provisioning.
+    trust: crate::client::RuntimeAuthorizationTrust,
     /// Optional display metadata; never an assignment or authorization identity.
     name: Option<&'a str>,
     /// Base64url-encoded provisioned service identity seed.
@@ -200,9 +202,14 @@ pub struct ServiceConnectOptions<'a> {
 
 impl<'a> ServiceConnectOptions<'a> {
     /// Create service connect options with ergonomic default timeouts.
-    pub fn new(trellis_url: &'a str, provisioned_identity_seed_base64url: &'a str) -> Self {
+    pub fn new(
+        nats_servers: Vec<String>,
+        trust: crate::client::RuntimeAuthorizationTrust,
+        provisioned_identity_seed_base64url: &'a str,
+    ) -> Self {
         Self {
-            trellis_url,
+            nats_servers,
+            trust,
             name: None,
             provisioned_identity_seed_base64url,
             timeout_ms: DEFAULT_TIMEOUT_MS,
@@ -835,7 +842,7 @@ impl ServiceHandlerContext {
             .request
             .caller
             .as_ref()
-            .map(|caller| caller.session_key.as_str())
+            .map(|caller| caller.session_public_key.as_str())
             .ok_or_else(|| ServerError::MissingSessionKey {
                 subject: self.request.subject.clone(),
             })?;
@@ -856,7 +863,7 @@ impl ServiceHandlerContext {
                 .ok_or_else(|| ServerError::MissingSessionKey {
                     subject: self.request.subject.clone(),
                 })?
-                .connection_id,
+                .runtime_id,
             resources: self.handle.resources(),
             store,
             transfer_id,
@@ -925,8 +932,11 @@ impl<C> ConnectedServiceRuntime<C> {
         let (event_failures, event_failure_receiver) = mpsc::unbounded_channel();
         let api_id = api_id.into();
         let auth =
-            LocalAuthVerifier::new(client.authorization_context_cache().ok(), api_id.clone());
+            LocalAuthVerifier::new(client.authorization_owner().clone(), client.nats(), api_id);
         let mut router = Router::new();
+        router.set_live_owner(super::live_router::LiveProviderOwner::new(Arc::clone(
+            &client,
+        )));
         let provider_deployment_id = client
             .own_deployment_id()
             .expect("connected services always have a deployment assignment");
@@ -967,29 +977,6 @@ impl<C> ConnectedServiceRuntime<C> {
     /// Return the internal Trellis client owned by this runtime.
     pub(crate) fn client(&self) -> &Arc<TrellisClient> {
         &self.client
-    }
-
-    fn descriptor_subject(&self, family: &str, api_id: &str, action: &str) -> String {
-        let action = action.split_once('.').map_or(action, |(_, name)| name);
-        let subject = match family {
-            "rpc" => trellis_protocol::derive_bound_rpc_subject(
-                api_id,
-                &self.provider_deployment_id,
-                action,
-            ),
-            "operation" => trellis_protocol::derive_bound_operation_subject(
-                api_id,
-                &self.provider_deployment_id,
-                action,
-            ),
-            "live" => trellis_protocol::derive_bound_live_subject(
-                api_id,
-                &self.provider_deployment_id,
-                action,
-            ),
-            _ => unreachable!("only request route families are deployment-bound"),
-        };
-        subject.expect("generated route metadata must form a valid bound subject")
     }
 
     /// Return the authenticated transport consumed by generated facades.
@@ -1285,8 +1272,7 @@ impl<C> ConnectedServiceRuntime<C> {
             context.download_allowed = D::DOWNLOAD;
             handler(context, input)
         });
-        self.registered_subjects
-            .insert(self.descriptor_subject("rpc", D::API_ID, D::KEY));
+        self.registered_subjects.insert(D::SUBJECT.to_owned());
     }
 
     /// Register one descriptor-backed live Live handler and record its subject.
@@ -1310,18 +1296,13 @@ impl<C> ConnectedServiceRuntime<C> {
                 input,
             )
         });
-        let subject = self.descriptor_subject("live", D::API_ID, D::KEY);
-        self.registered_subjects.insert(subject.clone());
-        self.router
-            .set_live_owner(super::live_router::LiveProviderOwner::new(
-                std::sync::Arc::clone(&self.client),
-            ));
+        let subject = D::SUBJECT.to_owned();
+        self.registered_subjects.insert(subject);
     }
 
     /// Register one operation business handler and record its runtime-owned lifecycle routes.
     ///
-    /// An operation control route is a Live route, so this installs the
-    /// connection's live provider owner exactly as [`Self::register_live`] does.
+    /// Starts use canonical subjects; lifecycle controls retain their deployment owner.
     pub fn register_operation_handler<D, F, Fut>(&mut self, handler: F)
     where
         D: OperationDescriptor + 'static,
@@ -1359,13 +1340,18 @@ impl<C> ConnectedServiceRuntime<C> {
                 Some(Arc::clone(&self.client)),
             ),
         );
-        let subject = self.descriptor_subject("operation", D::API_ID, D::KEY);
-        self.registered_subjects.insert(subject.clone());
-        self.registered_subjects.insert(control_subject(&subject));
-        self.router
-            .set_live_owner(super::live_router::LiveProviderOwner::new(
-                std::sync::Arc::clone(&self.client),
-            ));
+        self.registered_subjects.insert(D::SUBJECT.to_owned());
+        // A start selects an eligible provider; subsequent controls target that
+        // operation's deployment-owned repository rather than another provider.
+        let action = D::KEY.split_once('.').map_or(D::KEY, |(_, name)| name);
+        let owner_subject = trellis_protocol::derive_bound_operation_subject(
+            D::API_ID,
+            &self.provider_deployment_id,
+            action,
+        )
+        .expect("generated operation metadata must form a valid owner subject");
+        self.registered_subjects
+            .insert(control_subject(&owner_subject));
     }
 
     /// Run registered subjects using the default NATS request loop.
@@ -1445,10 +1431,9 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     pub async fn connect(options: ServiceConnectOptions<'_>) -> Result<Self, ServiceRuntimeError> {
         let client =
             TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
-                trellis_url: options.trellis_url,
+                nats_servers: options.nats_servers,
+                trust: options.trust,
                 participant_id: C::ID,
-                participant_path: C::PATH,
-                package_evidence: C::package_evidence(),
                 name: options.name,
                 provisioned_identity_seed_base64url: options.provisioned_identity_seed_base64url,
                 timeout_ms: options.timeout_ms,
@@ -1468,27 +1453,41 @@ impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
             api_id,
         );
         runtime.event_subscribe_needs = C::EVENT_SUBSCRIBE_NEEDS;
-        runtime.operation_repository = Some(runtime.operation_repository().await?);
-        let staging_bucket = format!(
-            "trellis_operation_staging_{}",
-            runtime.provider_deployment_id
-        );
-        // Validate the runtime-provisioned staging bucket on the initial
-        // generation, then acquire a suitable generation per staging call so
-        // staging follows cutover instead of pinning one.
-        async_nats::jetstream::new(runtime.client.nats().clone())
-            .get_object_store(&staging_bucket)
-            .await
-            .map_err(|error| {
-                ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
-            })?;
-        runtime.operation_staging = Some(
-            super::resources::backend::BoundStoreResourceClient::managed_current(
-                runtime.client.transport_generations(),
-                staging_bucket,
-                runtime.client.timeout_ms(),
-            ),
-        );
+        let owner = runtime.client.authorization_owner();
+        let authority = owner.own_authority()?;
+        let mut implements_operations = false;
+        for api_id in C::IMPLEMENTED_API_IDS {
+            let certificate = owner
+                .provider_certificate(&runtime.client.nats(), &authority, api_id)
+                .await?;
+            implements_operations |= certificate
+                .implemented_actions
+                .iter()
+                .any(|action| action.kind == trellis_protocol::ApiSurfaceKind::Operation);
+        }
+        if implements_operations {
+            runtime.operation_repository = Some(runtime.operation_repository().await?);
+            let staging_bucket = format!(
+                "trellis_operation_staging_{}",
+                runtime.provider_deployment_id
+            );
+            // Validate the runtime-provisioned staging bucket on the initial
+            // generation, then acquire a suitable generation per staging call so
+            // staging follows cutover instead of pinning one.
+            async_nats::jetstream::new(runtime.client.nats().clone())
+                .get_object_store(&staging_bucket)
+                .await
+                .map_err(|error| {
+                    ServiceRuntimeError::Server(Box::new(ServerError::Nats(error.to_string())))
+                })?;
+            runtime.operation_staging = Some(
+                super::resources::backend::BoundStoreResourceClient::managed_current(
+                    runtime.client.transport_generations(),
+                    staging_bucket,
+                    runtime.client.timeout_ms(),
+                ),
+            );
+        }
         for name in runtime.resources.store.keys().cloned().collect::<Vec<_>>() {
             let handle = runtime.store_client(&name).await?;
             runtime.store_handles.insert(name, handle);
@@ -1560,8 +1559,11 @@ where
         .split_once('.')
         .map_or(D::KEY, |(_, name)| name)
         .to_owned();
-    let descriptor_identity = D::descriptor_identity()
-        .map_err(|error| ServiceRuntimeError::Client(TrellisClientError::Subject(error)))?;
+    let publish_action = trellis_protocol::CatalogActionIdentity {
+        kind: trellis_protocol::ApiSurfaceKind::Event,
+        name: event_name.clone(),
+        direction: trellis_protocol::PermissionAction::Publish,
+    };
     let route = crate::telemetry::instruments::route_token(
         crate::telemetry::instruments::RouteFamily::Consumer,
         &event_name,
@@ -1588,7 +1590,7 @@ where
             .await
             .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
         let event_auth = auth.clone();
-        let descriptor_identity = descriptor_identity.clone();
+        let publish_action = publish_action.clone();
         let task = tokio::spawn(async move {
             let result = async {
                 while let Some(message) = events.next().await {
@@ -1602,7 +1604,9 @@ where
                             message.subject.as_ref(),
                             &message.payload,
                             message.headers.as_ref(),
-                            &descriptor_identity,
+                            &event_api_id,
+                            &publish_action,
+                            None,
                         )
                         .await
                     {
@@ -1720,7 +1724,7 @@ where
                 && (pattern != &subject
                     || registration.event_api_id != event_api_id
                     || registration.event_name != event_name
-                    || registration.descriptor_identity != descriptor_identity)
+                    || registration.publish_action != publish_action)
             {
                 return Err(TrellisClientError::EventSubscriptionProtocol(format!(
                     "event registration '{subject}' overlaps '{pattern}'"
@@ -1734,7 +1738,7 @@ where
             .or_insert_with(|| EventRegistration {
                 event_api_id: event_api_id.clone(),
                 event_name: event_name.clone(),
-                descriptor_identity: descriptor_identity.clone(),
+                publish_action: publish_action.clone(),
                 handlers: BTreeMap::new(),
             })
             .handlers
@@ -1799,7 +1803,7 @@ where
                 EventRegistration {
                     event_api_id,
                     event_name,
-                    descriptor_identity,
+                    publish_action,
                     handlers: BTreeMap::from([(handler_id, handler)]),
                 },
             )]),
@@ -1996,6 +2000,7 @@ async fn run_durable_event_pull_loop(
             } else {
                 None
             };
+            let mut trusted_replay_publication = None;
             if let Some(envelope) = &replay_envelope {
                 if envelope.resource_id != config.resource_id
                     || envelope.original_record_sequence == 0
@@ -2025,6 +2030,16 @@ async fn run_durable_event_pull_loop(
                     }
                 };
                 let detail = inspected.get("deadLetter").unwrap_or(&inspected);
+                trusted_replay_publication =
+                    detail
+                        .get("originalPublication")
+                        .cloned()
+                        .and_then(|value| {
+                            serde_json::from_value::<trellis_protocol::OriginalEventPublication>(
+                                value,
+                            )
+                            .ok()
+                        });
                 let dead_letter = detail.get("deadLetter").unwrap_or(detail);
                 let projected_generation = dead_letter.get("generation").and_then(|value| {
                     value
@@ -2098,14 +2113,30 @@ async fn run_durable_event_pull_loop(
                     )
                 })
                 .collect();
-            let publisher = match auth
-                .verify_event(
+            let publisher = match async {
+                let original_publication = if replay_envelope.is_some() {
+                    trusted_replay_publication.ok_or_else(|| {
+                        super::EventVerificationFailure::retryable(
+                            "original broker publication metadata unavailable",
+                        )
+                    })?
+                } else {
+                    message.original_publication().map_err(|error| {
+                        super::EventVerificationFailure::retryable(error.to_string())
+                    })?
+                };
+                let status = auth.historical_status(effective_headers).await?;
+                auth.verify_event(
                     effective_subject,
                     effective_payload,
                     effective_headers,
-                    &registration.descriptor_identity,
+                    &registration.event_api_id,
+                    &registration.publish_action,
+                    Some((&original_publication, &status)),
                 )
                 .await
+            }
+            .await
             {
                 Ok(publisher) => publisher,
                 Err(error) => {

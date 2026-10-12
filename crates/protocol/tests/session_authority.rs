@@ -81,6 +81,237 @@ fn issued() -> (
 }
 
 #[test]
+fn authority_budget_bounds_issuance_and_permissive_readers() {
+    let (_, pinned, authority, mut policy) = issued();
+    let issuer = SigningKey::from_bytes(&[2; 32]);
+    let mut body = authority.unsigned;
+    body.extensions.insert(
+        "payload".into(),
+        json!("x".repeat(trellis_protocol::MAX_SESSION_AUTHORITY_BYTES / 2)),
+    );
+    let signed = sign_session_authority(body.clone(), &issuer).unwrap();
+    let bytes = serde_json::to_vec(&signed).unwrap();
+    policy.maximum_authority_bytes = trellis_protocol::MAX_SESSION_AUTHORITY_BYTES * 4;
+    let parsed = parse_session_authority(&bytes, policy.maximum_authority_bytes).unwrap();
+    verify_session_authority(SessionAuthorityVerificationInput {
+        authority: &parsed,
+        issuer: &pinned,
+        trellis_instance_id: &parsed.unsigned.trellis_instance_id,
+        audience_nats_account: &parsed.unsigned.audience_nats_account,
+        purpose: SessionAuthorityPurpose::Live,
+        revocation_cutoff: None,
+        policy: &policy,
+    })
+    .unwrap();
+    body.extensions.insert(
+        "payload".into(),
+        json!("x".repeat(trellis_protocol::MAX_SESSION_AUTHORITY_BYTES)),
+    );
+    assert!(sign_session_authority(body, &issuer).is_err());
+    let mut padded = bytes;
+    padded.resize(trellis_protocol::MAX_SESSION_AUTHORITY_BYTES + 1, b' ');
+    assert!(parse_session_authority(&padded, policy.maximum_authority_bytes).is_err());
+}
+
+#[test]
+fn provider_publication_requires_exact_signed_implementation_and_never_grants_caller_rights() {
+    use trellis_protocol::{
+        ApiSurfaceKind, AuthorityProvider, CatalogAction, CatalogActionIdentity, PermissionAction,
+        SignedCatalogSnapshot, SignedProviderCertificate, CATALOG_SNAPSHOT_FORMAT_V1,
+        PROVIDER_CERTIFICATE_FORMAT_V1,
+    };
+    let (_, pinned, initial, policy) = issued();
+    let issuer = SigningKey::from_bytes(&[2; 32]);
+    let publish = CatalogActionIdentity {
+        kind: ApiSurfaceKind::Event,
+        name: "Changed".into(),
+        direction: PermissionAction::Publish,
+    };
+    let consume = CatalogActionIdentity {
+        direction: PermissionAction::Subscribe,
+        ..publish.clone()
+    };
+    let call = CatalogActionIdentity {
+        kind: ApiSurfaceKind::Rpc,
+        name: "Get".into(),
+        direction: PermissionAction::Call,
+    };
+    let catalog = SignedCatalogSnapshot {
+        format: CATALOG_SNAPSHOT_FORMAT_V1.into(),
+        issuer_key_id: pinned.key_id.clone(),
+        trellis_instance_id: initial.unsigned.trellis_instance_id.clone(),
+        audience_nats_account: initial.unsigned.audience_nats_account.clone(),
+        api_id: "documents@v1".into(),
+        generation: U64s::new(1),
+        accepted_revision: U64s::new(3),
+        definition_digest: URL_SAFE_NO_PAD.encode([9; 32]),
+        actions: [publish.clone(), consume.clone(), call.clone()]
+            .into_iter()
+            .map(|identity| CatalogAction {
+                identity,
+                introduced_revision: U64s::new(3),
+            })
+            .collect(),
+        capabilities: vec![],
+        issued_at: 1_100,
+        extensions: Map::new(),
+        critical: vec![],
+        signature: String::new(),
+    }
+    .sign(&issuer)
+    .unwrap();
+    catalog
+        .verify(
+            &pinned,
+            &initial.unsigned.trellis_instance_id,
+            &initial.unsigned.audience_nats_account,
+        )
+        .unwrap();
+    let certificate = SignedProviderCertificate {
+        format: PROVIDER_CERTIFICATE_FORMAT_V1.into(),
+        issuer_key_id: pinned.key_id.clone(),
+        trellis_instance_id: initial.unsigned.trellis_instance_id.clone(),
+        audience_nats_account: initial.unsigned.audience_nats_account.clone(),
+        principal_id: initial.unsigned.principal_id.clone(),
+        deployment_id: "01JY0000000000000000000006".into(),
+        instance_id: "01JY0000000000000000000007".into(),
+        session_public_key: initial.unsigned.session_public_key.clone(),
+        api_id: catalog.api_id.clone(),
+        generation: catalog.generation,
+        implementation_digest: URL_SAFE_NO_PAD.encode([8; 32]),
+        implemented_actions: vec![publish.clone(), consume.clone(), call.clone()],
+        issued_at: 1_100,
+        not_before: 1_100,
+        expires_at: 1_300,
+        extensions: Map::new(),
+        critical: vec![],
+        signature: String::new(),
+    }
+    .sign(&issuer)
+    .unwrap();
+    let mut body = initial.unsigned;
+    body.principal_kind = PrincipalKind::Service;
+    body.binding = SessionBinding::Service {
+        deployment_id: certificate.deployment_id.clone(),
+        instance_id: certificate.instance_id.clone(),
+        participant_id: "documents.service".into(),
+    };
+    body.login_session_id = None;
+    body.oauth_grant_id = None;
+    body.capabilities.clear();
+    body.platform_privileges.clear();
+    body.apis[0].catalog_snapshot_digest = catalog.digest().unwrap();
+    body.provider_bindings = vec![AuthorityProvider {
+        api_id: certificate.api_id.clone(),
+        generation: certificate.generation,
+        deployment_id: certificate.deployment_id.clone(),
+        implementation_digest: certificate.implementation_digest.clone(),
+        provider_certificate_digest: certificate.digest().unwrap(),
+    }];
+    let authority = sign_session_authority(body.clone(), &issuer).unwrap();
+    verify_session_authority(SessionAuthorityVerificationInput {
+        authority: &authority,
+        issuer: &pinned,
+        trellis_instance_id: &body.trellis_instance_id,
+        audience_nats_account: &body.audience_nats_account,
+        policy: &policy,
+        purpose: SessionAuthorityPurpose::Live,
+        revocation_cutoff: None,
+    })
+    .unwrap();
+    assert!(certificate
+        .authorizes_event_publication(&pinned, &authority, &catalog, &publish, 1_110)
+        .unwrap());
+    assert!(!catalog.authorizes(&authority, &publish));
+    for action in [&consume, &call] {
+        assert!(!certificate
+            .authorizes_event_publication(&pinned, &authority, &catalog, action, 1_110)
+            .unwrap());
+    }
+    let mut forged = certificate.clone();
+    forged.instance_id = "01JY0000000000000000000008".into();
+    assert!(forged
+        .authorizes_event_publication(&pinned, &authority, &catalog, &publish, 1_110)
+        .is_err());
+    let replaced = forged.sign(&issuer).unwrap();
+    assert!(!replaced
+        .authorizes_event_publication(&pinned, &authority, &catalog, &publish, 1_110)
+        .unwrap());
+    for field in [
+        "instance",
+        "principal",
+        "deployment",
+        "key",
+        "implementation",
+        "digest",
+        "generation",
+        "revision",
+    ] {
+        let mut altered = body.clone();
+        match field {
+            "instance" => {
+                if let SessionBinding::Service { instance_id, .. } = &mut altered.binding {
+                    *instance_id = "01JY0000000000000000000008".into();
+                }
+            }
+            "principal" => altered.principal_id = "01JY0000000000000000000008".into(),
+            "deployment" => {
+                if let SessionBinding::Service { deployment_id, .. } = &mut altered.binding {
+                    *deployment_id = "01JY0000000000000000000008".into();
+                }
+                altered.provider_bindings[0].deployment_id = "01JY0000000000000000000008".into();
+            }
+            "key" => {
+                altered.session_public_key = URL_SAFE_NO_PAD
+                    .encode(SigningKey::from_bytes(&[12; 32]).verifying_key().as_bytes())
+            }
+            "implementation" => {
+                altered.provider_bindings[0].implementation_digest = URL_SAFE_NO_PAD.encode([7; 32])
+            }
+            "digest" => {
+                altered.provider_bindings[0].provider_certificate_digest =
+                    URL_SAFE_NO_PAD.encode([7; 32])
+            }
+            "generation" => {
+                altered.apis[0].generation = U64s::new(2);
+                altered.provider_bindings[0].generation = U64s::new(2);
+            }
+            "revision" => altered.apis[0].accepted_revision = U64s::new(2),
+            _ => unreachable!(),
+        }
+        let altered = sign_session_authority(altered, &issuer).unwrap();
+        assert!(
+            !certificate
+                .authorizes_event_publication(&pinned, &altered, &catalog, &publish, 1_110)
+                .unwrap(),
+            "{field}"
+        );
+    }
+    let mut subset = certificate.clone();
+    subset
+        .implemented_actions
+        .retain(|action| action != &publish);
+    let subset = subset.sign(&issuer).unwrap();
+    let mut narrowed = body.clone();
+    narrowed.provider_bindings[0].provider_certificate_digest = subset.digest().unwrap();
+    let narrowed = sign_session_authority(narrowed, &issuer).unwrap();
+    assert!(!subset
+        .authorizes_event_publication(&pinned, &narrowed, &catalog, &publish, 1_110)
+        .unwrap());
+    // A retained event is checked at original publication time, not at replay's
+    // current clock; evidence outside the certificate's lifetime still fails.
+    assert!(certificate
+        .authorizes_event_publication(&pinned, &authority, &catalog, &publish, 1_299)
+        .unwrap());
+    assert!(certificate
+        .authorizes_event_publication(&pinned, &authority, &catalog, &publish, 1_300)
+        .is_err());
+    assert!(certificate
+        .authorizes_event_publication(&pinned, &authority, &catalog, &publish, 1_099)
+        .is_err());
+}
+
+#[test]
 fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
     use trellis_protocol::{
         session_request_signing_digest, sign_session_response, verify_session_response,
@@ -179,6 +410,34 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
     };
     let payload = b"actual provider result";
     let proof = sign_session_response(&response, payload, &provider_key).unwrap();
+    // Even an authentic provider cannot claim another deployment as the owner
+    // of a returned durable handle: signing the payload is not sufficient.
+    let forged_owner = "01JY0000000000000000000011";
+    let forged_reference = serde_json::to_vec(&serde_json::json!({
+        "kind": "accepted", "ref": {
+            "id": "01JY0000000000000000000012", "service": "documents",
+            "operation": "Generate", "deploymentId": forged_owner,
+        },
+    }))
+    .unwrap();
+    let forged_reference_proof =
+        sign_session_response(&response, &forged_reference, &provider_key).unwrap();
+    assert!(verify_session_response(SessionResponseVerificationInput {
+        provider: &provider,
+        certificate: &certificate,
+        certificate_issuer: &pinned,
+        pending_request: &request,
+        pending_request_digest: &pending_digest,
+        action: &action,
+        expected_deployment_id: Some(forged_owner),
+        received_subject: &response.subject,
+        response: &response,
+        raw_payload: &forged_reference,
+        proof: &forged_reference_proof,
+        policy: &policy,
+        known_revoked: false,
+    })
+    .is_err());
     let verify = |response, bytes, opening_digest, subject, expected_action, revoked| {
         verify_session_response(SessionResponseVerificationInput {
             provider: &provider,

@@ -10,6 +10,12 @@ export {
   BrowserSessionStore,
 } from "./browser/storage.ts";
 export {
+  BrowserOAuthClient,
+  type BrowserOAuthAdmission,
+  type BrowserOAuthMetadata,
+  type BrowserCapabilityRequest,
+} from "./browser/oauth.ts";
+export {
   classifyBrowserAuthError,
   isRecoverableBrowserAuthError,
 } from "./browser_recovery.ts";

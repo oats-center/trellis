@@ -3,8 +3,8 @@
  * boundary.
  *
  * Observation and control authority is scoped to the exact creating principal
- * and participant. A foreign principal, or the same principal on a different
- * participant, is denied without the operation being disclosed.
+ * and authenticated binding. A foreign principal, client, or browser origin
+ * is denied without the operation being disclosed.
  */
 
 import { assertEquals } from "@std/assert";
@@ -17,42 +17,85 @@ import {
 
 const OPERATION = {
   creatorPrincipalId: "principal-a",
-  creatorParticipantId: "runtime-trellis.OperationCaller",
+  creatorBinding: {
+    kind: "browser" as const,
+    clientId: "console",
+    origin: "https://console.example",
+  },
 };
 
-Deno.test("O09 the creating principal and participant are authorized", () => {
-  assertEquals(
-    operationObserveAuthorized(OPERATION, {
-      principalId: "principal-a",
-      participantId: "runtime-trellis.OperationCaller",
-    }),
-    true,
-  );
-});
+Deno.test(
+  "O09 the creating principal and browser binding are authorized",
+  () => {
+    assertEquals(
+      operationObserveAuthorized(OPERATION, {
+        principalId: "principal-a",
+        binding: {
+          kind: "browser",
+          clientId: "console",
+          origin: "https://console.example",
+        },
+      }),
+      true,
+    );
+  },
+);
 
 Deno.test("O09 a foreign principal is denied", () => {
   assertEquals(
     operationObserveAuthorized(OPERATION, {
       principalId: "principal-b",
-      participantId: "runtime-trellis.OperationCaller",
+      binding: {
+        kind: "browser",
+        clientId: "console",
+        origin: "https://console.example",
+      },
     }),
     false,
   );
 });
 
-Deno.test("O09 the same principal on a different participant is denied", () => {
-  assertEquals(
-    operationObserveAuthorized(OPERATION, {
-      principalId: "principal-a",
-      participantId: "runtime-trellis.OperationProvider",
-    }),
-    false,
-  );
-});
+Deno.test(
+  "O09 the same principal on another client or origin is denied",
+  () => {
+    assertEquals(
+      operationObserveAuthorized(OPERATION, {
+        principalId: "principal-a",
+        binding: {
+          kind: "browser",
+          clientId: "portal",
+          origin: "https://console.example",
+        },
+      }),
+      false,
+    );
+    assertEquals(
+      operationObserveAuthorized(OPERATION, {
+        principalId: "principal-a",
+        binding: {
+          kind: "browser",
+          clientId: "console",
+          origin: "https://other.example",
+        },
+      }),
+      false,
+    );
+    assertEquals(
+      operationObserveAuthorized(OPERATION, {
+        principalId: "principal-a",
+        binding: { kind: "native", clientId: "console", durableDpopJkt: "key" },
+      }),
+      false,
+    );
+  },
+);
 
-Deno.test("O09 internal callers without a verified caller are authorized", () => {
-  assertEquals(operationObserveAuthorized(OPERATION, undefined), true);
-});
+Deno.test(
+  "O09 internal callers without a verified caller are authorized",
+  () => {
+    assertEquals(operationObserveAuthorized(OPERATION, undefined), true);
+  },
+);
 
 const OWNER = { ownerInstanceId: "instance-a", ownerEpoch: 7 };
 
@@ -86,23 +129,26 @@ Deno.test("O10 a different executor instance is rejected", () => {
   );
 });
 
-Deno.test("O08 the observer reconciles authoritative durable state across executors", async () => {
-  const delivered: unknown[] = [];
-  const arbiter = new OperationObserverArbiter((value) => {
-    delivered.push(value);
-    return Promise.resolve();
-  });
-  // Executor A emits a transient update.
-  assertEquals(arbiter.update("executor-a-update"), true);
-  // The authoritative snapshot comes from durable state, not the executor.
-  await arbiter.snapshot("durable-a");
-  // Executor ownership changes; the same observer keeps reconciling.
-  assertEquals(arbiter.update("executor-b-update"), true);
-  await arbiter.snapshot("durable-terminal");
-  assertEquals(delivered, [
-    "executor-a-update",
-    "durable-a",
-    "executor-b-update",
-    "durable-terminal",
-  ]);
-});
+Deno.test(
+  "O08 the observer reconciles authoritative durable state across executors",
+  async () => {
+    const delivered: unknown[] = [];
+    const arbiter = new OperationObserverArbiter((value) => {
+      delivered.push(value);
+      return Promise.resolve();
+    });
+    // Executor A emits a transient update.
+    assertEquals(arbiter.update("executor-a-update"), true);
+    // The authoritative snapshot comes from durable state, not the executor.
+    await arbiter.snapshot("durable-a");
+    // Executor ownership changes; the same observer keeps reconciling.
+    assertEquals(arbiter.update("executor-b-update"), true);
+    await arbiter.snapshot("durable-terminal");
+    assertEquals(delivered, [
+      "executor-a-update",
+      "durable-a",
+      "executor-b-update",
+      "durable-terminal",
+    ]);
+  },
+);

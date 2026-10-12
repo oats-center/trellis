@@ -16,6 +16,9 @@ export declare const request: AppRequestDescriptor & {
 		}];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly actionNames: {
+		readonly ["client-upgrade-fixture.upgrade@v1:rpc:Echo"]: "Echo";
+	};
 	readonly states: {};
 };
 export type Request = typeof request;

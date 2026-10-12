@@ -49,6 +49,22 @@ administrator from demotion/revocation.
 There is no desired state, materialization, proposal, reconciliation, or
 separate identity/deployment authority record.
 
+## Finite Policy Aggregates
+
+Platform privileges are one assignment aggregate per principal, with a durable
+ULID and one revision. Assign atomically replaces the finite membership set and
+preserves that ULID; Revoke checks both assignment identity and revision. A new
+assignment after revocation gets a new ULID, so an old assignment cannot revoke
+it. The bootstrap administrator's assignment cannot lose existing privileges or
+be revoked. Administrative privileges do not imply capability entitlements.
+
+An OIDC role mapping has one durable ULID and revision for its provider/claim
+predicate and a set of role memberships pinned to role identity generations.
+Mapping replacement and deletion are atomic policy mutations; all matching roles
+participate in the existing entitlement union while verified claims remain fresh.
+Typed RPC results are stored in the SQLite idempotency repository, so a replay
+returns the original result without restoring or deleting current membership.
+
 ## Issuance
 
 Issuance runs in one SQL transaction and rereads current principal,

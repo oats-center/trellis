@@ -43,6 +43,14 @@ export const request = {
 		],
 		optionalCapabilities: []
 	}],
+	actionNames: {
+		["runtime-trellis.runtime@v1:rpc:Echo"]: "Echo",
+		["runtime-trellis.runtime@v1:operation:Upload"]: "Upload",
+		["runtime-trellis.runtime@v1:operation:Work"]: "Work",
+		["runtime-trellis.runtime@v1:event:Changed"]: "Changed",
+		["runtime-trellis.runtime@v1:event:Changed"]: "Changed",
+		["runtime-trellis.runtime@v1:live:Watch"]: "Watch"
+	},
 	states: {}
 };
 export default request;

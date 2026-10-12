@@ -13,6 +13,10 @@ use crate::{
     ISSUER_METADATA_DOMAIN_V1, MAX_ADMISSION_RESPONSE_BYTES,
 };
 
+/// Read-only issuer metadata bootstrap route for already admitted connections.
+/// Delivery is not trust: callers verify the retained signed exchange.
+pub const ISSUER_METADATA_SUBJECT: &str = "trellis.auth.metadata.get";
+
 /// Exact identifiers requested from the public Auth registry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]

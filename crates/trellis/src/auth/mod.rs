@@ -6,17 +6,15 @@ mod device_activation;
 mod device_identity;
 mod error;
 mod models;
+mod native_oauth;
 mod oauth_store;
 mod portal;
 mod protocol;
 mod session_store;
 
 pub use crate::service::payload_hash_base64url;
-pub use browser_login::{
-    generate_session_keypair, poll_agent_transaction_until_ready, start_admin_reauth,
-    start_agent_login,
-};
-pub use client::{connect_admin_client_async, session_public_key};
+pub use browser_login::generate_session_keypair;
+pub use client::session_public_key;
 pub use device_activation::{
     check_device_activation, derive_device_confirmation_code, wait_for_device_activation,
     DeviceActivationError, DeviceActivationOptions, DeviceActivationPending,
@@ -27,6 +25,10 @@ pub use error::TrellisAuthError;
 pub use models::{
     AdminLoginOutcome, AdminReauthOutcome, AdminSessionState, AgentLoginChallenge, BoundSession,
     DeviceCompanionIdentity, DeviceIdentity, StartAgentLoginOpts,
+};
+pub use native_oauth::{
+    discover_native_oauth, NativeDeviceAuthorization, NativeOAuthClient, NativeOAuthError,
+    NativeOAuthServer, NativeOAuthSession,
 };
 pub use oauth_store::{NativeCredentialLease, NativeCredentialScope, NativeOAuthGrant};
 pub use portal::{

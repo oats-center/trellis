@@ -16,7 +16,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::super::revocation::enqueue_scope;
-use super::super::{EnforcementScope, SqliteAuthorizationStore};
+use super::super::{AuthError, EnforcementScope, SqliteAuthorizationStore};
 
 pub(crate) struct OAuthStorage {
     pub(crate) authority: Arc<SqliteAuthorizationStore>,
@@ -69,12 +69,54 @@ impl OAuthStorage {
     /// Remove a bounded page of expired protocol secrets without deleting
     /// authority history or refresh-reuse evidence for a still-live family.
     pub(crate) fn cleanup_expired(&self, now: i64) -> Result<usize, StorageError> {
-        self.transaction(|connection| {
-            connection.execute(
-                "DELETE FROM auth_oauth_artifacts WHERE rowid IN (SELECT a.rowid FROM auth_oauth_artifacts a WHERE a.expires_at<=?1 AND (a.kind!='refresh' OR NOT EXISTS(SELECT 1 FROM auth_oauth_families f WHERE f.family_lookup_hash=a.family_lookup_hash AND f.expires_at>?1)) ORDER BY a.expires_at,a.rowid LIMIT 256)",
+        self.transaction(|connection| self.cleanup_expired_in(connection, now))
+    }
+
+    fn cleanup_expired_in(&self, connection: &Connection, now: i64) -> Result<usize, StorageError> {
+        // Pending decisions keep the exact reviewed client, not an unlimited
+        // freshness extension for new requests. Approved grants keep only the
+        // client identity and protocol fields their remaining lifecycle needs.
+        let clients = {
+            let mut statement = connection.prepare(
+                "SELECT c.client_id,NOT EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id) AND EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?1 AND l.revoked_at IS NULL AND l.expires_at>?1) FROM auth_cimd_clients c WHERE c.expires_at<=?1 AND NOT EXISTS(SELECT 1 FROM auth_oauth_artifacts a WHERE a.client_id=c.client_id AND a.kind IN ('authorization','upstream','device','deviceSelection','code') AND a.expires_at>?1) AND (EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id) OR NOT EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?1 AND l.revoked_at IS NULL AND l.expires_at>?1) OR c.metadata_json!=json_object('application_type',CASE c.kind WHEN 'browser' THEN 'web' ELSE 'native' END,'redirect_uris',json_extract(c.metadata_json,'$.redirect_uris'))) ORDER BY c.expires_at,c.client_id LIMIT 128"
+            ).map_err(failure)?;
+            let rows = statement
+                .query_map([now], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+                })
+                .map_err(failure)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(failure)?
+        };
+        let mut removed = 0;
+        for (client_id, approved) in clients {
+            if approved {
+                let mut client: Client = self
+                    .read(connection, "client", &client_id)?
+                    .ok_or_else(|| StorageError::new("approved client artifact missing"))?;
+                client.name = None;
+                let sealed = self.encode("client", &hash(&client_id), &client)?;
+                connection.execute("UPDATE auth_oauth_artifacts SET sealed_record=?2,revision=revision+1 WHERE kind='client' AND lookup_hash=?1",params![hash(&client_id),sealed]).map_err(failure)?;
+                connection.execute("UPDATE auth_cimd_clients SET metadata_json=json_object('application_type',CASE kind WHEN 'browser' THEN 'web' ELSE 'native' END,'redirect_uris',json_extract(metadata_json,'$.redirect_uris')) WHERE client_id=?1",[client_id]).map_err(failure)?;
+            } else {
+                removed += connection
+                    .execute(
+                        "DELETE FROM auth_oauth_artifacts WHERE kind='client' AND client_id=?1",
+                        [&client_id],
+                    )
+                    .map_err(failure)?;
+                removed += connection
+                    .execute(
+                        "DELETE FROM auth_cimd_clients WHERE client_id=?1",
+                        [client_id],
+                    )
+                    .map_err(failure)?;
+            }
+        }
+        removed+=connection.execute(
+                "DELETE FROM auth_oauth_artifacts WHERE rowid IN (SELECT a.rowid FROM auth_oauth_artifacts a WHERE a.kind!='client' AND a.expires_at<=?1 AND (a.kind!='refresh' OR NOT EXISTS(SELECT 1 FROM auth_oauth_families f WHERE f.family_lookup_hash=a.family_lookup_hash AND f.expires_at>?1)) ORDER BY a.expires_at,a.rowid LIMIT 256)",
                 [now],
-            ).map_err(failure)
-        })
+            ).map_err(failure)?;
+        Ok(removed)
     }
 
     /// Open durable OAuth custody using provisioned installation material. Never
@@ -266,13 +308,31 @@ impl OAuthStorage {
     pub(super) fn install_client_document(
         &self,
         document: &super::ClientDocument,
-    ) -> Result<(), StorageError> {
+    ) -> Result<(), AuthError> {
         let client = document.document.to_client();
-        self.transaction(|connection| {
-            let registered: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)", [client.client_id.as_str()], |row|row.get(0)).map_err(failure)?;
-            if registered {return Err(StorageError::new("client registration changed"));}
-            self.write(connection, Record {kind:"client",key:client.client_id.as_str(),value:&client,client:Some(client.client_id.as_str()),grant:None,family:None,user_code:None,established:SystemTime::now(),expires:None})?;
-            connection.execute("INSERT INTO auth_cimd_clients VALUES(?1,?2,?3,?4,?5) ON CONFLICT(client_id) DO UPDATE SET kind=excluded.kind,metadata_digest=excluded.metadata_digest,metadata_json=excluded.metadata_json,observed_at=excluded.observed_at",params![client.client_id.as_str(),document.kind,document.revision,serde_json::to_string(&document.metadata).map_err(failure)?,seconds(SystemTime::now())?]).map_err(failure)?;
+        let observed = seconds(document.observed_at).map_err(|_| AuthError::Unavailable)?;
+        let expires = observed.checked_add(300).ok_or(AuthError::Unavailable)?;
+        let metadata = serde_json::to_string(&document.metadata)?;
+        let sealed = self
+            .encode("client", &hash(client.client_id.as_str()), &client)
+            .map_err(|_| AuthError::Unavailable)?;
+        let now = seconds(SystemTime::now()).map_err(|_| AuthError::Unavailable)?;
+        if expires <= now {
+            return Err(AuthError::Denied);
+        }
+        self.authority.transaction(|connection| {
+            let registered: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)", [client.client_id.as_str()], |row|row.get(0))?;
+            if registered {return Err(AuthError::Conflict);}
+            self.cleanup_expired_in(connection,now).map_err(|_| AuthError::Unavailable)?;
+            let pending_changed:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_cimd_clients c WHERE c.client_id=?1 AND c.metadata_digest!=?2 AND EXISTS(SELECT 1 FROM auth_oauth_artifacts a WHERE a.client_id=c.client_id AND a.kind IN ('authorization','upstream','device','deviceSelection','code') AND a.expires_at>?3))",params![client.client_id.as_str(),document.revision,now],|row|row.get(0))?;
+            if pending_changed {return Err(AuthError::Conflict);}
+            let approved:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=?1 AND g.revoked_at IS NULL AND g.expires_at>?2 AND l.revoked_at IS NULL AND l.expires_at>?2)",params![client.client_id.as_str(),now],|row|row.get(0))?;
+            if !approved {
+                let (count,bytes):(i64,i64)=connection.query_row("SELECT count(*),coalesce(sum(length(CAST(c.metadata_json AS BLOB))+coalesce(length(a.sealed_record),0)),0) FROM auth_cimd_clients c LEFT JOIN auth_oauth_artifacts a ON a.client_id=c.client_id AND a.kind='client' WHERE c.client_id!=?1 AND NOT EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id) AND NOT EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?2 AND l.revoked_at IS NULL AND l.expires_at>?2)",params![client.client_id.as_str(),now],|row|Ok((row.get(0)?,row.get(1)?)))?;
+                if count>=128 || bytes.saturating_add(metadata.len() as i64).saturating_add(sealed.len() as i64)>16*1024*1024 {return Err(AuthError::ResourceLimit);}
+            }
+            connection.execute("INSERT INTO auth_oauth_artifacts(lookup_hash,kind,client_id,grant_established_at_ns,sealed_record,expires_at,revision) VALUES(?1,'client',?2,?3,?4,?5,1) ON CONFLICT(kind,lookup_hash) DO UPDATE SET sealed_record=excluded.sealed_record,expires_at=excluded.expires_at,revision=revision+1",params![hash(client.client_id.as_str()),client.client_id.as_str(),nanos(document.observed_at).map_err(|_|AuthError::Unavailable)?,sealed,expires])?;
+            connection.execute("INSERT INTO auth_cimd_clients(client_id,kind,metadata_digest,metadata_json,observed_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(client_id) DO UPDATE SET kind=excluded.kind,metadata_digest=excluded.metadata_digest,metadata_json=excluded.metadata_json,observed_at=excluded.observed_at,expires_at=excluded.expires_at",params![client.client_id.as_str(),document.kind,document.revision,metadata,observed,expires])?;
             Ok(())
         })
     }
@@ -327,13 +387,47 @@ impl OAuthStorage {
         now: i64,
     ) -> Result<super::portal::PortalAuthorization, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
-        let flow: super::portal::PortalAuthorization = self
+        let mut flow: super::portal::PortalAuthorization = self
             .read(&connection, "authorization", id)?
             .ok_or_else(|| StorageError::new("authorization unavailable"))?;
         if flow.session_id != session || flow.expires_at <= now {
             return Err(StorageError::new("authorization unavailable"));
         }
+        if let Some(presentation) = &mut flow.presentation {
+            let lookup = hash(id);
+            let sealed: Vec<u8> = connection.query_row("SELECT sealed_record FROM auth_oauth_artifacts WHERE kind='authorization' AND lookup_hash=?1",[&lookup],|row|row.get(0)).map_err(failure)?;
+            presentation.lookup_hash = lookup;
+            presentation.sealed_digest = URL_SAFE_NO_PAD.encode(Sha256::digest(&sealed));
+        }
         Ok(flow)
+    }
+
+    /// Save the displayed meaning in the same transaction that reads its policy.
+    /// Updating an existing artifact cannot resurrect an already consumed flow.
+    pub(super) fn present_authorization(
+        &self,
+        connection: &Connection,
+        id: &str,
+        expected: &super::portal::PortalAuthorization,
+        presentation: super::portal::ConsentPresentation,
+        now: i64,
+    ) -> Result<(), StorageError> {
+        let mut current: super::portal::PortalAuthorization = self
+            .read(connection, "authorization", id)?
+            .ok_or_else(|| StorageError::new("authorization unavailable"))?;
+        if current.session_id != expected.session_id
+            || current.expires_at <= now
+            || current.public_jwk != expected.public_jwk
+            || serde_json::to_value(&current.request).map_err(failure)?
+                != serde_json::to_value(&expected.request).map_err(failure)?
+        {
+            return Err(StorageError::new("authorization unavailable"));
+        }
+        current.presentation = Some(presentation);
+        let lookup = hash(id);
+        let sealed = self.encode("authorization", &lookup, &current)?;
+        connection.execute("UPDATE auth_oauth_artifacts SET sealed_record=?1,revision=revision+1 WHERE kind='authorization' AND lookup_hash=?2",params![sealed,lookup]).map_err(failure)?;
+        Ok(())
     }
 
     pub(crate) fn new(
@@ -362,7 +456,7 @@ impl OAuthStorage {
         Ok(result)
     }
 
-    fn decode<T: DeserializeOwned>(
+    pub(super) fn decode<T: DeserializeOwned>(
         &self,
         kind: &str,
         key: &str,
@@ -415,14 +509,28 @@ impl OAuthStorage {
         let key = hash(record.key);
         let sealed = self.encode(record.kind, &key, record.value)?;
         let family = record.family.map(hash);
-        if let (Some(family), Some(grant)) = (&family, record.grant) {
-            connection.execute("INSERT INTO auth_oauth_families(family_lookup_hash,oauth_grant_id,expires_at,revision) SELECT ?1,oauth_grant_id,expires_at,1 FROM auth_oauth_grants WHERE oauth_grant_id=?2 ON CONFLICT(family_lookup_hash) DO NOTHING", params![family,grant]).map_err(failure)?;
+        if record.kind == "refresh" {
+            let family = family
+                .as_ref()
+                .ok_or_else(|| StorageError::new("refresh family missing"))?;
+            let grant = record
+                .grant
+                .ok_or_else(|| StorageError::new("refresh grant missing"))?;
+            let expires = record
+                .expires
+                .map(seconds)
+                .transpose()?
+                .ok_or_else(|| StorageError::new("absolute refresh expiry missing"))?;
+            // Only the engine's initial refresh artifact establishes the absolute
+            // family deadline. Access-token expiry is unrelated, and rotations
+            // must never slide the original deadline.
+            connection.execute("INSERT INTO auth_oauth_families(family_lookup_hash,oauth_grant_id,expires_at,revision) SELECT ?1,g.oauth_grant_id,min(?3,g.expires_at,l.expires_at),1 FROM auth_oauth_grants g JOIN auth_login_sessions l ON l.login_session_id=g.login_session_id WHERE g.oauth_grant_id=?2 ON CONFLICT(family_lookup_hash) DO NOTHING", params![family,grant,expires]).map_err(failure)?;
         }
         connection.execute("INSERT INTO auth_oauth_artifacts(lookup_hash,kind,client_id,user_code_hash,grant_established_at_ns,family_lookup_hash,oauth_grant_id,sealed_record,expires_at,revision) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(kind,lookup_hash) DO UPDATE SET client_id=excluded.client_id,user_code_hash=excluded.user_code_hash,grant_established_at_ns=excluded.grant_established_at_ns,family_lookup_hash=excluded.family_lookup_hash,oauth_grant_id=excluded.oauth_grant_id,sealed_record=excluded.sealed_record,expires_at=excluded.expires_at,revision=revision+1", params![key,record.kind,record.client,record.user_code,nanos(record.established)?,family,record.grant,sealed,record.expires.map(seconds).transpose()?.unwrap_or(i64::MAX)]).map_err(failure)?;
         Ok(())
     }
 
-    fn encode<T: Serialize>(
+    pub(super) fn encode<T: Serialize>(
         &self,
         kind: &str,
         key: &str,
@@ -466,7 +574,7 @@ impl OAuthStorage {
         family: Option<&str>,
         established: SystemTime,
     ) -> Result<bool, StorageError> {
-        connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_barriers WHERE (kind='family' AND scope=?1) OR (kind='client' AND scope=?2 AND recorded_at_ns>=?3)) OR EXISTS(SELECT 1 FROM auth_oauth_families WHERE family_lookup_hash=?1 AND revoked_at IS NOT NULL)", params![family.map(hash),client.as_str(),nanos(established)?], |row| row.get(0)).map_err(failure)
+        connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_barriers WHERE (kind='family' AND scope=?1) OR (kind='client' AND scope=?2 AND recorded_at_ns>=?3)) OR EXISTS(SELECT 1 FROM auth_oauth_families WHERE family_lookup_hash=?1 AND (revoked_at IS NOT NULL OR expires_at<=?4))", params![family.map(hash),client.as_str(),nanos(established)?,seconds(SystemTime::now())?], |row| row.get(0)).map_err(failure)
     }
 
     fn access(&self, connection: &Connection, token: &IssuedToken) -> Result<(), StorageError> {
@@ -545,23 +653,6 @@ impl OAuthStorage {
         )
     }
 
-    fn client(&self, connection: &Connection, client: &Client) -> Result<(), StorageError> {
-        self.write(
-            connection,
-            Record {
-                kind: "client",
-                key: client.client_id.as_str(),
-                value: client,
-                client: Some(client.client_id.as_str()),
-                grant: None,
-                family: None,
-                user_code: None,
-                established: UNIX_EPOCH,
-                expires: None,
-            },
-        )
-    }
-
     fn barrier(
         &self,
         connection: &Connection,
@@ -580,15 +671,15 @@ impl OAuthStorage {
 impl Storage for OAuthStorage {
     async fn get_client(&self, client_id: &ClientId) -> Result<Option<Arc<Client>>, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
-        let registered: Option<(String, String, String, String)> = connection
+        let registered: Option<(String, String, String, String, String)> = connection
             .query_row(
-                "SELECT state,kind,display_name,redirect_uris_json FROM auth_oauth_clients WHERE client_id=?1",
+                "SELECT state,kind,display_name,redirect_uris_json,metadata_json FROM auth_oauth_clients WHERE client_id=?1",
                 [client_id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
             )
             .optional()
             .map_err(failure)?;
-        if let Some((state, kind, name, redirects)) = registered {
+        if let Some((state, kind, name, redirects, metadata)) = registered {
             if state != "active" {
                 return Ok(None);
             }
@@ -598,6 +689,22 @@ impl Storage for OAuthStorage {
             ];
             if kind == "native" {
                 grants.push(oauth_as::GrantType::DeviceCode);
+            }
+            let metadata: serde_json::Value = serde_json::from_str(&metadata).map_err(failure)?;
+            if let Some(configured) = metadata.get("grant_types") {
+                grants = configured
+                    .as_array()
+                    .ok_or_else(|| StorageError::new("invalid registered grant types"))?
+                    .iter()
+                    .map(|grant| match grant.as_str() {
+                        Some("authorization_code") => Ok(oauth_as::GrantType::AuthorizationCode),
+                        Some("refresh_token") => Ok(oauth_as::GrantType::RefreshToken),
+                        Some("urn:ietf:params:oauth:grant-type:device_code") => {
+                            Ok(oauth_as::GrantType::DeviceCode)
+                        }
+                        _ => Err(StorageError::new("invalid registered grant type")),
+                    })
+                    .collect::<Result<_, _>>()?;
             }
             return Ok(Some(Arc::new(Client {
                 client_id: client_id.clone(),
@@ -610,56 +717,31 @@ impl Storage for OAuthStorage {
                 registration: None,
             })));
         }
+        let now = seconds(SystemTime::now())?;
+        let retained:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_cimd_clients c WHERE c.client_id=?1 AND (c.expires_at>?2 OR EXISTS(SELECT 1 FROM auth_oauth_artifacts a WHERE a.client_id=c.client_id AND a.kind IN ('authorization','upstream','device','deviceSelection','code') AND a.expires_at>?2) OR EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?2 AND l.revoked_at IS NULL AND l.expires_at>?2)))",params![client_id.as_str(),now],|row|row.get(0)).map_err(failure)?;
+        if !retained {
+            return Ok(None);
+        }
         self.read(&connection, "client", client_id.as_str())
             .map(|client| client.map(Arc::new))
     }
 
-    async fn put_client(&self, client: Client) -> Result<(), StorageError> {
-        self.transaction(|connection| {
-            let registered: bool = connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",
-                    [client.client_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(failure)?;
-            if registered {
-                return Err(StorageError::new(
-                    "registered clients are managed by the administrative Auth API",
-                ));
-            }
-            self.client(connection, &client)
-        })
+    async fn put_client(&self, _client: Client) -> Result<(), StorageError> {
+        // Trellis does not expose the engine's dynamic registration paths. CIMD
+        // metadata and its bounded artifact must be installed atomically.
+        Err(StorageError::new(
+            "clients are managed by Auth registration or validated CIMD intake",
+        ))
     }
 
     async fn compare_and_swap_client(
         &self,
-        expected: &Client,
-        updated: Client,
+        _expected: &Client,
+        _updated: Client,
     ) -> Result<bool, StorageError> {
-        self.transaction(|connection| {
-            let registered: bool = connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",
-                    [updated.client_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(failure)?;
-            if registered {
-                return Err(StorageError::new(
-                    "registered clients are managed by the administrative Auth API",
-                ));
-            }
-            if self
-                .read::<Client>(connection, "client", updated.client_id.as_str())?
-                .as_ref()
-                != Some(expected)
-            {
-                return Ok(false);
-            }
-            self.client(connection, &updated)?;
-            Ok(true)
-        })
+        Err(StorageError::new(
+            "clients are managed by Auth registration or validated CIMD intake",
+        ))
     }
 
     async fn delete_client(
@@ -687,6 +769,12 @@ impl Storage for OAuthStorage {
             connection
                 .execute(
                     "DELETE FROM auth_oauth_artifacts WHERE client_id=?1",
+                    [client_id.as_str()],
+                )
+                .map_err(failure)?;
+            connection
+                .execute(
+                    "DELETE FROM auth_cimd_clients WHERE client_id=?1",
                     [client_id.as_str()],
                 )
                 .map_err(failure)?;
@@ -900,12 +988,7 @@ impl Storage for OAuthStorage {
     async fn sweep_expired(&self, now: SystemTime) -> Result<u64, StorageError> {
         self.transaction(|connection| {
             let now = seconds(now)?;
-            let records = connection
-                .execute(
-                    "DELETE FROM auth_oauth_artifacts WHERE expires_at<=?1",
-                    [now],
-                )
-                .map_err(failure)?;
+            let records = self.cleanup_expired_in(connection, now)?;
             let barriers = connection
                 .execute(
                     "DELETE FROM auth_oauth_barriers WHERE expires_at<=?1",
@@ -914,5 +997,178 @@ impl Storage for OAuthStorage {
                 .map_err(failure)?;
             Ok((records + barriers) as u64)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::portal::{ConsentRequest, PortalAuthorization};
+    use super::*;
+    use oauth_as::{
+        authorization::AuthorizationRequest,
+        cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument},
+        jwt::{EcdsaP256Key, JwsSigner},
+    };
+
+    #[tokio::test]
+    async fn live_consent_transactions_pin_client_capacity_until_their_own_expiry() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut connection = Connection::open(directory.path().join("platform.db")).unwrap();
+        let migration = refinery::Migration::unapplied(
+            "V1000__platform_init",
+            include_str!("../../../storage/sqlite/platform/V1000__platform_init.sql"),
+        )
+        .unwrap();
+        refinery::Runner::new(&[migration])
+            .run(&mut connection)
+            .unwrap();
+        let authority = Arc::new(
+            SqliteAuthorizationStore::from_connection(
+                connection,
+                ed25519_dalek::SigningKey::from_bytes(&[21; 32]),
+                super::super::super::sqlite::AuthSettings {
+                    instance_id: ulid::Ulid::new().to_string(),
+                    account: "cimd-retention".into(),
+                    oauth_origin: "https://auth.example".into(),
+                    upstream_tls_roots_pem: Vec::new(),
+                    authority_lifetime_seconds: 300,
+                    clock_skew_seconds: 30,
+                    login_lifetime_seconds: 86400,
+                    enforcement_page_size: 128,
+                },
+            )
+            .unwrap(),
+        );
+        let now = seconds(SystemTime::now()).unwrap();
+        let guest = authority.create_portal_session(now).unwrap();
+        let engine =
+            super::super::OAuthEngine::new(OAuthStorage::new(authority, &[17; 32]).unwrap())
+                .unwrap();
+        let key = EcdsaP256Key::generate("pending-cimd");
+        let document = |client_id: &str, name: &str| {
+            let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":name,"redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]});
+            let body = serde_json::to_vec(&metadata).unwrap();
+            let mut policy = CimdPolicy::new();
+            policy.redirect_uris_same_origin = false;
+            let identity = ClientIdUrl::parse(client_id, &policy).unwrap();
+            super::super::ClientDocument {
+                document: ValidatedClientIdDocument::validate(&identity, &body, &policy).unwrap(),
+                revision: URL_SAFE_NO_PAD.encode(Sha256::digest(&body)),
+                metadata,
+                kind: "native".into(),
+                observed_at: SystemTime::now(),
+            }
+        };
+        let mut transactions = Vec::new();
+        let mut clients = Vec::new();
+        for _ in 0..128 {
+            let client_id = format!(
+                "https://{}.example/client.json",
+                ulid::Ulid::new().to_string().to_ascii_lowercase()
+            );
+            engine
+                .server
+                .store()
+                .install_client_document(&document(&client_id, "Reviewed client"))
+                .unwrap();
+            let pairs=vec![
+                ("response_type".into(),"code".into()),("client_id".into(),client_id.clone()),("redirect_uri".into(),"http://127.0.0.1:9123/callback".into()),
+                ("code_challenge".into(),URL_SAFE_NO_PAD.encode(Sha256::digest(b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"))),("code_challenge_method".into(),"S256".into()),
+                ("dpop_jkt".into(),key.public_jwk().thumbprint()),("authorization_details".into(),serde_json::json!([{"type":"trellis_capabilities","required":[],"optional":[]}]).to_string()),
+            ];
+            let request = AuthorizationRequest::from_pairs(
+                pairs
+                    .iter()
+                    .map(|(key, value): &(String, String)| (key.as_str(), value.as_str())),
+            );
+            engine
+                .server
+                .validate_authorization_request(&request)
+                .await
+                .unwrap();
+            let transaction = ulid::Ulid::new().to_string();
+            engine
+                .server
+                .store()
+                .store_authorization(
+                    &transaction,
+                    &PortalAuthorization {
+                        session_id: guest.session_id.clone(),
+                        request: ConsentRequest::Authorization(pairs),
+                        public_jwk: serde_json::to_value(key.public_jwk()).unwrap(),
+                        expires_at: now + 600,
+                        presentation: None,
+                    },
+                    &client_id,
+                )
+                .unwrap();
+            transactions.push(transaction);
+            clients.push(ClientId::new(client_id));
+        }
+        engine.server.store().cleanup_expired(now + 301).unwrap();
+        for (transaction, client) in transactions.iter().zip(&clients) {
+            assert!(engine
+                .server
+                .store()
+                .authorization(transaction, &guest.session_id, now + 301)
+                .is_ok());
+            assert!(engine
+                .server
+                .store()
+                .get_client(client)
+                .await
+                .unwrap()
+                .is_some());
+        }
+        assert!(matches!(
+            engine
+                .server
+                .store()
+                .install_client_document(&document(clients[0].as_str(), "Changed client")),
+            Err(AuthError::Conflict)
+        ));
+        let overflow = format!(
+            "https://{}.example/client.json",
+            ulid::Ulid::new().to_string().to_ascii_lowercase()
+        );
+        assert!(matches!(
+            engine
+                .server
+                .store()
+                .install_client_document(&document(&overflow, "Overflow client")),
+            Err(AuthError::ResourceLimit)
+        ));
+        engine
+            .server
+            .store()
+            .sweep_expired(UNIX_EPOCH + std::time::Duration::from_secs((now + 601) as u64))
+            .await
+            .unwrap();
+        for (transaction, client) in transactions.iter().zip(&clients) {
+            assert!(engine
+                .server
+                .store()
+                .authorization(transaction, &guest.session_id, now + 601)
+                .is_err());
+            assert!(engine
+                .server
+                .store()
+                .get_client(client)
+                .await
+                .unwrap()
+                .is_none());
+        }
+        engine
+            .server
+            .store()
+            .install_client_document(&document(&overflow, "Fresh client"))
+            .unwrap();
+        assert!(engine
+            .server
+            .store()
+            .get_client(&ClientId::new(overflow))
+            .await
+            .unwrap()
+            .is_some());
     }
 }

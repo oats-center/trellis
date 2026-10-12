@@ -65,6 +65,7 @@ async fn cancelled(signal: Option<&TransferCancellation>) {
 
 /// Exact immutable grant coordinates shared by the two streaming directions.
 struct Coordinates<'a> {
+    action: crate::live::authority::LiveAction,
     id: &'a str,
     expires: &'a str,
     provider: &'a TransferIdentity,
@@ -95,8 +96,9 @@ fn validate_coordinates(
     {
         return Err(fail("invalid Transfer v2 grant discriminator"));
     }
-    if coordinates.consumer.session_key != client.auth().session_key
-        || coordinates.consumer.connection_id != client.own_connection_id()?
+    let identity = client.own_pinned_identity()?;
+    if coordinates.consumer.session_key != identity.session_key
+        || coordinates.consumer.connection_id != identity.connection_id
     {
         return Err(fail("transfer grant consumer identity mismatch"));
     }
@@ -173,6 +175,7 @@ async fn activate(
     };
     let headers = wire::caller_headers(
         client,
+        &coordinates.action,
         coordinates.control,
         coordinates.signal,
         &descriptor,
@@ -181,10 +184,12 @@ async fn activate(
     .map_err(fail)?;
     let request_id = wire::header(&headers, "request-id").map_err(fail)?;
     let local = TransferPeer::retain(
-        client.authorization_provider(),
-        &client.authorization_context_digest()?,
+        client.authorization_owner(),
+        lease.nats(),
+        client.authorization_owner().own_authority()?.digest(),
         coordinates.consumer,
-        None,
+        &coordinates.action,
+        false,
     )
     .await
     .map_err(fail)?;
@@ -208,7 +213,7 @@ async fn activate(
                     let body = TransferControl::Cancel { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: coordinates.id.into(), control_seq: U64s::new(2), received_seq: U64s::new(0), consumed_seq: U64s::new(0), consumed_bytes: U64s::new(0) };
                     let payload = Bytes::from(serde_json::to_vec(&body)?);
                     let descriptor = TransferFrameDescriptor { transfer_id: coordinates.id.into(), direction: coordinates.direction, sequence: U64s::new(2), kind: TransferFrameKind::Control, terminal: None };
-                    let headers = wire::caller_headers(client, coordinates.control, coordinates.signal, &descriptor, &payload).map_err(fail)?;
+                    let headers = wire::caller_headers(client, &coordinates.action, coordinates.control, coordinates.signal, &descriptor, &payload).map_err(fail)?;
                     lease.nats().publish_with_reply_and_headers(coordinates.control.to_owned(), coordinates.signal.to_owned(), headers, payload.clone()).await.map_err(fail)?;
                     transfer::telemetry::frame(&descriptor, &payload, "client-tx");
                     cancelled_sent = true;
@@ -231,10 +236,12 @@ async fn activate(
                 .ok_or_else(|| fail("signal headers missing"))?;
             let digest = wire::header(headers, "authorization-context").map_err(fail)?;
             let peer = match TransferPeer::retain(
-                client.authorization_provider(),
+                client.authorization_owner(),
+                lease.nats(),
                 &digest,
                 coordinates.provider,
-                None,
+                &coordinates.action,
+                true,
             )
             .await
             {
@@ -330,6 +337,7 @@ async fn publish_control(
     };
     let headers = wire::caller_headers(
         client,
+        &coordinates.action,
         coordinates.control,
         coordinates.signal,
         &descriptor,
@@ -374,6 +382,10 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
 ) -> Result<FileInfo, TrellisClientError> {
     parse_transfer_grant(&serde_json::to_vec(grant)?).map_err(fail)?;
     let coordinates = Coordinates {
+        action: crate::live::authority::LiveAction {
+            api_id: grant.origin.api_id.clone(),
+            identity: grant.origin.action.clone(),
+        },
         id: &grant.transfer_id,
         expires: &grant.expires_at,
         provider: &grant.provider,
@@ -424,7 +436,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                     let next = transferred.checked_add(bytes.len() as u64).ok_or_else(|| fail("upload size overflow"))?;
                     if grant.max_bytes.is_some_and(|max| next > max) { return Err(fail("upload exceeds object limit")); }
                     let descriptor = TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Send, sequence: U64s::new(seq), kind: TransferFrameKind::Data, terminal: None };
-                    let headers = wire::caller_headers(client, &grant.data_subject, &grant.signal_subject, &descriptor, &bytes).map_err(fail)?;
+                    let headers = wire::caller_headers(client, &coordinates.action, &grant.data_subject, &grant.signal_subject, &descriptor, &bytes).map_err(fail)?;
                     hasher.update(&bytes);
                     let len = bytes.len() as u64;
                     active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, bytes.bytes.clone()).await.map_err(fail)?;
@@ -438,7 +450,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                 let body = TransferComplete { format: TransferFormat::V2, kind: TransferCompleteKind::Complete, transfer_id: grant.transfer_id.clone(), final_seq: U64s::new(window.highest_sent.load(Ordering::Acquire)), size: transferred, digest: format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize())) };
                 let payload = Bytes::from(serde_json::to_vec(&body)?);
                 let descriptor = TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Send, sequence: body.final_seq, kind: TransferFrameKind::Complete, terminal: None };
-                let headers = wire::caller_headers(client, &grant.data_subject, &grant.signal_subject, &descriptor, &payload).map_err(fail)?;
+                let headers = wire::caller_headers(client, &coordinates.action, &grant.data_subject, &grant.signal_subject, &descriptor, &payload).map_err(fail)?;
                 active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, payload).await.map_err(fail)?;
                 complete_sent = true;
             }
@@ -523,6 +535,10 @@ pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + 
 ) -> Result<FileInfo, TrellisClientError> {
     parse_transfer_grant(&serde_json::to_vec(grant)?).map_err(fail)?;
     let coordinates = Coordinates {
+        action: crate::live::authority::LiveAction {
+            api_id: grant.origin.api_id.clone(),
+            identity: grant.origin.action.clone(),
+        },
         id: &grant.transfer_id,
         expires: &grant.expires_at,
         provider: &grant.provider,

@@ -218,6 +218,7 @@ declare const __api: {
 		readonly "rpc:Admission.Renew": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Admission.Renew";
+			readonly subject: "rpc.v1.auth.Admission.Renew";
 			readonly input: typeof Types0.AuthAdmissionRenewRequestCodec;
 			readonly output: typeof Types0.AuthAdmissionRenewResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -227,6 +228,7 @@ declare const __api: {
 		readonly "rpc:Apis.Accept": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Apis.Accept";
+			readonly subject: "rpc.v1.auth.Apis.Accept";
 			readonly input: typeof Types0.AuthApiAcceptRequestCodec;
 			readonly output: typeof Types0.AuthApiAcceptResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -236,6 +238,7 @@ declare const __api: {
 		readonly "rpc:Apis.ForceReplace": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Apis.ForceReplace";
+			readonly subject: "rpc.v1.auth.Apis.ForceReplace";
 			readonly input: typeof Types0.AuthApiForceReplaceRequestCodec;
 			readonly output: typeof Types0.AuthApiAcceptResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -245,6 +248,7 @@ declare const __api: {
 		readonly "rpc:Apis.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Apis.Get";
+			readonly subject: "rpc.v1.auth.Apis.Get";
 			readonly input: typeof Types0.AuthApiGetRequestCodec;
 			readonly output: typeof Types0.AuthApiGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -254,6 +258,7 @@ declare const __api: {
 		readonly "rpc:Apis.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Apis.List";
+			readonly subject: "rpc.v1.auth.Apis.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthApisListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -263,6 +268,7 @@ declare const __api: {
 		readonly "rpc:Apis.Review": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Apis.Review";
+			readonly subject: "rpc.v1.auth.Apis.Review";
 			readonly input: typeof Types0.AuthApiReviewRequestCodec;
 			readonly output: typeof Types0.AuthApiReviewResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -272,6 +278,7 @@ declare const __api: {
 		readonly "rpc:Authority.Renew": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Authority.Renew";
+			readonly subject: "rpc.v1.auth.Authority.Renew";
 			readonly input: typeof Types0.AuthAuthorityRenewRequestCodec;
 			readonly output: typeof Types0.AuthAuthorityRenewResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -281,6 +288,7 @@ declare const __api: {
 		readonly "rpc:Authority.Resolve": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Authority.Resolve";
+			readonly subject: "rpc.v1.auth.Authority.Resolve";
 			readonly input: typeof Types0.AuthAuthorityResolveRequestCodec;
 			readonly output: typeof Types0.AuthAuthorityResolveResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -290,6 +298,7 @@ declare const __api: {
 		readonly "rpc:Authority.Status": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Authority.Status";
+			readonly subject: "rpc.v1.auth.Authority.Status";
 			readonly input: typeof Types0.AuthAuthorityStatusRequestCodec;
 			readonly output: typeof Types0.AuthAuthorityStatusResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -299,6 +308,7 @@ declare const __api: {
 		readonly "rpc:AuthorizationSessions.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:AuthorizationSessions.List";
+			readonly subject: "rpc.v1.auth.AuthorizationSessions.List";
 			readonly input: typeof Types0.AuthAuthorizationSessionsListRequestCodec;
 			readonly output: typeof Types0.AuthAuthorizationSessionsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -308,6 +318,7 @@ declare const __api: {
 		readonly "rpc:AuthorizationSessions.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:AuthorizationSessions.Revoke";
+			readonly subject: "rpc.v1.auth.AuthorizationSessions.Revoke";
 			readonly input: typeof Types0.AuthAuthorizationSessionRevokeRequestCodec;
 			readonly output: typeof Types0.AuthAuthorizationSessionRevokeResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -317,6 +328,7 @@ declare const __api: {
 		readonly "rpc:Capabilities.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Capabilities.List";
+			readonly subject: "rpc.v1.auth.Capabilities.List";
 			readonly input: typeof Types0.AuthCapabilitiesListRequestCodec;
 			readonly output: typeof Types0.AuthCapabilitiesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -326,6 +338,7 @@ declare const __api: {
 		readonly "rpc:CapabilityGrants.Grant": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:CapabilityGrants.Grant";
+			readonly subject: "rpc.v1.auth.CapabilityGrants.Grant";
 			readonly input: typeof Types0.AuthCapabilityGrantRequestCodec;
 			readonly output: typeof Types0.AuthCapabilityGrantResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -335,6 +348,7 @@ declare const __api: {
 		readonly "rpc:CapabilityGrants.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:CapabilityGrants.List";
+			readonly subject: "rpc.v1.auth.CapabilityGrants.List";
 			readonly input: typeof Types0.AuthCapabilityGrantsListRequestCodec;
 			readonly output: typeof Types0.AuthCapabilityGrantsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -344,6 +358,7 @@ declare const __api: {
 		readonly "rpc:CapabilityGrants.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:CapabilityGrants.Revoke";
+			readonly subject: "rpc.v1.auth.CapabilityGrants.Revoke";
 			readonly input: typeof Types0.AuthCapabilityRevokeRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -353,6 +368,7 @@ declare const __api: {
 		readonly "rpc:Connections.Kick": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Connections.Kick";
+			readonly subject: "rpc.v1.auth.Connections.Kick";
 			readonly input: typeof Types0.AuthConnectionsKickRequestCodec;
 			readonly output: typeof Types0.AuthConnectionsKickResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -362,6 +378,7 @@ declare const __api: {
 		readonly "rpc:Connections.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Connections.List";
+			readonly subject: "rpc.v1.auth.Connections.List";
 			readonly input: typeof Types0.AuthConnectionsListRequestCodec;
 			readonly output: typeof Types0.AuthConnectionsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -371,6 +388,7 @@ declare const __api: {
 		readonly "rpc:Delegations.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Delegations.List";
+			readonly subject: "rpc.v1.auth.Delegations.List";
 			readonly input: typeof Types0.AuthDelegationsListRequestCodec;
 			readonly output: typeof Types0.AuthDelegationsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -380,6 +398,7 @@ declare const __api: {
 		readonly "rpc:Delegations.Review": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Delegations.Review";
+			readonly subject: "rpc.v1.auth.Delegations.Review";
 			readonly input: typeof Types0.AuthDelegationReviewRequestCodec;
 			readonly output: typeof Types0.AuthDelegationReviewResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -389,6 +408,7 @@ declare const __api: {
 		readonly "rpc:Delegations.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Delegations.Revoke";
+			readonly subject: "rpc.v1.auth.Delegations.Revoke";
 			readonly input: typeof Types0.AuthDelegationRevokeRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -398,6 +418,7 @@ declare const __api: {
 		readonly "rpc:Deployments.Apply": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Apply";
+			readonly subject: "rpc.v1.auth.Deployments.Apply";
 			readonly input: typeof Types0.AuthDeploymentApplyRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -407,6 +428,7 @@ declare const __api: {
 		readonly "rpc:Deployments.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Create";
+			readonly subject: "rpc.v1.auth.Deployments.Create";
 			readonly input: typeof Types0.AuthDeploymentCreateRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -416,6 +438,7 @@ declare const __api: {
 		readonly "rpc:Deployments.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Disable";
+			readonly subject: "rpc.v1.auth.Deployments.Disable";
 			readonly input: typeof Types0.AuthDeploymentMutationRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -425,6 +448,7 @@ declare const __api: {
 		readonly "rpc:Deployments.Enable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Enable";
+			readonly subject: "rpc.v1.auth.Deployments.Enable";
 			readonly input: typeof Types0.AuthDeploymentMutationRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -434,6 +458,7 @@ declare const __api: {
 		readonly "rpc:Deployments.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Get";
+			readonly subject: "rpc.v1.auth.Deployments.Get";
 			readonly input: typeof Types0.AuthDeploymentGetRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -443,6 +468,7 @@ declare const __api: {
 		readonly "rpc:Deployments.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.List";
+			readonly subject: "rpc.v1.auth.Deployments.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -452,6 +478,7 @@ declare const __api: {
 		readonly "rpc:Deployments.Remove": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Deployments.Remove";
+			readonly subject: "rpc.v1.auth.Deployments.Remove";
 			readonly input: typeof Types0.AuthDeploymentMutationRequestCodec;
 			readonly output: typeof Types0.AuthDeploymentMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -461,6 +488,7 @@ declare const __api: {
 		readonly "rpc:Devices.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Disable";
+			readonly subject: "rpc.v1.auth.Devices.Disable";
 			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
 			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -470,6 +498,7 @@ declare const __api: {
 		readonly "rpc:Devices.Enable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Enable";
+			readonly subject: "rpc.v1.auth.Devices.Enable";
 			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
 			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -479,6 +508,7 @@ declare const __api: {
 		readonly "rpc:Devices.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.List";
+			readonly subject: "rpc.v1.auth.Devices.List";
 			readonly input: typeof Types0.AuthInstancesListRequestCodec;
 			readonly output: typeof Types0.AuthInstancesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -488,6 +518,7 @@ declare const __api: {
 		readonly "rpc:Devices.Provision": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Provision";
+			readonly subject: "rpc.v1.auth.Devices.Provision";
 			readonly input: typeof Types0.AuthInstanceProvisionRequestCodec;
 			readonly output: typeof Types0.AuthInstanceProvisionResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -497,6 +528,7 @@ declare const __api: {
 		readonly "rpc:Devices.Remove": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Remove";
+			readonly subject: "rpc.v1.auth.Devices.Remove";
 			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
 			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -506,6 +538,7 @@ declare const __api: {
 		readonly "rpc:Issuers.ResolveChain": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Issuers.ResolveChain";
+			readonly subject: "rpc.v1.auth.Issuers.ResolveChain";
 			readonly input: typeof Types0.AuthIssuerChainRequestCodec;
 			readonly output: typeof Types0.AuthIssuerChainResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -515,6 +548,7 @@ declare const __api: {
 		readonly "rpc:Issuers.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Issuers.Revoke";
+			readonly subject: "rpc.v1.auth.Issuers.Revoke";
 			readonly input: typeof Types0.AuthIssuerRevokeRequestCodec;
 			readonly output: typeof Types0.AuthIssuerRevokeResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -524,6 +558,7 @@ declare const __api: {
 		readonly "rpc:Issuers.Rotate": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Issuers.Rotate";
+			readonly subject: "rpc.v1.auth.Issuers.Rotate";
 			readonly input: typeof Types0.AuthIssuerRotateRequestCodec;
 			readonly output: typeof Types0.AuthIssuerRotateResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -533,6 +568,7 @@ declare const __api: {
 		readonly "rpc:OAuthClients.Delete": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OAuthClients.Delete";
+			readonly subject: "rpc.v1.auth.OAuthClients.Delete";
 			readonly input: typeof Types0.AuthOAuthClientMutationRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -542,6 +578,7 @@ declare const __api: {
 		readonly "rpc:OAuthClients.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OAuthClients.Disable";
+			readonly subject: "rpc.v1.auth.OAuthClients.Disable";
 			readonly input: typeof Types0.AuthOAuthClientMutationRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -551,6 +588,7 @@ declare const __api: {
 		readonly "rpc:OAuthClients.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OAuthClients.Get";
+			readonly subject: "rpc.v1.auth.OAuthClients.Get";
 			readonly input: typeof Types0.AuthOAuthClientGetRequestCodec;
 			readonly output: typeof Types0.AuthOAuthClientGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -560,6 +598,7 @@ declare const __api: {
 		readonly "rpc:OAuthClients.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OAuthClients.List";
+			readonly subject: "rpc.v1.auth.OAuthClients.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthOAuthClientsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -569,6 +608,7 @@ declare const __api: {
 		readonly "rpc:OAuthClients.Put": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OAuthClients.Put";
+			readonly subject: "rpc.v1.auth.OAuthClients.Put";
 			readonly input: typeof Types0.AuthOAuthClientPutRequestCodec;
 			readonly output: typeof Types0.AuthOAuthClientGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -578,6 +618,7 @@ declare const __api: {
 		readonly "rpc:OIDCProviders.Delete": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCProviders.Delete";
+			readonly subject: "rpc.v1.auth.OIDCProviders.Delete";
 			readonly input: typeof Types0.AuthOIDCProviderMutationRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -587,6 +628,7 @@ declare const __api: {
 		readonly "rpc:OIDCProviders.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCProviders.Disable";
+			readonly subject: "rpc.v1.auth.OIDCProviders.Disable";
 			readonly input: typeof Types0.AuthOIDCProviderMutationRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -596,6 +638,7 @@ declare const __api: {
 		readonly "rpc:OIDCProviders.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCProviders.Get";
+			readonly subject: "rpc.v1.auth.OIDCProviders.Get";
 			readonly input: typeof Types0.AuthOIDCProviderGetRequestCodec;
 			readonly output: typeof Types0.AuthOIDCProviderGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -605,6 +648,7 @@ declare const __api: {
 		readonly "rpc:OIDCProviders.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCProviders.List";
+			readonly subject: "rpc.v1.auth.OIDCProviders.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthOIDCProvidersListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -614,6 +658,7 @@ declare const __api: {
 		readonly "rpc:OIDCProviders.Put": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCProviders.Put";
+			readonly subject: "rpc.v1.auth.OIDCProviders.Put";
 			readonly input: typeof Types0.AuthOIDCProviderPutRequestCodec;
 			readonly output: typeof Types0.AuthOIDCProviderGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -623,6 +668,7 @@ declare const __api: {
 		readonly "rpc:OIDCRoleMappings.Delete": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCRoleMappings.Delete";
+			readonly subject: "rpc.v1.auth.OIDCRoleMappings.Delete";
 			readonly input: typeof Types0.AuthOIDCRoleMappingDeleteRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -632,6 +678,7 @@ declare const __api: {
 		readonly "rpc:OIDCRoleMappings.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCRoleMappings.List";
+			readonly subject: "rpc.v1.auth.OIDCRoleMappings.List";
 			readonly input: typeof Types0.AuthOIDCRoleMappingsListRequestCodec;
 			readonly output: typeof Types0.AuthOIDCRoleMappingsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -641,6 +688,7 @@ declare const __api: {
 		readonly "rpc:OIDCRoleMappings.Put": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:OIDCRoleMappings.Put";
+			readonly subject: "rpc.v1.auth.OIDCRoleMappings.Put";
 			readonly input: typeof Types0.AuthOIDCRoleMappingPutRequestCodec;
 			readonly output: typeof Types0.AuthOIDCRoleMappingPutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -650,6 +698,7 @@ declare const __api: {
 		readonly "rpc:PlatformDelegations.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:PlatformDelegations.List";
+			readonly subject: "rpc.v1.auth.PlatformDelegations.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthPlatformDelegationsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -659,6 +708,7 @@ declare const __api: {
 		readonly "rpc:PlatformDelegations.Put": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:PlatformDelegations.Put";
+			readonly subject: "rpc.v1.auth.PlatformDelegations.Put";
 			readonly input: typeof Types0.AuthPlatformDelegationPutRequestCodec;
 			readonly output: typeof Types0.AuthPlatformDelegationPutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -668,6 +718,7 @@ declare const __api: {
 		readonly "rpc:PlatformDelegations.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:PlatformDelegations.Revoke";
+			readonly subject: "rpc.v1.auth.PlatformDelegations.Revoke";
 			readonly input: typeof Types0.AuthPlatformDelegationRevokeRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -677,6 +728,7 @@ declare const __api: {
 		readonly "rpc:PlatformPrivileges.Assign": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:PlatformPrivileges.Assign";
+			readonly subject: "rpc.v1.auth.PlatformPrivileges.Assign";
 			readonly input: typeof Types0.AuthPlatformAssignRequestCodec;
 			readonly output: typeof Types0.AuthPlatformAssignResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -686,6 +738,7 @@ declare const __api: {
 		readonly "rpc:PlatformPrivileges.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:PlatformPrivileges.List";
+			readonly subject: "rpc.v1.auth.PlatformPrivileges.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthPlatformAssignmentsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -695,6 +748,7 @@ declare const __api: {
 		readonly "rpc:PlatformPrivileges.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:PlatformPrivileges.Revoke";
+			readonly subject: "rpc.v1.auth.PlatformPrivileges.Revoke";
 			readonly input: typeof Types0.AuthPlatformRevokeRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -704,6 +758,7 @@ declare const __api: {
 		readonly "rpc:Principals.EffectiveAccess": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Principals.EffectiveAccess";
+			readonly subject: "rpc.v1.auth.Principals.EffectiveAccess";
 			readonly input: typeof Types0.AuthPrincipalRequestCodec;
 			readonly output: typeof Types0.AuthEffectiveAccessResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -713,6 +768,7 @@ declare const __api: {
 		readonly "rpc:Resources.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Get";
+			readonly subject: "rpc.v1.auth.Resources.Get";
 			readonly input: typeof Types0.AuthResourceGetRequestCodec;
 			readonly output: typeof Types0.AuthResourceGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -722,6 +778,7 @@ declare const __api: {
 		readonly "rpc:Resources.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.List";
+			readonly subject: "rpc.v1.auth.Resources.List";
 			readonly input: typeof Types0.AuthResourcesListRequestCodec;
 			readonly output: typeof Types0.AuthResourcesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -731,6 +788,7 @@ declare const __api: {
 		readonly "rpc:Resources.Remove": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Remove";
+			readonly subject: "rpc.v1.auth.Resources.Remove";
 			readonly input: typeof Types0.AuthResourceRemoveRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -740,6 +798,7 @@ declare const __api: {
 		readonly "rpc:RoleAssignments.Assign": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:RoleAssignments.Assign";
+			readonly subject: "rpc.v1.auth.RoleAssignments.Assign";
 			readonly input: typeof Types0.AuthRoleAssignRequestCodec;
 			readonly output: typeof Types0.AuthRoleAssignResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -749,6 +808,7 @@ declare const __api: {
 		readonly "rpc:RoleAssignments.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:RoleAssignments.List";
+			readonly subject: "rpc.v1.auth.RoleAssignments.List";
 			readonly input: typeof Types0.AuthRoleAssignmentsListRequestCodec;
 			readonly output: typeof Types0.AuthRoleAssignmentsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -758,6 +818,7 @@ declare const __api: {
 		readonly "rpc:RoleAssignments.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:RoleAssignments.Revoke";
+			readonly subject: "rpc.v1.auth.RoleAssignments.Revoke";
 			readonly input: typeof Types0.AuthRoleRevokeRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -767,6 +828,7 @@ declare const __api: {
 		readonly "rpc:Roles.Delete": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Roles.Delete";
+			readonly subject: "rpc.v1.auth.Roles.Delete";
 			readonly input: typeof Types0.AuthRoleDeleteRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -776,6 +838,7 @@ declare const __api: {
 		readonly "rpc:Roles.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Roles.Get";
+			readonly subject: "rpc.v1.auth.Roles.Get";
 			readonly input: typeof Types0.AuthRoleGetRequestCodec;
 			readonly output: typeof Types0.AuthRoleGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -785,6 +848,7 @@ declare const __api: {
 		readonly "rpc:Roles.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Roles.List";
+			readonly subject: "rpc.v1.auth.Roles.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthRolesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -794,6 +858,7 @@ declare const __api: {
 		readonly "rpc:Roles.Put": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Roles.Put";
+			readonly subject: "rpc.v1.auth.Roles.Put";
 			readonly input: typeof Types0.AuthRolePutRequestCodec;
 			readonly output: typeof Types0.AuthRolePutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -803,6 +868,7 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Disable";
+			readonly subject: "rpc.v1.auth.ServiceInstances.Disable";
 			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
 			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -812,6 +878,7 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Enable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Enable";
+			readonly subject: "rpc.v1.auth.ServiceInstances.Enable";
 			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
 			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -821,6 +888,7 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.List";
+			readonly subject: "rpc.v1.auth.ServiceInstances.List";
 			readonly input: typeof Types0.AuthInstancesListRequestCodec;
 			readonly output: typeof Types0.AuthInstancesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -830,6 +898,7 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Provision": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Provision";
+			readonly subject: "rpc.v1.auth.ServiceInstances.Provision";
 			readonly input: typeof Types0.AuthInstanceProvisionRequestCodec;
 			readonly output: typeof Types0.AuthInstanceProvisionResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -839,6 +908,7 @@ declare const __api: {
 		readonly "rpc:ServiceInstances.Remove": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ServiceInstances.Remove";
+			readonly subject: "rpc.v1.auth.ServiceInstances.Remove";
 			readonly input: typeof Types0.AuthInstanceMutationRequestCodec;
 			readonly output: typeof Types0.AuthInstanceMutationResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -848,6 +918,7 @@ declare const __api: {
 		readonly "rpc:Sessions.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.List";
+			readonly subject: "rpc.v1.auth.Sessions.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthSessionsListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -857,6 +928,7 @@ declare const __api: {
 		readonly "rpc:Sessions.Logout": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.Logout";
+			readonly subject: "rpc.v1.auth.Sessions.Logout";
 			readonly input: typeof Types0.AuthEmptyCodec;
 			readonly output: typeof Types0.AuthSessionsLogoutResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -866,6 +938,7 @@ declare const __api: {
 		readonly "rpc:Sessions.Me": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.Me";
+			readonly subject: "rpc.v1.auth.Sessions.Me";
 			readonly input: typeof Types0.AuthEmptyCodec;
 			readonly output: typeof Types0.AuthSessionsMeResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -875,6 +948,7 @@ declare const __api: {
 		readonly "rpc:Sessions.Revoke": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Sessions.Revoke";
+			readonly subject: "rpc.v1.auth.Sessions.Revoke";
 			readonly input: typeof Types0.AuthLoginRevokeRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -884,6 +958,7 @@ declare const __api: {
 		readonly "rpc:UserIdentities.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:UserIdentities.List";
+			readonly subject: "rpc.v1.auth.UserIdentities.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthUserIdentitiesListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -893,6 +968,7 @@ declare const __api: {
 		readonly "rpc:UserIdentities.Unlink": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:UserIdentities.Unlink";
+			readonly subject: "rpc.v1.auth.UserIdentities.Unlink";
 			readonly input: typeof Types0.AuthUserIdentityUnlinkRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -902,6 +978,7 @@ declare const __api: {
 		readonly "rpc:Users.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Create";
+			readonly subject: "rpc.v1.auth.Users.Create";
 			readonly input: typeof Types0.AuthUserCreateRequestCodec;
 			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -911,6 +988,7 @@ declare const __api: {
 		readonly "rpc:Users.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Get";
+			readonly subject: "rpc.v1.auth.Users.Get";
 			readonly input: typeof Types0.AuthUserGetRequestCodec;
 			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -920,6 +998,7 @@ declare const __api: {
 		readonly "rpc:Users.IdentityLink.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.IdentityLink.Create";
+			readonly subject: "rpc.v1.auth.Users.IdentityLink.Create";
 			readonly input: typeof Types0.AuthIdentityLinkCreateRequestCodec;
 			readonly output: typeof Types0.AuthIdentityLinkCreateResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -929,6 +1008,7 @@ declare const __api: {
 		readonly "rpc:Users.List": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.List";
+			readonly subject: "rpc.v1.auth.Users.List";
 			readonly input: typeof Types0.AuthPageRequestCodec;
 			readonly output: typeof Types0.AuthUsersListResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -938,6 +1018,7 @@ declare const __api: {
 		readonly "rpc:Users.Password.Change": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Password.Change";
+			readonly subject: "rpc.v1.auth.Users.Password.Change";
 			readonly input: typeof Types0.AuthPasswordChangeRequestCodec;
 			readonly output: typeof Types0.AuthMutationResultCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -947,6 +1028,7 @@ declare const __api: {
 		readonly "rpc:Users.PasswordReset.Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.PasswordReset.Create";
+			readonly subject: "rpc.v1.auth.Users.PasswordReset.Create";
 			readonly input: typeof Types0.AuthPasswordResetCreateRequestCodec;
 			readonly output: typeof Types0.AuthPasswordResetCreateResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -956,6 +1038,7 @@ declare const __api: {
 		readonly "rpc:Users.Resolve": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Resolve";
+			readonly subject: "rpc.v1.auth.Users.Resolve";
 			readonly input: typeof Types0.AuthEmptyCodec;
 			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -965,6 +1048,7 @@ declare const __api: {
 		readonly "rpc:Users.Update": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Users.Update";
+			readonly subject: "rpc.v1.auth.Users.Update";
 			readonly input: typeof Types0.AuthUserUpdateRequestCodec;
 			readonly output: typeof Types0.AuthUserGetResponseCodec;
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
@@ -974,36 +1058,42 @@ declare const __api: {
 		readonly "event:AuthorizationSessions.Retired": {
 			readonly kind: "event";
 			readonly descriptorName: "event:AuthorizationSessions.Retired";
+			readonly subject: "events.v1.dHJlbGxpcy5hdXRoQHYx.AuthorizationSessions.Retired";
 			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Connections.Closed": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Connections.Closed";
+			readonly subject: "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Closed";
 			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Connections.Kicked": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Connections.Kicked";
+			readonly subject: "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Kicked";
 			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Connections.Opened": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Connections.Opened";
+			readonly subject: "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections.Opened";
 			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Issuers.Revoked": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Issuers.Revoked";
+			readonly subject: "events.v1.dHJlbGxpcy5hdXRoQHYx.Issuers.Revoked";
 			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Issuers.Rotated": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Issuers.Rotated";
+			readonly subject: "events.v1.dHJlbGxpcy5hdXRoQHYx.Issuers.Rotated";
 			readonly payload: typeof Types0.AuthSecurityEventCodec;
 			readonly parameters: readonly [];
 		};
@@ -1011,5 +1101,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "CF6mJ1tZZXKP6VWFqfKo3ey8wHhhcyNPEFybZ53NFPk";
+export declare const API_DIGEST: "cUMBXqBJgCmABzl490tbvdiToZbjAKY74ScNocCNYUQ";
 export {};

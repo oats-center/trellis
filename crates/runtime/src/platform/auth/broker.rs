@@ -8,6 +8,8 @@ use serde::Deserialize;
 use super::sqlite::{json, AuthError, SqliteAuthorizationStore};
 
 pub(crate) const ATTACHMENT_MARKER_PREFIX: &str = "trellis.auth.v1:";
+pub(crate) const MATERIAL_BUCKET: &str = "TRELLIS_AUTH_MATERIAL";
+pub(crate) const REVOCATION_BUCKET: &str = "TRELLIS_AUTH_REVOCATIONS";
 
 #[derive(Deserialize)]
 struct ServerIdentity {
@@ -98,6 +100,28 @@ pub(crate) async fn close_attachment(
 }
 
 impl SqliteAuthorizationStore {
+    /// Publish committed immutable verification material and await its broker acknowledgment.
+    pub(crate) async fn publish_verification_material(
+        &self,
+        material: &kv::Store,
+        kind: &str,
+        key: &str,
+    ) -> Result<(), AuthError> {
+        let prefix = match kind {
+            "authority" => "context",
+            "catalog" => "api",
+            "provider" => "provider",
+            "rotation" => "rotation",
+            _ => return Err(AuthError::Invalid("unknown verification material".into())),
+        };
+        let bytes = self.resolve_verification_material(kind, key)?;
+        material
+            .put(format!("{prefix}.{key}"), bytes.into())
+            .await
+            .map_err(|error| AuthError::Broker(error.to_string()))?;
+        Ok(())
+    }
+
     /// One ordinary worker turn: resume one enforcement page and a bounded
     /// outbox batch. Publication acknowledges durable JetStream acceptance;
     /// physical closure completes only after exact system-account evidence.
@@ -128,11 +152,8 @@ impl SqliteAuthorizationStore {
                                 .ok_or(AuthError::Denied)?
                                 .to_owned()
                         };
-                        let bytes = self.resolve_verification_material(kind, &key)?;
-                        material
-                            .put(format!("{kind}.{key}"), bytes.into())
-                            .await
-                            .map_err(|error| AuthError::Broker(error.to_string()))?;
+                        self.publish_verification_material(material, kind, &key)
+                            .await?;
                     }
                     "session_revoke" => {
                         let session = effect.payload["authorizationSessionId"]

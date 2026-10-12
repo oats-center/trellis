@@ -116,6 +116,7 @@ public_origin = "https://127.0.0.1:3000"
     let config = crate::config::RuntimeConfig::load_from_path(&config_path).unwrap();
     let oauth = config.resolve_oauth_listener().unwrap();
     f.store.settings.oauth_origin = origin.clone();
+    let admin = f.admin.clone();
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(Arc::new(f.store), &[17; 32]).unwrap()).unwrap(),
     );
@@ -124,7 +125,7 @@ public_origin = "https://127.0.0.1:3000"
         .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let stopping = shutdown.clone();
-    let router = super::super::oauth::router(engine, vec!["tls://127.0.0.1:4222".into()]);
+    let router = super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]);
     let server = tokio::spawn(listener.run(router, stopping));
     let metadata = format!("{origin}/.well-known/oauth-authorization-server");
     let untrusted = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -174,6 +175,21 @@ public_origin = "https://127.0.0.1:3000"
         .send()
         .await
         .is_err());
+    // Once the retained signer retires, this already-running listener must not
+    // keep advertising the old startup trust snapshot to new clients.
+    let next = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
+    let public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
+    engine
+        .server
+        .store()
+        .authority
+        .rotate_issuer(&super::mutation(&admin, &public), &public, NOW + 1)
+        .unwrap();
+    let response = http.get(&metadata).send().await.unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+    );
     shutdown.cancel();
     server.await.unwrap().unwrap();
 }

@@ -54,6 +54,7 @@ declare const __api: {
 		readonly "rpc:Delete": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Delete";
+			readonly subject: "rpc.v1.state.Delete";
 			readonly input: typeof Types0.StateDeleteRequestCodec;
 			readonly output: typeof Types0.StateDeleteResponseCodec;
 			readonly errors: readonly [typeof Conflict];
@@ -63,6 +64,7 @@ declare const __api: {
 		readonly "rpc:Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Get";
+			readonly subject: "rpc.v1.state.Get";
 			readonly input: typeof Types0.StateGetRequestCodec;
 			readonly output: typeof Types0.StateGetResponseCodec;
 			readonly errors: readonly [typeof CorruptRepresentation, typeof UnsupportedRepresentation];
@@ -72,6 +74,7 @@ declare const __api: {
 		readonly "rpc:Put": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Put";
+			readonly subject: "rpc.v1.state.Put";
 			readonly input: typeof Types0.StatePutRequestCodec;
 			readonly output: typeof Types0.StatePutResponseCodec;
 			readonly errors: readonly [typeof Conflict, typeof CorruptRepresentation, typeof UnsupportedRepresentation];
@@ -81,6 +84,7 @@ declare const __api: {
 		readonly "rpc:Resources.Inspect": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Inspect";
+			readonly subject: "rpc.v1.state.Resources.Inspect";
 			readonly input: typeof Types0.ResourcesInspectRequestCodec;
 			readonly output: typeof Types0.ResourcesInspectResponseCodec;
 			readonly errors: readonly [typeof CorruptRepresentation, typeof UnsupportedRepresentation];
@@ -90,6 +94,7 @@ declare const __api: {
 		readonly "rpc:Resources.Query": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Query";
+			readonly subject: "rpc.v1.state.Resources.Query";
 			readonly input: typeof Types0.ResourcesQueryRequestCodec;
 			readonly output: typeof Types0.ResourcesQueryResponseCodec;
 			readonly errors: readonly [typeof CorruptRepresentation, typeof UnsupportedRepresentation];

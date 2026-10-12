@@ -204,15 +204,15 @@ model AuthEffectiveAccessResponse {
 }
 
 model AuthPackageSourceEvidence {
-  alias: AuthShortName;
-  path: AuthPath;
+  name: AuthName;
+  version: AuthShortName;
+  digest: AuthDigest;
   source: string;
 }
 model AuthPackageEvidence {
-  packageName: AuthName;
-  packageVersion: AuthShortName;
-  sources: list<AuthPackageSourceEvidence>;
-  dependencies: list<AuthPackageEvidence>;
+  rootPackage: AuthName;
+  rootDigest: AuthDigest;
+  packages: list<AuthPackageSourceEvidence>;
 }
 model AuthAcceptedApi {
   apiId: AuthApiId;
@@ -642,21 +642,23 @@ model AuthInstanceMutationRequest {
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthInstanceMutationResponse { instance: AuthProvisionedInstance; enforcement?: AuthEnforcementProgress; }
+enum AuthResourceOwnerKind { "user"; "deployment"; }
+enum AuthResourceState { "pending"; "ready"; "failed"; "detached"; "destroying"; }
 model AuthResourceBinding {
-  resourceId: ulid;
-  principalId: ulid;
-  deploymentId: ulid;
+  resourceId: AuthDigest;
+  ownerKind: AuthResourceOwnerKind;
+  ownerId: ulid;
   participantId: string;
   localName: string;
   kind: AuthResourceKind;
   revision: AuthRevision;
-  ready: bool;
+  state: AuthResourceState;
 }
-model AuthResourceGetRequest { resourceId: ulid; }
+model AuthResourceGetRequest { resourceId: AuthDigest; }
 model AuthResourceGetResponse { resource: AuthResourceBinding; }
-model AuthResourcesListRequest { principalId?: ulid; deploymentId?: ulid; page?: CursorQuery; }
+model AuthResourcesListRequest { ownerKind?: AuthResourceOwnerKind; ownerId?: ulid; state?: AuthResourceState; page?: CursorQuery; }
 type AuthResourcesListResponse = CursorPage<AuthResourceBinding>;
-model AuthResourceRemoveRequest { resourceId: ulid; expectedRevision: AuthRevision; idempotencyKey: AuthIdempotencyKey; }
+model AuthResourceRemoveRequest { resourceId: AuthDigest; expectedRevision: AuthRevision; idempotencyKey: AuthIdempotencyKey; }
 
 model AuthSecurityEvent {
   eventId: ulid;

@@ -38,6 +38,27 @@ removes only affected optional grants.
 Services receive typed resource handles from `TrellisService.connect(...)`.
 They do not fetch raw bindings or derive physical names.
 
+`Auth.ServiceInstances.Provision` commits the immutable caller-supplied public key
+and awaits the same native resource producer used by runtime startup before
+returning success. Empty declaration sets and native KV are supported; other
+resource declarations currently return an explicit failure rather than empty
+bindings. Retry the same provisioning request after a broker failure to resume
+materialization without replacing the instance or destroying retained data.
+
+Omitting a resource in a deployment version, disabling a deployment, or removing
+the deployment detaches its resources. It does **not** delete their allocations
+or data. `Auth.Resources.List` includes detached resources; filter by `ownerKind`
+and `ownerId` when needed. Resource IDs are digests, and each row exposes its
+actual lifecycle `state`, participant, local name, kind, and revision.
+
+A compatible approved re-add reuses the retained allocation and its data. Changes
+that reduce KV history or TTL retention are rejected instead of recreating the
+bucket. An administrator may explicitly choose `Auth.Resources.Remove` for a
+detached KV resource, supplying its current revision. Active resources cannot be
+deleted. Trellis checks the physical ownership marker before deleting only the
+selected allocation. If the broker call fails, retry the same request to resume
+that manual choice; startup never chooses or resumes deletion automatically.
+
 ## Administration
 
 The `Admin` platform privilege gates Auth administrative RPCs. It is carried in

@@ -4,6 +4,7 @@ agent cli {
   use auth {
     capability capabilitiesRead;
     capability rolesRead;
+    capability resourcesRead;
     capability rolesPut;
     capability roleAssignmentsRead;
     capability roleAssignmentsAssign;
@@ -27,21 +28,21 @@ agent cli {
     capability serviceInstancesProvision;
     capability usersCreate;
     capability usersPasswordReset;
-    required capability sessionsRead;
-    required capability sessionsRevoke;
+    capability sessionsRead;
+    capability sessionsRevoke;
     required capability identitiesRead;
   }
   use events {
-    required capability consumersInspect;
-    required capability deadLettersDismiss;
-    required capability deadLettersInspect;
-    required capability deadLettersReplay;
-    required capability query;
+    capability consumersInspect;
+    capability deadLettersDismiss;
+    capability deadLettersInspect;
+    capability deadLettersReplay;
+    capability query;
   }
-  use health { required capability query; }
-  use jobs { required capability query; }
+  use health { capability query; }
+  use jobs { capability query; }
   use state {
-    required capability delete;
-    required capability resourcesInspect;
+    capability delete;
+    capability resourcesInspect;
   }
 }

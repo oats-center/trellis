@@ -636,7 +636,8 @@ impl<T> Stream for LiveSubscription<T> {
 pub(crate) struct ConsumerControl {
     pub(crate) nats: async_nats::Client,
     pub(crate) auth: Arc<crate::client::SessionAuth>,
-    pub(crate) contexts: Arc<crate::client::AuthorizationContextCache>,
+    pub(crate) owner: crate::client::AuthorizationOwner,
+    pub(crate) action: super::authority::LiveAction,
     pub(crate) inbox_prefix: String,
     pub(crate) session_id: String,
     pub(crate) control_subject: String,
@@ -665,22 +666,32 @@ impl ConsumerControl {
         reply: &str,
         body: &[u8],
     ) -> Result<(async_nats::HeaderMap, String), TrellisClientError> {
-        let context_digest = self
-            .contexts
-            .context_digest()
-            .map_err(|error| TrellisClientError::AuthorizationUnavailable(error.to_string()))?;
+        let authority = self.owner.own_authority()?;
+        let context_digest = authority.digest();
+        let api = authority
+            .authority()
+            .apis
+            .iter()
+            .find(|api| api.api_id == self.action.api_id)
+            .ok_or_else(|| {
+                TrellisClientError::AuthorizationUnavailable("live action API unavailable".into())
+            })?;
         let iat = crate::client::now_iat_seconds() as i64;
         let request_id = crate::client::new_request_id();
-        let proof = self.auth.create_request_proof(
-            &context_digest,
-            &self.control_subject,
-            reply,
-            body,
-            iat,
-            &request_id,
-        )?;
+        let request = trellis_protocol::SessionRequest {
+            authority_digest: context_digest.to_owned(),
+            api_id: self.action.api_id.clone(),
+            api_generation: api.generation,
+            accepted_revision: api.accepted_revision,
+            action: self.action.identity.name.clone(),
+            subject: self.control_subject.clone(),
+            reply_subject: Some(reply.to_owned()),
+            request_id: request_id.clone(),
+            issued_at: iat,
+        };
+        let (proof, _) = self.auth.create_request_proof(&request, body)?;
         let mut headers = async_nats::HeaderMap::new();
-        headers.insert("authorization-context", context_digest.as_str());
+        headers.insert("authorization-context", context_digest);
         headers.insert("session-key", self.auth.session_key.as_str());
         headers.insert("proof", proof.as_str());
         headers.insert("iat", iat.to_string().as_str());
@@ -709,7 +720,8 @@ impl ConsumerControl {
         let control = ConsumerControl {
             nats: self.nats.clone(),
             auth: self.auth.clone(),
-            contexts: self.contexts.clone(),
+            owner: self.owner.clone(),
+            action: self.action.clone(),
             inbox_prefix: self.inbox_prefix.clone(),
             session_id: self.session_id.clone(),
             control_subject: self.control_subject.clone(),

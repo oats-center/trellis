@@ -15,16 +15,6 @@ pub const OAUTH_ADMISSION_FORMAT_V1: &str = "trellis.oauth-admission.v1";
 /// Provisioned identities authenticate CONNECT independently of OAuth and HTTP.
 pub const PROVISIONED_ADMISSION_FORMAT_V1: &str = "trellis.provisioned-admission.v1";
 
-/// One generated API implementation bound by a provisioned CONNECT proof.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProvisionedImplementation {
-    /// Exact version-qualified API identity.
-    pub api_id: String,
-    /// Accepted implementation digest from the deployed participant.
-    pub implementation_digest: String,
-}
-
 /// Direct service/device admission, signed by the installed identity key.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -37,10 +27,6 @@ pub struct ProvisionedAdmission {
     pub audience_nats_account: String,
     /// Installed identity-key identifier, never asserted public-key bytes.
     pub credential_id: String,
-    /// Exact provisioned service/device binding.
-    pub binding: crate::SessionBinding,
-    /// Implementations in ascending API-ID order, without duplicate IDs.
-    pub implementations: Vec<ProvisionedImplementation>,
     /// Fresh process runtime nonce.
     pub runtime_id: String,
     /// Fresh ephemeral user NKey that signs the broker's CONNECT nonce.
@@ -63,49 +49,21 @@ pub struct SignedProvisionedAdmission {
 
 impl ProvisionedAdmission {
     fn digest(&self) -> Result<[u8; 32], ProtocolError> {
-        let (deployment, instance, participant) = match &self.binding {
-            crate::SessionBinding::Service {
-                deployment_id,
-                instance_id,
-                participant_id,
-            }
-            | crate::SessionBinding::Device {
-                deployment_id,
-                instance_id,
-                participant_id,
-            } => (deployment_id, instance_id, participant_id),
-            _ => return Err(invalid()),
-        };
         if self.format != PROVISIONED_ADMISSION_FORMAT_V1
             || self.audience_nats_account.is_empty()
             || self.audience_nats_account.len() > 256
-            || participant.is_empty()
-            || participant.len() > 2048
             || self.issued_at < 0
             || self.expires_at <= self.issued_at
             || self.expires_at.saturating_sub(self.issued_at) > 60
-            || self.implementations.len() > 256
-            || self
-                .implementations
-                .windows(2)
-                .any(|pair| pair[0].api_id >= pair[1].api_id)
-            || self.implementations.iter().any(|implementation| {
-                implementation.api_id.is_empty()
-                    || implementation.api_id.len() > 2048
-                    || implementation.implementation_digest.is_empty()
-                    || implementation.implementation_digest.len() > 256
-            })
         {
             return Err(invalid());
         }
-        for id in [&self.trellis_instance_id, deployment, instance] {
-            if ulid::Ulid::from_string(id)
-                .map_err(|_| invalid())?
-                .to_string()
-                != *id
-            {
-                return Err(invalid());
-            }
+        if ulid::Ulid::from_string(&self.trellis_instance_id)
+            .map_err(|_| invalid())?
+            .to_string()
+            != self.trellis_instance_id
+        {
+            return Err(invalid());
         }
         canonical::<32>(&self.credential_id)?;
         canonical::<16>(&self.runtime_id)?;
@@ -164,6 +122,59 @@ pub fn verify_provisioned_admission(
     Ok(signed)
 }
 
+#[cfg(test)]
+mod attachment_proof_tests {
+    use super::*;
+
+    #[test]
+    fn exact_socket_proof_rejects_noncanonical_identity_and_expired_request() {
+        let key = SigningKey::from_bytes(&[37; 32]);
+        let public = URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes());
+        let subject = admission_get_subject(&public).unwrap();
+        let reply = format!("{}.reply", admission_inbox_prefix(&public).unwrap());
+        let request = AdmissionGet {
+            trellis_instance_id: "01JY0000000000000000000001".into(),
+            runtime_id: URL_SAFE_NO_PAD.encode([8; 16]),
+            session_public_key: public,
+            attachment_id: "01JY0000000000000000000002".into(),
+            request_nonce: URL_SAFE_NO_PAD.encode([7; 16]),
+            issued_at: 100,
+        };
+        let signed = sign_admission_get(request.clone(), &subject, &reply, &key).unwrap();
+        verify_admission_get(&signed, &subject, &reply, &request.trellis_instance_id, 100).unwrap();
+        assert!(
+            verify_admission_get(&signed, &subject, &reply, &request.trellis_instance_id, 131)
+                .is_err()
+        );
+        for attachment in [
+            "",
+            "01jy0000000000000000000002",
+            "00000000-0000-0000-0000-000000000002",
+        ] {
+            assert!(sign_admission_get(
+                AdmissionGet {
+                    attachment_id: attachment.into(),
+                    ..request.clone()
+                },
+                &subject,
+                &reply,
+                &key
+            )
+            .is_err());
+        }
+        let mut swapped = signed;
+        swapped.request.request_nonce = URL_SAFE_NO_PAD.encode([9; 16]);
+        assert!(verify_admission_get(
+            &swapped,
+            &subject,
+            &reply,
+            &request.trellis_instance_id,
+            100
+        )
+        .is_err());
+    }
+}
+
 /// Private inbox namespace derived from the ephemeral session key.
 pub fn admission_inbox_prefix(session_public_key: &str) -> Result<String, ProtocolError> {
     let key = canonical::<32>(session_public_key)?;
@@ -186,6 +197,8 @@ pub struct AdmissionGet {
     pub runtime_id: String,
     /// Canonical ephemeral Ed25519 public key, not a durable identity assertion.
     pub session_public_key: String,
+    /// Exact physical socket attachment certified by the broker at CONNECT.
+    pub attachment_id: String,
     /// Fresh canonical random 128-bit reply-correlation nonce.
     pub request_nonce: String,
     /// Unix signing time in seconds.
@@ -257,6 +270,7 @@ fn admission_get_digest(
     reply: &str,
 ) -> Result<[u8; 32], ProtocolError> {
     canonical::<16>(&request.runtime_id)?;
+    crate::authorization::validate_id(&request.attachment_id, "attachmentId")?;
     canonical::<16>(&request.request_nonce)?;
     if request.trellis_instance_id.is_empty()
         || request.trellis_instance_id.len() > 256
@@ -332,7 +346,7 @@ fn admission_context_digest(response: &AdmissionContext) -> Result<[u8; 32], Pro
         || response.expires_at <= response.issued_at
         || response.expires_at - response.issued_at > 30
         || response.session_authority.is_empty()
-        || response.session_authority.len() > 64 * 1024
+        || response.session_authority.len() > crate::MAX_SESSION_AUTHORITY_BYTES
     {
         return Err(invalid());
     }
@@ -354,10 +368,14 @@ pub fn sign_admission_context(
         return Err(invalid());
     }
     let digest = admission_context_digest(&response)?;
-    Ok(SignedAdmissionContext {
+    let signed = SignedAdmissionContext {
         response,
         signature: URL_SAFE_NO_PAD.encode(signer.sign(&digest).to_bytes()),
-    })
+    };
+    if serde_json::to_vec(&signed)?.len() > MAX_ADMISSION_RESPONSE_BYTES {
+        return Err(invalid());
+    }
+    Ok(signed)
 }
 
 /// Verify an installation reply against the pinned issuer and original request.
@@ -373,6 +391,7 @@ pub fn verify_admission_context(
     if bytes.is_empty() || bytes.len() > MAX_ADMISSION_RESPONSE_BYTES {
         return Err(invalid());
     }
+    admission_get_digest(request, subject, reply)?;
     let signed: SignedAdmissionContext = serde_json::from_slice(bytes).map_err(|_| invalid())?;
     let response = &signed.response;
     if issuer.state != AuthorityIssuerState::Active
@@ -381,6 +400,11 @@ pub fn verify_admission_context(
         || response.audience_nats_account != account
         || response.runtime_id != request.runtime_id
         || response.request_nonce != request.request_nonce
+        || response
+            .registry
+            .get("attachmentId")
+            .and_then(serde_json::Value::as_str)
+            != Some(request.attachment_id.as_str())
         || response.request_subject != subject
         || response.reply_subject != reply
         || response.issued_at > now.saturating_add(5)
@@ -396,7 +420,10 @@ pub fn verify_admission_context(
             &Signature::from_bytes(&canonical::<64>(&signed.signature)?),
         )
         .map_err(|_| invalid())?;
-    let context = crate::parse_session_authority(response.session_authority.as_bytes(), 64 * 1024)?;
+    let context = crate::parse_session_authority(
+        response.session_authority.as_bytes(),
+        crate::MAX_SESSION_AUTHORITY_BYTES,
+    )?;
     if context.unsigned.runtime_id != request.runtime_id
         || context.unsigned.session_public_key != request.session_public_key
         || context.unsigned.trellis_instance_id != request.trellis_instance_id

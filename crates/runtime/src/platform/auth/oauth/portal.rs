@@ -29,6 +29,53 @@ pub(super) struct PortalAuthorization {
     pub(super) request: ConsentRequest,
     pub(super) public_jwk: serde_json::Value,
     pub(super) expires_at: i64,
+    pub(super) presentation: Option<ConsentPresentation>,
+}
+
+/// Server-owned meaning of one displayed decision. Kept only in the bounded
+/// pending authorization artifact, never carried in runtime authority.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ConsentPresentation {
+    pub(crate) id: String,
+    pub(crate) principal_id: String,
+    pub(crate) login_session_id: String,
+    pub(crate) client_id: String,
+    pub(crate) binding_kind: String,
+    pub(crate) binding_value: String,
+    pub(crate) selection: super::super::policy::CapabilitySelection,
+    pub(crate) capabilities:
+        std::collections::BTreeMap<String, Option<trellis_protocol::CapabilityAuthority>>,
+    pub(crate) api_generations: std::collections::BTreeMap<String, u64>,
+    pub(crate) required_privileges: Vec<trellis_protocol::PlatformPrivilege>,
+    pub(crate) optional_privileges: Vec<trellis_protocol::PlatformPrivilege>,
+    // Authenticated custody evidence filled when reading the sealed artifact.
+    #[serde(skip)]
+    pub(crate) lookup_hash: String,
+    #[serde(skip)]
+    pub(crate) sealed_digest: String,
+}
+
+#[derive(Debug)]
+pub(crate) enum ApprovalError {
+    ConsentChanged,
+    Protocol(oauth_as::error::ErrorResponse),
+}
+
+impl From<oauth_as::error::ErrorResponse> for ApprovalError {
+    fn from(error: oauth_as::error::ErrorResponse) -> Self {
+        Self::Protocol(error)
+    }
+}
+
+impl From<AuthError> for ApprovalError {
+    fn from(error: AuthError) -> Self {
+        match error {
+            AuthError::ConsentChanged => Self::ConsentChanged,
+            _ => Self::Protocol(oauth_as::error::ErrorResponse::new(
+                oauth_as::error::ErrorCode::AccessDenied,
+            )),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

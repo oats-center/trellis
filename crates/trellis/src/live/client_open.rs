@@ -8,13 +8,13 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use trellis_protocol::{
-    derive_live_data_subject, LiveErrorCode, LiveFrame, LiveOffer, LiveOfferKind, LiveSessionKind,
-    PermissionAtom, OPEN_RESERVATION_MS,
+    derive_live_data_subject, CatalogActionIdentity, LiveErrorCode, LiveFrame, LiveOffer,
+    LiveOfferKind, LiveSessionKind, OPEN_RESERVATION_MS,
 };
 
-use crate::client::{AuthorizationProviderCache, TransportLease, TrellisClientError};
+use crate::client::{AuthorizationOwner, TransportLease, TrellisClientError};
 
-use super::authority::{LiveAuthorityGuard, LiveGuardRequirement, PinnedPeerIdentity};
+use super::authority::{LiveAction, LiveAuthorityGuard, LiveGuardRequirement, PinnedPeerIdentity};
 use super::deadlines::{DeadlineAction, LiveDeadlines};
 use super::subscription::{
     activate_control, authority_failure, consumer_failure, credit_control, end_ack_control,
@@ -26,7 +26,7 @@ use super::types::{LiveCancellation, LiveEnd, LiveEndReason};
 pub(crate) struct ClientOpen<'a> {
     pub kind: LiveSessionKind,
     pub api_id: &'a str,
-    /// Descriptor/binding-derived route the signed offer must echo.
+    /// Canonical generated route the signed offer must echo.
     pub base_subject: &'a str,
     /// NATS subject the opening request is published on.
     ///
@@ -38,7 +38,7 @@ pub(crate) struct ClientOpen<'a> {
     pub receive_max_payload_bytes: u64,
     /// Exact descriptor-derived Subscribe or Observe permission the remote
     /// provider's installed participant must hold for this route.
-    pub permission: PermissionAtom,
+    pub action: CatalogActionIdentity,
 }
 
 /// One verified prepared observation, before its first iteration.
@@ -70,7 +70,7 @@ pub(crate) enum ClientOpenOutcome {
 /// identity/limits, or a lost opening reply. No prepared handle is returned.
 pub(crate) async fn open_client_session(
     client: &crate::client::TrellisClient,
-    provider: &AuthorizationProviderCache,
+    provider: &AuthorizationOwner,
     open: ClientOpen<'_>,
     lease: TransportLease,
     request_deadline: std::time::Instant,
@@ -89,18 +89,51 @@ pub(crate) async fn open_client_session(
             .min(tokio::time::Instant::now() + Duration::from_millis(client.timeout_ms().max(1)))
     };
     let consumer = client.own_pinned_identity()?;
-    let consumer_digest = client.authorization_context_digest()?;
+    let consumer_digest = client
+        .authorization_owner()
+        .own_authority()?
+        .digest()
+        .to_owned();
     let subject = open.publish_subject.to_owned();
     let reply = format!(
         "{}.{}",
         client.inbox_prefix(),
         LIVE_INBOX_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
-    let headers = client.signed_headers(&subject, &reply, &open.body)?;
-    let request_id = headers
-        .get("request-id")
-        .map(ToString::to_string)
-        .unwrap_or_default();
+    let authority = provider.own_authority()?;
+    let api = authority
+        .authority()
+        .apis
+        .iter()
+        .find(|api| api.api_id == open.api_id)
+        .ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable("live API unavailable".into())
+        })?;
+    let request_id = crate::client::new_request_id();
+    let request = trellis_protocol::SessionRequest {
+        authority_digest: consumer_digest.clone(),
+        api_id: open.api_id.to_owned(),
+        api_generation: api.generation,
+        accepted_revision: api.accepted_revision,
+        action: open.action.name.clone(),
+        subject: subject.clone(),
+        reply_subject: Some(reply.clone()),
+        request_id: request_id.clone(),
+        issued_at: crate::client::now_iat_seconds() as i64,
+    };
+    let (proof, _) = client
+        .auth_handle()
+        .create_request_proof(&request, &open.body)?;
+    let mut headers = async_nats::HeaderMap::new();
+    headers.insert(
+        "Trellis-Session-Request",
+        serde_json::to_string(&request)?.as_str(),
+    );
+    headers.insert("authorization-context", consumer_digest.as_str());
+    headers.insert("session-key", consumer.session_key.as_str());
+    headers.insert("proof", proof.as_str());
+    headers.insert("request-id", request_id.as_str());
+    headers.insert("iat", request.issued_at.to_string().as_str());
     let mut subscriber =
         tokio::time::timeout_at(step_timeout(), lease.nats().subscribe(reply.clone()))
             .await
@@ -136,7 +169,7 @@ pub(crate) async fn open_client_session(
 
 #[allow(clippy::too_many_arguments)]
 async fn verify_offer(
-    provider: &AuthorizationProviderCache,
+    provider: &AuthorizationOwner,
     open: &ClientOpen<'_>,
     request_id: &str,
     response: &async_nats::Message,
@@ -213,14 +246,11 @@ async fn verify_offer(
         &session_key,
     )
     .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
-    let policy = provider
-        .policy()
-        .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
     let lease = provider
-        .resolve_context(&context_digest, policy.now_unix_seconds)
+        .resolve_authority(transport_lease.nats(), &context_digest)
         .await
         .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
-    let peer = PinnedPeerIdentity::from_signed(lease.signed_context());
+    let peer = PinnedPeerIdentity::from_authority(&lease);
     if peer.session_key != session_key {
         return Err(TrellisClientError::LiveProtocol(
             "offer context does not bind the signing session key".into(),
@@ -259,11 +289,19 @@ async fn verify_offer(
             "offer control subject is not canonical for this session".into(),
         ));
     }
-    // The selected deployment must match the consumer's installed binding.
-    let selected = provider
-        .provider_deployment_id(open.api_id)
-        .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
-    verify_offer_claims(open, &offer, &selected, &peer, consumer, consumer_digest)?;
+    // Authenticate the responding provider; the opening route is canonical and
+    // carries no caller-selected deployment.
+    let certificate = provider
+        .authorize_provider(transport_lease.nats(), &lease, open.api_id, &open.action)
+        .await?;
+    verify_offer_claims(
+        open,
+        &offer,
+        &certificate.deployment_id,
+        &peer,
+        consumer,
+        consumer_digest,
+    )?;
     let negotiated = trellis_protocol::negotiate_max_data_body_bytes(
         open.receive_max_payload_bytes,
         transport_lease.nats().max_payload() as u64,
@@ -283,9 +321,14 @@ async fn verify_offer(
     // just for the opening exchange. Every later frame must still satisfy it.
     let provider_guard = LiveAuthorityGuard::retain(
         provider,
+        transport_lease.nats(),
         &context_digest,
         LiveGuardRequirement::PeerProvider {
             expected: peer.clone(),
+            action: LiveAction {
+                api_id: open.api_id.to_owned(),
+                identity: open.action.clone(),
+            },
         },
     )
     .await
@@ -386,7 +429,11 @@ where
     let control = Arc::new(ConsumerControl {
         nats: nats.clone(),
         auth: client.auth_handle(),
-        contexts: client.authorization_contexts_handle()?,
+        owner: client.authorization_owner().clone(),
+        action: provider_guard
+            .action()
+            .ok_or_else(|| TrellisClientError::LiveProtocol("provider action missing".into()))?
+            .clone(),
         inbox_prefix: client.inbox_prefix().to_owned(),
         session_id: prepared.offer.session_id.clone(),
         control_subject: prepared.offer.control_subject.clone(),
@@ -432,33 +479,31 @@ where
 
 /// Reject an offer whose route or session kind does not match the open.
 /// Verify every advertised claim in a parsed, proof-verified live offer against
-/// the independently selected provider binding and the opener's pinned local
+/// the authenticated provider certificate and the opener's pinned local
 /// identity. This is the production decision; its tests call the same function.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_offer_claims(
     open: &ClientOpen<'_>,
     offer: &LiveOffer,
-    selected_provider_deployment_id: &str,
+    certified_provider_deployment_id: &str,
     peer: &PinnedPeerIdentity,
     consumer: &PinnedPeerIdentity,
     consumer_digest: &str,
 ) -> Result<(), TrellisClientError> {
     verify_offer_identity(open, offer)?;
-    // The independently selected binding is the evidence that this deployment's
-    // participant implements the API; the offered provider deployment must be
-    // exactly that binding, never the offer's own claim.
-    if selected_provider_deployment_id != offer.provider.deployment_id {
+    // The certificate independently proves that the responding deployment
+    // implements this action; the offered deployment is only a checked claim.
+    if certified_provider_deployment_id != offer.provider.deployment_id {
         return Err(TrellisClientError::LiveProtocol(
-            "offer provider is not the selected deployment for this API".into(),
+            "offer provider deployment does not match its certificate".into(),
         ));
     }
     // Every advertised provider field must match the verified signed context; a
     // valid signature does not authorize silently changing them later.
     if peer.connection_id != offer.provider.connection_id
         || peer.principal_id != offer.provider.principal_id
-        || peer.participant_id != offer.provider.participant_id
-        || peer.deployment_id.as_deref().unwrap_or("") != offer.provider.deployment_id
-        || peer.instance_id.as_deref().unwrap_or("") != offer.provider.instance_id
+        || peer.participant_id() != offer.provider.participant_id
+        || peer.deployment_id().unwrap_or("") != offer.provider.deployment_id
+        || peer.instance_id().unwrap_or("") != offer.provider.instance_id
     {
         return Err(TrellisClientError::LiveProtocol(
             "offer provider tuple does not match its verified context".into(),
@@ -469,7 +514,7 @@ pub(crate) fn verify_offer_claims(
     if consumer_digest.is_empty()
         || consumer.connection_id != offer.consumer.connection_id
         || consumer.principal_id != offer.consumer.principal_id
-        || consumer.participant_id != offer.consumer.participant_id
+        || consumer.participant_id() != offer.consumer.participant_id
         || trellis_protocol::encode_subject_token(&consumer.session_key)
             != offer.consumer.session_key
     {
@@ -1152,16 +1197,11 @@ mod tests {
             body: Bytes::new(),
             open_id: "open".into(),
             receive_max_payload_bytes: 1024,
-            permission: trellis_protocol::PermissionAtom::new(
-                trellis_protocol::PermissionTarget::api_surface(
-                    "api@v1",
-                    trellis_protocol::ApiSurfaceKind::Live,
-                    "Watch".to_owned(),
-                )
-                .expect("api surface"),
-                trellis_protocol::PermissionAction::Subscribe,
-            )
-            .expect("permission"),
+            action: trellis_protocol::CatalogActionIdentity {
+                kind: trellis_protocol::ApiSurfaceKind::Live,
+                name: "Watch".into(),
+                direction: trellis_protocol::PermissionAction::Subscribe,
+            },
         }
     }
 
@@ -1210,9 +1250,10 @@ mod tests {
             connection_id: "C".into(),
             session_key: "consumer".into(),
             principal_id: "pru".into(),
-            participant_id: "pau".into(),
-            deployment_id: None,
-            instance_id: None,
+            binding: trellis_protocol::SessionBinding::Browser {
+                client_id: "app".into(),
+                origin: "https://app.example".into(),
+            },
         }
     }
 
@@ -1221,20 +1262,23 @@ mod tests {
             connection_id: "P".into(),
             session_key: "K".into(),
             principal_id: "pr".into(),
-            participant_id: "pa".into(),
-            deployment_id: Some("dep".into()),
-            instance_id: Some("inst".into()),
+            binding: trellis_protocol::SessionBinding::Service {
+                participant_id: "pa".into(),
+                deployment_id: "dep".into(),
+                instance_id: "inst".into(),
+            },
         }
     }
 
     fn signed_offer(kind: LiveSessionKind, base: &str) -> LiveOffer {
         let mut offer = offer(kind, base);
         offer.consumer.session_key = trellis_protocol::encode_subject_token("consumer");
+        offer.consumer.participant_id.clear();
         offer
     }
 
     #[test]
-    fn offer_from_a_non_selected_deployment_is_rejected() {
+    fn offer_deployment_must_match_authenticated_certificate() {
         let base = "live.v1.route.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         let error = verify_offer_claims(
@@ -1245,8 +1289,11 @@ mod tests {
             &consumer_identity(),
             "digest",
         )
-        .expect_err("selected deployment must match");
-        assert!(error.to_string().contains("selected deployment"));
+        .expect_err("certified deployment must match");
+        assert!(matches!(
+            error,
+            crate::client::TrellisClientError::LiveProtocol(_)
+        ));
     }
 
     #[test]
@@ -1254,7 +1301,10 @@ mod tests {
         let base = "live.v1.route.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         let mut mutated = provider_identity();
-        mutated.instance_id = Some("inst-mutated".into());
+        if let trellis_protocol::SessionBinding::Service { instance_id, .. } = &mut mutated.binding
+        {
+            *instance_id = "inst-mutated".into();
+        }
         let error = verify_offer_claims(
             &open,
             &signed_offer(LiveSessionKind::Standalone, base),
@@ -1272,7 +1322,7 @@ mod tests {
         let base = "live.v1.route.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         let mut mutated = consumer_identity();
-        mutated.participant_id = "other".into();
+        mutated.principal_id = "other".into();
         let error = verify_offer_claims(
             &open,
             &signed_offer(LiveSessionKind::Standalone, base),
@@ -1286,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_deployment_and_complete_tuples_are_accepted() {
+    fn certified_provider_and_browser_consumer_are_accepted() {
         let base = "live.v1.route.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         verify_offer_claims(
@@ -1297,6 +1347,6 @@ mod tests {
             &consumer_identity(),
             "digest",
         )
-        .expect("the selected provider's complete offer is accepted");
+        .expect("the certified provider's complete offer is accepted");
     }
 }

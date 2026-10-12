@@ -8,9 +8,21 @@ Generated facades expose typed start, get/watch/wait, signal, and cancel methods
 Production services use Trellis's deployment-scoped durable Operation store;
 they do not choose a Store mapping or use an in-memory runtime.
 
-Acceptance is persisted before reply. The same invocation identity/input returns
-the same record; different input conflicts. Progress, signals, cancellation, and
-terminal results are durable; typed updates are live-only.
+Acceptance is persisted before reply. Within the accepting deployment, the same
+invocation identity/input returns the same record; different input conflicts.
+Progress, signals, cancellation, and terminal results are durable; typed updates
+are live-only.
+
+New starts call the canonical API without selecting a deployment. Serialize and
+retain the complete accepted reference, including `deploymentId`, to restore a
+handle. The SDK verifies that deployment against the certified signed acceptance
+and routes subsequent get, watch, wait, cancel, and signals internally to it.
+An instance can disappear; another replica in the same deployment can take over
+using the existing executor lease. The reference supplies routing, not authority.
+
+Do not automatically retry an uncertain start: canonical routing may deliver the
+retry to another deployment, whose independent record store can accept the same
+invocation ID again. Trellis does not promise cross-deployment deduplication.
 
 Rust validates operation inputs, signals, progress, outputs, and declared updates
 against their descriptor schemas. Schema-validation issue paths use JSON Pointer:

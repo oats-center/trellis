@@ -27,9 +27,9 @@ fn manifest(name: &str, source: &str, dependencies: &str) -> String {
     )
 }
 
-const A_SOURCE: &str = "model A {}\napi a@v1 {\n  title \"A\";\n  description \"A\";\n  rpc Get { input A; output A; }\n  capabilities { public { allows { rpc Get; } } }\n}\nservice AService { implements a; }\n";
-const B_SOURCE: &str = "import { a } from aye;\nmodel B {}\napi b@v1 {\n  title \"B\";\n  description \"B\";\n  rpc Get { input B; output B; }\n  capabilities { public { allows { rpc Get; } } }\n}\nservice BService { implements b; use a { rpc Get; } }\n";
-const C_SOURCE: &str = "import { a } from a;\nimport { b } from b;\nmodel C {}\napi c@v1 {\n  title \"C\";\n  description \"C\";\n  rpc Get { input C; output C; }\n  capabilities { public { allows { rpc Get; } } }\n}\nservice CService { implements c; use a { rpc Get; } use b { rpc Get; } }\n";
+const A_SOURCE: &str = "model A {}\napi a@v1 {\n  title \"A\";\n  description \"A\";\n  rpc Get { input A; output A; }\n  capabilities { public { consent_revision 1; allows { rpc Get; } } }\n}\nservice AService { implements a; }\n";
+const B_SOURCE: &str = "import { a } from aye;\nmodel B {}\napi b@v1 {\n  title \"B\";\n  description \"B\";\n  rpc Get { input B; output B; }\n  capabilities { public { consent_revision 1; allows { rpc Get; } } }\n}\nservice BService { implements b; use a { required capability public; } }\n";
+const C_SOURCE: &str = "import { a } from a;\nimport { b } from b;\nmodel C {}\napi c@v1 {\n  title \"C\";\n  description \"C\";\n  rpc Get { input C; output C; }\n  capabilities { public { consent_revision 1; allows { rpc Get; } } }\n}\nservice CService { implements c; use a { required capability public; } use b { required capability public; } }\n";
 
 async fn install_and_generate(root: &Path) {
     let project = ProjectRootArgs {

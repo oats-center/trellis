@@ -38,6 +38,7 @@ async fn durable_proof_authenticates_only_its_signed_runtime_and_user_nkey() {
         "htm": "POST", "htu": TOKEN_URI,
         "iat": now.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs(),
         "jti": ulid::Ulid::new().to_string(),
+        "nonce": URL_SAFE_NO_PAD.encode([9; 32]), "ath": "ignored-at-token-endpoint",
         "trellis_runtime_id": runtime, "trellis_nats_jkt": thumbprint
     });
     let mut verifiers = JwsVerifiers::new();
@@ -56,6 +57,7 @@ async fn durable_proof_authenticates_only_its_signed_runtime_and_user_nkey() {
     assert_eq!(binding.ephemeral_nkey, ephemeral.public_key());
     assert_eq!(binding.runtime_id, runtime);
     assert_eq!(binding.persistent_dpop_jkt, key.public_jwk().thumbprint());
+    assert_eq!(binding.nonce.as_deref(), claims["nonce"].as_str());
     for (uri, nonce, nkey) in [
         (
             "https://attacker.example/token",
@@ -82,37 +84,59 @@ async fn durable_proof_authenticates_only_its_signed_runtime_and_user_nkey() {
     }
     // Re-signing is not the attack: changing signed content without its durable
     // private key must fail at the library's signature boundary.
-    let mut tampered = claims.clone();
-    tampered["trellis_runtime_id"] = json!(URL_SAFE_NO_PAD.encode([8; 16]));
     let parts: Vec<_> = signed.split('.').collect();
-    let forged = format!(
-        "{}.{}.{}",
-        parts[0],
-        URL_SAFE_NO_PAD.encode(tampered.to_string()),
-        parts[2]
-    );
-    assert!(TokenBinding::verify(
-        &verifiers,
-        &forged,
-        TOKEN_URI,
-        &runtime,
-        &ephemeral.public_key(),
-        now
-    )
-    .is_err());
+    for (claim, replacement) in [
+        ("trellis_runtime_id", URL_SAFE_NO_PAD.encode([8; 16])),
+        ("nonce", URL_SAFE_NO_PAD.encode([10; 32])),
+    ] {
+        let mut tampered = claims.clone();
+        tampered[claim] = json!(replacement);
+        let forged = format!(
+            "{}.{}.{}",
+            parts[0],
+            URL_SAFE_NO_PAD.encode(tampered.to_string()),
+            parts[2]
+        );
+        assert!(
+            TokenBinding::verify(
+                &verifiers,
+                &forged,
+                TOKEN_URI,
+                &runtime,
+                &ephemeral.public_key(),
+                now
+            )
+            .is_err(),
+            "accepted unsigned change to {claim}"
+        );
+    }
     // Even a genuinely signed proof cannot introduce ambiguous security claims.
-    let duplicate =
-        claims
-            .to_string()
-            .replacen("{", &format!("{{\"trellis_runtime_id\":\"{runtime}\","), 1);
-    let duplicate = proof(&key, &duplicate).await;
-    assert!(TokenBinding::verify(
-        &verifiers,
-        &duplicate,
-        TOKEN_URI,
-        &runtime,
-        &ephemeral.public_key(),
-        now
-    )
-    .is_err());
+    for claim in [
+        "htm",
+        "htu",
+        "iat",
+        "jti",
+        "nonce",
+        "ath",
+        "trellis_runtime_id",
+        "trellis_nats_jkt",
+    ] {
+        let duplicate =
+            claims
+                .to_string()
+                .replacen("{", &format!("{{\"{claim}\":{},", claims[claim]), 1);
+        let duplicate = proof(&key, &duplicate).await;
+        assert!(
+            TokenBinding::verify(
+                &verifiers,
+                &duplicate,
+                TOKEN_URI,
+                &runtime,
+                &ephemeral.public_key(),
+                now
+            )
+            .is_err(),
+            "accepted duplicate {claim}"
+        );
+    }
 }

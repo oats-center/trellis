@@ -1,15 +1,314 @@
 use std::{
+    collections::BTreeMap,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::super::oauth::{OAuthEngine, OAuthStorage, TrellisTokenResponse};
-use super::*;
+use super::super::oauth::{OAuthEngine, OAuthStorage, TokenError, TrellisTokenResponse};
+use super::super::phase_two_tests::*;
+use super::super::sqlite::id;
+use super::super::*;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use ed25519_dalek::SigningKey;
 use oauth_as::{
     authorization::AuthorizationRequest,
     jwt::{EcdsaP256Key, JwsSigner},
     server::TokenRequest,
 };
+use sha2::{Digest as _, Sha256};
+
+#[tokio::test]
+async fn cimd_client_cannot_receive_administrative_delegation_from_a_privileged_user() {
+    use oauth_as::cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument};
+    let f = fixture();
+    let client_id = "https://public.example/client.json";
+    let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":"Public client","redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]});
+    let body = serde_json::to_vec(&metadata).unwrap();
+    let mut policy = CimdPolicy::new();
+    policy.redirect_uris_same_origin = false;
+    let identity = ClientIdUrl::parse(client_id, &policy).unwrap();
+    let document = super::super::oauth::ClientDocument {
+        document: ValidatedClientIdDocument::validate(&identity, &body, &policy).unwrap(),
+        revision: URL_SAFE_NO_PAD.encode(Sha256::digest(&body)),
+        metadata,
+        kind: "native".into(),
+        observed_at: SystemTime::now(),
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let login = f
+        .store
+        .record_verified_login(
+            &VerifiedLogin {
+                principal_id: f.admin.clone(),
+                provider_id: None,
+                upstream_issuer: None,
+                upstream_subject: None,
+                verified_claims: None,
+                expires_at: now + 3600,
+            },
+            now,
+        )
+        .unwrap();
+    let mut approval = grant_request(&f.admin, &login, &f.read, &f.write, now);
+    approval.client_id = client_id.into();
+    approval.selection.required.clear();
+    approval.selection.optional.clear();
+    approval.approved.clear();
+    let storage = OAuthStorage::new(Arc::new(f.store), &[17; 32]).unwrap();
+    storage.install_client_document(&document).unwrap();
+    // The same installed CIMD client works for ordinary consent, ruling out an
+    // unrelated metadata, login or binding failure as the reason for denial.
+    let grant = storage
+        .authority
+        .approve_grant(&mutation(&f.admin, &approval), &approval, now)
+        .unwrap();
+    let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(crate::platform::auth::phase_two_tests::oauth_family(
+        &storage.authority,
+        &grant,
+        now,
+        now + 3600,
+    ));
+    admission.credential = Credential::OAuthGrant(grant);
+    assert!(storage
+        .authority
+        .issue_authority(&admission, None, now)
+        .unwrap()
+        .authority
+        .unsigned
+        .platform_privileges
+        .is_empty());
+    approval.privileges = vec![trellis_protocol::PlatformPrivilege::PrincipalsManage];
+    assert!(matches!(
+        storage
+            .authority
+            .approve_grant(&mutation(&f.admin, &approval), &approval, now),
+        Err(AuthError::Denied)
+    ));
+}
+
+#[tokio::test]
+async fn provisional_client_capacity_recovers_without_breaking_an_approved_refresh() {
+    use oauth_as::{
+        cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument},
+        client::ClientId,
+        store::Storage as _,
+    };
+    let f = fixture();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let key = EcdsaP256Key::generate("cimd-custody");
+    let login = f
+        .store
+        .record_verified_login(
+            &VerifiedLogin {
+                principal_id: f.principal.clone(),
+                provider_id: None,
+                upstream_issuer: None,
+                upstream_subject: None,
+                verified_claims: None,
+                expires_at: now + 3600,
+            },
+            now,
+        )
+        .unwrap();
+    let document = |client_id: &str| {
+        let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":"Reviewed public client","redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]});
+        let body = serde_json::to_vec(&metadata).unwrap();
+        let mut policy = CimdPolicy::new();
+        policy.redirect_uris_same_origin = false;
+        let identity = ClientIdUrl::parse(client_id, &policy).unwrap();
+        super::super::oauth::ClientDocument {
+            document: ValidatedClientIdDocument::validate(&identity, &body, &policy).unwrap(),
+            revision: URL_SAFE_NO_PAD.encode(Sha256::digest(&body)),
+            metadata,
+            kind: "native".into(),
+            observed_at: SystemTime::now(),
+        }
+    };
+    let approved_id = format!("https://{}.example/client.json", id().to_ascii_lowercase());
+    let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, now);
+    approval.client_id = approved_id.clone();
+    approval.expires_at = now + 3600;
+    approval.public_jwk = serde_json::to_value(key.public_jwk()).unwrap();
+    approval.durable_dpop_jkt = key.public_jwk().thumbprint();
+    approval.binding_value = approval.durable_dpop_jkt.clone();
+    approval.approved = vec![f.read.clone()];
+    approval.declined = vec![f.write.clone()];
+    let engine =
+        OAuthEngine::new(OAuthStorage::new(Arc::new(f.store), &[17; 32]).unwrap()).unwrap();
+    engine
+        .server
+        .store()
+        .install_client_document(&document(&approved_id))
+        .unwrap();
+    let verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    let request=AuthorizationRequest::from_pairs(vec![
+        ("response_type","code".to_owned()),("client_id",approved_id.clone()),("redirect_uri","http://127.0.0.1:9123/callback".to_owned()),
+        ("code_challenge",URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))),("code_challenge_method","S256".to_owned()),
+        ("dpop_jkt",approval.durable_dpop_jkt.clone()),("authorization_details",serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}]).to_string()),
+    ]);
+    let code = engine
+        .approve(&request, &mutation(&f.principal, &approval), &approval)
+        .await
+        .unwrap();
+    let token_uri = format!(
+        "{}/token",
+        engine.server.store().authority.settings.oauth_origin
+    );
+    let runtime = URL_SAFE_NO_PAD.encode([21; 16]);
+    let ephemeral = nkeys::KeyPair::new_user();
+    let proof = dpop(&key, &runtime, &ephemeral, &token_uri).await;
+    let redemption = TokenRequest::AuthorizationCode {
+        client_id: ClientId::new(&approved_id),
+        client_secret: None,
+        code: code.code,
+        redirect_uri: Some("http://127.0.0.1:9123/callback".into()),
+        code_verifier: Some(verifier.into()),
+    };
+    let nonce = match engine
+        .token(
+            redemption.clone(),
+            &proof,
+            &runtime,
+            &ephemeral.public_key(),
+        )
+        .await
+    {
+        Err(TokenError::UseDpopNonce(nonce)) => nonce,
+        _ => panic!("expected a nonce challenge before code redemption"),
+    };
+    let proof = dpop_with_nonce(&key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await;
+    let tokens = engine
+        .token(redemption, &proof, &runtime, &ephemeral.public_key())
+        .await
+        .unwrap();
+    let mut abandoned = Vec::new();
+    for _ in 0..128 {
+        let client_id = format!("https://{}.example/client.json", id().to_ascii_lowercase());
+        engine
+            .server
+            .store()
+            .install_client_document(&document(&client_id))
+            .unwrap();
+        let invalid = AuthorizationRequest::from_pairs(vec![
+            ("client_id", client_id.clone()),
+            ("response_type", "code".into()),
+            (
+                "redirect_uri",
+                "https://not-reviewed.example/callback".into(),
+            ),
+        ]);
+        assert!(engine
+            .server
+            .validate_authorization_request(&invalid)
+            .await
+            .is_err());
+        abandoned.push(ClientId::new(client_id));
+    }
+    let next_id = format!("https://{}.example/client.json", id().to_ascii_lowercase());
+    assert!(matches!(
+        engine
+            .server
+            .store()
+            .install_client_document(&document(&next_id)),
+        Err(AuthError::ResourceLimit)
+    ));
+    assert!(engine
+        .server
+        .store()
+        .get_client(&ClientId::new(&next_id))
+        .await
+        .unwrap()
+        .is_none());
+    let after_intake = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    while engine
+        .server
+        .store()
+        .cleanup_expired(after_intake + 301)
+        .unwrap()
+        > 0
+    {}
+    for client in abandoned {
+        assert!(engine
+            .server
+            .store()
+            .get_client(&client)
+            .await
+            .unwrap()
+            .is_none());
+    }
+    assert!(engine
+        .server
+        .store()
+        .get_client(&ClientId::new("native-client"))
+        .await
+        .unwrap()
+        .is_some());
+    engine
+        .server
+        .store()
+        .install_client_document(&document(&next_id))
+        .unwrap();
+    let fresh = AuthorizationRequest::from_pairs(vec![
+        ("response_type", "code".to_owned()),
+        ("client_id", next_id),
+        ("redirect_uri", "http://127.0.0.1:9123/callback".to_owned()),
+        (
+            "code_challenge",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+        ),
+        ("code_challenge_method", "S256".to_owned()),
+        ("dpop_jkt", approval.durable_dpop_jkt.clone()),
+        (
+            "authorization_details",
+            serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[]}])
+                .to_string(),
+        ),
+    ]);
+    engine
+        .server
+        .validate_authorization_request(&fresh)
+        .await
+        .unwrap();
+    let proof = dpop_with_nonce(&key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await;
+    let refreshed = engine
+        .token(
+            TokenRequest::RefreshToken {
+                client_id: ClientId::new(&approved_id),
+                client_secret: None,
+                refresh_token: tokens.oauth.refresh_token.unwrap(),
+                scope: None,
+            },
+            &proof,
+            &runtime,
+            &ephemeral.public_key(),
+        )
+        .await
+        .unwrap();
+    assert!(engine
+        .server
+        .store()
+        .authority
+        .admit_oauth(
+            refreshed.trellis_admission.as_bytes(),
+            &ephemeral.public_key(),
+            "_INBOX.cimd",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        )
+        .is_ok());
+}
 
 #[tokio::test]
 async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_evade_peer_limits() {
@@ -180,16 +479,36 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
         String::from_utf8_lossy(&result.stderr)
     );
     let token_uri = format!("{origin}/token");
+    let poll = [
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+        ("client_id", "native-client"),
+        ("device_code", device.device_code.as_str()),
+        ("trellis_runtime_id", runtime.as_str()),
+        ("trellis_session_nkey", &ephemeral.public_key()),
+    ];
     let response = http
         .post(&token_uri)
         .header("DPoP", dpop(&key, &runtime, &ephemeral, &token_uri).await)
-        .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("client_id", "native-client"),
-            ("device_code", device.device_code.as_str()),
-            ("trellis_runtime_id", runtime.as_str()),
-            ("trellis_session_nkey", ephemeral.public_key().as_str()),
-        ])
+        .form(&poll)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let nonce = response.headers()["dpop-nonce"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap()["error"],
+        "use_dpop_nonce"
+    );
+    let response = http
+        .post(&token_uri)
+        .header(
+            "DPoP",
+            dpop_with_nonce(&key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await,
+        )
+        .form(&poll)
         .send()
         .await
         .unwrap();
@@ -213,15 +532,35 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     host.await.unwrap();
 }
 
-pub(super) async fn dpop(
+pub(in crate::platform::auth) async fn dpop(
     key: &EcdsaP256Key,
     runtime: &str,
     ephemeral: &nkeys::KeyPair,
     token_uri: &str,
 ) -> String {
+    dpop_with_nonce(key, runtime, ephemeral, token_uri, None).await
+}
+
+pub(in crate::platform::auth) async fn dpop_with_nonce(
+    key: &EcdsaP256Key,
+    runtime: &str,
+    ephemeral: &nkeys::KeyPair,
+    token_uri: &str,
+    nonce: Option<&str>,
+) -> String {
     let (_, bytes) = nkeys::from_public_key(&ephemeral.public_key()).unwrap();
     let public = serde_json::json!({"crv":"Ed25519","kty":"OKP","x":URL_SAFE_NO_PAD.encode(bytes)});
-    let input = format!("{}.{}", URL_SAFE_NO_PAD.encode(serde_json::json!({"typ":"dpop+jwt","alg":"ES256","jwk":key.public_jwk()}).to_string()), URL_SAFE_NO_PAD.encode(serde_json::json!({"htm":"POST","htu":token_uri,"iat":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),"jti":id(),"trellis_runtime_id":runtime,"trellis_nats_jkt":URL_SAFE_NO_PAD.encode(Sha256::digest(super::super::sqlite::json(&public).unwrap().as_bytes()))}).to_string()));
+    let mut claims = serde_json::json!({"htm":"POST","htu":token_uri,"iat":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),"jti":id(),"trellis_runtime_id":runtime,"trellis_nats_jkt":URL_SAFE_NO_PAD.encode(Sha256::digest(super::super::sqlite::json(&public).unwrap().as_bytes()))});
+    if let Some(nonce) = nonce {
+        claims["nonce"] = serde_json::json!(nonce);
+    }
+    let input = format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(
+            serde_json::json!({"typ":"dpop+jwt","alg":"ES256","jwk":key.public_jwk()}).to_string()
+        ),
+        URL_SAFE_NO_PAD.encode(claims.to_string())
+    );
     let signature = key.sign(input.as_bytes()).await.unwrap();
     format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_bytes()))
 }
@@ -342,6 +681,24 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .send()
         .await
         .unwrap();
+    let nonce = rejected.headers()["dpop-nonce"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        rejected.json::<serde_json::Value>().await.unwrap()["error"],
+        "use_dpop_nonce"
+    );
+    let rejected = http
+        .post(&token_uri)
+        .header(
+            "DPoP",
+            dpop_with_nonce(&stolen_key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await,
+        )
+        .form(&poll)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(
         rejected.json::<serde_json::Value>().await.unwrap()["error"],
         "invalid_grant"
@@ -438,6 +795,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .form(&[
             ("csrf", csrf.as_str()),
             ("transaction", transaction.as_str()),
+            ("presentation", consent["presentationId"].as_str().unwrap()),
             ("decision", "approve"),
             ("approved", f.read.as_str()),
         ])
@@ -470,6 +828,67 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .unwrap()
         .1
         .into_owned();
+    let consent: serde_json::Value = http
+        .get(format!("{origin}/portal/authorization/{transaction}"))
+        .header("Cookie", cookies.join("; "))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let changed = SOURCE
+        .replace("Read documents.", "Read confidential documents.")
+        .replace(
+            "consent_revision 1; allows { rpc Get; }",
+            "consent_revision 2; allows { rpc Get; }",
+        );
+    accept(&authority, &f.admin, &changed, false, now);
+    let stale = http
+        .post(format!("{origin}/portal/approve"))
+        .header("Origin", &origin)
+        .header("Cookie", cookies.join("; "))
+        .form(&[
+            ("csrf", csrf.as_str()),
+            ("transaction", transaction.as_str()),
+            ("presentation", consent["presentationId"].as_str().unwrap()),
+            ("decision", "approve"),
+            ("approved", f.read.as_str()),
+            ("confirm_device", device.user_code.as_str()),
+            ("privilege", "principals.manage"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        stale.headers()["location"],
+        format!("/consent?transaction={transaction}&error=consent_changed")
+    );
+    use oauth_as::store::Storage as _;
+    assert_eq!(
+        engine
+            .server
+            .store()
+            .get_device_grant(&device.device_code)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        oauth_as::device::DeviceGrantState::Pending
+    );
+    let consent: serde_json::Value = http
+        .get(format!("{origin}/portal/authorization/{transaction}"))
+        .header("Cookie", cookies.join("; "))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        consent["capabilities"][0]["description"],
+        "Read confidential documents."
+    );
     let approved = http
         .post(format!("{origin}/portal/approve"))
         .header("Origin", &origin)
@@ -477,6 +896,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .form(&[
             ("csrf", csrf.as_str()),
             ("transaction", transaction.as_str()),
+            ("presentation", consent["presentationId"].as_str().unwrap()),
             ("decision", "approve"),
             ("approved", f.read.as_str()),
             ("confirm_device", device.user_code.as_str()),
@@ -486,7 +906,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .await
         .unwrap();
     assert_eq!(approved.status(), reqwest::StatusCode::SEE_OTHER);
-    let proof = dpop(&key, &runtime, &ephemeral, &token_uri).await;
+    let proof = dpop_with_nonce(&key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await;
     let tokens = http
         .post(&token_uri)
         .header("DPoP", proof)
@@ -529,7 +949,10 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     );
     let replay = http
         .post(&token_uri)
-        .header("DPoP", dpop(&key, &runtime, &ephemeral, &token_uri).await)
+        .header(
+            "DPoP",
+            dpop_with_nonce(&key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await,
+        )
         .form(&poll)
         .send()
         .await
@@ -563,12 +986,13 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
                 upstream_issuer: None,
                 upstream_subject: None,
                 verified_claims: None,
-                expires_at: now + 3600,
+                expires_at: now + 35 * 24 * 60 * 60,
             },
             now,
         )
         .unwrap();
     let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, now);
+    approval.expires_at = now + 35 * 24 * 60 * 60;
     approval.public_jwk = serde_json::to_value(key.public_jwk()).unwrap();
     approval.durable_dpop_jkt = key.public_jwk().thumbprint();
     approval.binding_value = approval.durable_dpop_jkt.clone();
@@ -749,6 +1173,59 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         rejected.json::<serde_json::Value>().await.unwrap(),
         serde_json::json!({"error":"invalid_request"})
     );
+    let untrusted = http
+        .post(&token_uri)
+        .header("DPoP", &proof)
+        .header("Origin", "https://untrusted.example")
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(untrusted.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(!untrusted.headers().contains_key("dpop-nonce"));
+    assert!(!untrusted
+        .headers()
+        .contains_key("access-control-allow-origin"));
+    let response = http
+        .post(&token_uri)
+        .header("DPoP", &proof)
+        .header("Origin", "http://127.0.0.1:9123")
+        .form(&form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert_eq!(
+        response.headers()["access-control-allow-origin"],
+        "http://127.0.0.1:9123"
+    );
+    assert_eq!(
+        response.headers()["access-control-expose-headers"],
+        "dpop-nonce"
+    );
+    let nonce = response.headers()["dpop-nonce"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        serde_json::json!({"error":"use_dpop_nonce"})
+    );
+    // Re-sign with the challenge but retain the unconsumed jti: this proves
+    // neither the code nor proof identifier was spent by the challenge. Normal
+    // clients generate a new jti as well as signing a fresh proof on retry.
+    let parts = proof.split('.').collect::<Vec<_>>();
+    let mut claims: serde_json::Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+    claims["nonce"] = serde_json::json!(nonce);
+    let input = format!(
+        "{}.{}",
+        parts[0],
+        URL_SAFE_NO_PAD.encode(claims.to_string())
+    );
+    let signature = key.sign(input.as_bytes()).await.unwrap();
+    let proof = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.as_bytes()));
     let response = http
         .post(&token_uri)
         .header("DPoP", &proof)
@@ -798,33 +1275,105 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         )
         .is_err());
     let refresh = tokens.oauth.refresh_token.unwrap();
+    use oauth_as::store::Storage as _;
+    let absolute_expiry = engine
+        .server
+        .store()
+        .get_refresh_token(&refresh)
+        .await
+        .unwrap()
+        .unwrap()
+        .expires_at
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     stop.send(()).unwrap();
     host.await.unwrap();
     drop(engine);
     drop(authority);
     let mut reopened = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
-    reopened.settings.oauth_origin = origin;
+    reopened.settings.oauth_origin = origin.clone();
     let authority = Arc::new(reopened);
-    let engine =
-        OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap();
+    let engine = Arc::new(
+        OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
+    );
+    let listener = tokio::net::TcpListener::bind(origin.strip_prefix("http://").unwrap())
+        .await
+        .unwrap();
+    let router = super::super::oauth::router(engine.clone(), vec![]);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let host = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
     let next_ephemeral = nkeys::KeyPair::new_user();
     let next_runtime = URL_SAFE_NO_PAD.encode([12; 16]);
     let refresh_request = TokenRequest::RefreshToken {
         client_id: oauth_as::client::ClientId::new("native-client"),
         client_secret: None,
-        refresh_token: refresh,
+        refresh_token: refresh.clone(),
         scope: None,
     };
-    let proof = dpop(&key, &next_runtime, &next_ephemeral, &token_uri).await;
-    let next = engine
-        .token(
-            refresh_request.clone(),
-            &proof,
-            &next_runtime,
-            &next_ephemeral.public_key(),
-        )
+    let refresh_form = [
+        ("grant_type", "refresh_token".to_owned()),
+        ("client_id", "native-client".into()),
+        ("refresh_token", refresh),
+        ("trellis_runtime_id", next_runtime.clone()),
+        ("trellis_session_nkey", next_ephemeral.public_key()),
+    ];
+    // A restart loses only process-local nonces, never the durable refresh.
+    let proof = dpop_with_nonce(
+        &key,
+        &next_runtime,
+        &next_ephemeral,
+        &token_uri,
+        Some(&nonce),
+    )
+    .await;
+    let response = http
+        .post(&token_uri)
+        .header("DPoP", &proof)
+        .form(&refresh_form)
+        .send()
         .await
         .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let restarted_nonce = response.headers()["dpop-nonce"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(nonce, restarted_nonce);
+    assert_eq!(
+        response.json::<serde_json::Value>().await.unwrap(),
+        serde_json::json!({"error":"use_dpop_nonce"})
+    );
+    let nonce = restarted_nonce;
+    let proof = dpop_with_nonce(
+        &key,
+        &next_runtime,
+        &next_ephemeral,
+        &token_uri,
+        Some(&nonce),
+    )
+    .await;
+    let response = http
+        .post(&token_uri)
+        .header("DPoP", &proof)
+        .form(&refresh_form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let next: TrellisTokenResponse = response.json().await.unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     let resumed = authority
         .admit_oauth(
             next.trellis_admission.as_bytes(),
@@ -849,6 +1398,51 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         initial.authority.unsigned.capabilities,
         resumed.authority.unsigned.capabilities
     );
+    // Exercise the authority transaction at the real engine family's deadline,
+    // while the login and grant remain valid. Rotation must not extend it.
+    let rotated = engine
+        .server
+        .store()
+        .get_refresh_token(next.oauth.refresh_token.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rotated
+            .expires_at
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+        absolute_expiry
+    );
+    let admission: trellis_protocol::SignedOAuthAdmission =
+        serde_json::from_str(&next.trellis_admission).unwrap();
+    let identity = AdmissionIdentity {
+        refresh_family_id: Some(admission.credential.refresh_family_id.clone()),
+        credential: Credential::OAuthGrant(admission.credential.oauth_grant_id),
+        runtime_id: next_runtime.clone(),
+        session_public_key: resumed.authority.unsigned.session_public_key.clone(),
+        inbox_prefix: resumed.authority.unsigned.inbox_prefix.clone(),
+    };
+    let renewed = authority
+        .issue_authority(
+            &identity,
+            Some(&resumed.authority.unsigned.authorization_session_id),
+            absolute_expiry - 1,
+        )
+        .unwrap();
+    assert_eq!(renewed.authority.unsigned.expires_at, absolute_expiry);
+    assert!(authority
+        .issue_authority(
+            &identity,
+            Some(&resumed.authority.unsigned.authorization_session_id),
+            absolute_expiry
+        )
+        .is_err());
+    assert!(authority
+        .issue_authority(&identity, None, absolute_expiry)
+        .is_err());
     // A proof replay is refused, without spending the replacement refresh token.
     let replacement = TokenRequest::RefreshToken {
         client_id: oauth_as::client::ClientId::new("native-client"),
@@ -865,7 +1459,14 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         )
         .await
         .is_err());
-    let proof = dpop(&key, &next_runtime, &next_ephemeral, &token_uri).await;
+    let proof = dpop_with_nonce(
+        &key,
+        &next_runtime,
+        &next_ephemeral,
+        &token_uri,
+        Some(&nonce),
+    )
+    .await;
     assert!(engine
         .token(
             replacement,
@@ -899,7 +1500,14 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         .unwrap()
         .is_none());
     // Genuine reuse after cleanup still durably closes the family.
-    let proof = dpop(&key, &next_runtime, &next_ephemeral, &token_uri).await;
+    let proof = dpop_with_nonce(
+        &key,
+        &next_runtime,
+        &next_ephemeral,
+        &token_uri,
+        Some(&nonce),
+    )
+    .await;
     assert!(engine
         .token(
             refresh_request,
@@ -929,6 +1537,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     assert!(authority
         .issue_authority(
             &AdmissionIdentity {
+                refresh_family_id: Some(admission.credential.refresh_family_id.clone()),
                 credential: Credential::OAuthGrant(
                     resumed.authority.unsigned.oauth_grant_id.unwrap()
                 ),
@@ -941,6 +1550,8 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         )
         .is_err());
     // Reopen again: no process-local revocation state can account for this denial.
+    stop.send(()).unwrap();
+    host.await.unwrap();
     drop(engine);
     drop(authority);
     let reopened = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
@@ -1153,9 +1764,11 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
             .unwrap()["available"],
         false
     );
+    let presentation = view["presentationId"].as_str().unwrap().to_owned();
     let consent = [
         ("csrf", &csrf),
         ("transaction", &transaction),
+        ("presentation", &presentation),
         ("decision", &"approve".to_owned()),
         ("approved", &approved),
         ("remember", &"true".to_owned()),
@@ -1172,6 +1785,56 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         denied.json::<serde_json::Value>().await.unwrap(),
         serde_json::json!({"error":"invalid_request"})
     );
+    let changed = SOURCE
+        .replace("Read documents.", "Read confidential documents.")
+        .replace(
+            "consent_revision 1; allows { rpc Get; }",
+            "consent_revision 2; allows { rpc Get; }",
+        );
+    accept(&authority, &f.admin, &changed, false, now);
+    let stale = http
+        .post(format!("{origin}/portal/approve"))
+        .header("Origin", &origin)
+        .header("Cookie", &cookie)
+        .form(&consent)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        stale.headers()["location"],
+        format!("/consent?transaction={transaction}&error=consent_changed")
+    );
+    let view: serde_json::Value = http
+        .get(format!("{origin}/portal/authorization/{transaction}"))
+        .header(
+            "Cookie",
+            format!("{cookie}; __Host-trellis-portal-csrf={csrf}"),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let presentation = view["presentationId"].as_str().unwrap().to_owned();
+    let consent = [
+        ("csrf", &csrf),
+        ("transaction", &transaction),
+        ("presentation", &presentation),
+        ("decision", &"approve".to_owned()),
+        ("approved", &approved),
+        ("remember", &"true".to_owned()),
+    ];
+    let unrelated = PolicyMutation::RolePut {
+        role_id: id(),
+        expected_revision: 0,
+        title: "Unassigned role".into(),
+        description: "This role is not part of the displayed authorization".into(),
+        capabilities: vec![f.read.clone()],
+    };
+    authority
+        .apply_policy(&mutation(&f.admin, &unrelated), &unrelated, now)
+        .unwrap();
     let callback = http
         .post(format!("{origin}/portal/approve"))
         .header("Origin", &origin)
@@ -1196,18 +1859,34 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
     let runtime = URL_SAFE_NO_PAD.encode([22; 16]);
     let token_uri = format!("{origin}/token");
     let proof = dpop(&key, &runtime, &ephemeral, &token_uri).await;
+    let redemption = [
+        ("grant_type", "authorization_code".to_owned()),
+        ("client_id", "native-client".into()),
+        ("code", parameters["code"].clone()),
+        ("redirect_uri", "http://127.0.0.1:9123/callback".into()),
+        ("code_verifier", verifier.into()),
+        ("trellis_runtime_id", runtime.clone()),
+        ("trellis_session_nkey", ephemeral.public_key()),
+    ];
     let tokens = http
         .post(&token_uri)
         .header("DPoP", proof)
-        .form(&[
-            ("grant_type", "authorization_code".to_owned()),
-            ("client_id", "native-client".into()),
-            ("code", parameters["code"].clone()),
-            ("redirect_uri", "http://127.0.0.1:9123/callback".into()),
-            ("code_verifier", verifier.into()),
-            ("trellis_runtime_id", runtime),
-            ("trellis_session_nkey", ephemeral.public_key()),
-        ])
+        .form(&redemption)
+        .send()
+        .await
+        .unwrap();
+    let nonce = tokens.headers()["dpop-nonce"].to_str().unwrap().to_owned();
+    assert_eq!(
+        tokens.json::<serde_json::Value>().await.unwrap()["error"],
+        "use_dpop_nonce"
+    );
+    let tokens = http
+        .post(&token_uri)
+        .header(
+            "DPoP",
+            dpop_with_nonce(&key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await,
+        )
+        .form(&redemption)
         .send()
         .await
         .unwrap();

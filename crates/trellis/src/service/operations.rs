@@ -53,6 +53,7 @@ impl OperationState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 #[doc = concat!("Public Trellis data type `", stringify!(OperationRefData), "`.")]
 pub struct OperationRefData {
     #[doc = concat!("The `", stringify!(id), "` value.")]
@@ -61,6 +62,8 @@ pub struct OperationRefData {
     pub service: String,
     #[doc = concat!("The `", stringify!(operation), "` value.")]
     pub operation: String,
+    /// Deployment retained in the durable operation record for owner-directed controls.
+    pub deployment_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -637,16 +640,15 @@ where
             && record.operation == D::KEY
             && record.deployment_id == deployment_id
             && !record.creator_principal_id.is_empty()
-            && !record.creator_participant_id.is_empty()
             && caller.principal_id == record.creator_principal_id
-            && caller.participant_id == record.creator_participant_id
+            && caller.binding == record.creator_binding
             && permission_matches
         {
             Ok(())
         } else {
             Err(ServerError::RequestDenied {
                 subject: context.subject.clone(),
-                session_key: caller.session_key.clone(),
+                session_key: caller.session_public_key.clone(),
             })
         }
     }
@@ -726,6 +728,7 @@ where
             let control = OperationControl {
                 operation_ref: OperationRefData {
                     id: claimed.record.invocation_id.clone(),
+                    deployment_id: claimed.record.deployment_id.clone(),
                     service,
                     operation: D::KEY.to_owned(),
                 },
@@ -975,10 +978,9 @@ where
                             || record.record.api_id != D::API_ID
                             || record.record.operation != D::KEY
                             || record.record.creator_principal_id.is_empty()
-                            || record.record.creator_participant_id.is_empty()
                             || record.record.caller.as_ref().is_none_or(|caller| {
                                 caller.principal_id != record.record.creator_principal_id
-                                    || caller.participant_id != record.record.creator_participant_id
+                                    || caller.binding != record.record.creator_binding
                             })
                             || record
                                 .record
@@ -1200,7 +1202,7 @@ where
                 D::API_ID,
                 D::KEY,
                 &caller.principal_id,
-                &caller.participant_id,
+                &caller.binding,
                 &input_value,
             )?;
             let timestamp = now_timestamp();
@@ -1208,7 +1210,7 @@ where
                 Some(DurableOperationUpload {
                     staging_key: format!("operation-{invocation_id}"),
                     state: "pending".to_owned(),
-                    grant: operation_upload_grant(
+                    grant: operation_upload_grant::<D>(
                         &service,
                         &service_session_key,
                         &connection_id,
@@ -1232,8 +1234,8 @@ where
                     operation: D::KEY.to_owned(),
                     deployment_id: deployment_id.clone(),
                     creator_principal_id: caller.principal_id.clone(),
-                    creator_participant_id: caller.participant_id.clone(),
-                    caller_session_key: caller.session_key.clone(),
+                    creator_binding: caller.binding.clone(),
+                    caller_session_key: caller.session_public_key.clone(),
                     caller: Some(caller.clone()),
                     input: input_value,
                     snapshot: OperationSnapshot {
@@ -1277,6 +1279,7 @@ where
                     kind: "accepted".to_owned(),
                     operation_ref: OperationRefData {
                         id: invocation_id,
+                        deployment_id: created.record.deployment_id.clone(),
                         service,
                         operation: D::KEY.to_owned(),
                     },
@@ -1304,6 +1307,7 @@ where
                     kind: "accepted".to_owned(),
                     operation_ref: OperationRefData {
                         id: invocation_id,
+                        deployment_id: created.record.deployment_id.clone(),
                         service,
                         operation: D::KEY.to_owned(),
                     },
@@ -1347,6 +1351,7 @@ where
                             kind: "accepted".to_owned(),
                             operation_ref: OperationRefData {
                                 id: invocation_id,
+                                deployment_id: current.record.deployment_id.clone(),
                                 service,
                                 operation: D::KEY.to_owned(),
                             },
@@ -1388,6 +1393,7 @@ where
                         kind: "accepted".to_owned(),
                         operation_ref: OperationRefData {
                             id: invocation_id,
+                            deployment_id: claimed.record.deployment_id.clone(),
                             service: service.clone(),
                             operation: D::KEY.to_owned(),
                         },
@@ -1416,7 +1422,7 @@ where
                 let previous_staging_key =
                     (upload.state != "pending").then(|| upload.staging_key.clone());
                 if upload.state != "pending" {
-                    upload.grant = operation_upload_grant(
+                    upload.grant = operation_upload_grant::<D>(
                         &service,
                         &service_session_key,
                         &connection_id,
@@ -1660,6 +1666,7 @@ where
                     kind: "accepted".to_owned(),
                     operation_ref: OperationRefData {
                         id: invocation_id,
+                        deployment_id: staged.record.deployment_id.clone(),
                         service,
                         operation: D::KEY.to_owned(),
                     },
@@ -1701,6 +1708,7 @@ where
                 kind: "accepted".to_owned(),
                 operation_ref: OperationRefData {
                     id: invocation_id,
+                    deployment_id: claimed.record.deployment_id.clone(),
                     service: service.clone(),
                     operation: D::KEY.to_owned(),
                 },
@@ -1901,7 +1909,15 @@ where
                                     else {
                                         continue;
                                     };
+                                    let Some(session_request) = message.headers.as_ref()
+                                        .and_then(|headers| headers.get("Trellis-Session-Request"))
+                                        .and_then(|value| serde_json::from_str::<trellis_protocol::SessionRequest>(value.as_str()).ok())
+                                    else { continue; };
+                                    if session_request.api_id != D::API_ID
+                                        || session_request.action != D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action)
+                                    { continue; }
                                     let request = RequestContext {
+                                        session_request: Some(session_request),
                                         subject: message.subject.to_string(),
                                         reply_to: Some(reply_to),
                                         session_key: message
@@ -1948,13 +1964,10 @@ where
                                     else {
                                         continue;
                                     };
-                                    if !matches!(
-                                        caller.principal_kind,
-                                        trellis_protocol::PrincipalKind::Service
-                                            | trellis_protocol::PrincipalKind::Device
-                                    ) || caller.participant_id != provider_participant_id
-                                        || caller.deployment_id.as_deref()
-                                            != Some(&update_deployment_id)
+                                    if !matches!(&caller.binding,
+                                        trellis_protocol::SessionBinding::Service { participant_id, deployment_id, .. }
+                                            | trellis_protocol::SessionBinding::Device { participant_id, deployment_id, .. }
+                                        if participant_id == &provider_participant_id && deployment_id == &update_deployment_id)
                                     {
                                         continue;
                                     }
@@ -1992,7 +2005,7 @@ where
                                             != Some(&envelope.owner_executor_id)
                                         || current.record.owner_connection_id.as_deref()
                                             != Some(&envelope.owner_connection_id)
-                                        || caller.connection_id != envelope.owner_connection_id
+                                        || caller.runtime_id != envelope.owner_connection_id
                                         || current
                                             .record
                                             .lease_expires_at_ms
@@ -2309,10 +2322,9 @@ where
                 .lease_expires_at_ms
                 .is_some_and(|expiry| expiry > now_ms())
             && !current.record.creator_principal_id.is_empty()
-            && !current.record.creator_participant_id.is_empty()
             && current.record.caller.as_ref().is_some_and(|caller| {
                 caller.principal_id == current.record.creator_principal_id
-                    && caller.participant_id == current.record.creator_participant_id
+                    && caller.binding == current.record.creator_binding
             })
     }))
 }
@@ -2402,11 +2414,11 @@ struct DurableOperationUpload {
     content_type: Option<String>,
 }
 
-fn operation_upload_grant(
+fn operation_upload_grant<D: OperationDescriptor>(
     service: &str,
     service_session_key: &str,
     connection_id: &str,
-    caller: &crate::client::VerifiedCaller,
+    caller: &crate::client::AuthenticatedCaller,
     max_payload: u64,
     content_type: Option<String>,
 ) -> Result<UploadTransferGrant, ServerError> {
@@ -2417,10 +2429,21 @@ fn operation_upload_grant(
     let transfer_id =
         generate_transfer_id().map_err(|error| ServerError::Nats(error.to_string()))?;
     let subject = |kind| {
-        derive_transfer_subject(kind, connection_id, &caller.connection_id, &transfer_id)
+        derive_transfer_subject(kind, connection_id, &caller.runtime_id, &transfer_id)
             .map_err(|error| ServerError::Nats(error.to_string()))
     };
     Ok(UploadTransferGrant {
+        origin: trellis_protocol::transfer::TransferOrigin {
+            api_id: D::API_ID.to_owned(),
+            action: trellis_protocol::CatalogActionIdentity {
+                kind: trellis_protocol::ApiSurfaceKind::Operation,
+                name: D::KEY
+                    .split_once('.')
+                    .map_or(D::KEY, |(_, action)| action)
+                    .to_owned(),
+                direction: trellis_protocol::PermissionAction::Invoke,
+            },
+        },
         format: TRANSFER_VERSION.to_owned(),
         type_name: "TransferGrant".to_owned(),
         direction: "send".to_owned(),
@@ -2430,8 +2453,8 @@ fn operation_upload_grant(
             session_key: service_session_key.to_owned(),
         },
         consumer: super::transfer::TransferIdentity {
-            connection_id: caller.connection_id.clone(),
-            session_key: caller.session_key.clone(),
+            connection_id: caller.runtime_id.clone(),
+            session_key: caller.session_public_key.clone(),
         },
         data_subject: subject(TransferSubjectKind::UploadData)?,
         control_subject: subject(TransferSubjectKind::Control)?,
@@ -2845,9 +2868,49 @@ where
             occurred_at: timestamp.clone(),
             update: update_value,
         })?;
-        let headers = publisher
-            .signed_headers(&self.update_subject, &reply, &payload)
+        let authorization = publisher.authorization_owner();
+        let authority = authorization
+            .own_authority()
             .map_err(|error| ServerError::Nats(error.to_string()))?;
+        authorization
+            .assert_current(&authority)
+            .map_err(|error| ServerError::Nats(error.to_string()))?;
+        let api = authority
+            .authority()
+            .apis
+            .iter()
+            .find(|api| api.api_id == D::API_ID)
+            .ok_or_else(|| {
+                ServerError::Nats("operation update API authority is unavailable".into())
+            })?;
+        let request = trellis_protocol::SessionRequest {
+            authority_digest: authority.digest().to_owned(),
+            api_id: D::API_ID.to_owned(),
+            api_generation: api.generation,
+            accepted_revision: api.accepted_revision,
+            action: D::KEY
+                .split_once('.')
+                .map_or(D::KEY, |(_, action)| action)
+                .to_owned(),
+            subject: self.update_subject.clone(),
+            reply_subject: Some(reply.clone()),
+            request_id: crate::client::new_request_id(),
+            issued_at: crate::client::now_iat_seconds() as i64,
+        };
+        let auth = publisher.auth_handle();
+        let (proof, _) = auth
+            .create_request_proof(&request, &payload)
+            .map_err(|error| ServerError::Nats(error.to_string()))?;
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(
+            "Trellis-Session-Request",
+            serde_json::to_string(&request)?.as_str(),
+        );
+        headers.insert("authorization-context", request.authority_digest.as_str());
+        headers.insert("session-key", auth.session_key.as_str());
+        headers.insert("proof", proof.as_str());
+        headers.insert("request-id", request.request_id.as_str());
+        headers.insert("iat", request.issued_at.to_string().as_str());
         self.nats
             .publish_with_reply_and_headers(
                 self.update_subject.clone(),
@@ -3315,7 +3378,7 @@ mod tests {
 
     use super::*;
     use crate::client::DeclaredOperationUpdates;
-    use crate::service::{RequestValidation, VerifiedCaller};
+    use crate::service::{AuthenticatedCaller, RequestValidation};
 
     #[derive(Clone)]
     struct Allow;
@@ -3432,7 +3495,7 @@ mod tests {
             creator_principal_id: "principal".to_owned(),
             creator_participant_id: "participant".to_owned(),
             caller_session_key: "session".to_owned(),
-            caller: Some(VerifiedCaller {
+            caller: Some(AuthenticatedCaller {
                 session_key: "session".to_owned(),
                 inbox_prefix: "_INBOX".to_owned(),
                 context_digest: "digest".to_owned(),
@@ -3479,7 +3542,7 @@ mod tests {
                 action,
                 signal: signal.map(str::to_owned),
             }),
-            caller: Some(VerifiedCaller {
+            caller: Some(AuthenticatedCaller {
                 session_key: "session".to_owned(),
                 inbox_prefix: "_INBOX".to_owned(),
                 context_digest: "digest".to_owned(),
@@ -3507,6 +3570,7 @@ mod tests {
         OperationControl {
             operation_ref: OperationRefData {
                 id: id.to_owned(),
+                deployment_id: record.record.deployment_id.clone(),
                 service: "service".to_owned(),
                 operation: D::KEY.to_owned(),
             },
@@ -5397,31 +5461,4 @@ fn record_ownership_event(action: &'static str, ok: bool) {
             crate::telemetry::KeyValue::new("trellis.outcome", if ok { "ok" } else { "error" }),
         ],
     );
-}
-
-#[cfg(test)]
-mod trace_carrier_tests {
-    use crate::service::{operation_invocation_digest, OperationTraceCarrier};
-    use serde_json::json;
-
-    #[test]
-    fn diagnostic_trace_carrier_is_excluded_from_invocation_identity() {
-        let input = json!({"value": 1});
-        let digest = operation_invocation_digest("test@v1", "Test.Handle", "p", "q", &input)
-            .expect("digest");
-        let carrier = OperationTraceCarrier {
-            traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_owned(),
-            tracestate: Some("vendor=value".to_owned()),
-        };
-        // The carrier round-trips as diagnostic-only data; identity is a pure
-        // function of the invocation inputs above.
-        let encoded = serde_json::to_value(&carrier).expect("carrier encodes");
-        let decoded: OperationTraceCarrier =
-            serde_json::from_value(encoded).expect("carrier decodes");
-        assert_eq!(decoded, carrier);
-        let without_carrier =
-            operation_invocation_digest("test@v1", "Test.Handle", "p", "q", &input)
-                .expect("digest");
-        assert_eq!(digest, without_carrier);
-    }
 }

@@ -42,16 +42,14 @@ export function setActiveJobWaitHook(hook: ActiveJobWaitHook): void {
 }
 
 export type OperationState =
-  | "pending"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
+  "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type OperationRefData = {
   id: string;
   service: string;
   operation: string;
+  /** Durable owning deployment; routing metadata, not authorization. */
+  deploymentId: string;
 };
 
 export type OperationSnapshot<TProgress = unknown, TOutput = unknown> = {
@@ -116,12 +114,7 @@ export type StartedTransfer<
   TOutput = OperationOutputOf<TDesc>,
   TUpdate = OperationUpdateOf<TDesc>,
 > = {
-  operation: OperationRef<
-    TDesc,
-    TProgress,
-    TOutput,
-    TUpdate
-  >;
+  operation: OperationRef<TDesc, TProgress, TOutput, TUpdate>;
   wait(): AsyncResult<
     CompletedTransfer<TDesc, TProgress, TOutput>,
     OperationControlError | UnexpectedError | TransferError
@@ -137,15 +130,22 @@ export type OperationRef<
   id: string;
   service: string;
   operation: string;
+  deploymentId: string;
   get(): AsyncResult<
     OperationSnapshot<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   >;
-  wait(options?: OperationWaitOptions): AsyncResult<
+  /** Serialize the complete durable reference without observation or connection state. */
+  toJSON(): OperationRefData;
+  wait(
+    options?: OperationWaitOptions,
+  ): AsyncResult<
     TerminalOperation<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   >;
-  live(options?: OperationWatchOptions): AsyncResult<
+  live(
+    options?: OperationWatchOptions,
+  ): AsyncResult<
     LiveSubscription<OperationEvent<TProgress, TOutput, TUpdate>>,
     OperationControlError | UnexpectedError
   >;
@@ -181,13 +181,14 @@ export type OperationWaitOptions = {
   observationSignal?: AbortSignal;
 };
 
-/** Options that identify an idempotent operation invocation. */
+/** Identify an invocation within its accepting deployment, not across alternative providers. */
 export type OperationStartOptions = {
   invocationId?: string;
   /**
    * Admit cancellation intent atomically for an ordinary operation start.
-   * Requires Invoke and Cancel authority. Reuse the invocationId and frozen
-   * input when retrying; the provider enters cleanup with an aborted signal.
+   * Requires Invoke and Cancel authority; the provider enters cleanup with an
+   * aborted signal. An uncertain canonical start must not be automatically
+   * replayed: another deployment can execute the same invocationId independently.
    */
   cancellationRequested?: boolean;
   /** Abort only automatic callback observation; not a business cancel. */
@@ -204,9 +205,12 @@ export type StartedOperationEvent<TProgress = unknown, TOutput = unknown> = {
   snapshot: OperationSnapshot<TProgress, TOutput>;
 };
 
-export type TransferOperationSnapshot<TProgress = unknown, TOutput = unknown> =
-  & OperationSnapshot<TProgress, TOutput>
-  & { transfer: OperationTransferProgress };
+export type TransferOperationSnapshot<
+  TProgress = unknown,
+  TOutput = unknown,
+> = OperationSnapshot<TProgress, TOutput> & {
+  transfer: OperationTransferProgress;
+};
 
 export type TransferOperationEvent<TProgress = unknown, TOutput = unknown> = {
   type: "transfer";
@@ -214,9 +218,10 @@ export type TransferOperationEvent<TProgress = unknown, TOutput = unknown> = {
   transfer: OperationTransferProgress;
 };
 
-export type ProgressOperationSnapshot<TProgress = unknown, TOutput = unknown> =
-  & OperationSnapshot<TProgress, TOutput>
-  & { progress: TProgress };
+export type ProgressOperationSnapshot<
+  TProgress = unknown,
+  TOutput = unknown,
+> = OperationSnapshot<TProgress, TOutput> & { progress: TProgress };
 
 export type ProgressOperationEvent<TProgress = unknown, TOutput = unknown> = {
   type: "progress";
@@ -297,9 +302,7 @@ export type OperationObserverCallbacks<
     event: OperationEvent<TProgress, TOutput, TUpdate>,
   ) => void | Promise<void>;
   /** Automatic observer transport/callback failure. Does not cancel business work. */
-  onObservationError?: (
-    error: LiveStreamError,
-  ) => void | Promise<void>;
+  onObservationError?: (error: LiveStreamError) => void | Promise<void>;
 };
 
 interface OperationObserverBuilderBase<
@@ -371,13 +374,12 @@ export interface TransferOperationBuilder<
   TProgress = OperationProgressOf<TDesc>,
   TOutput = OperationOutputOf<TDesc>,
   TUpdate = OperationUpdateOf<TDesc>,
-> extends
-  OperationObserverBuilderBase<
-    TransferOperationBuilder<TDesc, TProgress, TOutput, TUpdate>,
-    TProgress,
-    TOutput,
-    TUpdate
-  > {
+> extends OperationObserverBuilderBase<
+  TransferOperationBuilder<TDesc, TProgress, TOutput, TUpdate>,
+  TProgress,
+  TOutput,
+  TUpdate
+> {
   onTransfer(
     handler: NonNullable<
       OperationObserverCallbacks<TProgress, TOutput>["onTransfer"]
@@ -397,29 +399,26 @@ export interface OperationInputBuilder<
   TProgress = OperationProgressOf<TDesc>,
   TOutput = OperationOutputOf<TDesc>,
   TUpdate = OperationUpdateOf<TDesc>,
-> extends
-  OperationInputBuilderBase<
-    TDesc,
-    TProgress,
-    TOutput,
-    TUpdate,
-    OperationInputBuilder<TDesc, TProgress, TOutput, TUpdate>
-  > {
-}
+> extends OperationInputBuilderBase<
+  TDesc,
+  TProgress,
+  TOutput,
+  TUpdate,
+  OperationInputBuilder<TDesc, TProgress, TOutput, TUpdate>
+> {}
 
 export interface TransferCapableOperationInputBuilder<
   TDesc extends OperationShape,
   TProgress = OperationProgressOf<TDesc>,
   TOutput = OperationOutputOf<TDesc>,
   TUpdate = OperationUpdateOf<TDesc>,
-> extends
-  OperationInputBuilderBase<
-    TDesc,
-    TProgress,
-    TOutput,
-    TUpdate,
-    TransferCapableOperationInputBuilder<TDesc, TProgress, TOutput, TUpdate>
-  > {
+> extends OperationInputBuilderBase<
+  TDesc,
+  TProgress,
+  TOutput,
+  TUpdate,
+  TransferCapableOperationInputBuilder<TDesc, TProgress, TOutput, TUpdate>
+> {
   transfer(
     body: TransferBody,
   ): TransferOperationBuilder<TDesc, TProgress, TOutput>;
@@ -437,8 +436,10 @@ type OperationSnapshotFrame<TProgress = unknown, TOutput = unknown> = {
   snapshot: OperationSnapshot<TProgress, TOutput>;
 };
 
-type OperationSignalAckFrame<TProgress = unknown, TOutput = unknown> =
-  OperationSignalAck<TProgress, TOutput>;
+type OperationSignalAckFrame<
+  TProgress = unknown,
+  TOutput = unknown,
+> = OperationSignalAck<TProgress, TOutput>;
 
 type OperationControlErrorFrame = {
   kind: "error";
@@ -468,28 +469,30 @@ type OperationInputOf<TDesc extends OperationShape> = InferSchemaType<
   TDesc["input"]
 >;
 type OperationProgressOf<TDesc extends OperationShape> =
-  TDesc["progress"] extends undefined ? unknown
+  TDesc["progress"] extends undefined
+    ? unknown
     : InferSchemaType<NonNullable<TDesc["progress"]>>;
-type OperationUpdateOf<TDesc extends OperationShape> = TDesc["update"] extends
-  undefined ? unknown
-  : InferSchemaType<NonNullable<TDesc["update"]>>;
-type OperationOutputOf<TDesc extends OperationShape> = TDesc["output"] extends
-  undefined ? unknown
-  : InferSchemaType<NonNullable<TDesc["output"]>>;
+type OperationUpdateOf<TDesc extends OperationShape> =
+  TDesc["update"] extends undefined
+    ? unknown
+    : InferSchemaType<NonNullable<TDesc["update"]>>;
+type OperationOutputOf<TDesc extends OperationShape> =
+  TDesc["output"] extends undefined
+    ? unknown
+    : InferSchemaType<NonNullable<TDesc["output"]>>;
 
 export interface OperationTransport {
   requestJson(
     subject: string,
     body: JsonValue,
+    expectedDeploymentId?: string,
   ): AsyncResult<JsonValue, TransportError | UnexpectedError>;
   watchJson<T>(
     subject: string,
     body: JsonValue,
     decodeEvent: (value: unknown) => T | undefined,
-  ): AsyncResult<
-    LiveSubscription<T>,
-    TransportError | UnexpectedError
-  >;
+    expectedDeploymentId?: string,
+  ): AsyncResult<LiveSubscription<T>, TransportError | UnexpectedError>;
   putTransfer(
     grant: SendTransferGrant,
     body: TransferBody,
@@ -499,8 +502,8 @@ export interface OperationTransport {
 /**
  * Await one operation transport request, converting a rejection into a Result.
  *
- * A transport failure is a refused request, never a thrown exception, so every
- * operation caller receives a Result it can inspect.
+ * Every caller receives a Result it can inspect. A transport failure does not
+ * establish that the provider refused or did not execute the request.
  *
  * @param request - Starts one transport request.
  * @returns The request value, or the Result that refuses it.
@@ -531,7 +534,9 @@ function operationRequestBody(
 
 function encodeOperationInput(schema: unknown, value: unknown): JsonValue {
   if (
-    value === undefined || value === null || schema === undefined ||
+    value === undefined ||
+    value === null ||
+    schema === undefined ||
     schema === null
   ) {
     return value as JsonValue;
@@ -544,8 +549,24 @@ function encodeOperationInput(schema: unknown, value: unknown): JsonValue {
   return value as JsonValue;
 }
 
-export function controlSubject(subject: string): string {
-  return `${subject}.control`;
+/** Route established controls to their durable deployment using the existing owner subject family. */
+export function controlSubject(subject: string, deploymentId: string): string {
+  const parts = subject.split(".");
+  if (
+    parts[0] !== "operation" ||
+    parts[1] !== "v1" ||
+    parts.length < 4 ||
+    !deploymentId
+  ) {
+    throw new Error("invalid operation owner route");
+  }
+  const token = btoa(
+    String.fromCharCode(...new TextEncoder().encode(deploymentId)),
+  )
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+  return [...parts.slice(0, 3), token, ...parts.slice(3), "control"].join(".");
 }
 
 function isTerminalState(state: OperationState): boolean {
@@ -569,8 +590,8 @@ function createTransportError(args: {
       ...(args.cause instanceof Error
         ? { causeName: args.cause.name, causeMessage: args.cause.message }
         : args.cause === undefined
-        ? {}
-        : { cause: String(args.cause) }),
+          ? {}
+          : { cause: String(args.cause) }),
     },
   });
 }
@@ -628,8 +649,11 @@ function isTerminalEvent<TProgress, TOutput, TUpdate>(
   OperationEvent<TProgress, TOutput, TUpdate>,
   { type: "completed" | "failed" | "cancelled" }
 > {
-  return event.type === "completed" || event.type === "failed" ||
-    event.type === "cancelled";
+  return (
+    event.type === "completed" ||
+    event.type === "failed" ||
+    event.type === "cancelled"
+  );
 }
 
 function normalizeOperationEvent<TProgress, TOutput, TUpdate>(
@@ -671,13 +695,14 @@ function normalizeOperationEvent<TProgress, TOutput, TUpdate>(
         return ok(event);
     }
   } catch (cause) {
-    return err(createTransportError({
-      code: "trellis.operation.invalid_event",
-      message: "Trellis returned an invalid operation event.",
-      hint:
-        "Retry the operation watch. If it keeps failing, reconnect to Trellis and try again.",
-      cause,
-    }));
+    return err(
+      createTransportError({
+        code: "trellis.operation.invalid_event",
+        message: "Trellis returned an invalid operation event.",
+        hint: "Retry the operation watch. If it keeps failing, reconnect to Trellis and try again.",
+        cause,
+      }),
+    );
   }
 }
 
@@ -720,14 +745,14 @@ function hasObserverCallbacks<TProgress, TOutput, TUpdate>(
 ): boolean {
   return Boolean(
     options.onAccepted ||
-      options.onStarted ||
-      options.onTransfer ||
-      options.onProgress ||
-      options.onUpdate ||
-      options.onCompleted ||
-      options.onFailed ||
-      options.onCancelled ||
-      options.onEvent,
+    options.onStarted ||
+    options.onTransfer ||
+    options.onProgress ||
+    options.onUpdate ||
+    options.onCompleted ||
+    options.onFailed ||
+    options.onCancelled ||
+    options.onEvent,
   );
 }
 
@@ -742,20 +767,29 @@ function decodeAcceptedEnvelope<TProgress, TOutput>(
       return err(controlFrameToError(value));
     }
     const envelope = value as OperationAcceptedEnvelope<TProgress, TOutput>;
-    if (envelope?.kind !== "accepted" || !envelope.ref || !envelope.snapshot) {
+    if (
+      envelope?.kind !== "accepted" ||
+      !envelope.ref ||
+      !envelope.snapshot ||
+      !envelope.ref.deploymentId ||
+      envelope.ref.id !== envelope.snapshot.id ||
+      envelope.ref.service !== envelope.snapshot.service ||
+      envelope.ref.operation !== envelope.snapshot.operation
+    ) {
       throw new Error(
         `Expected accepted operation envelope, got ${JSON.stringify(value)}`,
       );
     }
     return ok(envelope);
   } catch (cause) {
-    return err(createTransportError({
-      code: "trellis.operation.invalid_accept",
-      message: "Trellis returned an invalid operation start response.",
-      hint:
-        "Retry starting the operation. If it keeps failing, reconnect to Trellis and try again.",
-      cause,
-    }));
+    return err(
+      createTransportError({
+        code: "trellis.operation.invalid_accept",
+        message: "Trellis returned an invalid operation start response.",
+        hint: "The start outcome is uncertain. Do not retry against an alternative deployment.",
+        cause,
+      }),
+    );
   }
 }
 
@@ -773,13 +807,14 @@ function decodeSnapshotFrame<TProgress, TOutput>(
     }
     return ok(frame);
   } catch (cause) {
-    return err(createTransportError({
-      code: "trellis.operation.invalid_snapshot",
-      message: "Trellis returned an invalid operation snapshot.",
-      hint:
-        "Retry the operation request. If it keeps failing, reconnect to Trellis and try again.",
-      cause,
-    }));
+    return err(
+      createTransportError({
+        code: "trellis.operation.invalid_snapshot",
+        message: "Trellis returned an invalid operation snapshot.",
+        hint: "Retry the operation request. If it keeps failing, reconnect to Trellis and try again.",
+        cause,
+      }),
+    );
   }
 }
 
@@ -801,20 +836,21 @@ function decodeSignalAckFrame<TProgress, TOutput>(
       !frame.snapshot
     ) {
       throw new Error(
-        `Expected signal-accepted operation frame, received ${
-          JSON.stringify(value)
-        }`,
+        `Expected signal-accepted operation frame, received ${JSON.stringify(
+          value,
+        )}`,
       );
     }
     return ok(frame);
   } catch (cause) {
-    return err(createTransportError({
-      code: "trellis.operation.invalid_signal_ack",
-      message: "Trellis returned an invalid operation signal response.",
-      hint:
-        "Retry the operation signal. If it keeps failing, reconnect to Trellis and try again.",
-      cause,
-    }));
+    return err(
+      createTransportError({
+        code: "trellis.operation.invalid_signal_ack",
+        message: "Trellis returned an invalid operation signal response.",
+        hint: "Retry the operation signal. If it keeps failing, reconnect to Trellis and try again.",
+        cause,
+      }),
+    );
   }
 }
 
@@ -827,6 +863,7 @@ class RuntimeOperationRef<
   readonly id: string;
   readonly service: string;
   readonly operation: string;
+  readonly deploymentId: string;
 
   readonly #transport: OperationTransport;
   readonly #descriptor: TDesc;
@@ -838,11 +875,19 @@ class RuntimeOperationRef<
     ref: OperationRefData,
     acceptedTransfer?: SendTransferGrant,
   ) {
+    if (
+      ![ref.id, ref.service, ref.operation, ref.deploymentId].every(
+        (value) => typeof value === "string" && value.length > 0,
+      )
+    ) {
+      throw new Error("restoring an operation requires its complete reference");
+    }
     this.#transport = transport;
     this.#descriptor = descriptor;
     this.id = ref.id;
     this.service = ref.service;
     this.operation = ref.operation;
+    this.deploymentId = ref.deploymentId;
     this.#acceptedTransfer = acceptedTransfer;
   }
 
@@ -863,9 +908,10 @@ class RuntimeOperationRef<
       update?: unknown;
       progress?: unknown;
     };
-    const decoded = (event as { snapshot?: unknown }).snapshot === undefined
-      ? { ...event }
-      : { ...event, snapshot: this.#decodeSnapshot(event.snapshot) };
+    const decoded =
+      (event as { snapshot?: unknown }).snapshot === undefined
+        ? { ...event }
+        : { ...event, snapshot: this.#decodeSnapshot(event.snapshot) };
     if (event.type === "progress") {
       return {
         ...decoded,
@@ -878,10 +924,7 @@ class RuntimeOperationRef<
     if (event.type === "update") {
       return {
         ...decoded,
-        update: this.#decodePayload(
-          descriptor.update,
-          event.update,
-        ) as TUpdate,
+        update: this.#decodePayload(descriptor.update, event.update) as TUpdate,
       } as OperationEvent<TProgress, TOutput, TUpdate>;
     }
     return decoded as OperationEvent<TProgress, TOutput, TUpdate>;
@@ -894,72 +937,77 @@ class RuntimeOperationRef<
     return this.#controlSnapshot("get");
   }
 
-  wait(options?: OperationWaitOptions): AsyncResult<
+  wait(
+    options?: OperationWaitOptions,
+  ): AsyncResult<
     TerminalOperation<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   > {
-    return AsyncResult.from((async () => {
-      const initialTerminal = await this.#terminalSnapshotFromGet().take();
-      if (isErr(initialTerminal)) {
-        return initialTerminal;
-      }
-      if (initialTerminal !== null) {
-        return ok(initialTerminal);
-      }
-
-      const eventsValue = await this.live({
-        signal: options?.observationSignal,
-      })
-        .take();
-      if (isErr(eventsValue)) {
-        const terminal = await this.#terminalSnapshotFromGet().take();
-        if (!isErr(terminal) && terminal !== null) {
-          return ok(terminal);
+    return AsyncResult.from(
+      (async () => {
+        const initialTerminal = await this.#terminalSnapshotFromGet().take();
+        if (isErr(initialTerminal)) {
+          return initialTerminal;
         }
-        if (options?.observationSignal?.aborted) {
-          return err(this.#observationCancelledError());
+        if (initialTerminal !== null) {
+          return ok(initialTerminal);
         }
-        return eventsValue;
-      }
 
-      const subscription = eventsValue;
-      try {
-        for await (const event of subscription) {
-          if (isTerminalEvent(event)) {
-            return ok(event.snapshot);
+        const eventsValue = await this.live({
+          signal: options?.observationSignal,
+        }).take();
+        if (isErr(eventsValue)) {
+          const terminal = await this.#terminalSnapshotFromGet().take();
+          if (!isErr(terminal) && terminal !== null) {
+            return ok(terminal);
           }
+          if (options?.observationSignal?.aborted) {
+            return err(this.#observationCancelledError());
+          }
+          return eventsValue;
         }
-      } catch (cause) {
+
+        const subscription = eventsValue;
+        try {
+          for await (const event of subscription) {
+            if (isTerminalEvent(event)) {
+              return ok(event.snapshot);
+            }
+          }
+        } catch (cause) {
+          const terminal = await this.#terminalSnapshotFromGet().take();
+          if (!isErr(terminal) && terminal !== null) {
+            return ok(terminal);
+          }
+          if (options?.observationSignal?.aborted) {
+            return err(this.#observationCancelledError());
+          }
+          return err(watchFailure(cause));
+        } finally {
+          await subscription[Symbol.asyncDispose]();
+        }
+
         const terminal = await this.#terminalSnapshotFromGet().take();
         if (!isErr(terminal) && terminal !== null) {
           return ok(terminal);
         }
+        // A local observation stop is a normal cancellation, not an incomplete
+        // watch: it never dispatches a business cancel or invents a terminal.
         if (options?.observationSignal?.aborted) {
           return err(this.#observationCancelledError());
         }
-        return err(watchFailure(cause));
-      } finally {
-        await subscription[Symbol.asyncDispose]();
-      }
 
-      const terminal = await this.#terminalSnapshotFromGet().take();
-      if (!isErr(terminal) && terminal !== null) {
-        return ok(terminal);
-      }
-      // A local observation stop is a normal cancellation, not an incomplete
-      // watch: it never dispatches a business cancel or invents a terminal.
-      if (options?.observationSignal?.aborted) {
-        return err(this.#observationCancelledError());
-      }
-
-      return err(createTransportError({
-        code: "trellis.operation.watch_closed",
-        message: "Trellis operation watch ended before a terminal snapshot.",
-        hint:
-          "Retry the operation wait. If it keeps happening, reconnect to Trellis and try again.",
-        context: { operationId: this.id, operation: this.operation },
-      }));
-    })());
+        return err(
+          createTransportError({
+            code: "trellis.operation.watch_closed",
+            message:
+              "Trellis operation watch ended before a terminal snapshot.",
+            hint: "Retry the operation wait. If it keeps happening, reconnect to Trellis and try again.",
+            context: { operationId: this.id, operation: this.operation },
+          }),
+        );
+      })(),
+    );
   }
 
   #observationCancelledError(): TransportError {
@@ -975,31 +1023,35 @@ class RuntimeOperationRef<
     TerminalOperation<TProgress, TOutput> | null,
     OperationControlError | UnexpectedError
   > {
-    return AsyncResult.from((async () => {
-      const snapshotValue = await this.#controlSnapshot("get").take();
-      if (isErr(snapshotValue)) {
-        return snapshotValue;
-      }
-      if (isTerminalState(snapshotValue.state)) {
-        return ok(snapshotValue as TerminalOperation<TProgress, TOutput>);
-      }
-      return ok(null);
-    })());
+    return AsyncResult.from(
+      (async () => {
+        const snapshotValue = await this.#controlSnapshot("get").take();
+        if (isErr(snapshotValue)) {
+          return snapshotValue;
+        }
+        if (isTerminalState(snapshotValue.state)) {
+          return ok(snapshotValue as TerminalOperation<TProgress, TOutput>);
+        }
+        return ok(null);
+      })(),
+    );
   }
 
   cancel(): AsyncResult<
     OperationSnapshot<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   > {
-    return AsyncResult.from((async () => {
-      for (;;) {
-        const snapshot = await this.#controlSnapshot("cancel").take();
-        if (isErr(snapshot)) return snapshot;
-        if (isTerminalState(snapshot.state)) return ok(snapshot);
-        // ponytail: poll through the same cancel grant; observing may require a separate grant.
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-    })());
+    return AsyncResult.from(
+      (async () => {
+        for (;;) {
+          const snapshot = await this.#controlSnapshot("cancel").take();
+          if (isErr(snapshot)) return snapshot;
+          if (isTerminalState(snapshot.state)) return ok(snapshot);
+          // ponytail: poll through the same cancel grant; observing may require a separate grant.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      })(),
+    );
   }
 
   signal(
@@ -1009,46 +1061,50 @@ class RuntimeOperationRef<
     OperationSignalAck<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   > {
-    return AsyncResult.from((async (): Promise<
-      Result<
-        OperationSignalAck<TProgress, TOutput>,
-        OperationControlError | UnexpectedError
-      >
-    > => {
-      const body: {
-        action: "signal";
-        operationId: string;
-        signal: string;
-        input?: JsonValue;
-      } = {
-        action: "signal",
-        operationId: this.id,
-        signal,
-      };
-      if (input !== undefined) {
-        const signals =
-          (this.#descriptor as { signals?: Record<string, unknown> })
-            .signals;
-        body.input = encodeOperationInput(signals?.[signal], input);
-      }
+    return AsyncResult.from(
+      (async (): Promise<
+        Result<
+          OperationSignalAck<TProgress, TOutput>,
+          OperationControlError | UnexpectedError
+        >
+      > => {
+        const body: {
+          action: "signal";
+          operationId: string;
+          signal: string;
+          input?: JsonValue;
+        } = {
+          action: "signal",
+          operationId: this.id,
+          signal,
+        };
+        if (input !== undefined) {
+          const signals = (
+            this.#descriptor as { signals?: Record<string, unknown> }
+          ).signals;
+          body.input = encodeOperationInput(signals?.[signal], input);
+        }
 
-      const responseValue = await settleRequest(() =>
-        this.#transport.requestJson(
-          controlSubject(this.#descriptor.subject),
-          body,
-        )
-      );
-      if (isErr(responseValue)) {
-        return err(responseValue.error);
-      }
+        const responseValue = await settleRequest(() =>
+          this.#transport.requestJson(
+            controlSubject(this.#descriptor.subject, this.deploymentId),
+            body,
+            this.deploymentId,
+          ),
+        );
+        if (isErr(responseValue)) {
+          return err(responseValue.error);
+        }
 
-      const ack = decodeSignalAckFrame<TProgress, TOutput>(responseValue)
-        .take();
-      if (isErr(ack)) {
-        return ack;
-      }
-      return ok({ ...ack, snapshot: this.#decodeSnapshot(ack.snapshot)! });
-    })());
+        const ack = decodeSignalAckFrame<TProgress, TOutput>(
+          responseValue,
+        ).take();
+        if (isErr(ack)) {
+          return ack;
+        }
+        return ok({ ...ack, snapshot: this.#decodeSnapshot(ack.snapshot)! });
+      })(),
+    );
   }
 
   startTransfer(
@@ -1066,62 +1122,73 @@ class RuntimeOperationRef<
     return this.#transport.putTransfer(grant, body);
   }
 
-  live(options: OperationWatchOptions = {}): AsyncResult<
+  live(
+    options: OperationWatchOptions = {},
+  ): AsyncResult<
     LiveSubscription<OperationEvent<TProgress, TOutput, TUpdate>>,
     OperationControlError | UnexpectedError
   > {
-    return AsyncResult.from((async () => {
-      if (options.signal?.aborted) {
-        return err(createTransportError({
-          code: "trellis.operation.watch_aborted",
-          message: "The operation watch was aborted before it opened.",
-          hint: "Retry watching the operation if it is still needed.",
-          context: { operationId: this.id, operation: this.operation },
-        }));
-      }
-      const decodeEvent = this.#decodeEvent.bind(this);
-      const subscription = await this.#transport.watchJson(
-        controlSubject(this.#descriptor.subject),
-        {
-          action: "watch",
-          operationId: this.id,
-          ...(options.updates ? { includeUpdates: true } : {}),
-        },
-        (value) => {
-          const decoded = decodeWatchFrame<TProgress, TOutput, TUpdate>(
-            value as JsonValue,
-          ).take();
-          if (isErr(decoded)) throw decoded.error;
-          if (decoded === null) return;
-          const normalized = normalizeOperationEvent(decoded).take();
-          if (isErr(normalized)) throw normalized.error;
-          return decodeEvent(normalized);
-        },
-      ).take();
-      if (isErr(subscription)) {
-        return err(subscription.error);
-      }
-      if (options.signal) {
-        const close = () => {
-          subscription.close();
-        };
-        if (options.signal.aborted) {
-          close();
-          return err(createTransportError({
-            code: "trellis.operation.watch_aborted",
-            message: "The operation watch was aborted while it opened.",
-            hint: "Retry watching the operation if it is still needed.",
-            context: { operationId: this.id, operation: this.operation },
-          }));
+    return AsyncResult.from(
+      (async () => {
+        if (options.signal?.aborted) {
+          return err(
+            createTransportError({
+              code: "trellis.operation.watch_aborted",
+              message: "The operation watch was aborted before it opened.",
+              hint: "Retry watching the operation if it is still needed.",
+              context: { operationId: this.id, operation: this.operation },
+            }),
+          );
         }
-        options.signal.addEventListener("abort", close, { once: true });
-        // The listener is owned by this observation and removed at settlement.
-        void subscription.closed.finally(() => {
-          options.signal?.removeEventListener("abort", close);
-        });
-      }
-      return ok(subscription);
-    })());
+        const decodeEvent = this.#decodeEvent.bind(this);
+        const subscription = await this.#transport
+          .watchJson(
+            controlSubject(this.#descriptor.subject, this.deploymentId),
+            {
+              action: "watch",
+              operationId: this.id,
+              ...(options.updates ? { includeUpdates: true } : {}),
+            },
+            (value) => {
+              const decoded = decodeWatchFrame<TProgress, TOutput, TUpdate>(
+                value as JsonValue,
+              ).take();
+              if (isErr(decoded)) throw decoded.error;
+              if (decoded === null) return;
+              const normalized = normalizeOperationEvent(decoded).take();
+              if (isErr(normalized)) throw normalized.error;
+              return decodeEvent(normalized);
+            },
+            this.deploymentId,
+          )
+          .take();
+        if (isErr(subscription)) {
+          return err(subscription.error);
+        }
+        if (options.signal) {
+          const close = () => {
+            subscription.close();
+          };
+          if (options.signal.aborted) {
+            close();
+            return err(
+              createTransportError({
+                code: "trellis.operation.watch_aborted",
+                message: "The operation watch was aborted while it opened.",
+                hint: "Retry watching the operation if it is still needed.",
+                context: { operationId: this.id, operation: this.operation },
+              }),
+            );
+          }
+          options.signal.addEventListener("abort", close, { once: true });
+          // The listener is owned by this observation and removed at settlement.
+          void subscription.closed.finally(() => {
+            options.signal?.removeEventListener("abort", close);
+          });
+        }
+        return ok(subscription);
+      })(),
+    );
   }
 
   #controlSnapshot(
@@ -1130,28 +1197,31 @@ class RuntimeOperationRef<
     OperationSnapshot<TProgress, TOutput>,
     OperationControlError | UnexpectedError
   > {
-    return AsyncResult.from((async () => {
-      const responseValue = await settleRequest(() =>
-        this.#transport.requestJson(
-          controlSubject(this.#descriptor.subject),
-          {
-            action,
-            operationId: this.id,
-          },
-        )
-      );
-      if (isErr(responseValue)) {
-        return err(responseValue.error);
-      }
+    return AsyncResult.from(
+      (async () => {
+        const responseValue = await settleRequest(() =>
+          this.#transport.requestJson(
+            controlSubject(this.#descriptor.subject, this.deploymentId),
+            {
+              action,
+              operationId: this.id,
+            },
+            this.deploymentId,
+          ),
+        );
+        if (isErr(responseValue)) {
+          return err(responseValue.error);
+        }
 
-      const frame = decodeSnapshotFrame<TProgress, TOutput>(
-        responseValue,
-      ).take();
-      if (isErr(frame)) {
-        return frame;
-      }
-      return ok(this.#decodeSnapshot(frame.snapshot)!);
-    })());
+        const frame = decodeSnapshotFrame<TProgress, TOutput>(
+          responseValue,
+        ).take();
+        if (isErr(frame)) {
+          return frame;
+        }
+        return ok(this.#decodeSnapshot(frame.snapshot)!);
+      })(),
+    );
   }
 }
 
@@ -1163,7 +1233,8 @@ function decodeWatchFrame<TProgress, TOutput, TUpdate>(
 > {
   try {
     if (
-      value && typeof value === "object" &&
+      value &&
+      typeof value === "object" &&
       (value as { kind?: string }).kind === "keepalive"
     ) {
       return ok(null);
@@ -1176,12 +1247,13 @@ function decodeWatchFrame<TProgress, TOutput, TUpdate>(
     const frame = value as
       | { kind: "snapshot"; snapshot: OperationSnapshot<TProgress, TOutput> }
       | {
-        kind: "event";
-        event: OperationEvent<TProgress, TOutput, TUpdate>;
-      };
+          kind: "event";
+          event: OperationEvent<TProgress, TOutput, TUpdate>;
+        };
 
     if (
-      (frame as { kind?: string }).kind === "snapshot" && "snapshot" in frame
+      (frame as { kind?: string }).kind === "snapshot" &&
+      "snapshot" in frame
     ) {
       return ok(snapshotToEvent<TProgress, TOutput, TUpdate>(frame.snapshot));
     }
@@ -1191,13 +1263,14 @@ function decodeWatchFrame<TProgress, TOutput, TUpdate>(
 
     throw new Error("Expected snapshot, event, or keepalive frame");
   } catch (cause) {
-    return err(createTransportError({
-      code: "trellis.operation.invalid_frame",
-      message: "Trellis returned an invalid operation watch frame.",
-      hint:
-        "Retry the operation watch. If it keeps failing, reconnect to Trellis and try again.",
-      cause,
-    }));
+    return err(
+      createTransportError({
+        code: "trellis.operation.invalid_frame",
+        message: "Trellis returned an invalid operation watch frame.",
+        hint: "Retry the operation watch. If it keeps failing, reconnect to Trellis and try again.",
+        cause,
+      }),
+    );
   }
 }
 
@@ -1212,11 +1285,10 @@ type OperationWatchObservation<TProgress, TOutput> = {
   closed?: Promise<LiveEnd>;
 };
 
-function watchFailure(
-  cause: unknown,
-): OperationControlError | UnexpectedError {
+function watchFailure(cause: unknown): OperationControlError | UnexpectedError {
   if (
-    cause instanceof TransportError || cause instanceof UnexpectedError ||
+    cause instanceof TransportError ||
+    cause instanceof UnexpectedError ||
     isOperationLifecycleError(cause)
   ) {
     return cause;
@@ -1225,8 +1297,7 @@ function watchFailure(
     return createTransportError({
       code: cause.codeString(),
       message: cause.message,
-      hint:
-        "Retry watching the operation. If it keeps failing, check Trellis runtime health.",
+      hint: "Retry watching the operation. If it keeps failing, check Trellis runtime health.",
       cause,
     });
   }
@@ -1265,40 +1336,43 @@ function invokeOperation<
   InvokedOperation<TDesc, TProgress, TOutput, TUpdate>,
   OperationControlError | UnexpectedError
 > {
-  return AsyncResult.from((async () => {
-    const responseValue = await settleRequest(() =>
-      transport.requestJson(
-        descriptor.subject,
-        operationRequestBody(
-          encodeOperationInput(descriptor.input, input),
-          invocationId,
-          cancellationRequested,
+  return AsyncResult.from(
+    (async () => {
+      const responseValue = await settleRequest(() =>
+        transport.requestJson(
+          descriptor.subject,
+          operationRequestBody(
+            encodeOperationInput(descriptor.input, input),
+            invocationId,
+            cancellationRequested,
+          ),
         ),
-      )
-    );
-    if (isErr(responseValue)) {
-      return responseValue;
-    }
+      );
+      if (isErr(responseValue)) {
+        return responseValue;
+      }
 
-    const envelope = decodeAcceptedEnvelope<TProgress, TOutput>(responseValue)
-      .take();
-    if (isErr(envelope)) {
-      return envelope;
-    }
+      const envelope = decodeAcceptedEnvelope<TProgress, TOutput>(
+        responseValue,
+      ).take();
+      if (isErr(envelope)) {
+        return envelope;
+      }
 
-    return ok({
-      accepted: {
-        type: "accepted",
-        snapshot: decodeOperationSnapshot(descriptor, envelope.snapshot)!,
-      },
-      operation: new RuntimeOperationRef<TDesc, TProgress, TOutput, TUpdate>(
-        transport,
-        descriptor,
-        envelope.ref,
-        envelope.transfer,
-      ),
-    });
-  })());
+      return ok({
+        accepted: {
+          type: "accepted",
+          snapshot: decodeOperationSnapshot(descriptor, envelope.snapshot)!,
+        },
+        operation: new RuntimeOperationRef<TDesc, TProgress, TOutput, TUpdate>(
+          transport,
+          descriptor,
+          envelope.ref,
+          envelope.transfer,
+        ),
+      });
+    })(),
+  );
 }
 
 function beginObservedWatch<
@@ -1318,100 +1392,105 @@ function beginObservedWatch<
     return AsyncResult.ok({});
   }
 
-  return AsyncResult.from((async () => {
-    const liveValue = await operation.live({
-      updates: callbacks.onUpdate !== undefined,
-    }).take();
-    if (isErr(liveValue)) {
-      return liveValue;
-    }
-
-    const subscription = liveValue;
-    let stopped = false;
-    const close = async () => {
-      stopped = true;
-      await subscription[Symbol.asyncDispose]();
-    };
-    const signal = options.observationSignal;
-    const onAbort = () => {
-      void close();
-    };
-    if (signal) {
-      if (signal.aborted) void close();
-      else signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    const task = (async (): Promise<
-      Result<
-        TerminalOperation<TProgress, TOutput>,
-        OperationControlError | UnexpectedError
-      >
-    > => {
-      try {
-        await options.ready;
-
-        for await (const event of subscription) {
-          if (options.skipEvent?.(event)) {
-            continue;
-          }
-          try {
-            await dispatchObservedOperationEvent(callbacks, event);
-          } catch (cause) {
-            await close();
-            const callbackError = new LiveStreamError(
-              "callback_failed",
-              cause instanceof Error ? cause.message : String(cause),
-            );
-            await reportObservationError(callbacks, callbackError);
-            return err(toObservedCallbackError(cause));
-          }
-          if (isTerminalEvent(event)) {
-            await close();
-            return ok(
-              event.snapshot as TerminalOperation<TProgress, TOutput>,
-            );
-          }
-        }
-
-        if (stopped) {
-          // A local stop is a normal observation cancellation: no
-          // `watch_incomplete` and no unsolicited error callback.
-          return err(createTransportError({
-            code: "trellis.operation.observation_cancelled",
-            message: "The operation observation was stopped locally.",
-            hint: "The durable Operation itself was not cancelled.",
-            context: { operationId: operation.id },
-          }));
-        }
-        const incomplete = createTransportError({
-          code: "trellis.operation.watch_incomplete",
-          message: "Trellis ended the operation watch before completion.",
-          hint:
-            "Retry watching the operation. If it keeps happening, reconnect to Trellis and try again.",
-          cause: new Error("operation watch ended before terminal event"),
-        });
-        await reportObservationError(
-          callbacks,
-          new LiveStreamError("source_error", incomplete.message),
-        );
-        return err(incomplete);
-      } catch (cause) {
-        const failure = watchFailure(cause);
-        await reportObservationError(
-          callbacks,
-          cause instanceof LiveStreamError
-            ? cause
-            : new LiveStreamError("source_error", failure.message),
-        );
-        return err(failure);
-      } finally {
-        signal?.removeEventListener("abort", onAbort);
-        await close();
+  return AsyncResult.from(
+    (async () => {
+      const liveValue = await operation
+        .live({
+          updates: callbacks.onUpdate !== undefined,
+        })
+        .take();
+      if (isErr(liveValue)) {
+        return liveValue;
       }
-    })();
 
-    return ok({ task, close, closed: subscription.closed });
-  })());
+      const subscription = liveValue;
+      let stopped = false;
+      const close = async () => {
+        stopped = true;
+        await subscription[Symbol.asyncDispose]();
+      };
+      const signal = options.observationSignal;
+      const onAbort = () => {
+        void close();
+      };
+      if (signal) {
+        if (signal.aborted) void close();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      const task = (async (): Promise<
+        Result<
+          TerminalOperation<TProgress, TOutput>,
+          OperationControlError | UnexpectedError
+        >
+      > => {
+        try {
+          await options.ready;
+
+          for await (const event of subscription) {
+            if (options.skipEvent?.(event)) {
+              continue;
+            }
+            try {
+              await dispatchObservedOperationEvent(callbacks, event);
+            } catch (cause) {
+              await close();
+              const callbackError = new LiveStreamError(
+                "callback_failed",
+                cause instanceof Error ? cause.message : String(cause),
+              );
+              await reportObservationError(callbacks, callbackError);
+              return err(toObservedCallbackError(cause));
+            }
+            if (isTerminalEvent(event)) {
+              await close();
+              return ok(
+                event.snapshot as TerminalOperation<TProgress, TOutput>,
+              );
+            }
+          }
+
+          if (stopped) {
+            // A local stop is a normal observation cancellation: no
+            // `watch_incomplete` and no unsolicited error callback.
+            return err(
+              createTransportError({
+                code: "trellis.operation.observation_cancelled",
+                message: "The operation observation was stopped locally.",
+                hint: "The durable Operation itself was not cancelled.",
+                context: { operationId: operation.id },
+              }),
+            );
+          }
+          const incomplete = createTransportError({
+            code: "trellis.operation.watch_incomplete",
+            message: "Trellis ended the operation watch before completion.",
+            hint: "Retry watching the operation. If it keeps happening, reconnect to Trellis and try again.",
+            cause: new Error("operation watch ended before terminal event"),
+          });
+          await reportObservationError(
+            callbacks,
+            new LiveStreamError("source_error", incomplete.message),
+          );
+          return err(incomplete);
+        } catch (cause) {
+          const failure = watchFailure(cause);
+          await reportObservationError(
+            callbacks,
+            cause instanceof LiveStreamError
+              ? cause
+              : new LiveStreamError("source_error", failure.message),
+          );
+          return err(failure);
+        } finally {
+          signal?.removeEventListener("abort", onAbort);
+          await close();
+        }
+      })();
+
+      return ok({ task, close, closed: subscription.closed });
+    })(),
+  );
 }
 
 function startObservedOperation<
@@ -1429,64 +1508,69 @@ function startObservedOperation<
   OperationRef<TDesc, TProgress, TOutput, TUpdate>,
   OperationControlError | UnexpectedError
 > {
-  return AsyncResult.from((async () => {
-    const startedValue = await invokeOperation<
-      TDesc,
-      TProgress,
-      TOutput,
-      TUpdate
-    >(
-      transport,
-      descriptor,
-      input,
-      options?.invocationId ?? ulid(),
-      options?.cancellationRequested,
-    ).take();
-    if (isErr(startedValue)) {
-      return startedValue;
-    }
+  return AsyncResult.from(
+    (async () => {
+      const startedValue = await invokeOperation<
+        TDesc,
+        TProgress,
+        TOutput,
+        TUpdate
+      >(
+        transport,
+        descriptor,
+        input,
+        options?.invocationId ?? ulid(),
+        options?.cancellationRequested,
+      ).take();
+      if (isErr(startedValue)) {
+        return startedValue;
+      }
 
-    const ready = deferred<void>();
+      const ready = deferred<void>();
 
-    const observedValue = await beginObservedWatch(
-      startedValue.operation,
-      callbacks,
-      {
-        ready: ready.promise,
-        skipEvent: createAcceptedReplayFilter(startedValue.accepted),
-      },
-    ).take();
-    if (isErr(observedValue)) {
-      await reportObservationError(
+      const observedValue = await beginObservedWatch(
+        startedValue.operation,
         callbacks,
-        new LiveStreamError("source_error", observedValue.error.message),
-      );
-    }
-    const observation: OperationWatchObservation<TProgress, TOutput> =
-      isErr(observedValue)
+        {
+          ready: ready.promise,
+          skipEvent: createAcceptedReplayFilter(startedValue.accepted),
+        },
+      ).take();
+      if (isErr(observedValue)) {
+        await reportObservationError(
+          callbacks,
+          new LiveStreamError("source_error", observedValue.error.message),
+        );
+      }
+      const observation: OperationWatchObservation<TProgress, TOutput> = isErr(
+        observedValue,
+      )
         ? failedObservation<TProgress, TOutput>(observedValue.error)
         : observedValue;
 
-    const accepted = await dispatchOperationEventResult(
-      callbacks,
-      startedValue.accepted,
-    );
-    if (accepted.isErr()) {
+      const accepted = await dispatchOperationEventResult(
+        callbacks,
+        startedValue.accepted,
+      );
+      if (accepted.isErr()) {
+        if (!isErr(observedValue)) {
+          ready.resolve();
+          await observation.close?.();
+        }
+        return ok(
+          createPublicOperationRef(
+            startedValue.operation,
+            failedObservation(accepted.error),
+          ),
+        );
+      }
+
       if (!isErr(observedValue)) {
         ready.resolve();
-        await observation.close?.();
       }
-      return ok(createPublicOperationRef(
-        startedValue.operation,
-        failedObservation(accepted.error),
-      ));
-    }
-
-    if (!isErr(observedValue)) {
-      ready.resolve();
-    }
-    return ok(createPublicOperationRef(startedValue.operation, observation));
-  })());
+      return ok(createPublicOperationRef(startedValue.operation, observation));
+    })(),
+  );
 }
 
 function startObservedTransfer<
@@ -1505,73 +1589,72 @@ function startObservedTransfer<
   StartedTransfer<TDesc, TProgress, TOutput, TUpdate>,
   OperationControlError | UnexpectedError | TransferError
 > {
-  return AsyncResult.from((async () => {
-    const startedValue = await invokeOperation<
-      TDesc,
-      TProgress,
-      TOutput,
-      TUpdate
-    >(
-      transport,
-      descriptor,
-      input,
-      options?.invocationId ?? ulid(),
-    ).take();
-    if (isErr(startedValue)) {
-      return startedValue;
-    }
+  return AsyncResult.from(
+    (async () => {
+      const startedValue = await invokeOperation<
+        TDesc,
+        TProgress,
+        TOutput,
+        TUpdate
+      >(transport, descriptor, input, options?.invocationId ?? ulid()).take();
+      if (isErr(startedValue)) {
+        return startedValue;
+      }
 
-    const operation = startedValue.operation;
-    const ready = deferred<void>();
-    const observedValue = await beginObservedWatch(operation, callbacks, {
-      ready: ready.promise,
-      skipEvent: createAcceptedReplayFilter(startedValue.accepted),
-      observationSignal: options?.observationSignal,
-    }).take();
-    const observation = isErr(observedValue) ? {} : observedValue;
+      const operation = startedValue.operation;
+      const ready = deferred<void>();
+      const observedValue = await beginObservedWatch(operation, callbacks, {
+        ready: ready.promise,
+        skipEvent: createAcceptedReplayFilter(startedValue.accepted),
+        observationSignal: options?.observationSignal,
+      }).take();
+      const observation = isErr(observedValue) ? {} : observedValue;
 
-    const accepted = await dispatchOperationEventResult(
-      callbacks,
-      startedValue.accepted,
-    );
-    if (accepted.isErr()) {
+      const accepted = await dispatchOperationEventResult(
+        callbacks,
+        startedValue.accepted,
+      );
+      if (accepted.isErr()) {
+        if (!isErr(observedValue)) {
+          ready.resolve();
+          await observation.close?.();
+        }
+      }
+
       if (!isErr(observedValue)) {
         ready.resolve();
-        await observation.close?.();
       }
-    }
 
-    if (!isErr(observedValue)) {
-      ready.resolve();
-    }
+      const transferredValue = await operation.startTransfer(body).take();
+      if (isErr(transferredValue)) {
+        await observation.close?.();
+        return transferredValue;
+      }
 
-    const transferredValue = await operation.startTransfer(body).take();
-    if (isErr(transferredValue)) {
-      await observation.close?.();
-      return transferredValue;
-    }
+      const publicOperation = createPublicOperationRef(
+        operation,
+        accepted.isErr() ? failedObservation(accepted.error) : observation,
+      );
 
-    const publicOperation = createPublicOperationRef(
-      operation,
-      accepted.isErr() ? failedObservation(accepted.error) : observation,
-    );
+      return ok({
+        operation: publicOperation,
+        wait: () =>
+          AsyncResult.from(
+            (async () => {
+              const terminalValue = await publicOperation.wait().take();
+              if (isErr(terminalValue)) {
+                return terminalValue;
+              }
 
-    return ok({
-      operation: publicOperation,
-      wait: () =>
-        AsyncResult.from((async () => {
-          const terminalValue = await publicOperation.wait().take();
-          if (isErr(terminalValue)) {
-            return terminalValue;
-          }
-
-          return ok({
-            transferred: transferredValue,
-            terminal: terminalValue,
-          });
-        })()),
-    });
-  })());
+              return ok({
+                transferred: transferredValue,
+                terminal: terminalValue,
+              });
+            })(),
+          ),
+      });
+    })(),
+  );
 }
 
 function createObservedOperationRef<
@@ -1599,27 +1682,54 @@ function createPublicOperationRef<
     id: operation.id,
     service: operation.service,
     operation: operation.operation,
+    deploymentId: operation.deploymentId,
+    toJSON: (): OperationRefData => ({
+      id: operation.id,
+      service: operation.service,
+      operation: operation.operation,
+      deploymentId: operation.deploymentId,
+    }),
     get: () => operation.get(),
     wait: (options?: OperationWaitOptions) =>
-      AsyncResult.from((async () => {
-        // The observation-only signal stops the automatic callback observer; it
-        // never dispatches a business cancel.
-        const signal = options?.observationSignal;
-        const stopObserving = () => {
-          void observation.close?.();
-        };
-        if (signal) {
-          if (signal.aborted) stopObserving();
-          else signal.addEventListener("abort", stopObserving, { once: true });
-        }
-        try {
-          const waited = activeJobWaitHook?.({
-            kind: "operation",
-            id: operation.id,
-            operationId: operation.id,
-            service: operation.service,
-            type: operation.operation,
-          }, async () => {
+      AsyncResult.from(
+        (async () => {
+          // The observation-only signal stops the automatic callback observer; it
+          // never dispatches a business cancel.
+          const signal = options?.observationSignal;
+          const stopObserving = () => {
+            void observation.close?.();
+          };
+          if (signal) {
+            if (signal.aborted) stopObserving();
+            else
+              signal.addEventListener("abort", stopObserving, { once: true });
+          }
+          try {
+            const waited = activeJobWaitHook?.(
+              {
+                kind: "operation",
+                id: operation.id,
+                operationId: operation.id,
+                service: operation.service,
+                type: operation.operation,
+              },
+              async () => {
+                if (observation.task) {
+                  const terminal = await observation.task;
+                  const terminalValue = terminal.take();
+                  if (!isErr(terminalValue)) {
+                    return ok(terminalValue);
+                  }
+                  if (isObservedCallbackError(terminalValue.error)) {
+                    return terminalValue;
+                  }
+                }
+
+                return await operation.wait(options);
+              },
+            );
+            if (waited) return await waited;
+
             if (observation.task) {
               const terminal = await observation.task;
               const terminalValue = terminal.take();
@@ -1632,36 +1742,24 @@ function createPublicOperationRef<
             }
 
             return await operation.wait(options);
-          });
-          if (waited) return await waited;
-
-          if (observation.task) {
-            const terminal = await observation.task;
-            const terminalValue = terminal.take();
-            if (!isErr(terminalValue)) {
-              return ok(terminalValue);
-            }
-            if (isObservedCallbackError(terminalValue.error)) {
-              return terminalValue;
-            }
+          } finally {
+            signal?.removeEventListener("abort", stopObserving);
           }
-
-          return await operation.wait(options);
-        } finally {
-          signal?.removeEventListener("abort", stopObserving);
-        }
-      })()),
+        })(),
+      ),
     live: (options?: OperationWatchOptions) => operation.live(options),
     cancel: () => operation.cancel(),
     signal: (signal: string, input?: unknown) =>
       operation.signal(signal, input),
     observationClosed: observation.closed,
     stopObserving: () =>
-      AsyncResult.from((async () => {
-        if (!observation.close) return ok(null);
-        await observation.close();
-        return ok(null);
-      })()),
+      AsyncResult.from(
+        (async () => {
+          if (!observation.close) return ok(null);
+          await observation.close();
+          return ok(null);
+        })(),
+      ),
     [Symbol.asyncDispose]: async () => {
       await observation.close?.();
     },
@@ -1779,22 +1877,16 @@ function createOperationInputBuilder<
           TProgress,
           TOutput,
           TUpdate
-        >(
-          transport,
-          descriptor,
-          input,
-          body,
-          callbacks,
-        );
+        >(transport, descriptor, input, body, callbacks);
       },
     } as TDesc["transfer"] extends undefined
       ? OperationInputBuilder<TDesc, TProgress, TOutput, TUpdate>
       : TransferCapableOperationInputBuilder<
-        TDesc,
-        TProgress,
-        TOutput,
-        TUpdate
-      >;
+          TDesc,
+          TProgress,
+          TOutput,
+          TUpdate
+        >;
   }
 
   return baseBuilder as TDesc["transfer"] extends undefined
@@ -1923,17 +2015,19 @@ export class OperationInvoker<
     ) as TDesc["transfer"] extends undefined
       ? OperationInputBuilder<TDesc, TProgress, TOutput, TUpdate>
       : TransferCapableOperationInputBuilder<
-        TDesc,
-        TProgress,
-        TOutput,
-        TUpdate
-      >;
+          TDesc,
+          TProgress,
+          TOutput,
+          TUpdate
+        >;
   }
 }
 
 function decodeOperationPayload(schema: unknown, value: unknown): unknown {
   if (
-    value === undefined || value === null || schema === undefined ||
+    value === undefined ||
+    value === null ||
+    schema === undefined ||
     schema === null
   ) {
     return value;
@@ -1953,27 +2047,34 @@ function decodeOperationSnapshot<TProgress, TOutput>(
   }
   return {
     ...snapshot,
-    ...(snapshot.progress === undefined ? {} : {
-      progress: decodeOperationPayload(
-        descriptor.progress,
-        snapshot.progress,
-      ) as TProgress,
-    }),
-    ...(snapshot.output === undefined ? {} : {
-      output: decodeOperationPayload(
-        descriptor.output,
-        snapshot.output,
-      ) as TOutput,
-    }),
+    ...(snapshot.progress === undefined
+      ? {}
+      : {
+          progress: decodeOperationPayload(
+            descriptor.progress,
+            snapshot.progress,
+          ) as TProgress,
+        }),
+    ...(snapshot.output === undefined
+      ? {}
+      : {
+          output: decodeOperationPayload(
+            descriptor.output,
+            snapshot.output,
+          ) as TOutput,
+        }),
   };
 }
 
 function isOperationControlErrorFrame(
   value: JsonValue,
 ): value is OperationControlErrorFrame {
-  return !!value && typeof value === "object" &&
+  return (
+    !!value &&
+    typeof value === "object" &&
     (value as { kind?: string }).kind === "error" &&
-    typeof Reflect.get(value, "error") === "object";
+    typeof Reflect.get(value, "error") === "object"
+  );
 }
 
 function controlFrameToError(
@@ -1987,8 +2088,7 @@ function controlFrameToError(
   return createTransportError({
     code: "trellis.operation.control_error",
     message: frame.error.message,
-    hint:
-      "Check the operation state, then retry the action if it still applies.",
+    hint: "Check the operation state, then retry the action if it still applies.",
     context: {
       controlErrorType: frame.error.type,
       controlErrorMessage: frame.error.message,
@@ -2024,14 +2124,17 @@ function controlFrameToLifecycleError(
 function isOperationLifecycleError(
   error: unknown,
 ): error is OperationLifecycleError {
-  return error instanceof OperationNotFoundError ||
+  return (
+    error instanceof OperationNotFoundError ||
     error instanceof OperationAlreadyTerminalError ||
-    error instanceof OperationMismatchError;
+    error instanceof OperationMismatchError
+  );
 }
 
-function isFullOperationLifecycleErrorData(
-  error: { type: string; message: string },
-): boolean {
+function isFullOperationLifecycleErrorData(error: {
+  type: string;
+  message: string;
+}): boolean {
   if (typeof Reflect.get(error, "id") !== "string") {
     return false;
   }
@@ -2041,9 +2144,11 @@ function isFullOperationLifecycleErrorData(
     case "OperationAlreadyTerminalError":
       return typeof Reflect.get(error, "operationId") === "string";
     case "OperationMismatchError":
-      return typeof Reflect.get(error, "operationId") === "string" &&
+      return (
+        typeof Reflect.get(error, "operationId") === "string" &&
         typeof Reflect.get(error, "expectedService") === "string" &&
-        typeof Reflect.get(error, "expectedOperation") === "string";
+        typeof Reflect.get(error, "expectedOperation") === "string"
+      );
     default:
       return false;
   }
@@ -2064,12 +2169,14 @@ function createAcceptedReplayFilter<TProgress, TOutput>(
   accepted: AcceptedOperationEvent<TProgress, TOutput>,
 ): (event: OperationEvent<TProgress, TOutput>) => boolean {
   return (event) => {
-    return event.type === "accepted" &&
+    return (
+      event.type === "accepted" &&
       event.snapshot.id === accepted.snapshot.id &&
       event.snapshot.service === accepted.snapshot.service &&
       event.snapshot.operation === accepted.snapshot.operation &&
       event.snapshot.revision === accepted.snapshot.revision &&
-      event.snapshot.state === accepted.snapshot.state;
+      event.snapshot.state === accepted.snapshot.state
+    );
   };
 }
 
@@ -2111,15 +2218,16 @@ async function dispatchOperationEventResult<TProgress, TOutput, TUpdate>(
 }
 
 function toObservedCallbackError(cause: unknown): UnexpectedError {
-  return (cause instanceof UnexpectedError
-    ? cause
-    : new UnexpectedError({ cause }))
-    .withContext({ operationObserverCallback: true });
+  return (
+    cause instanceof UnexpectedError ? cause : new UnexpectedError({ cause })
+  ).withContext({ operationObserverCallback: true });
 }
 
 function isObservedCallbackError(
   error: OperationControlError | UnexpectedError,
 ): boolean {
-  return error instanceof UnexpectedError &&
-    error.getContext().operationObserverCallback === true;
+  return (
+    error instanceof UnexpectedError &&
+    error.getContext().operationObserverCallback === true
+  );
 }

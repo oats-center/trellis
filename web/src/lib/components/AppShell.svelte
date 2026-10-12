@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { type apis } from "trellis-web-generated";
+  import type { AuthorityProfile } from "../console/authority.ts";
+  import { resolve } from "$app/paths";
   import { afterNavigate } from "$app/navigation";
   import { base } from "$lib/console_paths";
   import { page } from "$app/state";
@@ -24,7 +25,7 @@
 
   type Props = {
     children: Snippet;
-    profile: apis.auth.SessionsMeOutput["user"] | null;
+    profile: AuthorityProfile | null;
     authority: Authority | null;
     profileLoaded: boolean;
     navSections: NavSection[];
@@ -51,7 +52,8 @@
 
   const commandIndex = $derived(buildCommandIndex(navSections));
   const paletteShortcut = $derived(
-    typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent)
+    typeof navigator !== "undefined" &&
+      /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent)
       ? "⌘K"
       : "Ctrl K",
   );
@@ -66,12 +68,18 @@
   const routePath = $derived(toRoutePath(page.url.pathname));
   const pageTitle = $derived(getPageTitle(routePath));
   const connectionLabel = $derived(
-    connectionStatus === "connected" ? "Connected" :
-      connectionStatus === "reconnecting" ? "Reconnecting" : "Offline"
+    connectionStatus === "connected"
+      ? "Connected"
+      : connectionStatus === "reconnecting"
+        ? "Reconnecting"
+        : "Offline",
   );
   const connectionVariant = $derived(
-    connectionStatus === "connected" ? "healthy" :
-      connectionStatus === "reconnecting" ? "degraded" : "unhealthy"
+    connectionStatus === "connected"
+      ? "healthy"
+      : connectionStatus === "reconnecting"
+        ? "degraded"
+        : "unhealthy",
   );
 
   function toRoutePath(pathname: string): string {
@@ -90,14 +98,6 @@
     drawerOpen = false;
   }
 
-  function resolveAppPath(path: string): string {
-    if (base && (path === base || path.startsWith(`${base}/`))) {
-      return path;
-    }
-
-    return `${base}${path.startsWith("/") ? path : `/${path}`}`;
-  }
-
   afterNavigate(() => {
     closeDrawer();
   });
@@ -109,19 +109,30 @@
   <title>{pageTitle} · Trellis</title>
 </svelte:head>
 
-<a class="skip-link btn btn-sm btn-primary" href="#trellis-main">Skip to main content</a>
+<a class="skip-link btn btn-sm btn-primary" href="#trellis-main"
+  >Skip to main content</a
+>
 
 <div class="drawer min-h-screen bg-base-200 lg:drawer-open">
-  <input id="trellis-nav" type="checkbox" class="drawer-toggle" bind:checked={drawerOpen} />
+  <input
+    id="trellis-nav"
+    type="checkbox"
+    class="drawer-toggle"
+    bind:checked={drawerOpen}
+  />
 
   <div class="drawer-content flex min-w-0 flex-col">
-    <header class="navbar trellis-topbar sticky top-0 z-30 h-16 min-h-16 border-b border-base-300 bg-base-100 px-4 lg:px-7">
+    <header
+      class="navbar trellis-topbar sticky top-0 z-30 h-16 min-h-16 border-b border-base-300 bg-base-100 px-4 lg:px-7"
+    >
       <div class="navbar-start gap-3">
         <button
           type="button"
           class="btn btn-square btn-ghost"
           aria-label="Toggle navigation"
-          onclick={() => { drawerOpen = !drawerOpen; }}
+          onclick={() => {
+            drawerOpen = !drawerOpen;
+          }}
         >
           <Icon name="menu" size={20} />
         </button>
@@ -129,7 +140,9 @@
           type="button"
           class="btn btn-ghost btn-sm h-9 gap-2 border border-base-300 bg-base-200/60 px-3 font-normal text-base-content/70"
           aria-label="Open command palette"
-          onclick={() => { paletteOpen = true; }}
+          onclick={() => {
+            paletteOpen = true;
+          }}
         >
           <Icon name="search" size={15} class="opacity-60" />
           <span class="hidden md:inline">Search pages and views</span>
@@ -137,39 +150,59 @@
         </button>
       </div>
       <div class="navbar-end gap-2 sm:gap-3">
-        <StatusBadge label={`${connectionLabel}: Trellis`} status={connectionVariant} class="hidden sm:inline-flex px-3" />
+        <StatusBadge
+          label={`${connectionLabel}: Trellis`}
+          status={connectionVariant}
+          class="hidden sm:inline-flex px-3"
+        />
         <div class="divider divider-horizontal mx-0 hidden lg:flex"></div>
         <label class="swap swap-rotate btn btn-ghost btn-square btn-sm">
-          <input type="checkbox" checked={consoleTheme.darkMode} onchange={() => consoleTheme.toggle()} aria-label="Toggle dark mode" />
+          <input
+            type="checkbox"
+            checked={consoleTheme.darkMode}
+            onchange={() => consoleTheme.toggle()}
+            aria-label="Toggle dark mode"
+          />
           <Icon name="sun" size={20} class="swap-off" />
           <Icon name="moon" size={20} class="swap-on" />
         </label>
         {#if profile}
-          <ActionMenu buttonBaseClass="btn btn-ghost gap-2 rounded-full pr-2" widthClass="w-64" ariaLabel="Open user menu">
+          <ActionMenu
+            buttonBaseClass="btn btn-ghost gap-2 rounded-full pr-2"
+            widthClass="w-64"
+            ariaLabel="Open user menu"
+          >
             {#snippet summary()}
-              {#if profile.image}
-                <div class="avatar">
-                  <div class="w-8 rounded-full">
-                    <img src={profile.image} alt={profile.name} />
-                  </div>
+              <div class="avatar avatar-placeholder">
+                <div class="w-8 rounded-full bg-neutral text-neutral-content">
+                  <span class="text-xs">{getInitials(profile)}</span>
                 </div>
-              {:else}
-                <div class="avatar avatar-placeholder">
-                  <div class="w-8 rounded-full bg-neutral text-neutral-content">
-                    <span class="text-xs">{getInitials(profile)}</span>
-                  </div>
-                </div>
-              {/if}
+              </div>
               <Icon name="chevronDown" size={16} class="opacity-60" />
             {/snippet}
             <li class="menu-title px-2 py-2 normal-case">
               <div class="min-w-0">
-                <p class="truncate text-sm font-medium">{profile.name}</p>
-                <p class="text-xs text-base-content/60">{getRoleLabel(authority)}</p>
+                <p class="truncate text-sm font-medium">
+                  {profile.displayName}
+                </p>
+                <p class="text-xs text-base-content/60">
+                  {getRoleLabel(authority)}
+                </p>
               </div>
             </li>
-            <li><a class="btn btn-ghost btn-sm justify-start" href={resolveAppPath("/profile")}>Account</a></li>
-            <li><button type="button" class="btn btn-ghost btn-sm justify-start" onclick={onSignOut}>Sign out</button></li>
+            <li>
+              <a
+                class="btn btn-ghost btn-sm justify-start"
+                href={resolve("/console/(app)/profile")}>Account</a
+              >
+            </li>
+            <li>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm justify-start"
+                onclick={onSignOut}>Sign out</button
+              >
+            </li>
           </ActionMenu>
         {/if}
       </div>
@@ -184,7 +217,11 @@
         <Notice variant="error" class="mb-4">
           {authFailure}
           {#if onRetryAuthority}
-            <button class="btn btn-ghost btn-xs ml-2" type="button" onclick={onRetryAuthority}>Retry</button>
+            <button
+              class="btn btn-ghost btn-xs ml-2"
+              type="button"
+              onclick={onRetryAuthority}>Retry</button
+            >
           {/if}
         </Notice>
       {/if}
@@ -200,24 +237,50 @@
 
     <aside class="trellis-sidebar flex min-h-full w-[251px] flex-col">
       <div class="flex h-[76px] items-center gap-3 px-6">
-        <a href={resolveAppPath("/admin")} aria-label="Trellis Console home">
-          <TrellisLogo subtitle="Console" markClass="trellis-logo-orange" titleClass="text-white" subtitleClass="text-slate-400" />
+        <a
+          href={resolve("/console/(app)/admin")}
+          aria-label="Trellis Console home"
+        >
+          <TrellisLogo
+            subtitle="Console"
+            markClass="trellis-logo-orange"
+            titleClass="text-white"
+            subtitleClass="text-slate-400"
+          />
         </a>
-        <button type="button" class="btn btn-square btn-ghost btn-sm ml-auto lg:hidden" aria-label="Close navigation" onclick={closeDrawer}>
+        <button
+          type="button"
+          class="btn btn-square btn-ghost btn-sm ml-auto lg:hidden"
+          aria-label="Close navigation"
+          onclick={closeDrawer}
+        >
           <Icon name="menu" size={18} />
         </button>
       </div>
 
       <div class="hidden border-b border-neutral-content/10"></div>
 
-      <nav class="flex-1 space-y-8 overflow-y-auto px-3 pt-3" aria-label="Primary">
+      <nav
+        class="flex-1 space-y-8 overflow-y-auto px-3 pt-3"
+        aria-label="Primary"
+      >
         {#each navSections as section (section.title)}
           <div>
-            <p class="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500">{section.title}</p>
+            <p
+              class="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-500"
+            >
+              {section.title}
+            </p>
             <ul class="menu gap-1 p-0">
               {#each section.items as item (item.href)}
                 <li>
-                  <a href={resolveAppPath(item.href)} class={{ active: routePath === item.href }} aria-current={routePath === item.href ? "page" : undefined} onclick={closeDrawer}><Icon name={item.icon} size={16} />{item.label}</a>
+                  <a
+                    href={resolve(`/console${item.href}`)}
+                    class={{ active: routePath === item.href }}
+                    aria-current={routePath === item.href ? "page" : undefined}
+                    onclick={closeDrawer}
+                    ><Icon name={item.icon} size={16} />{item.label}</a
+                  >
                 </li>
               {/each}
             </ul>
@@ -225,9 +288,20 @@
         {/each}
       </nav>
 
-      <div class="m-3 rounded-box border border-white/10 bg-white/5 p-4 text-sm">
+      <div
+        class="m-3 rounded-box border border-white/10 bg-white/5 p-4 text-sm"
+      >
         <div class="mb-3 flex items-center gap-2 text-slate-100">
-          <span class={["h-2.5 w-2.5 rounded-full", connectionStatus === "connected" ? "bg-success" : connectionStatus === "reconnecting" ? "bg-warning" : "bg-error"]}></span>
+          <span
+            class={[
+              "h-2.5 w-2.5 rounded-full",
+              connectionStatus === "connected"
+                ? "bg-success"
+                : connectionStatus === "reconnecting"
+                  ? "bg-warning"
+                  : "bg-error",
+            ]}
+          ></span>
           {connectionLabel}: Trellis
         </div>
         <div class="text-slate-400">Trellis Runtime</div>

@@ -151,7 +151,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "RI_bltV-O9Ho4EdV_TnG4Zs7RdsR2-rJ0DJnFuFCepM";
+export declare const PARTICIPANT_DIGEST: "slo0ydN7U8ZETGMG9GoWMoWVphnlp_F9lWO_RTScmzs";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ConnectionsResource = ResourceDescriptors["connections"];

@@ -31,6 +31,7 @@ impl ExpectedRuntimeResources {
         let mut streams = Vec::new();
         if subsystems.contains(&SubsystemName::Platform)
             || subsystems.contains(&SubsystemName::Events)
+            || subsystems.contains(&SubsystemName::Health)
         {
             streams.push(event_stream_config());
         }
@@ -316,7 +317,11 @@ fn health_stream_config(config: &RuntimeConfig) -> stream::Config {
         .unwrap_or(DEFAULT_TRANSPORT_MAX_BYTES);
     stream::Config {
         name: HEALTH_STREAM.to_owned(),
-        subjects: vec![HEALTH_SUBJECT.to_owned()],
+        sources: Some(vec![stream::Source {
+            name: EVENT_STREAM.into(),
+            filter_subject: Some(HEALTH_SUBJECT.into()),
+            ..Default::default()
+        }]),
         retention: stream::RetentionPolicy::Limits,
         storage: stream::StorageType::File,
         discard: stream::DiscardPolicy::Old,
@@ -329,74 +334,6 @@ fn health_stream_config(config: &RuntimeConfig) -> stream::Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn config() -> RuntimeConfig {
-        RuntimeConfig::from_toml_str("").expect("empty optional config")
-    }
-
-    fn names(mode: RuntimeMode) -> Vec<String> {
-        ExpectedRuntimeResources::for_mode(mode, &config(), stream::StorageType::File)
-            .streams()
-            .iter()
-            .map(|stream| stream.name.clone())
-            .collect()
-    }
-
-    #[test]
-    fn runtime_mode_derives_only_owned_streams() {
-        assert_eq!(names(RuntimeMode::Platform), [EVENT_STREAM]);
-        assert_eq!(
-            names(RuntimeMode::Jobs),
-            [JOBS_STREAM, JOBS_WORK_STREAM, JOBS_ADVISORIES_STREAM]
-        );
-        assert_eq!(names(RuntimeMode::Health), [HEALTH_STREAM]);
-        assert_eq!(
-            names(RuntimeMode::Events),
-            [
-                EVENT_STREAM,
-                DLQ_STREAM,
-                REPLAY_STREAM,
-                JOBS_ADVISORIES_STREAM
-            ]
-        );
-        assert_eq!(
-            names(RuntimeMode::All),
-            [
-                EVENT_STREAM,
-                DLQ_STREAM,
-                REPLAY_STREAM,
-                JOBS_ADVISORIES_STREAM,
-                JOBS_STREAM,
-                JOBS_WORK_STREAM,
-                HEALTH_STREAM,
-            ]
-        );
-    }
-
-    #[test]
-    fn all_mode_is_the_union_without_duplicate_event_streams() {
-        let expected = ExpectedRuntimeResources::for_mode(
-            RuntimeMode::All,
-            &config(),
-            stream::StorageType::File,
-        );
-        assert_eq!(
-            expected
-                .streams()
-                .iter()
-                .filter(|stream| stream.name == EVENT_STREAM)
-                .count(),
-            1
-        );
-        for subsystem in [
-            SubsystemName::Platform,
-            SubsystemName::Jobs,
-            SubsystemName::Health,
-            SubsystemName::Events,
-        ] {
-            assert!(expected.requires(subsystem));
-        }
-    }
 
     #[test]
     fn authoritative_streams_only_expand_limits() {

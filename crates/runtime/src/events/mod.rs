@@ -8,33 +8,15 @@ use trellis_events_runtime::{
     ConsumerBindingResolver, DeadLetterJournal, DeliveryReporter, EventsManagement, EventsQuery,
     EventsStore, ManagementAction, VerifiedEventPublisher,
 };
-use trellis_protocol::{
-    ApiSurfaceKind, ParticipantResourceKind, PermissionAction, PermissionAtom, PermissionTarget,
-    PlatformPrivilege,
-};
+use trellis_protocol::{ApiSurfaceKind, PermissionAction};
 use trellis_rs::service::{
-    internal::run_builtin_authenticated_router, RequestContext, RequestValidator, ServerError,
+    internal::run_builtin_authenticated_router, RequestContext, ServerError,
 };
-use trellis_runtime_apis::apis::trellis_events_v1::{self as events, lives, rpc};
+use trellis_runtime_apis::apis::trellis_events_v1 as events;
 
 use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};
 use crate::{StorageBackend, SubsystemName};
-
-const EVENTS_SUBJECTS: &[&str] = &[
-    rpc::ConsumersInspect::SUBJECT,
-    rpc::ConsumersQuery::SUBJECT,
-    rpc::ConsumersReportDelivery::SUBJECT,
-    rpc::DeadLettersDismiss::SUBJECT,
-    rpc::DeadLettersInspect::SUBJECT,
-    rpc::DeadLettersQuery::SUBJECT,
-    rpc::DeadLettersReplay::SUBJECT,
-    rpc::Diagnostics::SUBJECT,
-    rpc::Inspect::SUBJECT,
-    rpc::Metrics::SUBJECT,
-    rpc::Query::SUBJECT,
-    lives::Watch::SUBJECT,
-];
 
 #[derive(Clone)]
 struct SqliteConsumerResolver {
@@ -193,8 +175,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let owner = context.owner(crate::ownership::OwnerGroup::Events)?;
     let stop = StopHandle::new();
     let task_stop = stop.clone();
-    let mut validator_join =
-        crate::platform::auth::verifier::ensure_read_only(context, task_stop.clone()).await?;
     let StorageBackend::Sqlite(storage) = context
         .config
         .events_storage_backend()
@@ -213,41 +193,142 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let consumer_telemetry = ConsumerTelemetryReader::new(platform_storage.path.clone());
     let query = EventsQuery::new(store.clone(), events_runtime.clone(), Arc::clone(&resolver));
     let mut router = trellis_events_runtime::build_router_with_query(query.clone());
-    let verifier = context.platform_verifier.get().cloned().ok_or_else(|| {
-        RuntimeError::Platform("local authorization verifier is not ready".to_owned())
-    })?;
-    let validator: Arc<dyn RequestValidator> = Arc::new(verifier.clone());
-    let event_auth_verifier = verifier.clone();
+    let event_owner = context
+        .live_providers
+        .receiver(crate::platform::LiveProviderRole::Events);
+    let event_stop = task_stop.clone();
     let event_verifier = Arc::new(
         move |input: trellis_events_runtime::EventAuthorizationInput| {
-            let verifier = event_auth_verifier.clone();
+            let mut owner = event_owner.clone();
+            let stop = event_stop.clone();
             Box::pin(async move {
-                verifier
-                    .verify_event(
-                        crate::platform::auth::verifier::RuntimeAuthorizationEventVerificationInput {
-                            subject: &input.subject,
-                            descriptor_identity: &input.descriptor_identity,
+                use trellis_rs::service::EventVerificationFailure;
+                let owner = crate::platform::await_live_owner(&mut owner, &stop)
+                    .await
+                    .ok_or_else(|| {
+                        EventVerificationFailure::Retryable(("Events provider stopped").into())
+                    })?;
+                let headers = input.headers.as_ref().ok_or_else(|| {
+                    EventVerificationFailure::Rejected(("missing event headers").into())
+                })?;
+                let header = |name: &str| {
+                    headers
+                        .get(name)
+                        .map(|value| value.as_str())
+                        .ok_or_else(|| {
+                            EventVerificationFailure::Rejected(
+                                ("missing event proof header").into(),
+                            )
+                        })
+                };
+                let event: trellis_protocol::SessionEvent =
+                    serde_json::from_str(header("Trellis-Session-Event")?).map_err(|_| {
+                        EventVerificationFailure::Rejected(("invalid event transcript").into())
+                    })?;
+                let descriptor = trellis_protocol::decode_event_descriptor_identity(header(
+                    "Trellis-Event-Descriptor",
+                )?)
+                .map_err(|_| {
+                    EventVerificationFailure::Rejected(("invalid event descriptor").into())
+                })?;
+                trellis_protocol::validate_event_descriptor_subject(&descriptor, &input.subject)
+                    .map_err(|_| {
+                        EventVerificationFailure::Rejected(
+                            "event subject differs from descriptor".into(),
+                        )
+                    })?;
+                if event.subject != input.subject
+                    || descriptor.api_id() != event.api_id
+                    || descriptor.event_name() != event.action
+                    || header("authorization-context")? != event.authority_digest
+                    || header("Nats-Msg-Id")? != event.event_id
+                    || header("Trellis-Event-Time")? != event.event_time
+                {
+                    return Err(EventVerificationFailure::Rejected(
+                        ("event headers differ from signed transcript").into(),
+                    ));
+                }
+                let proof =
+                    trellis_protocol::SessionEventProof::parse(header("proof")?).map_err(|_| {
+                        EventVerificationFailure::Rejected(("invalid event proof").into())
+                    })?;
+                let authority_owner = owner.runtime_authorization_owner();
+                let transport = owner.runtime_nats();
+                let status = authority_owner
+                    .historical_status(&transport, &event.authority_digest)
+                    .await
+                    .map_err(|error| {
+                        EventVerificationFailure::Retryable((error.to_string()).into())
+                    })?;
+                let action = trellis_protocol::CatalogActionIdentity {
+                    kind: ApiSurfaceKind::Event,
+                    name: event.action.clone(),
+                    direction: PermissionAction::Publish,
+                };
+                let verified = authority_owner
+                    .verify_historical_event(
+                        &transport,
+                        trellis_rs::client::HistoricalEventVerificationInput {
+                            event: &event,
                             payload: &input.payload,
-                            session_key: &input.session_key,
-                            proof: &input.proof,
-                            authorization_context: &input.authorization_context,
-                            event_id: &input.event_id,
-                            event_time: &input.event_time,
+                            proof: &proof,
+                            action: &action,
+                            original_publication: &input.original_publication,
+                            status: &status,
                         },
                     )
                     .await
-                    .map(|verified| VerifiedEventPublisher {
-                        kind: verified.publisher.kind,
-                        deployment_id: verified.publisher.deployment_id,
-                        instance_id: verified.publisher.instance_id,
-                        participant_id: verified.publisher.participant_id,
-                        principal_id: verified.publisher.principal_id,
-                        connection_id: verified.publisher.connection_id,
-                        login_session_id: verified.publisher.login_session_id,
-                        context_digest: input.authorization_context,
-                        owner_contract_id: verified.owner_contract_id,
-                        owner_event_name: verified.owner_event_name,
-                    })
+                    .map_err(|error| match error {
+                        trellis_rs::client::TrellisClientError::AuthorizationUnavailable(_) => {
+                            EventVerificationFailure::Retryable((error.to_string()).into())
+                        }
+                        _ => EventVerificationFailure::Rejected((error.to_string()).into()),
+                    })?;
+                let authority = verified.authority().authority();
+                if header("session-key")? != authority.session_public_key {
+                    return Err(EventVerificationFailure::Rejected(
+                        ("event session key differs from authority").into(),
+                    ));
+                }
+                let (kind, participant_id, deployment_id, instance_id) = match &authority.binding {
+                    trellis_protocol::SessionBinding::Service {
+                        participant_id,
+                        deployment_id,
+                        instance_id,
+                    } => (
+                        "service",
+                        participant_id.clone(),
+                        Some(deployment_id.clone()),
+                        Some(instance_id.clone()),
+                    ),
+                    trellis_protocol::SessionBinding::Device {
+                        participant_id,
+                        deployment_id,
+                        instance_id,
+                        ..
+                    } => (
+                        "device",
+                        participant_id.clone(),
+                        Some(deployment_id.clone()),
+                        Some(instance_id.clone()),
+                    ),
+                    trellis_protocol::SessionBinding::Browser { client_id, .. }
+                    | trellis_protocol::SessionBinding::Native { client_id, .. } => {
+                        ("user", client_id.clone(), None, None)
+                    }
+                };
+                Ok(VerifiedEventPublisher {
+                    kind: kind.into(),
+                    participant_id,
+                    deployment_id,
+                    instance_id,
+                    principal_id: authority.principal_id.clone(),
+                    connection_id: authority.authorization_session_id.clone(),
+                    login_session_id: authority.login_session_id.clone(),
+                    context_digest: event.authority_digest.clone(),
+                    owner_contract_id: event.api_id.clone(),
+                    owner_event_name: event.action.clone(),
+                })
             })
                 as std::pin::Pin<
                     Box<
@@ -275,54 +356,89 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         Arc::clone(&resolver),
         event_verifier.clone(),
     );
-    let management_verifier = verifier.clone();
+    let management_owner = context
+        .live_providers
+        .receiver(crate::platform::LiveProviderRole::Events);
+    let management_stop = task_stop.clone();
+    let management_path = platform_storage.path.clone();
     let management_resolver = Arc::clone(&resolver);
     let authorizer = Arc::new(
         move |request: RequestContext,
               resource_id: String,
               action: ManagementAction,
               method: &'static str| {
-            let verifier = management_verifier.clone();
+            let mut owner = management_owner.clone();
+            let stop = management_stop.clone();
+            let path = management_path.clone();
             let resolver = Arc::clone(&management_resolver);
             Box::pin(async move {
+                let verified = request
+                    .verified_request()
+                    .ok_or_else(|| events_forbidden("verified request is missing"))?;
                 let caller = request
                     .caller
+                    .as_ref()
                     .ok_or_else(|| events_forbidden("verified caller is missing"))?;
+                let owner = crate::platform::await_live_owner(&mut owner, &stop)
+                    .await
+                    .ok_or_else(|| ServerError::Nats("Events provider stopped".into()))?;
+                let authority_owner = owner.runtime_authorization_owner();
+                let transport = owner.runtime_nats();
+                let authority = authority_owner
+                    .resolve_authority(&transport, &caller.authority_digest)
+                    .await
+                    .map_err(|_| events_forbidden("Events authority unavailable"))?;
                 if !resource_id.is_empty() {
                     let binding = resolver
                         .by_resource(&resource_id)
                         .await
                         .map_err(ServerError::Nats)?
                         .ok_or_else(|| events_forbidden("Consumer resource is unavailable"))?;
-                    let owns_binding = caller.participant_id == binding.participant_id
-                        && match binding.owner_kind.as_str() {
-                            "deployment" => {
-                                caller.deployment_id.as_deref() == Some(&binding.owner_id)
-                            }
-                            "user" => caller.principal_id == binding.owner_id,
-                            _ => false,
-                        };
-                    let target = PermissionTarget::participant_resource(
-                        binding.participant_id,
-                        ParticipantResourceKind::EventConsumer,
-                        binding.local_name,
-                    )
-                    .map_err(|error| events_forbidden(error.to_string()))?;
-                    let permission = PermissionAtom::new(
-                        target,
-                        match action {
-                            ManagementAction::Read => PermissionAction::Read,
-                            ManagementAction::Control => PermissionAction::Control,
-                            ManagementAction::Consume => PermissionAction::Consume,
-                        },
-                    )
-                    .map_err(|error| events_forbidden(error.to_string()))?;
-                    if owns_binding
-                        && verifier
-                            .require_cached_permission(&caller.context_digest, &permission)
-                            .is_ok()
-                    {
-                        return Ok(());
+                    let owns_binding = match &caller.binding {
+                        trellis_protocol::SessionBinding::Service {
+                            participant_id,
+                            deployment_id,
+                            ..
+                        }
+                        | trellis_protocol::SessionBinding::Device {
+                            participant_id,
+                            deployment_id,
+                            ..
+                        } => {
+                            binding.owner_kind == "deployment"
+                                && participant_id == &binding.participant_id
+                                && deployment_id == &binding.owner_id
+                        }
+                        _ => false,
+                    };
+                    if owns_binding {
+                        use base64::Engine as _;
+                        use sha2::Digest as _;
+                        let deployment = binding.owner_id.clone();
+                        let digest = tokio::task::spawn_blocking(move || -> Result<String, String> {
+                            let connection = rusqlite::Connection::open_with_flags(path,
+                                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| error.to_string())?;
+                            let json: String = connection.query_row(
+                                "SELECT resource_commitments_json FROM auth_deployment_bindings WHERE deployment_id=?1",
+                                [deployment], |row| row.get(0)).map_err(|error| error.to_string())?;
+                            let value: serde_json::Value = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+                            let canonical = trellis_protocol::canonicalize_json(&value).map_err(|error| error.to_string())?;
+                            Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(canonical.as_bytes())))
+                        }).await.map_err(|error| ServerError::Nats(error.to_string()))?
+                            .map_err(ServerError::Nats)?;
+                        if verified
+                            .authority()
+                            .authority()
+                            .resource_bindings_digest
+                            .as_deref()
+                            == Some(&digest)
+                        {
+                            authority_owner
+                                .assert_current(&authority)
+                                .map_err(|_| events_forbidden("Events authority unavailable"))?;
+                            request.authorize_handler_request()?;
+                            return Ok(());
+                        }
                     }
                 }
                 if action == ManagementAction::Consume {
@@ -330,23 +446,17 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         "Consumer delivery reporting requires exact Consume authority",
                     ));
                 }
-                let call = PermissionAtom::new(
-                    PermissionTarget::api_surface(events::API_ID, ApiSurfaceKind::Rpc, method)
-                        .map_err(|error| events_forbidden(error.to_string()))?,
-                    PermissionAction::Call,
-                )
-                .map_err(|error| events_forbidden(error.to_string()))?;
-                if caller
-                    .platform_privileges
-                    .contains(&PlatformPrivilege::Admin)
-                {
-                    verifier
-                        .require_cached_permission(&caller.context_digest, &call)
-                        .map_err(|_| events_forbidden("Events management permission denied"))?;
-                    Ok(())
-                } else {
-                    Err(events_forbidden("Events management permission denied"))
-                }
+                let call = trellis_protocol::CatalogActionIdentity {
+                    kind: ApiSurfaceKind::Rpc,
+                    name: method.into(),
+                    direction: PermissionAction::Call,
+                };
+                authority_owner
+                    .authorize_action(&transport, &authority, events::API_ID, &call)
+                    .await
+                    .map_err(|_| events_forbidden("Events management permission denied"))?;
+                request.authorize_handler_request()?;
+                Ok(())
             })
                 as std::pin::Pin<
                     Box<dyn std::future::Future<Output = Result<(), ServerError>> + Send>,
@@ -402,32 +512,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             };
             let mut router = router;
             router.set_live_owner(owner.clone());
-            run_builtin_authenticated_router(
-                owner,
-                events::API_ID,
-                EVENTS_SUBJECTS,
-                router,
-                validator,
-            )
-            .await
+            let validator = owner.runtime_validator(events::API_ID);
+            run_builtin_authenticated_router(owner, router, validator).await
         };
         tokio::pin!(api_loop);
         let result = {
-            let validator_exit = async {
-                match validator_join.as_mut() {
-                    Some(join) => match join.await {
-                        Ok(Ok(())) => Err(RuntimeError::Platform(
-                            "authorization validator cache exited unexpectedly".to_owned(),
-                        )),
-                        Ok(Err(error)) => Err(error),
-                        Err(error) => Err(RuntimeError::Platform(format!(
-                            "authorization validator cache task failed: {error}"
-                        ))),
-                    },
-                    None => std::future::pending().await,
-                }
-            };
-            tokio::pin!(validator_exit);
             tokio::select! {
                 biased;
                 () = task_stop.stopped() => Ok(()),
@@ -467,7 +556,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         Err(error) => Err(runtime_error(error)),
                     }
                 },
-                result = &mut validator_exit => result,
             }
         };
         task_stop.stop();
@@ -477,9 +565,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         dead_letter_projector.stop().await;
         replay_dispatcher.stop().await;
         advisories.stop().await;
-        if let Some(join) = validator_join {
-            let _ = join.await;
-        }
         result
     }));
 

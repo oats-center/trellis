@@ -58,22 +58,16 @@ pub enum TopLevelCommand {
     Generate(GenerateArgs),
     /// Publish every project-owned canonical API to OCI.
     Publish(PublishArgs),
-    /// Start a detached portal login against a Trellis auth service.
+    /// Authorize the native CLI through the selected server's device flow.
     Login(LoginArgs),
-    /// Revoke the current admin session and clear local session state.
+    /// Revoke the current login and clear the selected local credential.
     Logout,
-    /// Show the currently logged-in Trellis admin session.
+    /// Show the authenticated principal and login.
     Whoami,
-    /// Manage participant-scoped identity grants.
-    Identity(IdentityCommand),
-    /// Install participant definitions without granting authority.
-    Participants(ParticipantsCommand),
     /// Manage authorization signing issuers.
     Issuers(IssuersCommand),
     /// Manage Trellis users.
     Users(UsersCommand),
-    /// Inspect and manage login portals.
-    Portals(PortalsCommand),
     /// Manage service deployments.
     Svc(SvcCommand),
     /// Manage device deployments.
@@ -113,11 +107,8 @@ impl TopLevelCommand {
             Self::Login(_) => "login",
             Self::Logout => "logout",
             Self::Whoami => "whoami",
-            Self::Identity(_) => "identity",
-            Self::Participants(_) => "participants",
             Self::Issuers(_) => "issuers",
             Self::Users(_) => "users",
-            Self::Portals(_) => "portals",
             Self::Svc(_) => "svc",
             Self::Dev(_) => "dev",
             Self::Resources(_) => "resources",

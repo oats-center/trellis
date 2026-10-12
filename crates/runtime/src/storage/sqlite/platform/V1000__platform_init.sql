@@ -27,6 +27,7 @@ CREATE TABLE auth_principals (
 );
 
 CREATE TABLE auth_provider_identities (
+    identity_id TEXT NOT NULL UNIQUE CHECK (length(identity_id) = 26),
     provider TEXT NOT NULL CHECK (length(provider) > 0),
     provider_subject TEXT NOT NULL CHECK (length(provider_subject) > 0),
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
@@ -119,6 +120,7 @@ END;
 
 CREATE TABLE auth_deployments (
     deployment_id TEXT PRIMARY KEY CHECK (length(deployment_id) > 0),
+    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     participant_id TEXT NOT NULL CHECK (length(participant_id) > 0),
     participant_kind TEXT NOT NULL CHECK (participant_kind IN ('service', 'device')),
     state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'revoked')),
@@ -128,6 +130,7 @@ CREATE TABLE auth_deployments (
 
 CREATE TABLE auth_instances (
     instance_id TEXT PRIMARY KEY CHECK (length(instance_id) > 0),
+    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     deployment_id TEXT NOT NULL REFERENCES auth_deployments(deployment_id) ON DELETE CASCADE,
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
     -- Exact participant revision this instance's software is actually running.
@@ -178,6 +181,18 @@ CREATE TABLE auth_resource_history (
     state TEXT NOT NULL CHECK (state IN ('detached', 'destroying', 'failed', 'pending', 'ready')),
     changed_at INTEGER NOT NULL CHECK (changed_at BETWEEN 0 AND 9007199254740991),
     PRIMARY KEY (resource_id, revision)
+);
+
+-- Only an explicit administrative Remove creates a provider deletion intent.
+-- No deployment lifecycle or startup path writes this table.
+CREATE TABLE auth_resource_removals (
+    actor_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    resource_id TEXT NOT NULL CHECK (length(resource_id) = 43),
+    resource_revision INTEGER NOT NULL,
+    physical_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
+    PRIMARY KEY (actor_id, request_id)
 );
 
 CREATE TABLE auth_resource_binding_evidence (
@@ -491,6 +506,7 @@ CREATE TABLE auth_role_capabilities (
         REFERENCES auth_capability_identities(capability_id, identity_generation)
 );
 CREATE TABLE auth_role_assignments (
+    assignment_id TEXT NOT NULL UNIQUE CHECK (length(assignment_id) = 26),
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     role_id TEXT NOT NULL,
     role_generation INTEGER NOT NULL,
@@ -502,6 +518,7 @@ CREATE TABLE auth_role_assignments (
 );
 CREATE INDEX auth_role_assignments_role ON auth_role_assignments(role_id, role_generation, principal_id);
 CREATE TABLE auth_direct_capabilities (
+    grant_id TEXT NOT NULL UNIQUE CHECK (length(grant_id) = 26),
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     capability_id TEXT NOT NULL,
     capability_generation INTEGER NOT NULL,
@@ -533,11 +550,15 @@ CREATE TABLE auth_oidc_role_mappings (
     provider_id TEXT NOT NULL REFERENCES auth_oidc_providers(provider_id),
     claim_name TEXT NOT NULL,
     claim_value TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    UNIQUE (provider_id, claim_name, claim_value)
+);
+CREATE TABLE auth_oidc_mapping_roles (
+    mapping_id TEXT NOT NULL REFERENCES auth_oidc_role_mappings(mapping_id) ON DELETE CASCADE,
     role_id TEXT NOT NULL,
     role_generation INTEGER NOT NULL,
-    revision INTEGER NOT NULL CHECK (revision >= 1),
     FOREIGN KEY (role_id, role_generation) REFERENCES auth_roles(role_id, identity_generation),
-    UNIQUE (provider_id, claim_name, claim_value, role_id, role_generation)
+    PRIMARY KEY (mapping_id, role_id, role_generation)
 );
 CREATE TABLE auth_login_sessions (
     login_session_id TEXT PRIMARY KEY CHECK (length(login_session_id) = 26),
@@ -594,14 +615,20 @@ CREATE TABLE auth_cimd_clients (
     kind TEXT NOT NULL CHECK (kind IN ('browser','native')),
     metadata_digest TEXT NOT NULL,
     metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
-    observed_at INTEGER NOT NULL
+    observed_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL CHECK (expires_at > observed_at)
+);
+CREATE INDEX auth_cimd_clients_expiry ON auth_cimd_clients(expires_at);
+CREATE TABLE auth_platform_assignments (
+    assignment_id TEXT PRIMARY KEY CHECK (length(assignment_id) = 26),
+    principal_id TEXT NOT NULL UNIQUE REFERENCES auth_principals(principal_id),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    created_at INTEGER NOT NULL
 );
 CREATE TABLE auth_platform_privileges (
-    principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
+    principal_id TEXT NOT NULL REFERENCES auth_platform_assignments(principal_id) ON DELETE CASCADE,
     privilege TEXT NOT NULL CHECK (privilege IN ('principals.manage', 'roles.manage', 'apis.accept',
         'apis.forceReplace', 'clients.manage', 'privileges.manage')),
-    revision INTEGER NOT NULL CHECK (revision >= 1),
-    created_at INTEGER NOT NULL,
     PRIMARY KEY (principal_id, privilege)
 );
 CREATE TABLE auth_platform_delegations (
@@ -670,6 +697,7 @@ CREATE TABLE auth_oauth_families (
     revision INTEGER NOT NULL CHECK (revision >= 1)
 );
 CREATE INDEX auth_oauth_families_grant ON auth_oauth_families(oauth_grant_id, revoked_at);
+CREATE UNIQUE INDEX auth_oauth_families_owner ON auth_oauth_families(family_lookup_hash, oauth_grant_id);
 CREATE TRIGGER auth_oauth_family_revocation_final BEFORE UPDATE ON auth_oauth_families
 WHEN OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS NOT OLD.revoked_at
 BEGIN SELECT RAISE(ABORT, 'refresh family revocation is irreversible'); END;
@@ -679,7 +707,9 @@ CREATE TABLE auth_oauth_artifacts (
     client_id TEXT,
     user_code_hash TEXT,
     grant_established_at_ns INTEGER NOT NULL DEFAULT 0,
-    family_lookup_hash TEXT REFERENCES auth_oauth_families(family_lookup_hash),
+    -- Access tokens are stored before the first refresh record establishes
+    -- the family's absolute deadline; this column is an indexed lookup.
+    family_lookup_hash TEXT,
     oauth_grant_id TEXT REFERENCES auth_oauth_grants(oauth_grant_id),
     sealed_record BLOB NOT NULL,
     expires_at INTEGER NOT NULL,
@@ -709,6 +739,8 @@ CREATE TABLE auth_authorization_sessions (
     session_public_key TEXT NOT NULL CHECK (length(session_public_key) = 43),
     credential_kind TEXT NOT NULL CHECK (credential_kind IN ('oauthGrant', 'provisionedIdentity')),
     oauth_grant_id TEXT REFERENCES auth_oauth_grants(oauth_grant_id),
+    original_refresh_family_id TEXT,
+    refresh_family_lookup_hash TEXT,
     identity_key_id TEXT REFERENCES auth_provisioned_identities(identity_key_id),
     selected_capabilities_json TEXT NOT NULL CHECK (json_valid(selected_capabilities_json)),
     approved_capabilities_json TEXT NOT NULL CHECK (json_valid(approved_capabilities_json)),
@@ -720,13 +752,16 @@ CREATE TABLE auth_authorization_sessions (
     retired_at INTEGER,
     revision INTEGER NOT NULL CHECK (revision >= 1),
     CHECK ((credential_kind = 'oauthGrant' AND oauth_grant_id IS NOT NULL AND identity_key_id IS NULL
+            AND original_refresh_family_id IS NOT NULL AND refresh_family_lookup_hash IS NOT NULL
             AND binding_kind IN ('browser', 'native'))
         OR (credential_kind = 'provisionedIdentity' AND identity_key_id IS NOT NULL
-            AND oauth_grant_id IS NULL AND binding_kind IN ('service', 'device'))),
+             AND oauth_grant_id IS NULL AND original_refresh_family_id IS NULL AND refresh_family_lookup_hash IS NULL AND binding_kind IN ('service', 'device'))),
     CHECK (issued_at < hard_deadline AND latest_context_expiry <= hard_deadline),
     CHECK ((state = 'active') = (retired_at IS NULL)),
     FOREIGN KEY (oauth_grant_id, principal_id)
         REFERENCES auth_oauth_grants(oauth_grant_id, principal_id),
+    FOREIGN KEY (refresh_family_lookup_hash, oauth_grant_id)
+        REFERENCES auth_oauth_families(family_lookup_hash, oauth_grant_id),
     FOREIGN KEY (identity_key_id, principal_id)
         REFERENCES auth_provisioned_identities(identity_key_id, principal_id)
 );
@@ -750,6 +785,7 @@ WHEN NEW.authorization_session_id IS NOT OLD.authorization_session_id
     OR NEW.binding_key IS NOT OLD.binding_key OR NEW.binding_json IS NOT OLD.binding_json
     OR NEW.runtime_id IS NOT OLD.runtime_id OR NEW.session_public_key IS NOT OLD.session_public_key
     OR NEW.credential_kind IS NOT OLD.credential_kind OR NEW.oauth_grant_id IS NOT OLD.oauth_grant_id
+    OR NEW.original_refresh_family_id IS NOT OLD.original_refresh_family_id OR NEW.refresh_family_lookup_hash IS NOT OLD.refresh_family_lookup_hash
     OR NEW.identity_key_id IS NOT OLD.identity_key_id OR NEW.issued_at IS NOT OLD.issued_at
     OR NEW.hard_deadline > OLD.hard_deadline OR NEW.latest_context_expiry < OLD.latest_context_expiry
 BEGIN SELECT RAISE(ABORT, 'logical authorization identity and acceptance history cannot change'); END;
@@ -800,6 +836,8 @@ CREATE TABLE auth_attachments (
     context_digest TEXT NOT NULL,
     ephemeral_nkey TEXT NOT NULL CHECK (length(ephemeral_nkey) = 56),
     transport_policy_digest TEXT NOT NULL CHECK (length(transport_policy_digest) = 43),
+    transport_policy_json TEXT NOT NULL CHECK (json_valid(transport_policy_json)),
+    broker_user_nkey TEXT NOT NULL CHECK (length(broker_user_nkey) = 56),
     state TEXT NOT NULL CHECK (state IN ('pending', 'admitted', 'closed')),
     created_at INTEGER NOT NULL,
     admitted_at INTEGER,

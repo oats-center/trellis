@@ -16,6 +16,7 @@ export const request = {
 		}],
 		optionalCapabilities: []
 	}],
+	actionNames: { ["runtime-trellis.events@v1:event:Beta"]: "Beta" },
 	states: {}
 };
 export default request;

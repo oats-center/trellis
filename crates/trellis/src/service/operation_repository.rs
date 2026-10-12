@@ -38,12 +38,12 @@ pub struct DurableOperationRecord {
     pub deployment_id: String,
     /// Stable principal that initiated the operation.
     pub creator_principal_id: String,
-    /// Stable participant that initiated the operation.
-    pub creator_participant_id: String,
+    /// Auth-verified application or deployment binding that initiated the operation.
+    pub creator_binding: trellis_protocol::SessionBinding,
     /// Session key that authenticated the accepted start request.
     pub caller_session_key: String,
     /// Verified caller projection restored when an expired invocation is reclaimed.
-    pub caller: Option<crate::client::VerifiedCaller>,
+    pub caller: Option<crate::client::AuthenticatedCaller>,
     /// Exact accepted input.
     pub input: Value,
     /// Current durable lifecycle snapshot.
@@ -111,7 +111,7 @@ impl DurableOperationRecord {
                 &self.api_id,
                 &self.operation,
                 &self.creator_principal_id,
-                &self.creator_participant_id,
+                &self.creator_binding,
                 &self.input,
             )?
         {
@@ -227,14 +227,14 @@ pub fn operation_invocation_digest(
     api_id: &str,
     operation: &str,
     creator_principal_id: &str,
-    creator_participant_id: &str,
+    creator_binding: &trellis_protocol::SessionBinding,
     input: &Value,
 ) -> Result<String, ServerError> {
     trellis_protocol::digest_json(&serde_json::json!({
         "apiId": api_id,
         "operation": operation,
         "creatorPrincipalId": creator_principal_id,
-        "creatorParticipantId": creator_participant_id,
+        "creatorBinding": creator_binding,
         "input": input,
     }))
     .map_err(|error| ServerError::Nats(error.to_string()))
@@ -669,7 +669,7 @@ impl OperationRepository for KvOperationRepository {
             || record.operation != current.record.operation
             || record.deployment_id != current.record.deployment_id
             || record.creator_principal_id != current.record.creator_principal_id
-            || record.creator_participant_id != current.record.creator_participant_id
+            || record.creator_binding != current.record.creator_binding
             || record.caller != current.record.caller
             || record.input != current.record.input
         {
@@ -729,7 +729,7 @@ impl OperationRepository for KvOperationRepository {
             || record.operation != current.record.operation
             || record.deployment_id != current.record.deployment_id
             || record.creator_principal_id != current.record.creator_principal_id
-            || record.creator_participant_id != current.record.creator_participant_id
+            || record.creator_binding != current.record.creator_binding
             || record.caller != current.record.caller
             || record.input != current.record.input
         {

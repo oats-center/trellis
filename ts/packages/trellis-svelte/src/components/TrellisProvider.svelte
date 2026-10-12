@@ -1,14 +1,9 @@
-<script lang="ts" generics="TContract extends TrellisParticipantLike">
-  import {
-    classifyBrowserAuthError,
-    ClientAuthHandledError,
-    TrellisClient,
-    type ClientAuthOptions,
-  } from "@oatscenter/trellis";
+<script lang="ts" generics="TContract extends TrellisAppRequest">
+  import { classifyBrowserAuthError, TrellisClient } from "@oatscenter/trellis";
   import { onMount } from "svelte";
   import type {
     TrellisClientFor,
-    TrellisParticipantLike,
+    TrellisAppRequest,
   } from "../context.svelte.ts";
   import { resolveTrellisAppUrl } from "../context.svelte.ts";
   import TrellisContextProvider from "./TrellisContextProvider.svelte";
@@ -86,21 +81,11 @@
   onMount(() => {
     let active = true;
 
-    function withBrowserAuthDefaults(
-      authOptions: ClientAuthOptions | undefined,
-    ): ClientAuthOptions {
-      if (authOptions?.mode === "session_key") {
-        return authOptions;
-      }
-
-      return {
-        ...authOptions,
-        currentUrl:
-          authOptions?.currentUrl ?? (() => new URL(window.location.href)),
-      };
-    }
-
-    const connectAuth = withBrowserAuthDefaults(auth);
+    const connectAuth = {
+      ...auth,
+      currentUrl: auth.currentUrl ?? window.location.href,
+    };
+    let authHandled = false;
     const trellisUrl = resolveTrellisAppUrl(trellisApp.trellisUrl);
     if (!trellisUrl) {
       connectError = new TypeError(
@@ -115,11 +100,12 @@
         const connected = await TrellisClient.connect({
           ...client,
           trellisUrl,
-          participant: trellisApp.participant,
+          request: trellisApp.request,
           auth: connectAuth,
           onAuthRequired: onAuthRequired
             ? async (ctx) => {
                 await onAuthRequired(ctx.loginUrl, ctx);
+                authHandled = true;
                 return { status: "handled" };
               }
             : undefined,
@@ -133,7 +119,7 @@
         }
       } catch (error) {
         if (!active) return;
-        if (error instanceof ClientAuthHandledError) {
+        if (authHandled) {
           providerState = "auth_handled";
           return;
         }

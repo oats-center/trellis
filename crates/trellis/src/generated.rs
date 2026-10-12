@@ -651,10 +651,7 @@ impl Client {
             action_name(D::DESCRIPTOR_NAME),
         ))
         .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
-        let route = self
-            .client
-            .bound_key_subject("rpc", D::API_ID, D::KEY)
-            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        let route = D::SUBJECT;
         // The runtime transport layer acquires an admitted generation for this
         // exact route and inbox, waiting for automatic adoption when the
         // capability is granted but not yet admitted. A route current authority
@@ -665,7 +662,13 @@ impl Client {
         let output = self
             .client
             .request_json_value_routed(
-                &route,
+                D::API_ID,
+                trellis_protocol::CatalogActionIdentity {
+                    kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                    name: action_name(D::DESCRIPTOR_NAME).to_owned(),
+                    direction: trellis_protocol::PermissionAction::Call,
+                },
+                route,
                 &input,
                 crate::telemetry::instruments::route_token(
                     crate::telemetry::instruments::RouteFamily::Rpc,
@@ -895,16 +898,6 @@ impl Client {
     pub(crate) fn inner(&self) -> &Arc<crate::client::TrellisClient> {
         &self.client
     }
-
-    pub(crate) async fn request_api_value(
-        &self,
-        api_id: &str,
-        action: &str,
-        input: serde_json::Value,
-    ) -> Result<serde_json::Value, crate::client::TrellisClientError> {
-        let subject = self.client.bound_api_subject("rpc", api_id, action)?;
-        self.client.request_json_value(&subject, &input).await
-    }
 }
 
 /// Typed client entrypoint for one generated Operation.
@@ -952,6 +945,8 @@ where
     }
 
     /// Start or replay the Operation with a caller-selected ULID.
+    /// Replay deduplication is deployment-scoped. Do not automatically retry an
+    /// uncertain canonical start: another deployment can accept the same ID.
     ///
     /// Persist the chosen id before this network call to retain ownership even if
     /// the acceptance reply is lost. The invocation id is the durable Operation
@@ -975,6 +970,9 @@ where
     }
 
     /// Admit or replay this Operation with cancellation durably requested.
+    /// Invocation deduplication applies only within the accepting deployment;
+    /// canonical routing does not guarantee cross-deployment cancellation of an
+    /// uncertain earlier start.
     ///
     /// Use the reserved invocation id and original input to prevent a delayed
     /// normal start from entering business work. Requires Invoke and Cancel
@@ -998,13 +996,14 @@ where
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
     }
 
-    /// Open typed control for an existing durable Operation id without starting it.
+    /// Restore typed control from a complete serialized Operation reference.
+    /// Its deployment routes the durable workflow; receivers still authorize controls.
     pub fn control(
         &self,
-        operation_id: impl Into<String>,
+        reference: crate::client::OperationRefData,
     ) -> Result<OperationRef<'a, D>, crate::client::TrellisClientError> {
         self.inner
-            .control(operation_id)
+            .control(reference)
             .map(|inner| OperationRef { inner })
     }
 }

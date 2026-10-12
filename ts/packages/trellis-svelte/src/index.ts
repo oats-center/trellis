@@ -9,23 +9,7 @@ export type {
   TrellisAppUrlResolver,
   TrellisClientFor,
   TrellisContextClient,
-  TrellisParticipantLike,
+  TrellisAppRequest,
 } from "./context.svelte.ts";
 export { createTrellisApp, resolveTrellisAppUrl } from "./context.svelte.ts";
-export {
-  AuthorizationContextController,
-  type AuthorizationContextStatus,
-} from "./authorization_context.svelte.ts";
-export {
-  createDeviceActivationController,
-  type DeviceActivationAuth,
-  type DeviceActivationClient,
-  DeviceActivationController,
-  type DeviceActivationControllerConfig,
-  type DeviceActivationOperationRef,
-} from "./device_activation.svelte.ts";
-export {
-  createPortalFlow,
-  type CreatePortalFlowConfig,
-  PortalFlowController,
-} from "./portal_flow.svelte.ts";
+export { OwnAuthorityController } from "./own_authority.svelte.ts";

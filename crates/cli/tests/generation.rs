@@ -34,7 +34,7 @@ api ping@v1 {
   title "Ping";
   description "A generation fixture.";
   rpc Get { input Empty; output Empty; }
-  capabilities { public { allows { rpc Get; } } }
+  capabilities { public { consent_revision 1; allows { rpc Get; } } }
 }
 "#,
     )
@@ -48,7 +48,6 @@ api ping@v1 {
         .unwrap();
 
     let lock = trellis_idl::project::read_lock(&root.path().join("trellis.lock")).unwrap();
-    assert_eq!(lock.format, 2);
     assert_eq!(lock.root, "fixture");
     assert_eq!(lock.packages.len(), 1);
     let metadata: serde_json::Value =

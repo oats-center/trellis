@@ -29,7 +29,6 @@ import { recordTrellisDuration } from "./admin/metrics.ts";
 import { isRecord, postJson } from "./admin/transport.ts";
 import { generateSessionSeed } from "./auth/random.ts";
 import type {
-  TrellisTestParticipantApplyResult,
   TrellisTestParticipantApproval,
   TrellisTestParticipantLike,
   TrellisTestServiceKey,
@@ -62,13 +61,10 @@ export class TrellisTestAdminAutomation {
     this.#getBootstrapUrl = args.getBootstrapUrl;
     this.#deployment = {
       defaultDeployment: args.defaultDeployment,
-      createdDeployments: new Map(),
-      deploymentBindingRevisions: new Map(),
       deploymentIds: new Map(),
-      pendingApprovals: new Map(),
-      installedParticipants: new Map(),
-      deploymentResourceExpectations: new Map(),
-      resourceReadyTimeoutMs: args.resourceReadyTimeoutMs ?? 30_000,
+      deploymentRevisions: new Map(),
+      deploymentDigests: new Map(),
+      acceptedApis: new Map(),
       rpc: <M extends TrellisTestAdminRpcMethod>(
         method: M,
         input: AdminRpc[M]["input"],
@@ -87,9 +83,9 @@ export class TrellisTestAdminAutomation {
         const bootstrapUrl = await this.#getBootstrapUrl();
         const flowId = adminAccountTokenFromUrl(bootstrapUrl);
         const response = await postJson(
-          `${this.#trellisUrl}/auth/account-flow/${
-            encodeURIComponent(flowId)
-          }/local-password`,
+          `${this.#trellisUrl}/auth/account-flow/${encodeURIComponent(
+            flowId,
+          )}/local-password`,
           { username: ADMIN_USERNAME, password: this.#adminPassword },
         );
         if (!isRecord(response) || response.status !== "created") {
@@ -145,10 +141,7 @@ export class TrellisTestAdminAutomation {
   }
 
   /** Forwards one validated low-level Auth RPC over the local or shared admin transport. */
-  async callAdminRpc(
-    method: string,
-    input: unknown,
-  ): Promise<unknown> {
+  async callAdminRpc(method: string, input: unknown): Promise<unknown> {
     if (!Object.hasOwn(adminMethods, method)) {
       throw new Error(`unsupported Trellis test admin RPC ${method}`);
     }
@@ -161,31 +154,26 @@ export class TrellisTestAdminAutomation {
     method: M,
     input: AdminRpc[M]["input"],
   ): Promise<AdminRpc[M]["output"]> {
-    return await this.callAdminRpc(method, input) as AdminRpc[M]["output"];
+    return (await this.callAdminRpc(method, input)) as AdminRpc[M]["output"];
   }
 
   /** Creates a service deployment through `Auth.Deployments.Create`. */
   async createDeployment(args: {
     deployment?: string;
-    kind?: "service" | "device";
-    reviewMode?: "none" | "required";
-  } = {}): Promise<void> {
+    contract: TrellisTestParticipantLike;
+  }): Promise<void> {
     return await adminDeployment.createDeployment(this.#deployment, args);
   }
 
   async provisionDevice(
     input: import("../trellis/index.js").apis.auth.DevicesProvisionInput,
-  ): Promise<
-    import("../trellis/index.js").apis.auth.DevicesProvisionOutput
-  > {
-    return await this.#rpc(
-      "authDevicesProvision",
-      {
-        ...input,
-        deploymentId: this.#deployment.deploymentIds.get(input.deploymentId) ??
-          input.deploymentId,
-      },
-    );
+  ): Promise<import("../trellis/index.js").apis.auth.DevicesProvisionOutput> {
+    return await this.#rpc("authDevicesProvision", {
+      ...input,
+      deploymentId:
+        this.#deployment.deploymentIds.get(input.deploymentId) ??
+        input.deploymentId,
+    });
   }
 
   async stateResourcesInspect(
@@ -283,38 +271,12 @@ export class TrellisTestAdminAutomation {
     this.#configuredConsentPolicies.add(participantId);
   }
 
-  /** Installs a participant and atomically replaces its deployment GrantBinding. */
+  /** Accepts generated APIs and applies the deployment's native source evidence. */
   async applyParticipant(args: {
     deployment?: string;
     contract: TrellisTestParticipantLike;
   }): Promise<TrellisTestParticipantApproval> {
     return await adminDeployment.applyParticipant(this.#deployment, args);
-  }
-
-  /** Applies a deployment without consent; returns the pending approval when required. */
-  async requestParticipantApply(args: {
-    deployment?: string;
-    contract: TrellisTestParticipantLike;
-  }): Promise<TrellisTestParticipantApplyResult> {
-    return await adminDeployment.requestParticipantApply(
-      this.#deployment,
-      args,
-    );
-  }
-
-  /** Completes a deployment apply with server-computed consent for a pending approval. */
-  async approveParticipantApply(
-    pendingId: string,
-    opts: {
-      excludeResources?: readonly string[];
-      excludeCapabilities?: readonly string[];
-    } = {},
-  ): Promise<TrellisTestParticipantApproval> {
-    return await adminDeployment.approveParticipantApply(
-      this.#deployment,
-      pendingId,
-      opts,
-    );
   }
 
   async installParticipant(args: {

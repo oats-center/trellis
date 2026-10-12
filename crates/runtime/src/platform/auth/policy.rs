@@ -75,12 +75,11 @@ pub(crate) enum PolicyMutation {
     },
     PrivilegeAssign {
         principal_id: String,
-        privilege: PlatformPrivilege,
+        privileges: Vec<PlatformPrivilege>,
         expected_revision: u64,
     },
     PrivilegeRevoke {
-        principal_id: String,
-        privilege: PlatformPrivilege,
+        assignment_id: String,
         expected_revision: u64,
     },
     ClientState {
@@ -105,7 +104,7 @@ pub(crate) enum PolicyMutation {
         provider_id: String,
         claim_name: String,
         claim_value: String,
-        role_id: String,
+        role_ids: Vec<String>,
         expected_revision: u64,
     },
     OidcMappingDelete {
@@ -158,7 +157,7 @@ pub(super) fn entitlements(
             "SELECT latest.verified_claims_json,latest.fresh_until,latest.provider_id FROM auth_login_sessions own JOIN auth_login_sessions latest ON latest.principal_id=own.principal_id AND latest.provider_id=own.provider_id JOIN auth_oidc_providers p ON p.provider_id=latest.provider_id WHERE own.login_session_id=?1 AND own.principal_id=?2 AND own.revoked_at IS NULL AND own.expires_at>?3 AND latest.observation_order=(SELECT max(observation_order) FROM auth_login_sessions observation WHERE observation.principal_id=own.principal_id AND observation.provider_id=own.provider_id) AND latest.revoked_at IS NULL AND latest.expires_at>?3 AND latest.fresh_until>?3 AND p.state='active'", params![login,principal,now], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
         if let Some((claims, fresh_until, provider)) = claims {
             let claims: serde_json::Value = decode(&claims)?;
-            let mut mappings = connection.prepare("SELECT m.claim_name,m.claim_value,c.capability_id,m.mapping_id FROM auth_oidc_role_mappings m JOIN auth_roles r ON r.role_id=m.role_id AND r.identity_generation=m.role_generation JOIN auth_role_capabilities rc ON rc.role_id=r.role_id AND rc.role_generation=r.identity_generation JOIN auth_capability_identities c ON c.capability_id=rc.capability_id AND c.identity_generation=rc.capability_generation WHERE m.provider_id=?1 AND r.state='active' AND c.state='active'")?;
+            let mut mappings = connection.prepare("SELECT m.claim_name,m.claim_value,c.capability_id,m.mapping_id FROM auth_oidc_role_mappings m JOIN auth_oidc_mapping_roles mr ON mr.mapping_id=m.mapping_id JOIN auth_roles r ON r.role_id=mr.role_id AND r.identity_generation=mr.role_generation JOIN auth_role_capabilities rc ON rc.role_id=r.role_id AND rc.role_generation=r.identity_generation JOIN auth_capability_identities c ON c.capability_id=rc.capability_id AND c.identity_generation=rc.capability_generation WHERE m.provider_id=?1 AND r.state='active' AND c.state='active'")?;
             for row in mappings.query_map([provider], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -241,11 +240,13 @@ pub(super) fn evaluate(
             Err(AuthError::NotFound) => None,
             Err(error) => return Err(error),
         };
-        let consent = current.as_ref().is_some_and(|current| {
-            root.approved
-                .as_ref()
-                .is_none_or(|approved| approved.contains(current))
-        });
+        let consent = !(selected == super::deployments::SELF_HEALTH_CAPABILITY
+            && result.principal_kind == trellis_protocol::PrincipalKind::User)
+            && current.as_ref().is_some_and(|current| {
+                root.approved
+                    .as_ref()
+                    .is_none_or(|approved| approved.contains(current))
+            });
         if let (Some(current), Some((deadline, sources)), true) =
             (current, entitled.get(&selected), consent)
         {
@@ -310,28 +311,34 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<u64, AuthError> {
         self.mutate(identity, "policy", mutation, now, |connection| {
-            let privilege = match mutation {
-                PolicyMutation::PrivilegeAssign { .. } | PolicyMutation::PrivilegeRevoke { .. } => {
-                    "privileges.manage"
-                }
-                PolicyMutation::ClientState { .. } => "clients.manage",
-                PolicyMutation::PrincipalState { .. } => "principals.manage",
-                PolicyMutation::ConsentRevoke { principal_id, .. }
-                    if principal_id == &identity.actor =>
-                {
-                    ""
-                }
-                PolicyMutation::ConsentRevoke { .. } => "principals.manage",
-                _ => "roles.manage",
-            };
-            if !privilege.is_empty() {
-                Self::require_privilege(connection, &identity.actor, privilege)?;
-            }
-            let (scope, revision) = apply_policy(connection, mutation, now)?;
-            Self::policy_changed(connection, &scope, now)?;
-            Ok(revision)
+            apply_policy_in_transaction(connection, identity, mutation, now)
         })
     }
+}
+
+/// Apply policy and its enforcement intents within the caller's aggregate transaction.
+pub(super) fn apply_policy_in_transaction(
+    connection: &Connection,
+    identity: &Mutation,
+    mutation: &PolicyMutation,
+    now: i64,
+) -> Result<u64, AuthError> {
+    let privilege = match mutation {
+        PolicyMutation::PrivilegeAssign { .. } | PolicyMutation::PrivilegeRevoke { .. } => {
+            "privileges.manage"
+        }
+        PolicyMutation::ClientState { .. } => "clients.manage",
+        PolicyMutation::PrincipalState { .. } => "principals.manage",
+        PolicyMutation::ConsentRevoke { principal_id, .. } if principal_id == &identity.actor => "",
+        PolicyMutation::ConsentRevoke { .. } => "principals.manage",
+        _ => "roles.manage",
+    };
+    if !privilege.is_empty() {
+        SqliteAuthorizationStore::require_privilege(connection, &identity.actor, privilege)?;
+    }
+    let (scope, revision) = apply_policy(connection, mutation, now)?;
+    SqliteAuthorizationStore::policy_changed(connection, &scope, now)?;
+    Ok(revision)
 }
 
 pub(super) fn apply_policy(
@@ -412,7 +419,7 @@ pub(super) fn apply_policy(
             if current.unwrap_or(0) != *expected_revision {
                 return Err(AuthError::Conflict);
             }
-            connection.execute("INSERT INTO auth_role_assignments VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(principal_id,role_id,role_generation) DO UPDATE SET revision=excluded.revision,expires_at=excluded.expires_at",params![principal_id,role_id,generation,expected_revision+1,expires_at,now])?;
+            connection.execute("INSERT INTO auth_role_assignments (assignment_id,principal_id,role_id,role_generation,revision,expires_at,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(principal_id,role_id,role_generation) DO UPDATE SET revision=excluded.revision,expires_at=excluded.expires_at",params![super::sqlite::id(),principal_id,role_id,generation,expected_revision+1,expires_at,now])?;
             Ok((
                 EnforcementScope::Principal(principal_id.clone()),
                 expected_revision + 1,
@@ -440,11 +447,18 @@ pub(super) fn apply_policy(
                 return Err(AuthError::Invalid("expired grant".into()));
             }
             let cap = capability(connection, capability_id)?;
+            if capability_id == super::deployments::SELF_HEALTH_CAPABILITY {
+                let native: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind IN ('service','device'))",[principal_id],|row|row.get(0))?;
+                if !native {
+                    return Err(AuthError::Denied);
+                }
+                super::deployments::native_health_capability(connection)?;
+            }
             let current:Option<u64>=connection.query_row("SELECT revision FROM auth_direct_capabilities WHERE principal_id=?1 AND capability_id=?2 AND capability_generation=?3",params![principal_id,capability_id,cap.identity_generation.get()],|row|row.get(0)).optional()?;
             if current.unwrap_or(0) != *expected_revision {
                 return Err(AuthError::Conflict);
             }
-            connection.execute("INSERT INTO auth_direct_capabilities VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(principal_id,capability_id,capability_generation) DO UPDATE SET revision=excluded.revision,expires_at=excluded.expires_at",params![principal_id,capability_id,cap.identity_generation.get(),expected_revision+1,expires_at,now])?;
+            connection.execute("INSERT INTO auth_direct_capabilities (grant_id,principal_id,capability_id,capability_generation,revision,expires_at,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(principal_id,capability_id,capability_generation) DO UPDATE SET revision=excluded.revision,expires_at=excluded.expires_at",params![super::sqlite::id(),principal_id,capability_id,cap.identity_generation.get(),expected_revision+1,expires_at,now])?;
             Ok((
                 EnforcementScope::Principal(principal_id.clone()),
                 expected_revision + 1,
@@ -464,21 +478,7 @@ pub(super) fn apply_policy(
         }
         PolicyMutation::PrivilegeAssign {
             principal_id,
-            privilege,
-            expected_revision,
-        } => {
-            if *expected_revision != 0 {
-                return Err(AuthError::Conflict);
-            }
-            connection.execute(
-                "INSERT INTO auth_platform_privileges VALUES(?1,?2,1,?3)",
-                params![principal_id, serde_json::to_value(privilege)?.as_str(), now],
-            )?;
-            Ok((EnforcementScope::Principal(principal_id.clone()), 1))
-        }
-        PolicyMutation::PrivilegeRevoke {
-            principal_id,
-            privilege,
+            privileges,
             expected_revision,
         } => {
             let protected: bool = connection.query_row(
@@ -487,9 +487,62 @@ pub(super) fn apply_policy(
                 |row| row.get(0),
             )?;
             if protected {
+                let mut statement = connection.prepare(
+                    "SELECT privilege FROM auth_platform_privileges WHERE principal_id=?1",
+                )?;
+                for existing in
+                    statement.query_map([principal_id], |row| row.get::<_, String>(0))?
+                {
+                    let existing: PlatformPrivilege =
+                        serde_json::from_value(serde_json::Value::String(existing?))?;
+                    if !privileges.contains(&existing) {
+                        return Err(AuthError::Denied);
+                    }
+                }
+            }
+            let current: Option<u64> = connection
+                .query_row(
+                    "SELECT revision FROM auth_platform_assignments WHERE principal_id=?1",
+                    [principal_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if current.unwrap_or(0) != *expected_revision {
+                return Err(AuthError::Conflict);
+            }
+            connection.execute("INSERT INTO auth_platform_assignments VALUES(?1,?2,?3,?4) ON CONFLICT(principal_id) DO UPDATE SET revision=excluded.revision", params![super::sqlite::id(), principal_id, expected_revision+1, now])?;
+            connection.execute(
+                "DELETE FROM auth_platform_privileges WHERE principal_id=?1",
+                [principal_id],
+            )?;
+            for privilege in privileges.iter().collect::<BTreeSet<_>>() {
+                connection.execute(
+                    "INSERT INTO auth_platform_privileges VALUES(?1,?2)",
+                    params![principal_id, serde_json::to_value(privilege)?.as_str()],
+                )?;
+            }
+            Ok((
+                EnforcementScope::Principal(principal_id.clone()),
+                expected_revision + 1,
+            ))
+        }
+        PolicyMutation::PrivilegeRevoke {
+            assignment_id,
+            expected_revision,
+        } => {
+            let principal_id: String = connection.query_row("SELECT principal_id FROM auth_platform_assignments WHERE assignment_id=?1 AND revision=?2", params![assignment_id,expected_revision], |row| row.get(0)).optional()?.ok_or(AuthError::Conflict)?;
+            let protected: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+                [&principal_id],
+                |row| row.get(0),
+            )?;
+            if protected {
                 return Err(AuthError::Denied);
             }
-            if connection.execute("DELETE FROM auth_platform_privileges WHERE principal_id=?1 AND privilege=?2 AND revision=?3",params![principal_id,serde_json::to_value(privilege)?.as_str(),expected_revision])?!=1 {return Err(AuthError::Conflict);}
+            connection.execute(
+                "DELETE FROM auth_platform_assignments WHERE assignment_id=?1 AND revision=?2",
+                params![assignment_id, expected_revision],
+            )?;
             Ok((
                 EnforcementScope::Principal(principal_id.clone()),
                 expected_revision + 1,
@@ -563,13 +616,12 @@ pub(super) fn apply_policy(
             provider_id,
             claim_name,
             claim_value,
-            role_id,
+            role_ids,
             expected_revision,
         } => {
             if ulid::Ulid::from_string(mapping_id).is_err() || !claim_name.starts_with('/') {
                 return Err(AuthError::Invalid("invalid OIDC mapping".into()));
             }
-            let (generation, _) = role(connection, role_id)?;
             let current: Option<u64> = connection
                 .query_row(
                     "SELECT revision FROM auth_oidc_role_mappings WHERE mapping_id=?1",
@@ -580,7 +632,18 @@ pub(super) fn apply_policy(
             if current.unwrap_or(0) != *expected_revision {
                 return Err(AuthError::Conflict);
             }
-            connection.execute("INSERT INTO auth_oidc_role_mappings VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(mapping_id) DO UPDATE SET provider_id=excluded.provider_id,claim_name=excluded.claim_name,claim_value=excluded.claim_value,role_id=excluded.role_id,role_generation=excluded.role_generation,revision=excluded.revision",params![mapping_id,provider_id,claim_name,claim_value,role_id,generation,expected_revision+1])?;
+            connection.execute("INSERT INTO auth_oidc_role_mappings VALUES(?1,?2,?3,?4,?5) ON CONFLICT(mapping_id) DO UPDATE SET provider_id=excluded.provider_id,claim_name=excluded.claim_name,claim_value=excluded.claim_value,revision=excluded.revision",params![mapping_id,provider_id,claim_name,claim_value,expected_revision+1])?;
+            connection.execute(
+                "DELETE FROM auth_oidc_mapping_roles WHERE mapping_id=?1",
+                [mapping_id],
+            )?;
+            for role_id in role_ids.iter().collect::<BTreeSet<_>>() {
+                let (generation, _) = role(connection, role_id)?;
+                connection.execute(
+                    "INSERT INTO auth_oidc_mapping_roles VALUES(?1,?2,?3)",
+                    params![mapping_id, role_id, generation],
+                )?;
+            }
             Ok((EnforcementScope::All, expected_revision + 1))
         }
         PolicyMutation::OidcMappingDelete {

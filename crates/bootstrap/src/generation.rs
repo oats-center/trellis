@@ -71,24 +71,10 @@ pub fn generate_trellis_bootstrap(options: &TrellisBootstrapOptions) -> Result<(
     // The built-in live providers' identity seeds are provisioned material that
     // ships inside the (possibly read-only) bundle, so generate them here rather
     // than letting the runtime create them next to the session seed at startup.
-    let live_providers = options.out.join("live-providers");
-    create_private_dir(&live_providers)?;
-    for key in ["platform", "health", "jobs", "events"] {
-        write_private_file(
-            live_providers.join(format!("{key}.seed")),
-            format!("{}\n", trellis_local_bootstrap::generate_session_seed()),
-        )?;
-    }
-    Ok(())
-}
-
-fn create_private_dir(path: &Path) -> Result<(), BootstrapError> {
-    fs::create_dir_all(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
+    trellis_local_bootstrap::generate_local_live_provider_seeds(
+        &options.out.join("live-providers"),
+    )
+    .map_err(|error| BootstrapError::AuthorizationTrust(error.to_string()))?;
     Ok(())
 }
 

@@ -68,10 +68,6 @@ try {
     '<script src="/assets/web/bootstrap.js"></script>',
   );
   await writeFile(fallbackPath, fallback);
-  await writeFile(
-    join(buildDir, "assets/web/runtime-config.js"),
-    "globalThis.__TRELLIS_RUNTIME_CONFIG__ = { authUrl: globalThis.location.origin };\n",
-  );
 
   await writeFile(join(buildDir, ".trellis-web-owned"), "web\n");
   const info = await lstat(destination).catch((error: unknown) => {

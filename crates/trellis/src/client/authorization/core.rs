@@ -1,49 +1,22 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
+use std::sync::Arc;
+
 use trellis_protocol::{
-    verify_authorization_event, verify_authorization_request, AuthorizationEventProof,
-    AuthorizationEventPublisher, AuthorizationEventVerificationInput, AuthorizationRequestProof,
-    AuthorizationRequestVerificationInput, AuthorizationVerificationPolicy, PermissionAtom,
-    ProtocolError, VerifiedAuthorizationContext, VerifiedAuthorizationEventProof,
-    VerifiedAuthorizationRequestProof,
+    verify_session_event, verify_session_request, AuthenticatedCaller, AuthorityIssuerKey,
+    CatalogActionIdentity, OriginalEventPublication, ProtocolError,
+    SessionAuthorityVerificationPolicy, SessionEvent, SessionEventProof,
+    SessionEventVerificationInput, SessionRequest, SessionRequestProof,
+    SessionRequestVerificationInput, SignedCatalogSnapshot, VerifiedSessionAuthority,
 };
 
-/// Typed caller projection produced after a local authorization proof verifies.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct VerifiedCaller {
-    /// Session public key presented with the request.
-    pub session_key: String,
-    /// Signed reply-inbox prefix bound to the session.
-    pub inbox_prefix: String,
-    /// Digest of the complete signed authorization context.
-    pub context_digest: String,
-    /// Signed SDK-owned live connection identity.
-    pub connection_id: String,
-    /// Durable login identity for user connections only.
-    pub login_session_id: Option<String>,
-    /// Signed principal identity.
-    pub principal_id: String,
-    /// Signed principal class.
-    pub principal_kind: trellis_protocol::PrincipalKind,
-    /// Installed participant assignment.
-    pub participant_id: String,
-    /// Server-assigned meta-authority, independent of ordinary permission atoms.
-    pub platform_privileges: Vec<trellis_protocol::PlatformPrivilege>,
-    /// Signed deployment identity, when present.
-    pub deployment_id: Option<String>,
-    /// Signed runtime instance identity, when present.
-    pub instance_id: Option<String>,
-}
-
-/// Failure returned by the shared local authorization verification core.
+/// Failure to authenticate a message or authorize its exact registered action.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthorizationVerificationError {
-    /// The presented digest does not identify the verified context.
-    #[error("authorization context digest does not match verified context")]
-    ContextDigestMismatch,
-    /// The protocol proof, permission, or validity check failed.
-    #[error("authorization proof rejected: {0}")]
+    /// The proof, signed authority, catalog, or validity check failed.
+    #[error("session proof rejected: {0}")]
     Protocol(Box<ProtocolError>),
+    /// The catalog does not authorize the actual registered action.
+    #[error("session capability does not authorize the registered action")]
+    PermissionDenied,
 }
 
 impl From<ProtocolError> for AuthorizationVerificationError {
@@ -52,200 +25,285 @@ impl From<ProtocolError> for AuthorizationVerificationError {
     }
 }
 
-/// Verified request proof and its local caller projection.
+/// Authenticated opening retained for dispatch and response signing.
+/// Possession alone leaves `authorized_action` empty and cannot authorize a response.
 #[derive(Clone, Debug)]
 pub struct VerifiedAuthorizationRequest {
-    request: VerifiedAuthorizationRequestProof,
-    caller: VerifiedCaller,
+    authority: Arc<VerifiedSessionAuthority>,
+    caller: AuthenticatedCaller,
+    request: SessionRequest,
+    digest: [u8; 32],
+    authorized_action: Option<CatalogActionIdentity>,
+    handler_authorized: bool,
 }
 
 impl VerifiedAuthorizationRequest {
-    /// Return the verified caller projection.
-    pub fn caller(&self) -> &VerifiedCaller {
+    /// Exact action admitted by catalog membership or the payload-authorizing handler.
+    /// `None` authenticates identity only and must not reserve Live or produce a reply.
+    pub fn authorized_action(&self) -> Option<&CatalogActionIdentity> {
+        self.authorized_action.as_ref()
+    }
+
+    pub(crate) fn handler_authorized(&self) -> bool {
+        self.handler_authorized
+    }
+
+    pub(crate) fn authorize_handler(
+        &mut self,
+        action: CatalogActionIdentity,
+    ) -> Result<(), AuthorizationVerificationError> {
+        if self.request.action != action.name
+            || self
+                .authorized_action
+                .as_ref()
+                .is_some_and(|current| current != &action)
+        {
+            return Err(AuthorizationVerificationError::PermissionDenied);
+        }
+        self.authorized_action = Some(action);
+        self.handler_authorized = true;
+        Ok(())
+    }
+    /// Authenticated identity and whole capabilities, never header-derived identity.
+    pub fn caller(&self) -> &AuthenticatedCaller {
         &self.caller
     }
 
-    /// Return the verified signed authorization context.
-    pub fn context(&self) -> &VerifiedAuthorizationContext {
-        self.request.context()
+    /// Signature-checked session authority used for this opening.
+    pub fn authority(&self) -> &VerifiedSessionAuthority {
+        &self.authority
+    }
+
+    /// Exact authenticated opening identity.
+    pub fn request(&self) -> &SessionRequest {
+        &self.request
+    }
+
+    /// Transcript digest to which a provider's success or error response must bind.
+    pub fn digest(&self) -> &[u8; 32] {
+        &self.digest
     }
 }
 
-/// Verified event proof and its protocol publisher projection.
+/// Authenticated publication with explicit original broker chronology when historical.
 #[derive(Clone, Debug)]
 pub struct VerifiedAuthorizationEvent {
-    event: VerifiedAuthorizationEventProof,
+    authority: Arc<VerifiedSessionAuthority>,
+    event: SessionEvent,
+    original_publication: Option<OriginalEventPublication>,
 }
 
 impl VerifiedAuthorizationEvent {
-    /// Return the verified publisher projection.
-    pub fn publisher(&self) -> &AuthorizationEventPublisher {
-        self.event.publisher()
+    /// Authenticated publisher authority, not a handle usable for current RPC dispatch.
+    pub fn authority(&self) -> &VerifiedSessionAuthority {
+        &self.authority
     }
 
-    /// Return the verified signed authorization context.
-    pub fn context(&self) -> &VerifiedAuthorizationContext {
-        self.event.context()
+    /// Authenticated descriptor identity and publication subject.
+    pub fn event(&self) -> &SessionEvent {
+        &self.event
+    }
+
+    /// Original broker-assigned chronology supplied by the historical reader.
+    pub fn original_publication(&self) -> Option<&OriginalEventPublication> {
+        self.original_publication.as_ref()
     }
 }
 
-/// Shared local verifier used by both the platform and connected Rust SDKs.
-///
-/// Resolution of trust/context records stays with each provider cache. Once a
-/// verified context is available, this core owns proof parsing, exact
-/// permission checks, and caller projection.
+/// Proof and whole-capability verification shared by transport adapters.
+/// Material resolution and sticky revocation ownership remain with the runtime owner.
 #[derive(Clone, Debug, Default)]
-pub struct AuthorizationVerificationCore {}
+pub struct AuthorizationVerificationCore;
 
-/// Borrowed transport and authority inputs for shared request verification.
-#[derive(Clone, Copy, Debug)]
+/// Actual request transcript and authenticated catalog for one registered route.
+#[derive(Debug)]
 pub struct RequestVerificationInput<'a> {
-    /// Resolved and cryptographically verified authorization context.
-    pub context: &'a VerifiedAuthorizationContext,
-    /// Context digest presented by the transport.
-    pub context_digest: &'a str,
-    /// Exact routed subject.
-    pub subject: &'a str,
-    /// Exact received payload bytes.
+    /// Signature-checked authority retained by the connected runtime owner.
+    pub authority: Arc<VerifiedSessionAuthority>,
+    /// Transcript assembled from actual transport and generated route metadata.
+    pub request: &'a SessionRequest,
+    /// Exact received bytes, before decoding or field projection.
     pub payload: &'a [u8],
-    /// Signed proof issue time.
-    pub iat: i64,
-    /// Signed request identifier.
-    pub request_id: &'a str,
-    /// Actual reply subject.
-    pub reply_subject: Option<&'a str>,
-    /// Encoded request proof.
-    pub proof: &'a str,
-    /// Verification policy.
-    pub policy: &'a AuthorizationVerificationPolicy,
-    /// Required exact permissions.
-    pub required_permissions: &'a [PermissionAtom],
+    /// Received ephemeral-key signature.
+    pub proof: &'a SessionRequestProof,
+    /// Current clock and bounded authority policy.
+    pub policy: &'a SessionAuthorityVerificationPolicy,
+    /// Sticky logical-session retirement state from the runtime owner.
+    pub known_revoked: bool,
+    /// Current accepted catalog obtained from the bounded authenticated material source.
+    pub catalog: &'a SignedCatalogSnapshot,
+    /// Catalog signer authenticated through the pinned issuer rotation chain.
+    pub catalog_issuer: &'a AuthorityIssuerKey,
+    /// Exact action registered by the generated provider descriptor.
+    pub action: &'a CatalogActionIdentity,
 }
 
-/// Borrowed transport and authority inputs for shared event verification.
-#[derive(Clone, Copy, Debug)]
+/// Actual event identity and accepted publish action, independent of subject parsing.
+#[derive(Debug)]
 pub struct EventVerificationInput<'a> {
-    /// Resolved and cryptographically verified authorization context.
-    pub context: &'a VerifiedAuthorizationContext,
-    /// Context digest presented by the transport.
-    pub context_digest: &'a str,
-    /// Exact published subject.
-    pub subject: &'a str,
-    /// Signed canonical event descriptor identity.
-    pub descriptor_identity: &'a str,
-    /// Exact received payload bytes.
+    /// Signature-checked publisher authority retained by the runtime owner.
+    pub authority: Arc<VerifiedSessionAuthority>,
+    /// Actual received descriptor identity and publication values.
+    pub event: &'a SessionEvent,
+    /// Exact publication bytes.
     pub payload: &'a [u8],
-    /// Signed event identifier.
-    pub event_id: &'a str,
-    /// Signed event time.
-    pub event_time: &'a str,
-    /// Encoded event proof.
-    pub proof: &'a str,
-    /// Verification policy.
-    pub policy: &'a AuthorizationVerificationPolicy,
-    /// Context revocation time, when present.
-    pub revoked_at: Option<i64>,
+    /// Received publisher signature.
+    pub proof: &'a SessionEventProof,
+    /// Current clock and bounded authority policy.
+    pub policy: &'a SessionAuthorityVerificationPolicy,
+    /// Sticky retirement state; historical verification also requires a verified cutoff.
+    pub known_revoked: bool,
+    /// Authenticated catalog containing the exact publish action.
+    pub catalog: &'a SignedCatalogSnapshot,
+    /// Catalog signer authenticated through pinned issuer trust.
+    pub catalog_issuer: &'a AuthorityIssuerKey,
+    /// Registered event publish action.
+    pub action: &'a CatalogActionIdentity,
+    /// Original trusted broker metadata, mandatory for historical publisher authority.
+    pub original_publication: Option<&'a OriginalEventPublication>,
+    /// Exact issuer-signed implementation evidence, when the publisher is a provider.
+    pub provider: Option<(
+        &'a trellis_protocol::SignedProviderCertificate,
+        &'a AuthorityIssuerKey,
+    )>,
 }
 
 impl AuthorizationVerificationCore {
-    /// Create an empty local verification core.
+    /// Construct the stateless verifier; connected owners supply authenticated material.
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
-    /// Verify one context-bound request proof.
+    /// Authenticate exact bytes and project identity without granting an action.
+    /// Handler-authorized routes must separately check their payload-bound rights.
+    pub fn verify_possession(
+        &self,
+        authority: Arc<VerifiedSessionAuthority>,
+        request: &SessionRequest,
+        payload: &[u8],
+        proof: &SessionRequestProof,
+        policy: &SessionAuthorityVerificationPolicy,
+        known_revoked: bool,
+    ) -> Result<VerifiedAuthorizationRequest, AuthorizationVerificationError> {
+        let verified = verify_session_request(SessionRequestVerificationInput {
+            authority: &authority,
+            request,
+            raw_payload: payload,
+            proof,
+            policy,
+            known_revoked,
+        })?;
+        let caller = verified.caller();
+        let digest = *verified.digest();
+        Ok(VerifiedAuthorizationRequest {
+            authority,
+            caller,
+            request: request.clone(),
+            digest,
+            authorized_action: None,
+            handler_authorized: false,
+        })
+    }
+
+    /// Authenticate exact request bytes and check current whole-capability membership.
     pub fn verify_request(
         &self,
         input: RequestVerificationInput<'_>,
     ) -> Result<VerifiedAuthorizationRequest, AuthorizationVerificationError> {
-        let RequestVerificationInput {
-            context,
-            context_digest,
-            subject,
-            payload,
-            iat,
-            request_id,
-            reply_subject,
-            proof,
-            policy,
-            required_permissions,
-        } = input;
-        self.check_context_binding(context, context_digest)?;
-        let proof = AuthorizationRequestProof::parse(proof.to_owned())?;
-        let request = verify_authorization_request(AuthorizationRequestVerificationInput {
-            context,
-            subject,
-            reply_subject,
-            raw_payload: payload,
-            iat,
-            request_id,
-            proof: &proof,
-            policy,
-            required_permissions,
-        })?;
-        Ok(VerifiedAuthorizationRequest {
-            caller: project_caller(request.context()),
-            request,
-        })
+        let mut verified = self.verify_possession(
+            input.authority.clone(),
+            input.request,
+            input.payload,
+            input.proof,
+            input.policy,
+            input.known_revoked,
+        )?;
+        let body = input.authority.authority();
+        input.catalog.verify(
+            input.catalog_issuer,
+            &body.trellis_instance_id,
+            &body.audience_nats_account,
+        )?;
+        if input.request.api_id != input.catalog.api_id
+            || input.request.action != input.action.name
+            || !input
+                .catalog
+                .authorizes(input.authority.signed(), input.action)
+        {
+            return Err(AuthorizationVerificationError::PermissionDenied);
+        }
+        verified.authorized_action = Some(input.action.clone());
+        Ok(verified)
     }
 
-    /// Verify one context-bound event proof.
+    /// Authenticate live or historical event bytes and the exact publish capability.
+    /// Consumer read authorization is a separate operation against its current authority.
     pub fn verify_event(
         &self,
         input: EventVerificationInput<'_>,
     ) -> Result<VerifiedAuthorizationEvent, AuthorizationVerificationError> {
-        let EventVerificationInput {
-            context,
-            context_digest,
-            subject,
-            descriptor_identity,
-            payload,
-            event_id,
-            event_time,
-            proof,
-            policy,
-            revoked_at,
-        } = input;
-        self.check_context_binding(context, context_digest)?;
-        let proof = AuthorizationEventProof::parse(proof.to_owned())?;
-        let event = verify_authorization_event(AuthorizationEventVerificationInput {
-            context,
-            subject,
-            descriptor_identity,
-            raw_payload: payload,
-            event_id,
-            event_time,
-            proof: &proof,
-            policy,
-            revoked_at,
+        verify_session_event(SessionEventVerificationInput {
+            authority: &input.authority,
+            event: input.event,
+            raw_payload: input.payload,
+            proof: input.proof,
+            policy: input.policy,
+            original_publication: input.original_publication,
+            known_revoked: input.known_revoked,
         })?;
-        Ok(VerifiedAuthorizationEvent { event })
-    }
-
-    fn check_context_binding(
-        &self,
-        context: &VerifiedAuthorizationContext,
-        context_digest: &str,
-    ) -> Result<(), AuthorizationVerificationError> {
-        if context.context_digest() != context_digest {
-            return Err(AuthorizationVerificationError::ContextDigestMismatch);
+        let body = input.authority.authority();
+        input.catalog.verify(
+            input.catalog_issuer,
+            &body.trellis_instance_id,
+            &body.audience_nats_account,
+        )?;
+        let mut authorized = input
+            .catalog
+            .authorizes(input.authority.signed(), input.action);
+        if !authorized {
+            if let Some((certificate, issuer)) = input.provider {
+                let event_time = time::OffsetDateTime::parse(
+                    &input.event.event_time,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map_err(|_| AuthorizationVerificationError::PermissionDenied)?
+                .unix_timestamp();
+                authorized = certificate.authorizes_event_publication(
+                    issuer,
+                    input.authority.signed(),
+                    input.catalog,
+                    input.action,
+                    event_time,
+                )?;
+                if let Some(publication) = input.original_publication {
+                    let published = time::OffsetDateTime::parse(
+                        &publication.published_at,
+                        &time::format_description::well_known::Rfc3339,
+                    )
+                    .map_err(|_| AuthorizationVerificationError::PermissionDenied)?
+                    .unix_timestamp();
+                    authorized &= certificate.authorizes_event_publication(
+                        issuer,
+                        input.authority.signed(),
+                        input.catalog,
+                        input.action,
+                        published,
+                    )?;
+                }
+            }
         }
-        Ok(())
-    }
-}
-
-fn project_caller(context: &VerifiedAuthorizationContext) -> VerifiedCaller {
-    VerifiedCaller {
-        session_key: URL_SAFE_NO_PAD.encode(context.session_key()),
-        inbox_prefix: context.inbox_prefix().to_owned(),
-        context_digest: context.context_digest().to_owned(),
-        connection_id: context.connection_id().to_owned(),
-        login_session_id: context.login_session_id().map(ToOwned::to_owned),
-        principal_id: context.principal_id().to_owned(),
-        principal_kind: context.principal_kind(),
-        participant_id: context.participant_id().to_owned(),
-        platform_privileges: context.platform_privileges().to_vec(),
-        deployment_id: context.deployment_id().map(ToOwned::to_owned),
-        instance_id: context.instance_id().map(ToOwned::to_owned),
+        if input.event.api_id != input.catalog.api_id
+            || input.event.action != input.action.name
+            || input.action.kind != trellis_protocol::ApiSurfaceKind::Event
+            || input.action.direction != trellis_protocol::PermissionAction::Publish
+            || !authorized
+        {
+            return Err(AuthorizationVerificationError::PermissionDenied);
+        }
+        Ok(VerifiedAuthorizationEvent {
+            authority: input.authority,
+            event: input.event.clone(),
+            original_publication: input.original_publication.cloned(),
+        })
     }
 }

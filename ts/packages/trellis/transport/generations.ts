@@ -1,10 +1,6 @@
 import type { Authenticator, NatsConnection } from "@nats-io/nats-core";
 
-import {
-  admittedPolicyCovers,
-  type OwnAdmission,
-  readOwnAdmission,
-} from "../auth/authorization/transport_state.ts";
+import { admittedPolicyCovers } from "../auth/authorization/transport_state.ts";
 import {
   classifyTransportAuthorizationWasm,
   transportAuthorizationDigestWasm,
@@ -42,8 +38,7 @@ export type TransportGenerationDisposal = {
  * the existing `closed()` result, never as a new public status surface. @internal
  */
 export type TransportTerminalResult =
-  | { kind: "closed" }
-  | { kind: "failure"; error: Error };
+  { kind: "closed" } | { kind: "failure"; error: Error };
 
 /**
  * Bounded reason one generation was opened, promoted, or retired.
@@ -91,15 +86,25 @@ export type TransportGenerationConnect = {
 };
 
 /**
- * One prepared generation: the exact context digest it will CONNECT with, the
- * signed policy that supplies its immutable admitted authority, and the CONNECT
- * bundle itself.
+ * One frozen CONNECT bundle and desired policy. A known context digest remains
+ * exact; signed-admission CONNECT learns its context only from the verified reply.
  */
 export type TransportGenerationPrepared = {
-  readonly contextDigest: string;
+  readonly contextDigest?: string;
   readonly policy: TransportAuthorizationV1;
   readonly policyDigest: string;
   readonly connect: TransportGenerationConnect;
+};
+
+/** Issuer-authenticated policy for this exact proven physical attachment. */
+export type OwnAdmission = {
+  attachmentId: string;
+  contextDigest: string;
+  policy: TransportAuthorizationV1;
+  /** Fresh desired policy from the same signed admission reply, when CONNECT did not select a context digest. */
+  desiredPolicy?: TransportAuthorizationV1;
+  /** Recheck the original verified candidate immediately before publication. */
+  assertCurrent?(): void;
 };
 
 /** Immutable, original-operation-bound view of a private own candidate. @internal */
@@ -245,9 +250,7 @@ export class TransportGeneration {
    * generation is already retired, in which case the manager has taken over the
    * handle's cleanup and the owner must not add further resources. @internal
    */
-  readonly registerDisposal: (
-    handle: TransportGenerationDisposal,
-  ) => boolean;
+  readonly registerDisposal: (handle: TransportGenerationDisposal) => boolean;
 
   /** @internal */
   constructor(args: {
@@ -351,8 +354,8 @@ export type TransportGenerationManagerOptions = {
   prepare(): Promise<TransportGenerationPrepared | undefined>;
   /** Open one physical NATS connection with the frozen CONNECT bundle. */
   open(connect: TransportGenerationConnect): Promise<NatsConnection>;
-  /** Bounded own-admission read; defaults to the broker `$SYS` read. */
-  readAdmission?(nc: NatsConnection): Promise<OwnAdmission | undefined>;
+  /** Signed own-admission lookup; unsigned broker diagnostics cannot authorize a generation. */
+  readAdmission(nc: NatsConnection): Promise<OwnAdmission | undefined>;
   admissionTimeoutMs?: number;
   /**
    * Bound on one candidate CONNECT attempt. A physical connect can keep
@@ -529,6 +532,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     const generation = this.#createGeneration(nc, admission!, prepared);
     try {
       await this.#options.onPreActivate?.(generation);
+      admission?.assertCurrent?.();
     } catch (error) {
       // Owner cleanup is already pushed into the generation's registration;
       // the connect caller owns this failed logical connection and force-closes
@@ -553,8 +557,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   currentNats(): NatsConnection {
     const current = this.#currentGeneration();
     if (current) return current.nc;
-    const ready = this.#readyGenerations().filter((generation) =>
-      !this.#parked.has(generation.id)
+    const ready = this.#readyGenerations().filter(
+      (generation) => !this.#parked.has(generation.id),
     );
     const fallback = ready[ready.length - 1];
     if (fallback) return fallback.nc;
@@ -667,7 +671,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     ) {
       return undefined;
     }
-    if (!await this.#safeUnder(generation, desired)) return undefined;
+    if (!(await this.#safeUnder(generation, desired))) return undefined;
     // Synchronous revalidation: no await separates this comparison from the
     // lease, so a promotion or loss during classification cannot yield a stale
     // lease. The clock is re-read because the deadline may have crossed.
@@ -701,17 +705,20 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     if (!authorizationUnexpired(installed, this.#options.nowSeconds())) {
       return undefined;
     }
-    if (!await this.#safeUnder(generation, installed)) return undefined;
+    if (!(await this.#safeUnder(generation, installed))) return undefined;
     this.#throwIfClosed();
     if (
-      !originCurrent() || this.#publishedCurrentGeneration() !== generation ||
-      generation.disposalStarted || this.#parked.has(generation.id) ||
+      !originCurrent() ||
+      this.#publishedCurrentGeneration() !== generation ||
+      generation.disposalStarted ||
+      this.#parked.has(generation.id) ||
       !authorizationUnexpired(installed, this.#options.nowSeconds()) ||
       !authorizationUnexpired(
         generation.admittedPolicy,
         this.#options.nowSeconds(),
       )
-    ) return undefined;
+    )
+      return undefined;
     const lease = generation.lease();
     return { ...lease, generationId: generation.id };
   }
@@ -728,8 +735,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   async prepareOwnCoverage(
     candidate: TransportOwnCoverageCandidate,
     prepareConnect: () =>
-      | TransportGenerationPrepared
-      | Promise<TransportGenerationPrepared>,
+      TransportGenerationPrepared | Promise<TransportGenerationPrepared>,
     opts?: TransportAcquireOptions,
   ): Promise<TransportOwnCoveragePreparation> {
     let ended = false;
@@ -752,9 +758,12 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         return false;
       }
       this.#assertNotAborted(opts);
-      return Number.isFinite(now) && now >= candidate.notBefore &&
+      return (
+        Number.isFinite(now) &&
+        now >= candidate.notBefore &&
         now < candidate.expiresAt &&
-        authorizationUnexpired(candidate.policy, now);
+        authorizationUnexpired(candidate.policy, now)
+      );
     };
     const releaseOpening = () => {
       if (!openingTask) return;
@@ -789,15 +798,18 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       pin = undefined;
       // Close a provisional socket immediately, never wait for its admission
       // request (which can be held by the broker) to finish.
-      cleanup = provisional && socket
-        ? Promise.resolve().then(() => socket!.close()).catch(() => undefined)
-        : Promise.resolve();
+      cleanup =
+        provisional && socket
+          ? Promise.resolve()
+              .then(() => socket!.close())
+              .catch(() => undefined)
+          : Promise.resolve();
       try {
         if (provisional && generation) {
           const retirement = this.#closeGeneration(generation, "logical_close");
           if (retirement) {
-            cleanup = Promise.allSettled([cleanup, retirement]).then(() =>
-              undefined
+            cleanup = Promise.allSettled([cleanup, retirement]).then(
+              () => undefined,
             );
           }
         }
@@ -831,20 +843,21 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       const now = candidate.nowSeconds();
       if (!valid(now)) return false;
       if (
-        target.state === "closed" || !target.ready || target.nc.isClosed() ||
-        target.disposalStarted || this.#parked.has(target.id) ||
+        target.state === "closed" ||
+        !target.ready ||
+        target.nc.isClosed() ||
+        target.disposalStarted ||
+        this.#parked.has(target.id) ||
         (physicalConnectionId !== undefined &&
           target.physicalConnectionId !== physicalConnectionId)
-      ) return false;
+      )
+        return false;
       if (provisional) {
         if (this.#adoptionTask !== openingTask) return false;
         if (target.contextDigest !== candidate.contextDigest) return false;
         if (this.#generations.includes(target)) return false;
       } else if (!this.#generations.includes(target)) return false;
-      return authorizationUnexpired(
-        target.admittedPolicy,
-        now,
-      );
+      return authorizationUnexpired(target.admittedPolicy, now);
     };
     const borrow = async (): Promise<TransportGeneration | undefined> => {
       const current = this.#currentGeneration();
@@ -852,11 +865,13 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       if (current) targets.unshift(current);
       for (const target of new Set(targets)) {
         if (!usable(target)) continue;
-        const relation = await wait(classifyTransportAuthorizationWasm(
-          target.admittedPolicy,
-          candidate.policy,
-          candidate.nowSeconds(),
-        ));
+        const relation = await wait(
+          classifyTransportAuthorizationWasm(
+            target.admittedPolicy,
+            candidate.policy,
+            candidate.nowSeconds(),
+          ),
+        );
         if (relation === "reduction_required" || !usable(target)) continue;
         // No await between original-instance/window/physical fence and pin.
         pin = target.lease();
@@ -871,9 +886,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     // including while registry warming is awaiting a withheld response.
     const timer = setInterval(() => {
       try {
-        if (
-          !(generation ? usable(generation) : valid()) || socket?.isClosed()
-        ) abort();
+        if (!(generation ? usable(generation) : valid()) || socket?.isClosed())
+          abort();
       } catch {
         abort();
       }
@@ -903,8 +917,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
           );
           if (
             prepared.contextDigest !== candidate.contextDigest ||
-            prepared.policyDigest !== digest || preparedDigest !== digest
-          ) throw transportUnavailableError();
+            prepared.policyDigest !== digest ||
+            preparedDigest !== digest
+          )
+            throw transportUnavailableError();
           // Routing freshness is a CONNECT condition only, not a carrier or
           // post-CONNECT coverage lifetime condition.
           const connectNow = candidate.nowSeconds();
@@ -916,10 +932,14 @@ export class TransportGenerationManager implements TrellisTransportProvider {
             prepared.connect,
             openingAbort.signal,
           );
-          void pending.then((nc) => {
-            if (ended) void Promise.resolve(nc.close()).catch(() => undefined);
-            else socket = nc;
-          }, () => undefined);
+          void pending.then(
+            (nc) => {
+              if (ended)
+                void Promise.resolve(nc.close()).catch(() => undefined);
+              else socket = nc;
+            },
+            () => undefined,
+          );
           socket = await wait(pending);
           // Observe physical loss from socket creation, even while the exact
           // admission read or registry warming is pending. No intake is added.
@@ -1046,7 +1066,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     ) {
       return false;
     }
-    if (!await this.#safeUnder(generation, desired)) return false;
+    if (!(await this.#safeUnder(generation, desired))) return false;
     // Synchronous final fence: nothing can interleave between this comparison
     // and the callback.
     if (this.#closed) throw transportClosedError();
@@ -1085,8 +1105,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         this.#throwIfClosed();
         if (
           this.#options.desiredPolicy() === desired &&
-          generation.state !== "closed" && generation.ready &&
-          !generation.nc.isClosed() && !generation.disposalStarted &&
+          generation.state !== "closed" &&
+          generation.ready &&
+          !generation.nc.isClosed() &&
+          !generation.disposalStarted &&
           !this.#parked.has(generation.id) &&
           authorizationUnexpired(
             generation.admittedPolicy,
@@ -1129,8 +1151,11 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         if (this.#options.desiredPolicy() !== desired) continue;
         if (this.#currentGeneration() !== current) continue;
         if (
-          safe && current.state !== "closed" && current.ready &&
-          !current.nc.isClosed() && !current.disposalStarted &&
+          safe &&
+          current.state !== "closed" &&
+          current.ready &&
+          !current.nc.isClosed() &&
+          !current.disposalStarted &&
           !this.#parked.has(current.id) &&
           authorizationUnexpired(
             current.admittedPolicy,
@@ -1237,10 +1262,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     const generation = new TransportGeneration({
       id: ++this.#nextId,
       nc,
-      contextDigest: prepared.contextDigest,
+      contextDigest: admission.contextDigest,
       admittedPolicy: prepared.policy,
       admittedPolicyDigest: prepared.policyDigest,
-      physicalConnectionId: admission.authenticatedUser,
+      physicalConnectionId: admission.attachmentId,
       state: "draining",
       createdAtSeconds,
       onLeaseReleased: () => this.#onLeaseReleased(generation),
@@ -1277,13 +1302,16 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         while (true) {
           const next = await iterator.next();
           if (next.done) return;
-          const event = next.value as
-            | { type?: unknown; isAuthError?: () => boolean }
-            | null;
+          const event = next.value as {
+            type?: unknown;
+            isAuthError?: () => boolean;
+          } | null;
           const type = event?.type;
           if (
-            type === "disconnect" || type === "reconnecting" ||
-            type === "staleConnection" || type === "forceReconnect"
+            type === "disconnect" ||
+            type === "reconnecting" ||
+            type === "staleConnection" ||
+            type === "forceReconnect"
           ) {
             this.#markUnavailable(generation);
           } else if (type === "reconnect") {
@@ -1310,10 +1338,16 @@ export class TransportGenerationManager implements TrellisTransportProvider {
    */
   async #reverifyReconnect(generation: TransportGeneration): Promise<void> {
     if (this.#closed || this.#isGenerationClosed(generation)) return;
-    const admission = await this.#readAdmission(generation.nc);
+    let admission: OwnAdmission | undefined;
+    try {
+      admission = await this.#readAdmission(generation.nc);
+    } catch {
+      this.#closeGeneration(generation, "recovery");
+      return;
+    }
     if (this.#closed || this.#isGenerationClosed(generation)) return;
     if (admission?.contextDigest === generation.contextDigest) {
-      generation.physicalConnectionId = admission.authenticatedUser;
+      generation.physicalConnectionId = admission.attachmentId;
       this.#setReady(generation, true);
     } else {
       this.#closeGeneration(generation, "recovery");
@@ -1357,8 +1391,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
    */
   #handleCurrentUnavailable(recoverFromLoss: boolean): void {
     if (this.#closed) return;
-    const survivor = this.#readyGenerations().some((generation) =>
-      generation.ready
+    const survivor = this.#readyGenerations().some(
+      (generation) => generation.ready,
     );
     if (survivor) {
       this.#holdCarriersForUnusableAuthority();
@@ -1402,15 +1436,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     }
   }
 
-  async #readAdmission(
-    nc: NatsConnection,
-  ): Promise<OwnAdmission | undefined> {
-    const read = this.#options.readAdmission;
-    if (read) return await read(nc);
-    return await readOwnAdmission(
-      nc,
-      this.#options.admissionTimeoutMs ?? 5_000,
-    );
+  async #readAdmission(nc: NatsConnection): Promise<OwnAdmission | undefined> {
+    return await this.#options.readAdmission(nc);
   }
 
   #currentGeneration(): TransportGeneration | undefined {
@@ -1457,8 +1484,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     const published = this.#currentId;
     const generation = this.#currentGeneration();
     if (
-      generation === undefined || generation.id !== published ||
-      generation.state !== "current" || !generation.ready ||
+      generation === undefined ||
+      generation.id !== published ||
+      generation.state !== "current" ||
+      !generation.ready ||
       generation.nc.isClosed()
     ) {
       return undefined;
@@ -1480,7 +1509,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     if (this.#currentId !== generation.id) return false;
     if (this.#currentGeneration() !== generation) return false;
     if (
-      generation.state !== "current" || !generation.ready ||
+      generation.state !== "current" ||
+      !generation.ready ||
       generation.nc.isClosed()
     ) {
       return false;
@@ -1493,8 +1523,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   }
 
   #readyGenerations(): TransportGeneration[] {
-    return this.#generations.filter((generation) =>
-      !this.#isGenerationClosed(generation)
+    return this.#generations.filter(
+      (generation) => !this.#isGenerationClosed(generation),
     );
   }
 
@@ -1524,7 +1554,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       // Never lease a generation carrying authority current authorization no
       // longer covers; reduction retires it, and server enforcement is
       // authoritative until then.
-      if (!await this.#safeUnder(generation, desired)) continue;
+      if (!(await this.#safeUnder(generation, desired))) continue;
       const covers = await admittedPolicyCovers(
         generation.admittedPolicy,
         requirement,
@@ -1544,7 +1574,9 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     reason: TransportGenerationReason,
   ): void {
     if (
-      this.#closed || this.#isGenerationClosed(generation) || !generation.ready
+      this.#closed ||
+      this.#isGenerationClosed(generation) ||
+      !generation.ready
     ) {
       this.#closeGeneration(generation, "logical_close");
       return;
@@ -1691,26 +1723,28 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       );
       this.#finalizeRetired(generation, reason);
       closed = true;
-    })().catch((error) => {
-      aborted = true;
-      this.#log.warn(
-        { error, generationId: generation.id },
-        "transport generation reaping failed",
-      );
-      // A reaping failure still leaves the generation unusable; finish its
-      // physical teardown rather than leaking a half-retired generation.
-      this.#finalizeRetired(generation, reason);
-      closed = true;
-    }).finally(() => {
-      this.#reaping.delete(generation.id);
-      this.#reapCancels.delete(generation.id);
-      this.#reapTasks.delete(generation.id);
-      // Only a finalized generation closes its socket; an aborted reap belongs
-      // to a generation that was reinstated and stays open.
-      if (closed && !this.#closed) {
-        void Promise.resolve(generation.nc.close()).catch(() => undefined);
-      }
-    });
+    })()
+      .catch((error) => {
+        aborted = true;
+        this.#log.warn(
+          { error, generationId: generation.id },
+          "transport generation reaping failed",
+        );
+        // A reaping failure still leaves the generation unusable; finish its
+        // physical teardown rather than leaking a half-retired generation.
+        this.#finalizeRetired(generation, reason);
+        closed = true;
+      })
+      .finally(() => {
+        this.#reaping.delete(generation.id);
+        this.#reapCancels.delete(generation.id);
+        this.#reapTasks.delete(generation.id);
+        // Only a finalized generation closes its socket; an aborted reap belongs
+        // to a generation that was reinstated and stays open.
+        if (closed && !this.#closed) {
+          void Promise.resolve(generation.nc.close()).catch(() => undefined);
+        }
+      });
     this.#reapTasks.set(generation.id, task);
   }
 
@@ -1737,18 +1771,21 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     this.#reapCancels.get(generation.id)?.();
     if (task) await task;
     if (
-      this.#closed || this.#isGenerationClosed(generation) ||
+      this.#closed ||
+      this.#isGenerationClosed(generation) ||
       generation.disposalStarted
-    ) return false;
+    )
+      return false;
     try {
       await this.#options.onPreActivate?.(generation);
       return true;
     } catch (error) {
       this.#log.warn(
         {
-          error: error instanceof Error
-            ? { name: error.name, message: error.message }
-            : String(error),
+          error:
+            error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
           generationId: generation.id,
         },
         "transport survivor intake reinstall failed",
@@ -1820,7 +1857,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     // never be republished and must not pin resources; force-close rather than
     // hold or hand it to the graceful path.
     if (
-      generation.disposalStarted || !generation.ready ||
+      generation.disposalStarted ||
+      !generation.ready ||
       generation.nc.isClosed() ||
       !authorizationUnexpired(
         generation.admittedPolicy,
@@ -1860,8 +1898,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         "transport generation retirement failed",
       );
     } finally {
-      this.#generations = this.#generations.filter((candidate) =>
-        candidate !== generation
+      this.#generations = this.#generations.filter(
+        (candidate) => candidate !== generation,
       );
       this.#reapTasks.delete(generation.id);
       this.#reapCancels.delete(generation.id);
@@ -1882,8 +1920,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     generation.ready = false;
     generation.markClosed(this.#options.nowSeconds());
     if (this.#currentId === generation.id) this.#setCurrent(undefined);
-    this.#generations = this.#generations.filter((candidate) =>
-      candidate !== generation
+    this.#generations = this.#generations.filter(
+      (candidate) => candidate !== generation,
     );
     this.#reapTasks.delete(generation.id);
     this.#reapCancels.delete(generation.id);
@@ -1911,7 +1949,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     handle: TransportGenerationDisposal,
   ): boolean {
     if (
-      this.#closed || generation.state === "closed" ||
+      this.#closed ||
+      generation.state === "closed" ||
       generation.disposalStarted
     ) {
       this.#trackLateCleanup(generation.id, handle);
@@ -1924,19 +1963,17 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   }
 
   /** Run and observe a late owner cleanup, reporting failure without dropping it. */
-  #trackLateCleanup(
-    id: number,
-    handle: TransportGenerationDisposal,
-  ): void {
+  #trackLateCleanup(id: number, handle: TransportGenerationDisposal): void {
     const task = (async () => {
       try {
         await handle.dispose();
       } catch (error) {
         this.#log.warn(
           {
-            error: error instanceof Error
-              ? { name: error.name, message: error.message }
-              : String(error),
+            error:
+              error instanceof Error
+                ? { name: error.name, message: error.message }
+                : String(error),
             generationId: id,
           },
           "transport late owner cleanup failed",
@@ -1993,17 +2030,19 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     // Requesting adoption is not itself a state change: notifying here would
     // wake every waiter into a no-op re-request loop.
     if (!this.#initialized || this.#adoptionTask) return;
-    const task = this.#runAdoption().catch((error) => {
-      this.#log.warn(
-        { error },
-        "transport generation adoption failed unexpectedly",
-      );
-    }).finally(() => {
-      if (this.#adoptionTask === task) this.#adoptionTask = undefined;
-      if (this.#adoptionRequested && !this.#closed) {
-        this.#requestAdoption(reason);
-      }
-    });
+    const task = this.#runAdoption()
+      .catch((error) => {
+        this.#log.warn(
+          { error },
+          "transport generation adoption failed unexpectedly",
+        );
+      })
+      .finally(() => {
+        if (this.#adoptionTask === task) this.#adoptionTask = undefined;
+        if (this.#adoptionRequested && !this.#closed) {
+          this.#requestAdoption(reason);
+        }
+      });
     this.#adoptionTask = task;
   }
 
@@ -2036,7 +2075,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       // Reduction is hard: retire any generation current authority no longer
       // covers before considering a replacement.
       for (const generation of this.#readyGenerations()) {
-        if (!await this.#safeUnder(generation, desired)) {
+        if (!(await this.#safeUnder(generation, desired))) {
           // Post-await fence: the verdict is only acted on while the exact
           // desired policy captured for this pass is still installed. A
           // superseding or withdrawn policy (including absent authority, which
@@ -2059,7 +2098,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       }
       // Keep a current generation that already serves the newest desired policy.
       const current = this.#currentGeneration();
-      if (current?.ready && await this.#policyEqual(current, desired)) {
+      if (current?.ready && (await this.#policyEqual(current, desired))) {
         // The default is kept and authority is usable again: a carrier that was
         // held while authority was unavailable has no reason to stay pinned to
         // hard expiry. The settled current is excluded so a restart cannot race
@@ -2072,7 +2111,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       let reused: TransportGeneration | undefined;
       for (const generation of this.#readyGenerations()) {
         if (failedRestorations.has(generation.id)) continue;
-        if (generation.ready && await this.#policyEqual(generation, desired)) {
+        if (
+          generation.ready &&
+          (await this.#policyEqual(generation, desired))
+        ) {
           reused = generation;
           break;
         }
@@ -2117,8 +2159,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       // socket would be unowned) is never opened.
       if (!current?.ready) {
         let survivor: TransportGeneration | undefined;
-        const ready = this.#readyGenerations().filter((generation) =>
-          generation.ready
+        const ready = this.#readyGenerations().filter(
+          (generation) => generation.ready,
         );
         for (let i = ready.length - 1; i >= 0; i -= 1) {
           if (failedRestorations.has(ready[i].id)) continue;
@@ -2182,12 +2224,13 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     const current = this.#currentGeneration();
     if (!current?.ready) return;
     if (this.#options.desiredPolicy() !== desired) return;
-    const held = this.#generations.filter((generation) =>
-      generation !== current &&
-      generation.state === "draining" &&
-      generation.ready &&
-      !generation.disposalStarted &&
-      !generation.nc.isClosed()
+    const held = this.#generations.filter(
+      (generation) =>
+        generation !== current &&
+        generation.state === "draining" &&
+        generation.ready &&
+        !generation.disposalStarted &&
+        !generation.nc.isClosed(),
     );
     for (const generation of held) {
       if (this.#closed) return;
@@ -2305,7 +2348,21 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     }
     try {
       const admission = await this.#readAdmission(nc);
+      if (!admission) throw transportClosedError();
       assertExactAdmission(admission, prepared);
+      const admittedDigest = await this.#policyDigest(admission.policy);
+      const signedDesired =
+        prepared.contextDigest === undefined
+          ? admission.desiredPolicy
+          : undefined;
+      const expectedDigest = signedDesired
+        ? await this.#policyDigest(signedDesired)
+        : prepared.policyDigest;
+      if (admittedDigest !== expectedDigest) {
+        await Promise.resolve(nc.close()).catch(() => undefined);
+        this.#adoptionRequested = true;
+        return;
+      }
       // Only the newest desired policy is worth publishing. The identity check
       // is synchronous and runs after every await, so an obsolete candidate is
       // never activated.
@@ -2320,7 +2377,17 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         reason: this.#lastReason,
         outcome: "ok",
       });
-      const generation = this.#createGeneration(nc, admission!, prepared);
+      const generation = this.#createGeneration(
+        nc,
+        admission!,
+        signedDesired
+          ? {
+              ...prepared,
+              policy: admission.policy,
+              policyDigest: admittedDigest,
+            }
+          : prepared,
+      );
       const desiredSnapshot = desired;
       // Install before activation: routing exists before the generation can be
       // selected as the default. A partial install retains whatever intake it
@@ -2352,12 +2419,20 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       // is never published.
       const latestDigest = await this.#latestDesiredDigest();
       if (
-        this.#closed || this.#isGenerationClosed(generation) ||
+        this.#closed ||
+        this.#isGenerationClosed(generation) ||
         this.#options.desiredPolicy() !== desiredSnapshot ||
         latestDigest !== prepared.policyDigest
       ) {
         // The candidate was superseded by a newer authorization while it was
         // unpublished; it did not become the default.
+        await this.#rejectCandidate(generation, "authorization_growth");
+        if (!this.#closed) this.#adoptionRequested = true;
+        return;
+      }
+      try {
+        admission.assertCurrent?.();
+      } catch {
         await this.#rejectCandidate(generation, "authorization_growth");
         if (!this.#closed) this.#adoptionRequested = true;
         return;
@@ -2492,9 +2567,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     // With no caller deadline, a failed-adoption retry window still bounds the
     // wait: it resolves (rather than times out) so the caller re-evaluates the
     // next bounded attempt instead of waiting forever or spinning.
-    const retryAtMs = deadlineMs === undefined
-      ? this.#failure?.nextRetryAtMs
-      : undefined;
+    const retryAtMs =
+      deadlineMs === undefined ? this.#failure?.nextRetryAtMs : undefined;
     if (!signal && deadlineMs === undefined && retryAtMs === undefined) {
       return this.#nextChange();
     }
@@ -2574,7 +2648,11 @@ function assertExactAdmission(
       prepared.contextDigest,
     );
   }
-  if (admission.contextDigest === undefined) {
+  if (
+    !admission.contextDigest ||
+    !admission.attachmentId ||
+    (prepared.contextDigest === undefined && !admission.assertCurrent)
+  ) {
     throw admissionError(
       "trellis.transport.admission_malformed",
       "The broker reported a malformed Trellis admission marker.",
@@ -2582,7 +2660,10 @@ function assertExactAdmission(
       prepared.contextDigest,
     );
   }
-  if (admission.contextDigest !== prepared.contextDigest) {
+  if (
+    prepared.contextDigest !== undefined &&
+    admission.contextDigest !== prepared.contextDigest
+  ) {
     throw admissionError(
       "trellis.transport.admission_mismatch",
       "The broker admitted a different authorization context than the one this connection opened with.",
@@ -2596,7 +2677,7 @@ function admissionError(
   code: string,
   message: string,
   hint: string,
-  contextDigest: string,
+  contextDigest: string | undefined,
 ): TransportError {
   return new TransportError({
     code,
@@ -2633,8 +2714,7 @@ function transportTimeoutError(): TransportError {
     code: "trellis.transport.timeout",
     message:
       "The Trellis runtime did not establish the required transport authority in time.",
-    hint:
-      "Retry the operation. If it keeps failing, check Trellis runtime health.",
+    hint: "Retry the operation. If it keeps failing, check Trellis runtime health.",
   });
 }
 

@@ -37,7 +37,6 @@ import type {
   TrellisTestClientKey,
   TrellisTestClientParticipant,
   TrellisTestConnectedClient,
-  TrellisTestParticipantApplyResult,
   TrellisTestParticipantApproval,
   TrellisTestParticipantLike,
   TrellisTestRuntimeStartOptions,
@@ -108,7 +107,9 @@ async function runBootstrapCommand(
   const timeout = setTimeout(() => {
     try {
       child.kill("SIGKILL");
-    } catch { /* already exited */ }
+    } catch {
+      /* already exited */
+    }
   }, timeoutMs);
   try {
     if (input !== undefined) {
@@ -119,9 +120,9 @@ async function runBootstrapCommand(
     const result = await output;
     if (!result.success) {
       throw new Error(
-        `Production bootstrap failed (exit ${result.code}): ${
-          new TextDecoder().decode(result.stderr).slice(-8192)
-        }`,
+        `Production bootstrap failed (exit ${result.code}): ${new TextDecoder()
+          .decode(result.stderr)
+          .slice(-8192)}`,
       );
     }
     return result.stdout;
@@ -129,7 +130,9 @@ async function runBootstrapCommand(
     clearTimeout(timeout);
     try {
       child.kill("SIGTERM");
-    } catch { /* already exited */ }
+    } catch {
+      /* already exited */
+    }
     await output.catch(() => undefined);
   }
 }
@@ -269,9 +272,10 @@ export class TcpProxy {
       connectionId = this.#gate?.connectionOpened(toClient);
       // Only the gate-enabled path needs protocol framing; without a gate the
       // pump forwards raw bytes so binary payloads are never held or reframed.
-      const gating = this.#gate !== undefined && connectionId !== undefined
-        ? { gate: this.#gate, connectionId }
-        : undefined;
+      const gating =
+        this.#gate !== undefined && connectionId !== undefined
+          ? { gate: this.#gate, connectionId }
+          : undefined;
       clientReader = client.readable.getReader();
       upstreamReader = upstream.readable.getReader();
       pumps.push(
@@ -382,34 +386,19 @@ export class TrellisTestRuntime implements AsyncDisposable {
   /** Local test-admin password configured for this runtime. */
   readonly adminPassword: string;
   readonly deployments: {
-    create(
-      args: {
-        id?: string;
-        kind?: "service" | "device";
-        reviewMode?: "none" | "required";
-      },
-    ): Promise<void>;
+    create(args: {
+      id?: string;
+      contract: TrellisTestParticipantLike;
+    }): Promise<void>;
   };
   readonly contracts: {
-    apply(
-      args: {
-        deployment?: string;
-        contract: TrellisTestParticipantLike;
-      },
-    ): Promise<TrellisTestParticipantApproval>;
-    install(
-      args: { contract: TrellisTestParticipantLike },
-    ): Promise<TrellisTestParticipantApproval>;
-    requestApply(
-      args: { deployment?: string; contract: TrellisTestParticipantLike },
-    ): Promise<TrellisTestParticipantApplyResult>;
-    approveApply(
-      pendingId: string,
-      opts?: {
-        excludeResources?: readonly string[];
-        excludeCapabilities?: readonly string[];
-      },
-    ): Promise<TrellisTestParticipantApproval>;
+    apply(args: {
+      deployment?: string;
+      contract: TrellisTestParticipantLike;
+    }): Promise<TrellisTestParticipantApproval>;
+    install(args: {
+      contract: TrellisTestParticipantLike;
+    }): Promise<TrellisTestParticipantApproval>;
   };
   readonly services: {
     createInstance(args: {
@@ -417,12 +406,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
       name: string;
       contract: TrellisTestParticipantLike;
     }): Promise<TrellisTestServiceKey>;
-    provisionInstanceOnly(
-      args: { deployment?: string },
-    ): Promise<{ seed: string; sessionKey: string }>;
+    provisionInstanceOnly(args: {
+      deployment?: string;
+    }): Promise<{ seed: string; sessionKey: string }>;
     disableInstance(
-      input:
-        import("../trellis/index.js").apis.auth.ServiceInstancesDisableInput,
+      input: import("../trellis/index.js").apis.auth.ServiceInstancesDisableInput,
     ): Promise<
       import("../trellis/index.js").apis.auth.ServiceInstancesDisableOutput
     >;
@@ -430,9 +418,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   readonly devices: {
     provision(
       input: import("../trellis/index.js").apis.auth.DevicesProvisionInput,
-    ): Promise<
-      import("../trellis/index.js").apis.auth.DevicesProvisionOutput
-    >;
+    ): Promise<import("../trellis/index.js").apis.auth.DevicesProvisionOutput>;
   };
   readonly state: {
     resourcesInspect(
@@ -483,10 +469,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
     method: M,
     input: AdminRpc[M]["input"],
   ): Promise<AdminRpc[M]["output"]> {
-    return await this.#admin.callAdminRpc(
+    return (await this.#admin.callAdminRpc(
       method,
       input,
-    ) as AdminRpc[M]["output"];
+    )) as AdminRpc[M]["output"];
   }
 
   /** Completes the first-administrator bootstrap through the harness automation. */
@@ -534,11 +520,10 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.#nativeGate = args.nativeGate;
     this.#admin = args.admin;
     this.deployments = {
-      create: ({ id, kind, reviewMode }) =>
+      create: ({ id, contract }) =>
         this.#admin.createDeployment({
           deployment: id ?? this.#deployment,
-          kind,
-          reviewMode,
+          contract,
         }),
     };
     this.contracts = {
@@ -548,13 +533,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
           contract,
         }),
       install: ({ contract }) => this.#admin.installParticipant({ contract }),
-      requestApply: ({ deployment, contract }) =>
-        this.#admin.requestParticipantApply({
-          deployment: deployment ?? this.#deployment,
-          contract,
-        }),
-      approveApply: (pendingId, opts) =>
-        this.#admin.approveParticipantApply(pendingId, opts),
     };
     this.services = {
       createInstance: ({ deployment, contract }) =>
@@ -588,7 +566,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   static async start(
     options: TrellisTestRuntimeStartOptions = {},
   ): Promise<TrellisTestRuntime> {
-    for (let attempt = 1;; attempt++) {
+    for (let attempt = 1; ; attempt++) {
       try {
         return await TrellisTestRuntime.#startOnce(options);
       } catch (error) {
@@ -630,15 +608,13 @@ export class TrellisTestRuntime implements AsyncDisposable {
       const environment = policy?.inherit === false ? {} : Deno.env.toObject();
       for (const name of policy?.unset ?? []) delete environment[name];
       Object.assign(environment, policy?.set);
-      for (
-        const [variable, directory] of Object.entries({
-          HOME: "home",
-          XDG_CONFIG_HOME: "config",
-          XDG_DATA_HOME: "data",
-          XDG_STATE_HOME: "state",
-          XDG_RUNTIME_DIR: "runtime",
-        })
-      ) {
+      for (const [variable, directory] of Object.entries({
+        HOME: "home",
+        XDG_CONFIG_HOME: "config",
+        XDG_DATA_HOME: "data",
+        XDG_STATE_HOME: "state",
+        XDG_RUNTIME_DIR: "runtime",
+      })) {
         const path = join(workdir, directory);
         await Deno.mkdir(path, { mode: 0o700 });
         environment[variable] = path;
@@ -655,9 +631,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
       for (let index = 0; index < 4; index++) {
         portLeases.push(reserveLocalPort());
       }
-      const [port, nativePort, monitorPort, websocketPort] = portLeases.map((
-        lease,
-      ) => lease.port);
+      const [port, nativePort, monitorPort, websocketPort] = portLeases.map(
+        (lease) => lease.port,
+      );
       const natsUrl = `nats://127.0.0.1:${nativePort}`;
       const websocketUrl = `ws://127.0.0.1:${websocketPort}`;
       const browserHost = options.browserHost;
@@ -708,12 +684,11 @@ export class TrellisTestRuntime implements AsyncDisposable {
       for (const origin of options.webOrigins ?? []) {
         initArgs.push("--extra-origin", origin);
       }
-      for (
-        const [surface, source] of [["web", options.webSource], [
-          "portal",
-          options.portalSource,
-        ], ["console", options.consoleSource]] as const
-      ) {
+      for (const [surface, source] of [
+        ["web", options.webSource],
+        ["portal", options.portalSource],
+        ["console", options.consoleSource],
+      ] as const) {
         if (source) {
           initArgs.push(
             `--${surface}-${"directory" in source ? "directory" : "proxy"}`,
@@ -721,32 +696,32 @@ export class TrellisTestRuntime implements AsyncDisposable {
           );
         }
       }
-      for (
-        const [flag, value] of [
-          ["platform-sessions-ttl-ms", options.ttlMs?.sessions],
-          ["platform-oauth-ttl-ms", options.ttlMs?.oauth],
-          ["platform-device-flow-ttl-ms", options.ttlMs?.deviceFlow],
-          ["platform-pending-auth-ttl-ms", options.ttlMs?.pendingAuth],
-          [
-            "auth-context-lifetime-seconds",
-            options.authorization?.contextLifetimeSeconds,
-          ],
-          [
-            "auth-refresh-lead-seconds",
-            options.authorization?.refreshLeadSeconds,
-          ],
-          [
-            "auth-refresh-jitter-seconds",
-            options.authorization?.refreshJitterSeconds,
-          ],
-          [
-            "auth-minimum-context-lifetime-seconds",
-            options.authorization?.minimumContextLifetimeSeconds,
-          ],
-        ] as const
-      ) if (value !== undefined) initArgs.push(`--${flag}`, String(value));
+      for (const [flag, value] of [
+        ["platform-sessions-ttl-ms", options.ttlMs?.sessions],
+        ["platform-oauth-ttl-ms", options.ttlMs?.oauth],
+        ["platform-device-flow-ttl-ms", options.ttlMs?.deviceFlow],
+        ["platform-pending-auth-ttl-ms", options.ttlMs?.pendingAuth],
+        [
+          "auth-context-lifetime-seconds",
+          options.authorization?.contextLifetimeSeconds,
+        ],
+        [
+          "auth-refresh-lead-seconds",
+          options.authorization?.refreshLeadSeconds,
+        ],
+        [
+          "auth-refresh-jitter-seconds",
+          options.authorization?.refreshJitterSeconds,
+        ],
+        [
+          "auth-minimum-context-lifetime-seconds",
+          options.authorization?.minimumContextLifetimeSeconds,
+        ],
+      ] as const)
+        if (value !== undefined) initArgs.push(`--${flag}`, String(value));
       if (
-        options.oauthProviders && Object.keys(options.oauthProviders).length
+        options.oauthProviders &&
+        Object.keys(options.oauthProviders).length
       ) {
         const inputPath = join(workdir, "config", "oauth-providers.json");
         await Deno.writeTextFile(
@@ -762,13 +737,15 @@ export class TrellisTestRuntime implements AsyncDisposable {
         environment,
         timeouts.startupMs,
       );
-      const bootstrap = z.object({
-        trellisConfig: z.string(),
-        trellisRuntimeCreds: z.string(),
-      }).parse(JSON.parse(new TextDecoder().decode(output)));
+      const bootstrap = z
+        .object({
+          trellisConfig: z.string(),
+          trellisRuntimeCreds: z.string(),
+        })
+        .parse(JSON.parse(new TextDecoder().decode(output)));
       environment.TRELLIS_CONFIG = bootstrap.trellisConfig;
-      const adminPassword = options.adminPassword ??
-        `trellis-testkit-${crypto.randomUUID()}`;
+      const adminPassword =
+        options.adminPassword ?? `trellis-testkit-${crypto.randomUUID()}`;
       const seeded = (options.firstAdmin ?? "seeded") === "seeded";
       if (seeded) {
         await runBootstrapCommand(
@@ -925,9 +902,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   }
 
   /** Connects an app/client via generated APIs, waiting for required startup resources. */
-  async connectClient<
-    TContract extends TrellisTestClientParticipant,
-  >(
+  async connectClient<TContract extends TrellisTestClientParticipant>(
     args: ClientOpts & {
       name: string;
       contract: TContract;
@@ -940,32 +915,37 @@ export class TrellisTestRuntime implements AsyncDisposable {
     let staleAttempts = 0;
     while (!client) {
       try {
-        client = await TrellisClient.connect({
+        client = (await TrellisClient.connect({
           ...args,
           trellisUrl: this.trellisUrl,
           participant: args.contract,
           auth: auth.auth,
           onAuthRequired: auth.onAuthRequired,
-        }).orThrow() as TrellisTestConnectedClient<TContract>;
+        }).orThrow()) as TrellisTestConnectedClient<TContract>;
         break;
       } catch (error) {
         let cause = error;
         while (
-          typeof cause === "object" && cause !== null && "cause" in cause &&
+          typeof cause === "object" &&
+          cause !== null &&
+          "cause" in cause &&
           cause.cause !== undefined
-        ) cause = cause.cause;
+        )
+          cause = cause.cause;
         if (
-          typeof cause === "object" && cause !== null &&
-          "status" in cause && "code" in cause &&
+          typeof cause === "object" &&
+          cause !== null &&
+          "status" in cause &&
+          "code" in cause &&
           cause.status === 409 &&
           [
             "authority_changed",
             "consent_decision_stale",
             "consent_view_changed",
-          ]
-            .includes(String(cause.code)) &&
+          ].includes(String(cause.code)) &&
           staleAttempts++ < 2
-        ) continue;
+        )
+          continue;
         throw error;
       }
     }
@@ -982,11 +962,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   /** Polls until `fn` returns a truthy value. */
   waitFor<T>(
     fn: () =>
-      | T
-      | null
-      | undefined
-      | false
-      | Promise<T | null | undefined | false>,
+      T | null | undefined | false | Promise<T | null | undefined | false>,
     opts?: WaitForOptions,
   ): Promise<T> {
     return waitForHelper(fn, {
@@ -1115,9 +1091,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
 
   /** Replaces the browser WebSocket endpoint and retires the prior listener. */
   async rotateWebsocketProxy(): Promise<[string, string]> {
-    if (
-      this.#websocketProxy === undefined
-    ) {
+    if (this.#websocketProxy === undefined) {
       throw new Error("Runtime was not started with rotatableWebsocketProxy");
     }
     const retired = this.#websocketProxy;

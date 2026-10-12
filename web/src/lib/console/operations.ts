@@ -15,20 +15,13 @@
 
 import { apis } from "trellis-web-generated";
 
-import {
-  type Authority,
-  hasExactPermission,
-  PLATFORM_ADMIN,
-} from "../control-panel.ts";
+import { type Authority, hasExactPermission } from "../control-panel.ts";
 
 /** API surface families that can appear in a generated permission atom. */
 export type OperationSurface = "rpc" | "feed" | "event";
 
 /** Exact interaction required for one surface family. */
-export type OperationAction =
-  | "call"
-  | "subscribe"
-  | "publish";
+export type OperationAction = "call" | "subscribe" | "publish";
 
 /** One exact generated API interaction. */
 export type ConsoleOperation = {
@@ -44,15 +37,16 @@ export type ConsoleOperation = {
   readonly privilege?: string;
 };
 
-const AUTH_ADMIN = PLATFORM_ADMIN;
-
-function authRpc(name: string): ConsoleOperation {
+function authRpc(
+  name: string,
+  privilege?: ConsoleOperation["privilege"],
+): ConsoleOperation {
   return {
     api: apis.auth.API.identity,
     surface: "rpc",
     name,
     action: "call",
-    privilege: AUTH_ADMIN,
+    ...(privilege === undefined ? {} : { privilege }),
   };
 }
 
@@ -137,18 +131,6 @@ function stateRpc(name: string): ConsoleOperation {
  */
 export const CONSOLE_OPERATIONS = {
   // Auth: session and account self-service.
-  sessionsMe: {
-    api: apis.auth.API.identity,
-    surface: "rpc",
-    name: "Sessions.Me",
-    action: "call",
-  },
-  sessionsLogout: {
-    api: apis.auth.API.identity,
-    surface: "rpc",
-    name: "Sessions.Logout",
-    action: "call",
-  },
   usersPasswordChange: {
     api: apis.auth.API.identity,
     surface: "rpc",
@@ -176,9 +158,6 @@ export const CONSOLE_OPERATIONS = {
   deploymentsDisable: authRpc("Deployments.Disable"),
   deploymentsEnable: authRpc("Deployments.Enable"),
   deploymentsRemove: authRpc("Deployments.Remove"),
-  participantsGet: authRpc("Participants.Get"),
-  participantsInstall: authRpc("Participants.Install"),
-  participantsList: authRpc("Participants.List"),
   serviceInstancesList: authRpc("ServiceInstances.List"),
   serviceInstancesProvision: authRpc("ServiceInstances.Provision"),
   serviceInstancesDisable: authRpc("ServiceInstances.Disable"),
@@ -191,14 +170,11 @@ export const CONSOLE_OPERATIONS = {
   devicesDisable: authRpc("Devices.Disable"),
   devicesEnable: authRpc("Devices.Enable"),
   devicesRemove: authRpc("Devices.Remove"),
-  deviceUserAuthoritiesList: authRpc("DeviceUserAuthorities.List"),
-  deviceUserAuthoritiesRevoke: authRpc("DeviceUserAuthorities.Revoke"),
-  deviceUserAuthoritiesReviewsList: authRpc(
-    "DeviceUserAuthorities.Reviews.List",
-  ),
-  deviceUserAuthoritiesReviewsDecide: authRpc(
-    "DeviceUserAuthorities.Reviews.Decide",
-  ),
+
+  // Auth: retained allocations, independent of active deployment declarations.
+  resourcesList: authRpc("Resources.List", "principals.manage"),
+  resourcesGet: authRpc("Resources.Get", "principals.manage"),
+  resourcesRemove: authRpc("Resources.Remove", "principals.manage"),
 
   // Auth: sessions, connections, users, identities.
   sessionsList: authRpc("Sessions.List"),
@@ -214,29 +190,26 @@ export const CONSOLE_OPERATIONS = {
   usersPasswordResetCreate: authRpc("Users.PasswordReset.Create"),
 
   // Auth: grants, capability groups, capabilities, issuers.
-  grantsList: authRpc("Grants.List"),
-  grantsGet: authRpc("Grants.Get"),
-  grantsSet: authRpc("Grants.Set"),
-  grantsRevoke: authRpc("Grants.Revoke"),
-  capabilityGroupsList: authRpc("CapabilityGroups.List"),
-  capabilityGroupsGet: authRpc("CapabilityGroups.Get"),
-  capabilityGroupsPut: authRpc("CapabilityGroups.Put"),
-  capabilityGroupsDelete: authRpc("CapabilityGroups.Delete"),
-  capabilitiesList: authRpc("Capabilities.List"),
+  rolesList: authRpc("Roles.List", "roles.manage"),
+  rolesGet: authRpc("Roles.Get", "roles.manage"),
+  rolesPut: authRpc("Roles.Put", "roles.manage"),
+  rolesDelete: authRpc("Roles.Delete", "roles.manage"),
+  roleAssignmentsList: authRpc("RoleAssignments.List", "roles.manage"),
+  roleAssignmentsAssign: authRpc("RoleAssignments.Assign", "roles.manage"),
+  roleAssignmentsRevoke: authRpc("RoleAssignments.Revoke", "roles.manage"),
+  capabilityGrantsList: authRpc("CapabilityGrants.List", "roles.manage"),
+  capabilityGrantsGrant: authRpc("CapabilityGrants.Grant", "roles.manage"),
+  capabilityGrantsRevoke: authRpc("CapabilityGrants.Revoke", "roles.manage"),
+  principalsEffectiveAccess: authRpc(
+    "Principals.EffectiveAccess",
+    "roles.manage",
+  ),
+  delegationsList: authRpc("Delegations.List"),
+  delegationsRevoke: authRpc("Delegations.Revoke"),
+  authorizationSessionsList: authRpc("AuthorizationSessions.List"),
+  authorizationSessionsRevoke: authRpc("AuthorizationSessions.Revoke"),
+  capabilitiesList: authRpc("Capabilities.List", "roles.manage"),
   issuersRevoke: authRpc("Issuers.Revoke"),
-
-  // Auth: portals, settings, routes, grant overrides.
-  portalsList: authRpc("Portals.List"),
-  portalsGet: authRpc("Portals.Get"),
-  portalsPut: authRpc("Portals.Put"),
-  portalsRemove: authRpc("Portals.Remove"),
-  portalsLoginSettingsGet: authRpc("Portals.LoginSettings.Get"),
-  portalsLoginSettingsUpdate: authRpc("Portals.LoginSettings.Update"),
-  portalsRoutesPut: authRpc("Portals.Routes.Put"),
-  portalsRoutesRemove: authRpc("Portals.Routes.Remove"),
-  portalsGrantOverridesList: authRpc("Portals.GrantOverrides.List"),
-  portalsGrantOverridesPut: authRpc("Portals.GrantOverrides.Put"),
-  portalsGrantOverridesRemove: authRpc("Portals.GrantOverrides.Remove"),
 
   // Events: primary query, optional panels, actions, watch.
   eventsQuery: eventsRpc("Query"),
@@ -282,9 +255,7 @@ export const CONSOLE_OPERATIONS = {
 export type ConsoleOperationName = keyof typeof CONSOLE_OPERATIONS;
 
 /** True when `name` is a registered console operation. */
-export function isConsoleOperation(
-  name: string,
-): name is ConsoleOperationName {
+export function isConsoleOperation(name: string): name is ConsoleOperationName {
   return Object.hasOwn(CONSOLE_OPERATIONS, name);
 }
 
@@ -294,16 +265,15 @@ export function isConsoleOperation(
  * Both the exact contract permission atom and any required platform privilege
  * must be present. An unregistered operation is never permitted.
  */
-export function canPerform(
-  authority: Authority | null,
-  name: string,
-): boolean {
+export function canPerform(authority: Authority | null, name: string): boolean {
   if (authority === null) return false;
   if (!isConsoleOperation(name)) return false;
   const operation: ConsoleOperation = CONSOLE_OPERATIONS[name];
   if (
     operation.privilege !== undefined &&
-    !authority.platformPrivileges.includes(operation.privilege)
+    !authority.platformPrivileges.some(
+      (privilege) => privilege === operation.privilege,
+    )
   ) {
     return false;
   }

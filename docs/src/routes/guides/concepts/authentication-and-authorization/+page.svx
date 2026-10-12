@@ -5,15 +5,40 @@ NATS subjects themselves.
 
 ## Principals
 
-| Principal | Authentication |
-| --- | --- |
-| User | Browser or CLI login established through an Auth portal |
-| Service | Immutable provisioned Ed25519 identity for a service instance |
-| Device | Provisioned/activated Ed25519 identity for a device instance |
+| Principal | Authentication                                                |
+| --------- | ------------------------------------------------------------- |
+| User      | Browser or CLI login established through an Auth portal       |
+| Service   | Immutable provisioned Ed25519 identity for a service instance |
+| Device    | Provisioned/activated Ed25519 identity for a device instance  |
 
 OIDC identities and local passwords are sign-in methods for a Trellis user.
 They are not separate authorization containers. Durable Auth sessions represent
 user logins only; services and devices authenticate without a login row.
+
+Immediate `Auth.ServiceInstances.Provision` and `Auth.Devices.Provision` require
+`identityPublicKey`: generate the Ed25519 identity key on the client and submit
+only its public key. Keep the private seed client-side; Trellis never generates,
+stores, or returns it. A missing public key returns validation code
+`identity_public_key_required` without creating a principal or instance, and the
+failed request does not consume its idempotency key. The current response has
+`provisioningSecret: null`; one-time activation-token provisioning is not yet
+implemented. CONNECT proves possession of the registered immutable identity key.
+
+## Account actions
+
+`Auth.Users.PasswordReset.Create` returns a five-minute, one-use token for a
+non-bootstrap user. Open `/account/reset?token=...` on the OAuth origin and submit
+the native password form. Completion requires the requester's original logical
+session and current accepted `principals.manage`, rejects stale credentials, and
+atomically changes the password and signs out existing login/grant families.
+Bootstrap administrators use the existing local recovery path instead.
+
+`Auth.Users.IdentityLink.Create` returns a five-minute portal authorization URL
+for the current user. Sign in as that same user, then continue through the
+identity provider's fresh OIDC authentication. Provider revision/state, nonce,
+PKCE, and current portal-user continuity are checked before the identity is linked.
+An identity belonging to another user cannot be reassigned. Creation retries
+return the original response; they do not renew or revive consumed actions.
 
 ## Installed participants
 
@@ -92,6 +117,20 @@ When a principal bootstraps or refreshes, Auth rereads the current credential,
 binding, installed participant, resource evidence, and online issuer in one
 transaction. It signs an authorization context containing that exact snapshot
 and stores it permanently by digest before use.
+
+OAuth sessions retain the refresh family verified at CONNECT. Every authority
+or admission renewal consults that exact family's absolute deadline and
+revocation state, even if another family of the same grant remains valid.
+Rotation does not extend the family deadline. Capability-specific deadlines
+remain separate from this shared credential-root limit.
+
+A live OAuth caller can use `Admission.Renew` with its own context digest and
+ordinary session-key proof to obtain a fresh, same-key signed admission. Auth
+rechecks policy and validates the candidate authority in the same transaction;
+the admission lasts at most 300 seconds and never outlives that authority or
+the family. This does not rotate refresh tokens or create durable reconnect
+credentials. Provisioned admission must still be signed locally with the
+client's identity key (`provisioned_signature_required` otherwise).
 
 Applications carry only the context digest, a message proof, message-specific
 metadata, and a small `session-key` header that must equal the key inside the

@@ -39,32 +39,38 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
     >::new()));
     let maintenance = Arc::new(Mutex::new(Instant::now()));
     let maintenance_engine = engine.clone();
-    let mut metadata = serde_json::to_value(engine.server.metadata()).unwrap_or(Value::Null);
-    if let Some(document) = metadata.as_object_mut() {
-        // The optional introspection route is not a public Trellis surface.
-        document.remove("introspection_endpoint");
-        let authority = &engine.server.store().authority;
-        document.insert(
-            "trellis".into(),
-            serde_json::json!({
-                "trellisInstanceId":authority.settings.instance_id,
-                "audienceNatsAccount":authority.settings.account,
-                "natsEndpoints":nats_endpoints,
-                "authorityFormat":trellis_protocol::SESSION_AUTHORITY_FORMAT_V1,
-                "admissionFormat":trellis_protocol::OAUTH_ADMISSION_FORMAT_V1,
-                "issuers":[authority.issuer()],
-                "requiredAuthorizationDetailsTypes":["trellis_capabilities"],
-            }),
-        );
-    }
+    let metadata_engine = engine.clone();
     // Public OAuth endpoints use proof-bearing credentials, not portal cookies.
     // Cookie-authenticated portal routes deliberately do not enable CORS.
     let public = Router::new()
         .route(
             "/.well-known/oauth-authorization-server",
             get(move || {
-                let metadata = metadata.clone();
-                async move { Json(metadata) }
+                let engine = metadata_engine.clone();
+                let endpoints = nats_endpoints.clone();
+                async move {
+                    let metadata = tokio::task::spawn_blocking(move || {
+                        let trust = engine.server.store().authority.runtime_authorization_trust()?;
+                        let mut metadata = serde_json::to_value(engine.server.metadata())?;
+                        let document = metadata.as_object_mut().ok_or(super::super::AuthError::Unavailable)?;
+                        document.remove("introspection_endpoint");
+                        document.insert("trellis".into(), serde_json::json!({
+                            "trellisInstanceId": trust.instance_id,
+                            "audienceNatsAccount": trust.account,
+                            "natsEndpoints": endpoints,
+                            "authorityFormat": trellis_protocol::SESSION_AUTHORITY_FORMAT_V1,
+                            "admissionFormat": trellis_protocol::OAUTH_ADMISSION_FORMAT_V1,
+                            "issuers": [trust.issuer],
+                            "rotationSequence": trellis_protocol::U64s::new(trust.rotation_sequence),
+                            "requiredAuthorizationDetailsTypes": ["trellis_capabilities"],
+                        }));
+                        Ok::<_, super::super::AuthError>(metadata)
+                    }).await;
+                    match metadata {
+                        Ok(Ok(metadata)) => Json(metadata).into_response(),
+                        _ => error(ErrorCode::ServerError),
+                    }
+                }
             }),
         )
         .route("/token", post(token))
@@ -105,6 +111,8 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .route("/portal/authorization/{transaction}", get(consent))
         .route("/portal/session", post(portal_session))
         .route("/portal/login", post(portal_login))
+        .route("/account/{kind}", get(super::account::page))
+        .route("/portal/account/{kind}", post(super::account::submit))
         .route("/portal/providers", get(super::upstream_http::providers))
         .route(
             "/portal/oidc/{provider}/begin",
@@ -319,6 +327,7 @@ async fn authorize(
     };
     let transaction = super::super::sqlite::id();
     let flow = super::portal::PortalAuthorization {
+        presentation: None,
         session_id,
         request: super::portal::ConsentRequest::Authorization(pairs),
         public_jwk,
@@ -497,7 +506,13 @@ async fn consent_data(
         let binding = if kind=="native" {validated.dpop_jkt.clone()} else {url::Url::parse(validated.redirect_uri.as_deref().ok_or(super::super::AuthError::Denied)?).map_err(|_|super::super::AuthError::Denied)?.origin().ascii_serialization()};
         let username:Option<String> = connection.query_row("SELECT normalized_username FROM auth_local_credentials WHERE principal_id=?1",[&login.principal_id],|row|row.get(0)).optional()?;
         let mut capabilities = Vec::new();
+        let mut meanings = std::collections::BTreeMap::new();
+        let mut api_generations = std::collections::BTreeMap::new();
         for capability in requested.capabilities.required.iter().chain(&requested.capabilities.optional) {
+            let meaning=match super::super::policy::capability(connection,capability) {Ok(value)=>Some(value),Err(super::super::AuthError::NotFound)=>None,Err(error)=>return Err(error)};
+            meanings.insert(capability.clone(),meaning);
+            let api:Option<(String,u64)>=connection.query_row("SELECT a.api_id,a.generation FROM auth_capability_identities c JOIN auth_accepted_apis a ON a.api_id=c.api_id WHERE c.capability_id=?1 AND c.state='active'",[capability],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
+            if let Some((api,generation))=api {api_generations.insert(api,generation);}
             let metadata: Option<(String,String,String)> = connection.query_row("SELECT title,description,consequence FROM auth_capability_identities WHERE capability_id=?1 AND state='active'",[capability],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
             let (title,description,consequence) = metadata.unwrap_or_else(||(capability.clone(),"This capability is not installed.".into(),String::new()));
             let remembered:bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_remembered_consent d JOIN auth_capability_identities c ON c.capability_id=d.capability_id AND c.identity_generation=d.capability_generation AND c.consent_revision=d.consent_revision WHERE d.principal_id=?1 AND d.binding_kind=?2 AND d.binding_value=?3 AND d.client_id=?4 AND d.capability_id=?5 AND d.decision='approved' AND c.state='active' AND (d.expires_at IS NULL OR d.expires_at>?6))",rusqlite::params![login.principal_id,kind,binding,validated.client_id.as_str(),capability,now],|row|row.get(0))?;
@@ -517,7 +532,16 @@ async fn consent_data(
             };
             privileges.push(serde_json::json!({"privilege":privilege_id,"label":label,"description":description,"required":requested.required_privileges.contains(privilege),"available":available&&eligible.contains(privilege)}));
         }
-        Ok(serde_json::json!({"transaction":transaction,"clientId":validated.client_id.as_str(),"clientName":client.name,"registered":registered,"username":username,"principalId":login.principal_id,"redirectUri":validated.redirect_uri,"deviceUserCode":validated.device_user_code,"capabilities":capabilities,"platformPrivileges":privileges}))
+        let presentation_id=super::super::sqlite::id();
+        let presentation=super::portal::ConsentPresentation {
+            id:presentation_id.clone(),principal_id:login.principal_id.clone(),login_session_id:login.login_session_id.clone(),
+            client_id:validated.client_id.as_str().into(),binding_kind:kind,binding_value:binding,
+            selection:requested.capabilities.clone(),capabilities:meanings,api_generations,
+            required_privileges:requested.required_privileges.clone(),optional_privileges:requested.optional_privileges.clone(),
+            lookup_hash:String::new(),sealed_digest:String::new(),
+        };
+        engine.server.store().present_authorization(connection,transaction,&flow,presentation,now).map_err(|_|super::super::AuthError::Unavailable)?;
+        Ok(serde_json::json!({"transaction":transaction,"presentationId":presentation_id,"clientId":validated.client_id.as_str(),"clientName":client.name,"registered":registered,"username":username,"principalId":login.principal_id,"redirectUri":validated.redirect_uri,"deviceUserCode":validated.device_user_code,"capabilities":capabilities,"platformPrivileges":privileges}))
     });
     result.map_err(|_| error(ErrorCode::ServerError))
 }
@@ -586,7 +610,7 @@ async fn approve(
     let flow = match engine
         .server
         .store()
-        .take_authorization(transaction, &login.session_id, now)
+        .authorization(transaction, &login.session_id, now)
     {
         Ok(flow) => flow,
         Err(_) => return error(ErrorCode::InvalidRequest),
@@ -596,6 +620,14 @@ async fn approve(
         Err(response) => return error(response.error),
     };
     if decision == "deny" {
+        if engine
+            .server
+            .store()
+            .take_authorization(transaction, &login.session_id, now)
+            .is_err()
+        {
+            return error(ErrorCode::InvalidRequest);
+        }
         return match &flow.request {
             super::portal::ConsentRequest::Authorization(pairs) => {
                 let request = AuthorizationRequest::from_pairs(
@@ -620,6 +652,16 @@ async fn approve(
             }
         };
     }
+    let Some(presentation) = flow
+        .presentation
+        .as_ref()
+        .filter(|presentation| form.get("presentation") == Some(&presentation.id))
+    else {
+        return Redirect::to(&format!(
+            "/consent?transaction={transaction}&error=consent_changed"
+        ))
+        .into_response();
+    };
     if validated
         .device_user_code
         .as_ref()
@@ -670,6 +712,7 @@ async fn approve(
         .cloned()
         .collect();
     let approval = super::super::GrantApproval {
+        presentation: Some(presentation.clone()),
         principal_id: login.principal_id.clone(),
         login_session_id: login.login_session_id,
         client_id: validated.client_id.as_str().into(),
@@ -693,7 +736,7 @@ async fn approve(
     };
     let identity = super::super::Mutation {
         actor: login.principal_id,
-        request_id: transaction.clone(),
+        request_id: presentation.id.clone(),
         request_digest: digest,
     };
     match flow.request {
@@ -708,7 +751,11 @@ async fn approve(
                     &response.location(validated.redirect_uri.as_deref().unwrap_or_default()),
                 )
                 .into_response(),
-                Err(response) => error(response.error),
+                Err(super::portal::ApprovalError::ConsentChanged) => Redirect::to(&format!(
+                    "/consent?transaction={transaction}&error=consent_changed"
+                ))
+                .into_response(),
+                Err(super::portal::ApprovalError::Protocol(response)) => error(response.error),
             }
         }
         super::portal::ConsentRequest::Device { device_code } => {
@@ -721,7 +768,11 @@ async fn approve(
                 .await
             {
                 Ok(()) => Redirect::to("/device/complete?decision=approved").into_response(),
-                Err(response) => error(response.error),
+                Err(super::portal::ApprovalError::ConsentChanged) => Redirect::to(&format!(
+                    "/consent?transaction={transaction}&error=consent_changed"
+                ))
+                .into_response(),
+                Err(super::portal::ApprovalError::Protocol(response)) => error(response.error),
             }
         }
     }
@@ -1066,7 +1117,21 @@ async fn token(
         tokio::spawn(async move { engine.token(request, &proof, &runtime, &nkey).await }).await;
     let mut response = match result {
         Ok(Ok(tokens)) => Json(tokens).into_response(),
-        Ok(Err(response)) => error(response.error),
+        Ok(Err(super::engine::TokenError::OAuth(response))) => error(response.error),
+        Ok(Err(super::engine::TokenError::UseDpopNonce(nonce))) => {
+            let mut response = (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error":"use_dpop_nonce"})),
+            )
+                .into_response();
+            let Ok(nonce) = HeaderValue::from_str(&nonce) else {
+                return error(ErrorCode::ServerError);
+            };
+            response
+                .headers_mut()
+                .insert(HeaderName::from_static("dpop-nonce"), nonce);
+            response
+        }
         Err(_) => error(ErrorCode::ServerError),
     };
     response

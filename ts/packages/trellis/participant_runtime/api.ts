@@ -23,25 +23,9 @@ export function eventDescriptorIdentity(
       "event parameter count must be a non-negative safe integer",
     );
   }
-  return `v1.${subjectToken(apiId)}.${
-    subjectToken(eventName)
-  }.${parameterCount}`;
-}
-
-/** Derives one deployment-bound API request subject. */
-export function boundApiSubject(
-  family: "rpc" | "operation" | "live",
-  apiId: string,
-  providerDeploymentId: string,
-  action: string,
-): string {
-  return family === "live"
-    ? `live.v1.route.${subjectToken(apiId)}.${
-      subjectToken(providerDeploymentId)
-    }.${action}`
-    : `${family}.v1.${subjectToken(apiId)}.${
-      subjectToken(providerDeploymentId)
-    }.${action}`;
+  return `v1.${subjectToken(apiId)}.${subjectToken(
+    eventName,
+  )}.${parameterCount}`;
 }
 
 /** Derives one API-qualified event subject template. */
@@ -55,17 +39,17 @@ export function liveControlSubject(
   ownerInstanceId: string,
   liveId?: string,
 ): string {
-  const ownerSubject = `${liveSubject}.control.${
-    subjectToken(ownerInstanceId)
-  }`;
+  const ownerSubject = `${liveSubject}.control.${subjectToken(
+    ownerInstanceId,
+  )}`;
   return liveId === undefined
     ? `${ownerSubject}.*`
     : `${ownerSubject}.${subjectToken(liveId)}`;
 }
 
-/** Derives the stable queue shared by replicas subscribed to an exact route. */
-export function routeQueueGroup(subject: string): string {
-  return `trellis.${sha256Base64urlSync(subject)}`;
+/** Stable request queue shared by every provider of one logical API. Owner-directed controls pass their owner subject. */
+export function routeQueueGroup(apiOrOwnerSubject: string): string {
+  return `trellis.${sha256Base64urlSync(apiOrOwnerSubject)}`;
 }
 
 export type Schema<T> = {
@@ -98,19 +82,25 @@ export type RuntimeRpcErrorDesc<
   type: TType;
   schema?: TSchema;
   fromSerializable(
-    data: TSchema extends SchemaLike ? InferSchemaType<TSchema>
+    data: TSchema extends SchemaLike
+      ? InferSchemaType<TSchema>
       : SerializableErrorData,
   ): TError;
 };
 
-export type InferRuntimeRpcError<T extends RuntimeRpcErrorDesc> = T extends
-  RuntimeRpcErrorDesc<string, SchemaLike | undefined, infer TError> ? TError
-  : never;
+export type InferRuntimeRpcError<T extends RuntimeRpcErrorDesc> =
+  T extends RuntimeRpcErrorDesc<string, SchemaLike | undefined, infer TError>
+    ? TError
+    : never;
 
-export type InferSchemaType<S> = S extends Schema<infer T> ? T
-  : S extends { decode(value: unknown): infer T } ? T
-  : S extends TSchema ? StaticDecode<S>
-  : unknown;
+export type InferSchemaType<S> =
+  S extends Schema<infer T>
+    ? T
+    : S extends { decode(value: unknown): infer T }
+      ? T
+      : S extends TSchema
+        ? StaticDecode<S>
+        : unknown;
 
 export function schema<T>(raw: unknown): Schema<T> {
   return { schema: raw } as Schema<T>;
@@ -155,8 +145,7 @@ export type RPCDesc<
   O extends SchemaLike = SchemaLike,
   E extends readonly string[] | undefined = readonly string[] | undefined,
   TRuntimeErrors extends readonly RuntimeRpcErrorDesc[] | undefined =
-    | readonly RuntimeRpcErrorDesc[]
-    | undefined,
+    readonly RuntimeRpcErrorDesc[] | undefined,
 > = {
   subject: string;
   input: I;
@@ -203,8 +192,7 @@ export type OperationDesc<
   O extends SchemaLike | undefined = SchemaLike | undefined,
   E extends readonly string[] | undefined = readonly string[] | undefined,
   TRuntimeErrors extends readonly RuntimeRpcErrorDesc[] | undefined =
-    | readonly RuntimeRpcErrorDesc[]
-    | undefined,
+    readonly RuntimeRpcErrorDesc[] | undefined,
   U extends SchemaLike | undefined = SchemaLike | undefined,
 > = {
   subject: string;

@@ -1,148 +1,117 @@
 <script lang="ts">
-  import { type apis } from "trellis-web-generated";
-  import { resolve, consoleUrl } from "$lib/console_paths";
+  import type { apis } from "trellis-web-generated";
   import { onMount } from "svelte";
-  import { catalogPage, traverseAll } from "$lib/console/paging.ts";
-  import ActionMenu from "$lib/components/ActionMenu.svelte";
+  import { resolve } from "$lib/console_paths";
+  import { getTrellis } from "$lib/trellis";
+  import { traverseAll } from "$lib/console/paging.ts";
+  import { RequestScope } from "$lib/console/request_scope.ts";
+  import { projectConsoleError } from "$lib/console/display_value.ts";
   import DataTable from "$lib/components/DataTable.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
-  import Icon from "$lib/components/Icon.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
-  import { errorMessage, formatDate } from "$lib/format";
-  import { getTrellis } from "$lib/trellis";
-  import { isErr } from "@oatscenter/result";
+  import { formatDate } from "$lib/format";
 
-  type GrantBinding = apis.auth.GrantsListOutput["items"][number];
-  type GrantOwner = apis.auth.UsersListOutput["items"][number];
-
+  type Delegation = apis.auth.DelegationsListOutput["items"][number];
   const trellis = getTrellis();
-
+  const scope = new RequestScope("app-delegations");
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let identityGrants = $state.raw<GrantBinding[]>([]);
-  let ownerNames = $state.raw(new Map<string, string>());
-
-  async function load() {
+  let delegations = $state.raw<Delegation[]>([]);
+  async function load(): Promise<void> {
+    const token = scope.begin();
     loading = true;
-    error = null;
-    const result = await traverseAll<GrantBinding>(async (pageRequest) => {
-      const response = await trellis.grantsList({
-        ownerKind: "user",
-        page: catalogPage(pageRequest.cursor),
-      }).take();
-      if (isErr(response)) throw response;
+    const result = await traverseAll(async (page) => {
+      const response = await trellis.delegationsList({ page }).orThrow();
       return { items: response.items, cursor: response.page.nextCursor };
     });
+    if (!scope.settle(token)) return;
+    delegations = [...result.items];
+    error = result.complete ? null : projectConsoleError(result.error).message;
     loading = false;
-    if (!result.complete) {
-      error = errorMessage(result.error);
-      return;
-    }
-    identityGrants = [...result.items];
-    // A name lookup is auxiliary metadata; absence must not keep grants hidden.
-    const ownerResult = await traverseAll<GrantOwner>(async (pageRequest) => {
-      const response = await trellis.usersList({ page: catalogPage(pageRequest.cursor) }).take();
-      if (isErr(response)) throw response;
-      return { items: response.items, cursor: response.page.nextCursor };
-    });
-    if (ownerResult.complete) {
-      ownerNames = new Map(ownerResult.items.map((owner) => [owner.userId, owner.username?.trim() || owner.name?.trim() || owner.email?.trim() || owner.userId]));
-    }
   }
-
-  onMount(load);
+  onMount(() => {
+    void load();
+    return () => scope.dispose();
+  });
 </script>
 
 <section class="space-y-4">
   <PageToolbar
-    title="User-owned grants"
-    description="Inspect and revoke grant bindings owned by a user, such as delegated app and agent grants."
+    title="App delegations"
+    description="Inspect consent choices bound to exact OAuth client identities and browser origins."
+    >{#snippet actions()}<button
+        class="btn btn-ghost btn-sm"
+        disabled={loading}
+        onclick={() => void load()}>Refresh</button
+      ><a class="btn btn-outline btn-sm" href={resolve("/admin/apps/revoke")}
+        >Revoke delegation</a
+      >{/snippet}</PageToolbar
   >
-    {#snippet actions()}
-      <div class="trellis-filterbar-actions">
-        <button class="btn btn-ghost btn-sm" onclick={load} disabled={loading}>
-          Refresh
-        </button>
-        <ActionMenu buttonBaseClass="btn btn-outline btn-sm" widthClass="w-64">
-          {#snippet summary()}
-            Actions <Icon name="chevronDown" size={14} />
-          {/snippet}
-          <li>
-            <a href={resolve("/admin/apps/revoke")}>Revoke user-owned grant</a>
-          </li>
-        </ActionMenu>
-      </div>
-    {/snippet}
-  </PageToolbar>
-
-  {#if error}
-    <Notice variant="error">{error}</Notice>
-  {/if}
-
-  {#if loading}
-    <Panel><LoadingState label="Loading user-owned grants" /></Panel>
-  {:else if identityGrants.length === 0}
-    <EmptyState
-      title="No user-owned grants"
-      description="No user-owned grant bindings are currently visible."
-    />
-  {:else}
-    <Panel title="User-owned grants" eyebrow="Primary table">
-      <DataTable>
-        <thead>
-          <tr>
-            <th>Owner</th>
-            <th>Participant</th>
-            <th>State</th>
-            <th>Installed revision</th>
-            <th>Grant revision</th>
-            <th>Updated</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each identityGrants as entry (`${entry.ownerId}:${entry.participantId}`)}
-            <tr>
-              <td class="font-medium">{ownerNames.get(entry.ownerId) ?? entry.ownerId}</td>
-              <td>{entry.participantId}</td>
-              <td>
-                <span class="badge badge-sm {entry.state === "active" ? "badge-success" : "badge-neutral"}">
-                  {entry.state}
-                </span>
-              </td>
-              <td class="text-base-content/60">{entry.installedRevision}</td>
-              <td class="text-base-content/60">{entry.revision}</td>
-              <td class="text-base-content/60">{formatDate(entry.updatedAt)}</td>
-              <td class="text-right">
-                {#if entry.state === "active"}
-                  <ActionMenu>
-                    <li>
-                      <a
-                        class="text-error"
-                        href={consoleUrl("/admin/apps/revoke", {
-                          query: {
-                            ownerKind: "user",
-                            ownerId: entry.ownerId,
-                            participantId: entry.participantId,
-                          },
-                        })}>Revoke</a
-                      >
-                    </li>
-                  </ActionMenu>
-                {:else}
-                  <span class="text-xs text-base-content/50">retained</span>
-                {/if}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </DataTable>
-      <p class="text-xs text-base-content/50">
-        {identityGrants.length} user-owned grant{identityGrants.length !== 1 ? "s" : ""} loaded
-      </p>
-    </Panel>
+  {#if error}<Notice variant="warning"
+      >Delegation catalog incomplete: {error}</Notice
+    >{/if}
+  {#if loading}<Panel><LoadingState label="Loading delegations" /></Panel
+    >{:else if !delegations.length}<EmptyState
+      title="No app delegations returned"
+      description="OAuth consent creates client-bound delegations; these are not participant GrantSets."
+    />{:else}
+    <Panel
+      title="App delegations"
+      eyebrow={`${delegations.length} loaded records`}
+      ><DataTable
+        ><thead
+          ><tr
+            ><th>Delegation / Principal</th><th>Client binding</th><th
+              >Capability choices</th
+            ><th>Revision</th><th>Actions</th></tr
+          ></thead
+        ><tbody>
+          {#each delegations as entry (entry.delegationId)}<tr
+              ><td class="trellis-identifier"
+                >{entry.delegationId}
+                <div class="trellis-metadata">{entry.principalId}</div></td
+              ><td class="trellis-identifier"
+                >{entry.binding.clientId}
+                <div class="trellis-metadata">
+                  {entry.binding.kind}{#if entry.binding.origin}
+                    · {entry.binding.origin}{/if}
+                </div>
+                {#if entry.binding.durableDpopJkt}<div
+                    class="trellis-metadata break-all"
+                  >
+                    DPoP {entry.binding.durableDpopJkt}
+                  </div>{/if}</td
+              ><td
+                >{#each entry.choices as choice (`${choice.capability.capabilityId}:${choice.capability.identityGeneration}`)}<div
+                    class="mb-2"
+                  >
+                    <span class="trellis-identifier"
+                      >{choice.capability.capabilityId}</span
+                    ><span
+                      class="badge badge-xs ml-2 {choice.decision === 'approved'
+                        ? 'badge-success'
+                        : 'badge-neutral'}">{choice.decision}</span
+                    >
+                    <div class="trellis-metadata">
+                      Identity generation {choice.capability.identityGeneration} ·
+                      Consent revision {choice.consentRevision}{#if choice.expiresAt}
+                        · Expires {formatDate(choice.expiresAt)}{/if}
+                    </div>
+                  </div>{:else}No capability consent choices.{/each}</td
+              ><td>{entry.revision}</td><td
+                ><a
+                  class="btn btn-ghost btn-xs"
+                  href={resolve(
+                    `/admin/apps/revoke?delegationId=${entry.delegationId}`,
+                  )}>Revoke</a
+                ></td
+              ></tr
+            >{/each}
+        </tbody></DataTable
+      ></Panel
+    >
   {/if}
 </section>

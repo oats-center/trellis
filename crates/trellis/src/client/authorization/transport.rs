@@ -56,22 +56,43 @@ pub fn admission_context_digest(authenticated_user: &str) -> Option<&str> {
 
 /// Read this attachment's authenticated identity from the broker.
 ///
-/// A missing or malformed reply must never install authority, so any failure
-/// yields [`None`] instead of an error.
-pub async fn read_own_admission(nats: &Client, timeout: Duration) -> Option<OwnAdmission> {
+/// Missing or malformed replies fail closed with a classified transport error.
+pub async fn read_own_admission(
+    nats: &Client,
+    timeout: Duration,
+) -> Result<OwnAdmission, TrellisClientError> {
     let reply = tokio::time::timeout(
         timeout,
         nats.request(OWN_USER_INFO_SUBJECT, bytes::Bytes::new()),
     )
     .await
-    .ok()?
-    .ok()?;
-    let info = serde_json::from_slice::<serde_json::Value>(&reply.payload).ok()?;
-    let user = info.get("data")?.get("user")?.as_str()?;
+    .map_err(|_| {
+        TrellisClientError::AuthorizationUnavailable("broker attachment read timed out".into())
+    })?
+    .map_err(|error| {
+        TrellisClientError::AuthorizationUnavailable(format!(
+            "broker attachment request failed: {}",
+            error.kind()
+        ))
+    })?;
+    let info = serde_json::from_slice::<serde_json::Value>(&reply.payload).map_err(|_| {
+        TrellisClientError::AuthorizationUnavailable("broker attachment reply is not JSON".into())
+    })?;
+    let user = info
+        .get("data")
+        .and_then(|data| data.get("user"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable(
+                "broker attachment reply has no user identity".into(),
+            )
+        })?;
     if user.is_empty() {
-        return None;
+        return Err(TrellisClientError::AuthorizationUnavailable(
+            "broker attachment reply has an empty user identity".into(),
+        ));
     }
-    Some(OwnAdmission {
+    Ok(OwnAdmission {
         authenticated_user: user.to_owned(),
         context_digest: admission_context_digest(user).map(str::to_owned),
     })

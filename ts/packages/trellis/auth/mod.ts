@@ -5,21 +5,6 @@
  */
 
 export {
-  type AuthorizationContextBundle,
-  AuthorizationContextBundleSchema,
-  AuthorizationContextCache,
-  AuthorizationContextRefreshError,
-  AuthorizationProviderCache,
-  type AuthorizationProviderEvent,
-  type AuthorizationProviderRequest,
-  type AuthorizationRoutingMaterial,
-  type AuthorizationRuntimeBinding,
-  refreshAuthorizationContext,
-  refreshAuthorizationContextWithMetadata,
-  startAuthorizationContextRefresh,
-  type VerifiedAuthorizationContext,
-} from "./authorization_context.ts";
-export {
   type BrowserAuthRecoveryClassification,
   type BrowserAuthRecoveryKind,
   classifyBrowserAuthError,
@@ -31,10 +16,7 @@ export {
   deriveDeviceIdentity,
   waitForDeviceActivation,
 } from "./device_activation.ts";
-export type {
-  DeviceUserAuthoritiesResolveOutput,
-  DeviceUserAuthoritiesResolveProgress,
-} from "../internal_sdk/generated/apis/auth/mod.js";
+export { SessionAuthorityOwner } from "./authority.ts";
 // All transcript framing and authenticated verification is owned by Rust/WASM.
 export {
   createEventProof,
@@ -65,8 +47,6 @@ export {
 } from "./session_proof.ts";
 export {
   classifyTransportAuthorizationWasm,
-  encodePermissionTargetWasm,
-  participantResourceTarget,
   TRANSPORT_AUTHORIZATION_FORMAT_V1,
   transportAuthorizationDigestWasm,
   type TransportAuthorizationV1,

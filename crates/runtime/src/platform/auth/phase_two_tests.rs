@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
@@ -18,15 +18,41 @@ use trellis_protocol::{
 use super::sqlite::{digest, id};
 use super::*;
 
-#[path = "oauth_engine_tests.rs"]
-mod oauth_engine_tests;
+#[path = "native_oauth_tests.rs"]
+mod native_oauth_tests;
+use super::oauth::oauth_engine_tests;
+#[path = "initialization_capability_tests.rs"]
+mod initialization_capability_tests;
+#[path = "issuer_metadata_tests.rs"]
+mod issuer_metadata_tests;
+#[path = "oauth_renewal_tests.rs"]
+mod oauth_renewal_tests;
 #[path = "oauth_transport_tests.rs"]
 mod oauth_transport_tests;
 #[path = "oauth_upstream_tests.rs"]
 mod oauth_upstream_tests;
+#[path = "own_context_tests.rs"]
+mod own_context_tests;
+#[path = "resources_tests.rs"]
+mod resources_tests;
+#[path = "rpc_credentials_tests.rs"]
+mod rpc_credentials_tests;
+#[path = "rpc_policy_aggregates_tests.rs"]
+mod rpc_policy_aggregates_tests;
+#[path = "rpc_policy_tests.rs"]
+mod rpc_policy_tests;
+#[path = "telemetry_tests.rs"]
+mod telemetry_tests;
 
-const NOW: i64 = 1_800_000_000;
-const SOURCE: &str = r#"
+pub(super) const NOW: i64 = 1_800_000_000;
+
+fn account_key() -> &'static str {
+    static ACCOUNT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ACCOUNT
+        .get_or_init(|| nkeys::KeyPair::new_account().public_key())
+        .as_str()
+}
+pub(super) const SOURCE: &str = r#"
 model Document { id: string; }
 api documents@v1 {
  title "Documents";
@@ -42,24 +68,81 @@ api documents@v1 {
 service Reader { use documents { required capability read; capability write; } }
 "#;
 
-struct Fixture {
-    directory: tempfile::TempDir,
-    store: SqliteAuthorizationStore,
-    admin: String,
-    principal: String,
+pub(super) struct Fixture {
+    pub(super) directory: tempfile::TempDir,
+    pub(super) store: SqliteAuthorizationStore,
+    pub(super) admin: String,
+    pub(super) principal: String,
     api: String,
-    read: String,
-    write: String,
+    pub(super) read: String,
+    pub(super) write: String,
     grant: String,
-    admission: AdmissionIdentity,
+    pub(super) admission: AdmissionIdentity,
 }
 
-fn mutation(actor: &str, input: &impl Serialize) -> Mutation {
+pub(super) fn mutation(actor: &str, input: &impl Serialize) -> Mutation {
     Mutation {
         actor: actor.into(),
         request_id: id(),
         request_digest: digest(input).unwrap(),
     }
+}
+
+/// Establish the same real SQLite refresh-family record used by the OAuth engine.
+pub(super) fn oauth_family(
+    store: &SqliteAuthorizationStore,
+    grant: &str,
+    now: i64,
+    expires: i64,
+) -> String {
+    use futures_util::FutureExt;
+    use oauth_as::{store::Storage, token::RefreshTokenRecord, ScopeSet};
+    let path = store.connection.lock().unwrap().path().unwrap().to_owned();
+    let authority = SqliteAuthorizationStore::from_connection(
+        Connection::open(path).unwrap(),
+        store.signer.clone(),
+        store.settings.clone(),
+    )
+    .unwrap();
+    let (client, jkt): (String, String) = authority
+        .connection
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT client_id,durable_dpop_jkt FROM auth_oauth_grants WHERE oauth_grant_id=?1",
+            [grant],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let storage = super::oauth::OAuthStorage::new(Arc::new(authority), &[17; 32]).unwrap();
+    let family = id();
+    let mut record = RefreshTokenRecord::new(
+        id(),
+        oauth_as::client::ClientId::new(client),
+        Some(grant.into()),
+        ScopeSet::empty(),
+        family.clone(),
+    );
+    record.jkt = Some(jkt.into());
+    record.grant_established_at =
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(now as u64);
+    record.expires_at =
+        Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(expires as u64));
+    let token = record.refresh_token.clone();
+    let outcome = storage
+        .put_refresh_token(record)
+        .now_or_never()
+        .unwrap()
+        .unwrap();
+    assert_eq!(outcome, oauth_as::store::WriteOutcome::Applied);
+    // Component authority fixtures need the established family, not a retained
+    // refresh secret encrypted under a key belonging to another OAuth fixture.
+    storage
+        .take_refresh_token(&token)
+        .now_or_never()
+        .unwrap()
+        .unwrap();
+    family
 }
 
 fn evidence(source: &str) -> PackageEvidence {
@@ -95,7 +178,7 @@ fn evidence(source: &str) -> PackageEvidence {
     }
 }
 
-fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuthorizationStore {
+pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuthorizationStore {
     let mut connection = Connection::open(directory.path().join("platform.db")).unwrap();
     let migration = refinery::Migration::unapplied(
         "V1000__platform_init",
@@ -111,7 +194,7 @@ fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuthorizationSt
         AuthSettings {
             upstream_tls_roots_pem: Vec::new(),
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
-            account: "account-phase-two".into(),
+            account: account_key().into(),
             oauth_origin: "https://auth.example".into(),
             authority_lifetime_seconds: 60,
             clock_skew_seconds: 5,
@@ -122,7 +205,7 @@ fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuthorizationSt
     .unwrap()
 }
 
-fn accept(
+pub(super) fn accept(
     store: &SqliteAuthorizationStore,
     admin: &str,
     source: &str,
@@ -153,7 +236,12 @@ fn accept(
         .unwrap()
 }
 
-fn policy(store: &SqliteAuthorizationStore, admin: &str, command: PolicyMutation, now: i64) -> u64 {
+pub(super) fn policy(
+    store: &SqliteAuthorizationStore,
+    admin: &str,
+    command: PolicyMutation,
+    now: i64,
+) -> u64 {
     store
         .apply_policy(&mutation(admin, &command), &command, now)
         .unwrap()
@@ -185,13 +273,20 @@ fn approve(
         .unwrap()
 }
 
-fn grant_request(principal: &str, login: &str, read: &str, write: &str, now: i64) -> GrantApproval {
+pub(super) fn grant_request(
+    principal: &str,
+    login: &str,
+    read: &str,
+    write: &str,
+    now: i64,
+) -> GrantApproval {
     // RFC 7638 public P-256 thumbprint; private material never enters Auth.
     let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"f83OJ3D2xF4tH8Ew7k6N4dQx7mD2GxLyD6uZJq9m7tQ","y":"x_FEzRu9m36HLN1qrnUbcS1v6sV_4rxGO6ZGfStUdSU"});
     let jkt = URL_SAFE_NO_PAD.encode(Sha256::digest(
         super::sqlite::json(&jwk).unwrap().as_bytes(),
     ));
     GrantApproval {
+        presentation: None,
         principal_id: principal.into(),
         login_session_id: login.into(),
         client_id: "native-client".into(),
@@ -214,7 +309,7 @@ fn grant_request(principal: &str, login: &str, read: &str, write: &str, now: i64
     }
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let directory = tempfile::tempdir().unwrap();
     let store = open(&directory, SigningKey::from_bytes(&[42; 32]));
     store.initialize_issuer(NOW).unwrap();
@@ -269,6 +364,7 @@ fn fixture() -> Fixture {
     }
     let grant = approve(&store, &principal, &read, &write, NOW);
     let admission = AdmissionIdentity {
+        refresh_family_id: Some(oauth_family(&store, &grant, NOW, NOW + 86400)),
         credential: Credential::OAuthGrant(grant.clone()),
         runtime_id: URL_SAFE_NO_PAD.encode([7; 16]),
         session_public_key: URL_SAFE_NO_PAD
@@ -371,8 +467,10 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
     let key_directory = tempfile::tempdir().unwrap();
     trellis_local_bootstrap::generate_local_oauth_storage_key(key_directory.path()).unwrap();
     let sealing_key_file = key_directory.path().join("oauth-storage.key");
+    let mut config = ServerConfig::new("https://auth.example", "https://auth.example/oauth/device");
+    config.refresh_token_ttl = Some(std::time::Duration::from_secs(3600));
     let engine = AuthorizationServer::new(
-        ServerConfig::new("https://auth.example", "https://auth.example/oauth/device"),
+        config.clone(),
         super::oauth::OAuthStorage::open(Arc::new(f.store), &sealing_key_file).unwrap(),
     );
     let verifier = URL_SAFE_NO_PAD.encode([31; 32]);
@@ -455,7 +553,7 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
     // Reopen the real, migrated database through the production constructor.
     // There is no memory mirror or restored test-only OAuth state.
     let engine = AuthorizationServer::new(
-        ServerConfig::new("https://auth.example", "https://auth.example/oauth/device"),
+        config,
         super::oauth::OAuthStorage::open(
             Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32]))),
             &sealing_key_file,
@@ -472,6 +570,16 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
         .await
         .unwrap();
     let mut admission = f.admission;
+    admission.refresh_family_id = Some(
+        engine
+            .store()
+            .get_refresh_token(rotated.refresh_token.as_deref().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .family_id
+            .clone(),
+    );
     admission.credential = Credential::OAuthGrant(grant);
     engine
         .store()
@@ -629,6 +737,124 @@ fn remembered_decline_enforces_existing_sessions_without_a_renewal() {
 }
 
 #[test]
+fn registered_development_privileges_require_eligibility_user_authority_and_consent() {
+    use trellis_protocol::PlatformPrivilege::*;
+    let f = fixture();
+    let privileges = vec![
+        PrincipalsManage,
+        RolesManage,
+        ApisAccept,
+        ApisForceReplace,
+        ClientsManage,
+        PrivilegesManage,
+    ];
+    let mut client = ClientRegistration {
+        client_id: "development-console".into(),
+        kind: "browser".into(),
+        display_name: "Development Console".into(),
+        redirect_uris: vec!["http://localhost:5173/callback".into()],
+        development: true,
+        implied_capabilities: vec![],
+        eligible_privileges: privileges.clone(),
+        metadata: serde_json::json!({}),
+        expected_revision: 0,
+    };
+    assert!(matches!(
+        f.store
+            .register_client(&mutation(&f.principal, &client), &client, NOW),
+        Err(AuthError::Denied)
+    ));
+    let client_manager = f
+        .store
+        .create_principal(&mutation(&f.admin, &"user"), "user", NOW)
+        .unwrap();
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::PrivilegeAssign {
+            principal_id: client_manager.clone(),
+            privileges: vec![ClientsManage],
+            expected_revision: 0,
+        },
+        NOW,
+    );
+    // Client management alone cannot assign administrative eligibility.
+    assert!(matches!(
+        f.store
+            .register_client(&mutation(&client_manager, &client), &client, NOW),
+        Err(AuthError::Denied)
+    ));
+    f.store
+        .register_client(&mutation(&f.admin, &client), &client, NOW)
+        .unwrap();
+    client.client_id = "ordinary-development-client".into();
+    client.eligible_privileges.clear();
+    f.store
+        .register_client(&mutation(&client_manager, &client), &client, NOW)
+        .unwrap();
+
+    for (principal, client_id, consent, allowed) in [
+        (&f.admin, "development-console", true, true),
+        (&f.admin, "development-console", false, true),
+        (&f.admin, "ordinary-development-client", true, false),
+        (&f.admin, "ordinary-development-client", false, true),
+        (&f.principal, "development-console", true, false),
+    ] {
+        let login = f
+            .store
+            .record_verified_login(
+                &VerifiedLogin {
+                    principal_id: principal.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW,
+            )
+            .unwrap();
+        let mut approval = grant_request(principal, &login, &f.read, &f.write, NOW);
+        approval.client_id = client_id.into();
+        approval.binding_kind = "browser".into();
+        approval.binding_value = "http://localhost:5173".into();
+        approval.selection.required.clear();
+        approval.selection.optional.clear();
+        approval.approved.clear();
+        approval.remember = false;
+        approval.privileges = if consent { privileges.clone() } else { vec![] };
+        let result = f
+            .store
+            .approve_grant(&mutation(principal, &approval), &approval, NOW);
+        if !allowed {
+            assert!(
+                matches!(result, Err(AuthError::Denied)),
+                "{client_id}, principal={principal}"
+            );
+            continue;
+        }
+        let mut admission = f.admission.clone();
+        admission.runtime_id = URL_SAFE_NO_PAD.encode(ulid::Ulid::new().to_bytes());
+        let grant = result.unwrap();
+        admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
+        admission.credential = Credential::OAuthGrant(grant);
+        let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+        assert_eq!(
+            issued
+                .authority
+                .unsigned
+                .platform_privileges
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            approval
+                .privileges
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+        );
+    }
+}
+
+#[test]
 fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
     use trellis_protocol::PlatformPrivilege::{ApisAccept, ApisForceReplace};
     let f = fixture();
@@ -646,18 +872,16 @@ fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
     f.store
         .register_client(&mutation(&f.admin, &registration), &registration, NOW)
         .unwrap();
-    for privilege in [ApisAccept, ApisForceReplace] {
-        policy(
-            &f.store,
-            &f.admin,
-            PolicyMutation::PrivilegeAssign {
-                principal_id: f.principal.clone(),
-                privilege,
-                expected_revision: 0,
-            },
-            NOW,
-        );
-    }
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::PrivilegeAssign {
+            principal_id: f.principal.clone(),
+            privileges: vec![ApisAccept, ApisForceReplace],
+            expected_revision: 0,
+        },
+        NOW,
+    );
     let login = f
         .store
         .record_verified_login(
@@ -679,6 +903,7 @@ fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
         .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
         .unwrap();
     let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
     assert!(issued
@@ -754,6 +979,7 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
             .approve_grant(&mutation(&f.principal, &explicit), &explicit, now)
             .unwrap();
         let mut admission = f.admission.clone();
+        admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
         admission.credential = Credential::OAuthGrant(grant);
         let issued = f.store.issue_authority(&admission, None, now).unwrap();
         assert!(issued
@@ -800,6 +1026,7 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
             .store
             .approve_grant(&mutation(&f.principal, &explicit), &explicit, now)
             .unwrap();
+        admission.refresh_family_id = Some(oauth_family(&f.store, &fresh_grant, NOW, NOW + 86400));
         admission.credential = Credential::OAuthGrant(fresh_grant);
         let fresh = f.store.issue_authority(&admission, None, now).unwrap();
         policy(
@@ -853,6 +1080,7 @@ fn reused_remembered_approval_keeps_its_deadline_and_cannot_be_renewed_after_exp
         .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
         .unwrap();
     let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
     assert_eq!(issued.authority.unsigned.expires_at, NOW + 10);
@@ -903,8 +1131,15 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
         .provision_deployment(&command, &provisioning, NOW)
         .unwrap();
     assert_eq!(replayed.identity_key_id, provisioned.identity_key_id);
+    // A distinct provisioning command cannot make the same key select between
+    // multiple independently owned bindings. The original remains usable below.
+    assert!(f
+        .store
+        .provision_deployment(&mutation(&f.admin, &provisioning), &provisioning, NOW,)
+        .is_err());
     let mut admission = f.admission.clone();
     admission.credential = Credential::ProvisionedIdentity(provisioned.identity_key_id.clone());
+    admission.refresh_family_id = None;
     let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
     assert_eq!(
         issued.authority.unsigned.principal_kind,
@@ -929,8 +1164,6 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
             trellis_instance_id: f.store.settings.instance_id.clone(),
             audience_nats_account: f.store.settings.account.clone(),
             credential_id: provisioned.identity_key_id.clone(),
-            binding: issued.authority.unsigned.binding.clone(),
-            implementations: vec![],
             runtime_id: URL_SAFE_NO_PAD.encode([17; 16]),
             ephemeral_nkey: ephemeral.public_key(),
             issued_at: NOW,
@@ -954,6 +1187,42 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
         admitted.authority.unsigned.session_public_key,
         URL_SAFE_NO_PAD.encode(public)
     );
+    // Auth derives the authoritative deployment/instance/participant binding
+    // from the installed identity, not assertions submitted by the caller.
+    assert_eq!(
+        admitted.authority.unsigned.binding,
+        issued.authority.unsigned.binding
+    );
+    let wrong_identity = trellis_protocol::sign_provisioned_admission(
+        signed.credential.clone(),
+        &SigningKey::from_bytes(&[12; 32]),
+    )
+    .unwrap();
+    assert!(f
+        .store
+        .admit_provisioned(
+            &serde_json::to_vec(&wrong_identity).unwrap(),
+            &ephemeral.public_key(),
+            &inbox,
+            NOW,
+        )
+        .is_err());
+    let mut wrong_installation = signed.credential.clone();
+    wrong_installation.trellis_instance_id = id();
+    let wrong_installation = trellis_protocol::sign_provisioned_admission(
+        wrong_installation,
+        &SigningKey::from_bytes(&[11; 32]),
+    )
+    .unwrap();
+    assert!(f
+        .store
+        .admit_provisioned(
+            &serde_json::to_vec(&wrong_installation).unwrap(),
+            &ephemeral.public_key(),
+            &inbox,
+            NOW,
+        )
+        .is_err());
     assert!(f
         .store
         .admit_provisioned(
@@ -1004,7 +1273,7 @@ fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates(
         &f.admin,
         PolicyMutation::PrivilegeAssign {
             principal_id: delegate.clone(),
-            privilege: trellis_protocol::PlatformPrivilege::PrivilegesManage,
+            privileges: vec![trellis_protocol::PlatformPrivilege::PrivilegesManage],
             expected_revision: 0,
         },
         NOW,
@@ -1109,7 +1378,7 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
             provider_id: provider.provider_id.clone(),
             claim_name: "/groups".into(),
             claim_value: "readers".into(),
-            role_id: role,
+            role_ids: vec![role],
             expected_revision: 0,
         },
         NOW,
@@ -1139,6 +1408,7 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
         .approve_grant(&mutation(&f.principal, &request), &request, NOW)
         .unwrap();
     let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     let first = f.store.issue_authority(&admission, None, NOW).unwrap();
     assert_eq!(first.authority.unsigned.expires_at, NOW + 5);
@@ -1209,6 +1479,7 @@ fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
         .approve_grant(&mutation(&f.principal, &request), &request, NOW)
         .unwrap();
     let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     admission.runtime_id = URL_SAFE_NO_PAD.encode([8; 16]);
     let first = f.store.issue_authority(&admission, None, NOW).unwrap();
@@ -1268,6 +1539,7 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
         .unwrap();
     let mut provider = f.admission.clone();
     provider.credential = Credential::ProvisionedIdentity(provisioned.identity_key_id);
+    provider.refresh_family_id = None;
     let initial = f.store.issue_authority(&provider, None, NOW).unwrap();
     let certificate: trellis_protocol::SignedProviderCertificate = serde_json::from_slice(
         &f.store
@@ -1282,7 +1554,7 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
         .verify(
             &f.store.issuer(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "account-phase-two",
+            account_key(),
             NOW,
         )
         .unwrap();
@@ -1380,7 +1652,7 @@ fn rotation_authenticates_the_new_pin_and_rejects_forgery_and_rollback() {
         .verify_successor(
             &previous,
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "account-phase-two",
+            account_key(),
             0,
             NOW + 1,
         )
@@ -1391,7 +1663,7 @@ fn rotation_authenticates_the_new_pin_and_rejects_forgery_and_rollback() {
         .verify_successor(
             &previous,
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "account-phase-two",
+            account_key(),
             0,
             NOW + 1
         )
@@ -1400,7 +1672,7 @@ fn rotation_authenticates_the_new_pin_and_rejects_forgery_and_rollback() {
         .verify_successor(
             &installed,
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "account-phase-two",
+            account_key(),
             1,
             NOW + 1
         )
@@ -1544,12 +1816,23 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         attachment_id: attachment.clone(),
         server_id: server_id.clone(),
         broker_client_id: cid,
+        broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+            .unwrap()
+            .public_key(),
         authorization_session_id: issued.authority.unsigned.authorization_session_id.clone(),
         context_digest: issued.digest.clone(),
         ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
             .unwrap()
             .public_key(),
-        transport_policy_digest: digest(&issued.authority).unwrap(),
+        transport_policy_digest: f
+            .store
+            .transaction(|connection| {
+                f.store
+                    .compile_transport(connection, &issued.authority.unsigned)
+            })
+            .unwrap()
+            .digest()
+            .unwrap(),
     };
     let mut impostor = admission.clone();
     impostor.ephemeral_nkey = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [11; 32])
@@ -1566,7 +1849,7 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         .await
         .unwrap();
     let published = material
-        .get(format!("authority.{}", issued.digest))
+        .get(format!("context.{}", issued.digest))
         .await
         .unwrap()
         .unwrap();
@@ -1596,13 +1879,13 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         .verify(
             &f.store.issuer(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "account-phase-two",
+            account_key(),
         )
         .unwrap();
     assert_eq!(signed.effective_cutoff, NOW + 1);
     let mut cache = super::revocation::RevocationCache::new(
         "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
-        "account-phase-two".into(),
+        account_key().into(),
         1,
     )
     .unwrap();
@@ -1621,7 +1904,7 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         verify_session_authority(SessionAuthorityVerificationInput {
             issuer: &issuer,
             trellis_instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            audience_nats_account: "account-phase-two",
+            audience_nats_account: account_key(),
             authority: &issued.authority,
             policy: &policy,
             purpose: SessionAuthorityPurpose::Live,
@@ -1691,7 +1974,7 @@ fn bounded_revocation_cache_never_evicts_live_cutoffs_and_reclaims_only_expired_
     let second_id = &second.authority.unsigned.authorization_session_id;
     let mut cache = super::revocation::RevocationCache::new(
         "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
-        "account-phase-two".into(),
+        account_key().into(),
         1,
     )
     .unwrap();
@@ -1732,7 +2015,7 @@ fn bounded_revocation_cache_never_evicts_live_cutoffs_and_reclaims_only_expired_
         .resolve_revocation(first_id)
         .unwrap()
         .unwrap()
-        .verify(&issuer, "01ARZ3NDEKTSV4RRFFQ69G5FAV", "account-phase-two")
+        .verify(&issuer, "01ARZ3NDEKTSV4RRFFQ69G5FAV", account_key())
         .unwrap();
 }
 
@@ -1751,7 +2034,7 @@ fn issues_verifiable_authority_and_retains_it_after_restart_and_expiry() {
     let verified = verify_session_authority(SessionAuthorityVerificationInput {
         issuer: &issuer,
         trellis_instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-        audience_nats_account: "account-phase-two",
+        audience_nats_account: account_key(),
         authority: &issued.authority,
         policy: &policy,
         purpose: SessionAuthorityPurpose::Live,
@@ -1824,6 +2107,20 @@ fn union_survives_one_entitlement_path_and_required_loss_retires_the_session() {
         NOW + 2,
     );
     drain(&f.store, NOW + 2);
+    assert_eq!(
+        f.store
+            .authorization_session_status(
+                issued
+                    .authority
+                    .unsigned
+                    .authorization_session_id
+                    .parse()
+                    .unwrap()
+            )
+            .unwrap()
+            .state,
+        trellis_runtime_apis::types::AuthAuthorizationSessionState::Superseded,
+    );
     assert!(f
         .store
         .resolve_revocation(&issued.authority.unsigned.authorization_session_id)
@@ -1833,6 +2130,35 @@ fn union_survives_one_entitlement_path_and_required_loss_retires_the_session() {
         f.store.issue_authority(&f.admission, None, NOW + 2),
         Err(AuthError::RequiredMissing)
     ));
+}
+
+#[test]
+fn generated_review_request_preserves_canonical_evidence_for_breakage_review() {
+    let f = fixture();
+    let proposed = evidence(&SOURCE.replace(
+        "model Document { id: string; }",
+        "model Document { id: string; requiredValue: string; }",
+    ));
+    let request: trellis_runtime_apis::types::AuthApiReviewRequest =
+        serde_json::from_value(serde_json::json!({
+            "apiId": f.api,
+            "packageEvidence": proposed,
+        }))
+        .unwrap();
+    let decoded: trellis_runtime_apis::types::AuthApiReviewRequest =
+        serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+    let review = f
+        .store
+        .review_api(
+            &f.admin,
+            serde_json::from_value(serde_json::to_value(decoded.package_evidence).unwrap())
+                .unwrap(),
+            &decoded.api_id,
+            NOW + 1,
+        )
+        .unwrap();
+    assert!(!review.compatible);
+    assert!(!review.breaking_changes.is_empty());
 }
 
 #[test]
@@ -1855,6 +2181,9 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
         attachment_id: id(),
         server_id: "server".into(),
         broker_client_id: 1,
+        broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+            .unwrap()
+            .public_key(),
         authorization_session_id: session.clone(),
         context_digest: issued.digest.clone(),
         ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
@@ -1961,7 +2290,7 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
         &f.admin,
         PolicyMutation::PrivilegeAssign {
             principal_id: f.principal.clone(),
-            privilege: ApisAccept,
+            privileges: vec![ApisAccept],
             expected_revision: 0,
         },
         NOW,
@@ -1988,6 +2317,7 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
         .approve_grant(&mutation(&f.principal, &approval), &approval, NOW)
         .unwrap();
     let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     registration.expected_revision = 2;
     registration.eligible_privileges.clear();
@@ -2097,7 +2427,7 @@ fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits(
         .verify(
             &f.store.issuer(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "account-phase-two",
+            account_key(),
         )
         .unwrap();
     assert!(!catalog.authorizes(&issued.authority, &action));
@@ -2113,7 +2443,7 @@ fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits(
             .verify(
                 &f.store.issuer(),
                 "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                "account-phase-two",
+                account_key(),
             )
             .unwrap();
         // Current-catalog dispatch must agree with the immutable catalog
@@ -2137,6 +2467,92 @@ fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits(
         issued.authority.unsigned.authorization_session_id
     );
     assert!(catalog.authorizes(&renewed.authority, &action));
+}
+
+#[test]
+fn sdk_dispatch_checks_signed_bytes_new_membership_and_session_retirement() {
+    use trellis_protocol::{sign_session_request, SessionRequest};
+    use trellis_rs::client::{AuthorizationVerificationCore, RequestVerificationInput};
+
+    let f = fixture();
+    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let updated = SOURCE.replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
+    let catalog = accept(&f.store, &f.admin, &updated, false, NOW + 1);
+    let renewed = f
+        .store
+        .issue_authority(
+            &f.admission,
+            Some(&issued.authority.unsigned.authorization_session_id),
+            NOW + 1,
+        )
+        .unwrap();
+    let issuer = f.store.issuer();
+    let policy = SessionAuthorityVerificationPolicy {
+        now_unix_seconds: NOW + 1,
+        allowed_clock_skew_seconds: 5,
+        maximum_authority_lifetime_seconds: 60,
+        maximum_authority_bytes: 65536,
+        maximum_entries: 256,
+    };
+    let verifier = AuthorizationVerificationCore::new();
+    let action = CatalogActionIdentity {
+        kind: ApiSurfaceKind::Rpc,
+        name: "Export".into(),
+        direction: PermissionAction::Call,
+    };
+    for (candidate, allowed) in [(&issued, false), (&renewed, true)] {
+        let authority = Arc::new(
+            verify_session_authority(SessionAuthorityVerificationInput {
+                issuer: &issuer,
+                trellis_instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                audience_nats_account: account_key(),
+                authority: &candidate.authority,
+                policy: &policy,
+                purpose: SessionAuthorityPurpose::Live,
+                revocation_cutoff: None,
+            })
+            .unwrap(),
+        );
+        let api = &candidate.authority.unsigned.apis[0];
+        let request = SessionRequest {
+            authority_digest: candidate.digest.clone(),
+            api_id: api.api_id.clone(),
+            api_generation: api.generation,
+            accepted_revision: api.accepted_revision,
+            action: "Export".into(),
+            subject: "test.Export".into(),
+            reply_subject: Some(format!(
+                "{}.reply",
+                candidate.authority.unsigned.inbox_prefix
+            )),
+            request_id: id(),
+            issued_at: NOW + 1,
+        };
+        let payload = br#"{"id":"sample"}"#;
+        let proof =
+            sign_session_request(&request, payload, &SigningKey::from_bytes(&[9; 32])).unwrap();
+        let verify = |bytes: &[u8], revoked| {
+            verifier.verify_request(RequestVerificationInput {
+                authority: authority.clone(),
+                request: &request,
+                payload: bytes,
+                proof: &proof,
+                policy: &policy,
+                known_revoked: revoked,
+                catalog: &catalog,
+                catalog_issuer: &issuer,
+                action: &action,
+            })
+        };
+        assert_eq!(verify(payload, false).is_ok(), allowed);
+        assert!(verify(br#"{"id":"substituted"}"#, false).is_err());
+        assert!(verify(payload, true).is_err());
+        if allowed {
+            let verified = verify(payload, false).unwrap();
+            assert_eq!(verified.caller().principal_id, f.principal);
+            assert_eq!(verified.request().request_id, request.request_id);
+        }
+    }
 }
 
 #[test]
@@ -2184,7 +2600,7 @@ fn stale_review_and_force_without_privilege_are_atomic_failures() {
         &f.admin,
         PolicyMutation::PrivilegeAssign {
             principal_id: manager.clone(),
-            privilege: trellis_protocol::PlatformPrivilege::ApisAccept,
+            privileges: vec![trellis_protocol::PlatformPrivilege::ApisAccept],
             expected_revision: 0,
         },
         NOW,
@@ -2232,7 +2648,7 @@ fn hard_grant_revocation_blocks_offline_reissue_and_preserves_signed_cutoff() {
         .verify(
             &restarted.issuer(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "account-phase-two",
+            account_key(),
         )
         .unwrap();
     assert_eq!(revocation.effective_cutoff, NOW + 1);
@@ -2253,6 +2669,9 @@ fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
                 attachment_id: id(),
                 server_id: "offline-broker".into(),
                 broker_client_id: 8,
+                broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+                    .unwrap()
+                    .public_key(),
                 authorization_session_id: issued
                     .authority
                     .unsigned
@@ -2261,7 +2680,15 @@ fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
                 ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
                     .unwrap()
                     .public_key(),
-                transport_policy_digest: issued.digest.clone(),
+                transport_policy_digest: f
+                    .store
+                    .transaction(|connection| {
+                        f.store
+                            .compile_transport(connection, &issued.authority.unsigned)
+                    })
+                    .unwrap()
+                    .digest()
+                    .unwrap(),
                 context_digest: issued.digest.clone(),
             },
             NOW,
@@ -2323,10 +2750,12 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
     let subject = admission_get_subject(&f.admission.session_public_key).unwrap();
     let reply = format!("{}.initial", f.admission.inbox_prefix);
+    let attachment_id = id();
     let request = AdmissionGet {
         trellis_instance_id: f.store.settings.instance_id.clone(),
         runtime_id: f.admission.runtime_id.clone(),
         session_public_key: f.admission.session_public_key.clone(),
+        attachment_id: attachment_id.clone(),
         request_nonce: URL_SAFE_NO_PAD.encode([23; 16]),
         issued_at: NOW,
     };
@@ -2342,9 +2771,12 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     f.store
         .admit_attachment(
             &Attachment {
-                attachment_id: id(),
+                attachment_id: attachment_id.clone(),
                 server_id: "broker".into(),
                 broker_client_id: 1,
+                broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+                    .unwrap()
+                    .public_key(),
                 authorization_session_id: issued
                     .authority
                     .unsigned
@@ -2354,7 +2786,15 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
                 ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
                     .unwrap()
                     .public_key(),
-                transport_policy_digest: digest(&issued.authority).unwrap(),
+                transport_policy_digest: f
+                    .store
+                    .transaction(|connection| {
+                        f.store
+                            .compile_transport(connection, &issued.authority.unsigned)
+                    })
+                    .unwrap()
+                    .digest()
+                    .unwrap(),
             },
             NOW,
         )
@@ -2457,10 +2897,12 @@ async fn own_context_errors_never_publish_to_another_keys_reply_namespace() {
 
     let f = fixture();
     let instance_id = f.store.settings.instance_id.clone();
+    let jetstream_directory = f.directory.path().join("nats");
     let binary =
         std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into());
     let mut server = tokio::process::Command::new(binary)
-        .args(["-a", "127.0.0.1", "-p", "-1"])
+        .args(["-a", "127.0.0.1", "-p", "-1", "-js", "-sd"])
+        .arg(&jetstream_directory)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -2484,10 +2926,20 @@ async fn own_context_errors_never_publish_to_another_keys_reply_namespace() {
     let client = async_nats::connect(format!("nats://{address}"))
         .await
         .unwrap();
-    let service =
-        super::own_context::OwnContextService::start(client.clone(), std::sync::Arc::new(f.store))
-            .await
-            .unwrap();
+    let material = async_nats::jetstream::new(client.clone())
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: super::broker::MATERIAL_BUCKET.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let service = super::own_context::OwnContextService::start(
+        client.clone(),
+        material,
+        std::sync::Arc::new(f.store),
+    )
+    .await
+    .unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let running = tokio::spawn(service.run(async move {
         let _ = stopped.await;
@@ -2511,6 +2963,7 @@ async fn own_context_errors_never_publish_to_another_keys_reply_namespace() {
             trellis_instance_id: instance_id,
             runtime_id: URL_SAFE_NO_PAD.encode([88; 16]),
             session_public_key: public,
+            attachment_id: id(),
             request_nonce: URL_SAFE_NO_PAD.encode([89; 16]),
             issued_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -2531,13 +2984,10 @@ async fn own_context_errors_never_publish_to_another_keys_reply_namespace() {
         .publish_with_reply(subject, reply, bytes.into())
         .await
         .unwrap();
-    let response = tokio::time::timeout(Duration::from_secs(5), own_messages.next())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&response.payload).unwrap(),
-        serde_json::json!({"error":"authentication_required"})
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), own_messages.next())
+            .await
+            .is_err()
     );
     stop.send(()).unwrap();
     running.await.unwrap().unwrap();

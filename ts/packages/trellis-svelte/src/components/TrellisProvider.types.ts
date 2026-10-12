@@ -4,17 +4,14 @@ import type {
   ClientOpts,
 } from "@oatscenter/trellis";
 import type { Snippet } from "svelte";
-import type {
-  TrellisAppOwner,
-  TrellisParticipantLike,
-} from "../context.svelte.ts";
+import type { TrellisAppOwner, TrellisAppRequest } from "../context.svelte.ts";
 
 /** Props accepted by the Svelte Trellis provider component. */
 export type TrellisProviderProps<
-  TContract extends TrellisParticipantLike = TrellisParticipantLike,
+  TContract extends TrellisAppRequest = TrellisAppRequest,
 > = {
   trellisApp: TrellisAppOwner<TContract>;
-  auth?: ClientAuthOptions;
+  auth: ClientAuthOptions;
   client?: ClientOpts;
   children: Snippet;
   loading?: Snippet;

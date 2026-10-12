@@ -12,6 +12,7 @@ declare const __api: {
 		readonly "rpc:DropAlpha": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:DropAlpha";
+			readonly subject: "rpc.v1.events.DropAlpha";
 			readonly input: typeof Types0.EmptyCodec;
 			readonly output: typeof Types0.EmptyCodec;
 			readonly errors: readonly [];
@@ -21,6 +22,7 @@ declare const __api: {
 		readonly "rpc:Observed": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Observed";
+			readonly subject: "rpc.v1.events.Observed";
 			readonly input: typeof Types0.EmptyCodec;
 			readonly output: typeof Types0.ObservedCodec;
 			readonly errors: readonly [];
@@ -30,12 +32,14 @@ declare const __api: {
 		readonly "event:Alpha": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Alpha";
+			readonly subject: "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha";
 			readonly payload: typeof Types0.SampleCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Beta": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Beta";
+			readonly subject: "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Beta";
 			readonly payload: typeof Types0.SampleCodec;
 			readonly parameters: readonly [];
 		};

@@ -1,5 +1,6 @@
 import { deepStrictEqual as assertEquals } from "node:assert/strict";
 import { once } from "node:events";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -49,8 +50,24 @@ test("browser OAuth custody survives Chromium restart without exporting private 
   if (!address || typeof address === "string")
     throw new Error("missing HTTP address");
   const origin = `http://127.0.0.1:${address.port}`;
-  const handle = ulid();
+  const handle = "trellis.console";
   const otherHandle = ulid();
+  const publicKey = generateKeyPairSync("ed25519").publicKey.export({
+    format: "jwk",
+  });
+  if (!publicKey.x) throw new Error("missing issuer public key");
+  const trust = {
+    instanceId: "trellis-one",
+    account: "public-one",
+    issuer: {
+      keyId: createHash("sha256")
+        .update(Buffer.from(publicKey.x, "base64url"))
+        .digest("base64url"),
+      publicKey: publicKey.x,
+      state: "active" as const,
+    },
+    rotationSequence: "7",
+  };
   let browser = await chromium.launchPersistentContext(
     join(directory, "profile"),
     { headless: true },
@@ -59,18 +76,21 @@ test("browser OAuth custody survives Chromium restart without exporting private 
     const page = await browser.newPage();
     await page.goto(origin);
     const publicJwk = await page.evaluate(
-      async ({ origin, handle }) => {
+      async ({ origin, handle, trust }) => {
         const module: typeof import("../packages/trellis/auth/browser/storage.ts") =
           await import(`${origin}/custody.js`);
         const store = (
-          await module.BrowserSessionStore.open({
-            issuer: "https://oauth.example",
-            instanceId: "trellis-one",
-            account: "public-one",
-            clientId: "browser-app",
-            browserOrigin: origin,
-            credentialHandle: handle,
-          })
+          await module.BrowserSessionStore.open(
+            {
+              issuer: "https://oauth.example",
+              instanceId: "trellis-one",
+              account: "public-one",
+              clientId: "browser-app",
+              browserOrigin: origin,
+              credentialHandle: handle,
+            },
+            trust,
+          )
         ).unwrapOrElse((error) => {
           throw error;
         });
@@ -96,7 +116,7 @@ test("browser OAuth custody survives Chromium restart without exporting private 
         store.close();
         return publicJwk;
       },
-      { origin, handle },
+      { origin, handle, trust },
     );
     await browser.close();
     browser = await chromium.launchPersistentContext(
@@ -106,7 +126,7 @@ test("browser OAuth custody survives Chromium restart without exporting private 
     const restored = await browser.newPage();
     await restored.goto(origin);
     const result = await restored.evaluate(
-      async ({ origin, handle, otherHandle, publicJwk }) => {
+      async ({ origin, handle, otherHandle, publicJwk, trust }) => {
         const module: typeof import("../packages/trellis/auth/browser/storage.ts") =
           await import(`${origin}/custody.js`);
         const scope = {
@@ -118,7 +138,14 @@ test("browser OAuth custody survives Chromium restart without exporting private 
           credentialHandle: handle,
         };
         const store = (
-          await module.BrowserSessionStore.open(scope)
+          await module.BrowserSessionStore.open(scope, {
+            ...trust,
+            issuer: {
+              ...trust.issuer,
+              keyId: "fresh-discovery-must-not-replace-the-pin",
+            },
+            rotationSequence: "999",
+          })
         ).unwrapOrElse((error) => {
           throw error;
         });
@@ -147,10 +174,13 @@ test("browser OAuth custody survives Chromium restart without exporting private 
           payload,
         );
         const other = (
-          await module.BrowserSessionStore.open({
-            ...scope,
-            credentialHandle: otherHandle,
-          })
+          await module.BrowserSessionStore.open(
+            {
+              ...scope,
+              credentialHandle: otherHandle,
+            },
+            trust,
+          )
         ).unwrapOrElse((error) => {
           throw error;
         });
@@ -168,6 +198,32 @@ test("browser OAuth custody survives Chromium restart without exporting private 
         const preserved = (await store.refreshToken()).unwrapOrElse((error) => {
           throw error;
         });
+        const retainedTrust = store.trust;
+        // Simulate a pre-release unpinned record on disk. Reopening must not
+        // associate its still-encrypted secret with newly discovered trust.
+        const database = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open("trellis-oauth", 1);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        await new Promise<void>((resolve, reject) => {
+          const transaction = database.transaction("credentials", "readwrite");
+          const records = transaction.objectStore("credentials");
+          const request = records.openCursor();
+          request.onsuccess = () => {
+            const cursor = request.result;
+            if (!cursor) return;
+            const record = cursor.value;
+            delete record.trust;
+            cursor.update(record);
+            cursor.continue();
+          };
+          transaction.oncomplete = () => resolve();
+          transaction.onabort = () => reject(transaction.error);
+        });
+        database.close();
+        const unpinned = await module.BrowserSessionStore.open(scope, trust);
+        const recovery = unpinned.isErr() ? unpinned.error.reason : "accepted";
         store.close();
         other.close();
         return {
@@ -176,9 +232,11 @@ test("browser OAuth custody survives Chromium restart without exporting private 
           otherToken,
           changedUser: replacement.isOk(),
           preserved,
+          retainedTrust,
+          recovery,
         };
       },
-      { origin, handle, otherHandle, publicJwk },
+      { origin, handle, otherHandle, publicJwk, trust },
     );
     assertEquals(result, {
       token: "confidential-refresh-one",
@@ -186,6 +244,8 @@ test("browser OAuth custody survives Chromium restart without exporting private 
       otherToken: undefined,
       changedUser: false,
       preserved: "confidential-refresh-one",
+      retainedTrust: trust,
+      recovery: "OAuthRecoveryRequired",
     });
   } finally {
     await browser.close();

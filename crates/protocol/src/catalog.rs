@@ -358,6 +358,74 @@ impl SignedCatalogSnapshot {
 }
 
 impl SignedProviderCertificate {
+    /// Authorize only an exact provider-owned event publication against an
+    /// already authenticated catalog and session authority. `at` is the live
+    /// dispatch time, or the authenticated event/broker time for retained data.
+    /// Caller RPC and event-consumption rights are never derived from a certificate.
+    pub fn authorizes_event_publication(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        authority: &SignedSessionAuthority,
+        catalog: &SignedCatalogSnapshot,
+        action: &CatalogActionIdentity,
+        at: i64,
+    ) -> Result<bool, ProtocolError> {
+        if action.kind != ApiSurfaceKind::Event || action.direction != PermissionAction::Publish {
+            return Ok(false);
+        }
+        let body = &authority.unsigned;
+        self.verify(
+            issuer,
+            &body.trellis_instance_id,
+            &body.audience_nats_account,
+            at,
+        )?;
+        let coordinates = match &body.binding {
+            crate::SessionBinding::Service {
+                deployment_id,
+                instance_id,
+                ..
+            }
+            | crate::SessionBinding::Device {
+                deployment_id,
+                instance_id,
+                ..
+            } => deployment_id == &self.deployment_id && instance_id == &self.instance_id,
+            _ => false,
+        };
+        let Some(binding) = body
+            .provider_bindings
+            .iter()
+            .find(|binding| binding.api_id == self.api_id)
+        else {
+            return Ok(false);
+        };
+        let Some(api) = body.apis.iter().find(|api| api.api_id == self.api_id) else {
+            return Ok(false);
+        };
+        let Some(entry) = catalog
+            .actions
+            .iter()
+            .find(|entry| &entry.identity == action)
+        else {
+            return Ok(false);
+        };
+        Ok(coordinates
+            && self.principal_id == body.principal_id
+            && self.session_public_key == body.session_public_key
+            && binding.provider_certificate_digest == self.digest()?
+            && binding.deployment_id == self.deployment_id
+            && binding.implementation_digest == self.implementation_digest
+            && binding.generation == self.generation
+            && api.generation == self.generation
+            && catalog.api_id == self.api_id
+            && catalog.generation == self.generation
+            && api.catalog_snapshot_digest == catalog.digest()?
+            && api.accepted_revision <= catalog.accepted_revision
+            && api.accepted_revision >= entry.introduced_revision
+            && self.implemented_actions.contains(action))
+    }
+
     /// Verify provider identity, scope, signature and live validity.
     pub fn verify(
         &self,

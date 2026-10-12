@@ -9,15 +9,12 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use trellis_protocol::{
-    parse_session_authority, sign_admission_context, verify_admission_get, AdmissionContext,
-    AuthorityIssuerKey, AuthorityIssuerState, SignedAdmissionContext, SignedAdmissionGet,
-    ADMISSION_GET_DOMAIN_V1,
+    sign_admission_context, verify_admission_get, AdmissionContext, SignedAdmissionContext,
+    SignedAdmissionGet, ADMISSION_GET_DOMAIN_V1,
 };
 
 use super::{
-    authorization_sessions::{loses_authority, session_credential},
-    policy::evaluate,
-    revocation::retire_session,
+    authorization_sessions::{session_credential, AdmissionIdentity},
     AuthError, SqliteAuthorizationStore,
 };
 
@@ -25,13 +22,16 @@ use super::{
 /// ephemeral-key-derived publish subject from Callout's complete ACL.
 pub(crate) struct OwnContextService {
     subscriber: async_nats::Subscriber,
+    metadata: async_nats::Subscriber,
     client: async_nats::Client,
+    material: async_nats::jetstream::kv::Store,
     store: Arc<SqliteAuthorizationStore>,
 }
 
 impl OwnContextService {
     pub(crate) async fn start(
         client: async_nats::Client,
+        material: async_nats::jetstream::kv::Store,
         store: Arc<SqliteAuthorizationStore>,
     ) -> Result<Self, AuthError> {
         let subscriber = client
@@ -41,10 +41,19 @@ impl OwnContextService {
             )
             .await
             .map_err(|_| AuthError::Unavailable)?;
+        let metadata = client
+            .queue_subscribe(
+                trellis_protocol::ISSUER_METADATA_SUBJECT,
+                "trellis.auth.metadata".into(),
+            )
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
         client.flush().await.map_err(|_| AuthError::Unavailable)?;
         Ok(Self {
             subscriber,
+            metadata,
             client,
+            material,
             store,
         })
     }
@@ -77,23 +86,68 @@ impl OwnContextService {
                         || !reply.starts_with(&format!("{inbox}.")) || reply.len()>512
                         || reply.split('.').any(|part|part.is_empty() || part.contains(['*','>']) || part.chars().any(char::is_whitespace)) {continue;}
                     if requests.len()>=32 {
-                        self.client.publish(reply,br#"{"error":"admission_timeout"}"#.as_slice().into()).await.map_err(|_|AuthError::Unavailable)?;
                         continue;
                     }
                     let store=self.store.clone();
                     let client=self.client.clone();
+                    let material=self.material.clone();
                     requests.spawn(async move {
-                        let result=SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|time|i64::try_from(time.as_secs()).ok())
-                            .ok_or(AuthError::Unavailable)
-                            .and_then(|now|store.own_context(&message.payload,message.subject.as_str(),reply.as_str(),now))
-                            .and_then(|response|serde_json::to_vec(&response).map_err(AuthError::from));
-                        let bytes=result.unwrap_or_else(|_|br#"{"error":"authentication_required"}"#.to_vec());
+                        let destination=reply.clone();
+                        let publication_store=store.clone();
+                        let result=tokio::task::spawn_blocking(move || {
+                            SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|time|i64::try_from(time.as_secs()).ok())
+                                .ok_or(AuthError::Unavailable)
+                                .and_then(|now|store.own_context_with_digest(&message.payload,message.subject.as_str(),destination.as_str(),now))
+                                .and_then(|(response,digest)| {
+                                    let authority=trellis_protocol::parse_session_authority(response.response.session_authority.as_bytes(),trellis_protocol::MAX_SESSION_AUTHORITY_BYTES)?;
+                                    let dependencies=authority.unsigned.apis.iter()
+                                        .map(|api|("catalog",api.catalog_snapshot_digest.clone()))
+                                        .chain(authority.unsigned.provider_bindings.iter().map(|binding|("provider",binding.provider_certificate_digest.clone())))
+                                        .collect::<Vec<_>>();
+                                    Ok((serde_json::to_vec(&response)?,digest,dependencies))
+                                })
+                        }).await.map_err(|_|AuthError::Unavailable)?;
+                        // The bootstrap envelope has no signed negative variant.
+                        // Failed verification and overload remain transport failures,
+                        // never unsigned credential-revocation instructions.
+                         let Ok((bytes,digest,dependencies))=result else {return Ok(());};
+                        // A successful own-context reply makes application I/O immediately usable.
+                         // Publish its exact immutable dependency closure before exposing that reply; the durable
+                        // outbox remains the crash-recovery owner and may idempotently repeat this put.
+                         for (kind,key) in dependencies {
+                             publication_store.publish_verification_material(&material,kind,&key).await?;
+                         }
+                         publication_store.publish_verification_material(&material,"authority",&digest).await?;
+                        client.publish(reply,bytes.into()).await.map_err(|_|AuthError::Unavailable)
+                    });
+                }
+                message=self.metadata.next()=> {
+                    let Some(message)=message else {return Err(AuthError::Unavailable)};
+                    let Some(reply)=message.reply else {continue};
+                    // NATS admission ACLs restrict this subject to admitted users;
+                    // never reflect their unsigned lookup into API/control subjects.
+                    if message.payload.is_empty() || message.payload.len()>4096 || reply.len()>512
+                        || !reply.starts_with("_INBOX.") || reply.split('.').count()<3
+                        || reply.split('.').any(|part|part.is_empty() || part.contains(['*','>']) || part.chars().any(char::is_whitespace))
+                        || requests.len()>=32 {continue}
+                    let store=self.store.clone();let client=self.client.clone();
+                    requests.spawn(async move {
+                        let destination=reply.clone();
+                        let result=tokio::task::spawn_blocking(move || {
+                            let now=SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|time|i64::try_from(time.as_secs()).ok()).ok_or(AuthError::Unavailable)?;
+                            store.issuer_metadata(&message.payload,message.subject.as_str(),destination.as_str(),now)
+                        }).await.map_err(|_|AuthError::Unavailable)?;
+                        let Ok(bytes)=result else {return Ok(())};
                         client.publish(reply,bytes.into()).await.map_err(|_|AuthError::Unavailable)
                     });
                 }
             }
         }
         self.subscriber
+            .unsubscribe()
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
+        self.metadata
             .unsubscribe()
             .await
             .map_err(|_| AuthError::Unavailable)?;
@@ -115,8 +169,212 @@ impl OwnContextService {
 }
 
 impl SqliteAuthorizationStore {
+    /// Resolve only protocol-selected public verification material, from the
+    /// same snapshot as its fresh issuer signature. No caller policy is granted.
+    pub(super) fn issuer_metadata(
+        &self,
+        bytes: &[u8],
+        subject: &str,
+        reply: &str,
+        now: i64,
+    ) -> Result<Vec<u8>, AuthError> {
+        use trellis_protocol::{
+            sign_issuer_metadata, IssuerMetadata, IssuerMetadataQuery, IssuerMetadataRequest,
+            IssuerMetadataResult,
+        };
+        if bytes.is_empty()
+            || bytes.len() > 4096
+            || subject != trellis_protocol::ISSUER_METADATA_SUBJECT
+            || reply.len() > 512
+            || !reply.starts_with("_INBOX.")
+            || reply.split('.').count() < 3
+            || reply.split('.').any(|part| {
+                part.is_empty()
+                    || part.contains(['*', '>'])
+                    || part.chars().any(char::is_whitespace)
+            })
+        {
+            return Err(AuthError::Denied);
+        }
+        let request: IssuerMetadataRequest = serde_json::from_slice(bytes)?;
+        if request.trellis_instance_id != self.settings.instance_id
+            || request.audience_nats_account != self.settings.account
+        {
+            return Err(AuthError::Denied);
+        }
+        self.transaction(|connection| {
+            self.current_signer(connection)?;
+            let mut response = IssuerMetadata {
+                format: trellis_protocol::ISSUER_METADATA_DOMAIN_V1.into(),
+                issuer_key_id: self.issuer().key_id,
+                request,
+                request_subject: subject.into(),
+                reply_subject: reply.into(),
+                result: IssuerMetadataResult::Unavailable,
+                issued_at: now,
+                expires_at: now.saturating_add(30),
+            };
+            // Validate canonical nonce, selectors, scope and routing before SQL.
+            response.digest()?;
+            let result = match &response.request.query {
+                IssuerMetadataQuery::AuthorityResolve { context_digest } => {
+                    super::rpc_credentials::read_authority(connection, context_digest)
+                        .and_then(|value| Ok(serde_json::to_string(&value)?))
+                }
+                IssuerMetadataQuery::AuthorityStatus {
+                    authorization_session_id,
+                } => {
+                    let session = authorization_session_id
+                        .parse()
+                        .map_err(|_| AuthError::Denied)?;
+                    Self::authorization_session_status_in(connection, session)
+                        .and_then(|value| Ok(serde_json::to_string(&value)?))
+                }
+                IssuerMetadataQuery::IssuerChain {
+                    pinned_key_id,
+                    target_key_id,
+                } => super::rpc_credentials::read_chain(
+                    connection,
+                    &trellis_runtime_apis::types::AuthIssuerChainRequest {
+                        pinned_key_id: pinned_key_id.clone().into(),
+                        target_key_id: target_key_id.clone().into(),
+                        extra: Default::default(),
+                    },
+                )
+                .and_then(|value| Ok(serde_json::to_string(&value)?)),
+            };
+            response.result = match result {
+                Ok(payload) => IssuerMetadataResult::Value { payload },
+                Err(AuthError::NotFound) => IssuerMetadataResult::Missing,
+                Err(_) => IssuerMetadataResult::Unavailable,
+            };
+            match sign_issuer_metadata(response.clone(), &self.signer) {
+                Ok(signed) => Ok(serde_json::to_vec(&signed)?),
+                Err(_) => {
+                    response.result = IssuerMetadataResult::Unavailable;
+                    Ok(serde_json::to_vec(&sign_issuer_metadata(
+                        response,
+                        &self.signer,
+                    )?)?)
+                }
+            }
+        })
+    }
+
+    pub(super) fn attachment_registry(
+        &self,
+        connection: &rusqlite::Connection,
+        authority: &trellis_protocol::UnsignedSessionAuthority,
+        desired: &trellis_protocol::TransportAuthorizationV1,
+        admitted: &trellis_protocol::TransportAuthorizationV1,
+        attachment: &str,
+    ) -> Result<Value, AuthError> {
+        let mut registry = self.admission_registry(connection)?;
+        registry["transportAuthorization"] = serde_json::to_value(desired)?;
+        registry["admittedTransportAuthorization"] = serde_json::to_value(admitted)?;
+        registry["attachmentId"] = Value::String(attachment.into());
+        if let Some(bootstrap) = self.native_bootstrap(connection, authority)? {
+            registry["authorization"] = bootstrap;
+        }
+        Ok(registry)
+    }
+
+    /// Project the installed participant revision and its committed resources;
+    /// never substitute a generated caller descriptor or an empty binding for
+    /// a resource that the installed native participant requires.
+    pub(super) fn native_bootstrap(
+        &self,
+        connection: &rusqlite::Connection,
+        authority: &trellis_protocol::UnsignedSessionAuthority,
+    ) -> Result<Option<Value>, AuthError> {
+        let (deployment, instance, participant) = match &authority.binding {
+            trellis_protocol::SessionBinding::Service {
+                deployment_id,
+                instance_id,
+                participant_id,
+            }
+            | trellis_protocol::SessionBinding::Device {
+                deployment_id,
+                instance_id,
+                participant_id,
+            } => (deployment_id, instance_id, participant_id),
+            _ => return Ok(None),
+        };
+        let (digest,resources,evidence):(String,String,String)=connection.query_row(
+            "SELECT p.participant_digest,b.resource_commitments_json,p.projection_json FROM auth_instances i JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id AND b.installed_revision=i.installed_revision JOIN auth_installed_participants p ON p.participant_id=?3 AND p.revision=i.installed_revision WHERE i.deployment_id=?1 AND i.instance_id=?2 AND i.principal_id=?4 AND i.state='active'",
+            params![deployment,instance,participant,authority.principal_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+        let resources: Value = serde_json::from_str(&resources)?;
+        if Some(super::sqlite::digest(&resources)?) != authority.resource_bindings_digest {
+            return Err(AuthError::Denied);
+        }
+        let graph = trellis_idl::compile_evidence(serde_json::from_str(&evidence)?)
+            .map_err(|error| AuthError::Invalid(error.to_string()))?;
+        let installed = graph
+            .packages()
+            .values()
+            .flat_map(|package| package.participants().values())
+            .find(|value| value.identity().as_str() == participant)
+            .ok_or(AuthError::Denied)?;
+        let runtime: trellis_rs::service::ServiceResourceBindings =
+            serde_json::from_value(resources).map_err(|error| {
+                AuthError::Invalid(format!(
+                    "invalid committed native resource bindings: {error}"
+                ))
+            })?;
+        for (name, definition) in installed.resources() {
+            let name = name.as_str();
+            let present = match definition {
+                trellis_idl::ResourceDefinition::State { .. }
+                | trellis_idl::ResourceDefinition::Kv { .. } => runtime.kv.contains_key(name),
+                trellis_idl::ResourceDefinition::Store { .. } => runtime.store.contains_key(name),
+                trellis_idl::ResourceDefinition::Job { .. } => runtime
+                    .jobs
+                    .as_ref()
+                    .is_some_and(|jobs| jobs.queues.contains_key(name)),
+                trellis_idl::ResourceDefinition::Consumer { .. } => {
+                    runtime.event_consumers.contains_key(name)
+                }
+            };
+            if !present && !definition.optional() {
+                return Err(AuthError::Unavailable);
+            }
+        }
+        // auth_device_companions has a grant association, but provisioning does
+        // not populate it yet. A required companion cannot be represented by a
+        // fabricated participant/login assignment.
+        if installed
+            .companion()
+            .is_some_and(|companion| !companion.optional)
+        {
+            return Err(AuthError::Unavailable);
+        }
+        Ok(Some(
+            json!({"participantId":participant,"participantDigest":digest,"resourceRuntime":runtime,"companion":null}),
+        ))
+    }
+
+    /// The signed bootstrap identifies bounded immutable-material resolution;
+    /// it never grows with the catalog or the installation's issuer history.
+    pub(super) fn admission_registry(
+        &self,
+        connection: &rusqlite::Connection,
+    ) -> Result<Value, AuthError> {
+        let sequence: u64 = connection.query_row(
+            "SELECT coalesce(max(sequence),0) FROM auth_issuer_rotations",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(json!({
+            "materialBucket": super::broker::MATERIAL_BUCKET,
+            "revocationBucket": super::broker::REVOCATION_BUCKET,
+            "issuer": self.issuer(),
+            "rotationSequence": sequence.to_string(),
+        }))
+    }
+
     /// Verify possession and actual NATS routing before reading any context.
     /// Recheck live policy inside the same snapshot used to sign the reply.
+    #[cfg(test)]
     pub(crate) fn own_context(
         &self,
         bytes: &[u8],
@@ -124,6 +382,17 @@ impl SqliteAuthorizationStore {
         reply: &str,
         now: i64,
     ) -> Result<SignedAdmissionContext, AuthError> {
+        self.own_context_with_digest(bytes, subject, reply, now)
+            .map(|(response, _)| response)
+    }
+
+    fn own_context_with_digest(
+        &self,
+        bytes: &[u8],
+        subject: &str,
+        reply: &str,
+        now: i64,
+    ) -> Result<(SignedAdmissionContext, String), AuthError> {
         if bytes.is_empty() || bytes.len() > 4096 {
             return Err(AuthError::Denied);
         }
@@ -132,61 +401,41 @@ impl SqliteAuthorizationStore {
         self.transaction(|connection| {
             self.current_signer(connection)?;
             let count:i64=connection.query_row(
-                "SELECT count(DISTINCT s.authorization_session_id) FROM auth_authorization_sessions s JOIN auth_attachments a USING(authorization_session_id) WHERE s.runtime_id=?1 AND s.session_public_key=?2 AND s.state='active' AND s.hard_deadline>?3 AND a.state IN ('pending','admitted')",
-                params![request.request.runtime_id,request.request.session_public_key,now],|row|row.get(0))?;
+                "SELECT count(DISTINCT s.authorization_session_id) FROM auth_authorization_sessions s JOIN auth_attachments a USING(authorization_session_id) WHERE s.runtime_id=?1 AND s.session_public_key=?2 AND s.state='active' AND a.state IN ('pending','admitted')",
+                params![request.request.runtime_id,request.request.session_public_key],|row|row.get(0))?;
             // A key reused across different bindings is ambiguous, not permission
             // to choose whichever principal has the most authority.
             if count!=1 {return Err(AuthError::Denied);}
-            let record:Option<(String,Vec<u8>)>=connection.query_row(
-                "SELECT s.authorization_session_id,c.signed_bytes FROM auth_authorization_sessions s JOIN auth_attachments a USING(authorization_session_id) JOIN auth_session_authorities c ON c.context_digest=a.context_digest AND c.authorization_session_id=s.authorization_session_id WHERE s.runtime_id=?1 AND s.session_public_key=?2 AND s.state='active' AND s.hard_deadline>?3 AND a.state IN ('pending','admitted') AND c.not_before<=?3 AND c.expires_at>?3 ORDER BY c.rowid DESC LIMIT 1",
-                params![request.request.runtime_id,request.request.session_public_key,now],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-            let (session,bytes)=record.ok_or(AuthError::Denied)?;
-            let authority=parse_session_authority(&bytes,64*1024)?;
-            if !reply.starts_with(&format!("{}.",authority.unsigned.inbox_prefix)) {return Err(AuthError::Denied);}
-            let current=evaluate(connection,&session_credential(connection,&session)?,now);
-            let reduced=match &current {
-                Ok(current)=>!current.required_missing.is_empty() || loses_authority(connection,&session,current,now)?,
-                Err(AuthError::Denied|AuthError::RequiredMissing|AuthError::NotFound)=>true,
-                Err(_)=>false,
+            let record:Option<(String,String,String)>=connection.query_row(
+                "SELECT s.authorization_session_id,a.attachment_id,a.transport_policy_json FROM auth_authorization_sessions s JOIN auth_attachments a USING(authorization_session_id) WHERE s.runtime_id=?1 AND s.session_public_key=?2 AND a.attachment_id=?3 AND s.state='active' AND a.state IN ('pending','admitted')",
+                params![request.request.runtime_id,request.request.session_public_key,request.request.attachment_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            let (session,attachment,admitted)=record.ok_or(AuthError::Denied)?;
+            let identity=AdmissionIdentity {
+                credential:session_credential(connection,&session)?,
+                refresh_family_id:connection.query_row("SELECT original_refresh_family_id FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&session],|row|row.get(0))?,
+                runtime_id:request.request.runtime_id.clone(),
+                session_public_key:request.request.session_public_key.clone(),
+                inbox_prefix:trellis_protocol::admission_inbox_prefix(&request.request.session_public_key)?,
             };
-            if reduced {
-                retire_session(self,connection,&session,"own_context_reduction",false,None,now)?;
-                return Ok(Err(AuthError::Retired));
-            }
-            current?;
-            let mut catalogs=Vec::new();
-            for api in &authority.unsigned.apis {
-                let bytes:Vec<u8>=connection.query_row("SELECT signed_bytes FROM auth_api_verification_snapshots WHERE snapshot_digest=?1",[&api.catalog_snapshot_digest],|row|row.get(0))?;
-                catalogs.push(serde_json::from_slice::<Value>(&bytes)?);
-            }
-            let mut providers=Vec::new();
-            for provider in &authority.unsigned.provider_bindings {
-                let bytes:Vec<u8>=connection.query_row("SELECT signed_bytes FROM auth_provider_certificates WHERE certificate_digest=?1",[&provider.provider_certificate_digest],|row|row.get(0))?;
-                providers.push(serde_json::from_slice::<Value>(&bytes)?);
-            }
-            let mut issuers=Vec::new();
-            let mut statement=connection.prepare("SELECT key_id,public_key,state FROM auth_authorization_issuers ORDER BY key_id")?;
-            for row in statement.query_map([],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?)))? {
-                let (key_id,public_key,state)=row?;
-                if issuers.len()>=256 {return Err(AuthError::Unavailable);}
-                issuers.push(AuthorityIssuerKey {key_id,public_key,state:match state.as_str(){"active"=>AuthorityIssuerState::Active,"retired"=>AuthorityIssuerState::Retired,_=>AuthorityIssuerState::Revoked}});
-            }
-            let mut rotations=Vec::new();
-            let mut statement=connection.prepare("SELECT signed_bytes FROM auth_issuer_rotations ORDER BY sequence")?;
-            for row in statement.query_map([],|row|row.get::<_,Vec<u8>>(0))? {
-                if rotations.len()>=256 {return Err(AuthError::Unavailable);}
-                rotations.push(serde_json::from_slice::<Value>(&row?)?);
-            }
+            if !reply.starts_with(&format!("{}.",identity.inbox_prefix)) {return Err(AuthError::Denied);}
+            let issued=match self.issue_authority_in_transaction(connection,&identity,Some(&session),now)? {
+                Ok(issued)=>issued,
+                Err(error)=>return Ok(Err(error)),
+            };
+            let desired=self.compile_transport(connection,&issued.authority.unsigned)?;
+            let admitted:trellis_protocol::TransportAuthorizationV1=serde_json::from_str(&admitted)?;
+            admitted.validate()?;
+            let registry=self.attachment_registry(connection,&issued.authority.unsigned,&desired,&admitted,&attachment)?;
             let response=sign_admission_context(AdmissionContext {
                 format:ADMISSION_GET_DOMAIN_V1.into(),issuer_key_id:self.issuer().key_id,
                 trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),
                 runtime_id:request.request.runtime_id,request_nonce:request.request.request_nonce,
                 request_subject:subject.into(),reply_subject:reply.into(),
-                session_authority:String::from_utf8(bytes).map_err(|_|AuthError::Denied)?,
-                registry:json!({"catalogs":catalogs,"providers":providers,"issuers":issuers,"rotations":rotations}),
-                issued_at:now,expires_at:authority.unsigned.expires_at.min(now.saturating_add(30)),
+                session_authority:super::sqlite::json(&issued.authority)?,
+                registry,
+                issued_at:now,expires_at:issued.authority.unsigned.expires_at.min(now.saturating_add(30)),
             },&self.signer)?;
-            Ok(Ok(response))
+            Ok(Ok((response,issued.digest)))
         })?
     }
 }

@@ -16,6 +16,9 @@ export declare const request: AppRequestDescriptor & {
 		}];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly actionNames: {
+		readonly ["runtime-trellis.events@v1:event:Beta"]: "Beta";
+	};
 	readonly states: {};
 };
 export type Request = typeof request;

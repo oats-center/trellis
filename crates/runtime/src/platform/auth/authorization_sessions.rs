@@ -29,6 +29,8 @@ pub(crate) enum Credential {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct AdmissionIdentity {
     pub(crate) credential: Credential,
+    /// Original verified OAuth admission family, never inferred from a grant.
+    pub(crate) refresh_family_id: Option<String>,
     pub(crate) runtime_id: String,
     pub(crate) session_public_key: String,
     pub(crate) inbox_prefix: String,
@@ -121,10 +123,11 @@ pub(super) fn credential_snapshot(
             }
             // A revoked refresh family is a hard grant barrier, not a policy
             // reduction that can be escaped by creating another logical session.
-            let families:(i64,i64)=connection.query_row("SELECT count(*),coalesce(sum(CASE WHEN revoked_at IS NULL AND expires_at>?2 THEN 1 ELSE 0 END),0) FROM auth_oauth_families WHERE oauth_grant_id=?1",params![grant,now],|row|Ok((row.get(0)?,row.get(1)?)))?;
-            if families.0 > 0 && families.1 == 0 {
+            let families:(i64,Option<i64>)=connection.query_row("SELECT count(*),max(CASE WHEN revoked_at IS NULL AND expires_at>?2 THEN expires_at END) FROM auth_oauth_families WHERE oauth_grant_id=?1",params![grant,now],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            if families.0 > 0 && families.1.is_none() {
                 return Err(AuthError::Denied);
             }
+            let deadline = families.1.map_or(deadline, |expiry| deadline.min(expiry));
             let mut approved: Vec<CapabilityAuthority> = decode(&approved)?;
             let (requested,basis):(String,String)=connection.query_row("SELECT approved_privileges_json,consent_basis_json FROM auth_oauth_grants WHERE oauth_grant_id=?1",[grant],|row|Ok((row.get(0)?,row.get(1)?)))?;
             let basis: BTreeMap<String, GrantConsentBasis> = decode(&basis)?;
@@ -268,13 +271,21 @@ pub(super) fn credential_snapshot(
                 })
                 .collect();
             let resources: Value = decode(&resources)?;
+            super::deployments::native_health_capability(connection)?;
+            let mut required: Vec<String> = decode(&required)?;
+            if !required
+                .iter()
+                .any(|id| id == super::deployments::SELF_HEALTH_CAPABILITY)
+            {
+                required.push(super::deployments::SELF_HEALTH_CAPABILITY.into());
+            }
             Ok(CredentialSnapshot {
                 principal_id: principal,
                 principal_kind,
                 binding,
                 login_session_id: None,
                 selection: CapabilitySelection {
-                    required: decode(&required)?,
+                    required,
                     optional: decode(&optional)?,
                 },
                 approved: None,
@@ -311,6 +322,12 @@ pub(super) fn loses_authority(
     current: &super::policy::Evaluation,
     now: i64,
 ) -> Result<bool, AuthError> {
+    // Family invalidation is a session-root reduction, not a grant-wide policy
+    // change: another family of this same grant cannot keep this session live.
+    let family_unavailable:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_sessions s JOIN auth_oauth_families f ON f.family_lookup_hash=s.refresh_family_lookup_hash AND f.oauth_grant_id=s.oauth_grant_id WHERE s.authorization_session_id=?1 AND (f.revoked_at IS NOT NULL OR f.expires_at<=?2))",params![session,now],|row|row.get(0))?;
+    if family_unavailable {
+        return Ok(true);
+    }
     let mut statement=connection.prepare("SELECT signed_bytes FROM auth_session_authorities WHERE authorization_session_id=?1 AND maximum_acceptance_deadline>?2")?;
     for row in statement.query_map(params![session, now], |row| row.get::<_, Vec<u8>>(0))? {
         let old = trellis_protocol::parse_session_authority(&row?, 1_048_576)?;
@@ -375,7 +392,69 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<Result<IssuedAuthority, AuthError>, AuthError> {
         self.current_signer(connection)?;
-        let current = evaluate(connection, &admission.credential, now)?;
+        if let Some(session) = renew_session {
+            let exact: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_authorization_sessions WHERE authorization_session_id=?1 AND state='active' AND runtime_id=?2 AND session_public_key=?3)",
+                params![session, admission.runtime_id, admission.session_public_key],
+                |row| row.get(0),
+            )?;
+            if !exact {
+                return Err(AuthError::Retired);
+            }
+            if session_credential(connection, session)? != admission.credential {
+                return Err(AuthError::Denied);
+            }
+            let original:Option<String>=connection.query_row("SELECT original_refresh_family_id FROM auth_authorization_sessions WHERE authorization_session_id=?1",[session],|row|row.get(0))?;
+            if original != admission.refresh_family_id {
+                return Err(AuthError::Denied);
+            }
+        }
+        let family_deadline = match (&admission.credential, &admission.refresh_family_id) {
+            (Credential::OAuthGrant(grant), Some(family)) => {
+                match self.oauth_family_deadline_in(connection, grant, family, now) {
+                    Ok(deadline) => deadline,
+                    Err(AuthError::Denied) => {
+                        if let Some(session) = renew_session {
+                            retire_session(
+                                self,
+                                connection,
+                                session,
+                                "oauth_family_unavailable",
+                                true,
+                                None,
+                                now,
+                            )?;
+                            return Ok(Err(AuthError::Retired));
+                        }
+                        return Err(AuthError::Denied);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            (Credential::ProvisionedIdentity(_), None) => i64::MAX,
+            _ => return Err(AuthError::Denied),
+        };
+        let current = match evaluate(connection, &admission.credential, now) {
+            Ok(current) => current,
+            Err(error @ (AuthError::Denied | AuthError::RequiredMissing | AuthError::NotFound)) => {
+                if let Some(session) = renew_session {
+                    retire_session(
+                        self,
+                        connection,
+                        session,
+                        "credential_unavailable",
+                        matches!(&error, AuthError::Denied | AuthError::NotFound),
+                        None,
+                        now,
+                    )?;
+                    // The outer transaction must commit the cutoff and ordered
+                    // kicks even though renewal returns no replacement authority.
+                    return Ok(Err(AuthError::Retired));
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let binding_key = digest(&(&current.principal_id, &current.binding))?;
         let session = if let Some(session) = renew_session {
             let exact:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_sessions WHERE authorization_session_id=?1 AND state='active' AND binding_key=?2 AND runtime_id=?3 AND session_public_key=?4)",params![session,binding_key,admission.runtime_id,admission.session_public_key],|row|row.get(0))?;
@@ -389,6 +468,10 @@ impl SqliteAuthorizationStore {
         let mut session = session;
         if let Some(existing) = &session {
             if session_credential(connection, existing)? != admission.credential {
+                return Err(AuthError::Denied);
+            }
+            let original:Option<String>=connection.query_row("SELECT original_refresh_family_id FROM auth_authorization_sessions WHERE authorization_session_id=?1",[existing],|row|row.get(0))?;
+            if original != admission.refresh_family_id {
                 return Err(AuthError::Denied);
             }
             let expired:bool=connection.query_row("SELECT hard_deadline<=?2 FROM auth_authorization_sessions WHERE authorization_session_id=?1",params![existing,now],|row|row.get(0))?;
@@ -426,7 +509,10 @@ impl SqliteAuthorizationStore {
             }
         };
         let existing:Option<i64>=connection.query_row("SELECT hard_deadline FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&session],|row|row.get(0)).optional()?;
-        let hard_deadline = current.root_not_after.min(existing.unwrap_or(i64::MAX));
+        let hard_deadline = current
+            .root_not_after
+            .min(family_deadline)
+            .min(existing.unwrap_or(i64::MAX));
         let expires_at = current
             .not_after
             .min(hard_deadline)
@@ -447,7 +533,11 @@ impl SqliteAuthorizationStore {
         } else {
             hard_deadline
         };
-        connection.execute("INSERT INTO auth_authorization_sessions(authorization_session_id,principal_id,binding_kind,binding_key,binding_json,runtime_id,session_public_key,credential_kind,oauth_grant_id,identity_key_id,selected_capabilities_json,approved_capabilities_json,approved_privileges_json,issued_at,hard_deadline,latest_context_expiry,state,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,'active',1) ON CONFLICT(authorization_session_id) DO UPDATE SET hard_deadline=min(hard_deadline,excluded.hard_deadline),latest_context_expiry=max(latest_context_expiry,excluded.latest_context_expiry),approved_capabilities_json=excluded.approved_capabilities_json,approved_privileges_json=excluded.approved_privileges_json,revision=revision+1",params![session,current.principal_id,binding_kind,binding_key,json(&current.binding)?,admission.runtime_id,admission.session_public_key,kind,grant,identity,json(&current.selection)?,json(&current.capabilities)?,json(&current.platform_privileges)?,now,session_hard_deadline,expires_at])?;
+        let family_hash = admission
+            .refresh_family_id
+            .as_ref()
+            .map(|family| URL_SAFE_NO_PAD.encode(Sha256::digest(family.as_bytes())));
+        connection.execute("INSERT INTO auth_authorization_sessions(authorization_session_id,principal_id,binding_kind,binding_key,binding_json,runtime_id,session_public_key,credential_kind,oauth_grant_id,identity_key_id,selected_capabilities_json,approved_capabilities_json,approved_privileges_json,issued_at,hard_deadline,latest_context_expiry,original_refresh_family_id,refresh_family_lookup_hash,state,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,'active',1) ON CONFLICT(authorization_session_id) DO UPDATE SET hard_deadline=min(hard_deadline,excluded.hard_deadline),latest_context_expiry=max(latest_context_expiry,excluded.latest_context_expiry),approved_capabilities_json=excluded.approved_capabilities_json,approved_privileges_json=excluded.approved_privileges_json,revision=revision+1",params![session,current.principal_id,binding_kind,binding_key,json(&current.binding)?,admission.runtime_id,admission.session_public_key,kind,grant,identity,json(&current.selection)?,json(&current.capabilities)?,json(&current.platform_privileges)?,now,session_hard_deadline,expires_at,admission.refresh_family_id,family_hash])?;
         let mut providers = current.providers.clone();
         if let SessionBinding::Service {
             deployment_id,
@@ -515,6 +605,21 @@ impl SqliteAuthorizationStore {
                 )?;
             }
         }
+        let mut extensions = serde_json::Map::new();
+        if let SessionBinding::Service {
+            deployment_id,
+            instance_id,
+            participant_id,
+        }
+        | SessionBinding::Device {
+            deployment_id,
+            instance_id,
+            participant_id,
+        } = &current.binding
+        {
+            let (revision, participant_digest): (u64,String) = connection.query_row("SELECT i.installed_revision,p.participant_digest FROM auth_instances i JOIN auth_installed_participants p ON p.participant_id=?3 AND p.revision=i.installed_revision WHERE i.instance_id=?1 AND i.deployment_id=?2 AND i.principal_id=?4",params![instance_id,deployment_id,participant_id,current.principal_id],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            extensions.insert("trellis.nativeParticipant.v1".into(), serde_json::json!({"participantId":participant_id,"installedRevision":revision.to_string(),"participantDigest":participant_digest}));
+        }
         let authority = sign_session_authority(
             UnsignedSessionAuthority {
                 format: SESSION_AUTHORITY_FORMAT_V1.into(),
@@ -538,12 +643,40 @@ impl SqliteAuthorizationStore {
                 issued_at: now,
                 not_before: now,
                 expires_at,
-                extensions: Default::default(),
+                extensions,
                 critical: vec![],
             },
             &self.signer,
         )?;
         let digest = authority.digest()?;
+        // Validate the actual signed first-response envelope before committing
+        // either the authority or the attachment that can make it usable. Only
+        // the fresh nonce and reply suffix are unknown here; reserve their full
+        // supported lengths, rather than copying catalog history into bootstrap.
+        trellis_protocol::sign_admission_context(
+            trellis_protocol::AdmissionContext {
+                format: trellis_protocol::ADMISSION_GET_DOMAIN_V1.into(),
+                issuer_key_id: self.issuer().key_id,
+                trellis_instance_id: self.settings.instance_id.clone(),
+                audience_nats_account: self.settings.account.clone(),
+                runtime_id: admission.runtime_id.clone(),
+                request_nonce: URL_SAFE_NO_PAD.encode([0u8; 16]),
+                request_subject: trellis_protocol::admission_get_subject(
+                    &admission.session_public_key,
+                )?,
+                reply_subject: format!(
+                    "{}.{:A<width$}",
+                    admission.inbox_prefix,
+                    "",
+                    width = 511usize.saturating_sub(admission.inbox_prefix.len())
+                ),
+                session_authority: json(&authority)?,
+                registry: self.admission_registry(connection)?,
+                issued_at: now,
+                expires_at: expires_at.min(now.saturating_add(30)),
+            },
+            &self.signer,
+        )?;
         connection.execute(
             "INSERT OR IGNORE INTO auth_session_authorities VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",
             params![
@@ -595,8 +728,59 @@ impl SqliteAuthorizationStore {
                 .optional()?
                 .ok_or(AuthError::NotFound)?;
             Ok(trellis_protocol::parse_session_authority(
-                &bytes, 1_048_576,
+                &bytes,
+                trellis_protocol::MAX_SESSION_AUTHORITY_BYTES,
             )?)
+        })
+    }
+
+    /// Read the persisted logical lifecycle and its immutable retirement evidence
+    /// in one snapshot for the ordinary typed Authority.Status RPC.
+    pub(crate) fn authorization_session_status(
+        &self,
+        session: trellis_rs::generated::Ulid,
+    ) -> Result<trellis_runtime_apis::types::AuthAuthorityStatusResponse, AuthError> {
+        self.transaction(|connection| Self::authorization_session_status_in(connection, session))
+    }
+
+    pub(super) fn authorization_session_status_in(
+        connection: &Connection,
+        session: trellis_rs::generated::Ulid,
+    ) -> Result<trellis_runtime_apis::types::AuthAuthorityStatusResponse, AuthError> {
+        use trellis_runtime_apis::types::{AuthAuthorityStatusResponse, AuthSignedBlob};
+        let (state,latest,cutoff,reason,revocation):(String,i64,Option<i64>,Option<String>,Option<Vec<u8>>)=connection.query_row(
+                "SELECT s.state,s.latest_context_expiry,r.effective_cutoff,r.reason,r.signed_bytes FROM auth_authorization_sessions s LEFT JOIN auth_authorization_revocations r USING(authorization_session_id) WHERE s.authorization_session_id=?1",
+                [session.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?.ok_or(AuthError::NotFound)?;
+        let mut timestamps = Vec::new();
+        for value in [Some(latest), cutoff].into_iter().flatten() {
+            let value = time::OffsetDateTime::from_unix_timestamp(value)
+                .map_err(|_| AuthError::Unavailable)?
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|_| AuthError::Unavailable)?;
+            timestamps.push(
+                trellis_rs::generated::Timestamp::parse(&value)
+                    .map_err(|_| AuthError::Unavailable)?,
+            );
+        }
+        Ok(AuthAuthorityStatusResponse {
+            authorization_session_id: session,
+            state: serde_json::from_value(serde_json::Value::String(state))?,
+            maximum_context_expires_at: Some(timestamps.remove(0)),
+            cutoff: timestamps.pop(),
+            reason: match reason.as_deref() {
+                Some("session_revoked") => {
+                    Some(trellis_runtime_apis::types::AuthRevocationReason::ExplicitRevoke)
+                }
+                Some("policy_reduction" | "admission_reduction") => {
+                    Some(trellis_runtime_apis::types::AuthRevocationReason::PolicyReduced)
+                }
+                // Preserve the exact internal classification in signed evidence;
+                // do not invent a narrower public reason for a generic cutoff.
+                _ => None,
+            },
+            revocation: revocation.map(|bytes| AuthSignedBlob(bytes.into())),
+            enforcement: None,
+            extra: Default::default(),
         })
     }
 

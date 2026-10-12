@@ -1,32 +1,9 @@
 import type { CallerRuntime } from "@oatscenter/trellis";
-import { RemoteError } from "@oatscenter/trellis/errors";
 import type { Codec } from "@oatscenter/trellis/generated";
-import { apis, participants } from "../../trellis/index.js";
+import { apis, apps } from "../../trellis/index.js";
 
-export const adminParticipant = {
-  ...participants.cli.participant,
-  id: "trellis.cli",
-  identity: "trellis.cli",
-} as const;
-
-/** @internal Returns the server-computed consent request from an approval-required error. */
-export function deploymentConsentRequest(error: unknown) {
-  let authError: apis.auth.AuthError;
-  if (error instanceof apis.auth.AuthError) {
-    authError = error;
-  } else if (error instanceof RemoteError) {
-    try {
-      authError = apis.auth.AuthError.fromSerializable(error.remoteError);
-    } catch {
-      return undefined;
-    }
-  } else {
-    return undefined;
-  }
-  return authError.data.code === "approval_required"
-    ? authError.data.consentRequest
-    : undefined;
-}
+/** Generated native application selections used by the registered test administrator. */
+export const adminParticipant = apps.cli.request;
 
 export const ADMIN_USERNAME = "admin";
 
@@ -49,49 +26,9 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Capabilities.List"],
     (client, input) => client.capabilitiesList(input).orThrow(),
   ),
-  authCapabilityGroupsGet: adminMethod(
-    apis.auth.API.actions["rpc:CapabilityGroups.Get"],
-    (client, input) => client.capabilityGroupsGet(input).orThrow(),
-  ),
-  authCapabilityGroupsPut: adminMethod(
-    apis.auth.API.actions["rpc:CapabilityGroups.Put"],
-    (client, input) => client.capabilityGroupsPut(input).orThrow(),
-  ),
   authConnectionsList: adminMethod(
     apis.auth.API.actions["rpc:Connections.List"],
     (client, input) => client.connectionsList(input).orThrow(),
-  ),
-  authPortalsGrantOverridesRemove: adminMethod(
-    apis.auth.API.actions["rpc:Portals.GrantOverrides.Remove"],
-    (client, input) => client.portalsGrantOverridesRemove(input).orThrow(),
-  ),
-  authPortalsGrantOverridesPut: adminMethod(
-    apis.auth.API.actions["rpc:Portals.GrantOverrides.Put"],
-    (client, input) => client.portalsGrantOverridesPut(input).orThrow(),
-  ),
-  authPortalsGet: adminMethod(
-    apis.auth.API.actions["rpc:Portals.Get"],
-    (client, input) => client.portalsGet(input).orThrow(),
-  ),
-  authPortalsList: adminMethod(
-    apis.auth.API.actions["rpc:Portals.List"],
-    (client, input) => client.portalsList(input).orThrow(),
-  ),
-  authPortalsLoginSettingsGet: adminMethod(
-    apis.auth.API.actions["rpc:Portals.LoginSettings.Get"],
-    (client, input) => client.portalsLoginSettingsGet(input).orThrow(),
-  ),
-  authPortalsLoginSettingsUpdate: adminMethod(
-    apis.auth.API.actions["rpc:Portals.LoginSettings.Update"],
-    (client, input) => client.portalsLoginSettingsUpdate(input).orThrow(),
-  ),
-  authPortalsPut: adminMethod(
-    apis.auth.API.actions["rpc:Portals.Put"],
-    (client, input) => client.portalsPut(input).orThrow(),
-  ),
-  authPortalsRoutesPut: adminMethod(
-    apis.auth.API.actions["rpc:Portals.Routes.Put"],
-    (client, input) => client.portalsRoutesPut(input).orThrow(),
   ),
   authDevicesProvision: adminMethod(
     apis.auth.API.actions["rpc:Devices.Provision"],
@@ -125,29 +62,21 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Deployments.Enable"],
     (client, input) => client.deploymentsEnable(input).orThrow(),
   ),
-  authParticipantsInstall: adminMethod(
-    apis.auth.API.actions["rpc:Participants.Install"],
-    (client, input) => client.participantsInstall(input).orThrow(),
+  authApisReview: adminMethod(
+    apis.auth.API.actions["rpc:Apis.Review"],
+    (client, input) => client.apisReview(input).orThrow(),
   ),
-  authParticipantsGet: adminMethod(
-    apis.auth.API.actions["rpc:Participants.Get"],
-    (client, input) => client.participantsGet(input).orThrow(),
+  authApisAccept: adminMethod(
+    apis.auth.API.actions["rpc:Apis.Accept"],
+    (client, input) => client.apisAccept(input).orThrow(),
   ),
-  authGrantsGet: adminMethod(
-    apis.auth.API.actions["rpc:Grants.Get"],
-    (client, input) => client.grantsGet(input).orThrow(),
+  authOAuthClientsPut: adminMethod(
+    apis.auth.API.actions["rpc:OAuthClients.Put"],
+    (client, input) => client.oAuthClientsPut(input).orThrow(),
   ),
-  authGrantsList: adminMethod(
-    apis.auth.API.actions["rpc:Grants.List"],
-    (client, input) => client.grantsList(input).orThrow(),
-  ),
-  authGrantsSet: adminMethod(
-    apis.auth.API.actions["rpc:Grants.Set"],
-    (client, input) => client.grantsSet(input).orThrow(),
-  ),
-  authGrantsRevoke: adminMethod(
-    apis.auth.API.actions["rpc:Grants.Revoke"],
-    (client, input) => client.grantsRevoke(input).orThrow(),
+  authCapabilityGrantsGrant: adminMethod(
+    apis.auth.API.actions["rpc:CapabilityGrants.Grant"],
+    (client, input) => client.capabilityGrantsGrant(input).orThrow(),
   ),
   authServiceInstancesProvision: adminMethod(
     apis.auth.API.actions["rpc:ServiceInstances.Provision"],

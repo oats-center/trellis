@@ -1,114 +1,51 @@
-// Retained live-authority guards for active observation sessions.
-//
-// A live session stays authorized for its entire lifetime without a network
-// lookup per frame. This module wraps the existing provider cache's retained
-// lease in a typed, fail-closed check. A valid identity-preserving refresh on
-// the same connection generation replaces the retained lease without closing
-// the session or resetting its sequence and credit state; revocation, lost
-// coverage, expiry and epoch movement are observable through
-// {@link LiveAuthorityGuard.subscribeChanges} and
-// {@link LiveAuthorityGuard.checkNow}.
-
-import type { PermissionAtom } from "../auth/protocol_wasm.ts";
-import {
-  type AuthorizationProviderCache,
-  type LiveLeaseView,
-} from "../auth/authorization/provider_cache.ts";
+import type {
+  AuthenticatedCaller,
+  CatalogActionIdentity,
+  SessionAuthority,
+} from "../auth/protocol_wasm.ts";
+import type {
+  SessionAuthorityOwner,
+  VerifiedAuthority,
+} from "../auth/authority.ts";
 import { LiveEnd, LiveStreamError } from "./types.ts";
 
-/** Pinned peer identity from a verified authorization context. */
-export type PinnedPeerIdentity = {
-  connectionId: string;
-  sessionKey: string;
-  principalId: string;
-  participantId: string;
-  deploymentId?: string;
-  instanceId?: string;
-};
+/** Actual authenticated client/deployment identity, including browser/native bindings. */
+export type PinnedPeerIdentity = Pick<
+  AuthenticatedCaller,
+  "runtimeId" | "sessionPublicKey" | "principalId" | "binding"
+>;
 
-/** Why a retained live authority is no longer usable. */
+/** Why a retained session can no longer authorize new frames. */
 export type LiveAuthorityLost =
-  | "epoch_changed"
-  | "coverage_lost"
+  | "unavailable"
   | "revoked"
-  | "coverage_unknown"
   | "expired"
   | "identity_changed"
   | "binding_changed"
   | "permission_lost";
 
+/** Compiler-owned action or certified provider role, never a permission-atom set. */
 export type LiveGuardRequirement =
-  | { kind: "observer"; permission: PermissionAtom }
-  | { kind: "local-provider" }
-  | { kind: "peer-provider"; expected: PinnedPeerIdentity };
+  | { kind: "session" }
+  | { kind: "observer"; apiId: string; action: CatalogActionIdentity }
+  | { kind: "local-provider"; apiId: string; action: CatalogActionIdentity }
+  | {
+      kind: "peer-provider";
+      expected: PinnedPeerIdentity;
+      apiId: string;
+      generation: string;
+      action: CatalogActionIdentity;
+    };
 
-type VerifiedContext = LiveLeaseView["verified"]["context"];
-
-function identityOf(context: VerifiedContext): PinnedPeerIdentity {
-  return {
-    connectionId: context.connectionId,
-    sessionKey: context.sessionKey,
-    principalId: context.principalId,
-    participantId: context.participantId,
-    ...(context.deploymentId ? { deploymentId: context.deploymentId } : {}),
-    ...(context.instanceId ? { instanceId: context.instanceId } : {}),
-  };
-}
-
-function sameIdentity(
-  left: PinnedPeerIdentity,
-  right: PinnedPeerIdentity,
-): boolean {
-  return left.connectionId === right.connectionId &&
-    left.sessionKey === right.sessionKey &&
-    left.principalId === right.principalId &&
-    left.participantId === right.participantId &&
-    (left.deploymentId ?? "") === (right.deploymentId ?? "") &&
-    (left.instanceId ?? "") === (right.instanceId ?? "");
-}
-
-/** Canonical JSON with sorted object keys; permission atoms have no arrays. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (value !== null && typeof value === "object") {
-    return `{${
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-        .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-        .join(",")
-    }}`;
-  }
-  return JSON.stringify(value);
-}
-
-function grantAllows(
-  context: VerifiedContext,
-  permission: PermissionAtom,
-): boolean {
-  // Compare semantically: the verifier's projection and this projection may
-  // order object keys differently for the same authority atom.
-  const wanted = canonicalJson(permission);
-  return context.grants.permissions.some((granted) =>
-    canonicalJson(granted) === wanted
-  );
-}
-
-/** Map one authority loss into its bounded terminal outcome. */
+/** Translate an authority lifetime failure into the existing Live terminal vocabulary. */
 export function authorityLostEnd(lost: LiveAuthorityLost): LiveEnd {
   switch (lost) {
-    case "epoch_changed":
-      return new LiveEnd(
-        "disconnected",
-        new LiveStreamError("disconnected", "local transport epoch changed"),
-      );
     case "revoked":
       return new LiveEnd(
         "authorization_lost",
         new LiveStreamError(
           "authorization_revoked",
-          "authorization context was revoked",
+          "authorization session was revoked",
         ),
       );
     case "expired":
@@ -116,7 +53,7 @@ export function authorityLostEnd(lost: LiveAuthorityLost): LiveEnd {
         "authorization_lost",
         new LiveStreamError(
           "authorization_expired",
-          "authorization context expired",
+          "session authority expired",
         ),
       );
     case "permission_lost":
@@ -124,7 +61,7 @@ export function authorityLostEnd(lost: LiveAuthorityLost): LiveEnd {
         "authorization_lost",
         new LiveStreamError(
           "permission_denied",
-          "required permission was lost",
+          "required capability membership was lost",
         ),
       );
     case "identity_changed":
@@ -133,337 +70,217 @@ export function authorityLostEnd(lost: LiveAuthorityLost): LiveEnd {
         "binding_changed",
         new LiveStreamError("binding_changed", "pinned identity changed"),
       );
-    case "coverage_lost":
-    case "coverage_unknown":
+    case "unavailable":
       return new LiveEnd(
         "authorization_lost",
         new LiveStreamError(
           "authorization_unavailable",
-          "exact revocation coverage is unavailable",
+          "verified session authority is unavailable",
         ),
       );
   }
 }
 
-/**
- * Retained authorization coverage for one live session.
- *
- * Replacement retains and fully validates the new evidence before releasing
- * the old covered lease. Dropping an uncommitted candidate releases its lease.
- */
+/** Retains verified application authority independently of physical transport generations. */
 export class LiveAuthorityGuard {
-  readonly #cache: AuthorizationProviderCache;
-  #lease: LiveLeaseView | undefined;
+  readonly #owner: SessionAuthorityOwner;
   readonly #requirement: LiveGuardRequirement;
   readonly #identity: PinnedPeerIdentity;
-  #epoch: number;
-  #digest: string;
-  /** Whether this guard tracks the connection's own refreshable authority. */
   readonly #tracksLocal: boolean;
+  #lease?: VerifiedAuthority;
 
   private constructor(
-    cache: AuthorizationProviderCache,
-    lease: LiveLeaseView,
+    owner: SessionAuthorityOwner,
+    lease: VerifiedAuthority,
     requirement: LiveGuardRequirement,
-    identity: PinnedPeerIdentity,
-    epoch: number,
-    digest: string,
     tracksLocal: boolean,
   ) {
-    this.#cache = cache;
+    this.#owner = owner;
     this.#lease = lease;
     this.#requirement = requirement;
-    this.#identity = identity;
-    this.#epoch = epoch;
-    this.#digest = digest;
     this.#tracksLocal = tracksLocal;
+    this.#identity = {
+      runtimeId: lease.authority.runtimeId,
+      sessionPublicKey: lease.authority.sessionPublicKey,
+      principalId: lease.authority.principalId,
+      binding: lease.authority.binding,
+    };
   }
 
-  /**
-   * Retain a live guard for one exact digest, permission and pinned identity.
-   *
-   * @throws LiveAuthorityLost when the exact covered evidence is unavailable.
-   */
+  /** Verify before retention, including real catalog membership for observers. */
   static async retain(
-    cache: AuthorizationProviderCache,
+    owner: SessionAuthorityOwner,
     digest: string,
     requirement: LiveGuardRequirement,
   ): Promise<LiveAuthorityGuard> {
-    const epoch = cache.cacheEpoch();
-    const lease = await retainLease(cache, digest, epoch);
+    const lease = await owner.peer(digest);
     try {
-      const identity = identityOf(lease.verified.context);
-      if (requirement.kind === "observer") {
-        if (!grantAllows(lease.verified.context, requirement.permission)) {
-          throw new LiveAuthorityGuardError("permission_lost");
-        }
-      } else if (requirement.kind === "peer-provider") {
-        if (!sameIdentity(identity, requirement.expected)) {
-          throw new LiveAuthorityGuardError("identity_changed");
-        }
+      if (requirement.kind === "observer")
+        await lease.authorize(requirement.apiId, requirement.action);
+      if (
+        requirement.kind === "peer-provider" &&
+        !sameIdentity(lease.authority, requirement.expected)
+      )
+        throw new LiveAuthorityGuardError("identity_changed");
+      if (
+        (requirement.kind === "local-provider" ||
+          requirement.kind === "peer-provider") &&
+        !lease.authority.providerBindings.length
+      )
+        throw new LiveAuthorityGuardError("permission_lost");
+      if (
+        requirement.kind === "local-provider" ||
+        requirement.kind === "peer-provider"
+      ) {
+        const generation =
+          requirement.kind === "peer-provider"
+            ? requirement.generation
+            : lease.authority.providerBindings.find(
+                (binding) => binding.apiId === requirement.apiId,
+              )?.generation;
+        if (!generation) throw new LiveAuthorityGuardError("permission_lost");
+        await lease.authorizeProvider(
+          requirement.apiId,
+          generation,
+          requirement.action,
+        );
       }
+      lease.assertCurrent();
       return new LiveAuthorityGuard(
-        cache,
+        owner,
         lease,
         requirement,
-        identity,
-        epoch,
-        digest,
-        cache.currentLocalContextDigest() === digest,
+        owner.ownDigest === digest,
       );
     } catch (error) {
-      cache.releaseLiveLease(lease);
+      lease.release();
       throw error;
     }
   }
 
-  /** Return the pinned identity this session retains. */
+  /** Authenticated pinned endpoint identity. */
   get identity(): PinnedPeerIdentity {
     return this.#identity;
   }
-
-  /** Return the retained context digest. */
+  /** Accepted API stamps from the retained signed authority. */
+  get apis(): SessionAuthority["apis"] {
+    return this.#lease?.authority.apis ?? [];
+  }
+  /** Exact retained signed authority content address. */
   get contextDigest(): string {
-    return this.#lease?.verified.contextDigest ?? "";
+    return this.#lease?.digest ?? "";
   }
-
-  /**
-   * Reconcile this guard with current authorization.
-   *
-   * A local-tracking guard adopts a newly promoted local context digest in
-   * place: it retains and validates the new exact lease, checks the same
-   * identity and required permission, commits it, and releases the predecessor.
-   * A peer guard accepts replacement evidence only from the verified
-   * signed data/control/challenge path, so it simply re-checks its retained
-   * lease here and reports the precise loss. A real physical loss advances the
-   * generation and is reported as `epoch_changed`.
-   */
-  async reconcile(): Promise<LiveAuthorityLost | undefined> {
-    if (!this.#tracksLocal) return this.checkNow();
-    const cache = this.#cache;
-    const generation = cache.cacheEpoch();
-    const localDigest = cache.currentLocalContextDigest();
-    if (localDigest === undefined) return this.checkNow();
-    if (generation === this.#epoch && localDigest === this.#digest) {
-      return this.checkNow();
-    }
-    return await this.#rebind(generation);
-  }
-
-  /**
-   * Rebind onto the current transport generation after an ordinary reconnect
-   * changed it.
-   *
-   * Unlike {@link reconcile}, this is not gated on a local renewal: a
-   * long-lived provider guard must adopt the replacement attachment before it
-   * can admit new sessions. The predecessor lease is released only after the
-   * replacement evidence is retained and validated, so a failed rebind leaves
-   * the guard reporting the precise loss.
-   */
-  async rebindCurrentGeneration(): Promise<LiveAuthorityLost | undefined> {
-    const generation = this.#cache.cacheEpoch();
-    if (generation === this.#epoch) return this.checkNow();
-    return await this.#rebind(generation);
-  }
-
-  /** Retain, validate and install coverage for `generation`, releasing the predecessor on success. */
-  async #rebind(generation: number): Promise<LiveAuthorityLost | undefined> {
-    const cache = this.#cache;
-    const digest = this.#tracksLocal
-      ? cache.currentLocalContextDigest()
-      : this.#digest;
-    if (digest === undefined) return "coverage_lost";
-    let lease: LiveLeaseView;
-    try {
-      lease = await retainLease(cache, digest, generation);
-    } catch (error) {
-      return authorityLostFrom(error) ?? "coverage_lost";
-    }
-    const identity = identityOf(lease.verified.context);
-    if (!sameIdentity(identity, this.#identity)) {
-      cache.releaseLiveLease(lease);
-      return "identity_changed";
-    }
-    if (this.#requirement.kind === "observer") {
-      if (!grantAllows(lease.verified.context, this.#requirement.permission)) {
-        cache.releaseLiveLease(lease);
-        return "permission_lost";
-      }
-    }
-    const previous = this.#lease;
-    this.#lease = lease;
-    this.#epoch = generation;
-    this.#digest = digest;
-    if (previous) cache.releaseLiveLease(previous);
-    return undefined;
-  }
-
-  /** Return the retained context expiry in Unix seconds. */
+  /** Deadline of this exact authority, not a historical CONNECT credential. */
   get expiresAtSeconds(): number {
-    return this.#lease?.verified.context.expiresAt ?? 0;
+    return this.#lease?.authority.expiresAt ?? 0;
   }
 
-  /** Return whether the retained context grants one exact permission atom. */
-  allows(permission: PermissionAtom): boolean {
-    const lease = this.#lease;
-    if (!lease) return false;
-    return grantAllows(lease.verified.context, permission);
-  }
-
-  /**
-   * Perform the synchronous local authority check.
-   *
-   * Uses only retained local state: no network read and no re-verification of
-   * an opening proof. Returns the precise typed reason, never a lossy boolean.
-   */
-  checkNow(): LiveAuthorityLost | undefined {
-    const lease = this.#lease;
-    if (!lease) return "coverage_lost";
-    // The lease's own coverage is authoritative for this session. A global
-    // default/old-transport availability signal is not consulted here at all:
-    // a physical loss of this session's own transport is owned by its delivery
-    // and control path, and the cache epoch/coverage checks below already cover
-    // verifier stop/reset. Only genuine loss of this binding ends the session.
-    const coverage = this.#cache.liveLeaseCoverage(lease);
-    if (coverage === "revoked") return "revoked";
-    if (coverage === "epoch") return "epoch_changed";
-    if (coverage === "lost") return "coverage_lost";
-    if (this.#cache.cacheEpoch() !== this.#epoch) {
-      return "epoch_changed";
-    }
-    const context = lease.verified.context;
-    const now = this.#cache.liveNowSeconds();
+  /** Adopt an already promoted own renewal without changing accepted Live state. */
+  async reconcile(): Promise<LiveAuthorityLost | undefined> {
     if (
-      typeof context.notBefore !== "number" ||
-      typeof context.expiresAt !== "number" ||
-      context.notBefore > now || context.expiresAt <= now
+      this.#tracksLocal &&
+      this.#owner.ownDigest &&
+      this.#owner.ownDigest !== this.contextDigest
     ) {
+      let candidate: LiveAuthorityGuard | undefined;
+      try {
+        candidate = await this.prepareReplacement(this.#owner.ownDigest);
+        return this.commitReplacement(candidate);
+      } catch (error) {
+        return authorityLostFrom(error) ?? "unavailable";
+      } finally {
+        candidate?.release();
+      }
+    }
+    return this.checkNow();
+  }
+
+  /** Local current-time and sticky retirement check; frames perform no registry reads. */
+  checkNow(): LiveAuthorityLost | undefined {
+    if (!this.#lease) return "unavailable";
+    if (this.#owner.isRevoked(this.#lease.authority.authorizationSessionId))
+      return "revoked";
+    if (this.#lease.authority.expiresAt <= this.#owner.policy().nowUnixSeconds)
       return "expired";
-    }
-    if (!sameIdentity(identityOf(context), this.#identity)) {
+    if (!sameIdentity(this.#lease.authority, this.#identity))
       return "identity_changed";
-    }
-    if (this.#requirement.kind === "observer") {
-      if (!grantAllows(context, this.#requirement.permission)) {
-        return "permission_lost";
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * Resolve and validate a replacement without installing it.
-   *
-   * @throws LiveAuthorityLost when the replacement does not preserve the
-   * pinned identity, role requirement and connection generation.
-   */
-  async prepareReplacement(
-    digest: string,
-  ): Promise<LiveAuthorityGuard> {
-    const lease = await retainLease(this.#cache, digest, this.#epoch);
     try {
-      const identity = identityOf(lease.verified.context);
-      if (!sameIdentity(identity, this.#identity)) {
-        throw new LiveAuthorityGuardError("identity_changed");
-      }
-      if (this.#requirement.kind === "observer") {
-        if (
-          !grantAllows(lease.verified.context, this.#requirement.permission)
-        ) {
-          throw new LiveAuthorityGuardError("permission_lost");
-        }
-      }
-      return new LiveAuthorityGuard(
-        this.#cache,
-        lease,
-        this.#requirement,
-        identity,
-        this.#epoch,
-        digest,
-        this.#tracksLocal,
-      );
-    } catch (error) {
-      this.#cache.releaseLiveLease(lease);
-      throw error;
+      this.#lease.assertCurrent();
+      return undefined;
+    } catch {
+      return "unavailable";
     }
   }
 
-  /**
-   * Atomically install a prepared replacement on the same generation.
-   *
-   * The old covered lease is released only after the new one is installed.
-   */
+  /** Validate replacement identity, authority and action before mutating active Live state. */
+  async prepareReplacement(digest: string): Promise<LiveAuthorityGuard> {
+    const candidate = await LiveAuthorityGuard.retain(
+      this.#owner,
+      digest,
+      this.#requirement,
+    );
+    if (!sameIdentity(candidate.#identity, this.#identity)) {
+      candidate.release();
+      throw new LiveAuthorityGuardError("identity_changed");
+    }
+    return candidate;
+  }
+
+  /** Promote only a still-current candidate from the same trusted owner. */
   commitReplacement(
     candidate: LiveAuthorityGuard,
   ): LiveAuthorityLost | undefined {
     if (
-      this.#cache.cacheEpoch() !== this.#epoch ||
-      candidate.#epoch !== this.#epoch
-    ) {
-      return "epoch_changed";
-    }
-    if (!sameIdentity(candidate.#identity, this.#identity)) {
+      candidate.#owner !== this.#owner ||
+      !sameIdentity(candidate.#identity, this.#identity)
+    )
       return "identity_changed";
-    }
-    const candidateLease = candidate.#take();
-    if (!candidateLease) return "coverage_lost";
+    const lost = candidate.checkNow();
+    if (lost) return lost;
     const previous = this.#lease;
-    this.#lease = candidateLease;
-    this.#digest = candidate.#digest;
-    if (previous) this.#cache.releaseLiveLease(previous);
+    this.#lease = candidate.#lease;
+    candidate.#lease = undefined;
+    previous?.release();
     return undefined;
   }
 
-  /** Subscribe to local changes that can invalidate this guard. */
+  /** Wake existing reconciliation on own renewal, sticky retirement or shutdown. */
   subscribeChanges(callback: () => void): () => void {
-    return this.#cache.subscribeLiveChanges(callback);
+    return this.#owner.subscribeChanges(callback);
   }
-
-  /** Release every retained lease held by this guard. */
+  /** Release retained local material; accepted domain work remains committed. */
   release(): void {
-    const lease = this.#take();
-    if (lease) this.#cache.releaseLiveLease(lease);
-  }
-
-  #take(): LiveLeaseView | undefined {
-    const lease = this.#lease;
+    this.#lease?.release();
     this.#lease = undefined;
-    return lease;
   }
 }
 
-/** Typed failure used while retaining a guard. */
+/** Typed authority-lifetime failure for the existing long-lived terminal mapping. */
 export class LiveAuthorityGuardError extends Error {
-  readonly lost: LiveAuthorityLost;
-
-  constructor(lost: LiveAuthorityLost) {
+  constructor(readonly lost: LiveAuthorityLost) {
     super(`live authority is not usable: ${lost}`);
-    this.name = "LiveAuthorityGuardError";
-    this.lost = lost;
   }
 }
 
-async function retainLease(
-  cache: AuthorizationProviderCache,
-  digest: string,
-  epoch: number,
-): Promise<LiveLeaseView> {
-  try {
-    return await cache.retainLiveLease(digest, epoch);
-  } catch {
-    // No global transport-health veto: retention fails on verifier reset
-    // (`epoch_changed`) or on loss of the exact retained coverage
-    // (`coverage_lost`). This binding's own transport loss is owned elsewhere.
-    if (cache.cacheEpoch() !== epoch) {
-      throw new LiveAuthorityGuardError("epoch_changed");
-    }
-    throw new LiveAuthorityGuardError("coverage_lost");
-  }
-}
-
-/** Extract the typed loss from one guard failure, if it is one. */
+/** Recover a guard's typed loss without classifying exception message text. */
 export function authorityLostFrom(
   error: unknown,
 ): LiveAuthorityLost | undefined {
   return error instanceof LiveAuthorityGuardError ? error.lost : undefined;
+}
+
+function sameIdentity(
+  left: PinnedPeerIdentity | SessionAuthority,
+  right: PinnedPeerIdentity,
+): boolean {
+  return (
+    left.runtimeId === right.runtimeId &&
+    left.sessionPublicKey === right.sessionPublicKey &&
+    left.principalId === right.principalId &&
+    left.binding.kind === right.binding.kind &&
+    Object.entries(left.binding).every(
+      ([key, value]) => Reflect.get(right.binding, key) === value,
+    ) &&
+    Object.keys(left.binding).length === Object.keys(right.binding).length
+  );
 }

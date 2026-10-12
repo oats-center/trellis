@@ -10,6 +10,7 @@ declare const __api: {
 		readonly "rpc:Echo": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Echo";
+			readonly subject: "rpc.v1.upgrade.Echo";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly errors: readonly [];
@@ -19,6 +20,7 @@ declare const __api: {
 		readonly "rpc:Extra": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Extra";
+			readonly subject: "rpc.v1.upgrade.Extra";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly errors: readonly [];

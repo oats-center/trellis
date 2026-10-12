@@ -35,6 +35,41 @@ pub struct PreparedTrellisEvent {
 }
 
 impl PreparedTrellisEvent {
+    /// Restore a durable outbox publication without replacing its ID or timestamp.
+    /// Descriptor identity and payload are checked when the event is published.
+    pub fn restore(
+        subject: impl Into<String>,
+        payload: Bytes,
+        descriptor_identity: impl Into<String>,
+        event_id: impl Into<String>,
+        event_time: impl Into<String>,
+    ) -> Result<Self, SubjectError> {
+        let subject = subject.into();
+        let descriptor_identity = descriptor_identity.into();
+        let identity = trellis_protocol::decode_event_descriptor_identity(&descriptor_identity)
+            .map_err(|error| SubjectError::InvalidPayload(error.to_string()))?;
+        trellis_protocol::validate_event_descriptor_subject(&identity, &subject)
+            .map_err(|error| SubjectError::InvalidPayload(error.to_string()))?;
+        let event_id = event_id.into();
+        let event_time = event_time.into();
+        if Ulid::from_string(&event_id).is_err()
+            || OffsetDateTime::parse(&event_time, &Rfc3339).is_err()
+        {
+            return Err(SubjectError::InvalidPayload(
+                "invalid persisted event metadata".into(),
+            ));
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(EVENT_DESCRIPTOR_HEADER, descriptor_identity.as_str());
+        Ok(Self {
+            subject,
+            payload,
+            headers,
+            event_id,
+            event_time,
+            descriptor_identity,
+        })
+    }
     pub(crate) fn with_subject(mut self, subject: String) -> Self {
         self.subject = subject;
         self

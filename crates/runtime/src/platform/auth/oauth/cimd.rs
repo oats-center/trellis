@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine;
 use oauth_as::cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument};
@@ -19,13 +19,13 @@ pub(crate) struct ClientDocument {
     pub(crate) revision: String,
     pub(crate) metadata: serde_json::Value,
     pub(crate) kind: String,
-    expires: Instant,
+    pub(crate) observed_at: SystemTime,
 }
 
 pub(crate) struct ClientDocuments {
     client: reqwest::Client,
     policy: CimdPolicy,
-    cache: Mutex<BTreeMap<String, ClientDocument>>,
+    cache: Mutex<BTreeMap<String, (Instant, ClientDocument)>>,
     portal_origin: String,
 }
 
@@ -128,8 +128,8 @@ impl ClientDocuments {
         }
         {
             let mut cache = self.cache.lock().map_err(|_| AuthError::Unavailable)?;
-            cache.retain(|_, entry| entry.expires > Instant::now());
-            if let Some(entry) = cache.get(client_id) {
+            cache.retain(|_, (expires, _)| *expires > Instant::now());
+            if let Some((_, entry)) = cache.get(client_id) {
                 return Ok(entry.clone());
             }
         }
@@ -222,12 +222,15 @@ impl ClientDocuments {
             document,
             revision: base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .encode(Sha256::digest(&body)),
-            expires: Instant::now() + Duration::from_secs(ttl),
+            observed_at: SystemTime::now(),
         };
         let mut cache = self.cache.lock().map_err(|_| AuthError::Unavailable)?;
-        cache.retain(|_, entry| entry.expires > Instant::now());
+        cache.retain(|_, (expires, _)| *expires > Instant::now());
         if ttl > 0 && cache.len() < 128 {
-            cache.insert(client_id.into(), entry.clone());
+            cache.insert(
+                client_id.into(),
+                (Instant::now() + Duration::from_secs(ttl), entry.clone()),
+            );
         }
         Ok(entry)
     }

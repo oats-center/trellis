@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ulid } from "ulid";
   import { isErr } from "@oatscenter/result";
-  import { type apis } from "trellis-web-generated";
+  import { apis } from "trellis-web-generated";
   import { resolve } from "$lib/console_paths";
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";
@@ -25,8 +25,10 @@
   const notifications = getNotifications();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("device-deployment-disable");
-  type DisableInput = { deploymentId: string; expectedVersion: Deployment["version"]; idempotencyKey: string; reason: null };
-  const mutation = new MutationController<DisableInput, unknown>((state) => pending = state.busy);
+  type DisableInput = apis.auth.DeploymentsDisableInput;
+  const mutation = new MutationController<DisableInput, unknown>(
+    (state) => (pending = state.busy),
+  );
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -41,15 +43,24 @@
   let completedDeploymentId = $state<string | null>(null);
 
   const activeDeployments = $derived(
-    deployments.filter((deployment) => deployment.state === "active"),
+    deployments.filter(
+      (deployment) =>
+        deployment.kind === "device" && deployment.state === "enabled",
+    ),
   );
   const selectedDeployment = $derived(
-    activeDeployments.find((deployment) => deployment.deploymentId ===
-      (requestedDeploymentId || selectedDeploymentId)) ?? null,
+    activeDeployments.find(
+      (deployment) =>
+        deployment.deploymentId ===
+        (requestedDeploymentId || selectedDeploymentId),
+    ) ?? null,
   );
   const requestedUnavailable = $derived(
-    requestedDeploymentId !== "" && selectedDeployment === null && !loading && !error && completedDeploymentId !== requestedDeploymentId,
-
+    requestedDeploymentId !== "" &&
+      selectedDeployment === null &&
+      !loading &&
+      !error &&
+      completedDeploymentId !== requestedDeploymentId,
   );
 
   async function load(requestedId: string) {
@@ -61,23 +72,45 @@
     selectedDeploymentId = "";
     try {
       if (requestedId) {
-        const response = await trellis.deploymentsGet({ deploymentId: requestedId }).take();
+        const input = apis.auth.API.actions["rpc:Deployments.Get"].input.decode(
+          { deploymentId: requestedId },
+        );
+        const response = await trellis.deploymentsGet(input).take();
         if (!scope.isCurrent(token)) return;
         if (isErr(response)) {
-          if (projectConsoleError(response).code !== "not_found") error = projectConsoleError(response).message;
+          if (projectConsoleError(response).code !== "not_found")
+            error = projectConsoleError(response).message;
           return;
         }
-        deployments = response.deployment.kind === "device" ? [response.deployment] : [];
+        deployments =
+          response.deployment.kind === "device" ? [response.deployment] : [];
       } else {
         const result = await traverseAll<Deployment>(async (request) => {
-          const response = await trellis.deploymentsList({ kind: "device", state: "active", page: request }).take();
+          const response = await trellis
+            .deploymentsList({ page: request })
+            .take();
           if (isErr(response)) throw response;
-          return { items: response.items, cursor: response.page.nextCursor ?? undefined };
+          return {
+            items: response.items,
+            cursor: response.page.nextCursor ?? undefined,
+          };
         });
         if (!scope.isCurrent(token)) return;
-        if (!result.complete) { error = projectConsoleError(result.error).message; return; }
-        deployments = [...result.items];
-        if (deployments.some((deployment) => deployment.deploymentId === previousSelection && deployment.state === "active")) selectedDeploymentId = previousSelection;
+        if (!result.complete) {
+          error = projectConsoleError(result.error).message;
+          return;
+        }
+        deployments = result.items.filter(
+          (deployment) => deployment.kind === "device",
+        );
+        if (
+          deployments.some(
+            (deployment) =>
+              deployment.deploymentId === previousSelection &&
+              deployment.state === "enabled",
+          )
+        )
+          selectedDeploymentId = previousSelection;
       }
     } catch (cause) {
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
@@ -92,35 +125,59 @@
     const requestedAtCapture = requestedDeploymentId;
     const key = ulid();
     const intent = captureIntent<DisableInput>({
-      operation: "deploymentsDisable", targetId: target.deploymentId, label: target.deploymentId,
+      operation: "deploymentsDisable",
+      targetId: target.deploymentId,
+      label: target.deploymentId,
       expectedValue: target.deploymentId,
       idempotencyKey: key,
-      input: { deploymentId: target.deploymentId, expectedVersion: target.version, idempotencyKey: key, reason: null },
+      input: {
+        deploymentId: target.deploymentId,
+        expectedRevision: target.revision,
+        idempotencyKey: key,
+      },
       scope: { routeKey: scope.key },
     });
     if (!mutation.begin(intent)) return;
     const confirmed = await confirmationModal?.confirm({
       title: "Disable device deployment?",
-      message: "This prevents new device activations for the deployment until it is re-enabled.",
+      message:
+        "This prevents new device activations for the deployment until it is re-enabled.",
       confirmLabel: "Disable deployment",
       targetLabel: "Device deployment",
       targetName: intent.targetId,
       expectedValue: intent.expectedValue,
     });
-    if (!confirmed) { mutation.cancel(); return; }
+    if (!confirmed) {
+      mutation.cancel();
+      return;
+    }
     const outcome = await mutation.send({
-      isStillValid: () => scope.key === intent.scope.routeKey && requestedDeploymentId === requestedAtCapture && selectedDeployment?.deploymentId === intent.targetId,
+      isStillValid: () =>
+        scope.key === intent.scope.routeKey &&
+        requestedDeploymentId === requestedAtCapture &&
+        selectedDeployment?.deploymentId === intent.targetId,
 
-      dispatch: async ({ input }) => await trellis.deploymentsDisable(input).orThrow(),
+      dispatch: async ({ input }) =>
+        await trellis.deploymentsDisable(input).orThrow(),
     });
-    if (!outcome || scope.key !== intent.scope.routeKey || requestedDeploymentId !== requestedAtCapture || false) return;
+    if (
+      !outcome ||
+      scope.key !== intent.scope.routeKey ||
+      requestedDeploymentId !== requestedAtCapture ||
+      false
+    )
+      return;
 
     if (outcome.kind === "succeeded") {
       completedDeploymentId = intent.targetId;
-      notifications.success(`Device deployment ${intent.targetId} disabled.`, "Disabled");
+      notifications.success(
+        `Device deployment ${intent.targetId} disabled.`,
+        "Disabled",
+      );
       await load(requestedDeploymentId);
     } else if (outcome.kind === "unknown") {
-      error = "Outcome unknown; the disable may have completed. Check the deployment before trying again.";
+      error =
+        "Outcome unknown; the disable may have completed. Check the deployment before trying again.";
     } else error = projectConsoleError(outcome.error).message;
   }
 
@@ -136,9 +193,14 @@
 </script>
 
 <section class="space-y-4">
-  <PageToolbar title="Disable device deployment" description="Select an active deployment and confirm the disable workflow.">
+  <PageToolbar
+    title="Disable device deployment"
+    description="Select an active deployment and confirm the disable workflow."
+  >
     {#snippet actions()}
-      <a class="btn btn-ghost btn-sm" href={resolve("/admin/devices")}>Back to devices</a>
+      <a class="btn btn-ghost btn-sm" href={resolve("/admin/devices")}
+        >Back to devices</a
+      >
     {/snippet}
   </PageToolbar>
 
@@ -148,7 +210,8 @@
 
   {#if requestedUnavailable}
     <Notice variant="warning">
-      Device deployment '{requestedDeploymentId}' is not an active deployment that can be disabled.
+      Device deployment '{requestedDeploymentId}' is not an active deployment
+      that can be disabled.
     </Notice>
   {/if}
 
@@ -161,7 +224,15 @@
   {#if loading}
     <Panel><LoadingState label="Loading device deployments" /></Panel>
   {:else if error}
-    <Panel><p class="text-sm">Deployment lookup is incomplete. <button type="button" class="btn btn-ghost btn-xs" onclick={() => void load(requestedDeploymentId)}>Retry</button></p></Panel>
+    <Panel
+      ><p class="text-sm">
+        Deployment lookup is incomplete. <button
+          type="button"
+          class="btn btn-ghost btn-xs"
+          onclick={() => void load(requestedDeploymentId)}>Retry</button
+        >
+      </p></Panel
+    >
   {:else if requestedUnavailable}
     <EmptyState
       title="Deployment unavailable"
@@ -169,14 +240,25 @@
       class="m-5"
     >
       {#snippet actions()}
-        <a class="btn btn-outline btn-sm" href={resolve("/admin/devices")}>Back to devices</a>
+        <a class="btn btn-outline btn-sm" href={resolve("/admin/devices")}
+          >Back to devices</a
+        >
       {/snippet}
     </EmptyState>
   {:else if activeDeployments.length === 0}
-    <EmptyState title="No active deployments" description="There are no active device deployments available to disable." />
+    <EmptyState
+      title="No active deployments"
+      description="There are no active device deployments available to disable."
+    />
   {:else}
     <Panel title="Confirm deployment disable" eyebrow="Destructive workflow">
-      <form class="space-y-4" onsubmit={(event) => { event.preventDefault(); void requestDisableDeployment(); }}>
+      <form
+        class="space-y-4"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void requestDisableDeployment();
+        }}
+      >
         <label class="form-control gap-1">
           <span class="label-text text-xs">Deployment</span>
           {#if requestedDeploymentId !== ""}
@@ -187,10 +269,16 @@
               aria-label="Deployment"
             />
           {:else}
-            <select class="select select-bordered select-sm" bind:value={selectedDeploymentId} required>
+            <select
+              class="select select-bordered select-sm"
+              bind:value={selectedDeploymentId}
+              required
+            >
               <option value="" disabled>Select a deployment…</option>
               {#each activeDeployments as deployment (deployment.deploymentId)}
-                <option value={deployment.deploymentId}>{deployment.displayName} ({deployment.deploymentId})</option>
+                <option value={deployment.deploymentId}
+                  >{deployment.displayName} ({deployment.deploymentId})</option
+                >
               {/each}
             </select>
           {/if}
@@ -199,10 +287,18 @@
         {#if selectedDeployment}
           {@const target = selectedDeployment}
           {#if target}
-            <div class="rounded-box border border-base-300 bg-base-200/40 p-3 text-sm">
-              <div class="trellis-identifier font-medium">{target.deploymentId}</div>
+            <div
+              class="rounded-box border border-base-300 bg-base-200/40 p-3 text-sm"
+            >
+              <div class="trellis-identifier font-medium">
+                {target.deploymentId}
+              </div>
               <div class="text-base-content/60">State: {target.state}</div>
-              <div class="text-base-content/60">Delegation: {target.requiresDeviceDelegation ? "required" : "not required"}</div>
+              <div class="text-base-content/60">
+                Delegation: {target.requiresDeviceDelegation
+                  ? "required"
+                  : "not required"}
+              </div>
               <div class="text-base-content/60">Version: {target.version}</div>
             </div>
           {/if}

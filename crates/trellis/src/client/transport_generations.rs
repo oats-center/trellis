@@ -25,7 +25,6 @@ use std::time::{Duration, Instant};
 
 use async_nats::ConnectOptions;
 use futures_util::future::BoxFuture;
-use serde::Serialize;
 use tokio::sync::watch;
 use trellis_protocol::{TransportAuthorizationV1, TransportPolicyClass};
 
@@ -35,9 +34,6 @@ use crate::client::authorization::{
 };
 use crate::client::{SessionAuth, TrellisClientError};
 use crate::live::manager::LiveSessionManager;
-
-/// Connection token format carried in the NATS CONNECT as the Auth Callout input.
-const NATS_CONNECT_TOKEN_FORMAT: &str = "trellis.nats-connect-token.v2";
 
 /// Bounded broker own-admission read used to correlate a generation's CONNECT.
 const ADMISSION_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -172,15 +168,6 @@ struct Opening {
     generation: Option<Arc<TransportGeneration>>,
     /// Set when a lifecycle event arrives before the connection exists.
     failed: Arc<AtomicBool>,
-}
-
-/// NATS CONNECT token presented to the Auth Callout.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NatsConnectToken {
-    format: &'static str,
-    context_digest: String,
-    routing_jwt: String,
 }
 
 /// One immutable physical NATS attachment with an exact admitted policy.
@@ -1033,6 +1020,7 @@ impl ManagerInner {
         }
         let next_id = next.map(|generation| generation.id);
         state.current = next.cloned();
+        self.contexts.set_transport_ready(next.is_some());
         let previous = *self.published.borrow();
         if previous != next_id {
             self.published.send_replace(next_id);
@@ -1242,6 +1230,7 @@ impl ManagerInner {
             {
                 built = state.current.clone();
                 lost_current = true;
+                self.contexts.set_transport_ready(false);
             } else if let Some(generation) =
                 state.draining.iter().find(|generation| generation.id == id)
             {
@@ -1307,10 +1296,9 @@ impl TransportGenerationManager {
             terminal,
             stopped,
         });
-        let snapshot = inner.contexts.own_transport_snapshot()?;
         let id = inner.alloc_id();
         inner.baseline_id.store(id, Ordering::Release);
-        let generation = open_generation(&inner, id, &snapshot, "initial").await?;
+        let generation = open_generation(&inner, id, None, "initial").await?;
         let promoted = generation.promote_to_current();
         let lost = {
             let mut state = inner.lock_state()?;
@@ -1629,18 +1617,13 @@ impl TransportGenerationManager {
             // authenticate a *new* socket, so fail closed before opening one. This
             // gates only the new-socket path: reuse of an already-admitted carrier
             // above never revalidates the CONNECT credential.
-            if snapshot.routing_jwt_expires_at <= snapshot.corrected_now_seconds {
-                return Err(TrellisClientError::AuthorizationUnavailable(
-                    "authorization candidate route credential is no longer current".into(),
-                ));
-            }
             let runtime = snapshot.runtime.clone();
             (
                 OwnTransportSnapshot {
                     context_digest: snapshot.context_digest.clone(),
+                    authorization_session_id: snapshot.authorization_session_id.clone(),
                     policy: snapshot.policy.clone(),
                     runtime: runtime.clone(),
-                    routing_jwt: snapshot.routing_jwt.clone(),
                 },
                 snapshot.instance.clone(),
                 snapshot.server_clock_offset_ms,
@@ -1652,7 +1635,7 @@ impl TransportGenerationManager {
         let generation = match open_generation(
             &self.inner,
             id,
-            &candidate_snapshot,
+            Some(&candidate_snapshot),
             "own_candidate_stage",
         )
         .await
@@ -1754,7 +1737,7 @@ impl TransportGenerationManager {
             if generation.state() == GenerationState::Closed || generation.is_fenced() {
                 continue;
             }
-            if !generation_is_safe(generation, allowed, now)? {
+            if generation.admitted_policy.classify(allowed, now)? != TransportPolicyClass::Current {
                 continue;
             }
             if let Some(lease) = generation.lease() {
@@ -1768,6 +1751,49 @@ impl TransportGenerationManager {
             }
         }
         Ok(None)
+    }
+
+    /// Run `commit` with the exact published current generation pinned.
+    pub(crate) fn commit_candidate_on_carrier(
+        &self,
+        transition: &OwnTransitionGuard<'_>,
+        candidate: &PreparedOwnCandidate,
+        lease: &TransportLease,
+        commit: impl FnOnce() -> Result<(), TrellisClientError>,
+    ) -> Result<(), TrellisClientError> {
+        let state = self.inner.lock_state()?;
+        if let Some(error) = self.inner.terminated_error() {
+            return Err(error);
+        }
+        let snapshot = self
+            .inner
+            .contexts
+            .own_candidate_transport_snapshot_locked(
+                transition,
+                &candidate.context_digest,
+                &candidate.instance,
+            )?;
+        let retained = lease.weak_generation().upgrade().ok_or_else(|| {
+            TrellisClientError::TransportUnavailable("own-authority carrier lost".into())
+        })?;
+        let tracked = state
+            .current
+            .iter()
+            .chain(state.draining.iter())
+            .any(|generation| Arc::ptr_eq(generation, &retained));
+        if !tracked
+            || retained.state() == GenerationState::Closed
+            || retained.is_fenced()
+            || retained
+                .admitted_policy
+                .classify(&snapshot.policy, snapshot.corrected_now_seconds)?
+                != TransportPolicyClass::Current
+        {
+            return Err(TrellisClientError::TransportUnavailable(
+                "own-authority carrier changed".into(),
+            ));
+        }
+        commit()
     }
 
     /// Run `commit` with the exact published current generation pinned.
@@ -1892,16 +1918,6 @@ impl TransportGenerationManager {
                         .try_acquire_covering(&state, publish, subscribe, now, &policy, deadline)?
                     {
                         return Ok(lease);
-                    }
-                    if !policy_covers(&policy, publish, subscribe, now)? {
-                        if let Some(lease) =
-                            self.try_acquire_current(&state, now, &policy, deadline)?
-                        {
-                            return Ok(lease);
-                        }
-                        return Err(TrellisClientError::TransportUnavailable(
-                            "no admitted transport is available".into(),
-                        ));
                     }
                 }
             }
@@ -2340,23 +2356,24 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
 
         // Open a candidate for the newest desired policy.
         let id = inner.alloc_id();
-        let candidate = match open_generation(inner, id, &desired, "authorization_growth").await {
-            Ok(candidate) => candidate,
-            Err(error) => {
-                inner.clear_opening(id);
-                // Do not self-signal: retries stay demand-driven so an outage
-                // does not spin the worker.
-                tracing::warn!(
-                    event = "transport_generation.open_failed",
-                    generation_id = id,
-                    context_digest = %desired.context_digest,
-                    logical_terminal = ?inner.terminated_error(),
-                    %error,
-                    "failed to open transport generation"
-                );
-                return Err(error);
-            }
-        };
+        let candidate =
+            match open_generation(inner, id, Some(&desired), "authorization_growth").await {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    inner.clear_opening(id);
+                    // Do not self-signal: retries stay demand-driven so an outage
+                    // does not spin the worker.
+                    tracing::warn!(
+                        event = "transport_generation.open_failed",
+                        generation_id = id,
+                        context_digest = %desired.context_digest,
+                        logical_terminal = ?inner.terminated_error(),
+                        %error,
+                        "failed to open transport generation"
+                    );
+                    return Err(error);
+                }
+            };
 
         // A superseded policy must not be published. Read it before taking the
         // state lock to preserve the contexts-before-state lock order. This branch
@@ -2637,25 +2654,25 @@ impl Drop for RawConnectionGuard {
 async fn open_generation(
     inner: &Arc<ManagerInner>,
     id: u64,
-    snapshot: &OwnTransportSnapshot,
+    snapshot: Option<&OwnTransportSnapshot>,
     reason: &'static str,
 ) -> Result<Arc<TransportGeneration>, TrellisClientError> {
     tracing::info!(
         event = "transport_generation.opening",
         generation_id = id,
         reason,
-        context_digest = %snapshot.context_digest,
+        context_digest = ?snapshot.map(|snapshot| snapshot.context_digest.as_str()),
         "opening transport generation"
     );
-    let native = snapshot.runtime.transports.native.as_ref().ok_or_else(|| {
+    let runtime = &inner.contexts.runtime;
+    let native = runtime.transports.native.as_ref().ok_or_else(|| {
         TrellisClientError::TransportUnavailable(
             "bootstrap did not offer a native NATS transport".into(),
         )
     })?;
     let key_pair = Arc::new(inner.auth.nkey_pair()?);
     let session_nkey = key_pair.public_key();
-    let context_digest = snapshot.context_digest.clone();
-    let routing_jwt = snapshot.routing_jwt.clone();
+    let connect_token = inner.contexts.connect_token(&inner.auth)?;
     let state = Arc::new(AtomicU8::new(GenerationState::Draining as u8));
     let failed = Arc::new(AtomicBool::new(false));
     // Register the candidate before connecting so a loss during connect is
@@ -2675,8 +2692,7 @@ async fn open_generation(
     let options = ConnectOptions::with_auth_callback(move |nonce| {
         let key_pair = key_pair.clone();
         let session_nkey = session_nkey.clone();
-        let routing_jwt = routing_jwt.clone();
-        let context_digest = context_digest.clone();
+        let connect_token = connect_token.clone();
         let auth_state = auth_state.clone();
         let authenticated = authenticated.clone();
         async move {
@@ -2705,14 +2721,7 @@ async fn open_generation(
             credentials.jwt = None;
             credentials.signature =
                 Some(key_pair.sign(&nonce).map_err(async_nats::AuthError::new)?);
-            credentials.token = Some(
-                serde_json::to_string(&NatsConnectToken {
-                    format: NATS_CONNECT_TOKEN_FORMAT,
-                    context_digest,
-                    routing_jwt,
-                })
-                .map_err(async_nats::AuthError::new)?,
-            );
+            credentials.token = Some(connect_token);
             Ok(credentials)
         }
     })
@@ -2726,7 +2735,7 @@ async fn open_generation(
             inner.on_generation_event(id, event);
         }
     })
-    .custom_inbox_prefix(snapshot.runtime.inbox_prefix.clone());
+    .custom_inbox_prefix(runtime.inbox_prefix.clone());
     let nats = match options.connect(native.nats_servers.clone()).await {
         Ok(nats) => nats,
         Err(error) => {
@@ -2739,28 +2748,51 @@ async fn open_generation(
     // taken, and disarms only once a `TransportGeneration` owns it.
     let mut raw = RawConnectionGuard::new(nats.clone());
 
-    // G4 exact admission correlation: the broker marker must report exactly the
-    // context this CONNECT presented. Missing, malformed, or differing evidence
-    // closes the candidate and never publishes it.
-    let admission = match read_own_admission(&nats, ADMISSION_READ_TIMEOUT).await {
-        Some(admission) => admission,
-        None => {
+    // CONNECT carries admission, not application authority. Obtain the issuer-
+    // signed, request-correlated logical authority and exact compiled ACL before
+    // exposing the attachment. A new context digest alone is not an ACL change.
+    let response = inner
+        .contexts
+        .fetch_own_context(&inner.auth, &nats, ADMISSION_READ_TIMEOUT)
+        .await?;
+    let signed = response.signed;
+    let policy = response.admitted;
+    let authority = inner.contexts.owner.prepare_own(&nats, &signed).await?;
+    let marker = authority.digest().to_owned();
+    if let Some(snapshot) = snapshot {
+        if authority.authority().authorization_session_id != snapshot.authorization_session_id
+            || policy.classify(
+                &snapshot.policy,
+                inner.contexts.owner.policy().now_unix_seconds,
+            )? != TransportPolicyClass::Current
+        {
             inner.clear_opening(id);
             return Err(TrellisClientError::TransportUnavailable(
-                "broker own-admission evidence is unavailable".into(),
+                "broker admitted a different logical authority or transport policy".into(),
             ));
         }
-    };
-    let Some(marker) = admission.context_digest else {
+    }
+    let admission = read_own_admission(&nats, ADMISSION_READ_TIMEOUT).await?;
+    let attachment = admission
+        .authenticated_user
+        .strip_prefix("trellis.auth.v1:")
+        .and_then(|id| {
+            ulid::Ulid::from_string(id)
+                .ok()
+                .filter(|parsed| parsed.to_string() == id)
+        })
+        .ok_or_else(|| {
+            TrellisClientError::TransportUnavailable("broker attachment identity malformed".into())
+        })?;
+    if response.attachment_id != attachment.to_string()
+        || policy.classify(
+            &response.desired,
+            inner.contexts.owner.policy().now_unix_seconds,
+        )? != TransportPolicyClass::Current
+    {
         inner.clear_opening(id);
         return Err(TrellisClientError::TransportUnavailable(
-            "broker own-admission marker is malformed".into(),
-        ));
-    };
-    if marker != snapshot.context_digest {
-        inner.clear_opening(id);
-        return Err(TrellisClientError::TransportUnavailable(
-            "broker admitted a different authorization context".into(),
+            "attachment policy changed before installation".into(),
         ));
     }
     // A loss observed before the connection was built, or a logical close during
@@ -2771,7 +2803,7 @@ async fn open_generation(
             "candidate was lost during admission".into(),
         ));
     }
-    let admitted_policy_digest = snapshot.policy.digest()?;
+    let admitted_policy_digest = policy.digest()?;
     tracing::info!(
         event = "transport_generation.admitted",
         generation_id = id,
@@ -2784,10 +2816,10 @@ async fn open_generation(
     let generation = Arc::new(TransportGeneration {
         id,
         nats,
-        context_digest: snapshot.context_digest.clone(),
-        admitted_policy: snapshot.policy.clone(),
+        context_digest: marker.clone(),
+        admitted_policy: policy,
         admitted_policy_digest,
-        physical_connection_id: admission.authenticated_user,
+        physical_connection_id: attachment.to_string(),
         state,
         lease_state: Arc::new(std::sync::Mutex::new(LeaseState::default())),
         lease_wake,
@@ -2824,6 +2856,26 @@ async fn open_generation(
         return Err(TrellisClientError::TransportUnavailable(
             "candidate was lost during admission".into(),
         ));
+    }
+    if snapshot.is_none() {
+        let prepared = inner
+            .contexts
+            .prepare_authority(
+                &generation.nats,
+                &signed,
+                generation.admitted_policy.clone(),
+                response.authorization,
+            )
+            .await?;
+        let transition = inner.contexts.lock_own_transition()?;
+        if failed.load(Ordering::Acquire) || inner.is_terminated() {
+            return Err(TrellisClientError::TransportUnavailable(
+                "initial admission lost".into(),
+            ));
+        }
+        inner
+            .contexts
+            .promote_locked(&transition, &prepared.context_digest, &prepared.instance)?;
     }
     // The managed generation owns the socket now; the raw guard must not drain it.
     raw.disarm();

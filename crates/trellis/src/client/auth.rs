@@ -10,6 +10,7 @@ use crate::client::proof::{base64url_decode, base64url_encode, sha256};
 use crate::client::TrellisClientError;
 
 /// Session-scoped signing material used for Trellis auth and RPC proofs.
+#[derive(Clone)]
 #[doc = concat!("Public Trellis data type `", stringify!(SessionAuth), "`.")]
 pub struct SessionAuth {
     /// Public session key in base64url form.

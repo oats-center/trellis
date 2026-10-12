@@ -76,10 +76,13 @@ pub enum OperationState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct OperationRefData {
     pub id: String,
     pub service: String,
     pub operation: String,
+    /// Deployment that durably owns this operation and its control route.
+    pub deployment_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -250,19 +253,26 @@ pub trait OperationDescriptor {
 /// Marker trait for operations that declare an upload transfer.
 pub trait TransferOperationDescriptor: OperationDescriptor {}
 
+fn operation_action<D: OperationDescriptor>(
+    direction: trellis_protocol::PermissionAction,
+) -> trellis_protocol::CatalogActionIdentity {
+    trellis_protocol::CatalogActionIdentity {
+        kind: trellis_protocol::ApiSurfaceKind::Operation,
+        name: D::KEY
+            .split_once('.')
+            .map_or(D::KEY, |(_, action)| action)
+            .to_owned(),
+        direction,
+    }
+}
+
 #[doc(hidden)]
 pub trait OperationTransport {
-    fn operation_subject(
-        &self,
-        _api_id: &str,
-        _operation: &str,
-        subject: &str,
-    ) -> Result<String, TrellisClientError> {
-        Ok(subject.to_string())
-    }
-
     fn request_json_value<'a>(
         &'a self,
+        api_id: &'static str,
+        action: trellis_protocol::CatalogActionIdentity,
+        expected_deployment_id: Option<String>,
         subject: String,
         body: Value,
     ) -> impl Future<Output = Result<Value, TrellisClientError>> + Send + 'a;
@@ -392,32 +402,31 @@ impl<'a, T, D> OperationInvoker<'a, T, D> {
             .as_ref()
             .map_err(|message| TrellisClientError::OperationProtocol(message.clone()))
     }
-    /// Create a typed operation reference for an existing operation id.
+    /// Restore a typed reference from a complete persisted operation reference.
     ///
     /// This does not send a start request or run the operation handler. Follow-up
-    /// methods on the returned reference use the descriptor-derived control
-    /// subject and preserve the descriptor's progress and output types.
+    /// Follow-up requests target the retained owner deployment and verify its
+    /// certified replies; restoring a reference does not grant control authority.
     pub fn control(
         &self,
-        operation_id: impl Into<String>,
+        data: OperationRefData,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError>
     where
         D: OperationDescriptor,
     {
-        let operation_id = operation_id.into();
-        if operation_id.trim().is_empty() {
+        if data.id.trim().is_empty()
+            || data.service.trim().is_empty()
+            || data.deployment_id.trim().is_empty()
+            || data.operation != D::KEY
+        {
             return Err(TrellisClientError::OperationProtocol(
-                "operation id must not be empty".to_string(),
+                "operation reference must include its id, service, owner deployment, and matching operation".to_string(),
             ));
         }
 
         Ok(OperationRef {
             transport: self.transport,
-            data: OperationRefData {
-                id: operation_id,
-                service: String::new(),
-                operation: D::KEY.to_string(),
-            },
+            data,
             accepted_transfer: None,
             schemas: Arc::clone(self.schemas()?),
             _descriptor: PhantomData,
@@ -516,10 +525,16 @@ where
         body: Value,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
         let schemas = self.schemas()?;
-        let subject = self
+        let response = self
             .transport
-            .operation_subject(D::API_ID, D::KEY, D::SUBJECT)?;
-        let response = self.transport.request_json_value(subject, body).await?;
+            .request_json_value(
+                D::API_ID,
+                operation_action::<D>(trellis_protocol::PermissionAction::Invoke),
+                None,
+                D::SUBJECT.to_owned(),
+                body,
+            )
+            .await?;
         validate_snapshot_at(&response, "/snapshot", schemas)?;
         let accepted: AcceptedEnvelope<D::Progress, D::Output> = serde_json::from_value(response)?;
         if accepted.kind != "accepted" {
@@ -528,13 +543,18 @@ where
                 accepted.kind
             )));
         }
-        Ok(OperationRef {
-            transport: self.transport,
-            data: accepted.operation_ref,
-            accepted_transfer: accepted.transfer,
-            schemas: Arc::clone(schemas),
-            _descriptor: PhantomData,
-        })
+        if accepted.transfer.as_ref().is_some_and(|grant| {
+            grant.origin.api_id != D::API_ID
+                || grant.origin.action
+                    != operation_action::<D>(trellis_protocol::PermissionAction::Invoke)
+        }) {
+            return Err(TrellisClientError::OperationProtocol(
+                "accepted upload belongs to a different action".into(),
+            ));
+        }
+        let mut reference = self.control(accepted.operation_ref)?;
+        reference.accepted_transfer = accepted.transfer;
+        Ok(reference)
     }
 }
 
@@ -684,11 +704,7 @@ impl<'a, T, D> OperationRef<'a, T, D> {
         &self.data.id
     }
 
-    /// Return the owning service name when known from the accepted envelope.
-    ///
-    /// References resumed with [`OperationInvoker::control`] are scoped by the
-    /// typed descriptor and operation id, so this value is empty until the
-    /// runtime receives service metadata from a start response.
+    /// Return the owning service name retained in the complete reference.
     pub fn service(&self) -> &str {
         &self.data.service
     }
@@ -696,6 +712,27 @@ impl<'a, T, D> OperationRef<'a, T, D> {
     /// Return the operation key for this typed reference.
     pub fn operation(&self) -> &str {
         &self.data.operation
+    }
+
+    /// Return the deployment that durably owns this operation.
+    pub fn deployment_id(&self) -> &str {
+        &self.data.deployment_id
+    }
+
+    /// Return the complete reference for persistence and later restoration.
+    pub fn reference(&self) -> &OperationRefData {
+        &self.data
+    }
+}
+
+impl<T, D: OperationDescriptor> OperationRef<'_, T, D> {
+    fn owner_subject(&self) -> Result<String, TrellisClientError> {
+        trellis_protocol::derive_bound_operation_subject(
+            D::API_ID,
+            &self.data.deployment_id,
+            &operation_action::<D>(trellis_protocol::PermissionAction::Invoke).name,
+        )
+        .map_err(|error| TrellisClientError::OperationProtocol(error.to_string()))
     }
 }
 
@@ -714,11 +751,10 @@ where
         let response = self
             .transport
             .request_json_value(
-                control_subject(&self.transport.operation_subject(
-                    D::API_ID,
-                    D::KEY,
-                    D::SUBJECT,
-                )?),
+                D::API_ID,
+                operation_action::<D>(trellis_protocol::PermissionAction::Observe),
+                Some(self.data.deployment_id.clone()),
+                control_subject(&self.owner_subject()?),
                 body,
             )
             .await?;
@@ -737,15 +773,17 @@ where
             "action": "cancel",
             "operationId": self.id(),
         });
-        let subject = control_subject(&self.transport.operation_subject(
-            D::API_ID,
-            D::KEY,
-            D::SUBJECT,
-        )?);
+        let subject = control_subject(&self.owner_subject()?);
         loop {
             let response = self
                 .transport
-                .request_json_value(subject.clone(), body.clone())
+                .request_json_value(
+                    D::API_ID,
+                    operation_action::<D>(trellis_protocol::PermissionAction::Cancel),
+                    Some(self.data.deployment_id.clone()),
+                    subject.clone(),
+                    body.clone(),
+                )
                 .await?;
             let snapshot = decode_snapshot_response::<D>(response, &self.schemas)?;
             if matches!(
@@ -808,11 +846,10 @@ where
         let response = self
             .transport
             .request_json_value(
-                control_subject(&self.transport.operation_subject(
-                    D::API_ID,
-                    D::KEY,
-                    D::SUBJECT,
-                )?),
+                D::API_ID,
+                operation_action::<D>(trellis_protocol::PermissionAction::Control),
+                Some(self.data.deployment_id.clone()),
+                control_subject(&self.owner_subject()?),
                 body,
             )
             .await?;
@@ -944,9 +981,7 @@ where
     where
         TUpdate: DeserializeOwned + Send + 'static,
     {
-        let base_subject = self
-            .transport
-            .operation_subject(D::API_ID, D::KEY, D::SUBJECT)?;
+        let base_subject = self.owner_subject()?;
         let publish_subject = control_subject(&base_subject);
         let open_id = trellis_protocol::generate_nonce()
             .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
@@ -967,17 +1002,7 @@ where
             &open_id,
             receive_max_payload_bytes,
         );
-        let action_name = D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action);
-        let permission = trellis_protocol::PermissionAtom::new(
-            trellis_protocol::PermissionTarget::api_surface(
-                D::API_ID,
-                trellis_protocol::ApiSurfaceKind::Operation,
-                action_name.to_owned(),
-            )
-            .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?,
-            trellis_protocol::PermissionAction::Observe,
-        )
-        .map_err(|error| TrellisClientError::LiveProtocol(error.to_string()))?;
+        let action = operation_action::<D>(trellis_protocol::PermissionAction::Invoke);
         let open = crate::live::client_open::ClientOpen {
             kind: trellis_protocol::LiveSessionKind::Operation,
             api_id: D::API_ID,
@@ -986,16 +1011,22 @@ where
             body: Bytes::from(serde_json::to_vec(&body)?),
             open_id,
             receive_max_payload_bytes,
-            permission,
+            action,
         };
         let prepared = crate::live::client_open::open_client_session(
             self.transport,
-            self.transport.authorization_provider(),
+            self.transport.authorization_owner(),
             open,
             lease,
             deadline,
         )
         .await?;
+        if !matches!(&prepared.peer.binding, trellis_protocol::SessionBinding::Service { deployment_id, .. } if deployment_id == &self.data.deployment_id)
+        {
+            return Err(TrellisClientError::LiveProtocol(
+                "operation watch provider does not match the retained owner deployment".into(),
+            ));
+        }
         let schemas = Arc::clone(&self.schemas);
         crate::live::client_open::install_operation_watch_handle(
             self.transport,
@@ -1332,6 +1363,7 @@ mod tests {
         type Error = String;
 
         const KEY: &'static str = "Billing.Refund";
+        const API_ID: &'static str = "billing@v1";
         const SUBJECT: &'static str = "operations.v1.Billing.Refund";
         const CALLER_CAPABILITIES: &'static [&'static str] = &["billing.refund"];
         const OBSERVE_CAPABILITIES: &'static [&'static str] = &["billing.read"];
@@ -1345,6 +1377,33 @@ mod tests {
             r#"{"type":"object","properties":{},"required":[]}"#;
         const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
         const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = r#"{"selectWorkspace":{"type":"object","required":["workspaceId"],"properties":{"workspaceId":{"type":"string"}}}}"#;
+    }
+
+    #[test]
+    fn persisted_service_reference_restores_owner_directed_control_route() {
+        let invocation = super::OperationInvoker::<(), RefundOperation>::new(&());
+        for deployment in ["deployment-a", "deployment-b"] {
+            let server_ref = crate::service::OperationRefData {
+                id: ulid::Ulid::new().to_string(),
+                service: "billing".into(),
+                operation: RefundOperation::KEY.into(),
+                deployment_id: deployment.into(),
+            };
+            let data = serde_json::from_slice(&serde_json::to_vec(&server_ref).unwrap()).unwrap();
+            let restored = invocation.control(data).unwrap();
+            assert_eq!(
+                super::control_subject(&restored.owner_subject().unwrap()),
+                format!(
+                    "operation.v1.{}.{}.Refund.control",
+                    trellis_protocol::encode_subject_token("billing@v1"),
+                    trellis_protocol::encode_subject_token(deployment)
+                )
+            );
+            let persisted = serde_json::to_vec(restored.reference()).unwrap();
+            let mut other: super::OperationRefData = serde_json::from_slice(&persisted).unwrap();
+            other.operation = "Billing.Other".into();
+            assert!(invocation.control(other).is_err());
+        }
     }
 
     #[test]

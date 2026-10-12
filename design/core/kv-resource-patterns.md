@@ -42,6 +42,20 @@ are rejected and are never adopted, purged, or destroyed. Explicit Destroy is
 available only for a detached catalog resource and deletes an allocation only
 after that ownership proof succeeds.
 
+Deployment version changes, Disable, and Remove never destroy participant-owned
+allocations. Omitted/disabled bindings become unavailable and their catalog rows
+remain visible as `detached`, including across runtime restart. There is no
+omission TTL, resource garbage collector, or automatic destroy choice.
+
+The current native KV owner supports explicit `Auth.Resources.Remove` only for
+a detached resource at its expected catalog revision. It persists a manual
+`destroying` intent before checking the physical ownership marker and deleting
+the selected KV bucket. Broker failure is resumed by retrying that same manual
+request; startup and deployment reconciliation never resume deletion. A compatible
+approved re-add uses the retained deterministic physical allocation and updates
+binding evidence for the new installed participant revision. History/TTL increases
+may expand retention; decreases that could lose data are rejected.
+
 Trellis-owned runtime streams follow the same non-destructive startup rule. The
 runtime creates a missing stream, accepts an exact existing configuration, and
 may apply only safe subject or retention-limit expansions. Startup rejects any

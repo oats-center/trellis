@@ -1,33 +1,23 @@
 <script lang="ts">
   import { TrellisProvider } from "@oatscenter/trellis-svelte";
-  import type { Component, Snippet } from "svelte";
+  import type { Snippet } from "svelte";
   import { onMount } from "svelte";
-  import { setSelectedTrellisUrl, trellisApp } from "$lib/trellis-context.svelte";
+  import {
+    setSelectedTrellisUrl,
+    trellisApp,
+  } from "$lib/trellis-context.svelte";
   import AuthenticatedApp from "$lib/components/AuthenticatedApp.svelte";
   import AdminAccountRedirect from "$lib/components/AdminAccountRedirect.svelte";
-  import { buildConsoleLoginUrl } from "$lib/auth";
+  import { buildConsoleLoginUrl, consoleReturnKey } from "$lib/auth";
   import {
     buildAdminAccountLoginUrl,
     consumeAdminAccountToken,
   } from "$lib/admin_account";
-  import { APP_CONFIG } from "$lib/config";
+  import { APP_CONFIG, consoleAuthOptions } from "$lib/config";
 
   type Props = {
     children: Snippet;
   };
-  type ConsoleTrellisProviderProps = {
-    trellisApp: typeof trellisApp;
-    auth: { redirectTo(): string };
-    onAuthRequired(loginUrl: string): void;
-    onRecoverableAuthError(error: unknown): void | Promise<void>;
-    children: Snippet;
-    loading?: Snippet;
-    recoveringAuth?: Snippet;
-    error: Snippet<[unknown]>;
-  };
-
-  const ConsoleTrellisProvider = TrellisProvider as Component<ConsoleTrellisProviderProps>;
-
   let { children }: Props = $props();
   let initialized = $state(false);
   let adminAccountToken = $state<string | null>(null);
@@ -65,6 +55,7 @@
   });
 
   function redirectToLogin(loginUrl: string): void {
+    sessionStorage.setItem(consoleReturnKey(), currentPath());
     if (loginUrl) {
       if (adminAccountToken) {
         const setupUrl = buildAdminAccountLoginUrl(loginUrl, adminAccountToken);
@@ -93,7 +84,8 @@
   };
 
   function maybeSerializable(value: unknown): SerializableError | undefined {
-    if (!value || typeof value !== "object" || !("toSerializable" in value)) return undefined;
+    if (!value || typeof value !== "object" || !("toSerializable" in value))
+      return undefined;
     const fn = (value as { toSerializable: unknown }).toSerializable;
     if (typeof fn !== "function") return undefined;
     const s = fn.call(value);
@@ -143,16 +135,15 @@
     showConnectingModal = false;
   }
 
-  function connectingAction(node: HTMLElement): { destroy(): void } {
+  function connectingAction(): void {
     dismissConnecting();
-    return { destroy() {} };
   }
 </script>
 
 {#if initialized}
-  <ConsoleTrellisProvider
+  <TrellisProvider
     {trellisApp}
-    auth={{ redirectTo: () => window.location.href }}
+    auth={consoleAuthOptions()}
     onAuthRequired={redirectToLogin}
     onRecoverableAuthError={recoverAuth}
   >
@@ -160,21 +151,42 @@
     {#snippet recoveringAuth()}{/snippet}
 
     {#snippet error(connectError)}
-      <div use:connectingAction class="flex min-h-screen items-center justify-center bg-base-200 px-4 py-10">
+      <div
+        {@attach connectingAction}
+        class="flex min-h-screen items-center justify-center bg-base-200 px-4 py-10"
+      >
         <div class="flex flex-col items-center text-center">
-          <svg class="mb-6 h-16 w-16 text-base-content/30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <svg
+            class="mb-6 h-16 w-16 text-base-content/30"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
             <path d="M18 10h-4V6" />
             <path d="M14 10l7.03-7.03a2.12 2.12 0 0 1 3 3L17 13" />
             <path d="M6 14h4v4" />
             <path d="M10 14l-7.03 7.03a2.12 2.12 0 0 1-3-3L7 11" />
           </svg>
           <h1 class="text-xl font-semibold">Something went wrong</h1>
-          <p class="mt-2 max-w-sm text-sm text-base-content/60">We couldn't load the console. This might be a temporary issue.</p>
+          <p class="mt-2 max-w-sm text-sm text-base-content/60">
+            We couldn't load the console. This might be a temporary issue.
+          </p>
           <div class="mt-6 flex flex-col gap-3">
-            <button class="btn btn-primary btn-sm" onclick={goToConsole}>Go to console</button>
+            <button class="btn btn-primary btn-sm" onclick={goToConsole}
+              >Go to console</button
+            >
             <details class="text-left">
-              <summary class="cursor-pointer text-xs text-base-content/50 hover:text-base-content/70">Technical details</summary>
-              <pre class="mt-2 max-w-md overflow-auto rounded bg-base-300/50 p-3 text-xs text-base-content/70">{connectionErrorDetails(connectError)}</pre>
+              <summary
+                class="cursor-pointer text-xs text-base-content/50 hover:text-base-content/70"
+                >Technical details</summary
+              >
+              <pre
+                class="mt-2 max-w-md overflow-auto rounded bg-base-300/50 p-3 text-xs text-base-content/70">{connectionErrorDetails(
+                  connectError,
+                )}</pre>
             </details>
           </div>
         </div>
@@ -182,17 +194,17 @@
     {/snippet}
 
     {#if adminAccountToken}
-      <div use:connectingAction>
+      <div {@attach connectingAction}>
         <AdminAccountRedirect token={adminAccountToken} />
       </div>
     {:else}
       <AuthenticatedApp>
-        <div use:connectingAction>
+        <div {@attach connectingAction}>
           {@render children()}
         </div>
       </AuthenticatedApp>
     {/if}
-  </ConsoleTrellisProvider>
+  </TrellisProvider>
 
   {#if showConnectingModal}
     <dialog class="modal modal-open">
@@ -201,7 +213,9 @@
           <span class="loading loading-spinner loading-lg"></span>
           <div class="text-center">
             <p class="text-sm font-medium">Connecting to Trellis</p>
-            <p class="mt-1 text-xs text-base-content/60">This is taking longer than usual...</p>
+            <p class="mt-1 text-xs text-base-content/60">
+              This is taking longer than usual...
+            </p>
           </div>
         </div>
       </div>
@@ -211,7 +225,9 @@
     </dialog>
   {/if}
 {:else}
-  <div class="flex min-h-screen flex-col items-center justify-center gap-3 bg-base-200 px-4 py-10 text-center">
+  <div
+    class="flex min-h-screen flex-col items-center justify-center gap-3 bg-base-200 px-4 py-10 text-center"
+  >
     <h1 class="text-lg font-semibold">Loading console</h1>
     <span class="loading loading-spinner loading-md"></span>
   </div>

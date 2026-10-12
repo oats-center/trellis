@@ -1,6 +1,16 @@
 import { resolve } from "$app/paths";
 import { APP_CONFIG, buildAppLoginUrl } from "./config.ts";
 
+/** This tab's post-OAuth destination, isolated by exact application and issuer identity. */
+export function consoleReturnKey(): string {
+  return JSON.stringify([
+    location.origin,
+    APP_CONFIG.authUrl,
+    APP_CONFIG.clientId,
+    "console-return",
+  ]);
+}
+
 /** Converts auth callback reason codes into console-facing messages. */
 export function formatConsoleAuthError(error: string): string {
   switch (error) {
@@ -31,16 +41,16 @@ export function resolveConsolePath(
     return `${appBase}/${url.search}${url.hash}`;
   }
   if (appBase && url.pathname.startsWith(`${appBase}/`)) {
-    return `${appBase}${
-      url.pathname.slice(appBase.length)
-    }${url.search}${url.hash}`;
+    return `${appBase}${url.pathname.slice(
+      appBase.length,
+    )}${url.search}${url.hash}`;
   }
   return `${appBase}${url.pathname}${url.search}${url.hash}`;
 }
 
 export function getConsoleRedirectTarget(
   location: URL | Location = globalThis.location,
-  fallback = "/profile",
+  fallback = "/console/profile",
 ): string {
   const currentUrl = toUrl(location);
   const redirectTo = currentUrl.searchParams.get("redirectTo");

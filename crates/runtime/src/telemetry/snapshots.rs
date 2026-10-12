@@ -14,9 +14,7 @@ use trellis_rs::telemetry::instruments::{self, ObservableFamily};
 use trellis_rs::telemetry::KeyValue;
 
 use crate::events::ConsumerTelemetryReader;
-use crate::platform::auth::{
-    AuthTelemetrySnapshot, AuthorizationStateError, SqliteAuthorizationStore,
-};
+use crate::platform::auth::{AuthError, AuthorizationTelemetrySnapshot, SqliteAuthorizationStore};
 use crate::shutdown::StopHandle;
 use trellis_events_runtime::storage::EventsStore;
 use trellis_jobs_runtime::storage::SqliteJobsStore;
@@ -725,10 +723,12 @@ pub(crate) async fn run_consumer_sampler(
 pub(crate) async fn run_auth_sampler(
     store: SqliteAuthorizationStore,
     stop: StopHandle,
-) -> Result<(), AuthorizationStateError> {
+) -> Result<(), AuthError> {
     if !metrics_enabled() {
         return Ok(());
     }
+
+    let store = Arc::new(store);
 
     let source = SnapshotSource::register(
         Some("auth"),
@@ -740,7 +740,7 @@ pub(crate) async fn run_auth_sampler(
     );
     // At most one outstanding read per source; a late result is discarded.
     let mut outstanding: Option<
-        OutstandingRead<Result<AuthTelemetrySnapshot, AuthorizationStateError>>,
+        OutstandingRead<Result<AuthorizationTelemetrySnapshot, AuthError>>,
     > = None;
     loop {
         if let Some(read) = outstanding.as_ref() {
@@ -760,10 +760,11 @@ pub(crate) async fn run_auth_sampler(
             _ = stop.stopped() => return Ok(()),
         }
         let poll = SourcePoll::start();
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_millis() as i64);
-        let Some(mut read) = store.start_telemetry_snapshot(&poll, now_ms).await else {
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let snapshot_store = Arc::clone(&store);
+        let Some(mut read) =
+            start_bounded_read(&poll, move || snapshot_store.telemetry_snapshot(now)).await
+        else {
             source.record_failure("auth", "timeout");
             continue;
         };
@@ -791,7 +792,7 @@ pub(crate) async fn run_auth_sampler(
                         *count as f64,
                         vec![
                             KeyValue::new("trellis.kind", kind.clone()),
-                            KeyValue::new("trellis.state", *state),
+                            KeyValue::new("trellis.state", state.clone()),
                         ],
                     ));
                 }

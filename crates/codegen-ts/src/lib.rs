@@ -859,7 +859,7 @@ fn render_api(
         lines.push(format!(
             "    readonly {}: {};",
             js_string(&descriptor_name(id)),
-            render_action_type(action, id, package, modules)
+            render_action_type(api, action, id, package, modules)
         ));
     }
     lines.push("  };".into());
@@ -874,7 +874,7 @@ fn render_api(
         lines.push(format!(
             "    {}: {},",
             js_string(&descriptor_name(id)),
-            render_action(action, id, package, modules)
+            render_action(api, action, id, package, modules)
         ));
     }
     lines.push("  },".into());
@@ -890,22 +890,29 @@ fn render_api(
 }
 
 fn render_action(
+    api: &trellis_idl::ApiDefinition,
     action: &ActionDefinition,
     id: &ActionId,
     package: &str,
     modules: &BTreeMap<String, String>,
 ) -> String {
     let descriptor = js_string(&descriptor_name(id));
+    let subject = js_string(match id.kind {
+        ActionKind::Rpc => &api.subjects().rpc[&id.name],
+        ActionKind::Operation => &api.subjects().operations[&id.name],
+        ActionKind::Event => &api.subjects().events[&id.name].template,
+        ActionKind::Live => &api.subjects().lives[&id.name],
+    });
     match action {
         ActionDefinition::Rpc { input, output, errors, download, pagination } => format!(
-            "{{ kind: \"rpc\", descriptorName: {descriptor}, input: {}, output: {}, errors: [{}], download: {download}, pagination: {} }}",
+            "{{ kind: \"rpc\", descriptorName: {descriptor}, subject: {subject}, input: {}, output: {}, errors: [{}], download: {download}, pagination: {} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
             errors.iter().map(|error| error.to_owned()).collect::<Vec<_>>().join(", "),
             if pagination.is_some() { "\"cursor\"" } else { "undefined" }
         ),
         ActionDefinition::Operation { input, output, progress, update, errors, signals, upload } => format!(
-            "{{ kind: \"operation\", descriptorName: {descriptor}, input: {}, output: {}, progress: {}, update: {}, errors: [{}], signals: {{ {} }}, upload: {upload} }}",
+            "{{ kind: \"operation\", descriptorName: {descriptor}, subject: {subject}, input: {}, output: {}, progress: {}, update: {}, errors: [{}], signals: {{ {} }}, upload: {upload} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
             progress.as_ref().map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
@@ -914,12 +921,12 @@ fn render_action(
             signals.iter().map(|(name, ty)| format!("{}: {}", property_name(name), type_codec(ty, package, modules))).collect::<Vec<_>>().join(", ")
         ),
         ActionDefinition::Event { payload, parameters } => format!(
-            "{{ kind: \"event\", descriptorName: {descriptor}, payload: {}, parameters: {} }}",
+            "{{ kind: \"event\", descriptorName: {descriptor}, subject: {subject}, payload: {}, parameters: {} }}",
             type_codec(payload, package, modules),
             serde_json::to_string(parameters).expect("event parameters")
         ),
         ActionDefinition::Live { input, event } => format!(
-            "{{ kind: \"live\", descriptorName: {descriptor}, input: {}, event: {} }}",
+            "{{ kind: \"live\", descriptorName: {descriptor}, subject: {subject}, input: {}, event: {} }}",
             type_codec(input, package, modules),
             type_codec(event, package, modules)
         ),
@@ -927,20 +934,27 @@ fn render_action(
 }
 
 fn render_action_type(
+    api: &trellis_idl::ApiDefinition,
     action: &ActionDefinition,
     id: &ActionId,
     package: &str,
     modules: &BTreeMap<String, String>,
 ) -> String {
     let common = format!(
-        "readonly kind: {}; readonly descriptorName: {}",
+        "readonly kind: {}; readonly descriptorName: {}; readonly subject: {}",
         js_string(match id.kind {
             ActionKind::Rpc => "rpc",
             ActionKind::Operation => "operation",
             ActionKind::Event => "event",
             ActionKind::Live => "live",
         }),
-        js_string(&descriptor_name(id))
+        js_string(&descriptor_name(id)),
+        js_string(match id.kind {
+            ActionKind::Rpc => &api.subjects().rpc[&id.name],
+            ActionKind::Operation => &api.subjects().operations[&id.name],
+            ActionKind::Event => &api.subjects().events[&id.name].template,
+            ActionKind::Live => &api.subjects().lives[&id.name],
+        })
     );
     match action {
         ActionDefinition::Rpc { input, output, errors, download, pagination } => format!(
@@ -1048,6 +1062,16 @@ fn render_app_request(
         .join(", ");
     let mut use_types = Vec::new();
     let mut use_values = Vec::new();
+    let mut name_counts = BTreeMap::new();
+    for id in request.uses().keys() {
+        for action in find_api(graph, id)?.actions().keys() {
+            *name_counts
+                .entry(action.name.to_ascii_lowercase())
+                .or_insert(0usize) += 1;
+        }
+    }
+    let mut name_types = Vec::new();
+    let mut name_values = Vec::new();
     for (id, selection) in request.uses() {
         let api = find_api(graph, id)?;
         let mut action_types = Vec::new();
@@ -1069,6 +1093,18 @@ fn render_app_request(
                     .join(", ")
             };
             let descriptor = js_string(&descriptor_name(&selected.action));
+            let key = js_string(&format!(
+                "{}:{}",
+                id.as_str(),
+                descriptor_name(&selected.action)
+            ));
+            let name = if name_counts[&selected.action.name.to_ascii_lowercase()] > 1 {
+                format!("{}.{}", api.name(), selected.action.name)
+            } else {
+                selected.action.name.clone()
+            };
+            name_types.push(format!("readonly [{key}]: {};", js_string(&name)));
+            name_values.push(format!("[{key}]: {}", js_string(&name)));
             let direction = js_string(direction(selected.direction));
             action_types.push(format!("{{ readonly descriptorName: {descriptor}; readonly direction: {direction}; readonly optionalCapabilities: readonly [{alternatives}] }}"));
             action_values.push(format!("{{ descriptorName: {descriptor}, direction: {direction}, optionalCapabilities: [{alternatives}] }}"));
@@ -1087,7 +1123,7 @@ fn render_app_request(
         ));
     }
     lines.push("/** Developer selections and local State codecs; never principal installation evidence. */".into());
-    lines.push(format!("export const request: AppRequestDescriptor & {{ readonly id: {}; readonly kind: {}; readonly requiredCapabilities: readonly [{required}]; readonly optionalCapabilities: readonly [{optional}]; readonly uses: readonly [{}]; readonly states: {{", js_string(request.identity().as_str()), js_string(kind), use_types.join(", ")));
+    lines.push(format!("export const request: AppRequestDescriptor & {{ readonly id: {}; readonly kind: {}; readonly requiredCapabilities: readonly [{required}]; readonly optionalCapabilities: readonly [{optional}]; readonly uses: readonly [{}]; readonly actionNames: {{ {} }}; readonly states: {{", js_string(request.identity().as_str()), js_string(kind), use_types.join(", "), name_types.join(" ")));
     for (name, state) in request.states() {
         lines.push(format!(
             "readonly {}: {};",
@@ -1095,7 +1131,7 @@ fn render_app_request(
             render_resource_type(state, modules)
         ));
     }
-    lines.push(format!("}} }} = {{ id: {}, kind: {}, requiredCapabilities: [{required}], optionalCapabilities: [{optional}], uses: [{}], states: {{", js_string(request.identity().as_str()), js_string(kind), use_values.join(", ")));
+    lines.push(format!("}} }} = {{ id: {}, kind: {}, requiredCapabilities: [{required}], optionalCapabilities: [{optional}], uses: [{}], actionNames: {{ {} }}, states: {{", js_string(request.identity().as_str()), js_string(kind), use_values.join(", "), name_values.join(", ")));
     for (name, state) in request.states() {
         lines.push(format!(
             "{}: {},",

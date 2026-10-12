@@ -84,6 +84,22 @@ export const request = {
 		],
 		optionalCapabilities: []
 	}],
+	actionNames: {
+		["performance-trellis.performance@v1:rpc:Download"]: "Download",
+		["performance-trellis.performance@v1:rpc:Echo"]: "Echo",
+		["performance-trellis.performance@v1:rpc:PutRecord"]: "PutRecord",
+		["performance-trellis.performance@v1:rpc:ReadRecord"]: "ReadRecord",
+		["performance-trellis.performance@v1:operation:AwaitCancellation"]: "AwaitCancellation",
+		["performance-trellis.performance@v1:operation:AwaitObject"]: "AwaitObject",
+		["performance-trellis.performance@v1:operation:QueueKeyed"]: "QueueKeyed",
+		["performance-trellis.performance@v1:operation:QueueWork"]: "QueueWork",
+		["performance-trellis.performance@v1:operation:Upload"]: "Upload",
+		["performance-trellis.performance@v1:operation:Work"]: "Work",
+		["performance-trellis.performance@v1:event:Changed"]: "Changed",
+		["performance-trellis.performance@v1:event:Changed"]: "Changed",
+		["performance-trellis.performance@v1:event:Delivered"]: "Delivered",
+		["performance-trellis.performance@v1:live:Watch"]: "Watch"
+	},
 	states: { saved: {
 		kind: "state",
 		availability: "required",

@@ -19,23 +19,22 @@ mod transfer;
 mod transport_generations;
 
 pub use auth::SessionAuth;
-pub(crate) use authorization::AuthorizationContextLease;
-#[cfg(any(test, feature = "runtime-internals"))]
-pub use authorization::AuthorizationRegistryBinding;
-pub use authorization::{canonical_trellis_origin, AuthorizationProviderCache};
+pub use authorization::{
+    canonical_trellis_origin, AuthorizationLease, AuthorizationOwner,
+    HistoricalEventVerificationInput, RuntimeAuthorizationTrust, VerifiedAuthorizationResponse,
+};
 pub(crate) use authorization::{
     resource_action_marker, ResourceTransportAction, ResourceTransportKind,
 };
 pub use authorization::{
-    AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextCache,
-    AuthorizationContextPolicy, AuthorizationInstallation, AuthorizationNativeTransport,
-    AuthorizationRoutingMaterial, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
+    AuthorizationContextBundle, AuthorizationContextCache, AuthorizationInstallation,
+    AuthorizationNativeTransport, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
     AuthorizationVerificationCore, AuthorizationVerificationError, EventVerificationInput,
     RequestVerificationInput, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
-    VerifiedCaller,
 };
-#[cfg(feature = "runtime-internals")]
-pub use authorization::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
+pub use trellis_protocol::transfer::TransferOrigin;
+pub use trellis_protocol::AuthenticatedCaller;
+pub use trellis_protocol::{ApiSurfaceKind, CatalogActionIdentity, PermissionAction};
 
 pub use crate::generated::{EventDescriptor, LiveDescriptor, RpcDescriptor};
 pub(crate) use connection::fetch_device_activation;
@@ -43,7 +42,6 @@ pub(crate) use connection::DeviceEnrollmentResponse;
 pub use connection::{
     DeviceConnectOptions, EventMessage, EventReplayPolicy, EventSubscribeOptions,
     EventSubscriptionMode, ServiceConnectWithContractOptions, TrellisClient, UserConnectOptions,
-    UserSessionCredentials,
 };
 pub use error::{
     AuthenticationError, CallError, ProtocolError, RemoteErrorPayload, RpcErrorPayload,
@@ -70,7 +68,6 @@ pub use operations::{
     StartedOperationTransfer, TransferOperationDescriptor,
 };
 pub(crate) use proof::{new_request_id, now_iat_seconds};
-pub use proof::{verify_event_proof, VerifyEventProofInput};
 #[doc(hidden)]
 pub use resources::{BoundStateResourceClient, ConnectedStateHandle};
 pub use resources::{

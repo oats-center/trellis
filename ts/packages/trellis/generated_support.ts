@@ -15,23 +15,21 @@ export type SerializableErrorData = {
 
 type CodecValue<C> = C extends { decode(value: unknown): infer T } ? T : never;
 type OpenEnum<T extends string> =
-  | T
-  | (string & { readonly __openEnum?: never });
+  T | (string & { readonly __openEnum?: never });
 type Timestamp = string & { readonly __timestamp: unique symbol };
 type Ulid = string & { readonly __ulid: unique symbol };
 type OptionalCodec<T> = Codec<T | undefined> & Readonly<{ optional: true }>;
 type ModelField = Codec<unknown> | OptionalCodec<unknown>;
-type ModelValue<F extends Readonly<Record<string, ModelField>>> =
-  & {
-    [K in keyof F as F[K] extends OptionalCodec<unknown> ? never : K]:
-      CodecValue<F[K]>;
-  }
-  & {
-    [K in keyof F as F[K] extends OptionalCodec<unknown> ? K : never]?: Exclude<
-      CodecValue<F[K]>,
-      undefined
-    >;
-  };
+type ModelValue<F extends Readonly<Record<string, ModelField>>> = {
+  [K in keyof F as F[K] extends OptionalCodec<unknown> ? never : K]: CodecValue<
+    F[K]
+  >;
+} & {
+  [K in keyof F as F[K] extends OptionalCodec<unknown> ? K : never]?: Exclude<
+    CodecValue<F[K]>,
+    undefined
+  >;
+};
 
 function fail(expected: string): never {
   throw new TypeError(`Expected ${expected}`);
@@ -50,10 +48,13 @@ function integer(
   maximum: number,
 ): Codec<number> {
   return codec((value) =>
-    typeof value === "number" && Number.isInteger(value) && value >= minimum &&
-      value <= maximum && !Object.is(value, -0)
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= minimum &&
+    value <= maximum &&
+    !Object.is(value, -0)
       ? value
-      : fail(`${name} integer`)
+      : fail(`${name} integer`),
   );
 }
 
@@ -81,20 +82,21 @@ function bigintCodec(
 }
 
 const stringCodec = codec<string>((value) =>
-  typeof value === "string" ? value : fail("string")
+  typeof value === "string" ? value : fail("string"),
 );
 const boolCodec = codec<boolean>((value) =>
-  typeof value === "boolean" ? value : fail("boolean")
+  typeof value === "boolean" ? value : fail("boolean"),
 );
 const numberCodec = codec<number>((value) =>
   typeof value === "number" && Number.isFinite(value)
     ? value
-    : fail("finite number")
+    : fail("finite number"),
 );
 
 function decodeBase64(value: unknown): Uint8Array {
   if (
-    typeof value !== "string" || value.length % 4 !== 0 ||
+    typeof value !== "string" ||
+    value.length % 4 !== 0 ||
     !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
       value,
     )
@@ -102,9 +104,8 @@ function decodeBase64(value: unknown): Uint8Array {
     return fail("padded standard base64 string");
   }
   const binary = atob(value);
-  const decoded = Uint8Array.from(
-    binary,
-    (character) => character.charCodeAt(0),
+  const decoded = Uint8Array.from(binary, (character) =>
+    character.charCodeAt(0),
   );
   return encodeBase64(decoded) === value
     ? decoded
@@ -121,8 +122,9 @@ function encodeBase64(value: Uint8Array): string {
 function timestamp(value: unknown): Timestamp {
   if (typeof value !== "string") return fail("RFC 3339 timestamp");
   const match =
-    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i
-      .exec(value);
+    /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})$/i.exec(
+      value,
+    );
   if (!match) return fail("RFC 3339 timestamp");
   const [, seconds, fraction, offset] = match;
   if (seconds.slice(-2) === "60") {
@@ -167,8 +169,8 @@ export const codecs = Object.freeze({
   timestamp: codec<Timestamp>(timestamp),
   ulid: codec<Ulid>((value) =>
     typeof value === "string" && ulidPattern.test(value)
-      ? value as Ulid
-      : fail("canonical ULID")
+      ? (value as Ulid)
+      : fail("canonical ULID"),
   ),
   openEnum<const T extends string>(values: readonly T[]): Codec<OpenEnum<T>> {
     if (values.some((value) => typeof value !== "string")) {
@@ -200,7 +202,9 @@ export const codecs = Object.freeze({
     return codec(
       (value) => {
         if (
-          value === null || typeof value !== "object" || Array.isArray(value)
+          value === null ||
+          typeof value !== "object" ||
+          Array.isArray(value)
         ) {
           return fail("object");
         }
@@ -215,7 +219,9 @@ export const codecs = Object.freeze({
       },
       (value) => {
         if (
-          value === null || typeof value !== "object" || Array.isArray(value)
+          value === null ||
+          typeof value !== "object" ||
+          Array.isArray(value)
         ) {
           return fail("object");
         }
@@ -238,36 +244,42 @@ export const codecs = Object.freeze({
   },
   list<T>(item: Codec<T>): Codec<T[]> {
     return codec(
-      (value) => Array.isArray(value) ? value.map(item.decode) : fail("array"),
-      (value) => Array.isArray(value) ? value.map(item.encode) : fail("array"),
+      (value) =>
+        Array.isArray(value) ? value.map(item.decode) : fail("array"),
+      (value) =>
+        Array.isArray(value) ? value.map(item.encode) : fail("array"),
     );
   },
   map<T>(item: Codec<T>): Codec<Record<string, T>> {
     return codec(
       (value) => {
         if (
-          value === null || typeof value !== "object" || Array.isArray(value)
+          value === null ||
+          typeof value !== "object" ||
+          Array.isArray(value)
         ) {
           return fail("object map");
         }
         return Object.fromEntries(
-          Object.entries(value).map((
-            [key, entry],
-          ) => [key, item.decode(entry)]),
+          Object.entries(value).map(([key, entry]) => [
+            key,
+            item.decode(entry),
+          ]),
         );
       },
       (value) =>
         Object.fromEntries(
-          Object.entries(value).map((
-            [key, entry],
-          ) => [key, item.encode(entry)]),
+          Object.entries(value).map(([key, entry]) => [
+            key,
+            item.encode(entry),
+          ]),
         ),
     );
   },
   nullable<T>(value: Codec<T>): Codec<T | null> {
     return codec(
-      (input) => input === null ? null : value.decode(input),
-      (input) => input === null ? null : value.encode(input),
+      (input) => (input === null ? null : value.decode(input)),
+      (input) => (input === null ? null : value.encode(input)),
     );
   },
   optional<T>(value: Codec<T>): OptionalCodec<T> {
@@ -299,10 +311,8 @@ export const codecs = Object.freeze({
   },
 });
 
-type ApiDescriptorInput = Readonly<{
-  identity: string;
-  actions: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
-}>;
+type ApiDescriptorInput =
+  import("./participant_runtime/participant.ts").GeneratedApiDescriptor;
 
 type PackageEvidenceInput = Readonly<{
   rootPackage: string;
@@ -337,8 +347,19 @@ export type AppRequestDescriptor = Readonly<{
   optionalCapabilities: readonly string[];
   /** Compiler-derived callable surfaces; these do not confer authority. */
   uses: readonly ApiSelection[];
+  /** Compiler-owned flat client names for selected API actions. */
+  actionNames: Readonly<Record<string, string>>;
   /** Local State encoding metadata, not provisioned resource declarations. */
-  states: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+  states: Readonly<
+    Record<
+      string,
+      Readonly<{
+        codec: Codec<unknown>;
+        version: number;
+        migrations: Readonly<Record<number, Codec<unknown>>>;
+      }>
+    >
+  >;
 }>;
 
 type ParticipantDescriptorInput = Readonly<{
@@ -364,14 +385,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isCodec(value: unknown): value is Codec<unknown> {
-  return isRecord(value) && typeof value.decode === "function" &&
-    typeof value.encode === "function";
+  return (
+    isRecord(value) &&
+    typeof value.decode === "function" &&
+    typeof value.encode === "function"
+  );
 }
 
 function validateAction(name: string, action: Record<string, unknown>): void {
   if (
     !["rpc", "operation", "event", "live"].includes(String(action.kind)) ||
-    action.descriptorName !== name || !name.startsWith(`${action.kind}:`) ||
+    action.descriptorName !== name ||
+    !name.startsWith(`${action.kind}:`) ||
     name.length === String(action.kind).length + 1
   ) {
     fail("generated action descriptor");
@@ -379,29 +404,37 @@ function validateAction(name: string, action: Record<string, unknown>): void {
   switch (action.kind) {
     case "rpc":
       if (
-        !isCodec(action.input) || !isCodec(action.output) ||
+        !isCodec(action.input) ||
+        !isCodec(action.output) ||
         !Array.isArray(action.errors) ||
         typeof action.download !== "boolean" ||
         (action.pagination !== undefined && action.pagination !== "cursor")
-      ) fail("generated RPC descriptor");
+      )
+        fail("generated RPC descriptor");
       break;
     case "operation":
       if (
-        !isCodec(action.input) || !isCodec(action.output) ||
+        !isCodec(action.input) ||
+        !isCodec(action.output) ||
         (action.progress !== undefined && !isCodec(action.progress)) ||
         !Array.isArray(action.errors) ||
         !isRecord(action.signals) ||
         Object.values(action.signals).some((value) => !isCodec(value)) ||
         typeof action.upload !== "boolean"
-      ) fail("generated operation descriptor");
+      )
+        fail("generated operation descriptor");
       break;
     case "event":
       if (
-        !isCodec(action.payload) || !Array.isArray(action.parameters) ||
-        action.parameters.some((path) =>
-          !Array.isArray(path) || path.some((part) => typeof part !== "string")
+        !isCodec(action.payload) ||
+        !Array.isArray(action.parameters) ||
+        action.parameters.some(
+          (path) =>
+            !Array.isArray(path) ||
+            path.some((part) => typeof part !== "string"),
         )
-      ) fail("generated event descriptor");
+      )
+        fail("generated event descriptor");
       break;
     case "live":
       if (!isCodec(action.input) || !isCodec(action.event)) {
@@ -413,9 +446,11 @@ function validateAction(name: string, action: Record<string, unknown>): void {
 
 function validateApiDescriptor(descriptor: ApiDescriptorInput): void {
   if (
-    !descriptor || typeof descriptor !== "object" ||
+    !descriptor ||
+    typeof descriptor !== "object" ||
     typeof descriptor.identity !== "string" ||
-    descriptor.identity.length === 0 || !isRecord(descriptor.actions)
+    descriptor.identity.length === 0 ||
+    !isRecord(descriptor.actions)
   ) {
     fail("API descriptor");
   }
@@ -440,20 +475,27 @@ function validateResource(resource: Record<string, unknown>): void {
       String(resource.kind),
     ) ||
     !["required", "optional"].includes(String(resource.availability))
-  ) fail("generated resource descriptor");
+  )
+    fail("generated resource descriptor");
   if (resource.kind === "state" || resource.kind === "kv") {
     if (
-      !isCodec(resource.codec) || typeof resource.version !== "number" ||
-      !Number.isInteger(resource.version) || resource.version <= 0 ||
+      !isCodec(resource.codec) ||
+      typeof resource.version !== "number" ||
+      !Number.isInteger(resource.version) ||
+      resource.version <= 0 ||
       !isRecord(resource.migrations)
-    ) fail("generated representation descriptor");
+    )
+      fail("generated representation descriptor");
     const currentVersion = resource.version;
     if (
-      Object.entries(resource.migrations).some(([version, value]) =>
-        !/^[1-9][0-9]*$/.test(version) || Number(version) >= currentVersion ||
-        !isCodec(value)
+      Object.entries(resource.migrations).some(
+        ([version, value]) =>
+          !/^[1-9][0-9]*$/.test(version) ||
+          Number(version) >= currentVersion ||
+          !isCodec(value),
       )
-    ) fail("generated representation descriptor");
+    )
+      fail("generated representation descriptor");
   } else if (
     resource.kind === "job" &&
     (!isCodec(resource.payload) ||
@@ -467,7 +509,8 @@ function validateResource(resource: Record<string, unknown>): void {
       resource.deadlineMs !== undefined &&
       (!Number.isInteger(resource.deadlineMs) ||
         Number(resource.deadlineMs) <= 0)
-    ) fail("generated job descriptor");
+    )
+      fail("generated job descriptor");
     if (resource.retry !== undefined) {
       if (
         !isRecord(resource.retry) ||
@@ -476,31 +519,41 @@ function validateResource(resource: Record<string, unknown>): void {
         !Array.isArray(resource.retry.backoffMs) ||
         resource.retry.backoffMs.length !==
           Number(resource.retry.attempts) - 1 ||
-        resource.retry.backoffMs.some((value) =>
-          !Number.isInteger(value) || Number(value) <= 0
+        resource.retry.backoffMs.some(
+          (value) => !Number.isInteger(value) || Number(value) <= 0,
         )
-      ) fail("generated job descriptor");
+      )
+        fail("generated job descriptor");
     }
   }
 }
 
 function validatePackageEvidence(evidence: PackageEvidenceInput): void {
   if (
-    !isRecord(evidence) || typeof evidence.rootPackage !== "string" ||
+    !isRecord(evidence) ||
+    typeof evidence.rootPackage !== "string" ||
     evidence.rootPackage.length === 0 ||
     typeof evidence.rootDigest !== "string" ||
-    evidence.rootDigest.length === 0 || !Array.isArray(evidence.packages)
-  ) fail("package evidence");
+    evidence.rootDigest.length === 0 ||
+    !Array.isArray(evidence.packages)
+  )
+    fail("package evidence");
   let previous = "";
   let rootFound = false;
   for (const entry of evidence.packages) {
     if (
-      !isRecord(entry) || typeof entry.name !== "string" ||
-      entry.name.length === 0 || entry.name <= previous ||
-      typeof entry.version !== "string" || entry.version.length === 0 ||
-      typeof entry.digest !== "string" || entry.digest.length === 0 ||
-      typeof entry.source !== "string" || entry.source.length === 0
-    ) fail("sorted package evidence");
+      !isRecord(entry) ||
+      typeof entry.name !== "string" ||
+      entry.name.length === 0 ||
+      entry.name <= previous ||
+      typeof entry.version !== "string" ||
+      entry.version.length === 0 ||
+      typeof entry.digest !== "string" ||
+      entry.digest.length === 0 ||
+      typeof entry.source !== "string" ||
+      entry.source.length === 0
+    )
+      fail("sorted package evidence");
     previous = entry.name;
     if (entry.name === evidence.rootPackage) {
       if (entry.digest !== evidence.rootDigest) {
@@ -515,21 +568,22 @@ function validatePackageEvidence(evidence: PackageEvidenceInput): void {
 /** Validate and retain generated participant evidence without resolving grants or authority. */
 export function participantDescriptor<
   const T extends ParticipantDescriptorInput,
->(
-  descriptor: T,
-): T {
+>(descriptor: T): T {
   if (
-    !descriptor || typeof descriptor !== "object" ||
+    !descriptor ||
+    typeof descriptor !== "object" ||
     !["service", "device"].includes(descriptor.kind) ||
     descriptor.id !== descriptor.identity ||
     typeof descriptor.identity !== "string" ||
     descriptor.identity.length === 0 ||
-    typeof descriptor.path !== "string" || descriptor.path.length === 0 ||
+    typeof descriptor.path !== "string" ||
+    descriptor.path.length === 0 ||
     !isRecord(descriptor.packageEvidence) ||
     typeof descriptor.packageEvidence.rootPackage !== "string" ||
     descriptor.identity !==
       `${descriptor.packageEvidence.rootPackage}.${descriptor.path}` ||
-    !Array.isArray(descriptor.implements) || !Array.isArray(descriptor.uses) ||
+    !Array.isArray(descriptor.implements) ||
+    !Array.isArray(descriptor.uses) ||
     !Array.isArray(descriptor.requiredCapabilities) ||
     !Array.isArray(descriptor.optionalCapabilities) ||
     !isRecord(descriptor.actionNames) ||
@@ -541,27 +595,33 @@ export function participantDescriptor<
   const selections: readonly ApiSelection[] = descriptor.uses;
   for (const selection of selections) {
     if (
-      !isRecord(selection) || !isRecord(selection.api) ||
+      !isRecord(selection) ||
+      !isRecord(selection.api) ||
       !Array.isArray(selection.actions) ||
       !Array.isArray(selection.optionalCapabilities)
-    ) fail("generated action selection");
+    )
+      fail("generated action selection");
     const api = selection.api;
     validateApiDescriptor(api);
     for (const selected of selection.actions) {
       if (
-        !isRecord(selected) || typeof selected.descriptorName !== "string" ||
+        !isRecord(selected) ||
+        typeof selected.descriptorName !== "string" ||
         !(selected.descriptorName in api.actions) ||
         !Array.isArray(selected.optionalCapabilities) ||
         selected.optionalCapabilities.some((value) => typeof value !== "string")
-      ) fail("generated action selection");
+      )
+        fail("generated action selection");
       const kind = api.actions[selected.descriptorName].kind;
       if (
         (kind === "rpc" && selected.direction !== "call") ||
         (kind === "operation" && selected.direction !== "invoke") ||
-        (kind === "event" && selected.direction !== "publish" &&
+        (kind === "event" &&
+          selected.direction !== "publish" &&
           selected.direction !== "subscribe") ||
         (kind === "live" && selected.direction !== "subscribe")
-      ) fail("generated action direction");
+      )
+        fail("generated action direction");
     }
     if (
       selection.optionalCapabilities.some((value) => typeof value !== "string")
@@ -579,9 +639,8 @@ export function participantDescriptor<
       !isRecord(descriptor.companion.request) ||
       !["required", "optional"].includes(descriptor.companion.availability) ||
       !["browser", "native"].includes(descriptor.companion.request.kind) ||
-      descriptor.companion.request.id.split(".").slice(0, -1).join(
-          ".",
-        ) !== descriptor.identity
+      descriptor.companion.request.id.split(".").slice(0, -1).join(".") !==
+        descriptor.identity
     ) {
       fail("companion descriptor");
     }

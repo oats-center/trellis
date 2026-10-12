@@ -16,6 +16,7 @@ export const request = {
 		}],
 		optionalCapabilities: []
 	}],
+	actionNames: { ["client-upgrade-fixture.upgrade@v1:rpc:Echo"]: "Echo" },
 	states: {}
 };
 export default request;

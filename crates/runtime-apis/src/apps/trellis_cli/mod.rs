@@ -81,6 +81,7 @@ impl trellis_rs::generated::AppRequestDescriptor for Request {
         "trellis.events@v1::deadLettersInspect",
         "trellis.events@v1::deadLettersReplay",
         "trellis.events@v1::query",
+        "trellis.health@v1::observe",
         "trellis.health@v1::query",
         "trellis.jobs@v1::query",
         "trellis.state@v1::delete",
@@ -175,6 +176,7 @@ const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[
     trellis_rs::generated::OptionalAction::rpc("trellis.events@v1", "DeadLetters.Replay"),
     trellis_rs::generated::OptionalAction::rpc("trellis.events@v1", "Query"),
     trellis_rs::generated::OptionalAction::rpc("trellis.health@v1", "Query"),
+    trellis_rs::generated::OptionalAction::live("trellis.health@v1", "Watch"),
     trellis_rs::generated::OptionalAction::rpc("trellis.jobs@v1", "Query"),
     trellis_rs::generated::OptionalAction::rpc("trellis.state@v1", "Delete"),
 ];
@@ -3175,6 +3177,7 @@ pub mod trellis_events_v1 {
     }
 }
 pub mod trellis_health_v1 {
+    use crate::apis::trellis_health_v1::lives;
     use crate::apis::trellis_health_v1::rpc;
     #[derive(Clone)]
     pub struct Client {
@@ -3280,6 +3283,15 @@ pub mod trellis_health_v1 {
                     }
                 },
             ))
+        }
+        pub async fn watch(
+            &self,
+            input: &lives::WatchInput,
+        ) -> Result<
+            trellis_rs::LiveSubscription<lives::WatchEvent>,
+            trellis_rs::client::TrellisClientError,
+        > {
+            self.inner.live::<lives::Watch>(input).await
         }
     }
 }

@@ -34,6 +34,7 @@ declare const __api: {
 		readonly "rpc:Download": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Download";
+			readonly subject: "rpc.v1.performance.Download";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly errors: readonly [];
@@ -43,6 +44,7 @@ declare const __api: {
 		readonly "rpc:Echo": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Echo";
+			readonly subject: "rpc.v1.performance.Echo";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly errors: readonly [];
@@ -52,6 +54,7 @@ declare const __api: {
 		readonly "rpc:PutRecord": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:PutRecord";
+			readonly subject: "rpc.v1.performance.PutRecord";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly errors: readonly [];
@@ -61,6 +64,7 @@ declare const __api: {
 		readonly "rpc:ReadRecord": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:ReadRecord";
+			readonly subject: "rpc.v1.performance.ReadRecord";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly errors: readonly [];
@@ -70,6 +74,7 @@ declare const __api: {
 		readonly "operation:AwaitCancellation": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:AwaitCancellation";
+			readonly subject: "operations.v1.performance.AwaitCancellation";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly progress: typeof Types0.ValueCodec;
@@ -81,6 +86,7 @@ declare const __api: {
 		readonly "operation:AwaitObject": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:AwaitObject";
+			readonly subject: "operations.v1.performance.AwaitObject";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly progress: undefined;
@@ -92,6 +98,7 @@ declare const __api: {
 		readonly "operation:QueueKeyed": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:QueueKeyed";
+			readonly subject: "operations.v1.performance.QueueKeyed";
 			readonly input: typeof Types0.KeyedValueCodec;
 			readonly output: typeof Types0.KeyedValueCodec;
 			readonly progress: undefined;
@@ -103,6 +110,7 @@ declare const __api: {
 		readonly "operation:QueueWork": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:QueueWork";
+			readonly subject: "operations.v1.performance.QueueWork";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly progress: undefined;
@@ -114,6 +122,7 @@ declare const __api: {
 		readonly "operation:Upload": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:Upload";
+			readonly subject: "operations.v1.performance.Upload";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly progress: undefined;
@@ -125,6 +134,7 @@ declare const __api: {
 		readonly "operation:Work": {
 			readonly kind: "operation";
 			readonly descriptorName: "operation:Work";
+			readonly subject: "operations.v1.performance.Work";
 			readonly input: typeof Types0.ValueCodec;
 			readonly output: typeof Types0.ValueCodec;
 			readonly progress: typeof Types0.ValueCodec;
@@ -136,18 +146,21 @@ declare const __api: {
 		readonly "event:Changed": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Changed";
+			readonly subject: "events.v1.cGVyZm9ybWFuY2UtdHJlbGxpcy5wZXJmb3JtYW5jZUB2MQ.Changed";
 			readonly payload: typeof Types0.ValueCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "event:Delivered": {
 			readonly kind: "event";
 			readonly descriptorName: "event:Delivered";
+			readonly subject: "events.v1.cGVyZm9ybWFuY2UtdHJlbGxpcy5wZXJmb3JtYW5jZUB2MQ.Delivered";
 			readonly payload: typeof Types0.ValueCodec;
 			readonly parameters: readonly [];
 		};
 		readonly "live:Watch": {
 			readonly kind: "live";
 			readonly descriptorName: "live:Watch";
+			readonly subject: "live.v1.route.performance.Watch";
 			readonly input: typeof Types0.ValueCodec;
 			readonly event: typeof Types0.ValueCodec;
 		};

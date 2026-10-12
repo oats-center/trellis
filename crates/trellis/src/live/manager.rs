@@ -128,7 +128,7 @@ pub struct LiveSessionManager {
     /// not strand live observation.
     attachment: std::sync::Mutex<LiveAttachment>,
     auth: Arc<SessionAuth>,
-    contexts: Arc<crate::client::AuthorizationContextCache>,
+    owner: crate::client::AuthorizationOwner,
     provider_connection_id: String,
     stopped: AtomicBool,
     suspended: AtomicBool,
@@ -164,7 +164,7 @@ impl LiveSessionManager {
         generation_id: u64,
         generation: Weak<TransportGeneration>,
         auth: Arc<SessionAuth>,
-        contexts: Arc<crate::client::AuthorizationContextCache>,
+        owner: crate::client::AuthorizationOwner,
         provider_connection_id: String,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -174,7 +174,7 @@ impl LiveSessionManager {
                 generation,
             }),
             auth,
-            contexts,
+            owner,
             provider_connection_id,
             stopped: AtomicBool::new(false),
             suspended: AtomicBool::new(false),
@@ -529,10 +529,11 @@ impl LiveSessionManager {
         subject: &str,
         body: &[u8],
     ) -> Result<async_nats::HeaderMap, LiveErrorCode> {
-        let digest = self
-            .contexts
-            .context_digest()
+        let authority = self
+            .owner
+            .own_authority()
             .map_err(|_| LiveErrorCode::AuthorizationUnavailable)?;
+        let digest = authority.digest();
         if digest.is_empty() {
             return Err(LiveErrorCode::AuthorizationUnavailable);
         }
@@ -544,7 +545,7 @@ impl LiveSessionManager {
         )
         .map_err(|_| LiveErrorCode::AuthorizationUnavailable)?;
         let mut headers = async_nats::HeaderMap::new();
-        headers.insert("authorization-context", digest.as_str());
+        headers.insert("authorization-context", digest);
         headers.insert("session-key", self.auth.session_key.as_str());
         headers.insert("trellis-live-proof", proof.as_str());
         Ok(headers)
@@ -715,8 +716,8 @@ impl LiveSessionManager {
 
     /// Return the retained authorization cache for provider guards.
     #[must_use]
-    pub(crate) fn contexts_handle(&self) -> Arc<crate::client::AuthorizationContextCache> {
-        self.contexts.clone()
+    pub(crate) fn authorization_owner(&self) -> &crate::client::AuthorizationOwner {
+        &self.owner
     }
 
     /// Count currently retained provider sessions.

@@ -38,6 +38,7 @@ declare const __api: {
 		readonly "rpc:Resources.Destroy": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Destroy";
+			readonly subject: "rpc.v1.core.Resources.Destroy";
 			readonly input: typeof Types1.ResourcesDestroyRequestCodec;
 			readonly output: typeof Types1.ResourcesDestroyResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -47,6 +48,7 @@ declare const __api: {
 		readonly "rpc:Resources.Inspect": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Inspect";
+			readonly subject: "rpc.v1.core.Resources.Inspect";
 			readonly input: typeof Types1.ResourcesInspectRequestCodec;
 			readonly output: typeof Types1.ResourcesInspectResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -56,6 +58,7 @@ declare const __api: {
 		readonly "rpc:Resources.Query": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Query";
+			readonly subject: "rpc.v1.core.Resources.Query";
 			readonly input: typeof Types1.ResourcesQueryRequestCodec;
 			readonly output: typeof Types1.ResourcesQueryResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -65,6 +68,7 @@ declare const __api: {
 		readonly "rpc:Surface.Status": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Surface.Status";
+			readonly subject: "rpc.v1.core.Surface.Status";
 			readonly input: typeof Types1.TrellisSurfaceStatusRequestCodec;
 			readonly output: typeof Types1.TrellisSurfaceStatusResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];

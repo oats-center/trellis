@@ -4,7 +4,6 @@ import { join } from "@std/path";
 
 const DEFAULT_TIMEOUTS = {
   startupMs: 60_000,
-  reconciliationMs: 60_000,
   waitForMs: 10_000,
   shutdownMs: 10_000,
 };

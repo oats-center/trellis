@@ -2,10 +2,10 @@ import { type Authenticator, nkeyAuthenticator } from "@nats-io/nats-core";
 import { fromSeed, Prefix } from "@nats-io/nkeys";
 import { Codec } from "@nats-io/nkeys/lib/codec.js";
 
-import type { AuthorizationProviderCache } from "./authorization_context.ts";
+import type { SessionAuthorityOwner } from "./authority.ts";
 import { trellisCrypto } from "./crypto.ts";
 import { createProof, type RequestSignature } from "./proof.ts";
-import type { SessionRequest } from "./protocol_wasm.ts";
+import { signAdmissionGetWasm, type AdmissionGet, type SessionRequest } from "./protocol_wasm.ts";
 import {
   type SessionProof,
   type SessionProofInput,
@@ -27,14 +27,16 @@ export type TrellisAuth = {
   setServerClockOffsetMs: (clockOffsetMs: number) => void;
   /** Current authorization-context digest bound into v1 request and event proofs. */
   contextDigest: () => string;
-  /** Local verifier for received requests and events. */
-  authorizationProviderCache?: AuthorizationProviderCache;
+  /** Common owner of verified session identity and application authorization. */
+  authorityOwner?: SessionAuthorityOwner;
 
   createProof: (
     request: SessionRequest,
     payload: Uint8Array,
   ) => Promise<RequestSignature>;
   signSessionProof: (input: SessionProofInput) => Promise<SessionProof>;
+  /** Sign the native pending own-context lookup using this ephemeral key. */
+  signAdmissionGet: (request: AdmissionGet, subject: string, reply: string) => Promise<string>;
   natsConnectOptions: (opts: {
     inboxPrefix: string;
     /** Fresh signed admission for this exact ephemeral key, never a refresh token. */
@@ -82,6 +84,7 @@ export async function createAuth(opts: {
     contextDigest: resolveContextDigest,
     createProof: (request, payload) => createProof(signer, request, payload),
     signSessionProof: (input) => signSessionProof(input, signer, sessionKey),
+    signAdmissionGet: (request, subject, reply) => signAdmissionGetWasm(request, subject, reply, seed),
     natsConnectOptions: (options) => {
       return Promise.resolve({
         authenticator: [

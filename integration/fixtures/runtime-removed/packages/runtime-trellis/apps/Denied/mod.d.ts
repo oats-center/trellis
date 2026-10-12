@@ -12,6 +12,7 @@ export declare const request: AppRequestDescriptor & {
 		readonly actions: readonly [];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly actionNames: {};
 	readonly states: {};
 };
 export type Request = typeof request;

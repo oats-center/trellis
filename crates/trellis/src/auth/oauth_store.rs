@@ -6,10 +6,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::client::RuntimeAuthorizationTrust;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredTrust {
+    instance_id: String,
+    account: String,
+    issuer: trellis_protocol::AuthorityIssuerKey,
+    rotation_sequence: trellis_protocol::live::U64s,
+}
 
 /// Exact selected issuer, runtime, and app identity for one credential handle.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,6 +56,8 @@ struct Record {
     private_key: String,
     grant: Option<NativeOAuthGrant>,
     recovery_required: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
+    trust: Option<StoredTrust>,
 }
 
 /// Holds the cross-process family lock through read, exchange and durable commit.
@@ -98,6 +110,74 @@ fn private_file(path: &Path, create: bool) -> io::Result<fs::File> {
 }
 
 impl NativeCredentialLease {
+    pub(crate) fn restore_trust(
+        &mut self,
+        initial: &RuntimeAuthorizationTrust,
+    ) -> io::Result<RuntimeAuthorizationTrust> {
+        if self.record.trust.is_none() {
+            if self.record.grant.is_some() || self.record.recovery_required {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "credential trust missing",
+                ));
+            }
+            self.retain_trust(initial)?;
+        }
+        let stored = self
+            .record
+            .trust
+            .as_ref()
+            .ok_or_else(|| io::Error::other("credential trust missing"))?;
+        if stored.instance_id != self.record.scope.instance_id
+            || stored.account != self.record.scope.account
+            || stored.issuer.state != trellis_protocol::AuthorityIssuerState::Active
+            || stored.issuer.verifying_key().is_err()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid credential trust",
+            ));
+        }
+        Ok(RuntimeAuthorizationTrust {
+            instance_id: stored.instance_id.clone(),
+            account: stored.account.clone(),
+            issuer: stored.issuer.clone(),
+            rotation_sequence: stored.rotation_sequence.get(),
+        })
+    }
+
+    /// Persist only the exact trust supplied by the authenticated connection owner.
+    /// The same record holds both the rotation floor and token-spent marker.
+    pub(crate) fn retain_trust(&mut self, trust: &RuntimeAuthorizationTrust) -> io::Result<()> {
+        if trust.instance_id != self.record.scope.instance_id
+            || trust.account != self.record.scope.account
+            || trust.issuer.state != trellis_protocol::AuthorityIssuerState::Active
+            || trust.issuer.verifying_key().is_err()
+            || self.record.trust.as_ref().is_some_and(|stored| {
+                trust.rotation_sequence < stored.rotation_sequence.get()
+                    || (trust.rotation_sequence == stored.rotation_sequence.get()
+                        && trust.issuer != stored.issuer)
+            })
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid credential trust replacement",
+            ));
+        }
+        self.record.trust = Some(StoredTrust {
+            instance_id: trust.instance_id.clone(),
+            account: trust.account.clone(),
+            issuer: trust.issuer.clone(),
+            rotation_sequence: trellis_protocol::live::U64s::new(trust.rotation_sequence),
+        });
+        self.commit()
+    }
+
+    /// Selected identity for this locked credential; contains no secret material.
+    pub fn scope(&self) -> &NativeCredentialScope {
+        &self.record.scope
+    }
+
     /// Open or create owner-only custody and acquire its exclusive family lock.
     /// This blocking filesystem boundary belongs on the client's blocking executor.
     /// Unsupported platforms require an explicitly supplied secure-store adapter.
@@ -201,6 +281,7 @@ impl NativeCredentialLease {
                         private_key: URL_SAFE_NO_PAD.encode(signing_key.to_bytes()),
                         grant: None,
                         recovery_required: false,
+                        trust: None,
                     }
                 }
                 Err(error) => return Err(error),

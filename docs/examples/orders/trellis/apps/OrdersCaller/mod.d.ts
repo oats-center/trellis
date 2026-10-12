@@ -16,6 +16,9 @@ export declare const request: AppRequestDescriptor & {
 		}];
 		readonly optionalCapabilities: readonly [];
 	}];
+	readonly actionNames: {
+		readonly ["acme-orders.orders@v1:rpc:Create"]: "Create";
+	};
 	readonly states: {};
 };
 export type Request = typeof request;

@@ -1,39 +1,75 @@
-const CANONICAL_LOOPBACK_HOST = "localhost";
-const LOOPBACK_HOSTS = new Set([
-  "127.0.0.1",
-  "::1",
-  "[::1]",
-  CANONICAL_LOOPBACK_HOST,
-]);
+import type { ClientAuthOptions } from "@oatscenter/trellis";
 
 type RuntimeAppConfig = {
-  authUrl?: string;
+  authUrl: string;
+  clientId: string;
+  callbackUri: string;
+  loopbackDevelopment: boolean;
 };
 
 function readRuntimeConfig(): RuntimeAppConfig {
-  const config = (globalThis as typeof globalThis & {
-    __TRELLIS_RUNTIME_CONFIG__?: RuntimeAppConfig;
-  }).__TRELLIS_RUNTIME_CONFIG__;
-  return config ?? {};
+  const config = (
+    globalThis as typeof globalThis & {
+      __TRELLIS_RUNTIME_CONFIG__?: RuntimeAppConfig;
+    }
+  ).__TRELLIS_RUNTIME_CONFIG__;
+  if (
+    !config ||
+    typeof config.authUrl !== "string" ||
+    typeof config.clientId !== "string" ||
+    !config.clientId ||
+    typeof config.callbackUri !== "string" ||
+    typeof config.loopbackDevelopment !== "boolean"
+  )
+    throw new Error("Console OAuth configuration is missing or invalid");
+  const callback = new URL(config.callbackUri);
+  if (
+    callback.origin !== location.origin ||
+    callback.pathname !== "/login" ||
+    callback.search ||
+    callback.hash ||
+    callback.username ||
+    callback.password
+  )
+    throw new Error(
+      "Console OAuth callback does not match this application origin",
+    );
+  return config;
 }
 
-const runtimeConfig = readRuntimeConfig();
-const viteEnv = (import.meta as ImportMeta & {
-  env?: Record<string, string | undefined>;
-}).env ?? {};
-
-export const APP_CONFIG = {
-  authUrl: runtimeConfig.authUrl ?? viteEnv["VITE_TRELLIS_AUTH_URL"] ??
-    window.location.origin,
+export const APP_CONFIG: RuntimeAppConfig = {
+  get authUrl() {
+    return readRuntimeConfig().authUrl;
+  },
+  get clientId() {
+    return readRuntimeConfig().clientId;
+  },
+  get callbackUri() {
+    return readRuntimeConfig().callbackUri;
+  },
+  get loopbackDevelopment() {
+    return readRuntimeConfig().loopbackDevelopment;
+  },
 };
 
-function normalizeConfiguredUrl(value: string): string {
-  const url = new URL(value);
-  url.hash = "";
-  if (isLoopbackHost(url.hostname)) {
-    url.hostname = CANONICAL_LOOPBACK_HOST;
-  }
-  return url.toString().replace(/\/$/, "");
+/** Request finite administrative delegation through ordinary OAuth consent, independently of the generated app request. */
+export function consoleAuthOptions(): ClientAuthOptions {
+  return {
+    clientId: APP_CONFIG.clientId,
+    redirectTo: APP_CONFIG.callbackUri,
+    loopbackDevelopment: APP_CONFIG.loopbackDevelopment,
+    platformPrivileges: {
+      required: [],
+      optional: [
+        "principals.manage",
+        "roles.manage",
+        "apis.accept",
+        "apis.forceReplace",
+        "clients.manage",
+        "privileges.manage",
+      ],
+    },
+  };
 }
 
 function toUrl(location: URL | Location): URL {
@@ -42,38 +78,13 @@ function toUrl(location: URL | Location): URL {
     : new URL(location.href);
 }
 
-function isLoopbackHost(hostname: string): boolean {
-  return LOOPBACK_HOSTS.has(hostname);
-}
-
-export function getCanonicalLoopbackUrl(location: URL | Location): URL {
-  const url = toUrl(location);
-
-  if (isLoopbackHost(url.hostname)) {
-    url.hostname = CANONICAL_LOOPBACK_HOST;
-  }
-
-  return url;
-}
-
-export function getCanonicalLoopbackRedirectUrl(
-  location: URL | Location = globalThis.location,
-): string | null {
-  const current = toUrl(location);
-  const canonical = getCanonicalLoopbackUrl(current);
-
-  return canonical.toString() === current.toString()
-    ? null
-    : canonical.toString();
-}
-
 export function buildAppLoginUrl(
   redirectTo: string,
   location: URL | Location = globalThis.location,
   authError?: string,
   loginPath = "/login",
 ): string {
-  const url = new URL(loginPath, getCanonicalLoopbackUrl(location).origin);
+  const url = new URL(loginPath, toUrl(location).origin);
   url.searchParams.set("redirectTo", redirectTo);
   if (authError) {
     url.searchParams.set("authError", authError);

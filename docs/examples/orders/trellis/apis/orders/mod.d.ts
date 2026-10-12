@@ -8,6 +8,7 @@ declare const __api: {
 		readonly "rpc:Create": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Create";
+			readonly subject: "rpc.v1.orders.Create";
 			readonly input: typeof Types0.CreateOrderRequestCodec;
 			readonly output: typeof Types0.CreateOrderResponseCodec;
 			readonly errors: readonly [];

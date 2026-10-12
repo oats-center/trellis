@@ -8,6 +8,7 @@
     "./generated": "./generated.ts",
     "./auth": "./auth.ts",
     "./auth/browser": "./auth/browser.ts",
+    "./native": "./native.ts",
     "./device": "./device.ts",
     "./service": "./service/mod.ts",
     "./telemetry": "./telemetry.ts",

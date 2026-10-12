@@ -15,27 +15,22 @@ pub use bootstrap_http::canonical_trellis_origin;
 pub use core::{
     AuthorizationVerificationCore, AuthorizationVerificationError, EventVerificationInput,
     RequestVerificationInput, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
-    VerifiedCaller,
 };
 pub use own_context::AuthorizationContextCache;
 pub(crate) use own_context::{OwnTransitionGuard, PreparedOwnCandidate};
-pub(crate) use provider_cache::AuthorizationContextLease;
-pub use provider_cache::AuthorizationProviderCache;
-#[cfg(feature = "runtime-internals")]
-pub use provider_cache::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
+pub use provider_cache::{
+    AuthorizationLease, AuthorizationOwner, HistoricalEventVerificationInput,
+    RuntimeAuthorizationTrust, VerifiedAuthorizationResponse,
+};
 pub(crate) use refresh::install_prepared_authorization;
-pub(crate) use refresh::refresh_until_materialized;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;
 pub(crate) use refresh::AuthorizationRefreshRuntime;
 pub use transport::read_own_admission;
 pub use transport::resource_action_marker;
 pub(crate) use transport::{policy_covers, ResourceTransportAction, ResourceTransportKind};
 pub(super) use types::AuthorizationCredential;
-#[cfg(feature = "runtime-internals")]
-pub use types::AuthorizationRegistryBinding;
 pub(crate) use types::OwnTransportSnapshot;
 pub use types::{
-    AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextPolicy,
-    AuthorizationInstallation, AuthorizationNativeTransport, AuthorizationRoutingMaterial,
+    AuthorizationContextBundle, AuthorizationInstallation, AuthorizationNativeTransport,
     AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
 };

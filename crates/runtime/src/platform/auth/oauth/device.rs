@@ -156,6 +156,7 @@ pub(super) async fn begin(
     };
     let transaction = super::super::sqlite::id();
     let flow = super::portal::PortalAuthorization {
+        presentation: None,
         session_id: session,
         request: super::portal::ConsentRequest::Device {
             device_code: grant.device_code,
@@ -256,7 +257,7 @@ impl OAuthEngine {
         user_code: &str,
         identity: &Mutation,
         approval: &GrantApproval,
-    ) -> Result<(), ErrorResponse> {
+    ) -> Result<(), super::portal::ApprovalError> {
         let device = self
             .server
             .store()
@@ -288,7 +289,7 @@ impl OAuthEngine {
                     || requested.optional_privileges.contains(privilege)
             })
         {
-            return Err(ErrorResponse::new(ErrorCode::InvalidGrant));
+            return Err(ErrorResponse::new(ErrorCode::InvalidGrant).into());
         }
         let now = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -300,10 +301,10 @@ impl OAuthEngine {
             .store()
             .authority
             .approve_grant(identity, approval, now)
-            .map_err(|_| ErrorResponse::new(ErrorCode::AccessDenied))?;
+            .map_err(super::portal::ApprovalError::from)?;
         self.server
             .approve_device(user_code, grant)
             .await
-            .map_err(|_| ErrorResponse::new(ErrorCode::InvalidGrant))
+            .map_err(|_| ErrorResponse::new(ErrorCode::InvalidGrant).into())
     }
 }

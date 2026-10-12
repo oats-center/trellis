@@ -14,7 +14,6 @@ export type {
   TrellisTestClientParticipant,
   TrellisTestConnectedClient,
   TrellisTestParticipant,
-  TrellisTestParticipantApplyResult,
   TrellisTestParticipantApproval,
   TrellisTestParticipantLike,
   TrellisTestRuntimeStartOptions,

@@ -95,6 +95,10 @@ async fn accepted_generation(
 /// Request metadata forwarded to mounted RPC handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestContext {
+    /// Presented request transcript, untrusted until `verified_request` is available.
+    pub session_request: Option<trellis_protocol::SessionRequest>,
+    /// Shared verified opening retained across dispatch and reply publication.
+    pub(crate) verified_opening: VerifiedOpening,
     /// Whether this handler invocation reclaimed previously accepted work.
     pub resuming: bool,
     /// Last durable operation progress supplied to a resumed handler.
@@ -115,10 +119,12 @@ pub struct RequestContext {
     pub required_capabilities: Option<Vec<String>>,
     /// Exact permission surface required for this exact routed request.
     pub required_permission: Option<RoutePermission>,
+    /// Set only from registered route metadata, never from a wire assertion.
+    pub(crate) handler_authorizes: bool,
     /// NATS reply inbox used for request/reply responses.
     pub reply_to: Option<String>,
     /// Locally verified caller projection, when the request was authorized.
-    pub caller: Option<super::local_validator::VerifiedCaller>,
+    pub caller: Option<super::local_validator::AuthenticatedCaller>,
     /// W3C trace context header propagated by the caller, if present.
     pub traceparent: Option<String>,
     /// W3C trace state header propagated by the caller, if present.
@@ -126,6 +132,81 @@ pub struct RequestContext {
     /// The generation that accepted this request through a provider ingress.
     /// Session-scoped work accepted on it pins that generation.
     pub(crate) transport: GenerationPin,
+}
+
+/// Retains one verified opening across immutable validator and dispatcher contexts.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct VerifiedOpening(
+    Arc<std::sync::RwLock<Option<crate::client::VerifiedAuthorizationRequest>>>,
+);
+
+impl PartialEq for VerifiedOpening {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+            || self.0.read().ok().and_then(|value| {
+                value
+                    .as_ref()
+                    .map(|request| (*request.digest(), request.authorized_action().cloned()))
+            }) == other.0.read().ok().and_then(|value| {
+                value
+                    .as_ref()
+                    .map(|request| (*request.digest(), request.authorized_action().cloned()))
+            })
+    }
+}
+impl Eq for VerifiedOpening {}
+
+impl RequestContext {
+    /// Admit this exact opening after the handler has checked its payload-bound resource rights.
+    /// Only handler-authorized routes may call this, after—not before—their authorization check.
+    /// Possession alone never permits response signing or a Live reservation.
+    pub fn authorize_handler_request(&self) -> Result<(), ServerError> {
+        let route = self
+            .required_permission
+            .as_ref()
+            .filter(|_| self.handler_authorizes)
+            .ok_or_else(|| ServerError::Nats("request is not a handler-authorized route".into()))?;
+        let mut slot = self
+            .verified_opening
+            .0
+            .write()
+            .map_err(|_| ServerError::Nats("verified request unavailable".into()))?;
+        let verified = slot
+            .as_mut()
+            .ok_or_else(|| ServerError::Nats("verified opening unavailable".into()))?;
+        if verified.request().api_id != route.api {
+            return Err(ServerError::Nats("handler route API mismatch".into()));
+        }
+        verified
+            .authorize_handler(route.catalog_action())
+            .map_err(|error| ServerError::Nats(error.to_string()))
+    }
+    /// Return the authenticated opening, never the caller's unverified header assertions.
+    pub fn verified_request(&self) -> Option<crate::client::VerifiedAuthorizationRequest> {
+        self.verified_opening.0.read().ok()?.as_ref().cloned()
+    }
+
+    /// Retain a production-verified opening for downstream controls and response signing.
+    pub fn retain_verified_request(
+        &self,
+        request: crate::client::VerifiedAuthorizationRequest,
+    ) -> Result<(), ServerError> {
+        let mut slot = self
+            .verified_opening
+            .0
+            .write()
+            .map_err(|_| ServerError::Nats("verified request unavailable".into()))?;
+        if slot
+            .as_ref()
+            .is_some_and(|current| current.digest() != request.digest())
+        {
+            return Err(ServerError::Nats(
+                "verified request already installed".into(),
+            ));
+        }
+        *slot = Some(request);
+        Ok(())
+    }
 }
 
 /// One exact API-surface permission required by a routed request.
@@ -145,6 +226,14 @@ pub struct RoutePermission {
 }
 
 impl RoutePermission {
+    /// Exact generated catalog action; capabilities authorize the operation direction.
+    pub fn catalog_action(&self) -> trellis_protocol::CatalogActionIdentity {
+        trellis_protocol::CatalogActionIdentity {
+            kind: self.surface,
+            name: self.name.clone(),
+            direction: self.action,
+        }
+    }
     /// Convert generated route metadata into its exact permission atom.
     pub fn permission_atom(&self) -> Result<PermissionAtom, ProtocolError> {
         let target = if self.action == PermissionAction::Control {
@@ -196,7 +285,7 @@ struct Route {
 #[derive(Debug, Clone)]
 enum RoutePermissionSpec {
     /// The handler performs exact payload-bound authorization after proof verification.
-    Handler,
+    Handler(String, String),
     /// One fixed surface for every request on the route.
     Static(String, ApiSurfaceKind, String, PermissionAction),
     /// Operation control routes resolve the action from the payload.
@@ -206,7 +295,13 @@ enum RoutePermissionSpec {
 impl RoutePermissionSpec {
     fn for_payload(&self, payload: &[u8]) -> Option<RoutePermission> {
         match self {
-            Self::Handler => None,
+            Self::Handler(api, name) => Some(RoutePermission {
+                api: api.clone(),
+                surface: ApiSurfaceKind::Rpc,
+                name: name.clone(),
+                action: PermissionAction::Call,
+                signal: None,
+            }),
             Self::Static(api, surface, name, action) => Some(RoutePermission {
                 api: api.clone(),
                 surface: *surface,
@@ -300,7 +395,14 @@ impl Router {
         Self::default()
     }
 
-    /// Bind subsequently registered request routes to this provider deployment.
+    /// Exact registered entry and owner-control subjects for provider intake.
+    pub fn subjects(&self) -> Vec<String> {
+        let mut subjects: Vec<_> = self.handlers.keys().cloned().collect();
+        subjects.sort();
+        subjects
+    }
+
+    /// Bind established operation controls to their owning deployment.
     pub fn set_provider_deployment_id(&mut self, deployment_id: impl Into<String>) {
         self.provider_deployment_id = Some(deployment_id.into());
     }
@@ -308,6 +410,40 @@ impl Router {
     /// Bind Live control routes to this service instance.
     pub fn set_provider_instance_id(&mut self, instance_id: impl Into<String>) {
         self.provider_instance_id = Some(instance_id.into());
+    }
+
+    /// Rebind established operation controls to the installation's verified provider owner.
+    pub fn bind_provider_owner(
+        &mut self,
+        owner: &trellis_protocol::VerifiedSessionAuthority,
+    ) -> Result<(), ServerError> {
+        let trellis_protocol::SessionBinding::Service {
+            deployment_id,
+            instance_id,
+            ..
+        } = &owner.authority().binding
+        else {
+            return Err(ServerError::Nats(
+                "provider requires a verified service binding".into(),
+            ));
+        };
+        self.provider_deployment_id = Some(deployment_id.clone());
+        self.provider_instance_id = Some(instance_id.clone());
+        let mut controls = Vec::new();
+        for (subject, route) in &self.handlers {
+            if let RoutePermissionSpec::OperationControl(api, name) = &route.permission {
+                let base =
+                    trellis_protocol::derive_bound_operation_subject(api, deployment_id, name)
+                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                controls.push((subject.clone(), control_subject(&base)));
+            }
+        }
+        for (old, new) in controls {
+            if let Some(route) = self.handlers.remove(&old) {
+                self.handlers.insert(new, route);
+            }
+        }
+        Ok(())
     }
 
     /// Bind live Live/Operation observation routes to one connected owner.
@@ -353,26 +489,18 @@ impl Router {
         Ok(())
     }
 
-    fn descriptor_subject(
-        &self,
-        family: &str,
-        api_id: &str,
-        action: &str,
-        fallback: &str,
-    ) -> String {
-        let Some(deployment_id) = self.provider_deployment_id.as_deref() else {
-            return fallback.to_owned();
-        };
-        let action = self.descriptor_name(action);
-        let subject = match family {
-            "rpc" => trellis_protocol::derive_bound_rpc_subject(api_id, deployment_id, &action),
-            "operation" => {
-                trellis_protocol::derive_bound_operation_subject(api_id, deployment_id, &action)
-            }
-            "live" => trellis_protocol::derive_bound_live_subject(api_id, deployment_id, &action),
-            _ => unreachable!("only request route families are deployment-bound"),
-        };
-        subject.expect("generated route metadata must form a valid bound subject")
+    fn operation_owner_subject(&self, api_id: &str, action: &str, canonical: &str) -> String {
+        self.provider_deployment_id.as_deref().map_or_else(
+            || canonical.to_owned(),
+            |deployment| {
+                trellis_protocol::derive_bound_operation_subject(
+                    api_id,
+                    deployment,
+                    &self.descriptor_name(action),
+                )
+                .expect("generated operation metadata must form a valid owner subject")
+            },
+        )
     }
 
     fn descriptor_capabilities(&self, capabilities: &[&str]) -> Vec<String> {
@@ -426,7 +554,7 @@ impl Router {
         let handler = Arc::new(handler);
         let capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         self.handlers.insert(
-            self.descriptor_subject("rpc", D::API_ID, D::KEY, D::SUBJECT),
+            D::SUBJECT.to_owned(),
             Route {
                 capabilities: RouteCapabilities::Static(capabilities),
                 permission: RoutePermissionSpec::Static(
@@ -465,12 +593,18 @@ impl Router {
     where
         D: RpcDescriptor + 'static,
     {
-        let subject = self.descriptor_subject("rpc", D::API_ID, D::KEY, D::SUBJECT);
+        let subject = D::SUBJECT.to_owned();
         let route = self
             .handlers
             .get_mut(&subject)
             .expect("RPC must be registered before changing its authorization mode");
-        route.permission = RoutePermissionSpec::Handler;
+        route.permission = RoutePermissionSpec::Handler(
+            D::API_ID.to_owned(),
+            D::KEY
+                .split_once('.')
+                .map_or(D::KEY, |(_, action)| action)
+                .to_owned(),
+        );
     }
 
     /// Register one generated RPC descriptor for routing metadata only.
@@ -483,7 +617,7 @@ impl Router {
     {
         let capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         self.handlers.insert(
-            self.descriptor_subject("rpc", D::API_ID, D::KEY, D::SUBJECT),
+            D::SUBJECT.to_owned(),
             Route {
                 capabilities: RouteCapabilities::Static(capabilities),
                 permission: RoutePermissionSpec::Static(
@@ -511,7 +645,7 @@ impl Router {
     where
         D: OperationDescriptor + 'static,
     {
-        let subject = self.descriptor_subject("operation", D::API_ID, D::KEY, D::SUBJECT);
+        let subject = D::SUBJECT.to_owned();
         let name = self.descriptor_name(D::KEY);
         let metadata_handler = || {
             Box::new(
@@ -544,7 +678,7 @@ impl Router {
             },
         );
         self.handlers.insert(
-            control_subject(&subject),
+            control_subject(&self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT)),
             Route {
                 capabilities: RouteCapabilities::OperationControl {
                     observe: self.descriptor_capabilities(D::OBSERVE_CAPABILITIES),
@@ -575,15 +709,7 @@ impl Router {
     {
         let handler = Arc::new(handler);
         let live_owner = Arc::clone(&self.live_owner);
-        let subject = self.descriptor_subject("live", D::API_ID, D::KEY, D::SUBJECT);
-        let provider_deployment_id = self
-            .provider_deployment_id
-            .clone()
-            .unwrap_or_else(|| "unbound-deployment".to_owned());
-        let provider_instance_id = self
-            .provider_instance_id
-            .clone()
-            .unwrap_or_else(|| "unbound-instance".to_owned());
+        let subject = D::SUBJECT.to_owned();
         let capabilities = self.descriptor_capabilities(D::SUBSCRIBE_CAPABILITIES);
         let handler_subject = subject.clone();
         self.handlers.insert(
@@ -603,8 +729,6 @@ impl Router {
                     move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
                         let handler = Arc::clone(&handler);
                         let live_owner = live_owner.clone();
-                        let provider_deployment_id = provider_deployment_id.clone();
-                        let provider_instance_id = provider_instance_id.clone();
                         let handler_subject = handler_subject.clone();
                         Box::pin(async move {
                             let owner = live_owner
@@ -616,6 +740,12 @@ impl Router {
                                         "live route '{handler_subject}' has no live provider owner"
                                     ))
                                 })?;
+                            let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
+                            let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
+                                return Err(ServerError::Nats("live provider requires a service binding".into()));
+                            };
+                            let provider_deployment_id = deployment_id.clone();
+                            let provider_instance_id = instance_id.clone();
                             let opening = crate::service::live_router::parse_live_open::<D::Input>(
                                 &payload,
                             )?;
@@ -693,17 +823,8 @@ impl Router {
                 provider.recover().await
             })
         }));
-        let subject = self.descriptor_subject("operation", D::API_ID, D::KEY, D::SUBJECT);
-        let handler_subject = subject.clone();
+        let subject = D::SUBJECT.to_owned();
         let live_owner = Arc::clone(&self.live_owner);
-        let provider_deployment_id = self
-            .provider_deployment_id
-            .clone()
-            .unwrap_or_else(|| "unbound-deployment".to_owned());
-        let provider_instance_id = self
-            .provider_instance_id
-            .clone()
-            .unwrap_or_else(|| "unbound-instance".to_owned());
         let caller_capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         let observe_capabilities = self.descriptor_capabilities(D::OBSERVE_CAPABILITIES);
         let cancel_capabilities = self.descriptor_capabilities(D::CANCEL_CAPABILITIES);
@@ -753,7 +874,7 @@ impl Router {
         );
 
         self.handlers.insert(
-            control_subject(&subject),
+            control_subject(&self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT)),
             Route {
                 capabilities: RouteCapabilities::OperationControl {
                     observe: observe_capabilities,
@@ -775,9 +896,7 @@ impl Router {
                     let signal = Arc::clone(&signal);
                     let schemas = Arc::clone(&control_schemas);
                     let live_owner = live_owner.clone();
-                    let provider_deployment_id = provider_deployment_id.clone();
-                    let provider_instance_id = provider_instance_id.clone();
-                    let subject = handler_subject.clone();
+                    let subject = ctx.subject.strip_suffix(".control").unwrap_or(&ctx.subject).to_owned();
                     Box::pin(async move {
                         let schemas = schemas.get()?;
                         let request = serde_json::from_slice::<OperationControlRequest>(&payload)
@@ -810,6 +929,12 @@ impl Router {
                                             "operation route '{subject}' has no live provider owner"
                                         ))
                                     })?;
+                                let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
+                                let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
+                                    return Err(ServerError::Nats("operation provider requires a service binding".into()));
+                                };
+                                let provider_deployment_id = deployment_id.clone();
+                                let provider_instance_id = instance_id.clone();
                                 let opening =
                                     crate::service::live_router::parse_operation_watch_open(
                                         &payload,
@@ -971,6 +1096,31 @@ impl Router {
         Ok(route.permission.for_payload(payload))
     }
 
+    /// Whether the registered handler enforces payload-bound authority after possession verification.
+    pub fn handler_authorizes(&self, subject: &str) -> bool {
+        self.route(subject)
+            .is_some_and(|route| matches!(route.permission, RoutePermissionSpec::Handler(..)))
+    }
+
+    pub(crate) async fn sign_reply(
+        &self,
+        context: &RequestContext,
+        request_payload: &[u8],
+        reply: &super::request_loop::OutboundReply,
+    ) -> Result<async_nats::HeaderMap, ServerError> {
+        let owner = self
+            .live_owner
+            .read()
+            .ok()
+            .and_then(|owner| owner.clone())
+            .ok_or_else(|| ServerError::Nats("provider reply owner unavailable".into()))?;
+        let action = self
+            .required_permission(&context.subject, request_payload)?
+            .map(|route| route.catalog_action())
+            .ok_or_else(|| ServerError::Nats("reply has no registered provider action".into()))?;
+        super::request_loop::sign_verified_reply(owner.client(), context, &action, reply).await
+    }
+
     /// Dispatch one request to the registered handler for its subject.
     pub async fn handle_request_frames(
         &self,
@@ -1000,6 +1150,16 @@ impl Router {
         let route = self
             .route(subject)
             .ok_or_else(|| ServerError::MissingHandler(subject.to_string()))?;
+        if route.live
+            && !context
+                .verified_request()
+                .is_some_and(|verified| verified.authorized_action().is_some())
+        {
+            return Err(ServerError::RequestDenied {
+                subject: subject.to_owned(),
+                session_key: String::new(),
+            });
+        }
         (route.handler)(context, payload).await
     }
 }
@@ -1178,183 +1338,4 @@ where
         validate_provider_value(D::KEY, &schemas.output, &serde_json::to_value(output)?)?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-
-    use futures_util::stream;
-
-    use super::*;
-
-    struct TestOperation;
-
-    impl OperationDescriptor for TestOperation {
-        type Input = Value;
-        type Progress = Value;
-        type Output = Value;
-        type Update = Value;
-        type UpdateEvidence = crate::client::NoOperationUpdates;
-        type Error = super::super::OperationFailure;
-
-        const API_ID: &'static str = "test@v1";
-        const KEY: &'static str = "Test.Operation";
-        const SUBJECT: &'static str = "operations.v1.Test.Operation";
-        const CANCELABLE: bool = true;
-        const INPUT_SCHEMA_JSON: &'static str = r#"{"type":"object"}"#;
-        const PROGRESS_SCHEMA_JSON: Option<&'static str> = None;
-        const OUTPUT_SCHEMA_JSON: &'static str = r#"{"type":"object"}"#;
-        const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
-        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = r#"{"resume":{"type":"object"}}"#;
-    }
-
-    struct DefaultControlProvider;
-
-    #[test]
-    fn bound_routes_use_canonical_action_name_without_legacy_api_prefix() {
-        let mut router = Router::new();
-        router.set_provider_deployment_id("provider");
-        let subject = trellis_protocol::derive_bound_operation_subject(
-            TestOperation::API_ID,
-            "provider",
-            "Operation",
-        )
-        .expect("bound subject");
-        assert_eq!(
-            router.descriptor_subject(
-                "operation",
-                TestOperation::API_ID,
-                TestOperation::KEY,
-                TestOperation::SUBJECT,
-            ),
-            subject,
-        );
-    }
-
-    impl ServiceOperationProvider<TestOperation> for DefaultControlProvider {
-        fn start(
-            &self,
-            _context: RequestContext,
-            _input: Value,
-        ) -> BoxFuture<'static, Result<super::super::AcceptedOperation<Value, Value>, ServerError>>
-        {
-            unreachable!("start is not exercised")
-        }
-
-        fn get(
-            &self,
-            context: RequestContext,
-            operation_id: String,
-        ) -> BoxFuture<'static, Result<OperationSnapshot<Value, Value>, ServerError>> {
-            self.wait(context, operation_id)
-        }
-
-        fn wait(
-            &self,
-            _context: RequestContext,
-            _operation_id: String,
-        ) -> BoxFuture<'static, Result<OperationSnapshot<Value, Value>, ServerError>> {
-            Box::pin(async {
-                Ok(OperationSnapshot {
-                    revision: 2,
-                    state: super::super::OperationState::Completed,
-                    output: Some(serde_json::json!({})),
-                    ..Default::default()
-                })
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn provider_defaults_watch_terminal_and_reject_controls() {
-        let mut router = Router::new();
-        router.register_operation_provider::<TestOperation, _>(DefaultControlProvider);
-        let control = super::super::control_subject(TestOperation::SUBJECT);
-        let context = || RequestContext {
-            subject: control.clone(),
-            ..Default::default()
-        };
-
-        let response = router
-            .handle_request_response(
-                &control,
-                Bytes::from_static(br#"{"action":"watch","operationId":"op-1"}"#),
-                context(),
-            )
-            .await;
-        assert!(
-            matches!(response, Err(ServerError::Nats(message)) if message.contains("live provider owner")),
-            "a watch route without a live owner must fail closed, not stream"
-        );
-
-        for payload in [
-            br#"{"action":"cancel","operationId":"op-1"}"#.as_slice(),
-            br#"{"action":"signal","operationId":"op-1","signal":"resume","input":{}}"#.as_slice(),
-        ] {
-            assert!(matches!(
-                router
-                    .handle_request_response(&control, Bytes::copy_from_slice(payload), context())
-                    .await,
-                Err(ServerError::InvalidOperationControlAction { .. })
-            ));
-        }
-    }
-
-    struct TestLive;
-
-    impl LiveDescriptor for TestLive {
-        type Input = Value;
-        type Event = Value;
-
-        const API_ID: &'static str = "test@v1";
-        const DESCRIPTOR_NAME: &'static str = "live.Live";
-        const KEY: &'static str = "Test.Live";
-        const SUBJECT: &'static str = "live.v1.route.Test.Live";
-        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[];
-    }
-
-    #[tokio::test]
-    async fn live_routes_require_a_live_provider_owner() {
-        let mut router = Router::new();
-        router.set_provider_instance_id("provider-instance");
-        router.register_live::<TestLive, _, _>(|_, _| {
-            stream::pending::<Result<Value, ServerError>>()
-        });
-        let response = router
-            .handle_request_response(
-                TestLive::SUBJECT,
-                Bytes::from_static(b"{}"),
-                RequestContext {
-                    subject: TestLive::SUBJECT.to_owned(),
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(
-            matches!(response, Err(ServerError::Nats(message)) if message.contains("live provider owner")),
-            "a Live route without a live owner must fail closed"
-        );
-    }
-
-    #[tokio::test]
-    async fn live_open_rejects_a_non_live_envelope_before_reserving() {
-        let mut router = Router::new();
-        router.set_provider_instance_id("provider-instance");
-        router.register_live::<TestLive, _, _>(|_, _| {
-            stream::pending::<Result<Value, ServerError>>()
-        });
-        // A legacy finite request body is an explicit incompatible-protocol
-        // error, never a silent fallback to an old transport.
-        let response = router
-            .handle_request_response(
-                TestLive::SUBJECT,
-                Bytes::from_static(b"{}"),
-                RequestContext {
-                    subject: TestLive::SUBJECT.to_owned(),
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(response.is_err());
-    }
 }

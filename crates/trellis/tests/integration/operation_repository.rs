@@ -9,12 +9,16 @@ use trellis_rs::service::{
 
 fn record(id: String) -> DurableOperationRecord {
     let input = json!({"name": "Ada"});
+    let binding = trellis_protocol::SessionBinding::Browser {
+        client_id: "operations-client".to_owned(),
+        origin: "https://operations.example".to_owned(),
+    };
     DurableOperationRecord {
         invocation_digest: operation_invocation_digest(
             "example.api@1",
             "run",
             "principal",
-            "participant",
+            &binding,
             &input,
         )
         .unwrap(),
@@ -23,7 +27,7 @@ fn record(id: String) -> DurableOperationRecord {
         operation: "run".to_owned(),
         deployment_id: "deployment".to_owned(),
         creator_principal_id: "principal".to_owned(),
-        creator_participant_id: "participant".to_owned(),
+        creator_binding: binding,
         caller_session_key: "session".to_owned(),
         caller: None,
         input,
@@ -108,13 +112,35 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         repository.create(created.record.clone()).await.unwrap(),
         created
     );
+    for binding in [
+        trellis_protocol::SessionBinding::Browser {
+            client_id: "operations-client".to_owned(),
+            origin: "https://another-origin.example".to_owned(),
+        },
+        trellis_protocol::SessionBinding::Browser {
+            client_id: "another-client".to_owned(),
+            origin: "https://operations.example".to_owned(),
+        },
+    ] {
+        let mut conflicting = created.record.clone();
+        conflicting.creator_binding = binding;
+        conflicting.invocation_digest = operation_invocation_digest(
+            &conflicting.api_id,
+            &conflicting.operation,
+            &conflicting.creator_principal_id,
+            &conflicting.creator_binding,
+            &conflicting.input,
+        )
+        .unwrap();
+        assert!(repository.create(conflicting).await.is_err());
+    }
     let mut conflicting = created.record.clone();
     conflicting.input = json!({"name": "Grace"});
     conflicting.invocation_digest = operation_invocation_digest(
         &conflicting.api_id,
         &conflicting.operation,
         &conflicting.creator_principal_id,
-        &conflicting.creator_participant_id,
+        &conflicting.creator_binding,
         &conflicting.input,
     )
     .unwrap();
@@ -340,6 +366,70 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         before_capacity_rejections
     );
 
+    // Production repositories are scoped by their deployment's provisioned KV
+    // bucket. Identical invocation ids are not a cross-deployment dedupe key.
+    let other_bucket = format!("trellis_test_operations_{}", ulid::Ulid::new());
+    let other_store = jetstream
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: other_bucket.clone(),
+            history: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let other_repository = KvOperationRepository::new(other_store);
+    let shared_id = ulid::Ulid::new().to_string();
+    let deployment_a = repository.create(record(shared_id.clone())).await.unwrap();
+    let mut other_operation = record(shared_id.clone());
+    other_operation.deployment_id = "other-deployment".to_owned();
+    let deployment_b = other_repository.create(other_operation).await.unwrap();
+    assert_eq!(
+        repository
+            .create(deployment_a.record.clone())
+            .await
+            .unwrap(),
+        deployment_a
+    );
+    assert_eq!(
+        other_repository
+            .create(deployment_b.record.clone())
+            .await
+            .unwrap(),
+        deployment_b
+    );
+
+    // Even with the destination's correct CAS revision, a control mutation
+    // carrying the other deployment's immutable identity must not cross over.
+    let mut misrouted_cancel = deployment_a.record.clone();
+    misrouted_cancel.revision += 1;
+    misrouted_cancel.cancellation_requested = true;
+    assert!(other_repository
+        .compare_record_exchange(deployment_b.revision, misrouted_cancel)
+        .await
+        .is_err());
+    assert_eq!(
+        other_repository.get(&shared_id).await.unwrap().unwrap(),
+        deployment_b
+    );
+
+    let mut cancel_b = deployment_b.record.clone();
+    cancel_b.revision += 1;
+    cancel_b.cancellation_requested = true;
+    let cancelled_b = other_repository
+        .compare_record_exchange(deployment_b.revision, cancel_b)
+        .await
+        .unwrap();
+    assert!(cancelled_b.record.cancellation_requested);
+    assert_eq!(
+        repository.get(&shared_id).await.unwrap().unwrap(),
+        deployment_a
+    );
+    assert_eq!(
+        other_repository.create(deployment_b.record).await.unwrap(),
+        cancelled_b
+    );
+
+    jetstream.delete_key_value(other_bucket).await.unwrap();
     jetstream.delete_key_value(bucket).await.unwrap();
     nats.stop().unwrap();
 }

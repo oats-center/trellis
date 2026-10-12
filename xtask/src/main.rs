@@ -199,6 +199,37 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         toml_edit::value("Internal generated administration APIs for the Trellis runtime.");
     std::fs::write(&manifest_path, manifest.to_string()).into_diagnostic()?;
     rustfmt_generated(&staging)?;
+    // The SDK needs native Auth wire types without depending on the generated
+    // SDK crate, whose caller facades depend on trellis-rs. Reuse the exact
+    // producer-built nominal types rather than hand-authoring those DTOs.
+    let sdk_types = root.join("crates/trellis/src/internal_types.rs");
+    let sdk_types_staging = root.join("crates/trellis/src/.internal_types.rs.generated");
+    miette::ensure!(
+        !sdk_types_staging.exists(),
+        "retained SDK type generation staging file {}",
+        sdk_types_staging.display()
+    );
+    std::fs::copy(staging.join("src/__types.rs"), &sdk_types_staging).into_diagnostic()?;
+    let sdk_health = root.join("crates/trellis/src/runtime_health.rs");
+    let sdk_health_staging = root.join("crates/trellis/src/.runtime_health.rs.generated");
+    miette::ensure!(
+        !sdk_health_staging.exists(),
+        "retained SDK Health descriptor staging file {}",
+        sdk_health_staging.display()
+    );
+    let descriptor =
+        trellis_codegen_rust::render_runtime_event(&graph, "trellis.health@v1", "Heartbeat")
+            .into_diagnostic()?;
+    std::fs::write(&sdk_health_staging, descriptor).into_diagnostic()?;
+    let status = Command::new("rustfmt")
+        .args(["--edition", "2021"])
+        .arg(&sdk_health_staging)
+        .status()
+        .into_diagnostic()?;
+    miette::ensure!(
+        status.success(),
+        "rustfmt failed for generated Health descriptor"
+    );
     if target.exists() {
         std::fs::rename(&target, &backup).into_diagnostic()?;
     }
@@ -211,6 +242,8 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
     if backup.exists() {
         std::fs::remove_dir_all(backup).into_diagnostic()?;
     }
+    std::fs::rename(&sdk_health_staging, &sdk_health).into_diagnostic()?;
+    std::fs::rename(&sdk_types_staging, &sdk_types).into_diagnostic()?;
     let target = root.join("ts/packages/trellis/internal_sdk/generated");
     let staging = root.join("ts/packages/trellis/internal_sdk/.generated-staging");
     let backup = root.join("ts/packages/trellis/internal_sdk/.generated-backup");

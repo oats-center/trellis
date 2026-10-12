@@ -2,8 +2,8 @@
 //! Trellis request selection and reevaluates durable grants before admission.
 
 use std::{
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -40,6 +40,20 @@ pub(crate) struct OAuthEngine {
     pub(super) device_entries: FixedWindowRateLimiter,
     pub(super) upstream_http: openidconnect::reqwest::Client,
     documents: super::ClientDocuments,
+    nonces: Mutex<super::nonce::DpopNonces>,
+}
+
+/// Host nonce challenges are distinct from the library's protocol failures.
+#[derive(Debug)]
+pub(crate) enum TokenError {
+    OAuth(ErrorResponse),
+    UseDpopNonce(String),
+}
+
+impl From<ErrorResponse> for TokenError {
+    fn from(error: ErrorResponse) -> Self {
+        Self::OAuth(error)
+    }
 }
 
 /// Never Debug-format token-response extensions: admission is a credential too.
@@ -51,6 +65,82 @@ pub(crate) struct TrellisTokenResponse {
 }
 
 impl SqliteAuthorizationStore {
+    pub(in crate::platform::auth) fn oauth_family_deadline_in(
+        &self,
+        connection: &rusqlite::Connection,
+        grant: &str,
+        family: &str,
+        now: i64,
+    ) -> Result<i64, AuthError> {
+        connection.query_row("SELECT expires_at FROM auth_oauth_families WHERE family_lookup_hash=?1 AND oauth_grant_id=?2 AND revoked_at IS NULL AND expires_at>?3",params![URL_SAFE_NO_PAD.encode(Sha256::digest(family.as_bytes())),grant,now],|row|row.get(0)).optional()?.ok_or(AuthError::Denied)
+    }
+
+    /// Shared token/RPC minting owner: original family and current grant policy,
+    /// never a rotated refresh secret or a different family's lifetime.
+    pub(in crate::platform::auth) fn sign_oauth_admission_in(
+        &self,
+        connection: &rusqlite::Connection,
+        identity: &AdmissionIdentity,
+        ephemeral_nkey: &str,
+        current: &super::super::policy::Evaluation,
+        now: i64,
+    ) -> Result<trellis_protocol::SignedOAuthAdmission, AuthError> {
+        self.current_signer(connection)?;
+        let (Credential::OAuthGrant(grant), Some(family)) =
+            (&identity.credential, &identity.refresh_family_id)
+        else {
+            return Err(AuthError::Denied);
+        };
+        if !current.required_missing.is_empty() {
+            return Err(AuthError::RequiredMissing);
+        }
+        let deadline = self.oauth_family_deadline_in(connection, grant, family, now)?;
+        let (principal,login,client,kind,value,jkt):(String,String,String,String,String,String)=connection.query_row("SELECT principal_id,login_session_id,client_id,binding_kind,binding_value,durable_dpop_jkt FROM auth_oauth_grants WHERE oauth_grant_id=?1",[grant],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))?;
+        if principal != current.principal_id {
+            return Err(AuthError::Denied);
+        }
+        let binding = match kind.as_str() {
+            "browser" => OAuthAdmissionBinding::Browser {
+                browser_origin: value,
+            },
+            "native" => OAuthAdmissionBinding::Native {
+                native_dpop_jkt: value,
+            },
+            _ => return Err(AuthError::Denied),
+        };
+        let (kind, key) = nkeys::from_public_key(ephemeral_nkey).map_err(|_| AuthError::Denied)?;
+        if nkeys::KeyPairType::from(kind) != nkeys::KeyPairType::User
+            || URL_SAFE_NO_PAD.encode(key) != identity.session_public_key
+        {
+            return Err(AuthError::Denied);
+        }
+        let expires = current.not_after.min(deadline).min(now.saturating_add(300));
+        if expires <= now {
+            return Err(AuthError::Denied);
+        }
+        Ok(sign_oauth_admission(
+            OAuthAdmission {
+                format: OAUTH_ADMISSION_FORMAT_V1.into(),
+                issuer_key_id: self.issuer().key_id,
+                trellis_instance_id: self.settings.instance_id.clone(),
+                audience_nats_account: self.settings.account.clone(),
+                oauth_grant_id: grant.clone(),
+                refresh_family_id: family.clone(),
+                login_session_id: login,
+                principal_id: principal,
+                client_id: client,
+                binding,
+                persistent_dpop_jkt: jkt,
+                runtime_id: identity.runtime_id.clone(),
+                ephemeral_nkey: ephemeral_nkey.into(),
+                issued_at: now,
+                not_before: now,
+                expires_at: expires,
+            },
+            &self.signer,
+        )?)
+    }
+
     /// Signature, exact family status and authority issuance share one snapshot.
     /// The NATS caller must separately prove nonce possession of this User NKey.
     pub(crate) fn admit_oauth(
@@ -91,7 +181,7 @@ impl SqliteAuthorizationStore {
         })?
     }
 
-    pub(super) fn provisioned_admission_identity_in(
+    pub(in crate::platform::auth) fn provisioned_admission_identity_in(
         &self,
         connection: &rusqlite::Connection,
         credential: &[u8],
@@ -120,33 +210,18 @@ impl SqliteAuthorizationStore {
         .map_err(|_| AuthError::Denied)?;
         let body = body.credential;
         let credential = super::super::Credential::ProvisionedIdentity(body.credential_id);
-        let snapshot = super::super::authorization_sessions::credential_snapshot(
-            connection,
-            &credential,
-            now,
-        )?;
-        let mut implementations: Vec<_> = snapshot
-            .providers
-            .iter()
-            .map(|provider| trellis_protocol::ProvisionedImplementation {
-                api_id: provider.api_id.clone(),
-                implementation_digest: provider.implementation_digest.clone(),
-            })
-            .collect();
-        implementations.sort_by(|left, right| left.api_id.cmp(&right.api_id));
-        if snapshot.binding != body.binding || implementations != body.implementations {
-            return Err(AuthError::Denied);
-        }
+        super::super::authorization_sessions::credential_snapshot(connection, &credential, now)?;
         let (_, key) = nkeys::from_public_key(ephemeral_nkey).map_err(|_| AuthError::Denied)?;
         Ok(AdmissionIdentity {
             credential,
+            refresh_family_id: None,
             runtime_id: body.runtime_id,
             session_public_key: URL_SAFE_NO_PAD.encode(key),
             inbox_prefix: inbox_prefix.to_owned(),
         })
     }
 
-    pub(super) fn oauth_admission_identity_in(
+    pub(in crate::platform::auth) fn oauth_admission_identity_in(
         &self,
         connection: &rusqlite::Connection,
         credential: &[u8],
@@ -193,6 +268,7 @@ impl SqliteAuthorizationStore {
         let (_, key) = nkeys::from_public_key(ephemeral_nkey).map_err(|_| AuthError::Denied)?;
         Ok(AdmissionIdentity {
             credential: Credential::OAuthGrant(body.oauth_grant_id),
+            refresh_family_id: Some(body.refresh_family_id),
             runtime_id: body.runtime_id,
             session_public_key: URL_SAFE_NO_PAD.encode(key),
             inbox_prefix: inbox_prefix.into(),
@@ -308,6 +384,10 @@ impl OAuthEngine {
             documents,
             upstream_http,
             device_entries: FixedWindowRateLimiter::new(),
+            nonces: Mutex::new(
+                super::nonce::DpopNonces::new(Instant::now())
+                    .map_err(|_| AuthError::Unavailable)?,
+            ),
         })
     }
 
@@ -346,7 +426,14 @@ impl OAuthEngine {
         self.server
             .store()
             .install_client_document(&document)
-            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))
+            .map_err(|error| {
+                ErrorResponse::new(match error {
+                    AuthError::ResourceLimit | AuthError::Conflict => {
+                        ErrorCode::TemporarilyUnavailable
+                    }
+                    _ => ErrorCode::ServerError,
+                })
+            })
     }
 
     /// Called after the portal authenticates the login and CSRF-protected choices.
@@ -356,7 +443,7 @@ impl OAuthEngine {
         request: &AuthorizationRequest<'_>,
         identity: &Mutation,
         approval: &GrantApproval,
-    ) -> Result<AuthorizationResponse, ErrorResponse> {
+    ) -> Result<AuthorizationResponse, super::portal::ApprovalError> {
         let requested = RequestedAuthority::parse(
             request
                 .authorization_details
@@ -382,12 +469,12 @@ impl OAuthEngine {
                     || requested.optional_privileges.contains(privilege)
             })
         {
-            return Err(rejected());
+            return Err(rejected().into());
         }
         if approval.binding_kind == "browser" {
             let callback = url::Url::parse(&validated.redirect_uri).map_err(|_| rejected())?;
             if callback.origin().ascii_serialization() != approval.binding_value {
-                return Err(rejected());
+                return Err(rejected().into());
             }
         }
         let now = now_seconds()?;
@@ -396,7 +483,7 @@ impl OAuthEngine {
             .store()
             .authority
             .approve_grant(identity, approval, now)
-            .map_err(|_| rejected())?;
+            .map_err(super::portal::ApprovalError::from)?;
         // OAuth reports what was actually granted, not unchecked request JSON.
         let actual = self.server.store().authority.transaction(|connection| {
             let current = evaluate(connection, &Credential::OAuthGrant(grant.clone()), now)?;
@@ -412,7 +499,7 @@ impl OAuthEngine {
         self.server
             .issue_authorization_code(UserApproval::granted(&validated, grant))
             .await
-            .map_err(|_| rejected())
+            .map_err(|_| rejected().into())
     }
 
     /// Verify the same DPoP proof twice without claiming it twice: the precheck
@@ -423,9 +510,9 @@ impl OAuthEngine {
         proof: &str,
         runtime_id: &str,
         ephemeral_nkey: &str,
-    ) -> Result<TrellisTokenResponse, ErrorResponse> {
+    ) -> Result<TrellisTokenResponse, TokenError> {
         if matches!(request, TokenRequest::ClientCredentials { .. }) {
-            return Err(ErrorResponse::new(ErrorCode::UnsupportedGrantType));
+            return Err(ErrorResponse::new(ErrorCode::UnsupportedGrantType).into());
         }
         let uri = format!(
             "{}/token",
@@ -440,6 +527,17 @@ impl OAuthEngine {
             SystemTime::now(),
         )
         .map_err(|_| ErrorResponse::new(ErrorCode::InvalidDpopProof))?;
+        // Only the signature/HTTP/extension-verified proof supplies this nonce.
+        // Challenge before the library can consume a code, refresh token or jti.
+        let challenge = self
+            .nonces
+            .lock()
+            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
+            .check(binding.nonce.as_deref(), Instant::now())
+            .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
+        if let Some(nonce) = challenge {
+            return Err(TokenError::UseDpopNonce(nonce));
+        }
         let context =
             TokenRequestContext::new(ClientCredential::secret(None)).with_dpop_proof(proof);
         if let TokenRequest::DeviceCode {
@@ -456,7 +554,7 @@ impl OAuthEngine {
             if selection.persistent_dpop_jkt != binding.persistent_dpop_jkt
                 || selection.client_id != client_id.as_str()
             {
-                return Err(rejected());
+                return Err(rejected().into());
             }
         }
         let mut response = self.server.token_with_context(request, context).await?;
@@ -468,7 +566,7 @@ impl OAuthEngine {
             .map_err(|_| rejected())?
             .ok_or_else(rejected)?;
         if token.jkt.as_deref() != Some(binding.persistent_dpop_jkt.as_str()) {
-            return Err(rejected());
+            return Err(rejected().into());
         }
         let grant = token.subject.as_deref().ok_or_else(rejected)?;
         let family = token.family_id.as_deref().ok_or_else(rejected)?;
@@ -477,23 +575,11 @@ impl OAuthEngine {
             self.server.store().authority.current_signer(connection)?;
             let current = evaluate(connection, &Credential::OAuthGrant(grant.into()), now)?;
             if !current.required_missing.is_empty() { return Err(AuthError::RequiredMissing); }
-            let (principal,login,client,kind,value,jkt):(String,String,String,String,String,String) = connection.query_row("SELECT principal_id,login_session_id,client_id,binding_kind,binding_value,durable_dpop_jkt FROM auth_oauth_grants WHERE oauth_grant_id=?1",[grant],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))?;
-            let family_expiry: Option<i64> = connection.query_row("SELECT expires_at FROM auth_oauth_families WHERE family_lookup_hash=?1 AND oauth_grant_id=?2 AND revoked_at IS NULL AND expires_at>?3",params![URL_SAFE_NO_PAD.encode(Sha256::digest(family.as_bytes())),grant,now],|row|row.get(0)).optional()?;
-            if jkt != binding.persistent_dpop_jkt || client != token.client_id.as_str() { return Err(AuthError::Denied); }
-            let expires = current.not_after.min(family_expiry.ok_or(AuthError::Denied)?).min(now.saturating_add(300));
-            let binding_kind = match kind.as_str() {
-                "browser" => OAuthAdmissionBinding::Browser { browser_origin:value },
-                "native" => OAuthAdmissionBinding::Native { native_dpop_jkt:value },
-                _ => return Err(AuthError::Denied),
-            };
-            let issuer = self.server.store().authority.issuer();
-            let signed = sign_oauth_admission(OAuthAdmission {
-                format:OAUTH_ADMISSION_FORMAT_V1.into(), issuer_key_id:issuer.key_id,
-                trellis_instance_id:self.server.store().authority.settings.instance_id.clone(), audience_nats_account:self.server.store().authority.settings.account.clone(),
-                oauth_grant_id:grant.into(), refresh_family_id:family.into(), login_session_id:login, principal_id:principal, client_id:client,
-                binding:binding_kind, persistent_dpop_jkt:jkt, runtime_id:binding.runtime_id, ephemeral_nkey:binding.ephemeral_nkey,
-                issued_at:now, not_before:now, expires_at:expires,
-            }, &self.server.store().authority.signer)?;
+            let (_,key)=nkeys::from_public_key(&binding.ephemeral_nkey).map_err(|_|AuthError::Denied)?;
+            let identity=AdmissionIdentity {credential:Credential::OAuthGrant(grant.into()),refresh_family_id:Some(family.into()),runtime_id:binding.runtime_id,session_public_key:URL_SAFE_NO_PAD.encode(key),inbox_prefix:trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(key))?};
+            let signed=self.server.store().authority.sign_oauth_admission_in(connection,&identity,&binding.ephemeral_nkey,&current,now)?;
+            if signed.credential.persistent_dpop_jkt != binding.persistent_dpop_jkt || signed.credential.client_id != token.client_id.as_str() {return Err(AuthError::Denied)}
+            let expires=signed.credential.expires_at;
             // Read the exact granted details from the same current snapshot.
             let approved:Vec<_> = current.capabilities.iter().map(|capability| capability.capability_id.clone()).collect();
             let mut actual = vec![serde_json::json!({"type":"trellis_capabilities", "required":current.selection.required, "optional":approved.into_iter().filter(|name|!current.selection.required.contains(name)).collect::<Vec<_>>()})];

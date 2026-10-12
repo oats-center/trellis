@@ -790,6 +790,9 @@ fn validate_authority(body: &UnsignedSessionAuthority) -> Result<(), ProtocolErr
 }
 
 /// Sign target-format authority using an Auth-owned Ed25519 issuer.
+pub const MAX_SESSION_AUTHORITY_BYTES: usize = 64 * 1024;
+
+/// Sign target-format authority using an Auth-owned Ed25519 issuer.
 pub fn sign_session_authority(
     body: UnsignedSessionAuthority,
     issuer: &SigningKey,
@@ -805,10 +808,20 @@ pub fn sign_session_authority(
         ));
     }
     let digest = signed_json_digest(SESSION_AUTHORITY_FORMAT_V1, &body)?;
-    Ok(SignedSessionAuthority {
+    let authority = SignedSessionAuthority {
         unsigned: body,
         signature: URL_SAFE_NO_PAD.encode(issuer.sign(&digest).to_bytes()),
-    })
+    };
+    if crate::canonicalize_json(&serde_json::to_value(&authority)?)?.len()
+        > MAX_SESSION_AUTHORITY_BYTES
+    {
+        return Err(authorization_error(
+            AuthorizationErrorCode::ContextTooLarge,
+            [],
+            "authority exceeds byte budget",
+        ));
+    }
+    Ok(authority)
 }
 
 /// Bound allocation before parsing the strict, single accepted authority format.
@@ -816,7 +829,7 @@ pub fn parse_session_authority(
     bytes: &[u8],
     maximum_bytes: usize,
 ) -> Result<SignedSessionAuthority, ProtocolError> {
-    if maximum_bytes == 0 || bytes.len() > maximum_bytes {
+    if maximum_bytes == 0 || bytes.len() > maximum_bytes.min(MAX_SESSION_AUTHORITY_BYTES) {
         return Err(authorization_error(
             AuthorizationErrorCode::ContextTooLarge,
             [],
@@ -856,7 +869,10 @@ pub fn verify_session_authority(
         ));
     }
     let body = &input.authority.unsigned;
-    if serde_json::to_vec(input.authority)?.len() > policy.maximum_authority_bytes
+    if crate::canonicalize_json(&serde_json::to_value(input.authority)?)?.len()
+        > policy
+            .maximum_authority_bytes
+            .min(MAX_SESSION_AUTHORITY_BYTES)
         || body
             .capabilities
             .len()

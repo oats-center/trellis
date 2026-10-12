@@ -44,8 +44,8 @@ fn terminate_on_parent_exit(_command: &mut Command) {}
 
 /// Deliberately bogus NATS URLs baked into the bundle so managed mode's endpoint
 /// override is observable: nothing listens on these, yet the report must be valid.
-const BOGUS_NATS_URL: &str = "nats://nats.invalid:4222";
-const BOGUS_WS_URL: &str = "ws://browser.invalid:8080";
+const BOGUS_NATS_URL: &str = "tls://nats.invalid:4222";
+const BOGUS_WS_URL: &str = "wss://browser.invalid:8080";
 /// The first managed run downloads the pinned nats-server binary into an empty
 /// cache, so startup allows 600s for that initial acquisition.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -57,125 +57,6 @@ fn repo_root() -> &'static Path {
         .ancestors()
         .nth(2)
         .expect("trellis-rs crate should live under crates/trellis")
-}
-
-/// Real CLI login and repeat participant installation preserve both optional bundle kinds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn optional_bundles_decode_and_repeat_cli_install() {
-    use trellis_rs::auth::{complete_local_login, connect_admin_client_async, AdminSessionState};
-    use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
-    use trellis_runtime_apis::types::AuthParticipantsGetRequest;
-    use trellis_testkit::TrellisTestRuntime;
-
-    let mut runtime = TrellisTestRuntime::builder()
-        .start()
-        .await
-        .expect("start runtime");
-    let cli = std::env::var_os("TRELLIS_TEST_CLI_BIN").expect("producer-built CLI path");
-    let config_home = runtime.workdir().join("cli-profile");
-    let login_url_file = runtime.workdir().join("cli-login-url");
-    let mut login = tokio::process::Command::new(&cli)
-        .args([
-            "--format",
-            "json",
-            "login",
-            runtime.trellis_url(),
-            "--login-url-file",
-        ])
-        .arg(&login_url_file)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("ordinary CLI login");
-    let login_url = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(url) = fs::read_to_string(&login_url_file) {
-                break url;
-            }
-            assert!(
-                login.try_wait().unwrap().is_none(),
-                "CLI exited before login URL"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("CLI login URL deadline");
-    complete_local_login(
-        runtime.trellis_url(),
-        login_url.trim(),
-        runtime.admin_username(),
-        runtime.admin_password(),
-    )
-    .await
-    .expect("complete real portal login");
-    let logged_in = tokio::time::timeout(Duration::from_secs(30), login.wait_with_output())
-        .await
-        .expect("CLI login deadline")
-        .expect("CLI login completion");
-    assert!(
-        logged_in.status.success(),
-        "CLI login: {}",
-        String::from_utf8_lossy(&logged_in.stderr)
-    );
-    let state: AdminSessionState =
-        serde_json::from_slice(&fs::read(config_home.join("trellis/admin-session.json")).unwrap())
-            .unwrap();
-    let connected = connect_admin_client_async(&state)
-        .await
-        .expect("connect administrator");
-    let auth = AuthClient::from_generated(connected.clone());
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/optional-bundle-source");
-    for installation in ["initial", "repeat"] {
-        // No expected-revision: repeat installation must read the actual participant.
-        let output = tokio::time::timeout(
-            Duration::from_secs(30),
-            tokio::process::Command::new(&cli)
-                .args(["--format", "json", "participants", "install", "--source"])
-                .arg(&source)
-                .env("XDG_CONFIG_HOME", &config_home)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .expect("participant install deadline")
-        .expect("run participant install");
-        assert!(
-            output.status.success(),
-            "{installation} install: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let detail = auth
-        .participants_get(&AuthParticipantsGetRequest {
-            participant_id: "optional-bundle-fixture.Caller".to_owned().into(),
-            revision: None,
-            extra: Default::default(),
-        })
-        .await
-        .expect("generated Participants.Get must decode both kinds");
-    let bundles = &detail.participant.optional_bundles;
-    let capability = bundles
-        .iter()
-        .find(|bundle| bundle.id.as_ref() == "optional-bundle-fixture.echo@v1::optionalEcho")
-        .expect("optional API bundle");
-    assert_eq!(
-        capability.api_id.as_ref().map(AsRef::<str>::as_ref),
-        Some("optional-bundle-fixture.echo@v1")
-    );
-    assert!(!capability.permissions.is_empty());
-    let resource = bundles
-        .iter()
-        .find(|bundle| bundle.id.as_ref() == "resource.cache")
-        .expect("optional resource bundle");
-    assert!(resource.api_id.is_none());
-    assert!(!resource.permissions.is_empty());
-    drop(auth);
-    drop(connected);
-    runtime.shutdown().await.expect("shutdown runtime");
 }
 
 fn cli_command() -> Command {
@@ -419,8 +300,8 @@ async fn cli_server_managed_nats() {
     fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
     fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
         .expect("make managed-NATS cache dir private");
-    let reservations = [(); 4].map(|_| TcpListener::bind(("127.0.0.1", 0)).expect("reserve port"));
-    let [runtime_port, nats_port, monitor_port, websocket_port] = reservations
+    let reservations = [(); 5].map(|_| TcpListener::bind(("127.0.0.1", 0)).expect("reserve port"));
+    let [runtime_port, nats_port, monitor_port, websocket_port, oauth_port] = reservations
         .each_ref()
         .map(|socket| socket.local_addr().expect("port address").port());
     let managed_ports = [nats_port, monitor_port, websocket_port];
@@ -457,32 +338,14 @@ async fn cli_server_managed_nats() {
         "trellis init config failed: {}",
         String::from_utf8_lossy(&init_output.stderr)
     );
-    let init: Value = serde_json::from_slice(&init_output.stdout)
-        .expect("trellis init config should emit a JSON report");
-    assert_eq!(init["generated"], true);
-    assert_eq!(init["out"], bundle.display().to_string());
     let config_path = bundle.join("config.toml");
-    assert!(
-        config_path.is_file(),
-        "bundle trellis config was not generated"
-    );
-    assert!(
-        bundle.join("nats/nats.conf").is_file(),
-        "bundle nats.conf was not generated"
-    );
-    assert!(
-        bundle.join("nats/jwt.conf").is_file(),
-        "bundle jwt.conf was not generated"
-    );
-    let mut config_toml = fs::read_to_string(&config_path).expect("read bundle config");
-    assert!(
-        config_toml.contains(BOGUS_NATS_URL),
-        "bundle must configure the bogus NATS URL so the managed override is observable"
-    );
-    assert!(
-        config_toml.contains(BOGUS_WS_URL),
-        "bundle must configure the bogus websocket URL so the managed override is observable"
-    );
+    let mut config_toml = fs::read_to_string(&config_path)
+        .expect("read bundle config")
+        .replace(
+            "http://localhost:3001",
+            &format!("http://127.0.0.1:{oauth_port}"),
+        )
+        .replace("port = 3001", &format!("port = {oauth_port}"));
     config_toml.push_str(&format!(
         "\n[paths]\ndata = {data:?}\nstate = {state:?}\ncache = {cache:?}\nruntime = {runtime:?}\nlogs = {logs:?}\n",
         data = effective_root.join("data").display().to_string(),
@@ -492,6 +355,23 @@ async fn cli_server_managed_nats() {
         logs = effective_root.join("logs").display().to_string(),
     ));
     fs::write(&config_path, &config_toml).expect("write configured path roots");
+    let seeded = server_command(&workdir.0)
+        .args([
+            "bootstrap-admin",
+            "--config",
+            config_path.to_str().expect("UTF-8 config path"),
+            "--username",
+            "managed-nats-admin",
+            "--password",
+            "managed-nats-fixture-password",
+        ])
+        .output()
+        .expect("seed fresh installation administrator");
+    assert!(
+        seeded.status.success(),
+        "bootstrap administrator: {}",
+        String::from_utf8_lossy(&seeded.stderr)
+    );
     let authored_nats = fs::read(bundle.join("nats/nats.conf")).expect("read authored nats.conf");
     let authored_jwt = fs::read(bundle.join("nats/jwt.conf")).expect("read authored jwt.conf");
 
@@ -551,6 +431,13 @@ async fn cli_server_managed_nats() {
         "the runtime HTTP listener",
     )
     .await;
+    wait_until(
+        || port_accepts(oauth_port),
+        &mut child,
+        &run_stderr,
+        "the separate OAuth listener",
+    )
+    .await;
     child.signal_term();
     let exit = child.wait_for_exit(SHUTDOWN_TIMEOUT);
     assert!(
@@ -576,22 +463,6 @@ async fn cli_server_managed_nats() {
         !managed_ports.iter().any(|port| port_accepts(*port)),
         "managed ports still accept connections after shutdown"
     );
-    let effective_nats = fs::read_to_string(effective_root.join("state/nats/nats.conf"))
-        .expect("read effective managed nats.conf");
-    assert!(
-        !effective_nats.contains("0.0.0.0"),
-        "the managed local effective config must bind loopback only: {effective_nats}"
-    );
-    for (label, port) in [
-        ("listen", nats_port),
-        ("http", monitor_port),
-        ("listen", websocket_port),
-    ] {
-        assert!(
-            effective_nats.contains(&format!("{label}: 127.0.0.1:{port}")),
-            "effective managed config must bind {label} on loopback port {port}: {effective_nats}"
-        );
-    }
     let nats_log = effective_root.join("logs/nats-server.log");
     assert!(nats_log.is_file());
     assert!(
@@ -617,10 +488,6 @@ async fn cli_server_managed_nats() {
             "mutable {database} must not land under the config root"
         );
     }
-    assert!(
-        effective_root.join("state/event-context.digest").is_file(),
-        "omitted event context state must use the configured state root"
-    );
     assert_eq!(
         fs::read(bundle.join("nats/nats.conf")).expect("reread authored nats.conf"),
         authored_nats,

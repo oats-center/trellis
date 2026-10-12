@@ -1,0 +1,148 @@
+use super::*;
+use trellis_protocol::{
+    verify_issuer_metadata, IssuerMetadataQuery, IssuerMetadataRequest, IssuerMetadataResult,
+    ISSUER_METADATA_SUBJECT,
+};
+
+#[test]
+fn public_metadata_retains_signed_cutoff_and_authenticates_rotated_issuer_without_new_trust() {
+    let f = fixture();
+    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let original = f.store.issuer();
+    let scope =
+        EnforcementScope::Session(issued.authority.unsigned.authorization_session_id.clone());
+    f.store
+        .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
+        .unwrap();
+    let request = IssuerMetadataRequest {
+        trellis_instance_id: f.store.settings.instance_id.clone(),
+        audience_nats_account: f.store.settings.account.clone(),
+        request_nonce: URL_SAFE_NO_PAD.encode([27; 16]),
+        query: IssuerMetadataQuery::AuthorityStatus {
+            authorization_session_id: issued.authority.unsigned.authorization_session_id.clone(),
+        },
+    };
+    let reply = "_INBOX.TRELLIS.caller.request";
+    let bytes = f
+        .store
+        .issuer_metadata(
+            &serde_json::to_vec(&request).unwrap(),
+            ISSUER_METADATA_SUBJECT,
+            reply,
+            NOW + 2,
+        )
+        .unwrap();
+    let verified = verify_issuer_metadata(
+        &bytes,
+        &original,
+        &request,
+        ISSUER_METADATA_SUBJECT,
+        reply,
+        NOW + 2,
+    )
+    .unwrap();
+    let IssuerMetadataResult::Value { payload } = verified.result() else {
+        panic!("retired status remains retained")
+    };
+    let status: trellis_runtime_apis::types::AuthAuthorityStatusResponse =
+        serde_json::from_str(payload).unwrap();
+    let cutoff: trellis_protocol::SignedSessionRevocation =
+        serde_json::from_slice(&status.revocation.unwrap().0 .0).unwrap();
+    cutoff
+        .verify(
+            &original,
+            &f.store.settings.instance_id,
+            &f.store.settings.account,
+        )
+        .unwrap();
+    assert_eq!(cutoff.effective_cutoff, NOW + 1);
+    let policy = SessionAuthorityVerificationPolicy {
+        now_unix_seconds: NOW + 2,
+        allowed_clock_skew_seconds: 5,
+        maximum_authority_lifetime_seconds: 60,
+        maximum_authority_bytes: 65536,
+        maximum_entries: 256,
+    };
+    assert!(verify_session_authority(SessionAuthorityVerificationInput {
+        issuer: &original,
+        trellis_instance_id: &f.store.settings.instance_id,
+        audience_nats_account: &f.store.settings.account,
+        authority: &issued.authority,
+        policy: &policy,
+        purpose: SessionAuthorityPurpose::Live,
+        revocation_cutoff: Some(cutoff.effective_cutoff)
+    })
+    .is_err());
+    assert!(f
+        .store
+        .issuer_metadata(
+            &serde_json::to_vec(&request).unwrap(),
+            ISSUER_METADATA_SUBJECT,
+            "rpc.v1.control.Destroy",
+            NOW + 2
+        )
+        .is_err());
+    let next = SigningKey::from_bytes(&[76; 32]);
+    let next_public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
+    let rotation = f
+        .store
+        .rotate_issuer(&mutation(&f.admin, &next_public), &next_public, NOW + 3)
+        .unwrap();
+    // Install real successor custody through the ordinary production constructor.
+    let store = open(&f.directory, next);
+    let current = store.issuer();
+    let chain_request = IssuerMetadataRequest {
+        query: IssuerMetadataQuery::IssuerChain {
+            pinned_key_id: original.key_id.clone(),
+            target_key_id: current.key_id.clone(),
+        },
+        ..request.clone()
+    };
+    let bytes = store
+        .issuer_metadata(
+            &serde_json::to_vec(&chain_request).unwrap(),
+            ISSUER_METADATA_SUBJECT,
+            reply,
+            NOW + 4,
+        )
+        .unwrap();
+    assert!(verify_issuer_metadata(
+        &bytes,
+        &original,
+        &chain_request,
+        ISSUER_METADATA_SUBJECT,
+        reply,
+        NOW + 4
+    )
+    .is_err());
+    // The independently signed pinned-key rotation authenticates the target,
+    // before its envelope can be admitted. No unsigned payload installs a key.
+    let authenticated = rotation
+        .verify_successor(
+            &original,
+            &store.settings.instance_id,
+            &store.settings.account,
+            0,
+            NOW + 4,
+        )
+        .unwrap();
+    assert_eq!(authenticated, current);
+    let verified = verify_issuer_metadata(
+        &bytes,
+        &current,
+        &chain_request,
+        ISSUER_METADATA_SUBJECT,
+        reply,
+        NOW + 4,
+    )
+    .unwrap();
+    let IssuerMetadataResult::Value { payload } = verified.result() else {
+        panic!("rotation proof is resolvable")
+    };
+    let chain: trellis_runtime_apis::types::AuthIssuerChainResponse =
+        serde_json::from_str(payload).unwrap();
+    assert_eq!(chain.rotations.len(), 1);
+    let resolved: trellis_protocol::SignedIssuerRotation =
+        serde_json::from_slice(&chain.rotations[0].0 .0).unwrap();
+    assert_eq!(resolved, rotation);
+}

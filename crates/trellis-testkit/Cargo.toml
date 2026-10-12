@@ -30,8 +30,11 @@ trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0" }
 trellis-runtime = { path = "../runtime", version = "0.100.0" }
 trellis-bootstrap = { path = "../bootstrap", version = "0.100.0" }
 trellis-local-nats = { path = "../local-nats", version = "0.100.0" }
+trellis-idl = { path = "../idl", version = "0.100.0" }
 ulid.workspace = true
 url = { workspace = true }
 
 [dev-dependencies]
+time = { workspace = true, features = ["formatting", "parsing"] }
+trellis-protocol = { path = "../protocol", version = "0.100.0" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

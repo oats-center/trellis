@@ -2,3 +2,4 @@
 export * as AdminService from "./AdminService/mod.js";
 export * as EventService from "./EventService/mod.js";
 export * as Provider from "./Provider/mod.js";
+export * as ResourceProvider from "./ResourceProvider/mod.js";

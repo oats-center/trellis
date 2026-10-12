@@ -13,7 +13,7 @@ import type { PermissionAtom } from "../../participant_runtime/api.ts";
 import {
   type OperationTransferHandle,
   type RuntimeOperationTransferProgress,
-  toVerifierPermission,
+  toCatalogAction,
   type TrellisAuth,
   verifyLocalAuthorization,
 } from "../../session.ts";
@@ -65,7 +65,7 @@ export type InitiateUploadArgs = {
   sessionKey: string;
   connectionId: string;
   contextDigest: string;
-  permission: PermissionAtom | undefined;
+  permission: PermissionAtom;
   requiredCapabilities: readonly string[];
   operationId: string;
   expiresInMs: number;
@@ -178,11 +178,13 @@ export class ServiceTransfer {
     if (!this.opts.operationStagingBucket) {
       throw new Error("operation staging unavailable");
     }
-    const store = (await TypedStore.open(
-      this.opts.transport,
-      this.opts.operationStagingBucket,
-      { bindOnly: true },
-    )).take();
+    const store = (
+      await TypedStore.open(
+        this.opts.transport,
+        this.opts.operationStagingBucket,
+        { bindOnly: true },
+      )
+    ).take();
     if (isErr(store)) throw store.error;
     return store;
   }
@@ -190,7 +192,7 @@ export class ServiceTransfer {
   async #prepare(
     grant: TransferGrant,
     args: {
-      permission: PermissionAtom | undefined;
+      permission: PermissionAtom;
       requiredCapabilities: readonly string[];
       contextDigest: string;
     },
@@ -199,35 +201,39 @@ export class ServiceTransfer {
     logicalKey: string,
   ): Promise<ProviderSession> {
     transferParseGrant(new TextEncoder().encode(JSON.stringify(grant)));
-    const cache = this.opts.auth.authorizationProviderCache;
+    const cache = this.opts.auth.authorityOwner;
     if (!cache) throw new Error("transfer authorization cache unavailable");
     const callerGuard = await LiveAuthorityGuard.retain(
       cache,
       args.contextDigest,
-      args.permission
-        ? {
-          kind: "observer",
-          permission: toVerifierPermission(args.permission),
-        }
-        : { kind: "local-provider" },
+      {
+        kind: "observer",
+        apiId: grant.origin.apiId,
+        action: grant.origin.action,
+      },
     );
     if (
-      callerGuard.identity.connectionId !== grant.consumer.connectionId ||
-      callerGuard.identity.sessionKey !== grant.consumer.sessionKey
+      callerGuard.identity.runtimeId !== grant.consumer.connectionId ||
+      callerGuard.identity.sessionPublicKey !== grant.consumer.sessionKey
     ) {
       callerGuard.release();
       throw new Error("transfer caller identity mismatch");
     }
     let wire: TransferSession | undefined;
     try {
-      const lease = await this.opts.transport.acquireFor({
-        subscribe: grant.direction === "send"
-          ? [grant.controlSubject, grant.dataSubject]
-          : [grant.controlSubject],
-        publish: grant.direction === "send"
-          ? [grant.signalSubject]
-          : [grant.signalSubject, grant.dataSubject],
-      }, { deadlineMs: Date.parse(grant.expiresAt) });
+      const lease = await this.opts.transport.acquireFor(
+        {
+          subscribe:
+            grant.direction === "send"
+              ? [grant.controlSubject, grant.dataSubject]
+              : [grant.controlSubject],
+          publish:
+            grant.direction === "send"
+              ? [grant.signalSubject]
+              : [grant.signalSubject, grant.dataSubject],
+        },
+        { deadlineMs: Date.parse(grant.expiresAt) },
+      );
       wire = new TransferSession(grant, lease, this.opts.auth, true);
       await wire.retainLocal();
       wire.peerGuard = callerGuard;
@@ -262,13 +268,19 @@ export class ServiceTransfer {
         settlement: settled.promise,
         settled,
       };
-      wire.abort.signal.addEventListener("abort", () => {
-        session.credit?.close();
-        session.ingress?.fail(wire!.abort.signal.reason);
-        session.window?.wakeCredit();
-        void session.reader?.cancel(wire!.abort.signal.reason).catch(() => {});
-        wire!.run(this.#settle(session));
-      }, { once: true });
+      wire.abort.signal.addEventListener(
+        "abort",
+        () => {
+          session.credit?.close();
+          session.ingress?.fail(wire!.abort.signal.reason);
+          session.window?.wakeCredit();
+          void session.reader
+            ?.cancel(wire!.abort.signal.reason)
+            .catch(() => {});
+          wire!.run(this.#settle(session));
+        },
+        { once: true },
+      );
       let controlLane = Promise.resolve();
       let pendingControls = 0;
       wire.subscriptions.push(
@@ -285,7 +297,8 @@ export class ServiceTransfer {
               wire!.fail(new Error("transfer control flood"));
               return;
             }
-            controlLane = controlLane.then(() => this.#control(session, msg))
+            controlLane = controlLane
+              .then(() => this.#control(session, msg))
               .finally(() => pendingControls--);
             wire!.run(controlLane);
           },
@@ -309,7 +322,7 @@ export class ServiceTransfer {
                       ? 1
                       : 0) ||
                 (pendingBytes += msg.data.length) +
-                      (session.ingress?.bufferedBytes ?? 0) >
+                  (session.ingress?.bufferedBytes ?? 0) >
                   grant.windowBytes +
                     (msg.headers?.get("trellis-transfer-control") === "complete"
                       ? transferConstants().headerReserve
@@ -330,9 +343,8 @@ export class ServiceTransfer {
                   { "trellis.direction": "upload" },
                 );
               };
-              dataLane = dataLane.then(() =>
-                this.#uploadData(session, msg, handoff)
-              )
+              dataLane = dataLane
+                .then(() => this.#uploadData(session, msg, handoff))
                 .finally(() => {
                   pendingFrames--;
                   pendingBytes -= msg.data.length;
@@ -362,7 +374,12 @@ export class ServiceTransfer {
 
   #grant(
     direction: "send" | "receive",
-    args: { sessionKey: string; connectionId: string; expiresInMs: number },
+    args: {
+      sessionKey: string;
+      connectionId: string;
+      expiresInMs: number;
+      permission: PermissionAtom;
+    },
   ): Omit<SendTransferGrant, "direction"> & { direction: "send" | "receive" } {
     const C = transferConstants();
     const transferId = transferGenerateId();
@@ -399,6 +416,10 @@ export class ServiceTransfer {
       type: "TransferGrant",
       direction,
       service: this.opts.name,
+      origin: {
+        apiId: `${args.permission.apiId}@${args.permission.apiVersion}`,
+        action: toCatalogAction(args.permission),
+      },
       transferId,
       provider: {
         connectionId: this.opts.connectionId,
@@ -424,11 +445,12 @@ export class ServiceTransfer {
       const store = await this.#staging();
       const status = (await store.status()).take();
       if (isErr(status)) throw status.error;
-      const maxBytes = args.maxBytes === undefined
-        ? status.maxObjectBytes
-        : status.maxObjectBytes === undefined
-        ? args.maxBytes
-        : Math.min(args.maxBytes, status.maxObjectBytes);
+      const maxBytes =
+        args.maxBytes === undefined
+          ? status.maxObjectBytes
+          : status.maxObjectBytes === undefined
+            ? args.maxBytes
+            : Math.min(args.maxBytes, status.maxObjectBytes);
       const grant: SendTransferGrant = {
         ...this.#grant("send", args),
         direction: "send",
@@ -460,33 +482,34 @@ export class ServiceTransfer {
       (async (): Promise<
         ResultType<OperationUploadTransfer, TransferError>
       > => {
-        const updates = new AsyncValueBroadcaster<
-          RuntimeOperationTransferProgress
-        >();
+        const updates =
+          new AsyncValueBroadcaster<RuntimeOperationTransferProgress>();
         const completed = deferred<ResultType<FileInfo, TransferError>>();
         const stored = deferred<ResultType<StoredTransfer, TransferError>>();
-        const grant = (await this.initiateUpload({
-          ...args,
-          onProgress: (progress) => {
-            updates.push(progress);
-            return args.onProgress?.(progress);
-          },
-          onComplete: async (info) => {
-            await args.onComplete?.(info);
-          },
-          onStored: async (value) => {
-            await args.onStored?.(value);
-            stored.resolve(Result.ok(value));
-            completed.resolve(Result.ok(value.info));
-            updates.close();
-          },
-          onError: async (error) => {
-            stored.resolve(Result.err(error));
-            completed.resolve(Result.err(error));
-            updates.close();
-            await args.onError?.(error);
-          },
-        })).take();
+        const grant = (
+          await this.initiateUpload({
+            ...args,
+            onProgress: (progress) => {
+              updates.push(progress);
+              return args.onProgress?.(progress);
+            },
+            onComplete: async (info) => {
+              await args.onComplete?.(info);
+            },
+            onStored: async (value) => {
+              await args.onStored?.(value);
+              stored.resolve(Result.ok(value));
+              completed.resolve(Result.ok(value.info));
+              updates.close();
+            },
+            onError: async (error) => {
+              stored.resolve(Result.err(error));
+              completed.resolve(Result.err(error));
+              updates.close();
+              await args.onError?.(error);
+            },
+          })
+        ).take();
         if (isErr(grant)) return Result.err(grant.error);
         return Result.ok({
           grant,
@@ -494,33 +517,37 @@ export class ServiceTransfer {
             updates: () => updates.subscribe(),
             completed: () => AsyncResult.from(completed.promise),
             stream: () =>
-              AsyncResult.from((async () => {
-                const value = (await stored.promise).take();
-                if (isErr(value)) return Result.err(value.error);
-                const stream = (await value.entry.stream()).take();
-                return isErr(stream)
-                  ? Result.err(
-                    new TransferError({
-                      operation: "stream",
-                      cause: stream.error,
-                    }),
-                  )
-                  : Result.ok(stream);
-              })()),
+              AsyncResult.from(
+                (async () => {
+                  const value = (await stored.promise).take();
+                  if (isErr(value)) return Result.err(value.error);
+                  const stream = (await value.entry.stream()).take();
+                  return isErr(stream)
+                    ? Result.err(
+                        new TransferError({
+                          operation: "stream",
+                          cause: stream.error,
+                        }),
+                      )
+                    : Result.ok(stream);
+                })(),
+              ),
             bytes: () =>
-              AsyncResult.from((async () => {
-                const value = (await stored.promise).take();
-                if (isErr(value)) return Result.err(value.error);
-                const bytes = (await value.entry.bytes()).take();
-                return isErr(bytes)
-                  ? Result.err(
-                    new TransferError({
-                      operation: "bytes",
-                      cause: bytes.error,
-                    }),
-                  )
-                  : Result.ok(bytes);
-              })()),
+              AsyncResult.from(
+                (async () => {
+                  const value = (await stored.promise).take();
+                  if (isErr(value)) return Result.err(value.error);
+                  const bytes = (await value.entry.bytes()).take();
+                  return isErr(bytes)
+                    ? Result.err(
+                        new TransferError({
+                          operation: "bytes",
+                          cause: bytes.error,
+                        }),
+                      )
+                    : Result.ok(bytes);
+                })(),
+              ),
           },
         });
       })(),
@@ -547,70 +574,73 @@ export class ServiceTransfer {
             ReadableStream<Uint8Array>,
             TransferError
           > =>
-            AsyncResult.from((async () => {
-              try {
-                const entry = (await store.get(storageKey)).take();
-                if (isErr(entry)) throw entry.error;
-                const actual = fileInfoFromStoreInfo(entry.info);
-                const metadata = info.metadata ?? {};
-                const actualMetadata = actual.metadata ?? {};
-                if (
-                  actual.key !== storageKey || actual.size !== info.size ||
-                  actual.digest?.replace(/=+$/, "") !== expectedDigest ||
-                  actual.contentType !== info.contentType ||
-                  Object.keys(actualMetadata).length !==
-                    Object.keys(metadata).length ||
-                  Object.entries(metadata).some(([key, value]) =>
-                    actualMetadata[key] !== value
-                  )
-                ) {
-                  throw new Error(
-                    "staged upload metadata does not match its durable commit",
+            AsyncResult.from(
+              (async () => {
+                try {
+                  const entry = (await store.get(storageKey)).take();
+                  if (isErr(entry)) throw entry.error;
+                  const actual = fileInfoFromStoreInfo(entry.info);
+                  const metadata = info.metadata ?? {};
+                  const actualMetadata = actual.metadata ?? {};
+                  if (
+                    actual.key !== storageKey ||
+                    actual.size !== info.size ||
+                    actual.digest?.replace(/=+$/, "") !== expectedDigest ||
+                    actual.contentType !== info.contentType ||
+                    Object.keys(actualMetadata).length !==
+                      Object.keys(metadata).length ||
+                    Object.entries(metadata).some(
+                      ([key, value]) => actualMetadata[key] !== value,
+                    )
+                  ) {
+                    throw new Error(
+                      "staged upload metadata does not match its durable commit",
+                    );
+                  }
+                  const source = (await entry.stream()).take();
+                  if (isErr(source)) throw source.error;
+                  const hash = sha256.create();
+                  let size = 0;
+                  return Result.ok(
+                    source.pipeThrough(
+                      new TransformStream<Uint8Array, Uint8Array>({
+                        transform(chunk, controller) {
+                          size += chunk.length;
+                          if (size > info.size) {
+                            throw new TransferError({
+                              operation: "stream",
+                              cause: new Error(
+                                "staged upload size exceeded its durable commit",
+                              ),
+                            });
+                          }
+                          hash.update(chunk);
+                          controller.enqueue(chunk);
+                        },
+                        flush() {
+                          if (
+                            size !== info.size ||
+                            `SHA-256=${base64urlEncode(hash.digest())}` !==
+                              expectedDigest
+                          ) {
+                            throw new TransferError({
+                              operation: "stream",
+                              cause: new Error(
+                                "staged upload bytes do not match its durable commit",
+                              ),
+                            });
+                          }
+                        },
+                      }),
+                    ),
+                  );
+                } catch (cause) {
+                  return Result.err(
+                    new TransferError({ operation: "stream", cause }),
                   );
                 }
-                const source = (await entry.stream()).take();
-                if (isErr(source)) throw source.error;
-                const hash = sha256.create();
-                let size = 0;
-                return Result.ok(
-                  source.pipeThrough(
-                    new TransformStream<Uint8Array, Uint8Array>({
-                      transform(chunk, controller) {
-                        size += chunk.length;
-                        if (size > info.size) {
-                          throw new TransferError({
-                            operation: "stream",
-                            cause: new Error(
-                              "staged upload size exceeded its durable commit",
-                            ),
-                          });
-                        }
-                        hash.update(chunk);
-                        controller.enqueue(chunk);
-                      },
-                      flush() {
-                        if (
-                          size !== info.size ||
-                          `SHA-256=${base64urlEncode(hash.digest())}` !==
-                            expectedDigest
-                        ) {
-                          throw new TransferError({
-                            operation: "stream",
-                            cause: new Error(
-                              "staged upload bytes do not match its durable commit",
-                            ),
-                          });
-                        }
-                      },
-                    }),
-                  ),
-                );
-              } catch (cause) {
-                return Result.err(
-                  new TransferError({ operation: "stream", cause }),
-                );
-              }
-            })());
+              })(),
+            );
           // Recovery must reject corrupted persisted bytes before making the
           // handler runnable. Drain without collecting, then verify every later
           // read too because the backend can be overwritten after this check.
@@ -618,7 +648,9 @@ export class ServiceTransfer {
           if (isErr(verified)) throw verified.error;
           const reader = verified.getReader();
           try {
-            while (!(await reader.read()).done) { /* verification only */ }
+            while (!(await reader.read()).done) {
+              /* verification only */
+            }
           } finally {
             await reader.cancel().catch(() => {});
             reader.releaseLock();
@@ -628,41 +660,43 @@ export class ServiceTransfer {
             completed: () => AsyncResult.ok(structuredClone(info)),
             stream: openStream,
             bytes: () =>
-              AsyncResult.from((async () => {
-                const source = (await openStream()).take();
-                if (isErr(source)) return Result.err(source.error);
-                const reader = source.getReader();
-                let retainedBytes = 0;
-                try {
-                  const bytes = new Uint8Array(info.size);
-                  retainedBytes = bytes.length;
-                  recordCatalogUpDown(
-                    "trellis.transfer.buffered.bytes",
-                    retainedBytes,
-                    { "trellis.direction": "upload" },
-                  );
-                  let offset = 0;
-                  while (true) {
-                    const next = await reader.read();
-                    if (next.done) break;
-                    bytes.set(next.value, offset);
-                    offset += next.value.length;
+              AsyncResult.from(
+                (async () => {
+                  const source = (await openStream()).take();
+                  if (isErr(source)) return Result.err(source.error);
+                  const reader = source.getReader();
+                  let retainedBytes = 0;
+                  try {
+                    const bytes = new Uint8Array(info.size);
+                    retainedBytes = bytes.length;
+                    recordCatalogUpDown(
+                      "trellis.transfer.buffered.bytes",
+                      retainedBytes,
+                      { "trellis.direction": "upload" },
+                    );
+                    let offset = 0;
+                    while (true) {
+                      const next = await reader.read();
+                      if (next.done) break;
+                      bytes.set(next.value, offset);
+                      offset += next.value.length;
+                    }
+                    return Result.ok(bytes);
+                  } catch (cause) {
+                    return Result.err(
+                      new TransferError({ operation: "bytes", cause }),
+                    );
+                  } finally {
+                    recordCatalogUpDown(
+                      "trellis.transfer.buffered.bytes",
+                      -retainedBytes,
+                      { "trellis.direction": "upload" },
+                    );
+                    await reader.cancel().catch(() => {});
+                    reader.releaseLock();
                   }
-                  return Result.ok(bytes);
-                } catch (cause) {
-                  return Result.err(
-                    new TransferError({ operation: "bytes", cause }),
-                  );
-                } finally {
-                  recordCatalogUpDown(
-                    "trellis.transfer.buffered.bytes",
-                    -retainedBytes,
-                    { "trellis.direction": "upload" },
-                  );
-                  await reader.cancel().catch(() => {});
-                  reader.releaseLock();
-                }
-              })()),
+                })(),
+              ),
           });
         } catch (cause) {
           return Result.err(
@@ -716,49 +750,51 @@ export class ServiceTransfer {
     if (msg.reply !== wire.grant.signalSubject) {
       throw new Error("transfer signal reply mismatch");
     }
-    for (
-      const name of [
-        "authorization-context",
-        "session-key",
-        "proof",
-        "iat",
-        "request-id",
-      ]
-    ) {
+    for (const name of [
+      "authorization-context",
+      "session-key",
+      "proof",
+      "iat",
+      "request-id",
+    ]) {
       const values = msg.headers?.values(name);
       if (values?.length !== 1 || !values[0]) {
         throw new Error("ambiguous transfer request proof header");
       }
     }
-    const caller = (await transferWait(
-      verifyLocalAuthorization({
-        kind: "transfer",
-        cache: this.opts.auth.authorizationProviderCache,
-        message: msg,
-        permission: session.permission,
-        requiredCapabilities: session.requiredCapabilities,
-        transferId: wire.grant.transferId,
-        providerConnectionId: wire.grant.provider.connectionId,
-        consumerConnectionId: wire.grant.consumer.connectionId,
-        ...(proofPayload === undefined ? {} : { proofPayload }),
-      }),
-      wire.abort.signal,
-    )).take();
+    const caller = (
+      await transferWait(
+        verifyLocalAuthorization({
+          kind: "transfer",
+          cache: this.opts.auth.authorityOwner,
+          message: msg,
+          permission: session.permission,
+          requiredCapabilities: session.requiredCapabilities,
+          transferId: wire.grant.transferId,
+          providerConnectionId: wire.grant.provider.connectionId,
+          consumerConnectionId: wire.grant.consumer.connectionId,
+          ...(proofPayload === undefined ? {} : { proofPayload }),
+        }),
+        wire.abort.signal,
+      )
+    ).take();
     if (
-      isErr(caller) || caller.sessionKey !== wire.grant.consumer.sessionKey ||
-      caller.connectionId !== wire.grant.consumer.connectionId
-    ) throw new Error("invalid transfer caller proof");
-    if (caller.contextDigest !== session.callerGuard.contextDigest) {
+      isErr(caller) ||
+      caller.sessionPublicKey !== wire.grant.consumer.sessionKey ||
+      caller.runtimeId !== wire.grant.consumer.connectionId
+    )
+      throw new Error("invalid transfer caller proof");
+    if (caller.authorityDigest !== session.callerGuard.contextDigest) {
       const replacement = await transferWait(
-        session.callerGuard.prepareReplacement(caller.contextDigest).then(
-          (replacement) => {
+        session.callerGuard
+          .prepareReplacement(caller.authorityDigest)
+          .then((replacement) => {
             if (wire.abort.signal.aborted) {
               replacement.release();
               wire.throwIfAborted();
             }
             return replacement;
-          },
-        ),
+          }),
         wire.abort.signal,
       );
       const lost = session.callerGuard.commitReplacement(replacement);
@@ -774,10 +810,7 @@ export class ServiceTransfer {
     wire.throwIfAborted();
   }
 
-  #signal(
-    session: ProviderSession,
-    value: SignalBody,
-  ): Promise<void> {
+  #signal(session: ProviderSession, value: SignalBody): Promise<void> {
     if (value.type === "error") {
       session.signalLane = session.signalLane.catch(() => {});
     }
@@ -798,28 +831,33 @@ export class ServiceTransfer {
         value.type === "error",
       );
       if (value.type !== "error") session.wire.throwIfAborted();
-      this.opts.log?.debug({
-        operationId: session.upload?.operationId,
-        transferId: session.wire.grant.transferId,
-        signalType: value.type,
-        bodyBytes: payload.length,
-        maxBodyBytes: transferConstants().maxControlBytes,
-        headerCount: headers.keys().length,
-        headerValueBytes: [...headers].reduce(
-          (bytes, [, values]) =>
-            bytes +
-            values.reduce(
-              (n, value) => n + new TextEncoder().encode(value).length,
-              0,
-            ),
-          0,
-        ),
-      }, "Transfer publishing signed signal");
+      this.opts.log?.debug(
+        {
+          operationId: session.upload?.operationId,
+          transferId: session.wire.grant.transferId,
+          signalType: value.type,
+          bodyBytes: payload.length,
+          maxBodyBytes: transferConstants().maxControlBytes,
+          headerCount: headers.keys().length,
+          headerValueBytes: [...headers].reduce(
+            (bytes, [, values]) =>
+              bytes +
+              values.reduce(
+                (n, value) => n + new TextEncoder().encode(value).length,
+                0,
+              ),
+            0,
+          ),
+        },
+        "Transfer publishing signed signal",
+      );
       session.wire.lease.nc.publish(subject, payload, { headers });
       if (
-        value.type === "error" || value.type === "cancelled" ||
+        value.type === "error" ||
+        value.type === "cancelled" ||
         value.type === "committed"
-      ) session.terminalSent = true;
+      )
+        session.terminalSent = true;
     });
     return session.signalLane;
   }
@@ -830,22 +868,28 @@ export class ServiceTransfer {
     const sequence = msg.headers?.values(C.sequenceHeader);
     const kind = msg.headers?.values(C.controlHeader);
     if (
-      sequence?.length !== 1 || sequence[0] !== control.controlSeq ||
-      kind?.length !== 1 || kind[0] !== "control" ||
+      sequence?.length !== 1 ||
+      sequence[0] !== control.controlSeq ||
+      kind?.length !== 1 ||
+      kind[0] !== "control" ||
       msg.headers?.values(C.terminalHeader)?.length
-    ) throw new Error("transfer control descriptor mismatch");
+    )
+      throw new Error("transfer control descriptor mismatch");
     if (control.transferId !== session.wire.grant.transferId) {
       throw new Error("transfer control session mismatch");
     }
     await this.#verify(
       session,
       msg,
-      transferFrameDigest({
-        transferId: session.wire.grant.transferId,
-        direction: session.wire.grant.direction,
-        sequence: control.controlSeq,
-        kind: "control",
-      }, msg.data),
+      transferFrameDigest(
+        {
+          transferId: session.wire.grant.transferId,
+          direction: session.wire.grant.direction,
+          sequence: control.controlSeq,
+          kind: "control",
+        },
+        msg.data,
+      ),
     );
     const seq = BigInt(control.controlSeq);
     const body = JSON.stringify(control);
@@ -859,9 +903,12 @@ export class ServiceTransfer {
     const consumed = BigInt(control.consumedSeq);
     if (control.action === "activate") {
       if (
-        session.active || received !== 0n || consumed !== 0n ||
+        session.active ||
+        received !== 0n ||
+        consumed !== 0n ||
         control.receiveMaxFrameBytes === undefined
-      ) throw new Error("invalid transfer activation");
+      )
+        throw new Error("invalid transfer activation");
       session.maxFrameBytes = Math.min(
         session.maxFrameBytes,
         control.receiveMaxFrameBytes,
@@ -873,11 +920,13 @@ export class ServiceTransfer {
       }
       session.active = true;
       if (session.wire.grant.direction === "send") this.#startUpload(session);
-      else {session.window = new SenderWindow({
+      else {
+        session.window = new SenderWindow({
           maxFrameBytes: session.maxFrameBytes,
           windowFrames: session.wire.grant.windowFrames,
           windowBytes: session.wire.grant.windowBytes,
-        });}
+        });
+      }
       await this.#signal(session, {
         type: "activated",
         controlSeq: control.controlSeq,
@@ -903,13 +952,15 @@ export class ServiceTransfer {
       session.wire.fail(new Error("transfer cancelled"));
     } else if (control.action === "credit" || control.action === "end-ack") {
       if (
-        !session.active || !session.window ||
+        !session.active ||
+        !session.window ||
         session.window.applyCredit(
           received,
           consumed,
           transferParseCounter(control.consumedBytes),
         )
-      ) throw new Error("invalid transfer cumulative credit");
+      )
+        throw new Error("invalid transfer cumulative credit");
       recordCatalogCounter("trellis.transfer.credit.controls", 1, {
         "trellis.direction": "download",
       });
@@ -917,7 +968,8 @@ export class ServiceTransfer {
         if (
           !session.completing ||
           session.window.validateComplete(session.window.highestSent)
-        ) throw new Error("incomplete transfer end acknowledgement");
+        )
+          throw new Error("incomplete transfer end acknowledgement");
         await this.#settle(session);
       }
     }
@@ -944,30 +996,38 @@ export class ServiceTransfer {
     );
     const submitProgress = () => {
       if (
-        session.progressTask || !session.progressPending ||
+        session.progressTask ||
+        !session.progressPending ||
         session.wire.abort.signal.aborted
-      ) return;
+      )
+        return;
       session.progressTask = (async () => {
         while (session.progressPending && !session.wire.abort.signal.aborted) {
           session.progressPending = false;
           const progress = session.progress;
-          this.opts.log?.debug({
-            operationId: args.operationId,
-            transferId: session.wire.grant.transferId,
-            consumedSeq: session.consumed.toString(),
-            consumedBytes: session.consumedBytes,
-            submittedBytes: progress.transferredBytes,
-            hasProgressCallback: args.onProgress !== undefined,
-          }, "Transfer submitting backend-consumed progress");
+          this.opts.log?.debug(
+            {
+              operationId: args.operationId,
+              transferId: session.wire.grant.transferId,
+              consumedSeq: session.consumed.toString(),
+              consumedBytes: session.consumedBytes,
+              submittedBytes: progress.transferredBytes,
+              hasProgressCallback: args.onProgress !== undefined,
+            },
+            "Transfer submitting backend-consumed progress",
+          );
           await transferWait(
             Promise.resolve(args.onProgress?.(progress)),
             session.wire.abort.signal,
           );
-          this.opts.log?.debug({
-            operationId: args.operationId,
-            transferId: session.wire.grant.transferId,
-            submittedBytes: progress.transferredBytes,
-          }, "Transfer progress callback returned");
+          this.opts.log?.debug(
+            {
+              operationId: args.operationId,
+              transferId: session.wire.grant.transferId,
+              submittedBytes: progress.transferredBytes,
+            },
+            "Transfer progress callback returned",
+          );
         }
       })().finally(() => {
         session.progressTask = undefined;
@@ -985,16 +1045,19 @@ export class ServiceTransfer {
         session.consumedBytes += bytes;
         if (
           Math.floor(previousBytes / (1024 * 1024)) !==
-            Math.floor(session.consumedBytes / (1024 * 1024))
+          Math.floor(session.consumedBytes / (1024 * 1024))
         ) {
-          this.opts.log?.debug({
-            operationId: args.operationId,
-            transferId: session.wire.grant.transferId,
-            consumedSeq: seq.toString(),
-            consumedBytes: session.consumedBytes,
-            progressPending: session.progressPending,
-            progressTaskActive: session.progressTask !== undefined,
-          }, "Transfer backend consumed upload frames");
+          this.opts.log?.debug(
+            {
+              operationId: args.operationId,
+              transferId: session.wire.grant.transferId,
+              consumedSeq: seq.toString(),
+              consumedBytes: session.consumedBytes,
+              progressPending: session.progressPending,
+              progressTaskActive: session.progressTask !== undefined,
+            },
+            "Transfer backend consumed upload frames",
+          );
         }
         session.progress = {
           chunkIndex: Number(seq - 1n),
@@ -1008,18 +1071,22 @@ export class ServiceTransfer {
       },
     );
     session.backend = (async () => {
-      const result =
-        (await session.store.put(session.storageKey, session.ingress!, {
+      const result = (
+        await session.store.put(session.storageKey, session.ingress!, {
           ...(args.contentType ? { contentType: args.contentType } : {}),
           ...(args.metadata ? { metadata: args.metadata } : {}),
-        })).take();
+        })
+      ).take();
       if (isErr(result)) {
-        this.opts.log?.debug({
-          operationId: args.operationId,
-          transferId: session.wire.grant.transferId,
-          consumedBytes: session.consumedBytes,
-          err: result.error,
-        }, "Transfer backend upload failed");
+        this.opts.log?.debug(
+          {
+            operationId: args.operationId,
+            transferId: session.wire.grant.transferId,
+            consumedBytes: session.consumedBytes,
+            err: result.error,
+          },
+          "Transfer backend upload failed",
+        );
         throw result.error;
       }
     })();
@@ -1038,9 +1105,13 @@ export class ServiceTransfer {
     const rawSeq = msg.headers?.values(C.sequenceHeader);
     const rawControl = msg.headers?.values(C.controlHeader);
     if (
-      !rawSeq || rawSeq.length !== 1 || !rawControl ||
-      rawControl.length !== 1 || msg.headers?.values(C.terminalHeader)?.length
-    ) throw new Error("invalid transfer frame headers");
+      !rawSeq ||
+      rawSeq.length !== 1 ||
+      !rawControl ||
+      rawControl.length !== 1 ||
+      msg.headers?.values(C.terminalHeader)?.length
+    )
+      throw new Error("invalid transfer frame headers");
     const seq = BigInt(transferParseCounter(rawSeq[0]));
     const control = rawControl?.[0] ?? "";
     if (control !== "data" && control !== "complete") {
@@ -1049,12 +1120,15 @@ export class ServiceTransfer {
     await this.#verify(
       session,
       msg,
-      transferFrameDigest({
-        transferId: session.wire.grant.transferId,
-        direction: "send",
-        sequence: seq.toString(),
-        kind: control,
-      }, msg.data),
+      transferFrameDigest(
+        {
+          transferId: session.wire.grant.transferId,
+          direction: "send",
+          sequence: seq.toString(),
+          kind: control,
+        },
+        msg.data,
+      ),
     );
     if (control === "complete") {
       const complete = transferParseComplete(msg.data);
@@ -1062,9 +1136,11 @@ export class ServiceTransfer {
       if (
         complete.transferId !== session.wire.grant.transferId ||
         BigInt(complete.finalSeq) !== session.received ||
-        seq !== session.received || complete.size !== session.bytes ||
+        seq !== session.received ||
+        complete.size !== session.bytes ||
         complete.digest !== digest
-      ) throw new Error("upload completion mismatch");
+      )
+        throw new Error("upload completion mismatch");
       session.completing = true;
       session.ingress.close(session.received);
       await transferWait(session.backend!, session.wire.abort.signal);
@@ -1073,9 +1149,11 @@ export class ServiceTransfer {
       if (isErr(entry)) throw entry.error;
       const info = fileInfoFromStoreInfo(entry.info);
       if (
-        info.key !== session.storageKey || info.size !== session.bytes ||
+        info.key !== session.storageKey ||
+        info.size !== session.bytes ||
         info.digest?.replace(/=+$/, "") !== digest.replace(/=+$/, "")
-      ) throw new Error("upload stored metadata mismatch");
+      )
+        throw new Error("upload stored metadata mismatch");
       await session.credit!.flush();
       const stored: StoredTransfer = {
         transferId: session.wire.grant.transferId,
@@ -1113,9 +1191,11 @@ export class ServiceTransfer {
     const grant = session.wire.grant;
     if (
       !Number.isSafeInteger(session.bytes) ||
-      (grant.direction === "send" && grant.maxBytes !== undefined &&
+      (grant.direction === "send" &&
+        grant.maxBytes !== undefined &&
         session.bytes > grant.maxBytes)
-    ) throw new Error("upload maximum bytes exceeded");
+    )
+      throw new Error("upload maximum bytes exceeded");
     session.received = seq;
     session.hash.update(msg.data);
     handoff();
@@ -1138,9 +1218,11 @@ export class ServiceTransfer {
     if (isErr(entry)) throw entry.error;
     const info = fileInfoFromStoreInfo(entry.info);
     if (
-      info.size !== grant.info.size || info.digest !== grant.info.digest ||
+      info.size !== grant.info.size ||
+      info.digest !== grant.info.digest ||
       info.key !== grant.info.key
-    ) throw new Error("download source metadata changed");
+    )
+      throw new Error("download source metadata changed");
     const stream = (await entry.stream()).take();
     if (isErr(stream)) throw stream.error;
     const reader = stream.getReader();
@@ -1214,7 +1296,8 @@ export class ServiceTransfer {
       if (
         session.bytes !== grant.info.size ||
         digest.replace(/=+$/, "") !== grant.info.digest.replace(/=+$/, "")
-      ) throw new Error("download source digest mismatch");
+      )
+        throw new Error("download source digest mismatch");
       const payload = new Uint8Array();
       const headers = await session.wire.serverHeaders(
         grant.dataSubject,
@@ -1245,11 +1328,14 @@ export class ServiceTransfer {
       providerConnectionId: this.opts.connectionId,
       physicalClientId: session.wire.lease.nc.info?.client_id,
     });
-    log?.debug({
-      committed: session.committed,
-      completing: session.completing,
-      consumedBytes: session.consumedBytes,
-    }, "Transfer settlement started");
+    log?.debug(
+      {
+        committed: session.committed,
+        completing: session.completing,
+        consumedBytes: session.consumedBytes,
+      },
+      "Transfer settlement started",
+    );
     try {
       session.credit?.close();
       await session.barrier?.catch(() => {});
@@ -1261,22 +1347,25 @@ export class ServiceTransfer {
         );
       }
       if (!session.committed && session.wire.grant.direction === "send") {
-        const error = session.wire.abort.signal.reason instanceof TransferError
-          ? session.wire.abort.signal.reason
-          : new TransferError({
-            operation: "transfer",
-            cause: session.wire.abort.signal.reason,
-          });
+        const error =
+          session.wire.abort.signal.reason instanceof TransferError
+            ? session.wire.abort.signal.reason
+            : new TransferError({
+                operation: "transfer",
+                cause: session.wire.abort.signal.reason,
+              });
         session.ingress?.fail(error);
         await session.backend?.catch(() => {});
         log?.debug("Transfer upload backend joined");
         // A lost CAS response is not evidence that the durable write failed.
         // Unknown authoritative state retains this attempt for reconciliation.
         const committed = session.upload?.reconcileCommit
-          ? await session.upload.reconcileCommit(
-            session.storageKey,
-            session.wire.grant.transferId,
-          ).catch(() => undefined)
+          ? await session.upload
+              .reconcileCommit(
+                session.storageKey,
+                session.wire.grant.transferId,
+              )
+              .catch(() => undefined)
           : false;
         if (committed === true) session.committed = true;
         if (committed === false && session.completing) {
@@ -1290,14 +1379,15 @@ export class ServiceTransfer {
         "trellis.transfer.duration",
         performance.now() - session.startedAt,
         {
-          "trellis.direction": session.wire.grant.direction === "send"
-            ? "upload"
-            : "download",
-          "trellis.outcome": session.committed ||
-              (session.wire.grant.direction === "receive" &&
-                session.completing && !session.wire.abort.signal.aborted)
-            ? "ok"
-            : "error",
+          "trellis.direction":
+            session.wire.grant.direction === "send" ? "upload" : "download",
+          "trellis.outcome":
+            session.committed ||
+            (session.wire.grant.direction === "receive" &&
+              session.completing &&
+              !session.wire.abort.signal.aborted)
+              ? "ok"
+              : "error",
         },
       );
       session.wire.finish();
@@ -1316,9 +1406,11 @@ export class ServiceTransfer {
     for (const session of sessions) {
       session.wire.fail(new Error("transfer provider stopped"));
     }
-    await Promise.all(sessions.map(async (session) => {
-      await session.settlement;
-      await session.wire.join();
-    }));
+    await Promise.all(
+      sessions.map(async (session) => {
+        await session.settlement;
+        await session.wire.join();
+      }),
+    );
   }
 }

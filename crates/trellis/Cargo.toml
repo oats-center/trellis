@@ -38,7 +38,7 @@ opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry.workspace = true
 postgres = { version = "0.19.12", optional = true }
 rand.workspace = true
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "form"] }
 rusqlite = { workspace = true, optional = true }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true

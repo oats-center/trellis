@@ -31,6 +31,237 @@ use trellis_protocol::{
 };
 use wasm_bindgen::prelude::*;
 
+/// Sign the native own-admission request with the ephemeral session seed.
+#[wasm_bindgen]
+pub fn sign_admission_get(
+    request_json: &str,
+    subject: &str,
+    reply: &str,
+    seed: &[u8],
+) -> Result<String, JsError> {
+    let seed: [u8; 32] = seed
+        .try_into()
+        .map_err(|_| JsError::new("invalid session seed"))?;
+    let request =
+        serde_json::from_str(request_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let signed = trellis_protocol::sign_admission_get(request, subject, reply, &seed.into())
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&signed).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Sign a provisioned CONNECT credential without client-asserted deployment claims.
+#[wasm_bindgen]
+pub fn sign_provisioned_admission(credential_json: &str, seed: &[u8]) -> Result<String, JsError> {
+    let seed: [u8; 32] = seed
+        .try_into()
+        .map_err(|_| JsError::new("invalid identity seed"))?;
+    let credential =
+        serde_json::from_str(credential_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let signed = trellis_protocol::sign_provisioned_admission(credential, &seed.into())
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&signed).map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireAdmissionVerification {
+    issuer: AuthorityIssuerKey,
+    request: trellis_protocol::AdmissionGet,
+    subject: String,
+    reply: String,
+    account: String,
+    now_unix_seconds: i64,
+}
+
+/// Authenticate a signed admission reply against the exact pending request.
+#[wasm_bindgen]
+pub fn verify_admission_context(bytes: &[u8], verification_json: &str) -> Result<String, JsError> {
+    let input: WireAdmissionVerification = serde_json::from_str(verification_json)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let signed = trellis_protocol::verify_admission_context(
+        bytes,
+        &input.issuer,
+        &input.request,
+        &input.subject,
+        &input.reply,
+        &input.account,
+        input.now_unix_seconds,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    serde_json::to_string(&signed).map_err(|error| JsError::new(&error.to_string()))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireOAuthAdmissionVerification {
+    issuer: AuthorityIssuerKey,
+    trellis_instance_id: String,
+    audience_nats_account: String,
+    ephemeral_nkey: String,
+    now_unix_seconds: i64,
+    maximum_lifetime_seconds: u32,
+}
+
+/// Authenticate a bounded OAuth admission against explicitly selected trust.
+///
+/// The caller must additionally match runtime, client, durable DPoP binding and
+/// saved grant identity before installing credentials or connecting.
+#[wasm_bindgen]
+pub fn verify_oauth_admission(bytes: &[u8], verification_json: &str) -> String {
+    if verification_json.len() > 16_384 {
+        return input_error_result("");
+    }
+    let input: WireOAuthAdmissionVerification = match serde_json::from_str(verification_json) {
+        Ok(input) => input,
+        Err(_) => return input_error_result(""),
+    };
+    match trellis_protocol::verify_oauth_admission(
+        bytes,
+        &input.issuer,
+        &input.trellis_instance_id,
+        &input.audience_nats_account,
+        &input.ephemeral_nkey,
+        input.now_unix_seconds,
+        input.maximum_lifetime_seconds,
+    ) {
+        Ok(admission) => json_result(json!({"ok": true, "admission": admission})),
+        Err(error) => protocol_error_result(&error),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireAuthorityMetadataVerification {
+    issuer: AuthorityIssuerKey,
+    trellis_instance_id: String,
+    audience_nats_account: String,
+    now_unix_seconds: i64,
+    installed_sequence: Option<trellis_protocol::U64s>,
+    provider_publication: Option<WireProviderPublication>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct WireProviderPublication {
+    certificate: trellis_protocol::SignedProviderCertificate,
+    issuer: AuthorityIssuerKey,
+    at: i64,
+    published_at: Option<i64>,
+}
+
+/// Authenticate one canonical public record; decoding alone never establishes trust.
+#[wasm_bindgen]
+pub fn verify_authority_metadata(
+    kind: &str,
+    bytes: &[u8],
+    verification_json: &str,
+) -> Result<String, JsError> {
+    if bytes.len() > 2 * 1024 * 1024 || verification_json.len() > 16_384 {
+        return Err(JsError::new("metadata byte budget exceeded"));
+    }
+    let input: WireAuthorityMetadataVerification = serde_json::from_str(verification_json)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let result = (|| -> Result<Value, JsError> {
+        let issuer = &input.issuer;
+        let instance = &input.trellis_instance_id;
+        let account = &input.audience_nats_account;
+        match kind {
+            "catalog" => {
+                let record: trellis_protocol::SignedCatalogSnapshot =
+                    serde_json::from_slice(bytes)?;
+                record.verify(issuer, instance, account)?;
+                Ok(json!({"ok": true, "digest": record.digest()?, "record": record}))
+            }
+            "provider" => {
+                let record: trellis_protocol::SignedProviderCertificate =
+                    serde_json::from_slice(bytes)?;
+                record.verify(issuer, instance, account, input.now_unix_seconds)?;
+                Ok(json!({"ok": true, "digest": record.digest()?, "record": record}))
+            }
+            "revocation" => {
+                let record: trellis_protocol::SignedSessionRevocation =
+                    serde_json::from_slice(bytes)?;
+                record.verify(issuer, instance, account)?;
+                Ok(json!({"ok": true, "digest": record.digest()?, "record": record}))
+            }
+            "rotation" => {
+                let record: trellis_protocol::SignedIssuerRotation = serde_json::from_slice(bytes)?;
+                let successor = record.verify_successor(
+                    issuer,
+                    instance,
+                    account,
+                    input
+                        .installed_sequence
+                        .map_or(0, |sequence| sequence.get()),
+                    input.now_unix_seconds,
+                )?;
+                Ok(
+                    json!({"ok": true, "digest": record.digest()?, "record": record, "successor": successor}),
+                )
+            }
+            _ => Err(JsError::new("unknown metadata kind")),
+        }
+    })()?;
+    serde_json::to_string(&result).map_err(|error| JsError::new(&error.to_string()))
+}
+
+/// Check signed whole-capability membership against an already verified authority.
+#[wasm_bindgen]
+pub fn authorize_catalog_action(
+    authority: &VerifiedSessionAuthorityHandle,
+    bytes: &[u8],
+    verification_json: &str,
+    action_json: &str,
+) -> Result<String, JsError> {
+    if bytes.len() > 2 * 1024 * 1024
+        || verification_json.len() > 2 * 1024 * 1024
+        || action_json.len() > 4096
+    {
+        return Err(JsError::new("catalog byte budget exceeded"));
+    }
+    let input: WireAuthorityMetadataVerification = serde_json::from_str(verification_json)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let record: trellis_protocol::SignedCatalogSnapshot =
+        serde_json::from_slice(bytes).map_err(|error| JsError::new(&error.to_string()))?;
+    let action =
+        serde_json::from_str(action_json).map_err(|error| JsError::new(&error.to_string()))?;
+    record
+        .verify(
+            &input.issuer,
+            &input.trellis_instance_id,
+            &input.audience_nats_account,
+        )
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let mut authorized = record.authorizes(authority.authority.signed(), &action);
+    if !authorized {
+        if let Some(provider) = input.provider_publication {
+            authorized = provider
+                .certificate
+                .authorizes_event_publication(
+                    &provider.issuer,
+                    authority.authority.signed(),
+                    &record,
+                    &action,
+                    provider.at,
+                )
+                .map_err(|error| JsError::new(&error.to_string()))?;
+            if let Some(published) = provider.published_at {
+                authorized &= provider
+                    .certificate
+                    .authorizes_event_publication(
+                        &provider.issuer,
+                        authority.authority.signed(),
+                        &record,
+                        &action,
+                        published,
+                    )
+                    .map_err(|error| JsError::new(&error.to_string()))?;
+            }
+        }
+    }
+    Ok(json!({"ok": true, "authorized": authorized}).to_string())
+}
+
 /// Generate a high-entropy canonical Transfer v2 session ID.
 #[wasm_bindgen]
 pub fn transfer_generate_id() -> Result<String, JsError> {
@@ -567,6 +798,12 @@ struct WireIssuerMetadataVerification {
     now_unix_seconds: i64,
 }
 
+/// Return the protocol-owned admitted-connection metadata bootstrap subject.
+#[wasm_bindgen]
+pub fn issuer_metadata_subject() -> String {
+    trellis_protocol::ISSUER_METADATA_SUBJECT.into()
+}
+
 /// Authenticate public metadata against a retained nonce and configured issuer.
 ///
 /// The responder's own context is deliberately unnecessary: the pinned Auth
@@ -887,7 +1124,7 @@ pub fn live_logical_open_hash(identity_json: &str) -> Result<String, JsError> {
         consumer_connection_id: wire.consumer_connection_id,
         consumer_session_key: wire.consumer_session_key,
         consumer_principal_id: wire.consumer_principal_id,
-        consumer_participant_id: wire.consumer_participant_id,
+        consumer_binding: wire.consumer_binding,
         receive_max_payload_bytes: wire.receive_max_payload_bytes,
         live_input: wire.input,
         operation_id: wire.operation_id,
@@ -946,7 +1183,7 @@ struct WireLogicalOpenIdentity {
     consumer_connection_id: String,
     consumer_session_key: String,
     consumer_principal_id: String,
-    consumer_participant_id: String,
+    consumer_binding: trellis_protocol::SessionBinding,
     receive_max_payload_bytes: u64,
     #[serde(default)]
     input: Option<Value>,

@@ -8,6 +8,7 @@ use sha2::{Digest as _, Sha256};
 /// This value is constructed only after the engine verifies the entire proof.
 /// Its replay identifier must be claimed by the engine's token transaction.
 pub(crate) struct TokenBinding {
+    pub(crate) nonce: Option<String>,
     pub(crate) persistent_dpop_jkt: String,
     pub(crate) public_jwk: serde_json::Value,
     pub(crate) jti: String,
@@ -29,6 +30,9 @@ struct BindingClaims {
     _issued_at: i64,
     #[serde(rename = "jti")]
     _request_id: String,
+    nonce: Option<String>,
+    #[serde(rename = "ath")]
+    _access_token_hash: Option<String>,
     trellis_runtime_id: String,
     trellis_nats_jkt: String,
 }
@@ -80,6 +84,7 @@ impl TokenBinding {
             return Err("invalid_dpop_proof");
         }
         Ok(Self {
+            nonce: claims.nonce,
             persistent_dpop_jkt: verified.jkt,
             public_jwk: oauth_as::jwt::CompactJws::parse(proof)
                 .map_err(|_| "DPoP header is invalid")?

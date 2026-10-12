@@ -26,6 +26,78 @@ export type AuthorityIssuerKey = {
   state: "active" | "retired" | "revoked";
 };
 
+/** Exact Rust-owned OAuth admission signature domain. */
+export const OAUTH_ADMISSION_FORMAT_V1 = "trellis.oauth-admission.v1";
+
+/** Auth-certified OAuth client binding, not caller-asserted permissions. */
+export type OAuthAdmissionBinding =
+  | Readonly<{ bindingKind: "browser"; browserOrigin: string }>
+  | Readonly<{ bindingKind: "native"; nativeDpopJkt: string }>;
+
+/** Immutable projection of the Rust-owned signed OAuth admission body. */
+export type OAuthAdmission = Readonly<{
+  format: typeof OAUTH_ADMISSION_FORMAT_V1;
+  issuerKeyId: string;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  oauthGrantId: string;
+  refreshFamilyId: string;
+  loginSessionId: string;
+  principalId: string;
+  clientId: string;
+  binding: OAuthAdmissionBinding;
+  persistentDpopJkt: string;
+  runtimeId: string;
+  ephemeralNkey: string;
+  issuedAt: number;
+  notBefore: number;
+  expiresAt: number;
+}>;
+
+/** Exact signed envelope returned by successful shared verification. */
+export type SignedOAuthAdmission = Readonly<{
+  credential: OAuthAdmission;
+  signature: string;
+}>;
+
+/** Explicit pinned scope, runtime key and bounded validity for Rust verification. */
+export type OAuthAdmissionVerificationInput = Readonly<{
+  issuer: Readonly<AuthorityIssuerKey>;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  ephemeralNkey: string;
+  nowUnixSeconds: number;
+  maximumLifetimeSeconds: number;
+}>;
+
+/** Structured success or current shared authorization error. */
+export type VerifyOAuthAdmissionResult =
+  | Readonly<{ ok: true; admission: SignedOAuthAdmission }>
+  | Readonly<{ ok: false; error: AuthorizationVerificationError }>;
+
+/**
+ * Authenticate strict signed OAuth bytes with the existing Rust verifier.
+ * Callers must additionally check runtime/client/DPoP binding and saved grant
+ * identity before installing the credential or connecting.
+ */
+export async function verifyOAuthAdmissionWasm(
+  bytes: Uint8Array,
+  verification: OAuthAdmissionVerificationInput,
+): Promise<VerifyOAuthAdmissionResult> {
+  await initializeProtocolWasm();
+  const result = JSON.parse(
+    protocolWasm.verify_oauth_admission(bytes, JSON.stringify(verification)),
+  ) as VerifyOAuthAdmissionResult;
+  if (result.ok) {
+    Object.freeze(result.admission.credential.binding);
+    Object.freeze(result.admission.credential);
+    Object.freeze(result.admission);
+  } else {
+    Object.freeze(result.error);
+  }
+  return Object.freeze(result);
+}
+
 /** Finite administrative privileges, separate from ordinary capabilities. */
 export type PlatformPrivilege =
   | "principals.manage"
@@ -244,8 +316,290 @@ export type TransportPolicyClass =
 /** Immutable signed material authenticated by the Rust-owned parser/verifier. */
 export type VerifiedSessionAuthorityProjection = {
   authorityDigest: string;
-  authority: JsonObject;
+  authority: SessionAuthority;
 };
+
+/** Authenticated Rust projection, not a TypeScript contract-authoring schema. */
+export type SessionAuthority = Omit<AuthenticatedCaller, "authorityDigest"> & {
+  format: string;
+  issuerKeyId: string;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  providerBindings: {
+    apiId: string;
+    generation: string;
+    deploymentId: string;
+    implementationDigest: string;
+    providerCertificateDigest: string;
+  }[];
+  resourceBindingsDigest?: string;
+  issuedAt: number;
+  notBefore: number;
+  expiresAt: number;
+  extensions: JsonObject;
+  critical: string[];
+  signature: string;
+};
+
+/** Native protocol's ephemeral-key proof for the first own-context lookup. */
+export type AdmissionGet = {
+  trellisInstanceId: string;
+  runtimeId: string;
+  sessionPublicKey: string;
+  attachmentId: string;
+  requestNonce: string;
+  issuedAt: number;
+};
+
+/** Native protocol's issuer-authenticated installation response. */
+export type AdmissionContext = {
+  format: string;
+  issuerKeyId: string;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  runtimeId: string;
+  requestNonce: string;
+  requestSubject: string;
+  replySubject: string;
+  sessionAuthority: string;
+  registry: JsonObject;
+  issuedAt: number;
+  expiresAt: number;
+};
+
+/** Sign the native admission transcript, including actual request/reply subjects. */
+export async function signAdmissionGetWasm(
+  request: AdmissionGet,
+  subject: string,
+  reply: string,
+  seed: Uint8Array,
+): Promise<string> {
+  await initializeProtocolWasm();
+  return protocolWasm.sign_admission_get(
+    JSON.stringify(request),
+    subject,
+    reply,
+    seed,
+  );
+}
+
+/** Native provisioned CONNECT proof; Auth alone resolves principal and implementation. */
+export async function signProvisionedAdmissionWasm(
+  credential: {
+    format: "trellis.provisioned-admission.v1";
+    trellisInstanceId: string;
+    audienceNatsAccount: string;
+    credentialId: string;
+    runtimeId: string;
+    ephemeralNkey: string;
+    issuedAt: number;
+    expiresAt: number;
+  },
+  seed: Uint8Array,
+): Promise<string> {
+  await initializeProtocolWasm();
+  return protocolWasm.sign_provisioned_admission(
+    JSON.stringify(credential),
+    seed,
+  );
+}
+
+/** Authenticate exact own-context bytes against a selected issuer and pending lookup. */
+export async function verifyAdmissionContextWasm(
+  bytes: Uint8Array,
+  issuer: AuthorityIssuerKey,
+  request: AdmissionGet,
+  subject: string,
+  reply: string,
+  account: string,
+  now: number,
+): Promise<AdmissionContext> {
+  await initializeProtocolWasm();
+  const result: { response: AdmissionContext } = JSON.parse(
+    protocolWasm.verify_admission_context(
+      bytes,
+      JSON.stringify({
+        issuer,
+        request,
+        subject,
+        reply,
+        account,
+        nowUnixSeconds: now,
+      }),
+    ),
+  );
+  return result.response;
+}
+
+/** Compiler-owned exact dispatcher identity. */
+export type CatalogActionIdentity = {
+  kind: "rpc" | "event" | "operation" | "live" | "state";
+  name: string;
+  direction:
+    | "call"
+    | "invoke"
+    | "observe"
+    | "cancel"
+    | "control"
+    | "publish"
+    | "subscribe"
+    | "read"
+    | "write"
+    | "delete"
+    | "submit"
+    | "process"
+    | "consume";
+};
+
+/** Issuer-authenticated immutable catalog projection returned by Rust. */
+export type CatalogSnapshot = {
+  issuerKeyId: string;
+  apiId: string;
+  generation: string;
+  acceptedRevision: string;
+  definitionDigest: string;
+};
+
+/** Authenticated sticky logical-session retirement, also used for history. */
+export type SessionRevocation = {
+  issuerKeyId: string;
+  authorizationSessionId: string;
+  effectiveCutoff: number;
+  latestContextExpiry: number;
+};
+
+/** Exact protocol-owned public issuer metadata lookup. */
+export type IssuerMetadataQuery =
+  | { kind: "authorityResolve"; contextDigest: string }
+  | { kind: "authorityStatus"; authorizationSessionId: string }
+  | { kind: "issuerChain"; pinnedKeyId: string; targetKeyId: string };
+
+/** Retained scope and nonce for a signed issuer metadata exchange. */
+export type IssuerMetadataRequest = {
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  requestNonce: string;
+  query: IssuerMetadataQuery;
+};
+
+/** Issuer-authenticated result; missing and unavailable are never authority. */
+export type IssuerMetadataResponse = {
+  issuerKeyId: string;
+  request: IssuerMetadataRequest;
+  requestSubject: string;
+  replySubject: string;
+  issuedAt: number;
+  expiresAt: number;
+  result:
+    { kind: "value"; payload: string } | { kind: "missing" | "unavailable" };
+};
+
+/** Read the shared protocol's admitted-only metadata route. */
+export async function issuerMetadataSubjectWasm(): Promise<string> {
+  await initializeProtocolWasm();
+  return protocolWasm.issuer_metadata_subject();
+}
+
+/** Authenticate exact request, route, reply destination, freshness and pinned issuer. */
+export async function verifyIssuerMetadataWasm(
+  bytes: Uint8Array,
+  verification: {
+    issuer: AuthorityIssuerKey;
+    request: IssuerMetadataRequest;
+    requestSubject: string;
+    replySubject: string;
+    nowUnixSeconds: number;
+  },
+): Promise<IssuerMetadataResponse> {
+  await initializeProtocolWasm();
+  return parseWasmResult<{ response: IssuerMetadataResponse }>(
+    protocolWasm.verify_issuer_metadata(JSON.stringify(verification), bytes),
+  ).response;
+}
+
+/** Trusted installation/account and signer supplied to metadata verification. */
+export type MetadataVerification = {
+  issuer: AuthorityIssuerKey;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  nowUnixSeconds: number;
+  installedSequence?: string;
+};
+
+/** Authenticate one bounded cold-path record in the canonical protocol implementation. */
+export async function verifyAuthorityMetadataWasm(
+  kind: "catalog" | "provider" | "rotation" | "revocation",
+  bytes: Uint8Array,
+  verification: MetadataVerification,
+): Promise<{
+  digest: string;
+  record: JsonObject;
+  successor?: AuthorityIssuerKey;
+}> {
+  await initializeProtocolWasm();
+  return parseWasmResult(
+    protocolWasm.verify_authority_metadata(
+      kind,
+      bytes,
+      JSON.stringify(verification),
+    ),
+  );
+}
+
+/** Authenticate the catalog and exact delegated or certified provider-event publication rights. */
+export async function authorizeCatalogActionWasm(
+  authority: SessionAuthorityHandle,
+  catalog: Uint8Array,
+  verification: MetadataVerification & {
+    providerPublication?: {
+      certificate: JsonObject;
+      issuer: AuthorityIssuerKey;
+      at: number;
+      publishedAt?: number;
+    };
+  },
+  action: CatalogActionIdentity,
+): Promise<boolean> {
+  await initializeProtocolWasm();
+  return parseWasmResult<{ authorized: boolean }>(
+    protocolWasm.authorize_catalog_action(
+      authority,
+      catalog,
+      JSON.stringify(verification),
+      JSON.stringify(action),
+    ),
+  ).authorized;
+}
+
+/** Original broker provenance; never synthesized from a publisher's header. */
+export type OriginalEventPublication = {
+  publishedAt: string;
+  streamSequence: string;
+};
+
+/** Verify live or historical event bytes with actual retained broker provenance. */
+export async function verifySessionEventWasm(args: {
+  authorityHandle: SessionAuthorityHandle;
+  event: SessionEvent;
+  payload: Uint8Array;
+  proof: string;
+  policy: SessionAuthorityVerificationPolicy;
+  originalPublication: OriginalEventPublication | null;
+  knownRevoked: boolean;
+}): Promise<
+  | { ok: true; authorityDigest: string; publisherAuthority: SessionAuthority }
+  | { ok: false; error: AuthorizationVerificationError }
+> {
+  await initializeProtocolWasm();
+  const { authorityHandle, payload, ...verification } = args;
+  return JSON.parse(
+    protocolWasm.verify_session_event(
+      authorityHandle,
+      JSON.stringify(verification),
+      payload,
+    ),
+  );
+}
 
 /** Opaque shared verification state for one immutable session authority. */
 export type SessionAuthorityHandle = WasmSessionAuthorityHandle;
@@ -550,7 +904,7 @@ export type LiveOfferWire = {
     connectionId: string;
     sessionKey: string;
     principalId: string;
-    participantId: string;
+    binding: SessionBinding;
   };
   limits: {
     maxDataBodyBytes: number;
@@ -866,6 +1220,7 @@ type TransferGrantBaseWire = {
   format: "trellis.transfer.v2";
   type: "TransferGrant";
   service: string;
+  origin: { apiId: string; action: CatalogActionIdentity };
   transferId: string;
   expiresAt: string;
   provider: TransferGrantIdentityWire;

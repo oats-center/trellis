@@ -34,6 +34,7 @@ clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 jsonschema.workspace = true
+libc = "0.2.186"
 nats-jwt-rs.workspace = true
 nkeys.workspace = true
 oauth2.workspace = true

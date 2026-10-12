@@ -100,7 +100,7 @@ agent cli {
     capability resources_destroy;
     capability resources_read;
   }
-  use health { capability query; }
+  use health { capability query; capability observe; }
   use jobs { capability query; }
   use events {
     capability consumersInspect;

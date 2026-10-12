@@ -114,6 +114,7 @@ declare const __api: {
 		readonly "rpc:Consumers.Inspect": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Consumers.Inspect";
+			readonly subject: "rpc.v1.events.Consumers.Inspect";
 			readonly input: typeof Types1.EventsConsumersInspectRequestCodec;
 			readonly output: typeof Types1.EventsConsumersInspectResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -123,6 +124,7 @@ declare const __api: {
 		readonly "rpc:Consumers.Query": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Consumers.Query";
+			readonly subject: "rpc.v1.events.Consumers.Query";
 			readonly input: typeof Types1.EventsConsumersQueryRequestCodec;
 			readonly output: typeof Types1.EventsConsumersQueryResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -132,6 +134,7 @@ declare const __api: {
 		readonly "rpc:Consumers.ReportDelivery": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Consumers.ReportDelivery";
+			readonly subject: "rpc.v1.events.Consumers.ReportDelivery";
 			readonly input: typeof Types1.EventsConsumersReportDeliveryRequestCodec;
 			readonly output: typeof Types1.EventsConsumersReportDeliveryResponseCodec;
 			readonly errors: readonly [typeof Conflict, typeof Forbidden, typeof NotFoundError, typeof Unavailable, typeof ValidationError];
@@ -141,6 +144,7 @@ declare const __api: {
 		readonly "rpc:DeadLetters.Dismiss": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:DeadLetters.Dismiss";
+			readonly subject: "rpc.v1.events.DeadLetters.Dismiss";
 			readonly input: typeof Types1.EventsDeadLettersDismissRequestCodec;
 			readonly output: typeof Types1.EventsDeadLettersDismissResponseCodec;
 			readonly errors: readonly [typeof Conflict, typeof Forbidden, typeof NotFoundError, typeof Unavailable, typeof ValidationError];
@@ -150,6 +154,7 @@ declare const __api: {
 		readonly "rpc:DeadLetters.Inspect": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:DeadLetters.Inspect";
+			readonly subject: "rpc.v1.events.DeadLetters.Inspect";
 			readonly input: typeof Types1.EventsDeadLettersInspectRequestCodec;
 			readonly output: typeof Types1.EventsDeadLettersInspectResponseCodec;
 			readonly errors: readonly [typeof Forbidden, typeof NotFoundError, typeof Unavailable, typeof ValidationError];
@@ -159,6 +164,7 @@ declare const __api: {
 		readonly "rpc:DeadLetters.Query": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:DeadLetters.Query";
+			readonly subject: "rpc.v1.events.DeadLetters.Query";
 			readonly input: typeof Types1.EventsDeadLettersQueryRequestCodec;
 			readonly output: typeof Types1.EventsDeadLettersQueryResponseCodec;
 			readonly errors: readonly [typeof Forbidden, typeof UnexpectedError, typeof ValidationError];
@@ -168,6 +174,7 @@ declare const __api: {
 		readonly "rpc:DeadLetters.Replay": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:DeadLetters.Replay";
+			readonly subject: "rpc.v1.events.DeadLetters.Replay";
 			readonly input: typeof Types1.EventsDeadLettersReplayRequestCodec;
 			readonly output: typeof Types1.EventsDeadLettersReplayResponseCodec;
 			readonly errors: readonly [typeof Conflict, typeof Forbidden, typeof NotFoundError, typeof Unavailable, typeof UnreplayableOriginal, typeof ValidationError];
@@ -177,6 +184,7 @@ declare const __api: {
 		readonly "rpc:Diagnostics": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Diagnostics";
+			readonly subject: "rpc.v1.events.Diagnostics";
 			readonly input: typeof Types1.EventsDiagnosticsRequestCodec;
 			readonly output: typeof Types1.EventsDiagnosticsResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -186,6 +194,7 @@ declare const __api: {
 		readonly "rpc:Inspect": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Inspect";
+			readonly subject: "rpc.v1.events.Inspect";
 			readonly input: typeof Types1.EventsInspectRequestCodec;
 			readonly output: typeof Types1.EventsInspectResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
@@ -195,6 +204,7 @@ declare const __api: {
 		readonly "rpc:Metrics": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Metrics";
+			readonly subject: "rpc.v1.events.Metrics";
 			readonly input: typeof Types1.EventsMetricsRequestCodec;
 			readonly output: typeof Types1.EventsMetricsResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -204,6 +214,7 @@ declare const __api: {
 		readonly "rpc:Query": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Query";
+			readonly subject: "rpc.v1.events.Query";
 			readonly input: typeof Types1.EventsQueryRequestCodec;
 			readonly output: typeof Types1.EventsQueryResponseCodec;
 			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
@@ -213,6 +224,7 @@ declare const __api: {
 		readonly "live:Watch": {
 			readonly kind: "live";
 			readonly descriptorName: "live:Watch";
+			readonly subject: "live.v1.route.events.Watch";
 			readonly input: typeof Types1.EventsWatchRequestCodec;
 			readonly event: typeof Types1.EventsWatchFrameCodec;
 		};
