@@ -148,6 +148,9 @@ there is no automatic resource deletion. Compatible re-add reuses retained data.
 Explicit admin Resources.Remove permanently deletes only the selected detached
 owned KV at expectedRevision after checking its physical ownership marker. Retry
 the same manual request after broker failure; startup never resumes deletion.
+Removal execution is exclusively claimed and incarnation-fenced. Recreating a
+deleted logical resource uses a fresh allocation and physical bucket, so delayed
+deletion cannot touch replacement data; compatible reattachment keeps the original.
 KV history/TTL reductions that could lose retained data are rejected.
 
 Trellis owns native contract compilation, generated APIs, authenticated

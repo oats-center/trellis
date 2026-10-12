@@ -155,6 +155,7 @@ CREATE TABLE auth_devices (
 
 CREATE TABLE auth_resources (
     resource_id TEXT PRIMARY KEY CHECK (length(resource_id) = 43),
+    allocation_id TEXT NOT NULL CHECK (length(allocation_id) = 26),
     owner_kind TEXT NOT NULL CHECK (owner_kind IN ('user', 'deployment')),
     owner_id TEXT NOT NULL CHECK (length(owner_id) > 0),
     participant_id TEXT NOT NULL CHECK (length(participant_id) > 0),
@@ -191,7 +192,12 @@ CREATE TABLE auth_resource_removals (
     resource_id TEXT NOT NULL CHECK (length(resource_id) = 43),
     resource_revision INTEGER NOT NULL,
     physical_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')),
+    allocation_id TEXT NOT NULL CHECK (length(allocation_id) = 26),
+    state TEXT NOT NULL CHECK (state IN ('accepted', 'executing', 'completed')),
+    execution_owner TEXT,
+    lease_until INTEGER,
+    CHECK ((state = 'executing' AND execution_owner IS NOT NULL AND lease_until IS NOT NULL)
+        OR (state != 'executing' AND execution_owner IS NULL AND lease_until IS NULL)),
     PRIMARY KEY (actor_id, request_id)
 );
 

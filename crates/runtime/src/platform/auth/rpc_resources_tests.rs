@@ -352,11 +352,93 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     );
     config.description = owned_marker;
     jetstream.update_stream(config).await.unwrap();
-    let removed = remove_resource(&store, &nats, &manual, &removal, NOW + 4)
+    // Hold a real broker DELETE after its ownership check, across lease takeover.
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_port = proxy.local_addr().unwrap().port();
+    let target = format!(
+        "$JS.API.STREAM.DELETE.KV_{}",
+        bindings.kv["connections"].bucket
+    );
+    let (arrived, pending) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    let forwarding = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (client, _) = proxy.accept().await.unwrap();
+        let broker = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let (client_read, mut client_write) = client.into_split();
+        let (mut broker_read, mut broker_write) = broker.into_split();
+        let inbound = tokio::spawn(async move {
+            let _ = tokio::io::copy(&mut broker_read, &mut client_write).await;
+        });
+        let mut read = tokio::io::BufReader::new(client_read);
+        let mut arrived = Some(arrived);
+        let mut resume = Some(resume);
+        loop {
+            let mut line = String::new();
+            if read.read_line(&mut line).await.unwrap() == 0 {
+                break;
+            }
+            let words: Vec<_> = line.split_whitespace().collect();
+            let mut payload = Vec::new();
+            if matches!(words.first(), Some(&"PUB") | Some(&"HPUB")) {
+                payload.resize(words.last().unwrap().parse::<usize>().unwrap() + 2, 0);
+                read.read_exact(&mut payload).await.unwrap();
+                if words[1] == target && arrived.is_some() {
+                    arrived.take().unwrap().send(()).unwrap();
+                    resume.take().unwrap().await.unwrap();
+                }
+            }
+            broker_write.write_all(line.as_bytes()).await.unwrap();
+            broker_write.write_all(&payload).await.unwrap();
+        }
+        inbound.abort();
+    });
+    let delayed_nats = async_nats::connect(format!("nats://127.0.0.1:{proxy_port}"))
+        .await
+        .unwrap();
+    let delayed_store = store.clone();
+    let delayed_manual = manual.clone();
+    let delayed_removal = removal.clone();
+    let delayed = tokio::spawn(async move {
+        remove_resource(
+            &delayed_store,
+            &delayed_nats,
+            &delayed_manual,
+            &delayed_removal,
+            NOW + 4,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        remove_resource(&store, &nats, &manual, &removal, NOW + 4).await,
+        Err(AuthError::Conflict)
+    ));
+    let other_request = AuthResourceRemoveRequest {
+        idempotency_key: super::super::sqlite::id().into(),
+        ..removal.clone()
+    };
+    assert!(matches!(
+        remove_resource(
+            &store,
+            &nats,
+            &mutation(&f.admin, &other_request),
+            &other_request,
+            NOW + 35
+        )
+        .await,
+        Err(AuthError::Conflict)
+    ));
+    let removed = remove_resource(&store, &nats, &manual, &removal, NOW + 35)
         .await
         .unwrap();
     assert_eq!(
-        remove_resource(&store, &nats, &manual, &removal, NOW + 5)
+        remove_resource(&store, &nats, &manual, &removal, NOW + 36)
             .await
             .unwrap(),
         removed
@@ -372,5 +454,71 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         unrelated.get("untouched").await.unwrap().unwrap().as_ref(),
         b"unrelated-data"
     );
+    let current = store
+        .transaction(|connection| {
+            super::super::rpc_deployments::read_deployment(connection, &provider.deployment_id)
+        })
+        .unwrap();
+    let enable = AuthDeploymentMutationRequest {
+        deployment_id: current.deployment_id,
+        expected_revision: current.revision,
+        idempotency_key: super::super::sqlite::id().into(),
+        extra: Default::default(),
+    };
+    super::super::rpc_deployments::change_deployment(
+        &store,
+        &mutation(&f.admin, &enable),
+        &enable,
+        "active",
+        NOW + 36,
+    )
+    .unwrap();
+    let replacement = super::super::resources::materialize_native_kv(
+        &store,
+        &nats,
+        &provider.deployment_id,
+        NOW + 36,
+    )
+    .await
+    .unwrap();
+    let replacement_bucket = jetstream
+        .get_key_value(&replacement.kv["connections"].bucket)
+        .await
+        .unwrap();
+    replacement_bucket
+        .put("retained", b"replacement-data".as_slice().into())
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(3), delayed)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_err());
+    assert_eq!(
+        replacement_bucket
+            .get("retained")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"replacement-data"
+    );
+    assert_eq!(
+        remove_resource(&store, &nats, &manual, &removal, NOW + 37)
+            .await
+            .unwrap(),
+        removed
+    );
+    assert_eq!(
+        replacement_bucket
+            .get("retained")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"replacement-data"
+    );
+    forwarding.abort();
     server.kill().await.unwrap();
 }

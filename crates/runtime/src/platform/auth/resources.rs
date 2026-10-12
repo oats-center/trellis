@@ -48,6 +48,7 @@ pub(super) fn detach_deployment_resources(
 #[derive(Clone, Serialize, Deserialize)]
 struct KvAllocation {
     resource_id: String,
+    allocation_id: String,
     history: i64,
     ttl_ms: i64,
 }
@@ -86,14 +87,18 @@ pub(crate) async fn materialize_native_kv(
             let name=name.to_string();
             kv.insert(name.clone(),KvAllocation {
                 resource_id:digest(&("deployment",deployment,&participant,"kv",&name))?,
+                allocation_id:super::sqlite::id(),
                 history:i64::try_from(*history).map_err(|_|AuthError::Denied)?,
                 ttl_ms:i64::try_from(*ttl_ms).map_err(|_|AuthError::Denied)?,
             });
         }
-        for (name, allocation) in &kv {
-            let current: Option<String> = connection.query_row("SELECT state FROM auth_resources WHERE resource_id=?1", [&allocation.resource_id], |row| row.get(0)).optional()?;
-            if current.as_deref() == Some("destroying") { return Err(AuthError::Conflict); }
-            connection.execute("INSERT INTO auth_resources(resource_id,owner_kind,owner_id,participant_id,kind,local_name,commitment_json,state,binding_revision,revision,created_at,updated_at,physical_id) VALUES(?1,'deployment',?2,?3,'kv',?4,?5,'pending',?6,1,?7,?7,?8) ON CONFLICT(resource_id) DO UPDATE SET state='pending',updated_at=excluded.updated_at",params![allocation.resource_id,deployment,participant,name,json(allocation)?,binding_revision,now,format!("TRELLIS_RESOURCE_{}",allocation.resource_id)])?;
+        for (name, allocation) in &mut kv {
+            let current: Option<(String,String)> = connection.query_row("SELECT state,allocation_id FROM auth_resources WHERE resource_id=?1", [&allocation.resource_id], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
+            if let Some((state, incarnation)) = current {
+                if state == "destroying" { return Err(AuthError::Conflict); }
+                allocation.allocation_id = incarnation;
+            }
+            connection.execute("INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,owner_id,participant_id,kind,local_name,commitment_json,state,binding_revision,revision,created_at,updated_at,physical_id) VALUES(?1,?9,'deployment',?2,?3,'kv',?4,?5,'pending',?6,1,?7,?7,?8) ON CONFLICT(resource_id) DO UPDATE SET state='pending',updated_at=excluded.updated_at",params![allocation.resource_id,deployment,participant,name,json(allocation)?,binding_revision,now,format!("TRELLIS_RESOURCE_{}_{}",allocation.resource_id,allocation.allocation_id),allocation.allocation_id])?;
         }
         Ok(ResourcePlan {principal,deployment:deployment.into(),participant,installed_revision,binding_revision,kv})
     })?;
@@ -102,8 +107,8 @@ pub(crate) async fn materialize_native_kv(
     let mut bindings = ServiceResourceBindings::default();
     let allocation_result: Result<(),AuthError> = async {
     for (name, allocation) in &plan.kv {
-        let bucket = format!("TRELLIS_RESOURCE_{}", allocation.resource_id);
-        let marker = format!("trellis.resource.v1:{}", allocation.resource_id);
+        let bucket = format!("TRELLIS_RESOURCE_{}_{}", allocation.resource_id, allocation.allocation_id);
+        let marker = format!("trellis.resource.v1:{}:{}", allocation.resource_id, allocation.allocation_id);
         let resource = match jetstream.get_stream(format!("KV_{bucket}")).await {
             Ok(_) => jetstream
                 .get_key_value(&bucket)
@@ -161,9 +166,14 @@ pub(crate) async fn materialize_native_kv(
     }.await;
     if let Err(error) = allocation_result {
         store.transaction(|connection| {
-            connection.execute("UPDATE auth_resources SET state='failed',revision=revision+1,updated_at=?2 WHERE owner_kind='deployment' AND owner_id=?1 AND state='pending'",params![plan.deployment,now])?;
-            connection.execute("UPDATE auth_resource_binding_evidence SET state='unavailable' WHERE owner_kind='deployment' AND owner_id=?1",[&plan.deployment])?;
-            SqliteAuthorizationStore::policy_changed(connection,&super::EnforcementScope::Deployment(plan.deployment.clone()),now)?;
+            let mut failed = false;
+            for allocation in plan.kv.values() {
+                if connection.execute("UPDATE auth_resources SET state='failed',revision=revision+1,updated_at=?3 WHERE resource_id=?1 AND allocation_id=?2 AND state='pending'",params![allocation.resource_id,allocation.allocation_id,now])? == 1 {
+                    failed = true;
+                    connection.execute("UPDATE auth_resource_binding_evidence SET state='unavailable' WHERE binding_id=?1 AND provider_identity=?2",params![allocation.resource_id,format!("TRELLIS_RESOURCE_{}_{}",allocation.resource_id,allocation.allocation_id)])?;
+                }
+            }
+            if failed { SqliteAuthorizationStore::policy_changed(connection,&super::EnforcementScope::Deployment(plan.deployment.clone()),now)?; }
             Ok(())
         })?;
         return Err(error);
@@ -175,7 +185,7 @@ pub(crate) async fn materialize_native_kv(
             let binding=&bindings.kv[name];
             let commitment=json(allocation)?;
             let actual=json(binding)?;
-            if connection.execute("UPDATE auth_resources SET commitment_json=?2,physical_id=?3,actual_json=?4,state='ready',binding_revision=?5,revision=revision+1,updated_at=?6 WHERE resource_id=?1 AND state='pending'",params![allocation.resource_id,commitment,binding.bucket,actual,plan.binding_revision,now])? != 1 {return Err(AuthError::Conflict);}
+            if connection.execute("UPDATE auth_resources SET commitment_json=?2,physical_id=?3,actual_json=?4,state='ready',binding_revision=?5,revision=revision+1,updated_at=?6 WHERE resource_id=?1 AND allocation_id=?7 AND state='pending'",params![allocation.resource_id,commitment,binding.bucket,actual,plan.binding_revision,now,allocation.allocation_id])? != 1 {return Err(AuthError::Conflict);}
             connection.execute("INSERT INTO auth_resource_history SELECT resource_id,revision,commitment_json,actual_json,state,?2 FROM auth_resources WHERE resource_id=?1",params![allocation.resource_id,now])?;
             connection.execute("UPDATE auth_resource_binding_evidence SET state='unavailable' WHERE binding_id=?1",[&allocation.resource_id])?;
             connection.execute("INSERT INTO auth_resource_binding_evidence(owner_kind,owner_id,participant_id,installed_revision,resource_kind,local_name,binding_id,provider_identity,actual_json,state,materialized_at) VALUES('deployment',?1,?2,?3,'kv',?4,?5,?6,?7,'available',?8) ON CONFLICT(owner_kind,owner_id,participant_id,installed_revision,resource_kind,local_name) DO UPDATE SET provider_identity=excluded.provider_identity,actual_json=excluded.actual_json,state='available',materialized_at=excluded.materialized_at",params![plan.deployment,plan.participant,plan.installed_revision,name,allocation.resource_id,binding.bucket,actual,now])?;

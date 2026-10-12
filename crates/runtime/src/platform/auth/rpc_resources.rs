@@ -164,6 +164,8 @@ pub(super) async fn remove_resource(
     let store_copy = store.clone();
     let identity_copy = identity.clone();
     let input_copy = input.clone();
+    let execution_owner = super::sqlite::id();
+    let claim_owner = execution_owner.clone();
     let (result, command) = tokio::task::spawn_blocking(move || store_copy.transaction(|connection| {
         SqliteAuthorizationStore::require_privilege(connection, &identity_copy.actor, "principals.manage")?;
         let result = store_copy.mutate_in_transaction(connection,&identity_copy,"rpc.resources.remove",&input_copy,now,|connection| {
@@ -172,24 +174,29 @@ pub(super) async fn remove_resource(
             if resource.state != AuthResourceState::Detached || resource.revision != input_copy.expected_revision { return Err(AuthError::Conflict); }
             if resource.kind != AuthResourceKind::Kv { return Err(AuthError::Invalid("unsupported resource provider".into())); }
             if digest(&(resource.owner_kind.as_str(),resource.owner_id.to_string(),&resource.participant_id,"kv",&resource.local_name))? != id { return Err(AuthError::Conflict); }
-            let physical: String = connection.query_row("SELECT physical_id FROM auth_resources WHERE resource_id=?1",[&id],|row|row.get(0))?;
-            if physical != format!("TRELLIS_RESOURCE_{id}") {return Err(AuthError::Conflict);}
+            let (physical, allocation): (String,String) = connection.query_row("SELECT physical_id,allocation_id FROM auth_resources WHERE resource_id=?1",[&id],|row|Ok((row.get(0)?,row.get(1)?)))?;
+            if physical != format!("TRELLIS_RESOURCE_{id}_{allocation}") {return Err(AuthError::Conflict);}
             let revision = resource.revision.0.0 + 1;
             if connection.execute("UPDATE auth_resources SET state='destroying',revision=?2,updated_at=?3 WHERE resource_id=?1 AND state='detached' AND revision=?4",params![id,revision,now,input_copy.expected_revision.0.0])? != 1 {return Err(AuthError::Conflict);}
             connection.execute("INSERT INTO auth_resource_history SELECT resource_id,revision,commitment_json,actual_json,state,?2 FROM auth_resources WHERE resource_id=?1",params![id,now])?;
-            connection.execute("INSERT INTO auth_resource_removals VALUES(?1,?2,?3,?4,?5,'accepted')",params![identity_copy.actor,identity_copy.request_id,id,revision,physical])?;
+            connection.execute("INSERT INTO auth_resource_removals(actor_id,request_id,resource_id,resource_revision,physical_id,allocation_id,state) VALUES(?1,?2,?3,?4,?5,?6,'accepted')",params![identity_copy.actor,identity_copy.request_id,id,revision,physical,allocation])?;
             Ok(AuthMutationResult { revision: AuthRevision(revision.into()), enforcement: None, extra: Default::default() })
         })?;
-        let command: (String,u64,String,String) = connection.query_row("SELECT resource_id,resource_revision,physical_id,state FROM auth_resource_removals WHERE actor_id=?1 AND request_id=?2",params![identity_copy.actor,identity_copy.request_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
-        if command.3 != "completed" && !connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_resources WHERE resource_id=?1 AND revision=?2 AND state='destroying')",params![command.0,command.1],|row|row.get::<_,bool>(0))? {return Err(AuthError::Conflict);}
+        let command: (String,u64,String,String,String) = connection.query_row("SELECT resource_id,resource_revision,physical_id,state,allocation_id FROM auth_resource_removals WHERE actor_id=?1 AND request_id=?2",params![identity_copy.actor,identity_copy.request_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
+        if command.3 != "completed" {
+            if !connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_resources WHERE resource_id=?1 AND revision=?2 AND allocation_id=?3 AND state='destroying')",params![command.0,command.1,command.4],|row|row.get::<_,bool>(0))? {return Err(AuthError::Conflict);}
+            // Only an explicit retry of this command can recover an interrupted
+            // execution. A new request cannot adopt its durable removal intent.
+            if connection.execute("UPDATE auth_resource_removals SET state='executing',execution_owner=?3,lease_until=?4 WHERE actor_id=?1 AND request_id=?2 AND (state='accepted' OR (state='executing' AND lease_until<=?5))",params![identity_copy.actor,identity_copy.request_id,claim_owner,now+30,now])? != 1 {return Err(AuthError::Conflict);}
+        }
         Ok((result,command))
     })).await.map_err(|_|AuthError::Unavailable)??;
-    let (id, revision, physical, state) = command;
+    let (id, revision, physical, state, allocation) = command;
     if state == "completed" {
         return Ok(result);
     }
     let jetstream = async_nats::jetstream::new(operational.clone());
-    match jetstream.get_stream(format!("KV_{physical}")).await {
+    let deletion: Result<(),AuthError> = async { match jetstream.get_stream(format!("KV_{physical}")).await {
         Ok(mut stream) => {
             if stream
                 .info()
@@ -198,7 +205,7 @@ pub(super) async fn remove_resource(
                 .config
                 .description
                 .as_deref()
-                != Some(format!("trellis.resource.v1:{id}").as_str())
+                != Some(format!("trellis.resource.v1:{id}:{allocation}").as_str())
             {
                 return Err(AuthError::Conflict);
             }
@@ -211,12 +218,25 @@ pub(super) async fn remove_resource(
             {}
         Err(error) => return Err(AuthError::Broker(error.to_string())),
     }
+    Ok(()) }.await;
+    if let Err(error) = deletion {
+        // Release only this execution's claim; cancellation instead leaves its
+        // bounded lease for the same manual request to recover.
+        let store = store.clone();
+        let identity = identity.clone();
+        tokio::task::spawn_blocking(move || store.transaction(|connection| {
+            connection.execute("UPDATE auth_resource_removals SET state='accepted',execution_owner=NULL,lease_until=NULL WHERE actor_id=?1 AND request_id=?2 AND state='executing' AND execution_owner=?3",params![identity.actor,identity.request_id,execution_owner])?;
+            Ok(())
+        })).await.map_err(|_|AuthError::Unavailable)??;
+        return Err(error);
+    }
     let store = store.clone();
     let identity = identity.clone();
     tokio::task::spawn_blocking(move || store.transaction(|connection| {
+        if connection.execute("UPDATE auth_resource_removals SET state='completed',execution_owner=NULL,lease_until=NULL WHERE actor_id=?1 AND request_id=?2 AND allocation_id=?3 AND resource_revision=?4 AND state='executing' AND execution_owner=?5",params![identity.actor,identity.request_id,allocation,revision,execution_owner])? != 1 {return Err(AuthError::Conflict);}
+        if !connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_resources WHERE resource_id=?1 AND allocation_id=?2 AND revision=?3 AND state='destroying')",params![id,allocation,revision],|row|row.get::<_,bool>(0))? {return Err(AuthError::Conflict);}
         connection.execute("DELETE FROM auth_resource_binding_evidence WHERE binding_id=?1",[&id])?;
-        connection.execute("DELETE FROM auth_resources WHERE resource_id=?1 AND revision=?2 AND state='destroying'",params![id,revision])?;
-        connection.execute("UPDATE auth_resource_removals SET state='completed' WHERE actor_id=?1 AND request_id=?2",params![identity.actor,identity.request_id])?;
+        connection.execute("DELETE FROM auth_resources WHERE resource_id=?1 AND revision=?2 AND allocation_id=?3 AND state='destroying'",params![id,revision,allocation])?;
         Ok(())
     })).await.map_err(|_|AuthError::Unavailable)??;
     Ok(result)
