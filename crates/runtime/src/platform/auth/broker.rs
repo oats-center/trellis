@@ -125,6 +125,8 @@ impl SqliteAuthorizationStore {
     /// One ordinary worker turn: resume one enforcement page and a bounded
     /// outbox batch. Publication acknowledges durable JetStream acceptance;
     /// physical closure completes only after exact system-account evidence.
+    /// Advance one bounded enforcement page and deliver committed broker effects.
+    /// Count progress in both phases so drains cannot stop at effect-free pages.
     pub(crate) async fn process_effects(
         &self,
         material: &kv::Store,
@@ -132,9 +134,11 @@ impl SqliteAuthorizationStore {
         system: &Client,
         now: i64,
     ) -> Result<usize, AuthError> {
-        self.enforce_next_page(now)?;
+        let enforcement_progress = self.enforce_next_page(now)?.is_some();
         let effects = self.claim_effects(8, now, 10)?;
-        let mut completed = 0;
+        // An empty enforcement page still advances durable work. In particular,
+        // startup must drain bootstrap scopes before accepting policy mutations.
+        let mut completed = usize::from(enforcement_progress);
         let mut failure = None;
         for effect in effects {
             let result = async {

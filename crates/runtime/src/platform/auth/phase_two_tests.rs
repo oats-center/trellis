@@ -1857,6 +1857,85 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         trellis_protocol::parse_session_authority(&published, 65536).unwrap(),
         issued.authority
     );
+    // Drain ordinary provisioning before putting an effect-free policy page
+    // ahead of a provisioned identity's retirement. Reporting quiescence after
+    // that first page would leave its already-issued authority active.
+    let provider = f
+        .store
+        .initialize_builtin_provider::<
+            trellis_runtime_apis::participants::trellis_health_runtime::Participant,
+        >(&URL_SAFE_NO_PAD.encode([47; 32]), NOW)
+        .unwrap();
+    let provisioned_admission = AdmissionIdentity {
+        credential: Credential::ProvisionedIdentity(provider.identity_key_id),
+        refresh_family_id: None,
+        ..f.admission.clone()
+    };
+    let provider_authority = f
+        .store
+        .issue_authority(&provisioned_admission, None, NOW)
+        .unwrap();
+    while f
+        .store
+        .process_effects(&material, &revocations, &system, NOW)
+        .await
+        .unwrap()
+        != 0
+    {}
+    let unused_role = PolicyMutation::RolePut {
+        role_id: id(),
+        expected_revision: 0,
+        title: "Unused role".into(),
+        description: "No assignments".into(),
+        capabilities: vec![],
+    };
+    f.store
+        .apply_policy(&mutation(&f.admin, &unused_role), &unused_role, NOW + 1)
+        .unwrap();
+    let disable_provider = PolicyMutation::PrincipalState {
+        principal_id: provider.principal_id,
+        expected_revision: 1,
+        state: "disabled".into(),
+    };
+    f.store
+        .apply_policy(
+            &mutation(&f.admin, &disable_provider),
+            &disable_provider,
+            NOW + 2,
+        )
+        .unwrap();
+    while f
+        .store
+        .process_effects(&material, &revocations, &system, NOW + 2)
+        .await
+        .unwrap()
+        != 0
+    {}
+    let provider_cutoff = revocations
+        .get(
+            &provider_authority
+                .authority
+                .unsigned
+                .authorization_session_id,
+        )
+        .await
+        .unwrap()
+        .expect("effect-free work must not strand provider retirement");
+    let provider_cutoff: trellis_protocol::SignedSessionRevocation =
+        serde_json::from_slice(&provider_cutoff).unwrap();
+    provider_cutoff
+        .verify(
+            &f.store.issuer(),
+            &f.store.settings.instance_id,
+            &f.store.settings.account,
+        )
+        .unwrap();
+    assert_eq!(
+        f.store
+            .resolve_authority(&provider_authority.digest)
+            .unwrap(),
+        provider_authority.authority
+    );
     let session = issued.authority.unsigned.authorization_session_id.clone();
     let mut watcher = revocations.watch_with_history(&session).await.unwrap();
     let scope = EnforcementScope::Session(session.clone());
