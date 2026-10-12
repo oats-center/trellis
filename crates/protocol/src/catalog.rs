@@ -426,13 +426,16 @@ impl SignedProviderCertificate {
             && self.implemented_actions.contains(action))
     }
 
-    /// Verify provider identity, scope, signature and live validity.
-    pub fn verify(
+    /// Authenticate immutable provider identity, scope, signature and validity bounds.
+    ///
+    /// This does not authorize use at any particular time. Retained material can
+    /// remain authentic after expiry or ordinary issuer retirement; callers must
+    /// separately verify eligibility at the live or trusted publication time.
+    pub fn verify_authenticity(
         &self,
         issuer: &AuthorityIssuerKey,
         instance: &str,
         account: &str,
-        now: i64,
     ) -> Result<(), ProtocolError> {
         verify_metadata(
             self,
@@ -445,9 +448,24 @@ impl SignedProviderCertificate {
         if self.generation.get() == 0
             || self.not_before > self.issued_at
             || self.issued_at >= self.expires_at
-            || now < self.not_before
-            || now >= self.expires_at
         {
+            return Err(metadata_error());
+        }
+        Ok(())
+    }
+
+    /// Verify provider authenticity and eligibility at the supplied use time.
+    /// Live callers supply the current clock; historical callers must supply
+    /// authenticated publication/event time, never an unsigned claimed time.
+    pub fn verify(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+        now: i64,
+    ) -> Result<(), ProtocolError> {
+        self.verify_authenticity(issuer, instance, account)?;
+        if now < self.not_before || now >= self.expires_at {
             return Err(metadata_error());
         }
         Ok(())

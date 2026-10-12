@@ -49,6 +49,415 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn cold_provider_material_replays_real_backlog_after_expiry_and_issuer_retirement() {
+        use trellis_protocol::{
+            sign_session_event, AuthorityProvider, CatalogAction, OriginalEventPublication,
+            SessionEvent, SignedCatalogSnapshot, SignedProviderCertificate,
+        };
+
+        let source = tempfile::tempdir().unwrap();
+        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
+            source.path(),
+        ))
+        .unwrap();
+        let logs = tempfile::tempdir().unwrap();
+        let mut nats = trellis_local_nats::LocalNats::builder()
+            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
+            .cache_dir(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/trellis-test-cache"),
+            )
+            .source(source.path())
+            .temporary_state()
+            .ephemeral_ports()
+            .output(trellis_local_nats::NatsOutput::Log {
+                path: logs.path().join("nats.log"),
+                mirror: false,
+            })
+            .start()
+            .unwrap();
+        let transport = async_nats::ConnectOptions::new()
+            .credentials_file(source.path().join("creds/trellis-auth.creds"))
+            .await
+            .unwrap()
+            .connect(nats.nats_url())
+            .await
+            .unwrap();
+        let js = jetstream::new(transport.clone());
+        let material = js
+            .create_key_value(jetstream::kv::Config {
+                bucket: super::super::registry::MATERIAL_BUCKET.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let subject = "event.documents.Changed";
+        let stream = js
+            .create_stream(jetstream::stream::Config {
+                name: "retained_provider_events".into(),
+                subjects: vec![subject.into()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // Cryptographic adapter test: issuer-owned native protocol material, not
+        // a substitute Auth responder or fabricated broker publication timestamp.
+        let issuer_key = SigningKey::from_bytes(&[2; 32]);
+        let runtime_key = SigningKey::from_bytes(&[3; 32]);
+        let issuer = AuthorityIssuerKey {
+            key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(issuer_key.verifying_key().as_bytes())),
+            public_key: URL_SAFE_NO_PAD.encode(issuer_key.verifying_key().as_bytes()),
+            state: AuthorityIssuerState::Active,
+        };
+        let now = now_iat_seconds() as i64;
+        let action = CatalogActionIdentity {
+            kind: ApiSurfaceKind::Event,
+            name: "Documents.Changed".into(),
+            direction: PermissionAction::Publish,
+        };
+        let catalog = SignedCatalogSnapshot {
+            format: trellis_protocol::CATALOG_SNAPSHOT_FORMAT_V1.into(),
+            issuer_key_id: issuer.key_id.clone(),
+            trellis_instance_id: "01JY0000000000000000000001".into(),
+            audience_nats_account: "application-account".into(),
+            api_id: "documents@v1".into(),
+            generation: U64s::new(1),
+            accepted_revision: U64s::new(1),
+            definition_digest: URL_SAFE_NO_PAD.encode([4; 32]),
+            actions: vec![CatalogAction {
+                identity: action.clone(),
+                introduced_revision: U64s::new(1),
+            }],
+            capabilities: vec![],
+            issued_at: now,
+            extensions: Map::new(),
+            critical: vec![],
+            signature: String::new(),
+        }
+        .sign(&issuer_key)
+        .unwrap();
+        let certificate = SignedProviderCertificate {
+            format: trellis_protocol::PROVIDER_CERTIFICATE_FORMAT_V1.into(),
+            issuer_key_id: issuer.key_id.clone(),
+            trellis_instance_id: catalog.trellis_instance_id.clone(),
+            audience_nats_account: catalog.audience_nats_account.clone(),
+            principal_id: "01JY0000000000000000000002".into(),
+            deployment_id: "01JY0000000000000000000003".into(),
+            instance_id: "01JY0000000000000000000004".into(),
+            session_public_key: URL_SAFE_NO_PAD.encode(runtime_key.verifying_key().as_bytes()),
+            api_id: catalog.api_id.clone(),
+            generation: catalog.generation,
+            implementation_digest: URL_SAFE_NO_PAD.encode([5; 32]),
+            implemented_actions: vec![action.clone()],
+            issued_at: now,
+            not_before: now,
+            expires_at: now + 3,
+            extensions: Map::new(),
+            critical: vec![],
+            signature: String::new(),
+        }
+        .sign(&issuer_key)
+        .unwrap();
+        let authority = sign_session_authority(
+            UnsignedSessionAuthority {
+                format: trellis_protocol::SESSION_AUTHORITY_FORMAT_V1.into(),
+                issuer_key_id: issuer.key_id.clone(),
+                trellis_instance_id: catalog.trellis_instance_id.clone(),
+                audience_nats_account: catalog.audience_nats_account.clone(),
+                principal_id: certificate.principal_id.clone(),
+                principal_kind: PrincipalKind::Service,
+                binding: SessionBinding::Service {
+                    deployment_id: certificate.deployment_id.clone(),
+                    instance_id: certificate.instance_id.clone(),
+                    participant_id: "documents.service".into(),
+                },
+                authorization_session_id: "01JY0000000000000000000005".into(),
+                runtime_id: URL_SAFE_NO_PAD.encode([6; 16]),
+                session_public_key: certificate.session_public_key.clone(),
+                inbox_prefix: "_INBOX.runtime".into(),
+                login_session_id: None,
+                oauth_grant_id: None,
+                capabilities: vec![],
+                apis: vec![AuthorityApi {
+                    api_id: catalog.api_id.clone(),
+                    generation: catalog.generation,
+                    accepted_revision: catalog.accepted_revision,
+                    catalog_snapshot_digest: catalog.digest().unwrap(),
+                }],
+                provider_bindings: vec![AuthorityProvider {
+                    api_id: certificate.api_id.clone(),
+                    generation: certificate.generation,
+                    deployment_id: certificate.deployment_id.clone(),
+                    implementation_digest: certificate.implementation_digest.clone(),
+                    provider_certificate_digest: certificate.digest().unwrap(),
+                }],
+                resource_bindings_digest: None,
+                platform_privileges: vec![],
+                issued_at: now,
+                not_before: now,
+                expires_at: now + 240,
+                extensions: Map::new(),
+                critical: vec![],
+            },
+            &issuer_key,
+        )
+        .unwrap();
+        for (prefix, digest, bytes) in [
+            (
+                "api",
+                catalog.digest().unwrap(),
+                serde_json::to_vec(&catalog).unwrap(),
+            ),
+            (
+                "provider",
+                certificate.digest().unwrap(),
+                serde_json::to_vec(&certificate).unwrap(),
+            ),
+            (
+                "context",
+                authority.digest().unwrap(),
+                serde_json::to_vec(&authority).unwrap(),
+            ),
+        ] {
+            material
+                .put(format!("{prefix}.{digest}"), bytes.into())
+                .await
+                .unwrap();
+        }
+        let event = SessionEvent {
+            authority_digest: authority.digest().unwrap(),
+            api_id: catalog.api_id.clone(),
+            api_generation: catalog.generation,
+            accepted_revision: catalog.accepted_revision,
+            action: action.name.clone(),
+            subject: subject.into(),
+            event_id: "01JY0000000000000000000006".into(),
+            event_time: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+        };
+        let payload = b"retained provider payload";
+        let proof = sign_session_event(&event, payload, &runtime_key).unwrap();
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert(
+            "Trellis-Session-Event",
+            serde_json::to_string(&event).unwrap(),
+        );
+        headers.insert("proof", proof.as_str());
+        let first = js
+            .publish_with_headers(subject, headers.clone(), payload.as_slice().into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        let raw = stream.get_raw_message(first.sequence).await.unwrap();
+        assert!(raw.time.unix_timestamp() < certificate.expires_at);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while (now_iat_seconds() as i64) < certificate.expires_at {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .unwrap();
+        // Start cold after expiry: no previously authenticated certificate can
+        // mask a current-time rejection on the shared material-fetch path.
+        let owner = AuthorizationOwner::new(
+            RuntimeAuthorizationTrust {
+                instance_id: catalog.trellis_instance_id.clone(),
+                account: catalog.audience_nats_account.clone(),
+                issuer: issuer.clone(),
+                rotation_sequence: 0,
+            },
+            authority.unsigned.runtime_id.clone(),
+            certificate.session_public_key.clone(),
+        )
+        .unwrap();
+        let successor = SigningKey::from_bytes(&[8; 32]);
+        owner
+            .accept_issuer_rotation(
+                trellis_protocol::SignedIssuerRotation {
+                    format: trellis_protocol::ISSUER_ROTATION_FORMAT_V1.into(),
+                    trellis_instance_id: catalog.trellis_instance_id.clone(),
+                    audience_nats_account: catalog.audience_nats_account.clone(),
+                    sequence: U64s::new(1),
+                    previous_key_id: issuer.key_id.clone(),
+                    next_key_id: URL_SAFE_NO_PAD
+                        .encode(Sha256::digest(successor.verifying_key().as_bytes())),
+                    next_public_key: URL_SAFE_NO_PAD.encode(successor.verifying_key().as_bytes()),
+                    activated_at: now,
+                    previous_retired_at: now,
+                    extensions: Map::new(),
+                    critical: vec![],
+                    signature: String::new(),
+                }
+                .sign(&issuer_key)
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(owner.assert_issuer_current(&issuer.key_id).is_err());
+        let provider = owner
+            .material(
+                &transport,
+                MaterialKind::Provider,
+                &certificate.digest().unwrap(),
+            )
+            .await
+            .expect("expired authentic provider material must load cold");
+        let RegistryMaterial::Provider(certificate) = provider.as_ref() else {
+            panic!("provider material")
+        };
+        let catalog_material = owner
+            .material(
+                &transport,
+                MaterialKind::Catalog,
+                &catalog.digest().unwrap(),
+            )
+            .await
+            .unwrap();
+        let RegistryMaterial::Catalog(catalog) = catalog_material.as_ref() else {
+            panic!("catalog material")
+        };
+        let authority_material = owner
+            .material(
+                &transport,
+                MaterialKind::Authority,
+                &authority.digest().unwrap(),
+            )
+            .await
+            .unwrap();
+        let RegistryMaterial::Authority(authority) = authority_material.as_ref() else {
+            panic!("authority material")
+        };
+        let issuer = owner.issuer(&transport, &issuer.key_id).await.unwrap();
+        let policy = owner.policy();
+        assert!(certificate
+            .verify(
+                &issuer,
+                &catalog.trellis_instance_id,
+                &catalog.audience_nats_account,
+                policy.now_unix_seconds
+            )
+            .is_err());
+        let verified = owner
+            .verify_authority(
+                &authority,
+                &issuer,
+                SessionAuthorityPurpose::HistoricalEvent,
+            )
+            .unwrap();
+        let raw = stream.get_raw_message(first.sequence).await.unwrap();
+        let retained: SessionEvent =
+            serde_json::from_str(raw.headers.get("Trellis-Session-Event").unwrap().as_str())
+                .unwrap();
+        let retained_proof =
+            trellis_protocol::SessionEventProof::parse(raw.headers.get("proof").unwrap().as_str())
+                .unwrap();
+        let original = OriginalEventPublication {
+            published_at: raw
+                .time
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            stream_sequence: U64s::new(raw.sequence),
+        };
+        let check = |authority, event, proof, publication, payload: &[u8]| {
+            AuthorizationVerificationCore::new().verify_event(EventVerificationInput {
+                authority,
+                event,
+                proof,
+                payload,
+                policy: &policy,
+                known_revoked: false,
+                catalog: &catalog,
+                catalog_issuer: &issuer,
+                action: &action,
+                original_publication: Some(publication),
+                provider: Some((certificate, &issuer)),
+            })
+        };
+        check(
+            verified.clone(),
+            &retained,
+            &retained_proof,
+            &original,
+            &raw.payload,
+        )
+        .unwrap();
+        assert!(check(
+            verified.clone(),
+            &retained,
+            &retained_proof,
+            &original,
+            b"forged payload"
+        )
+        .is_err());
+        let wrong_generation = SessionEvent {
+            api_generation: U64s::new(2),
+            ..retained.clone()
+        };
+        let wrong_proof =
+            sign_session_event(&wrong_generation, &raw.payload, &runtime_key).unwrap();
+        assert!(check(
+            verified.clone(),
+            &wrong_generation,
+            &wrong_proof,
+            &original,
+            &raw.payload
+        )
+        .is_err());
+        let late = js
+            .publish_with_headers(subject, headers, payload.as_slice().into())
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        let late = stream.get_raw_message(late.sequence).await.unwrap();
+        let late_publication = OriginalEventPublication {
+            published_at: late
+                .time
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap(),
+            stream_sequence: U64s::new(late.sequence),
+        };
+        assert!(check(
+            verified,
+            &retained,
+            &retained_proof,
+            &late_publication,
+            &late.payload
+        )
+        .is_err());
+        owner
+            .accept_revocation(
+                SignedSessionRevocation {
+                    format: trellis_protocol::SESSION_REVOCATION_FORMAT_V1.into(),
+                    issuer_key_id: issuer.key_id.clone(),
+                    trellis_instance_id: catalog.trellis_instance_id.clone(),
+                    audience_nats_account: catalog.audience_nats_account.clone(),
+                    authorization_session_id: authority.unsigned.authorization_session_id.clone(),
+                    effective_cutoff: now,
+                    reason: "closed".into(),
+                    issued_at: policy.now_unix_seconds,
+                    latest_context_expiry: authority.unsigned.expires_at,
+                    extensions: Map::new(),
+                    critical: vec![],
+                    signature: String::new(),
+                }
+                .sign(&issuer_key)
+                .unwrap(),
+            )
+            .unwrap();
+        let revoked = owner
+            .verify_authority(
+                &authority,
+                &issuer,
+                SessionAuthorityPurpose::HistoricalEvent,
+            )
+            .unwrap();
+        assert!(check(revoked, &retained, &retained_proof, &original, &raw.payload).is_err());
+        nats.stop().unwrap();
+    }
+
+    #[tokio::test]
     async fn possession_and_signed_retirement_follow_real_mirror_coverage() {
         let source = tempfile::tempdir().unwrap();
         trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
@@ -1741,12 +2150,12 @@ impl AuthorizationOwner {
                         RegistryMaterial::Catalog(catalog) => {
                             catalog.verify(&issuer, &self.trust.instance_id, &self.trust.account)?
                         }
-                        RegistryMaterial::Provider(certificate) => certificate.verify(
-                            &issuer,
-                            &self.trust.instance_id,
-                            &self.trust.account,
-                            self.policy().now_unix_seconds,
-                        )?,
+                        RegistryMaterial::Provider(certificate) => certificate
+                            .verify_authenticity(
+                                &issuer,
+                                &self.trust.instance_id,
+                                &self.trust.account,
+                            )?,
                     }
                     Ok::<_, TrellisClientError>(Arc::new(material))
                 })

@@ -161,6 +161,8 @@ is not publication evidence. Current consumer read authority is separate from
 historical publisher authenticity; service code does not supply its own verifier.
 For certified publication, both timestamps must also lie within the provider
 certificate's validity window.
+Ordinary certificate expiry or issuer retirement does not invalidate authentic
+retained publications, including cold replay. Compromised issuers remain unusable.
 
 Author native IDL and set `[package]`, `[sources]`, and `[generate.rust].output`
 in `trellis.toml`. `trellis generate` is offline after dependencies are

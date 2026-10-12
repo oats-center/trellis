@@ -300,6 +300,68 @@ fn provider_publication_requires_exact_signed_implementation_and_never_grants_ca
         .unwrap());
     // A retained event is checked at original publication time, not at replay's
     // current clock; evidence outside the certificate's lifetime still fails.
+    certificate
+        .verify_authenticity(
+            &pinned,
+            &body.trellis_instance_id,
+            &body.audience_nats_account,
+        )
+        .unwrap();
+    assert!(certificate
+        .verify(
+            &pinned,
+            &body.trellis_instance_id,
+            &body.audience_nats_account,
+            1_300
+        )
+        .is_err());
+    let retired = AuthorityIssuerKey {
+        state: AuthorityIssuerState::Retired,
+        ..pinned.clone()
+    };
+    certificate
+        .verify_authenticity(
+            &retired,
+            &body.trellis_instance_id,
+            &body.audience_nats_account,
+        )
+        .unwrap();
+    let revoked = AuthorityIssuerKey {
+        state: AuthorityIssuerState::Revoked,
+        ..pinned.clone()
+    };
+    assert!(certificate
+        .verify_authenticity(
+            &revoked,
+            &body.trellis_instance_id,
+            &body.audience_nats_account
+        )
+        .is_err());
+    assert!(certificate
+        .verify_authenticity(&pinned, &body.trellis_instance_id, "other-account")
+        .is_err());
+    let mut forged = certificate.clone();
+    forged.expires_at += 1;
+    assert!(forged
+        .verify_authenticity(
+            &pinned,
+            &body.trellis_instance_id,
+            &body.audience_nats_account
+        )
+        .is_err());
+    let invalid = SignedProviderCertificate {
+        expires_at: certificate.issued_at,
+        ..certificate.clone()
+    }
+    .sign(&issuer)
+    .unwrap();
+    assert!(invalid
+        .verify_authenticity(
+            &pinned,
+            &body.trellis_instance_id,
+            &body.audience_nats_account
+        )
+        .is_err());
     assert!(certificate
         .authorizes_event_publication(&pinned, &authority, &catalog, &publish, 1_299)
         .unwrap());

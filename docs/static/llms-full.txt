@@ -440,6 +440,8 @@ revocation. Current permission to read remains separate from past publisher
 authenticity. Applications do not implement their own verifier or inspect
 Trellis's internal authorization KV registry. Certified publication additionally
 requires both timestamps within the provider certificate's validity window.
+Ordinary certificate expiry or issuer retirement does not invalidate authentic
+retained publications, including cold replay. Compromised issuers remain unusable.
 
 ## Choose A Surface
 

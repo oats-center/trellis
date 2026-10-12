@@ -183,6 +183,8 @@ JetStream publication time/stream sequence, never the consumer's read time.
 Both timestamps must precede ordinary session revocation and authority
 expiry; certified publication also requires both times within its certificate's
 validity window. Current permission to read is a separate authorization check.
+Ordinary certificate expiry or issuer retirement does not invalidate authentic
+retained publications, including cold replay. Compromised issuers remain unusable.
 
 1. Author the `.trellis` files explicitly listed by `[sources]`.
 2. Set `[package]`, `[dependencies]`, and language outputs in `trellis.toml`;

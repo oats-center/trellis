@@ -341,6 +341,13 @@ be installed as the configured runtime signer before further issuance. A
 previous signer cannot continue issuing after that commitment. Rotation itself
 does not retire sessions. Explicit key compromise revokes affected sessions and
 makes that key unusable; restart must not reinstall it as an active signer.
+Cold provider-certificate material reads authenticate the immutable signature,
+installation/account binding, identity, and validity bounds without applying
+today's clock. Live use still requires a current issuer and unexpired authority
+and certificate. Retained events require both signed event time and genuine
+original JetStream publication time within those validity windows and before any
+signed revocation cutoff; ordinary certificate expiry and issuer retirement do
+not invalidate that historical evidence. Compromised issuers remain unusable.
 Issuer rotation/revocation requires `privileges.manage`, not an additional
 `principals.manage` privilege. Other hard-root revocation retains its own
 `principals.manage` gate.
