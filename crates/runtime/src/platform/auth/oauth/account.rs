@@ -35,6 +35,15 @@ struct Payload {
     username: Option<String>,
     provider_revision: Option<u64>,
     protected: bool,
+    #[serde(default)]
+    handoff: Option<LinkHandoff>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LinkHandoff {
+    session: String,
+    expires: i64,
+    used: bool,
 }
 
 pub(super) struct Action {
@@ -126,7 +135,7 @@ pub(crate) fn create_reset(
         let (username, version): (Option<String>, Option<u64>) = connection.query_row("SELECT coalesce(c.normalized_username,(SELECT provider_subject FROM auth_provider_identities WHERE principal_id=p.principal_id AND provider='local')),c.version FROM auth_principals p LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND p.state='active'", [&target], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(AuthError::NotFound)?;
         let username = username.ok_or(AuthError::Denied)?;
         let token = token()?;
-        let payload = Payload { actor: identity.actor.clone(), requester_session: Some(requester_session.to_owned()), username: Some(username), credential_version: version, provider_revision: None, protected };
+        let payload = Payload { actor: identity.actor.clone(), requester_session: Some(requester_session.to_owned()), username: Some(username), credential_version: version, provider_revision: None, protected, handoff: None };
         insert(connection, &token, "password_reset", &target, None, &payload, now)?;
         let response = AuthPasswordResetCreateResponse { token, expires_at: super::super::rpc_users::timestamp(now + 300)?, extra: Default::default() };
         storage.encode("account-response", &lookup, &response).map_err(|_| AuthError::Unavailable)
@@ -155,7 +164,7 @@ pub(crate) fn create_link(
         let revision: u64 = connection.query_row("SELECT revision FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'", [&provider], |row| row.get(0)).optional()?.ok_or(AuthError::NotFound)?;
         let protected: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)", [&identity.actor], |row| row.get(0))?;
         let token = token()?;
-        let payload = Payload { actor: identity.actor.clone(), requester_session: None, username: None, credential_version: None, provider_revision: Some(revision), protected };
+        let payload = Payload { actor: identity.actor.clone(), requester_session: None, username: None, credential_version: None, provider_revision: Some(revision), protected, handoff: None };
         insert(connection, &token, "identity_link", &identity.actor, Some(&provider), &payload, now)?;
         let response = AuthIdentityLinkCreateResponse { authorization_url: format!("{}/account/link?token={token}", storage.authority.settings.oauth_origin), expires_at: super::super::rpc_users::timestamp(now + 300)?, extra: Default::default() };
         storage.encode("account-response", &lookup, &response).map_err(|_| AuthError::Unavailable)
@@ -189,7 +198,7 @@ pub(super) fn link_session(
 ) -> Result<Action, AuthError> {
     let login = storage.authority.portal_login(cookie, csrf, now)?;
     storage.authority.transaction(|connection| {
-        let action = action(connection, token, "identity_link", now)?;
+        let mut action = action(connection, token, "identity_link", now)?;
         if action.target != login.principal_id
             || action.payload.actor != login.principal_id
             || action.provider.as_deref() != Some(provider)
@@ -206,6 +215,15 @@ pub(super) fn link_session(
         if current != action.payload.provider_revision {
             return Err(AuthError::Denied);
         }
+        let handoff = action.payload.handoff.as_mut().ok_or(AuthError::Denied)?;
+        if handoff.session != login.session_id || handoff.expires <= now || handoff.used {
+            return Err(AuthError::Denied);
+        }
+        handoff.used = true;
+        connection.execute(
+            "UPDATE auth_account_flows SET payload_json=?1,version=version+1 WHERE flow_id=?2",
+            params![serde_json::to_string(&action.payload)?, action.id],
+        )?;
         Ok(action)
     })
 }
@@ -273,7 +291,7 @@ pub(super) fn complete_link(
     }
     storage.authority.transaction(|connection| {
         let action = action(connection, token, "identity_link", now)?;
-        if action.target != login.principal_id || action.payload.actor != login.principal_id || action.id != flow.authorization_transaction || action.provider.as_deref() != Some(&flow.provider.provider_id) || action.payload.provider_revision != Some(flow.provider.revision) || verified.expires_at <= now { return Err(AuthError::Denied); }
+        if action.target != login.principal_id || action.payload.actor != login.principal_id || action.id != flow.authorization_transaction || action.provider.as_deref() != Some(&flow.provider.provider_id) || action.payload.provider_revision != Some(flow.provider.revision) || verified.expires_at <= now || !action.payload.handoff.as_ref().is_some_and(|handoff| handoff.used && handoff.session == flow.session_id) { return Err(AuthError::Denied); }
         let live: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_portal_sessions s JOIN auth_login_sessions l ON l.login_session_id=s.login_session_id JOIN auth_principals p ON p.principal_id=l.principal_id JOIN auth_oidc_providers o ON o.provider_id=?1 WHERE s.portal_session_id=?2 AND l.principal_id=?3 AND l.revoked_at IS NULL AND l.expires_at>?4 AND s.expires_at>?4 AND p.state='active' AND o.state='active' AND o.revision=?5 AND s.cookie_hash=?6 AND s.csrf_hash=?7)", params![flow.provider.provider_id, login.session_id, action.target, now, flow.provider.revision, hash(cookie), hash(csrf)], |row| row.get(0))?;
         if !live { return Err(AuthError::Denied); }
         let existing: Option<String> = connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", params![flow.provider.provider_id, verified.subject], |row| row.get(0)).optional()?;
@@ -307,6 +325,41 @@ pub(super) async fn page(
     let Some(token) = form.get("token") else {
         return error(ErrorCode::InvalidRequest);
     };
+    if kind == "continue" {
+        if headers.contains_key(axum::http::header::ORIGIN) && !portal_origin(&engine, &headers) {
+            return error(ErrorCode::AccessDenied);
+        }
+        let action = match engine
+            .server
+            .store()
+            .authority
+            .transaction(|connection| action(connection, token, "identity_link", now()))
+        {
+            Ok(action) => action,
+            Err(_) => return error(ErrorCode::AccessDenied),
+        };
+        let Some(provider) = action.provider else {
+            return error(ErrorCode::AccessDenied);
+        };
+        // Ordinary navigation omits Origin. The reviewed, session-bound one-use
+        // handoff is authenticated by link_session, not a manufactured header.
+        let mut response = super::upstream_http::start(
+            State(engine),
+            Path(provider),
+            headers,
+            Query(vec![("link".into(), token.clone())]),
+        )
+        .await;
+        response.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        response.headers_mut().insert(
+            axum::http::header::REFERRER_POLICY,
+            axum::http::HeaderValue::from_static("no-referrer"),
+        );
+        return response;
+    }
     let flow_kind = match kind.as_str() {
         "reset" => "password_reset",
         "link" => "identity_link",
@@ -395,37 +448,41 @@ pub(super) async fn submit(
         return error(ErrorCode::AccessDenied);
     };
     if kind == "link" {
-        let action = match engine
-            .server
-            .store()
-            .authority
-            .transaction(|connection| action(connection, token, "identity_link", now()))
-        {
-            Ok(action) => action,
-            Err(_) => return error(ErrorCode::AccessDenied),
+        let storage = engine.server.store();
+        let now = now();
+        let reviewed = (|| {
+            let login = storage.authority.portal_login(&cookie, csrf, now)?;
+            let replacement = self::token()?;
+            storage.authority.transaction(|connection| {
+                let mut action = action(connection, token, "identity_link", now)?;
+                if action.target != login.principal_id || action.payload.actor != login.principal_id || action.payload.handoff.is_some() {
+                    return Err(AuthError::Denied);
+                }
+                let revision: Option<u64> = connection.query_row("SELECT revision FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'", [&action.provider], |row| row.get(0)).optional()?;
+                if revision.is_none() || revision != action.payload.provider_revision {
+                    return Err(AuthError::Denied);
+                }
+                action.payload.handoff = Some(LinkHandoff { session: login.session_id, expires: action.expires.min(now + 60), used: false });
+                connection.execute("UPDATE auth_account_flows SET token_hash=?1,payload_json=?2,version=version+1 WHERE flow_id=?3", params![hash(&replacement), serde_json::to_string(&action.payload)?, action.id])?;
+                Ok(replacement)
+            })
+        })();
+        return match reviewed {
+            Ok(token) => {
+                let mut response = html(
+                    "Continue to identity provider",
+                    &format!(
+                        r#"<p>Your account-link request has been reviewed. Continue to sign in with the identity provider.</p><a href="/account/continue?token={token}" rel="noreferrer">Continue to identity provider</a>"#
+                    ),
+                );
+                response.headers_mut().insert(
+                    axum::http::header::REFERRER_POLICY,
+                    axum::http::HeaderValue::from_static("no-referrer"),
+                );
+                response
+            }
+            Err(_) => error(ErrorCode::AccessDenied),
         };
-        let Some(provider) = action.provider else {
-            return error(ErrorCode::AccessDenied);
-        };
-        if link_session(
-            engine.server.store(),
-            token,
-            &cookie,
-            csrf,
-            &provider,
-            now(),
-        )
-        .is_err()
-        {
-            return error(ErrorCode::AccessDenied);
-        }
-        return super::upstream_http::start(
-            State(engine),
-            Path(provider),
-            headers,
-            Query(vec![("link".into(), token.clone())]),
-        )
-        .await;
     }
     let Some(password) = form.get("password") else {
         return error(ErrorCode::InvalidRequest);
@@ -522,4 +579,207 @@ pub(super) fn html(title: &str, body: &str) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::auth::{
+        lifecycle::OidcProviderRegistration,
+        phase_two_tests::{fixture, mutation},
+    };
+
+    #[tokio::test]
+    async fn reviewed_link_handoff_rejects_other_sessions_stale_csrf_expiry_and_replay() {
+        let f = fixture();
+        let authority = Arc::new(f.store);
+        let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        let provider = id();
+        let registration = OidcProviderRegistration {
+            provider_id: provider.clone(),
+            issuer: "https://identity.example".into(),
+            display_name: "Identity".into(),
+            client_id: "account".into(),
+            sealed_client_secret: None,
+            config: serde_json::json!({}),
+            claim_freshness_seconds: 300,
+            expected_revision: 0,
+        };
+        let now = now();
+        authority
+            .register_oidc_provider(&mutation(&f.admin, &registration), &registration, now)
+            .unwrap();
+        let guest = authority.create_portal_session(now).unwrap();
+        let cookie = token().unwrap();
+        authority
+            .portal_local_login(
+                &guest.cookie,
+                &guest.csrf,
+                &cookie,
+                "admin",
+                "a strong bootstrap password",
+                &id(),
+                now,
+            )
+            .unwrap();
+        let other_guest = authority.create_portal_session(now).unwrap();
+        let other_cookie = token().unwrap();
+        authority
+            .portal_local_login(
+                &other_guest.cookie,
+                &other_guest.csrf,
+                &other_cookie,
+                "admin",
+                "a strong bootstrap password",
+                &id(),
+                now,
+            )
+            .unwrap();
+        let engine = Arc::new(OAuthEngine::new(storage).unwrap());
+        for expires in [true, false] {
+            let request = AuthIdentityLinkCreateRequest {
+                provider_id: provider.parse().unwrap(),
+                idempotency_key: id().into(),
+                extra: Default::default(),
+            };
+            let created = create_link(
+                engine.server.store(),
+                &mutation(&f.admin, &request),
+                &request,
+                now,
+            )
+            .unwrap();
+            let original = url::Url::parse(&created.authorization_url)
+                .unwrap()
+                .query_pairs()
+                .find(|(name, _)| name == "token")
+                .unwrap()
+                .1
+                .into_owned();
+            // A freshly issued account URL cannot skip the protected POST.
+            assert!(link_session(
+                engine.server.store(),
+                &original,
+                &cookie,
+                &guest.csrf,
+                &provider,
+                now
+            )
+            .is_err());
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::header::ORIGIN,
+                authority.settings.oauth_origin.parse().unwrap(),
+            );
+            headers.insert(
+                axum::http::header::COOKIE,
+                format!(
+                    "__Host-trellis-portal={cookie}; __Host-trellis-portal-csrf={}",
+                    guest.csrf
+                )
+                .parse()
+                .unwrap(),
+            );
+            let response = submit(
+                State(engine.clone()),
+                Path("link".into()),
+                headers,
+                Form(vec![
+                    ("token".into(), original.clone()),
+                    ("csrf".into(), guest.csrf.clone()),
+                ]),
+            )
+            .await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap();
+            let body = std::str::from_utf8(&bytes).unwrap();
+            let document = scraper::Html::parse_document(body);
+            let selector = scraper::Selector::parse("a[href]").unwrap();
+            let destination = document
+                .select(&selector)
+                .next()
+                .unwrap()
+                .value()
+                .attr("href")
+                .unwrap();
+            let handoff = url::Url::parse(&created.authorization_url)
+                .unwrap()
+                .join(destination)
+                .unwrap()
+                .query_pairs()
+                .find(|(name, _)| name == "token")
+                .unwrap()
+                .1
+                .into_owned();
+            assert!(link_session(
+                engine.server.store(),
+                &original,
+                &cookie,
+                &guest.csrf,
+                &provider,
+                now
+            )
+            .is_err());
+            assert!(link_session(
+                engine.server.store(),
+                &handoff,
+                &other_cookie,
+                &other_guest.csrf,
+                &provider,
+                now
+            )
+            .is_err());
+            assert!(link_session(
+                engine.server.store(),
+                &handoff,
+                &cookie,
+                &other_guest.csrf,
+                &provider,
+                now
+            )
+            .is_err());
+            assert!(link_session(
+                engine.server.store(),
+                &handoff,
+                &cookie,
+                &guest.csrf,
+                &id(),
+                now
+            )
+            .is_err());
+            if expires {
+                assert!(link_session(
+                    engine.server.store(),
+                    &handoff,
+                    &cookie,
+                    &guest.csrf,
+                    &provider,
+                    now + 61
+                )
+                .is_err());
+            } else {
+                let action = link_session(
+                    engine.server.store(),
+                    &handoff,
+                    &cookie,
+                    &guest.csrf,
+                    &provider,
+                    now,
+                )
+                .unwrap();
+                assert_eq!(action.target, f.admin);
+                assert!(link_session(
+                    engine.server.store(),
+                    &handoff,
+                    &cookie,
+                    &guest.csrf,
+                    &provider,
+                    now
+                )
+                .is_err());
+            }
+        }
+    }
 }

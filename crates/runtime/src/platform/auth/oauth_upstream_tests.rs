@@ -342,6 +342,54 @@ staticPasswords:
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
+    let browser_request = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
+        provider_id: provider.parse().unwrap(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let browser_link = super::super::oauth::account::create_link(
+        engine.server.store(),
+        &mutation(&f.principal, &browser_request),
+        &browser_request,
+        current,
+    )
+    .unwrap();
+    let admin_request = trellis_runtime_apis::__types::trellis::AuthIdentityLinkCreateRequest {
+        provider_id: provider.parse().unwrap(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let admin_link = super::super::oauth::account::create_link(
+        engine.server.store(),
+        &mutation(&f.admin, &admin_request),
+        &admin_request,
+        current,
+    )
+    .unwrap();
+    let browser = tokio::process::Command::new("node")
+        .args(["--test", "ts/browser/oauth_account_link.browser_test.ts"])
+        .env(
+            "TRELLIS_TEST_ACCOUNT_LINK_URI",
+            &browser_link.authorization_url,
+        )
+        .env("TRELLIS_TEST_OIDC_ISSUER", issuer.as_str())
+        .env("TRELLIS_TEST_ADMIN_LINK_URI", &admin_link.authorization_url)
+        .env("TRELLIS_TEST_WRONG_PROVIDER", id())
+        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .kill_on_drop(true)
+        .output();
+    let browser = tokio::time::timeout(Duration::from_secs(45), browser)
+        .await
+        .expect("account-link Chromium deadline")
+        .expect("account-link Chromium runner");
+    assert!(
+        browser.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&browser.stdout),
+        String::from_utf8_lossy(&browser.stderr)
+    );
+    let linked: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
+    assert_eq!(linked, f.principal);
     for (actor, username, password, success) in [
         (&f.principal, "alice", "initial alice password", true),
         (&f.admin, "admin", "a strong bootstrap password", false),
@@ -425,7 +473,19 @@ staticPasswords:
             .send()
             .await
             .unwrap();
+        assert_eq!(begin.status(), reqwest::StatusCode::OK);
+        let continuation = {
+            let document = scraper::Html::parse_document(&begin.text().await.unwrap());
+            let selector = scraper::Selector::parse("a[href]").unwrap();
+            let link = document.select(&selector).next().unwrap();
+            portal.join(link.value().attr("href").unwrap()).unwrap()
+        };
+        let begin = http.get(continuation.clone()).send().await.unwrap();
         assert_eq!(begin.status(), reqwest::StatusCode::SEE_OTHER);
+        assert_eq!(
+            http.get(continuation).send().await.unwrap().status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
         let authorization = url::Url::parse(begin.headers()["location"].to_str().unwrap()).unwrap();
         assert!(authorization
             .query_pairs()

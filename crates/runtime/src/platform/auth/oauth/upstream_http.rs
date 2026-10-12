@@ -73,7 +73,9 @@ pub(super) async fn start(
         Err(_) => return error(ErrorCode::AccessDenied),
     };
     let (transaction, deadline, client_id, account_token) = if let Some(token) = form.get("link") {
-        if !super::http::portal_origin(&engine, &headers) {
+        if headers.contains_key(axum::http::header::ORIGIN)
+            && !super::http::portal_origin(&engine, &headers)
+        {
             return error(ErrorCode::InvalidRequest);
         }
         let action = match super::account::link_session(
