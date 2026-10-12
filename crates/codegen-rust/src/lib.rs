@@ -1219,7 +1219,7 @@ fn render_participant_facades(graph: &PackageGraph, participant: &ParticipantDef
         ));
         out.push_str("}\n");
     }
-    if participant.kind() == ParticipantKind::Service && !participant.implements().is_empty() {
+    if participant.kind() == ParticipantKind::Service {
         out.push_str("impl Participant { pub async fn connect(options: trellis_rs::service::ServiceConnectOptions<'_>) -> Result<trellis_rs::service::ConnectedServiceRuntime<Self>, trellis_rs::service::ServiceRuntimeError> { trellis_rs::service::ConnectedServiceRuntime::<Self>::connect(options).await } }\n");
         out.push_str("pub struct Provider<'a> { runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<Participant> }\nimpl<'a> Provider<'a> {\npub fn new(runtime: &'a mut trellis_rs::service::ConnectedServiceRuntime<Participant>) -> Self { Self { runtime } }\npub fn client(&self) -> Client { Client::from_generated(self.runtime.generated_client()) }\n");
         for api in participant.implements() {
@@ -1590,8 +1590,18 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
                             .collect::<Vec<_>>()
                             .join(" && ")
                     })
-                    .filter(|expression| !expression.is_empty())
+                    .map(|expression| {
+                        if expression.is_empty() {
+                            "true".into()
+                        } else {
+                            expression
+                        }
+                    })
                     .unwrap_or_else(|| "false".into());
+                let expression = format!(
+                    "snapshot.allows_capability({:?}) && ({expression})",
+                    capability.as_str()
+                );
                 fields.insert(
                     capability.as_str().to_owned(),
                     (format!("capability {}", capability.as_str()), expression),
@@ -2081,7 +2091,7 @@ mod tests {
 
     #[test]
     fn generated_crate_compiles_against_current_abi() {
-        let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } rpc Write { input Values; output Values; } capabilities { capability read { consent_revision 1; title \"Read\"; description \"Read values.\"; consequence \"Reveals values.\"; allows { rpc Get; } } capability work { consent_revision 1; title \"Work\"; description \"Run work.\"; consequence \"Changes values.\"; allows { operation Work; } } capability write { consent_revision 1; title \"Write\"; description \"Write values.\"; consequence \"Changes values.\"; allows { rpc Write; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { capability observe { consent_revision 1; title \"Observe\"; description \"Observe values.\"; consequence \"Reveals value changes.\"; allows { subscribe event Changed; live Watch; } } } event Changed { payload Values; } live Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } app Caller { use main { required capability read; required capability work; } use other { required capability observe; } }");
+        let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } rpc Write { input Values; output Values; } capabilities { capability read { consent_revision 1; title \"Read\"; description \"Read values.\"; consequence \"Reveals values.\"; allows { rpc Get; } } capability work { consent_revision 1; title \"Work\"; description \"Run work.\"; consequence \"Changes values.\"; allows { operation Work; } } capability write { consent_revision 1; title \"Write\"; description \"Write values.\"; consequence \"Changes values.\"; allows { rpc Write; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { capability observe { consent_revision 1; title \"Observe\"; description \"Observe values.\"; consequence \"Reveals value changes.\"; allows { subscribe event Changed; live Watch; } } } event Changed { payload Values; } live Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } service ResourceOnly { kv records { title \"Records\"; description \"KV-only service.\"; schema Values; version 1; history 4; ttl 0ms; } } app Caller { use main { required capability read; required capability work; } use other { required capability observe; } }");
         let output = tempfile::tempdir().unwrap();
         generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
         let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2111,6 +2121,7 @@ mod tests {
     },
     apis::fixture_other_v2::{events::Changed, lives::Watch},
     participants::fixture_backend,
+    participants::fixture_resource_only,
     apps::fixture_caller,
     types::{Status, Values},
 };
@@ -2146,6 +2157,13 @@ fn accepts_typed_kv<'a>(
     migrations: &'a fixture_backend::Migrations,
 ) -> impl std::future::Future<Output = Result<trellis_rs::service::KvHandle<Values>, trellis_rs::service::ServerError>> + 'a {
     provider.cache(migrations)
+}
+
+#[allow(dead_code)]
+async fn connects_resource_only_service(options: trellis_rs::service::ServiceConnectOptions<'_>)
+    -> Result<trellis_rs::service::KvHandle<Values>, Box<dyn std::error::Error>> {
+    let mut service = fixture_resource_only::Participant::connect(options).await?;
+    fixture_resource_only::Provider::new(&mut service).client().records().await.map_err(Into::into)
 }
 
 #[test]

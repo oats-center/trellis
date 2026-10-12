@@ -672,11 +672,11 @@ api auth@v1 {
       allows { subscribe event Connections.Opened; subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event AuthorizationSessions.Retired; subscribe event Issuers.Rotated; subscribe event Issuers.Revoked; }
     }
     capability accountRead {
-      consent_revision 1;
-      title "Read your account";
-      description "Read the current user's account profile.";
-      consequence "Reveals your username and display name to this app.";
-      allows { rpc Users.Resolve; }
+      consent_revision 2;
+      title "Read your account and sign out";
+      description "Read your account and current session, or end your current login.";
+      consequence "Reveals your username and display name, and may end your current login and its application sessions.";
+      allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; }
     }
     capability passwordChange {
       consent_revision 1;

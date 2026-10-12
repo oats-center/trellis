@@ -94,6 +94,18 @@ service Provider {
   consumer changes { title "Changes"; description "Runtime fixture durable changes."; events [runtime.Changed]; concurrency 1; replay new; }
 }
 service EchoProvider { implements runtime; }
+api optional_availability@v1 {
+  title "Optional operation availability";
+  description "Native clients use approved optional operations without legacy atom grants.";
+  rpc Read { input Value; output Value; }
+  operation Extend { input Value; output Value; }
+  capabilities {
+    capability read { title "Read"; description "Read fixture values."; consequence "The caller may read values."; consent_revision 1; allows { rpc Read; } }
+    capability extend { title "Extend"; description "Execute the optional operation."; consequence "The caller may extend values."; consent_revision 1; allows { operation Extend; } }
+  }
+}
+service NativeOptionalProvider { implements optional_availability; }
+agent NativeOptionalExtend { use optional_availability { required capability read; capability extend; } }
 service ResourceProvider {
   kv records { title "Records"; description "Console resource lifecycle acceptance values."; schema ResourceValue; version 1; history 4; ttl 0ms; }
 }

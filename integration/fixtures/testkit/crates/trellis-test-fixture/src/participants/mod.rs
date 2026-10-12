@@ -1,2 +1,3 @@
+pub mod trellis_test_fixture_kv_provider;
 pub mod trellis_test_fixture_provider;
 pub mod trellis_test_fixture_unsupported_device;

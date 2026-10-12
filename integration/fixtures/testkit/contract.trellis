@@ -33,6 +33,16 @@ api echo@v1 {
 }
 
 service Provider { implements echo; }
+service KvProvider {
+  kv records {
+    title "Records";
+    description "Authenticated generated KV availability across connection readiness.";
+    schema Value;
+    version 1;
+    history 4;
+    ttl 0ms;
+  }
+}
 app Caller { use echo { required capability invoke; required capability upload; } }
 agent AgentCaller { use echo { required capability invoke; } }
 app RestrictedCaller {}

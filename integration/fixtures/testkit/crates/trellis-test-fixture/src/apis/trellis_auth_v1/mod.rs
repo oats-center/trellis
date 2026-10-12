@@ -1,6 +1,6 @@
 //! Generated API `trellis.auth@v1`.
 pub const API_ID: &str = "trellis.auth@v1";
-pub const API_DIGEST: &str = "cUMBXqBJgCmABzl490tbvdiToZbjAKY74ScNocCNYUQ";
+pub const API_DIGEST: &str = "K_zP6pXNrQXivFvISCl3uHduzSt_MWff1wSEifNG8vs";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -5058,7 +5058,9 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Sessions.Logout";
         pub const KEY: &'static str = "auth.Sessions.Logout";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Sessions.Logout";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::accountRead",
+        ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
             "trellis.auth@v1::UnexpectedError",
@@ -5125,7 +5127,9 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Sessions.Me";
         pub const KEY: &'static str = "auth.Sessions.Me";
         pub const SUBJECT: &'static str = "rpc.v1.auth.Sessions.Me";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::accountRead",
+        ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.auth@v1::AuthError",
             "trellis.auth@v1::UnexpectedError",

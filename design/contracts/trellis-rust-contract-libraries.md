@@ -27,3 +27,18 @@ Generated device options do not accept a reusable session seed.
 Commit generated output when consumers must build without the CLI/cache.
 Regenerate rather than editing it, and use current Rustdoc/generated source for
 exact participant-specific methods.
+
+## Installed Availability
+
+Generated optional-action adapters consult one advisory projection of the
+verified whole-capability authority and its exact accepted signed catalogs.
+Capability identity generations, consent revisions, API generations, and
+accepted revisions remain significant; generated names do not confer authority.
+Dispatch still performs the authorization owner's live signed-catalog check.
+
+Authenticated native resource bindings retain their physical names and handle
+generations across transport suspension and readiness. Readiness changes only
+usability; an authenticated replacement that changes or removes a binding retires
+the previous physical handle. State availability follows supported user/device
+ownership, with the State provider validating the declared resource at dispatch,
+not fabricated participant-resource permission atoms.

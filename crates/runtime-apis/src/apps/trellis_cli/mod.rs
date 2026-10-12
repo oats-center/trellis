@@ -154,6 +154,8 @@ const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "ServiceInstances.Provision"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "ServiceInstances.Remove"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Sessions.List"),
+    trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Sessions.Logout"),
+    trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Sessions.Me"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Sessions.Revoke"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "UserIdentities.List"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "UserIdentities.Unlink"),
@@ -2434,6 +2436,22 @@ pub mod trellis_auth_v1 {
                     }
                 },
             ))
+        }
+        pub async fn sessions_logout(
+            &self,
+            input: &rpc::SessionsLogoutInput,
+        ) -> Result<
+            rpc::SessionsLogoutOutput,
+            trellis_rs::client::CallError<rpc::SessionsLogoutError>,
+        > {
+            self.inner.call::<rpc::SessionsLogout>(input).await
+        }
+        pub async fn sessions_me(
+            &self,
+            input: &rpc::SessionsMeInput,
+        ) -> Result<rpc::SessionsMeOutput, trellis_rs::client::CallError<rpc::SessionsMeError>>
+        {
+            self.inner.call::<rpc::SessionsMe>(input).await
         }
         pub async fn sessions_revoke(
             &self,

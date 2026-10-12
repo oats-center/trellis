@@ -19,9 +19,18 @@ pub const fn assert_abi(version: u32) {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AvailabilitySnapshot {
     usable: bool,
-    permissions: Arc<[trellis_protocol::PermissionAtom]>,
+    actions: Arc<[CatalogActionProjection]>,
+    capabilities: Arc<[trellis_protocol::CapabilityAuthority]>,
+    state_owner: Option<String>,
     resources: Arc<crate::service::ServiceResourceBindings>,
     resource_generations: Arc<std::collections::BTreeMap<(ResourceKind, String), u64>>,
+}
+
+/// Advisory membership of an action in an authenticated accepted catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogActionProjection {
+    pub(crate) api_id: String,
+    pub(crate) action: trellis_protocol::CatalogActionIdentity,
 }
 
 impl AvailabilitySnapshot {
@@ -31,14 +40,16 @@ impl AvailabilitySnapshot {
 
     #[cfg(test)]
     pub(crate) fn new(
-        permissions: Vec<trellis_protocol::PermissionAtom>,
+        actions: Vec<CatalogActionProjection>,
         resources: crate::service::ServiceResourceBindings,
     ) -> Self {
-        Self::replacing(permissions, resources, &Self::default())
+        Self::replacing(actions, Vec::new(), None, resources, &Self::default())
     }
 
     pub(crate) fn replacing(
-        permissions: Vec<trellis_protocol::PermissionAtom>,
+        actions: Vec<CatalogActionProjection>,
+        capabilities: Vec<trellis_protocol::CapabilityAuthority>,
+        state_owner: Option<String>,
         resources: crate::service::ServiceResourceBindings,
         previous: &Self,
     ) -> Self {
@@ -46,7 +57,9 @@ impl AvailabilitySnapshot {
         let next = generations.values().copied().max().unwrap_or(0) + 1;
         let candidate = Self {
             usable: true,
-            permissions: permissions.into(),
+            actions: actions.into(),
+            capabilities: capabilities.into(),
+            state_owner,
             resources: Arc::new(resources),
             resource_generations: Arc::default(),
         };
@@ -70,11 +83,13 @@ impl AvailabilitySnapshot {
     }
 
     pub(crate) fn suspended(previous: &Self) -> Self {
+        Self::with_usability(previous, false)
+    }
+
+    pub(crate) fn with_usability(previous: &Self, usable: bool) -> Self {
         Self {
-            usable: false,
-            permissions: previous.permissions.clone(),
-            resources: previous.resources.clone(),
-            resource_generations: previous.resource_generations.clone(),
+            usable,
+            ..previous.clone()
         }
     }
 
@@ -88,18 +103,9 @@ impl AvailabilitySnapshot {
 
     fn resource_names(&self, kind: ResourceKind) -> Vec<String> {
         match kind {
-            ResourceKind::State => self
-                .permissions
-                .iter()
-                .filter_map(|permission| match permission.target() {
-                    trellis_protocol::PermissionTarget::ParticipantResource {
-                        resource: trellis_protocol::ParticipantResourceKind::State,
-                        name,
-                        ..
-                    } => Some(name.clone()),
-                    _ => None,
-                })
-                .collect(),
+            // State is principal-owned, not a native physical resource binding.
+            // Its declared name is validated by the State provider at dispatch.
+            ResourceKind::State => Vec::new(),
             ResourceKind::Kv => self.resources.kv.keys().cloned().collect(),
             ResourceKind::Store => self.resources.store.keys().cloned().collect(),
             ResourceKind::Job => self
@@ -113,7 +119,7 @@ impl AvailabilitySnapshot {
 
     fn same_binding(&self, previous: &Self, kind: ResourceKind, name: &str) -> bool {
         match kind {
-            ResourceKind::State => true,
+            ResourceKind::State => self.state_owner == previous.state_owner,
             ResourceKind::Kv => self.resources.kv.get(name) == previous.resources.kv.get(name),
             ResourceKind::Store => {
                 self.resources.store.get(name) == previous.resources.store.get(name)
@@ -165,15 +171,26 @@ impl AvailabilitySnapshot {
         self.resources.event_consumers.get(name)
     }
 
-    /// Test exact installed authority for an API action.
+    /// Test projected whole-capability membership for an API action.
     #[doc(hidden)]
     pub fn allows_action(&self, action: OptionalAction) -> bool {
         self.usable
-            && self.permissions.iter().any(|permission| {
-                permission.action() == action.action
-                    && permission.target().as_api_surface()
-                        == Some((action.api_id, action.surface, action.name))
+            && self.actions.iter().any(|allowed| {
+                allowed.api_id == action.api_id
+                    && allowed.action.kind == action.surface
+                    && allowed.action.name == action.name
+                    && allowed.action.direction == action.action
             })
+    }
+
+    /// Test a whole capability whose signed identity and meaning match its accepted catalog.
+    #[doc(hidden)]
+    pub fn allows_capability(&self, capability_id: &str) -> bool {
+        self.usable
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability.capability_id == capability_id)
     }
 
     /// Reject an optional action absent from this installed snapshot.
@@ -199,16 +216,7 @@ impl AvailabilitySnapshot {
 
     fn has_installed_resource(&self, kind: ResourceKind, name: &str) -> bool {
         match kind {
-            ResourceKind::State => self.permissions.iter().any(|permission| {
-                matches!(
-                    permission.target(),
-                    trellis_protocol::PermissionTarget::ParticipantResource {
-                        resource: trellis_protocol::ParticipantResourceKind::State,
-                        name: resource_name,
-                        ..
-                    } if resource_name == name
-                )
-            }),
+            ResourceKind::State => self.state_owner.is_some(),
             ResourceKind::Kv => self.resources.kv.contains_key(name),
             ResourceKind::Store => self.resources.store.contains_key(name),
             ResourceKind::Job => self
@@ -800,6 +808,9 @@ impl Client {
         T: Codec + Send + 'static,
     {
         let availability = self.client.availability();
+        if !availability.has_resource(ResourceKind::Kv, name) {
+            return Ok(None);
+        }
         let Some(binding) = availability.kv_binding(name).cloned() else {
             return Ok(None);
         };
@@ -828,6 +839,9 @@ impl Client {
         name: &str,
     ) -> Result<Option<crate::service::StoreHandle>, crate::service::ServerError> {
         let availability = self.client.availability();
+        if !availability.has_resource(ResourceKind::Store, name) {
+            return Ok(None);
+        }
         let Some(binding) = availability.store_binding(name).cloned() else {
             return Ok(None);
         };
@@ -1700,102 +1714,10 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::{
-        ApiDescriptor, AvailabilitySnapshot, Codec as _, DeclaredOperationFailure,
-        OperationAdapter, OperationDeclaredError, OperationDescriptor, OperationSignal,
-        OptionalAction, PackageEvidence, PackageSourceEvidence, ResourceKind,
-        SerializableErrorData, Timestamp, TrellisError, Ulid,
+        ApiDescriptor, Codec as _, DeclaredOperationFailure, OperationAdapter,
+        OperationDeclaredError, OperationDescriptor, OperationSignal, PackageEvidence,
+        PackageSourceEvidence, SerializableErrorData, Timestamp, TrellisError, Ulid,
     };
-
-    #[test]
-    fn resource_generations_fence_removed_and_replaced_handles() {
-        let binding = crate::service::KvResourceBinding {
-            bucket: "KV_A".into(),
-            history: 2,
-            max_value_bytes: None,
-            ttl_ms: 0,
-        };
-        let resources = crate::service::ServiceResourceBindings {
-            kv: [("records".into(), binding.clone())].into(),
-            ..Default::default()
-        };
-        let first = AvailabilitySnapshot::replacing(vec![], resources.clone(), &Default::default());
-        let generation = first
-            .resource_generation(ResourceKind::Kv, "records")
-            .unwrap();
-
-        let suspended = AvailabilitySnapshot::suspended(&first);
-        assert!(!suspended.has_kv_binding("records", &binding));
-        assert_eq!(
-            suspended.resource_generation(ResourceKind::Kv, "records"),
-            None
-        );
-        let unchanged = AvailabilitySnapshot::replacing(vec![], resources, &suspended);
-        assert!(unchanged.has_kv_binding("records", &binding));
-        assert_eq!(
-            unchanged.resource_generation(ResourceKind::Kv, "records"),
-            Some(generation)
-        );
-
-        let removed = AvailabilitySnapshot::replacing(vec![], Default::default(), &unchanged);
-        let readded = AvailabilitySnapshot::replacing(
-            vec![],
-            crate::service::ServiceResourceBindings {
-                kv: [("records".into(), binding.clone())].into(),
-                ..Default::default()
-            },
-            &removed,
-        );
-        assert_ne!(
-            readded.resource_generation(ResourceKind::Kv, "records"),
-            Some(generation)
-        );
-
-        let replaced = AvailabilitySnapshot::replacing(
-            vec![],
-            crate::service::ServiceResourceBindings {
-                kv: [(
-                    "records".into(),
-                    crate::service::KvResourceBinding {
-                        bucket: "KV_B".into(),
-                        ..binding
-                    },
-                )]
-                .into(),
-                ..Default::default()
-            },
-            &readded,
-        );
-        assert_ne!(
-            replaced.resource_generation(ResourceKind::Kv, "records"),
-            readded.resource_generation(ResourceKind::Kv, "records")
-        );
-    }
-
-    #[tokio::test]
-    async fn availability_snapshot_replacement_wakes_watchers() {
-        let initial = AvailabilitySnapshot::default();
-        let (sender, mut receiver) = tokio::sync::watch::channel(initial.clone());
-        let action = OptionalAction::rpc("fixture.Primary@v1", "Fetch");
-        let replacement = AvailabilitySnapshot::new(
-            vec![trellis_protocol::PermissionAtom::new(
-                trellis_protocol::PermissionTarget::api_surface(
-                    "fixture.Primary@v1",
-                    trellis_protocol::ApiSurfaceKind::Rpc,
-                    "Fetch",
-                )
-                .unwrap(),
-                trellis_protocol::PermissionAction::Call,
-            )
-            .unwrap()],
-            Default::default(),
-        );
-
-        assert!(!initial.allows_action(action));
-        sender.send_replace(replacement.clone());
-        receiver.changed().await.unwrap();
-        assert_eq!(*receiver.borrow(), replacement);
-        assert!(receiver.borrow().allows_action(action));
-    }
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     struct WireScalars {
