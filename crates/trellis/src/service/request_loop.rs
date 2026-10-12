@@ -1162,9 +1162,8 @@ pub async fn sign_verified_reply(
     owner
         .assert_current(&provider)
         .map_err(|error| ServerError::Nats(error.to_string()))?;
-    owner
-        .assert_current(verified.authority())
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
+    // Admission authorized this finite work; only the provider must still be
+    // current when signing against the retained opening transcript.
     owner
         .assert_issuer_current(&certificate.issuer_key_id)
         .map_err(|error| ServerError::Nats(error.to_string()))?;
