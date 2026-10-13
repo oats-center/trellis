@@ -16,6 +16,9 @@ use trellis_testkit::TrellisTestRuntime;
 #[path = "support/operation_interop.rs"]
 mod operation_interop;
 
+#[path = "support/operation_lifecycle.rs"]
+mod operation_lifecycle;
+
 fn wire<T: DeserializeOwned>(value: Json) -> T {
     serde_json::from_value(value).unwrap()
 }

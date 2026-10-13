@@ -3802,13 +3802,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           }
           const runtime = await this.#acquireOperation(durable);
           if (!runtime?.reclaimed) return;
+          // Handler controls retain the exact fence installed by acquisition.
+          const fence = this.#activeOperationFences.get(runtime.id);
+          if (!fence || !this.#ownsOperation(runtime, fence)) return;
           if (this.#operationRecoveryAbort.signal.aborted) return;
           runtime.reclaimed = false;
           // Recovered execution pins the current generation so its support
           // traffic does not resurrect the seed socket or outlive its carrier.
           await this.#pinRecoveredOperation(runtime.id);
           if (runtime.transferGrant && !runtime.cancelRequestedAt) {
-            const fence = this.#operationFence(runtime);
             const committed = Reflect.get(runtime.transferGrant, "committed");
             if (Value.Check(FileInfoSchema, committed)) {
               if (!this.#transferSupport) return;
@@ -3891,7 +3893,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             );
             return;
           }
-          const fence = this.#operationFence(runtime);
           startLeaseHeartbeat(runtime, fence);
           watchCancellation(runtime, fence);
           void scheduleHandler(
