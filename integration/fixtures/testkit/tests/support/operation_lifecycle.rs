@@ -258,6 +258,130 @@ async fn signed_cancel_waits_for_the_handlers_joined_blocking_child() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rust_successor_resumes_interrupted_cancellation_before_terminal_acknowledgement() {
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = Arc::new(
+        runtime
+            .register_service::<Participant>("rust-cleanup-provider")
+            .await
+            .unwrap(),
+    );
+    let first_identity = Arc::clone(&identity);
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
+    let cleanup_tx = Arc::new(Mutex::new(Some(cleanup_tx)));
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    // Dropping this application's executor stops all its handler/lease tasks.
+    let first = std::thread::spawn(move || {
+        let executor = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        executor.block_on(async move {
+            let mut service = Participant::connect(first_identity.connect_options())
+                .await
+                .unwrap();
+            Provider::new(&mut service)
+                .runtime_trellis_optional_availability_v2()
+                .register_extend(move |_, _, operation| {
+                    let cleanup_tx = cleanup_tx.lock().unwrap().take().unwrap();
+                    async move {
+                        assert_eq!(
+                            operation.cancellation().cancelled().await,
+                            OperationCancellationReason::Requested
+                        );
+                        cleanup_tx.send(()).unwrap();
+                        std::future::pending::<()>().await;
+                        Ok(())
+                    }
+                });
+            let serving = tokio::spawn(service.run());
+            ready_tx.send(()).unwrap();
+            stop_rx.await.unwrap();
+            serving.abort();
+            let _ = serving.await;
+        });
+    });
+    ready_rx.await.unwrap();
+    let admin = administrator(&runtime).await;
+    let me = admin.sessions_me(&wire(json!({}))).await.unwrap();
+    for capability in Request::REQUIRED_CAPABILITIES
+        .iter()
+        .chain(Request::OPTIONAL_CAPABILITIES)
+    {
+        admin.capability_grants_grant(&wire(json!({"principalId":me.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    }
+    let caller_identity = runtime
+        .register_client::<Request>("rust-cleanup-caller")
+        .await
+        .unwrap();
+    let base = GeneratedClient::connect_user(caller_identity.connect_options())
+        .await
+        .unwrap();
+    let caller = Client::from_generated(base).runtime_trellis_optional_availability_v2();
+    let operation = caller
+        .extend()
+        .start(&ReadInput {
+            value: "recover cleanup".into(),
+            extra: Default::default(),
+        })
+        .await
+        .unwrap();
+    let persisted = serde_json::to_vec(operation.reference()).unwrap();
+    let cancellation = operation.cancel();
+    tokio::pin!(cancellation);
+    tokio::select! {
+        result = &mut cancellation => panic!("cleanup completed before interruption: {result:?}"),
+        result = tokio::time::timeout(Duration::from_secs(10), cleanup_rx) => { result.unwrap().unwrap(); }
+    }
+    stop_tx.send(()).unwrap();
+    tokio::task::spawn_blocking(move || first.join().unwrap())
+        .await
+        .unwrap();
+    let mut successor = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let (recovered_tx, recovered_rx) = tokio::sync::oneshot::channel();
+    let recovered_tx = Arc::new(Mutex::new(Some(recovered_tx)));
+    Provider::new(&mut successor)
+        .runtime_trellis_optional_availability_v2()
+        .register_extend(move |context, input, operation| {
+            let recovered_tx = recovered_tx.lock().unwrap().take().unwrap();
+            async move {
+                assert!(context.resuming);
+                assert_eq!(input.value, "recover cleanup");
+                assert_eq!(
+                    operation.cancellation().reason(),
+                    Some(OperationCancellationReason::Requested)
+                );
+                recovered_tx.send(()).unwrap();
+                Ok(())
+            }
+        });
+    let serving = tokio::spawn(successor.run());
+    tokio::time::timeout(Duration::from_secs(65), recovered_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let restored = caller
+        .extend()
+        .control(serde_json::from_slice(&persisted).unwrap())
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), restored.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Cancelled
+    );
+    serving.abort();
+    let _ = serving.await;
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_killed() {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
