@@ -568,3 +568,8 @@ referenced by current signed authority.
 The `accountRead` capability covers account resolution, reading your current
 session and signing out of the current login and its application sessions.
 `Sessions.Me` and `Sessions.Logout` require normal selection and consent.
+
+Refresh-successor checkpointing is restricted to actual refresh exchanges.
+Rejected cross-user Device Code reauthorization leaves prior custody usable.
+Retained browser OAuth clients refresh discovery from durable cross-tab trust
+before consuming a refresh token; no client recreation or page reload is needed.

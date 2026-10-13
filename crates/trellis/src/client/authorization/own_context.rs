@@ -151,16 +151,12 @@ impl AuthorizationContextCache {
 
     /// Retain a newly acquired OAuth CONNECT credential without changing logical
     /// application authority. The durable OAuth client owns HTTP token refresh.
-    pub(crate) async fn replace_oauth_admission(
+    pub(crate) fn replace_oauth_admission(
         &self,
-        transport: &async_nats::Client,
         auth: &SessionAuth,
         admission: trellis_protocol::SignedOAuthAdmission,
     ) -> Result<(), TrellisClientError> {
-        let issuer = self
-            .owner
-            .issuer(transport, &admission.credential.issuer_key_id)
-            .await?;
+        let issuer = self.owner.current_trust()?.issuer;
         trellis_protocol::verify_oauth_admission(
             &serde_json::to_vec(&admission)?,
             &issuer,

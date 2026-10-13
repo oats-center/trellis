@@ -1443,7 +1443,6 @@ impl TrellisClient {
         )
         .await?;
         let generations = connected.generations.clone();
-        let nats = connected.nats.clone();
         let (renew_tx, mut renew_rx) = tokio::sync::mpsc::channel::<
             tokio::sync::oneshot::Sender<Result<(), TrellisClientError>>,
         >(1);
@@ -1473,11 +1472,38 @@ impl TrellisClient {
                             "native OAuth recovery required".into(),
                         )
                     })?;
+                    let carrier = if session.admission.credential.issuer_key_id
+                        != authorization_contexts.owner.current_trust()?.issuer.key_id
+                    {
+                        let carrier = generations.acquire_published()?;
+                        authorization_contexts
+                            .owner
+                            .issuer(carrier.nats(), &session.admission.credential.issuer_key_id)
+                            .await?;
+                        Some(carrier)
+                    } else {
+                        None
+                    };
                     authorization_contexts
-                        .replace_oauth_admission(&nats, &session.auth, session.admission.clone())
+                        .replace_oauth_admission(&session.auth, session.admission.clone())?;
+                    // Signer resolution retires the old authority's issuer. Keep
+                    // this current maintenance lease through checked replacement.
+                    if let Some(carrier) = carrier {
+                        crate::client::authorization::install_prepared_authorization(
+                            &crate::client::authorization::AuthorizationRefreshRuntime {
+                                contexts: authorization_contexts.clone(),
+                                auth: Arc::new(session.auth.clone()),
+                                generations: generations.clone(),
+                            },
+                            Some(carrier),
+                        )
                         .await?;
-                    authorization_contexts.request_refresh();
-                    generations.authorization_promoted();
+                    } else {
+                        // A known signer needs no material lookup. Preserve fresh
+                        // admission recovery when the previous session is retired.
+                        authorization_contexts.request_refresh();
+                        generations.authorization_promoted();
+                    }
                     Ok(())
                 }
                 .await;
@@ -1674,6 +1700,7 @@ impl TrellisClient {
                 auth: self.auth.clone(),
                 generations: self.generations.clone(),
             },
+            None,
         )
         .await?;
         let mut availability = contexts.watch_availability();

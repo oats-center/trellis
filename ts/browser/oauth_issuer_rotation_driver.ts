@@ -205,6 +205,7 @@ async function nativeWorker(operation: string, slot: string, inflight = false) {
 async function native() {
   const first = await nativeWorker("login", "single");
   const second = await nativeWorker("login", "double");
+  await nativeWorker("reauthorize", "single");
   assert.equal(first.trust.issuer.keyId, second.trust.issuer.keyId);
   const k2 = await rotate();
   for (const malformed of ["missing", "forged"] as const) {
@@ -296,15 +297,19 @@ async function browser() {
     target: Page,
     handle: string,
     action: "authorize" | "complete" | "resume" | "tokenDigest",
+    reopen = true,
+    rejectInstall = false,
   ) {
     return await target.evaluate(
-      async ({ issuer, handle, appOrigin, action }) => {
+      async ({ issuer, handle, appOrigin, action, reopen, rejectInstall }) => {
         const sdk: typeof import("./oauth_issuer_rotation_client.ts") =
           await import(`${appOrigin}/sdk.js`);
-        await sdk.open(issuer, handle);
-        return await sdk[action]();
+        if (reopen) await sdk.open(issuer, handle);
+        return action === "resume"
+          ? await sdk.resume(rejectInstall)
+          : await sdk[action]();
       },
-      { issuer, handle, appOrigin, action },
+      { issuer, handle, appOrigin, action, reopen, rejectInstall },
     );
   }
   async function login(handle: string) {
@@ -347,6 +352,9 @@ async function browser() {
     const first = await login("rotation-single");
     const second = await login("rotation-double");
     assert.equal(first.keyId, second.keyId);
+    const retained = await context.newPage();
+    await retained.goto(appOrigin);
+    await call(retained, "rotation-single", "tokenDigest");
     const k2 = await rotate();
     await page.goto(appOrigin);
     const before = await call(page, "rotation-double", "tokenDigest");
@@ -368,6 +376,28 @@ async function browser() {
     }
     chain = "valid";
     await resume("rotation-single", first, k2);
+    const retainedResume = (await call(
+      retained,
+      "rotation-single",
+      "resume",
+      false,
+    )) as Summary;
+    assert.equal(retainedResume.keyId, k2);
+    assert.equal(retainedResume.principalId, first.principalId);
+    assert.equal(retainedResume.grantId, first.grantId);
+    assert.deepEqual(
+      await call(retained, "rotation-single", "resume", false, true),
+      { error: "OAuthRecoveryRequired" },
+    );
+    const retried = (await call(
+      retained,
+      "rotation-single",
+      "resume",
+      false,
+    )) as Summary;
+    assert.equal(retried.keyId, k2);
+    assert.equal(retried.runtime, retainedResume.runtime);
+    assert.equal(retried.nkey, retainedResume.nkey);
     const k3 = await rotate();
     const twoHop = await resume("rotation-double", second, k3);
     assert.equal(

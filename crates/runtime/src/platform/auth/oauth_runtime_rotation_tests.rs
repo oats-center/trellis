@@ -204,51 +204,112 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
         .unwrap();
     assert!(response.status().is_success());
     let cookie = cookies(&response).join("; ");
-    let response = http
-        .post(format!("{oauth_origin}/portal/device"))
-        .header("Origin", &oauth_origin)
-        .header("Cookie", &cookie)
-        .form(&[("csrf", csrf.as_str()), ("user_code", device.user_code())])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_redirection());
-    let location = url::Url::parse(&oauth_origin)
-        .unwrap()
-        .join(response.headers()["location"].to_str().unwrap())
-        .unwrap();
-    let transaction = location
-        .query_pairs()
-        .find(|(key, _)| key == "transaction")
-        .unwrap()
-        .1
-        .into_owned();
-    let response = http
-        .get(format!("{oauth_origin}/portal/authorization/{transaction}"))
-        .header("Cookie", &cookie)
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
-    let view: serde_json::Value = response.json().await.unwrap();
-    let response = http
-        .post(format!("{oauth_origin}/portal/approve"))
-        .header("Origin", &oauth_origin)
-        .header("Cookie", &cookie)
-        .form(&[
-            ("csrf", csrf.as_str()),
-            ("transaction", transaction.as_str()),
-            ("presentation", view["presentationId"].as_str().unwrap()),
-            ("decision", "approve"),
-            ("approved", "trellis.auth@v1::accountRead"),
-            ("confirm_device", device.user_code()),
-        ])
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_redirection());
+    let approve_device = |user_code: String| {
+        let http = &http;
+        let oauth_origin = &oauth_origin;
+        let csrf = &csrf;
+        let cookie = &cookie;
+        async move {
+            let response = http
+                .post(format!("{oauth_origin}/portal/device"))
+                .header("Origin", oauth_origin.as_str())
+                .header("Cookie", cookie.as_str())
+                .form(&[("csrf", csrf.as_str()), ("user_code", user_code.as_str())])
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_redirection());
+            let location = url::Url::parse(&oauth_origin)
+                .unwrap()
+                .join(response.headers()["location"].to_str().unwrap())
+                .unwrap();
+            let transaction = location
+                .query_pairs()
+                .find(|(key, _)| key == "transaction")
+                .unwrap()
+                .1
+                .into_owned();
+            let response = http
+                .get(format!("{oauth_origin}/portal/authorization/{transaction}"))
+                .header("Cookie", cookie.as_str())
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_success());
+            let view: serde_json::Value = response.json().await.unwrap();
+            let response = http
+                .post(format!("{oauth_origin}/portal/approve"))
+                .header("Origin", oauth_origin.as_str())
+                .header("Cookie", cookie.as_str())
+                .form(&[
+                    ("csrf", csrf.as_str()),
+                    ("transaction", transaction.as_str()),
+                    ("presentation", view["presentationId"].as_str().unwrap()),
+                    ("decision", "approve"),
+                    ("approved", "trellis.auth@v1::accountRead"),
+                    ("confirm_device", user_code.as_str()),
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert!(response.status().is_redirection());
+        }
+    };
+    approve_device(device.user_code().to_owned()).await;
     let mut session = device.complete().await.unwrap();
     let identity = session.admission.credential.clone();
+    let warm_native = NativeOAuthClient::open(
+        root.join("warm-custody"),
+        scope.clone(),
+        initial_trust.clone(),
+    )
+    .await
+    .unwrap();
+    let warm_device = warm_native.start_device(&serde_json::json!([
+        {"type":"trellis_capabilities","required":["trellis.auth@v1::accountRead"],"optional":[]}
+    ])).await.unwrap();
+    approve_device(warm_device.user_code().to_owned()).await;
+    let warm = trellis_rs::client::TrellisClient::connect_user(UserConnectOptions::new(
+        discovered.nats_servers.clone(),
+        30_000,
+        warm_device.complete().await.unwrap(),
+    ))
+    .await
+    .unwrap();
+    // Close the actual initial socket. A successful signed call must then use
+    // the manager's replacement generation, without replacing this client.
+    let baseline = warm.runtime_nats();
+    baseline.drain().await.unwrap();
+    let warm_input = serde_json::json!({});
+    let warm_me = || {
+        warm.request_json_value(
+            trellis_runtime_apis::apis::trellis_auth_v1::rpc::SessionsMe::API_ID,
+            trellis_protocol::CatalogActionIdentity {
+                kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                name: "Sessions.Me".into(),
+                direction: trellis_protocol::PermissionAction::Call,
+            },
+            trellis_runtime_apis::apis::trellis_auth_v1::rpc::SessionsMe::SUBJECT,
+            &warm_input,
+        )
+    };
+    let warm_initial = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut readiness = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            readiness.tick().await;
+            if baseline.flush().await.is_ok() {
+                continue;
+            }
+            match warm_me().await {
+                Ok(me) => break me,
+                Err(trellis_rs::client::TrellisClientError::AuthorizationUnavailable(_)) => {}
+                Err(error) => panic!("replacement socket signed readiness: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("replacement socket and authentic mirror coverage");
+    assert!(baseline.flush().await.is_err());
     let storage = crate::storage::SqliteStore::new(
         crate::SubsystemName::Platform,
         match config.platform_storage_backend().unwrap() {
@@ -361,6 +422,9 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
         }
         drop(store);
         (stop, runtime) = start_runtime(&config, &origin).await;
+        warm.refresh_authorization_context().await.unwrap();
+        let warm_renewed = warm_me().await.unwrap();
+        assert_eq!(warm_renewed["principal"], warm_initial["principal"]);
         session = NativeOAuthClient::open(custody.clone(), scope.clone(), pinned.clone())
             .await
             .unwrap()

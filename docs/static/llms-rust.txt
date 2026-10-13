@@ -489,3 +489,7 @@ the scheduled renewal worker and awaits authenticated publication and coverage.
 The `accountRead` capability covers account resolution, reading your current
 session and signing out of the current login and its application sessions.
 `Sessions.Me` and `Sessions.Logout` require normal selection and consent.
+
+Native OAuth renewal leases the current maintenance transport after HTTP refresh,
+and retains it through signer lookup and verified authority promotion. Replacing
+the physical NATS generation does not pin renewal to the original socket.

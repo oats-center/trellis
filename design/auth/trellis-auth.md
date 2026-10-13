@@ -380,6 +380,15 @@ be installed as the configured runtime signer before further issuance. A
 previous signer cannot continue issuing after that commitment. Rotation itself
 does not retire sessions. Explicit key compromise revokes affected sessions and
 makes that key unusable; restart must not reinstall it as an active signer.
+
+Refresh-successor checkpoints apply only to an actual in-progress refresh,
+never to a separate Device Code authorization. Rejected cross-principal
+reauthorization preserves the previous credential. Browser refresh reloads
+durable cross-tab trust under the custody lock and discovers the current signer
+before spending its token, even when the OAuth client object remains open.
+Native renewal leases the current maintenance attachment rather than retaining
+the initial socket; that finite lease carries signer resolution through the
+existing private preparation and checked authority-promotion boundary.
 Cold provider-certificate material reads authenticate the immutable signature,
 installation/account binding, identity, and validity bounds without applying
 today's clock. Live use still requires a current issuer and unexpired authority

@@ -60,10 +60,11 @@ export async function complete() {
 }
 
 /** Exercise the supported install callback after signed admission verification. */
-export async function resume() {
+export async function resume(rejectInstall = false) {
   if (!client) throw new Error("open browser custody first");
   let admission: BrowserOAuthAdmission | undefined;
   const result = await client.resume(async (value) => {
+    if (rejectInstall) throw new Error("application did not install admission");
     admission = value;
   });
   if (result.isErr()) return { error: result.error.reason };

@@ -78,6 +78,33 @@ async fn sdk_rotation(mode: &str) {
             .register_client(&mutation(&f.admin, &registration), &registration, now)
             .unwrap();
     }
+    if mode == "native" {
+        let input = trellis_runtime_apis::types::AuthUserCreateRequest {
+            username: "other-user".to_string().into(),
+            display_name: "Other user".to_string().into(),
+            password: Some("another strong local password".to_string().into()),
+            idempotency_key: ulid::Ulid::new().to_string().into(),
+            extra: Default::default(),
+        };
+        let other = super::super::rpc_users::create_user(
+            &f.store,
+            &mutation(&f.admin, &input),
+            &input,
+            now,
+        )
+        .unwrap();
+        policy(
+            &f.store,
+            &f.admin,
+            PolicyMutation::CapabilityGrant {
+                principal_id: other.user.principal.principal_id.to_string(),
+                capability_id: "trellis.auth@v1::identitiesRead".into(),
+                expected_revision: 0,
+                expires_at: None,
+            },
+            now,
+        );
+    }
     let mut authority = Arc::new(f.store);
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),

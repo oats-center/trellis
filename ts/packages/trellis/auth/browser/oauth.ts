@@ -371,8 +371,7 @@ export class BrowserOAuthClient {
           throw new AuthError({ reason: "OAuthRecoveryRequired" });
       },
       async () => {
-        if (this.#owner) await this.store.retainTrust(this.#owner);
-        else await this.#prepareTrust(this.metadata);
+        await this.#prepareTrust();
       },
     );
   }
@@ -411,7 +410,7 @@ export class BrowserOAuthClient {
       throw new AuthError({ reason: "OAuthTrustUnavailable" });
     const owner = await authenticateIssuerChain(
       this.scope.issuer,
-      this.store.trust,
+      this.#owner?.trustSnapshot ?? this.store.trust,
       {
         instanceId: metadata.trellis.trellisInstanceId,
         account: metadata.trellis.audienceNatsAccount,

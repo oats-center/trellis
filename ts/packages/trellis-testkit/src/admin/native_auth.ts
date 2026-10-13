@@ -36,6 +36,8 @@ export async function loginNativeTestClient(options: {
   issuer: string;
   directory: string;
   clientId: string;
+  /** Reauthorize an existing custody handle instead of opening a fresh client. */
+  client?: NativeOAuthClient;
   request: AppRequestDescriptor;
   username: string;
   password: string;
@@ -51,20 +53,22 @@ export async function loginNativeTestClient(options: {
     await discoverNativeOAuth(options.issuer, { signal: options.signal })
   ).take();
   if (isErr(server)) throw server.error;
-  const client = (
-    await NativeOAuthClient.open({
-      directory: options.directory,
-      scope: {
-        issuer: server.issuer,
-        instanceId: server.trust.instanceId,
-        account: server.trust.account,
-        clientId: options.clientId,
-        credentialHandle: ulid(),
-      },
-      trust: server.trust,
-      signal: options.signal,
-    })
-  ).take();
+  const client =
+    options.client ??
+    (
+      await NativeOAuthClient.open({
+        directory: options.directory,
+        scope: {
+          issuer: server.issuer,
+          instanceId: server.trust.instanceId,
+          account: server.trust.account,
+          clientId: options.clientId,
+          credentialHandle: ulid(),
+        },
+        trust: server.trust,
+        signal: options.signal,
+      })
+    ).take();
   if (isErr(client)) throw client.error;
   try {
     const device = (

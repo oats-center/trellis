@@ -472,9 +472,11 @@ export class NativeCredentialLease {
   retainRotatedToken(refreshToken: string): void {
     this.#assertOpen();
     const row = this.#records
-      .prepare("SELECT grant_json FROM credential WHERE id=1")
+      .prepare("SELECT spent, grant_json FROM credential WHERE id=1")
       .get();
     if (typeof row?.grant_json !== "string") return;
+    if (row.spent !== 1)
+      throw new AuthError({ reason: "OAuthRecoveryRequired" });
     const grant = grantSchema.parse(JSON.parse(row.grant_json));
     if (grant.refreshToken === refreshToken)
       throw new AuthError({ reason: "OAuthRecoveryRequired" });

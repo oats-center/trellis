@@ -202,12 +202,16 @@ pub(crate) async fn read_own_context(
 /// and publish only at the final checked transport boundary.
 pub(crate) async fn install_prepared_authorization(
     runtime: &AuthorizationRefreshRuntime,
+    carrier: Option<crate::client::transport_generations::TransportLease>,
 ) -> Result<String, TrellisClientError> {
     let _refresh = runtime.contexts.refresh.lock().await;
     if let Some(cause) = runtime.generations.terminal() {
         return Err(cause.client_error());
     }
-    let lease = runtime.generations.acquire_published()?;
+    let lease = match carrier {
+        Some(carrier) => carrier,
+        None => runtime.generations.acquire_published()?,
+    };
     let candidate = tokio::select! {
         biased;
         cause = runtime.generations.wait_terminal() => return Err(cause.client_error()),
@@ -268,7 +272,7 @@ pub(crate) fn spawn_authorization_context_refresh_task(
             if runtime.contexts.owner.own_authority().is_err() {
                 runtime.contexts.suspend();
             }
-            if let Err(error) = install_prepared_authorization(&runtime).await {
+            if let Err(error) = install_prepared_authorization(&runtime, None).await {
                 tracing::warn!(%error, "own-authority renewal unavailable");
                 if runtime.contexts.owner.own_authority().is_err() {
                     runtime.contexts.suspend();

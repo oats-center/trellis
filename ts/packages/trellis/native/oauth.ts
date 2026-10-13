@@ -335,6 +335,7 @@ export class NativeOAuthClient {
             options.signal,
           ),
           options.signal,
+          true,
         );
       } catch (cause) {
         if (
@@ -366,6 +367,7 @@ export class NativeOAuthClient {
             options.signal,
           ),
           options.signal,
+          true,
         );
       } catch (cause) {
         if (
@@ -566,9 +568,10 @@ export class NativeOAuthClient {
   async #install(
     data: unknown,
     signal?: AbortSignal,
+    rotating = false,
   ): Promise<NativeOAuthSession> {
     const response = tokenSchema.parse(data);
-    if (response.token_type.toLowerCase() === "dpop")
+    if (rotating && response.token_type.toLowerCase() === "dpop")
       this.#lease.retainRotatedToken(response.refresh_token);
     let trust = this.trust;
     let verified = await verifyOAuthAdmissionWasm(

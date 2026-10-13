@@ -349,3 +349,8 @@ exchange, authenticated by the active pinned issuer or its forward-verified
 successor. Historical keys never advance live trust; compromised keys remain
 unusable. A retired catalog signer does not invalidate an immutable catalog
 referenced by current signed authority.
+
+Rejected cross-user Device Code reauthorization preserves existing credentials.
+Already-open browser tabs refresh discovery from retained trust before spending
+refresh tokens. Native renewal uses the current maintenance attachment through
+verified authority promotion, including after transport replacement.

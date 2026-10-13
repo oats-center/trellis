@@ -44,31 +44,76 @@ if (mode === "login") {
     })
   ).orThrow();
   try {
-    const resumed = await client.resume();
-    if (mode === "denied") {
-      assert.equal(resumed.isErr(), true);
-      if (resumed.isErr())
-        assert.equal(resumed.error.reason, "OAuthTrustUnavailable");
-      console.log(JSON.stringify({ denied: true }));
-    } else {
-      const session = resumed.orThrow();
-      const installed = summary(session);
-      for (const key of ["principalId", "grantId", "loginId", "dpop"] as const)
-        assert.equal(installed[key], previous[key]);
-      assert.notEqual(installed.runtime, previous.runtime);
-      assert.notEqual(installed.nkey, previous.nkey);
-      if (mode === "inflight") {
-        console.log(JSON.stringify({ ready: true }));
-        const lines = createInterface({ input: process.stdin });
-        await lines[Symbol.asyncIterator]().next();
-        lines.close();
-        const refreshed = await session.refresh();
-        assert.equal(refreshed.isErr(), true);
-        if (refreshed.isErr())
-          assert.equal(refreshed.error.reason, "OAuthTrustUnavailable");
+    if (mode === "reauthorize") {
+      await assert.rejects(
+        loginNativeTestClient({
+          issuer: previous.scope.issuer,
+          directory,
+          clientId: previous.scope.clientId,
+          client,
+          request: apps.cli.request,
+          approvedCapabilities: apps.cli.request.requiredCapabilities,
+          username: "other-user",
+          password: "another strong local password",
+        }),
+        (error: unknown) =>
+          error instanceof Error &&
+          "reason" in error &&
+          error.reason === "InvalidCredential",
+      );
+      const reopened = (
+        await NativeOAuthClient.open({
+          directory,
+          scope: previous.scope,
+          trust: previous.trust,
+        })
+      ).orThrow();
+      try {
+        const recovered = summary((await reopened.resume()).orThrow());
+        for (const key of [
+          "principalId",
+          "grantId",
+          "loginId",
+          "dpop",
+        ] as const)
+          assert.equal(recovered[key], previous[key]);
         console.log(JSON.stringify({ preserved: true }));
+      } finally {
+        await reopened.close();
+      }
+      process.exitCode = 0;
+    } else {
+      const resumed = await client.resume();
+      if (mode === "denied") {
+        assert.equal(resumed.isErr(), true);
+        if (resumed.isErr())
+          assert.equal(resumed.error.reason, "OAuthTrustUnavailable");
+        console.log(JSON.stringify({ denied: true }));
       } else {
-        console.log(JSON.stringify(installed));
+        const session = resumed.orThrow();
+        const installed = summary(session);
+        for (const key of [
+          "principalId",
+          "grantId",
+          "loginId",
+          "dpop",
+        ] as const)
+          assert.equal(installed[key], previous[key]);
+        assert.notEqual(installed.runtime, previous.runtime);
+        assert.notEqual(installed.nkey, previous.nkey);
+        if (mode === "inflight") {
+          console.log(JSON.stringify({ ready: true }));
+          const lines = createInterface({ input: process.stdin });
+          await lines[Symbol.asyncIterator]().next();
+          lines.close();
+          const refreshed = await session.refresh();
+          assert.equal(refreshed.isErr(), true);
+          if (refreshed.isErr())
+            assert.equal(refreshed.error.reason, "OAuthTrustUnavailable");
+          console.log(JSON.stringify({ preserved: true }));
+        } else {
+          console.log(JSON.stringify(installed));
+        }
       }
     }
   } finally {
