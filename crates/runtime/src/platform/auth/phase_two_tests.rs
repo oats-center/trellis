@@ -1416,6 +1416,42 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
     admission.credential = Credential::OAuthGrant(grant);
     let first = f.store.issue_authority(&admission, None, NOW).unwrap();
     assert_eq!(first.authority.unsigned.expires_at, NOW + 5);
+    // A second linked identity at the same issuer must not replace the selected
+    // identity's verified claims, even when its login is newer.
+    f.store
+        .link_oidc_identity(
+            &mutation(
+                &f.admin,
+                &(
+                    f.principal.as_str(),
+                    provider.provider_id.as_str(),
+                    "another-upstream-user",
+                ),
+            ),
+            &f.principal,
+            &provider.provider_id,
+            "another-upstream-user",
+            NOW,
+        )
+        .unwrap();
+    let mut other_login = login.clone();
+    other_login.upstream_subject = Some("another-upstream-user".into());
+    other_login.verified_claims = Some(serde_json::json!({"groups":[]}));
+    f.store.record_verified_login(&other_login, NOW).unwrap();
+    let unchanged = f
+        .store
+        .issue_authority(
+            &admission,
+            Some(&first.authority.unsigned.authorization_session_id),
+            NOW,
+        )
+        .expect("another linked subject must not remove this grant's required role");
+    assert!(unchanged
+        .authority
+        .unsigned
+        .capabilities
+        .iter()
+        .any(|cap| cap.capability_id == f.read));
     login.verified_claims = Some(serde_json::json!({"groups":[]}));
     f.store.record_verified_login(&login, NOW + 1).unwrap();
     assert!(matches!(
@@ -1426,6 +1462,17 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
         ),
         Err(AuthError::Retired)
     ));
+    other_login.verified_claims = Some(serde_json::json!({"groups":["readers"]}));
+    f.store
+        .record_verified_login(&other_login, NOW + 1)
+        .unwrap();
+    assert!(
+        matches!(
+            f.store.issue_authority(&admission, None, NOW + 1),
+            Err(AuthError::RequiredMissing)
+        ),
+        "another linked subject must not supply this grant's missing role"
+    );
     login.verified_claims = Some(serde_json::json!({"groups":["readers"]}));
     f.store.record_verified_login(&login, NOW + 2).unwrap();
     let second = f.store.issue_authority(&admission, None, NOW + 2).unwrap();

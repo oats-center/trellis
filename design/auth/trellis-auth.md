@@ -69,12 +69,10 @@ introspection binds its reply to the ephemeral key's derived inbox namespace;
 the responder checks that routing before publishing either success or errors.
 
 Console and OAuth portal are separate required frontend apps. Their build tools
-now use Node 24 LTS, npm workspaces, and Vite; embedded builds compile into
-staging before replacing only owner-marked output. This tooling change does not
-migrate the Console's older SDK authentication to Revision 7. The required
-Console build currently fails on retired participant imports, and SDK builds
-fail on retired protocol APIs; no placeholder assets or optional Console build
-are substituted to conceal that later-phase dependency.
+use Node 24 LTS, npm workspaces, and Vite; embedded builds compile into staging
+before replacing only owner-marked output. Console uses the Revision 7 OAuth SDK
+path. Production builds require real embedded assets; placeholder assets and
+optional Console builds are not substitutes for the product.
 
 The bundled Console's OAuth registration is runtime-owned. Initialization
 registers it against the configured Console application origin using the ordinary
@@ -88,8 +86,7 @@ implicit loopback trust. Both registrations have finite eligibility for the six
 administrative privileges. Registration uses the newly created
 administrator's ordinary `clients.manage` and `privileges.manage` authority.
 Replay returns the saved result without re-registering or re-enabling a modified
-client; ordinary startup does not change client registration. Console login's
-SDK migration remains pending. Registration does not itself grant the user
+client; ordinary startup does not change client registration. Registration does not itself grant the user
 capabilities or platform privileges: finite delegation still requires the user's
 holdings and explicit consent.
 
@@ -131,6 +128,10 @@ unchanged.
 Dex is exclusively a real upstream OIDC test dependency, not a deployment
 component. Trellis validates upstream nonce, signature, issuer, and audience
 before translating verified claims through its own role mapping and consent.
+Fresh claims replace earlier observations only for the selected upstream subject
+at that provider. Two linked identities belonging to one user do not supply or
+remove each other's mapped roles. Direct grants remain independent of claim
+freshness or upstream role removal.
 
 ## CIMD Retention
 

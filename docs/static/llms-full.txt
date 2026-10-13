@@ -17,6 +17,10 @@ can forward their own updates without receiving caller Observe authority.
 Rust generated `OperationRef::reference()` exposes the complete serializable
 reference for restoring control without starting another execution.
 
+OIDC claim refresh is scoped to the selected provider and upstream subject; a
+second linked identity cannot add or remove another identity's mapped roles.
+Direct grants remain independent of upstream role loss and claim freshness.
+
 Identity-link approval remains a protected same-origin POST. Its no-store
 continuation page shows a navigation link to a 60-second, one-use GET handoff
 bound to the exact portal session, provider and account. Top-level navigation

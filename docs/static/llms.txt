@@ -360,3 +360,6 @@ across SDKs, storage and complete references; generated aliases are not durable
 identities. Canonical starts honor that API major, while owner-directed controls
 retain the fixed `operation.v1` transport family. Implementation-only providers
 can forward their own updates without receiving caller Observe authority.
+
+OIDC claim refresh is scoped to the selected provider and upstream subject; a
+second linked identity cannot add or remove another identity's mapped roles.

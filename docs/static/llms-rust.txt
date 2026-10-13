@@ -500,3 +500,7 @@ owner reference; restore it with the invoker's `control(reference)` without
 starting another execution. Both SDKs verify the exact consumer binding in Live
 offers. Operation updates carry operationId, sequence, timestamp and the unchanged
 observed snapshot alongside the declared update payload.
+
+OIDC role freshness follows the selected provider/subject identity, not merely
+the user's latest login at that provider. Other linked identities cannot supply
+or remove its roles; direct grants remain independent.

@@ -578,3 +578,7 @@ Operation identity is `<version-qualified API>:operation:<action>`, independent
 of generated method aliases. Starts honor the descriptor API major; controls and
 observation keep the fixed `operation.v1` family and encoded owner/API identity.
 Transient updates carry operationId, sequence, timestamp, update and snapshot.
+
+OIDC role freshness follows the selected provider/subject identity, not merely
+the user's latest login at that provider. Other linked identities cannot supply
+or remove its roles; direct grants remain independent.
