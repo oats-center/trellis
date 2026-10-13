@@ -58,6 +58,7 @@ pub struct UploadTransferGrant {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     /// Retained application metadata.
+    #[serde(default)]
     pub metadata: BTreeMap<String, String>,
 }
 
@@ -224,6 +225,7 @@ pub(super) type UploadTransferCompletionResult = (
 /// Owned endpoint completion and final Operation persistence barrier.
 #[derive(Debug)]
 pub struct UploadTransferCompletion {
+    pub(crate) cancellation: Option<oneshot::Sender<()>>,
     pub(super) receiver: oneshot::Receiver<UploadTransferCompletionResult>,
     pub(super) task: Option<JoinHandle<Result<(), ServerError>>>,
 }

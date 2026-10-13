@@ -1,8 +1,4 @@
 import {
-  ResourcesInspectRequest,
-  ResourcesInspectResponse,
-  ResourcesQueryRequest,
-  ResourcesQueryResponse,
   StateConflict,
   StateDeleteRequest,
   StateDeleteResponse,
@@ -11,6 +7,9 @@ import {
   StatePutRequest,
   StatePutResponse,
   StateRepresentationError,
+  StateRegisterRequest,
+  StateRegisterResponse,
+  StateRegistrationConflict,
 } from types;
 
 api state@v1 {
@@ -21,6 +20,13 @@ api state@v1 {
   error Conflict(StateConflict);
   error CorruptRepresentation(StateRepresentationError);
   error UnsupportedRepresentation(StateRepresentationError);
+  error RegistrationConflict(StateRegistrationConflict);
+
+  rpc Register {
+    input StateRegisterRequest;
+    output StateRegisterResponse;
+    errors [RegistrationConflict];
+  }
 
   rpc Get {
     input StateGetRequest;
@@ -41,17 +47,9 @@ api state@v1 {
   }
 
 
-  rpc Resources.Query {
-    input ResourcesQueryRequest;
-    output ResourcesQueryResponse;
-    errors [CorruptRepresentation, UnsupportedRepresentation];
-    pagination cursor;
-  }
-
-  rpc Resources.Inspect {
-    input ResourcesInspectRequest;
-    output ResourcesInspectResponse;
-    errors [CorruptRepresentation, UnsupportedRepresentation];
+  live Watch {
+    input StateGetRequest;
+    event StateGetResponse;
   }
 
   capabilities {
@@ -59,15 +57,15 @@ api state@v1 {
       title "Read State";
       description "Read saved State values in the caller's authorized namespace.";
       consequence "The caller can see saved values.";
-      consent_revision 1;
-      allows { rpc Get; }
+      consent_revision 2;
+      allows { rpc Get; live Watch; }
     }
     capability write {
       title "Write State";
-      description "Create or replace State values in the caller's authorized namespace.";
+      description "Register representations and create or replace State values in the caller's authorized namespace.";
       consequence "The caller can change saved values.";
-      consent_revision 1;
-      allows { rpc Put; }
+      consent_revision 2;
+      allows { rpc Register; rpc Put; }
     }
     capability delete {
       title "Delete State";
@@ -75,13 +73,6 @@ api state@v1 {
       consequence "The caller can remove saved values.";
       consent_revision 1;
       allows { rpc Delete; }
-    }
-    capability resourcesInspect {
-      title "State Resources Read";
-      description "Inspect State resource identities, representations, and readiness.";
-      consequence "The caller can inspect State resources across explicit administrative scope.";
-      consent_revision 1;
-      allows { rpc Resources.Inspect; rpc Resources.Query; }
     }
   }
 }

@@ -55,6 +55,8 @@ export const routeTitles = {
   "/admin/roles": "Roles",
   "/admin/roles/edit": "Edit Role",
   "/admin/roles/new": "New Role",
+  "/admin/clients": "OAuth clients",
+  "/admin/apis": "API catalog",
 } as const;
 
 /**
@@ -161,6 +163,38 @@ const navSections: NavSection[] = [
         label: "Roles",
         icon: "key",
         requires: ADMIN_ONLY,
+      },
+      {
+        href: "/admin/clients",
+        label: "OAuth clients",
+        icon: "key",
+        requires: [
+          {
+            privilege: "clients.manage",
+            permission: {
+              api: apis.auth.API.identity,
+              surface: "rpc",
+              name: "OAuthClients.List",
+              action: "call",
+            },
+          },
+        ],
+      },
+      {
+        href: "/admin/apis",
+        label: "API catalog",
+        icon: "server",
+        requires: [
+          {
+            privilege: "apis.accept",
+            permission: {
+              api: apis.auth.API.identity,
+              surface: "rpc",
+              name: "Apis.List",
+              action: "call",
+            },
+          },
+        ],
       },
     ],
   },

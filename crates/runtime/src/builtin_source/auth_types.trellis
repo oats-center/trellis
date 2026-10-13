@@ -400,7 +400,7 @@ model AuthAuthorizationSession {
   identityKeyId?: AuthKeyId;
   state: AuthAuthorizationSessionState;
   createdAt: timestamp;
-  notAfter: timestamp;
+  notAfter?: timestamp;
   maximumContextExpiresAt?: timestamp;
   retiredAt?: timestamp;
   reason?: AuthRevocationReason;
@@ -642,13 +642,75 @@ model AuthInstanceMutationRequest {
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthInstanceMutationResponse { instance: AuthProvisionedInstance; enforcement?: AuthEnforcementProgress; }
+type AuthDeviceConfirmationCode = string(min_length=8, max_length=8);
+type AuthDeviceProvisioningSecret = string(min_length=43, max_length=43);
+// JSON-number Unix milliseconds; the session-proof verifier also requires an integer.
+type AuthDeviceProofIssuedAt = number(min=0, max=9007199254740991);
+model AuthDeviceProof { format: string; signature: string; }
+model AuthDeviceEnrollmentRequest {
+  requestId: ulid;
+  iat: AuthDeviceProofIssuedAt;
+  connectionId: ulid;
+  identityKeyId: AuthDigest;
+  sessionKey: AuthPublicKey;
+  participantId: string;
+  identityPublicKey: AuthPublicKey;
+  challengeDigest: AuthDigest;
+  confirmationCode: AuthDeviceConfirmationCode;
+  provisioningSecret?: AuthDeviceProvisioningSecret;
+  proof: AuthDeviceProof;
+  sessionProof: AuthDeviceProof;
+}
+enum AuthDeviceReviewState { pending; approved; rejected; expired; }
+model AuthDeviceReview {
+  reviewId: ulid;
+  instanceId: ulid;
+  deploymentId: ulid;
+  participantId: string;
+  state: AuthDeviceReviewState;
+  expiresAt: timestamp;
+  revision: AuthRevision;
+  companionClientId?: AuthClientId;
+  companionRequestId?: string;
+  companionRequired?: bool;
+}
+model AuthDeviceReviewGetRequest { reviewId: ulid; confirmationCode: AuthDeviceConfirmationCode; }
+model AuthDeviceReviewResponse { review: AuthDeviceReview; }
+type AuthDeviceReviewsListResponse = CursorPage<AuthDeviceReview>;
+model AuthDeviceReviewDecideRequest {
+  reviewId: ulid;
+  confirmationCode: AuthDeviceConfirmationCode;
+  decision: AuthDecision;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthDeviceCompanionAttachRequest {
+  reviewId: ulid;
+  confirmationCode: AuthDeviceConfirmationCode;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthDeviceCompanion {
+  instanceId: ulid;
+  clientId: AuthClientId;
+  requestId: string;
+  oauthGrantId: ulid;
+  revision: AuthRevision;
+}
+model AuthDeviceCompanionRevokeRequest {
+  instanceId: ulid;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
 enum AuthResourceOwnerKind { "user"; "deployment"; }
 enum AuthResourceState { "pending"; "ready"; "failed"; "detached"; "destroying"; }
 model AuthResourceBinding {
   resourceId: AuthDigest;
   ownerKind: AuthResourceOwnerKind;
   ownerId: ulid;
-  participantId: string;
+  participantId?: string;
+  clientId?: string;
+  browserOrigin?: string;
   localName: string;
   kind: AuthResourceKind;
   revision: AuthRevision;

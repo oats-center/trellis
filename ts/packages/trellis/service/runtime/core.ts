@@ -124,6 +124,7 @@ type TrellisServiceRuntimeOpts<TA extends RuntimeApi> = Omit<
   "api"
 > & {
   api: TA;
+  inboxPrefix: string;
   transferSupport?: RuntimeOperationTransferSupport;
   version?: string;
   operationDeploymentId?: string;
@@ -628,10 +629,16 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     auth: TrellisAuth,
     opts?: TrellisServiceRuntimeOpts<RuntimeApi>,
   ) {
-    super(name, nats, auth, {
-      ...opts,
-      log: opts?.log ?? serviceRuntimeLogger,
-    });
+    super(
+      name,
+      nats,
+      auth,
+      {
+        ...opts,
+        log: opts?.log ?? serviceRuntimeLogger,
+      },
+      opts?.inboxPrefix,
+    );
     if (opts?.operationDeploymentId) {
       this.setOperationDeploymentId(opts.operationDeploymentId);
     }

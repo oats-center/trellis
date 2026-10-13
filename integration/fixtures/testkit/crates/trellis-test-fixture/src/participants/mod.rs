@@ -1,3 +1,6 @@
+pub mod trellis_test_fixture_companion_device;
+pub mod trellis_test_fixture_jobs_provider;
 pub mod trellis_test_fixture_kv_provider;
+pub mod trellis_test_fixture_optional_companion_device;
 pub mod trellis_test_fixture_provider;
 pub mod trellis_test_fixture_unsupported_device;

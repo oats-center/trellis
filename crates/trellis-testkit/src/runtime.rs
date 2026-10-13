@@ -474,12 +474,12 @@ async fn start_once(
         trellis_runtime::run_with_stop(
             RuntimeOptions {
                 mode: RuntimeMode::All,
-                config,
+                config: config.clone(),
                 reset_admin: false,
                 nats_override: Some(NatsEndpointOverride {
                     runtime_servers: nats_url.clone(),
                     advertised_native: Some(vec![nats_url.clone()]),
-                    advertised_websocket: Some(Vec::new()),
+                    advertised_websocket: Some(vec![websocket_url.clone()]),
                 }),
             },
             Some(stop),
@@ -508,6 +508,7 @@ async fn start_once(
     admin.verify().await.map_err(|error| (error, false))?;
     infrastructure.starting = false;
     Ok(TrellisTestRuntime {
+        config,
         workdir,
         trellis_url: public_origin,
         oauth_origin,
@@ -589,6 +590,7 @@ fn nats_error(error: LocalNatsError, stage: TrellisTestStage) -> TrellisTestErro
 
 /// A running production Trellis runtime owned by the calling test.
 pub struct TrellisTestRuntime {
+    config: RuntimeConfig,
     workdir: PathBuf,
     trellis_url: String,
     oauth_origin: String,
@@ -605,6 +607,73 @@ pub struct TrellisTestRuntime {
 }
 
 impl TrellisTestRuntime {
+    /// Restart the ordinary runtime against its existing persistent data and broker.
+    /// Existing callers must reconnect; no credentials or platform state are reseeded.
+    ///
+    /// # Errors
+    /// Returns shutdown, startup, readiness, or administrator reconnect failures.
+    pub async fn restart(&mut self) -> Result<(), TrellisTestError> {
+        self.admin = None;
+        if let Some(stop) = self.infrastructure.stop.take() {
+            stop.stop();
+        }
+        if let Some(mut task) = self.infrastructure.task.take() {
+            tokio::time::timeout(self.timeouts.shutdown, &mut task)
+                .await
+                .map_err(|_| request_timeout("runtime shutdown", TrellisTestStage::Shutdown))?
+                .map_err(|error| {
+                    TrellisTestError::new(
+                        TrellisTestErrorKind::Runtime,
+                        TrellisTestStage::Shutdown,
+                        error.to_string(),
+                    )
+                })?
+                .map_err(|error| runtime_error(error, TrellisTestStage::Shutdown))?;
+        }
+        let stop = StopHandle::new();
+        self.infrastructure.stop = Some(stop.clone());
+        self.infrastructure.task = Some(AbortOnDropHandle::new(tokio::spawn(
+            trellis_runtime::run_with_stop(
+                RuntimeOptions {
+                    mode: RuntimeMode::All,
+                    config: self.config.clone(),
+                    reset_admin: false,
+                    nats_override: Some(NatsEndpointOverride {
+                        runtime_servers: self.nats_url.clone(),
+                        advertised_native: Some(vec![self.nats_url.clone()]),
+                        advertised_websocket: Some(vec![self.websocket_url.clone()]),
+                    }),
+                },
+                Some(stop),
+            ),
+        )));
+        tokio::time::timeout(
+            self.timeouts.startup,
+            wait_for_readyz(&self.trellis_url, &mut self.infrastructure),
+        )
+        .await
+        .map_err(|_| request_timeout("runtime restart", TrellisTestStage::RuntimeStart))?
+        .map_err(|error| match error {
+            StartupError::Runtime(error) => runtime_error(error, TrellisTestStage::RuntimeStart),
+            StartupError::Test(error) => error,
+        })?;
+        self.admin = Some(
+            AdminSession::connect(
+                &self.oauth_origin,
+                &self.workdir.join("credentials/admin"),
+                &self.username,
+                &self.password,
+            )
+            .await?,
+        );
+        self.admin
+            .as_ref()
+            .expect("reconnected administrator")
+            .verify()
+            .await?;
+        Ok(())
+    }
+
     /// Creates a builder.
     #[must_use]
     pub fn builder() -> TrellisTestRuntimeBuilder {

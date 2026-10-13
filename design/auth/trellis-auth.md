@@ -40,6 +40,14 @@ all configured application origins. A shared hostname is allowed but requires a
 prominent cookie-scope warning, because cookies are not port-scoped. Console
 assets and application routers are never mounted on the OAuth listener.
 
+Remote deployments use native TLS NATS and WSS in addition to the dedicated
+HTTPS OAuth listener. Runtime startup selects its rustls provider before opening
+NATS; deployment trust roots must include the configured broker and OAuth
+certificates. Observable configured origin conflicts fail before binding a
+listener. Operators must also keep external reverse-proxy routes and aliases
+separate: the runtime cannot inspect an unconfigured proxy's routing table or
+discover that two public hostnames are mapped onto one origin.
+
 ### OAuth Storage Key Custody
 
 Fresh initialization provisions `auth/oauth-storage.key`, independently of the
@@ -89,6 +97,15 @@ Replay returns the saved result without re-registering or re-enabling a modified
 client; ordinary startup does not change client registration. Registration does not itself grant the user
 capabilities or platform privileges: finite delegation still requires the user's
 holdings and explicit consent.
+
+Administrative client Put derives supported flows on every revision: browser
+with callbacks uses Authorization Code and refresh; native without callbacks
+uses Device Code and refresh; native with callbacks uses both flows and refresh.
+It replaces prior flow metadata while retaining unrelated registration metadata.
+Adding/removing native callbacks enables/disables Authorization Code. Kind remains
+immutable because it fixes credential binding semantics; switching kind requires
+a new client ID. Native HTTP loopback callbacks need no development flag, while
+browser loopback callbacks require it and retain exact port/origin matching.
 
 Both local/container and native fresh-bootstrap generators provision the four
 built-in provider identity files under the existing `live-providers/` custody
@@ -332,6 +349,33 @@ custody retains the known newly returned, unsubmitted token without promoting
 unverified admission authority; later recovery spends that successor, not the
 already spent predecessor. Ambiguous responses retain the spent marker.
 
+Browser app sign-out revokes the latest refresh family under the cross-tab
+custody lock and clears both its refresh token and principal/grant binding.
+The independent Portal login survives until explicitly logged out. A later
+authorization may bind the cleared app handle to another account; an uncleared
+handle still rejects a different principal, and stale tabs cannot restore it.
+
+`Delegations.Revoke` atomically retires the selected grant and its refresh
+families, clears remembered approval for its app binding, and queues enforcement.
+It preserves sibling grants and the Portal login. Repeating its idempotency key
+returns the original mutation result rather than a revision conflict.
+
+Event Consumer exhaustion, including replay exhaustion, is broker-owned: SDKs
+leave the final failed delivery unacknowledged and Events journals the captured
+MAX_DELIVERIES advisory. Consumer services receive the implicit
+`trellis.events@v1::consumerRuntime` capability only for retained inspection and
+terminal replay reporting. Both require an exact current owned Consumer binding;
+ownership does not authorize Replay/Dismiss. Successful or permanently rejected
+replay is durably reported before ACK/TERM. A JetStream acknowledgement address
+correlates delivery only: a successful progress response is neither an
+authorization credential nor evidence that the delivery remains pending.
+The journal distinguishes permanent replay rejection from broker exhaustion;
+both return the entry to `dead`, retaining the failure reason for management.
+Applying a new Consumer declaration does not upgrade running instances: old
+instances become stale, and provisioning a current-revision instance materializes
+the new binding and selects its scoped authority. Omitting the declaration denies
+the previously authorized binding.
+
 Cold successor pins resolve older immutable verification material through the
 existing issuer-signed metadata exchange's `issuerKey` selector. Only an active
 issuer authenticated from the pin and forward rotations may sign this reply;
@@ -402,6 +446,12 @@ and certificate. Retained events require both signed event time and genuine
 original JetStream publication time within those validity windows and before any
 signed revocation cutoff; ordinary certificate expiry and issuer retirement do
 not invalidate that historical evidence. Compromised issuers remain unusable.
+Durable consumers verify at the broker's original publication time. The existing
+dead-letter journal retains that time with the original stream, sequence, bytes,
+and proof headers even after source retention removes the event. Targeted replay
+resolves those bytes and `originalPublishedAt` through authenticated, resource-scoped
+Events inspection; neither replay-envelope content nor publisher headers supply
+trusted chronology, and the replay stream's newer timestamp is never substituted.
 Issuer rotation/revocation requires `privileges.manage`, not an additional
 `principals.manage` privilege. Other hard-root revocation retains its own
 `principals.manage` gate.

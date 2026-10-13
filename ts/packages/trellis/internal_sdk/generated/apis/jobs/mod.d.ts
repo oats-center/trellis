@@ -42,6 +42,8 @@ export type DismissDLQInput = Types0.JobsDismissDLQRequest;
 export type DismissDLQOutput = Types0.JobsDismissDLQResponse;
 export type GetKeyInput = Types0.JobsGetKeyRequest;
 export type GetKeyOutput = Types0.JobsGetKeyResponse;
+export type HistoryInput = Types0.JobsHistoryRequest;
+export type HistoryOutput = Types0.JobsHistoryResponse;
 export type InspectInput = Types0.JobsInspectRequest;
 export type InspectOutput = Types0.JobsInspectResponse;
 export type ListDLQInput = Types0.JobsListDLQRequest;
@@ -90,6 +92,16 @@ declare const __api: {
 			readonly input: typeof Types0.JobsGetKeyRequestCodec;
 			readonly output: typeof Types0.JobsGetKeyResponseCodec;
 			readonly errors: readonly [typeof NotFoundError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:History": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:History";
+			readonly subject: "rpc.v1.jobs.History";
+			readonly input: typeof Types0.JobsHistoryRequestCodec;
+			readonly output: typeof Types0.JobsHistoryResponseCodec;
+			readonly errors: readonly [typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
@@ -184,5 +196,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "te7Bc9G_CD2uXOdqe01kQgY5vIjF4ZZS_u2i69q0kB4";
+export declare const API_DIGEST: "2JJNrTubKg1EupQq1eaZI0W837BpHQefERdnZVgjFbo";
 export {};

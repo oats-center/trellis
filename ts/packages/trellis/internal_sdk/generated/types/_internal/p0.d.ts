@@ -263,7 +263,7 @@ export type AuthAuthorizationSession = {
 	readonly identityKeyId?: AuthKeyId;
 	readonly loginSessionId?: ReturnType<typeof codecs.ulid.decode>;
 	readonly maximumContextExpiresAt?: ReturnType<typeof codecs.timestamp.decode>;
-	readonly notAfter: ReturnType<typeof codecs.timestamp.decode>;
+	readonly notAfter?: ReturnType<typeof codecs.timestamp.decode>;
 	readonly oauthGrantId?: ReturnType<typeof codecs.ulid.decode>;
 	readonly principalId: ReturnType<typeof codecs.ulid.decode>;
 	readonly principalKind: AuthPrincipalKind;
@@ -763,6 +763,147 @@ export type AuthDescription = string;
 export declare const AuthDescriptionCodec: {
 	decode(value: unknown): AuthDescription;
 	encode(value: AuthDescription): unknown;
+};
+export type AuthDeviceCompanion = {
+	readonly clientId: AuthClientId;
+	readonly instanceId: ReturnType<typeof codecs.ulid.decode>;
+	readonly oauthGrantId: ReturnType<typeof codecs.ulid.decode>;
+	readonly requestId: string;
+	readonly revision: AuthRevision;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceCompanionCodec: {
+	decode(value: unknown): AuthDeviceCompanion;
+	encode(value: AuthDeviceCompanion): unknown;
+};
+export type AuthDeviceCompanionAttachRequest = {
+	readonly confirmationCode: AuthDeviceConfirmationCode;
+	readonly expectedRevision: AuthRevision;
+	readonly idempotencyKey: AuthIdempotencyKey;
+	readonly reviewId: ReturnType<typeof codecs.ulid.decode>;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceCompanionAttachRequestCodec: {
+	decode(value: unknown): AuthDeviceCompanionAttachRequest;
+	encode(value: AuthDeviceCompanionAttachRequest): unknown;
+};
+export type AuthDeviceCompanionRevokeRequest = {
+	readonly expectedRevision: AuthRevision;
+	readonly idempotencyKey: AuthIdempotencyKey;
+	readonly instanceId: ReturnType<typeof codecs.ulid.decode>;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceCompanionRevokeRequestCodec: {
+	decode(value: unknown): AuthDeviceCompanionRevokeRequest;
+	encode(value: AuthDeviceCompanionRevokeRequest): unknown;
+};
+export type AuthDeviceConfirmationCode = string;
+export declare const AuthDeviceConfirmationCodeCodec: {
+	decode(value: unknown): AuthDeviceConfirmationCode;
+	encode(value: AuthDeviceConfirmationCode): unknown;
+};
+export type AuthDeviceEnrollmentRequest = {
+	readonly challengeDigest: AuthDigest;
+	readonly confirmationCode: AuthDeviceConfirmationCode;
+	readonly connectionId: ReturnType<typeof codecs.ulid.decode>;
+	readonly iat: AuthDeviceProofIssuedAt;
+	readonly identityKeyId: AuthDigest;
+	readonly identityPublicKey: AuthPublicKey;
+	readonly participantId: string;
+	readonly proof: AuthDeviceProof;
+	readonly provisioningSecret?: AuthDeviceProvisioningSecret;
+	readonly requestId: ReturnType<typeof codecs.ulid.decode>;
+	readonly sessionKey: AuthPublicKey;
+	readonly sessionProof: AuthDeviceProof;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceEnrollmentRequestCodec: {
+	decode(value: unknown): AuthDeviceEnrollmentRequest;
+	encode(value: AuthDeviceEnrollmentRequest): unknown;
+};
+export type AuthDeviceProof = {
+	readonly format: string;
+	readonly signature: string;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceProofCodec: {
+	decode(value: unknown): AuthDeviceProof;
+	encode(value: AuthDeviceProof): unknown;
+};
+export type AuthDeviceProofIssuedAt = number;
+export declare const AuthDeviceProofIssuedAtCodec: {
+	decode(value: unknown): AuthDeviceProofIssuedAt;
+	encode(value: AuthDeviceProofIssuedAt): unknown;
+};
+export type AuthDeviceProvisioningSecret = string;
+export declare const AuthDeviceProvisioningSecretCodec: {
+	decode(value: unknown): AuthDeviceProvisioningSecret;
+	encode(value: AuthDeviceProvisioningSecret): unknown;
+};
+export type AuthDeviceReview = {
+	readonly companionClientId?: AuthClientId;
+	readonly companionRequestId?: string;
+	readonly companionRequired?: boolean;
+	readonly deploymentId: ReturnType<typeof codecs.ulid.decode>;
+	readonly expiresAt: ReturnType<typeof codecs.timestamp.decode>;
+	readonly instanceId: ReturnType<typeof codecs.ulid.decode>;
+	readonly participantId: string;
+	readonly reviewId: ReturnType<typeof codecs.ulid.decode>;
+	readonly revision: AuthRevision;
+	readonly state: AuthDeviceReviewState;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceReviewCodec: {
+	decode(value: unknown): AuthDeviceReview;
+	encode(value: AuthDeviceReview): unknown;
+};
+export type AuthDeviceReviewDecideRequest = {
+	readonly confirmationCode: AuthDeviceConfirmationCode;
+	readonly decision: AuthDecision;
+	readonly expectedRevision: AuthRevision;
+	readonly idempotencyKey: AuthIdempotencyKey;
+	readonly reviewId: ReturnType<typeof codecs.ulid.decode>;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceReviewDecideRequestCodec: {
+	decode(value: unknown): AuthDeviceReviewDecideRequest;
+	encode(value: AuthDeviceReviewDecideRequest): unknown;
+};
+export type AuthDeviceReviewGetRequest = {
+	readonly confirmationCode: AuthDeviceConfirmationCode;
+	readonly reviewId: ReturnType<typeof codecs.ulid.decode>;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceReviewGetRequestCodec: {
+	decode(value: unknown): AuthDeviceReviewGetRequest;
+	encode(value: AuthDeviceReviewGetRequest): unknown;
+};
+export type AuthDeviceReviewResponse = {
+	readonly review: AuthDeviceReview;
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceReviewResponseCodec: {
+	decode(value: unknown): AuthDeviceReviewResponse;
+	encode(value: AuthDeviceReviewResponse): unknown;
+};
+export type AuthDeviceReviewState = "approved" | "expired" | "pending" | "rejected" | (string & {
+	readonly __openEnum?: never;
+});
+export declare const AuthDeviceReviewStateCodec: {
+	decode(value: unknown): AuthDeviceReviewState;
+	encode(value: AuthDeviceReviewState): unknown;
+};
+export type AuthDeviceReviewsListResponse = {
+	readonly items: Array<AuthDeviceReview>;
+	readonly page: {
+		readonly nextCursor?: string;
+		readonly [key: string]: unknown;
+	};
+	readonly [key: string]: unknown;
+};
+export declare const AuthDeviceReviewsListResponseCodec: {
+	decode(value: unknown): AuthDeviceReviewsListResponse;
+	encode(value: AuthDeviceReviewsListResponse): unknown;
 };
 export type AuthDigest = string;
 export declare const AuthDigestCodec: {
@@ -1485,11 +1626,13 @@ export declare const AuthPublicKeyCodec: {
 	encode(value: AuthPublicKey): unknown;
 };
 export type AuthResourceBinding = {
+	readonly browserOrigin?: string;
+	readonly clientId?: string;
 	readonly kind: AuthResourceKind;
 	readonly localName: string;
 	readonly ownerId: ReturnType<typeof codecs.ulid.decode>;
 	readonly ownerKind: AuthResourceOwnerKind;
-	readonly participantId: string;
+	readonly participantId?: string;
 	readonly resourceId: AuthDigest;
 	readonly revision: AuthRevision;
 	readonly state: AuthResourceState;
@@ -2077,6 +2220,7 @@ export type EventsDeadLetterDetail = {
 	readonly deadLetter: EventsDeadLetter;
 	readonly originalHeaders: Record<string, string>;
 	readonly originalPayload: Uint8Array;
+	readonly originalPublishedAt: string;
 	readonly originalSubject: string;
 	readonly transitionReferences: Array<bigint>;
 	readonly verificationStatus: EventsDeadLetterVerificationStatus;
@@ -5012,6 +5156,36 @@ export type JobsGetKeyResponsequeuedItemJobId = string;
 export declare const JobsGetKeyResponsequeuedItemJobIdCodec: {
 	decode(value: unknown): JobsGetKeyResponsequeuedItemJobId;
 	encode(value: JobsGetKeyResponsequeuedItemJobId): unknown;
+};
+export type JobsHistoryEntry = {
+	readonly payload: Uint8Array;
+	readonly sequence: bigint;
+	readonly [key: string]: unknown;
+};
+export declare const JobsHistoryEntryCodec: {
+	decode(value: unknown): JobsHistoryEntry;
+	encode(value: JobsHistoryEntry): unknown;
+};
+export type JobsHistoryRequest = {
+	readonly fromSequence: bigint;
+	readonly jobId: string;
+	readonly queue: string;
+	readonly throughSequence?: bigint;
+	readonly [key: string]: unknown;
+};
+export declare const JobsHistoryRequestCodec: {
+	decode(value: unknown): JobsHistoryRequest;
+	encode(value: JobsHistoryRequest): unknown;
+};
+export type JobsHistoryResponse = {
+	readonly entries: Array<JobsHistoryEntry>;
+	readonly nextSequence?: bigint;
+	readonly throughSequence: bigint;
+	readonly [key: string]: unknown;
+};
+export declare const JobsHistoryResponseCodec: {
+	decode(value: unknown): JobsHistoryResponse;
+	encode(value: JobsHistoryResponse): unknown;
 };
 export type JobsInspectRequest = {
 	readonly id: JobsInspectRequestId;
@@ -8535,6 +8709,43 @@ export type StatePutResponse = {
 export declare const StatePutResponseCodec: {
 	decode(value: unknown): StatePutResponse;
 	encode(value: StatePutResponse): unknown;
+};
+export type StateRegisterRequest = {
+	readonly accepts: Array<StateRepresentation>;
+	readonly expectedRevision: StateRevision;
+	readonly idempotencyKey: ReturnType<typeof codecs.ulid.decode>;
+	readonly representation: StateRepresentation;
+	readonly resourceName: StateResourceName;
+	readonly [key: string]: unknown;
+};
+export declare const StateRegisterRequestCodec: {
+	decode(value: unknown): StateRegisterRequest;
+	encode(value: StateRegisterRequest): unknown;
+};
+export type StateRegisterResponse = {
+	readonly revision: StateRevision;
+	readonly [key: string]: unknown;
+};
+export declare const StateRegisterResponseCodec: {
+	decode(value: unknown): StateRegisterResponse;
+	encode(value: StateRegisterResponse): unknown;
+};
+export type StateRegistrationConflict = {
+	readonly currentRevision: StateRevision;
+	readonly [key: string]: unknown;
+};
+export declare const StateRegistrationConflictCodec: {
+	decode(value: unknown): StateRegistrationConflict;
+	encode(value: StateRegistrationConflict): unknown;
+};
+export type StateRepresentation = {
+	readonly schema: Uint8Array;
+	readonly version: StateRepresentationVersion;
+	readonly [key: string]: unknown;
+};
+export declare const StateRepresentationCodec: {
+	decode(value: unknown): StateRepresentation;
+	encode(value: StateRepresentation): unknown;
 };
 export type StateRepresentationError = {
 	readonly representationVersion: StateRepresentationVersion;

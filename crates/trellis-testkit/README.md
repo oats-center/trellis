@@ -66,6 +66,11 @@ transports before calling [`TrellisTestRuntime::shutdown`]. The runtime owns
 only its own administration connection, production runtime task, and NATS
 process.
 
+For persistence acceptance, `runtime.restart().await?` stops and starts the
+ordinary runtime against the same data and still-running NATS broker. It does
+not reseed identities or credentials. Close application clients first, then
+reconnect them after restart and verify their stored values through public APIs.
+
 ## Browser and portal-driven tests
 
 The runtime exposes the isolated administrator credentials it bootstrapped:

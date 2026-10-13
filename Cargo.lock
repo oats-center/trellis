@@ -4389,6 +4389,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-trellis"
+version = "0.100.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "trellis-rs",
+]
+
+[[package]]
 name = "rusqlite"
 version = "0.40.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6156,6 +6166,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "reqwest 0.13.5",
+ "runtime-trellis",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -6165,6 +6176,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tracing-subscriber",
  "trellis-bootstrap",
  "trellis-idl",
  "trellis-local-nats",

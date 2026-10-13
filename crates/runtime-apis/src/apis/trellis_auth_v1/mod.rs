@@ -1,6 +1,6 @@
 //! Generated API `trellis.auth@v1`.
 pub const API_ID: &str = "trellis.auth@v1";
-pub const API_DIGEST: &str = "K_zP6pXNrQXivFvISCl3uHduzSt_MWff1wSEifNG8vs";
+pub const API_DIGEST: &str = "F0oBs3zpjt3NHA4o8DSFfpSUeCtHPPB5gIDsg3QKVcA";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -1870,6 +1870,136 @@ pub mod rpc {
             DeploymentsRemoveError::decode(value)
         }
     }
+    pub type DeviceCompanionsAttachInput =
+        crate::__types::trellis::AuthDeviceCompanionAttachRequest;
+    pub type DeviceCompanionsAttachOutput = crate::__types::trellis::AuthDeviceCompanion;
+    pub struct DeviceCompanionsAttach;
+    impl DeviceCompanionsAttach {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.DeviceCompanions.Attach";
+        pub const KEY: &'static str = "auth.DeviceCompanions.Attach";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.DeviceCompanions.Attach";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] =
+            &["trellis.auth@v1::deviceCompanionsManage"];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DeviceCompanionsAttachError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DeviceCompanionsAttachError {
+        pub fn decode(value: serde_json::Value) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::AuthError>(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::UnexpectedError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::ValidationError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DeviceCompanionsAttach {
+        type Input = DeviceCompanionsAttachInput;
+        type Output = DeviceCompanionsAttachOutput;
+        type Error = DeviceCompanionsAttachError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DeviceCompanionsAttachError::decode(value)
+        }
+    }
+    pub type DeviceCompanionsRevokeInput =
+        crate::__types::trellis::AuthDeviceCompanionRevokeRequest;
+    pub type DeviceCompanionsRevokeOutput = crate::__types::trellis::AuthMutationResult;
+    pub struct DeviceCompanionsRevoke;
+    impl DeviceCompanionsRevoke {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.DeviceCompanions.Revoke";
+        pub const KEY: &'static str = "auth.DeviceCompanions.Revoke";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.DeviceCompanions.Revoke";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] =
+            &["trellis.auth@v1::deviceCompanionsManage"];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DeviceCompanionsRevokeError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DeviceCompanionsRevokeError {
+        pub fn decode(value: serde_json::Value) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::AuthError>(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::UnexpectedError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::ValidationError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DeviceCompanionsRevoke {
+        type Input = DeviceCompanionsRevokeInput;
+        type Output = DeviceCompanionsRevokeOutput;
+        type Error = DeviceCompanionsRevokeError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DeviceCompanionsRevokeError::decode(value)
+        }
+    }
     pub type DevicesDisableInput = crate::__types::trellis::AuthInstanceMutationRequest;
     pub type DevicesDisableOutput = crate::__types::trellis::AuthInstanceMutationResponse;
     pub struct DevicesDisable;
@@ -2187,6 +2317,199 @@ pub mod rpc {
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
             DevicesRemoveError::decode(value)
+        }
+    }
+    pub type DevicesReviewsDecideInput = crate::__types::trellis::AuthDeviceReviewDecideRequest;
+    pub type DevicesReviewsDecideOutput = crate::__types::trellis::AuthDeviceReviewResponse;
+    pub struct DevicesReviewsDecide;
+    impl DevicesReviewsDecide {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Devices.Reviews.Decide";
+        pub const KEY: &'static str = "auth.Devices.Reviews.Decide";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.Reviews.Decide";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] =
+            &["trellis.auth@v1::devicesProvision"];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DevicesReviewsDecideError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DevicesReviewsDecideError {
+        pub fn decode(value: serde_json::Value) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::AuthError>(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::UnexpectedError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::ValidationError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DevicesReviewsDecide {
+        type Input = DevicesReviewsDecideInput;
+        type Output = DevicesReviewsDecideOutput;
+        type Error = DevicesReviewsDecideError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DevicesReviewsDecideError::decode(value)
+        }
+    }
+    pub type DevicesReviewsGetInput = crate::__types::trellis::AuthDeviceReviewGetRequest;
+    pub type DevicesReviewsGetOutput = crate::__types::trellis::AuthDeviceReviewResponse;
+    pub struct DevicesReviewsGet;
+    impl DevicesReviewsGet {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Devices.Reviews.Get";
+        pub const KEY: &'static str = "auth.Devices.Reviews.Get";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.Reviews.Get";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::deviceCompanionsManage",
+            "trellis.auth@v1::devicesRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DevicesReviewsGetError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DevicesReviewsGetError {
+        pub fn decode(value: serde_json::Value) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::AuthError>(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::UnexpectedError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::ValidationError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DevicesReviewsGet {
+        type Input = DevicesReviewsGetInput;
+        type Output = DevicesReviewsGetOutput;
+        type Error = DevicesReviewsGetError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DevicesReviewsGetError::decode(value)
+        }
+    }
+    pub type DevicesReviewsListInput = crate::__types::trellis::AuthPageRequest;
+    pub type DevicesReviewsListOutput = crate::__types::trellis::AuthDeviceReviewsListResponse;
+    pub struct DevicesReviewsList;
+    impl DevicesReviewsList {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Devices.Reviews.List";
+        pub const KEY: &'static str = "auth.Devices.Reviews.List";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.Devices.Reviews.List";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &["trellis.auth@v1::devicesRead"];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum DevicesReviewsListError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl DevicesReviewsListError {
+        pub fn decode(value: serde_json::Value) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::AuthError>(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::UnexpectedError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<super::errors::ValidationError>(
+                        value,
+                    )
+                    .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for DevicesReviewsList {
+        type Input = DevicesReviewsListInput;
+        type Output = DevicesReviewsListOutput;
+        type Error = DevicesReviewsListError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            DevicesReviewsListError::decode(value)
         }
     }
     pub type IssuersResolveChainInput = crate::__types::trellis::AuthIssuerChainRequest;
@@ -5700,11 +6023,16 @@ pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     router.register_rpc_metadata::<rpc::DeploymentsGet>();
     router.register_rpc_metadata::<rpc::DeploymentsList>();
     router.register_rpc_metadata::<rpc::DeploymentsRemove>();
+    router.register_rpc_metadata::<rpc::DeviceCompanionsAttach>();
+    router.register_rpc_metadata::<rpc::DeviceCompanionsRevoke>();
     router.register_rpc_metadata::<rpc::DevicesDisable>();
     router.register_rpc_metadata::<rpc::DevicesEnable>();
     router.register_rpc_metadata::<rpc::DevicesList>();
     router.register_rpc_metadata::<rpc::DevicesProvision>();
     router.register_rpc_metadata::<rpc::DevicesRemove>();
+    router.register_rpc_metadata::<rpc::DevicesReviewsDecide>();
+    router.register_rpc_metadata::<rpc::DevicesReviewsGet>();
+    router.register_rpc_metadata::<rpc::DevicesReviewsList>();
     router.register_rpc_metadata::<rpc::IssuersResolveChain>();
     router.register_rpc_metadata::<rpc::IssuersRevoke>();
     router.register_rpc_metadata::<rpc::IssuersRotate>();
@@ -6621,6 +6949,24 @@ impl Client {
     > {
         self.inner.call::<rpc::DeploymentsRemove>(input).await
     }
+    pub async fn device_companions_attach(
+        &self,
+        input: &rpc::DeviceCompanionsAttachInput,
+    ) -> Result<
+        rpc::DeviceCompanionsAttachOutput,
+        trellis_rs::client::CallError<rpc::DeviceCompanionsAttachError>,
+    > {
+        self.inner.call::<rpc::DeviceCompanionsAttach>(input).await
+    }
+    pub async fn device_companions_revoke(
+        &self,
+        input: &rpc::DeviceCompanionsRevokeInput,
+    ) -> Result<
+        rpc::DeviceCompanionsRevokeOutput,
+        trellis_rs::client::CallError<rpc::DeviceCompanionsRevokeError>,
+    > {
+        self.inner.call::<rpc::DeviceCompanionsRevoke>(input).await
+    }
     pub async fn devices_disable(
         &self,
         input: &rpc::DevicesDisableInput,
@@ -6746,6 +7092,123 @@ impl Client {
     ) -> Result<rpc::DevicesRemoveOutput, trellis_rs::client::CallError<rpc::DevicesRemoveError>>
     {
         self.inner.call::<rpc::DevicesRemove>(input).await
+    }
+    pub async fn devices_reviews_decide(
+        &self,
+        input: &rpc::DevicesReviewsDecideInput,
+    ) -> Result<
+        rpc::DevicesReviewsDecideOutput,
+        trellis_rs::client::CallError<rpc::DevicesReviewsDecideError>,
+    > {
+        self.inner.call::<rpc::DevicesReviewsDecide>(input).await
+    }
+    pub async fn devices_reviews_get(
+        &self,
+        input: &rpc::DevicesReviewsGetInput,
+    ) -> Result<
+        rpc::DevicesReviewsGetOutput,
+        trellis_rs::client::CallError<rpc::DevicesReviewsGetError>,
+    > {
+        self.inner.call::<rpc::DevicesReviewsGet>(input).await
+    }
+    pub async fn devices_reviews_list(
+        &self,
+        input: &rpc::DevicesReviewsListInput,
+    ) -> Result<
+        rpc::DevicesReviewsListOutput,
+        trellis_rs::client::CallError<rpc::DevicesReviewsListError>,
+    > {
+        self.inner.call::<rpc::DevicesReviewsList>(input).await
+    }
+    pub fn devices_reviews_list_pages(
+        &self,
+        input: rpc::DevicesReviewsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<rpc::DevicesReviewsListOutput, crate::PaginationError<rpc::DevicesReviewsListError>>,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(futures_util::stream::try_unfold(
+            (client, input, seen, false),
+            |(client, mut input, mut seen, done)| async move {
+                if done {
+                    return Ok(None);
+                }
+                let page = client
+                    .devices_reviews_list(&input)
+                    .await
+                    .map_err(crate::PaginationError::Call)?;
+                let next = page.page.next_cursor.clone();
+                let done = next.is_none();
+                if let Some(cursor) = next {
+                    if !seen.insert(cursor.clone()) {
+                        return Err(crate::PaginationError::RepeatedCursor(cursor));
+                    }
+                    let limit = input.page.as_ref().and_then(|page| page.limit);
+                    input.page = Some(crate::__types::CursorQuery {
+                        cursor: Some(cursor),
+                        limit,
+                    });
+                }
+                Ok(Some((page, (client, input, seen, done))))
+            },
+        ))
+    }
+    pub fn devices_reviews_list_items(
+        &self,
+        input: rpc::DevicesReviewsListInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthDeviceReview,
+            crate::PaginationError<rpc::DevicesReviewsListError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(futures_util::stream::try_unfold(
+            (
+                client,
+                input,
+                seen,
+                false,
+                Vec::<crate::__types::trellis::AuthDeviceReview>::new().into_iter(),
+            ),
+            |(client, mut input, mut seen, mut done, mut items)| async move {
+                loop {
+                    if let Some(item) = items.next() {
+                        return Ok(Some((item, (client, input, seen, done, items))));
+                    }
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .devices_reviews_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    items = page.items.into_iter();
+                }
+            },
+        ))
     }
     pub async fn issuers_resolve_chain(
         &self,
@@ -8776,6 +9239,34 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
         self.runtime
             .register_rpc::<rpc::DeploymentsRemove, _, _>(handler);
     }
+    pub fn register_device_companions_attach<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::DeviceCompanionsAttachInput) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DeviceCompanionsAttachOutput>,
+            > + Send
+            + 'static,
+    {
+        self.runtime
+            .register_rpc::<rpc::DeviceCompanionsAttach, _, _>(handler);
+    }
+    pub fn register_device_companions_revoke<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::DeviceCompanionsRevokeInput) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DeviceCompanionsRevokeOutput>,
+            > + Send
+            + 'static,
+    {
+        self.runtime
+            .register_rpc::<rpc::DeviceCompanionsRevoke, _, _>(handler);
+    }
     pub fn register_devices_disable<F, Fut>(&mut self, handler: F)
     where
         F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::DevicesDisableInput) -> Fut
@@ -8843,6 +9334,48 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
     {
         self.runtime
             .register_rpc::<rpc::DevicesRemove, _, _>(handler);
+    }
+    pub fn register_devices_reviews_decide<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::DevicesReviewsDecideInput) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DevicesReviewsDecideOutput>,
+            > + Send
+            + 'static,
+    {
+        self.runtime
+            .register_rpc::<rpc::DevicesReviewsDecide, _, _>(handler);
+    }
+    pub fn register_devices_reviews_get<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::DevicesReviewsGetInput) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DevicesReviewsGetOutput>,
+            > + Send
+            + 'static,
+    {
+        self.runtime
+            .register_rpc::<rpc::DevicesReviewsGet, _, _>(handler);
+    }
+    pub fn register_devices_reviews_list<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::DevicesReviewsListInput) -> Fut
+            + Send
+            + Sync
+            + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::DevicesReviewsListOutput>,
+            > + Send
+            + 'static,
+    {
+        self.runtime
+            .register_rpc::<rpc::DevicesReviewsList, _, _>(handler);
     }
     pub fn register_issuers_resolve_chain<F, Fut>(&mut self, handler: F)
     where

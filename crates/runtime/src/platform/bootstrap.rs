@@ -56,6 +56,9 @@ pub(crate) async fn connect_platform_provider(
     ))
     .await
     .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    super::state::StateRuntime::start(operational.clone(), store.clone())
+        .await?
+        .register(&mut provider);
     register_rpc(
         &mut trellis_auth_v1::Provider::new(&mut provider),
         store,

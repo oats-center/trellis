@@ -158,7 +158,8 @@ CREATE TABLE auth_resources (
     allocation_id TEXT NOT NULL CHECK (length(allocation_id) = 26),
     owner_kind TEXT NOT NULL CHECK (owner_kind IN ('user', 'deployment')),
     owner_id TEXT NOT NULL CHECK (length(owner_id) > 0),
-    participant_id TEXT NOT NULL CHECK (length(participant_id) > 0),
+    participant_id TEXT CHECK (participant_id IS NULL OR length(participant_id) > 0),
+    namespace_json TEXT CHECK (namespace_json IS NULL OR json_valid(namespace_json)),
     kind TEXT NOT NULL CHECK (kind IN ('consumer', 'job', 'kv', 'state', 'store')),
     local_name TEXT NOT NULL CHECK (length(local_name) > 0),
     commitment_json TEXT NOT NULL CHECK (json_valid(commitment_json)),
@@ -957,3 +958,4 @@ BEGIN SELECT RAISE(ABORT, 'issuer rotations are immutable'); END;
 CREATE TRIGGER auth_issuer_rotation_retained BEFORE DELETE ON auth_issuer_rotations
 BEGIN SELECT RAISE(ABORT, 'issuer rotations are retained'); END;
 CREATE INDEX auth_device_companions_grant ON auth_device_companions(oauth_grant_id, instance_id);
+CREATE UNIQUE INDEX auth_device_companions_active_grant ON auth_device_companions(oauth_grant_id) WHERE state='active';

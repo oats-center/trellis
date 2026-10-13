@@ -1,6 +1,6 @@
 //! Generated API `trellis.events@v1`.
 pub const API_ID: &str = "trellis.events@v1";
-pub const API_DIGEST: &str = "j3FLZq6tWMnMfI7Odb95cLH7pYS7u2Q3l9dAVei4Vcw";
+pub const API_DIGEST: &str = "XU3lRUuMF1SX44TtCr1Hk17wvIlQ3jIsxH2kF-VeVJA";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -432,7 +432,9 @@ pub mod rpc {
         pub const DESCRIPTOR_NAME: &'static str = "rpc.Consumers.ReportDelivery";
         pub const KEY: &'static str = "events.Consumers.ReportDelivery";
         pub const SUBJECT: &'static str = "rpc.v1.events.Consumers.ReportDelivery";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[];
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.events@v1::consumerRuntime",
+        ];
         pub const ERRORS: &'static [&'static str] = &[
             "trellis.events@v1::Conflict",
             "trellis.events@v1::Forbidden",
@@ -601,6 +603,7 @@ pub mod rpc {
         pub const KEY: &'static str = "events.DeadLetters.Inspect";
         pub const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Inspect";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.events@v1::consumerRuntime",
             "trellis.events@v1::deadLettersInspect",
         ];
         pub const ERRORS: &'static [&'static str] = &[

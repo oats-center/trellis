@@ -411,7 +411,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         }
                         _ => false,
                     };
-                    if owns_binding {
+                    if owns_binding && action != ManagementAction::Control {
                         use base64::Engine as _;
                         use sha2::Digest as _;
                         let deployment = binding.owner_id.clone();
@@ -436,7 +436,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                             authority_owner
                                 .assert_current(&authority)
                                 .map_err(|_| events_forbidden("Events authority unavailable"))?;
-                            request.authorize_handler_request()?;
                             return Ok(());
                         }
                     }
@@ -444,6 +443,18 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 if action == ManagementAction::Consume {
                     return Err(events_forbidden(
                         "Consumer delivery reporting requires exact Consume authority",
+                    ));
+                }
+                // The implicit runtime capability may inspect only the exact
+                // owned binding above. It must not become global DLQ access via
+                // the generic action-capability fallback.
+                if method == "DeadLetters.Inspect"
+                    && !authority.authority().capabilities.iter().any(|capability| {
+                        capability.capability_id == "trellis.events@v1::deadLettersInspect"
+                    })
+                {
+                    return Err(events_forbidden(
+                        "Consumer inspection requires ownership or management authority",
                     ));
                 }
                 let call = trellis_protocol::CatalogActionIdentity {
@@ -455,7 +466,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     .authorize_action(&transport, &authority, events::API_ID, &call)
                     .await
                     .map_err(|_| events_forbidden("Events management permission denied"))?;
-                request.authorize_handler_request()?;
                 Ok(())
             })
                 as std::pin::Pin<

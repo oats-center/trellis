@@ -357,6 +357,10 @@ export type AppRequestDescriptor = Readonly<{
         codec: Codec<unknown>;
         version: number;
         migrations: Readonly<Record<number, Codec<unknown>>>;
+        registration?: Readonly<{
+          representation: Readonly<{ version: number; schema: Uint8Array }>;
+          accepts: readonly Readonly<{ version: number; schema: Uint8Array }>[];
+        }>;
       }>
     >
   >;

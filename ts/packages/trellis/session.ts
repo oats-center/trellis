@@ -18,13 +18,14 @@ import {
   routeQueueGroup,
   type RuntimeApi,
 } from "./participant_runtime/api.ts";
-import type { Codec } from "./generated.ts";
+import { codecs, type Codec } from "./generated.ts";
 import { encodeEventSubjectParameterToken } from "./helpers.ts";
 import { openLive, openLiveOperationWatch } from "./live/client_open.ts";
 import { LiveProvider, parseLiveOpen } from "./live/provider.ts";
 import type {
   AuthenticatedCaller,
   CatalogActionIdentity,
+  OriginalEventPublication,
   SessionEvent,
   SessionRequest,
   SessionResponse,
@@ -129,6 +130,8 @@ import {
   type DeleteOutput as StateDeleteResponse,
   type GetOutput as StateGetResponse,
   type PutOutput as StateSetResponse,
+  type RegisterInput as StateRegisterRequest,
+  type RegisterOutput as StateRegisterResponse,
 } from "./internal_sdk/generated/apis/state/mod.js";
 import { API as EVENTS_API } from "./internal_sdk/generated/apis/events/mod.js";
 import { permission as actionPermission } from "./participant_runtime/participant.ts";
@@ -202,6 +205,7 @@ type LocalAuthorizationArgs =
       kind: "event";
       cache: SessionAuthorityOwner | undefined;
       message: LocalAuthorizationEventMessage;
+      originalPublication?: OriginalEventPublication;
       permission: DescriptorPermissionAtom | undefined;
       descriptorIdentity: string;
       requiredCapabilities: readonly string[];
@@ -239,6 +243,7 @@ export async function verifyLocalAuthorization(
       "request-id",
       "Trellis-Api-Generation",
       "Trellis-Accepted-Revision",
+      "Trellis-Session-Event",
       "Nats-Msg-Id",
       "Trellis-Event-Time",
       "Trellis-Event-Descriptor",
@@ -255,11 +260,32 @@ export async function verifyLocalAuthorization(
     try {
       const apiId = `${args.permission.apiId}@${args.permission.apiVersion}`;
       const action = toCatalogAction(args.permission);
-      const apiGeneration = args.message.headers?.get("Trellis-Api-Generation");
-      const acceptedRevision = args.message.headers?.get(
-        "Trellis-Accepted-Revision",
-      );
-      if (!apiGeneration || !acceptedRevision)
+      const eventPublication: unknown =
+        args.kind === "event"
+          ? JSON.parse(
+              args.message.headers?.get("Trellis-Session-Event") || "null",
+            )
+          : null;
+      const apiGeneration =
+        args.kind === "event"
+          ? eventPublication &&
+            typeof eventPublication === "object" &&
+            "apiGeneration" in eventPublication
+            ? eventPublication.apiGeneration
+            : undefined
+          : args.message.headers?.get("Trellis-Api-Generation");
+      const acceptedRevision =
+        args.kind === "event"
+          ? eventPublication &&
+            typeof eventPublication === "object" &&
+            "acceptedRevision" in eventPublication
+            ? eventPublication.acceptedRevision
+            : undefined
+          : args.message.headers?.get("Trellis-Accepted-Revision");
+      if (
+        typeof apiGeneration !== "string" ||
+        typeof acceptedRevision !== "string"
+      )
         return err(new AuthError({ reason: "missing_proof" }));
       if (args.kind !== "event") {
         const iatHeader = args.message.headers?.get("iat");
@@ -326,6 +352,7 @@ export async function verifyLocalAuthorization(
           args.message.data,
           proof,
           action,
+          args.originalPublication,
         );
         const sessionKey = args.message.headers?.get("session-key");
         if (sessionKey && sessionKey !== caller.sessionPublicKey)
@@ -830,6 +857,7 @@ export type RuntimeStateStoreShape = {
   codec: Codec<unknown>;
   version: number;
   migrations: Readonly<Record<number, Codec<unknown>>>;
+  registration?: StateRegistration;
 };
 export type RuntimeStateStores = Record<string, RuntimeStateStoreShape>;
 export type RuntimeStateStoresForContract<TContract> = TContract extends {
@@ -2214,6 +2242,17 @@ export type HandlerFn<
 >;
 
 const STATE_RUNTIME_RPC = {
+  Register: {
+    subject: "rpc.v1.state.Register",
+    input: STATE_API.actions["rpc:Register"].input,
+    output: STATE_API.actions["rpc:Register"].output,
+    callerCapabilities: [],
+    errors: STATE_API.actions["rpc:Register"].errors.map((error) => error.type),
+    declaredErrorTypes: STATE_API.actions["rpc:Register"].errors.map(
+      (error) => error.type,
+    ),
+    runtimeErrors: STATE_API.actions["rpc:Register"].errors,
+  },
   Get: {
     subject: "rpc.v1.state.Get",
     input: STATE_API.actions["rpc:Get"].input,
@@ -2251,6 +2290,13 @@ const STATE_RUNTIME_RPC = {
 
 /** Transport calls consumed by a typed State handle. */
 export type StateResourceCalls = Readonly<{
+  watch?(
+    input: { resourceName: string },
+    opts?: LiveSubscribeOpts,
+  ): PromiseLike<Result<LiveSubscription<StateGetResponse>, BaseError>>;
+  register?(
+    input: StateRegisterRequest,
+  ): PromiseLike<Result<StateRegisterResponse, BaseError>>;
   get(input: {
     resourceName: string;
   }): PromiseLike<Result<StateGetResponse, BaseError>>;
@@ -2267,6 +2313,17 @@ export type StateResourceCalls = Readonly<{
   }): PromiseLike<Result<StateDeleteResponse, BaseError>>;
 }>;
 
+/** Native-IDL projected schemas registered by an app before accessing State. */
+export type StateRegistration = Readonly<{
+  representation: StateRegisterRequest["representation"];
+  accepts: readonly StateRegisterRequest["representation"][];
+}>;
+
+/** Owned certified Live observation of typed State snapshots; `undefined` means unwritten or deleted. */
+export type StateWatch<T> = AsyncIterableIterator<StateValue<T> | undefined> &
+  Pick<LiveSubscription<StateValue<T> | undefined>, "closed" | "close"> &
+  AsyncDisposable;
+
 /** Typed handle for one generated single-value State resource. */
 export class StateHandle<T> {
   readonly #resourceName: string;
@@ -2275,6 +2332,9 @@ export class StateHandle<T> {
   readonly #isCurrent: () => boolean;
   readonly #isAvailable: () => boolean;
   readonly #calls: StateResourceCalls;
+  readonly #registration?: StateRegistration;
+  #registered?: Promise<Result<StateRegisterResponse, BaseError>>;
+  #registrationRequest?: StateRegisterRequest;
 
   /** Construct a handle from generated metadata and settled State transport calls. */
   constructor(args: {
@@ -2284,6 +2344,7 @@ export class StateHandle<T> {
     isCurrent?: () => boolean;
     isAvailable?: () => boolean;
     calls: StateResourceCalls;
+    registration?: StateRegistration;
   }) {
     this.#resourceName = args.resourceName;
     this.#definition = args.definition;
@@ -2291,6 +2352,136 @@ export class StateHandle<T> {
     this.#isCurrent = args.isCurrent ?? (() => true);
     this.#isAvailable = args.isAvailable ?? (() => true);
     this.#calls = args.calls;
+    this.#registration = args.registration;
+  }
+
+  /** Register an app representation with explicit CAS. Initial registration uses `0`; conflicts are never retried automatically. */
+  register(
+    expectedRevision = "0",
+    idempotencyKey = ulid(),
+  ): AsyncResult<StateRegisterResponse, BaseError> {
+    this.#registrationRequest = undefined;
+    return this.#sendRegistration((registration) => ({
+      resourceName: this.#resourceName,
+      representation: registration.representation,
+      accepts: [...registration.accepts],
+      expectedRevision,
+      idempotencyKey: codecs.ulid.decode(idempotencyKey),
+    }));
+  }
+
+  #sendRegistration(
+    request: (registration: StateRegistration) => StateRegisterRequest,
+  ): AsyncResult<StateRegisterResponse, BaseError> {
+    const pending = (async () => {
+      try {
+        this.#assertCurrent();
+        if (!this.#registration || !this.#calls.register)
+          throw new Error("Only app State uses representation registration");
+        const input = request(this.#registration);
+        this.#registrationRequest = input;
+        return await this.#calls.register(input);
+      } catch (cause) {
+        return Result.err(
+          cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
+        );
+      }
+    })().then((result) => {
+      if (
+        this.#registered === pending &&
+        result.isErr() &&
+        result.error.toSerializable().type !==
+          "trellis.state@v1::RegistrationConflict"
+      ) {
+        this.#registered = undefined;
+      }
+      return result;
+    });
+    this.#registered = pending;
+    return AsyncResult.from(pending);
+  }
+
+  async #ensureRegistered(): Promise<void> {
+    if (!this.#registration) return;
+    const request = this.#registrationRequest;
+    (
+      await (this.#registered ??
+        (request ? this.#sendRegistration(() => request) : this.register()))
+    ).orThrow();
+  }
+
+  /** Observe the initial snapshot and subsequent changes, migrating only in memory. Close or leave iteration to release the Live observation. */
+  watch(opts?: LiveSubscribeOpts): AsyncResult<StateWatch<T>, BaseError> {
+    return AsyncResult.from(
+      (async () => {
+        try {
+          this.#assertCurrent();
+          await this.#ensureRegistered();
+          if (!this.#calls.watch)
+            throw new Error("Generated State Watch transport is missing");
+          const opened = await this.#calls.watch(
+            { resourceName: this.#resourceName },
+            opts,
+          );
+          if (opened.isErr()) return opened;
+          const subscription = opened.orThrow();
+          let pending = false;
+          let ended = false;
+          const observation: StateWatch<T> = {
+            closed: subscription.closed,
+            close: () => {
+              ended = true;
+              return subscription.close();
+            },
+            [Symbol.asyncIterator]() {
+              return this;
+            },
+            next: async () => {
+              if (ended) return { done: true, value: undefined };
+              if (pending)
+                throw new Error("concurrent next() is not supported");
+              pending = true;
+              try {
+                this.#assertCurrent();
+                const next = await subscription.next();
+                if (next.done) return { done: true, value: undefined };
+                const value = next.value.entry
+                  ? await this.#project(next.value.entry)
+                  : undefined;
+                if (ended) return { done: true, value: undefined };
+                this.#assertCurrent();
+                return { done: false, value };
+              } catch (cause) {
+                ended = true;
+                await subscription.return();
+                throw cause;
+              } finally {
+                pending = false;
+              }
+            },
+            return: async () => {
+              ended = true;
+              await subscription.return();
+              return { done: true, value: undefined };
+            },
+            throw: async (cause?: unknown) => {
+              ended = true;
+              await subscription.return();
+              throw cause;
+            },
+            [Symbol.asyncDispose]: async () => {
+              ended = true;
+              await subscription.return();
+            },
+          };
+          return Result.ok(observation);
+        } catch (cause) {
+          return Result.err(
+            cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
+          );
+        }
+      })(),
+    );
   }
 
   async #project(
@@ -2352,6 +2543,7 @@ export class StateHandle<T> {
       (async () => {
         try {
           this.#assertCurrent();
+          await this.#ensureRegistered();
           const result = await this.#calls.set({
             resourceName: this.#resourceName,
             representationVersion: BigInt(this.#definition.version),
@@ -2390,6 +2582,7 @@ export class StateHandle<T> {
       (async () => {
         try {
           this.#assertCurrent();
+          await this.#ensureRegistered();
           const result = await this.#calls.get({
             resourceName: this.#resourceName,
           });
@@ -2430,6 +2623,7 @@ export class StateHandle<T> {
       (async () => {
         try {
           this.#assertCurrent();
+          await this.#ensureRegistered();
           const result = await this.#calls.delete({
             resourceName: this.#resourceName,
             ...(revision === undefined ? {} : { revision }),
@@ -2802,7 +2996,7 @@ export class Trellis<
   #createStateFacade(state: TState | undefined): StateFacade<TState> {
     const stores = (state ?? {}) as RuntimeStateStores;
     const facade: Record<string, ValueStateStoreClient<unknown>> = {};
-    const stateRpc = (name: "Get" | "Put" | "Delete") => {
+    const stateRpc = (name: "Register" | "Get" | "Put" | "Delete") => {
       const descriptor = Object.values(this.api.rpc).find(
         (candidate) =>
           candidate.permission.apiId === "trellis.state" &&
@@ -2823,9 +3017,38 @@ export class Trellis<
             resourceName,
             definition: descriptor,
             migrations: this.#stateMigrations[resourceName],
+            registration: descriptor.registration,
             isCurrent: () => generation === this.#resourceGeneration(),
             isAvailable: () => this.#resourceAvailability(resourceName),
             calls: {
+              watch: (input, opts) => {
+                const live = Object.values(this.api.lives ?? {}).find(
+                  (candidate) =>
+                    candidate.permission.apiId === "trellis.state" &&
+                    candidate.permission.apiVersion === "v1" &&
+                    candidate.permission.surfaceName === "Watch",
+                );
+                if (!live)
+                  throw new Error(
+                    "Generated participant is missing State.Watch",
+                  );
+                return this.#subscribeLive<typeof input, StateGetResponse>(
+                  "State.Watch",
+                  live,
+                  input,
+                  opts,
+                );
+              },
+              register: (input) =>
+                this.#requestBuiltRpc<StateRegisterResponse>(
+                  "State.Register",
+                  input,
+                  {
+                    ...STATE_RUNTIME_RPC.Register,
+                    subject: stateRpc("Register").subject,
+                    permission: stateRpc("Register").permission,
+                  },
+                ),
               get: (input) =>
                 this.#requestBuiltRpc<StateGetResponse>("State.Get", input, {
                   ...STATE_RUNTIME_RPC.Get,
@@ -5984,6 +6207,12 @@ export class Trellis<
       }
       for await (const msg of messages) {
         let replayEnvelope: ConsumerReplayEnvelope | undefined;
+        let originalPublication: OriginalEventPublication = {
+          publishedAt: new Date(
+            msg.info.timestampNanos / 1_000_000,
+          ).toISOString(),
+          streamSequence: String(msg.info.streamSequence),
+        };
         let deliveredMessage: Pick<
           Msg,
           "data" | "headers" | "subject" | "json"
@@ -5997,7 +6226,7 @@ export class Trellis<
             parsedReplayEnvelope.resourceId !== binding.resourceId ||
             parsedReplayEnvelope.originalRecordSequence <= 0
           ) {
-            this.#recordEventDisposition("ack", () => msg.ack());
+            this.#recordEventDisposition("nak", () => msg.nak());
             continue;
           }
           let inspected: Record<string, unknown>;
@@ -6052,19 +6281,45 @@ export class Trellis<
             this.#recordEventDisposition("ack", () => msg.ack());
             continue;
           }
-          const originalHeaders = natsHeaders();
-          for (const [name, values] of Object.entries(
-            parsedReplayEnvelope.originalHeaders,
-          )) {
-            for (const value of values) originalHeaders.append(name, value);
+          if (!detail || typeof detail !== "object") {
+            this.#recordEventDisposition("nak", () =>
+              msg.nak(binding.ackWaitMs),
+            );
+            continue;
           }
-          const data = new Uint8Array(
-            parsedReplayEnvelope.originalPayloadBytes,
-          );
+          const publishedAt = Reflect.get(detail, "originalPublishedAt");
+          const sequence = Reflect.get(deadLetter, "originalSequence");
+          const data = Reflect.get(detail, "originalPayload");
+          const subject = Reflect.get(detail, "originalSubject");
+          const headers = Reflect.get(detail, "originalHeaders");
+          if (
+            typeof publishedAt !== "string" ||
+            !Number.isFinite(Date.parse(publishedAt)) ||
+            typeof sequence !== "bigint" ||
+            !(data instanceof Uint8Array) ||
+            typeof subject !== "string" ||
+            !headers ||
+            typeof headers !== "object"
+          ) {
+            this.#recordEventDisposition("nak", () =>
+              msg.nak(binding.ackWaitMs),
+            );
+            continue;
+          }
+          originalPublication = {
+            publishedAt,
+            streamSequence: String(sequence),
+          };
+          // Use the authenticated inspection's retained bytes with its broker time,
+          // never publisher-supplied replay content with somebody else's provenance.
+          const originalHeaders = natsHeaders();
+          for (const [name, value] of Object.entries(headers)) {
+            if (typeof value === "string") originalHeaders.append(name, value);
+          }
           deliveredMessage = {
             data,
             headers: originalHeaders,
-            subject: parsedReplayEnvelope.originalSubject,
+            subject,
             json: () => JSON.parse(new TextDecoder().decode(data)),
           };
         }
@@ -6090,6 +6345,7 @@ export class Trellis<
             registration.event,
             registration.ctx,
             deliveredMessage,
+            originalPublication,
           );
           const proofValue = proofResult.take();
           if (isErr(proofValue)) {
@@ -6168,6 +6424,27 @@ export class Trellis<
               operation: String(registration.event),
               phase: "input_validation",
             });
+            if (replayEnvelope) {
+              try {
+                await this.#reportConsumerDelivery({
+                  resourceId: binding.resourceId,
+                  sourceStream: binding.replayBinding.stream,
+                  sourceSequence: BigInt(msg.info.streamSequence),
+                  deliveryCount: msg.info.deliveryCount,
+                  deliveryProof: jetStreamDeliveryProof(msg),
+                  replayGeneration: replayEnvelope.generation,
+                  outcome: "unreplayable",
+                  error: eventPayload.error.message,
+                });
+              } catch (error) {
+                this.#log.warn(
+                  { error, group },
+                  "Replay terminal report unavailable",
+                );
+                failed = true;
+                break;
+              }
+            }
             this.#recordEventDisposition("term", () => msg.term());
             failed = true;
             break;
@@ -6207,26 +6484,8 @@ export class Trellis<
               "Event handler failed",
             );
             if (delivery >= binding.maxDeliver) {
-              try {
-                msg.working();
-                await this.#reportConsumerDelivery({
-                  resourceId: binding.resourceId,
-                  sourceStream: isReplay
-                    ? binding.replayBinding.stream
-                    : binding.stream,
-                  sourceSequence: BigInt(msg.info.streamSequence),
-                  deliveryCount: delivery,
-                  deliveryProof: jetStreamDeliveryProof(msg),
-                  ...(replayEnvelope
-                    ? { replayGeneration: replayEnvelope.generation }
-                    : {}),
-                  outcome: "exhausted",
-                  error: JSON.stringify(handlerValue.error.toSerializable()),
-                });
-                this.#recordEventDisposition("ack", () => msg.ack());
-              } catch (error) {
-                this.#log.warn({ error, group }, "Delivery report unavailable");
-              }
+              // The broker's exhaustion advisory owns DLQ capture, including replay.
+              this.#recordEventDisposition("nak", () => msg.nak());
               failed = true;
               break;
             }
@@ -6334,6 +6593,23 @@ export class Trellis<
     }).orThrow();
   }
 
+  /** @internal Read authoritative history for a verified deployment-owned job. */
+  async requestJobHistory(
+    input: JobsHistoryRequest,
+  ): Promise<JobsHistoryResponse> {
+    const action = JOBS_HISTORY_API.actions["rpc:History"];
+    return await this.#requestBuiltRpc<JobsHistoryResponse>("History", input, {
+      subject: action.subject,
+      permission: actionPermission(JOBS_HISTORY_API.identity, action, "call"),
+      input: action.input,
+      output: action.output,
+      callerCapabilities: [],
+      errors: action.errors.map((error) => error.type),
+      declaredErrorTypes: action.errors.map((error) => error.type),
+      runtimeErrors: action.errors,
+    }).orThrow();
+  }
+
   #parseEventMessage(
     event: EventsOf<TA>,
     ctx: EventDescriptorOf<TA, EventsOf<TA>>,
@@ -6359,11 +6635,13 @@ export class Trellis<
     _event: EventsOf<TA>,
     descriptor: EventDescriptorOf<TA, EventsOf<TA>>,
     msg: Pick<Msg, "data" | "headers" | "subject">,
+    originalPublication?: OriginalEventPublication,
   ): Promise<Result<VerifiedCaller, BaseError>> {
     return await verifyLocalAuthorization({
       kind: "event",
       cache: this.#auth.authorityOwner,
       message: msg,
+      originalPublication,
       permission: descriptor.publishPermission,
       descriptorIdentity: descriptor.descriptorIdentity,
       requiredCapabilities: descriptor.publishCapabilities,
@@ -7121,3 +7399,8 @@ export class Trellis<
     );
   }
 }
+import { API as JOBS_HISTORY_API } from "./internal_sdk/generated/apis/jobs/mod.js";
+import type {
+  JobsHistoryRequest,
+  JobsHistoryResponse,
+} from "./internal_sdk/generated/types/index.js";

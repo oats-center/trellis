@@ -984,7 +984,7 @@ fn render_participant(
     // These are authoring selections, not local catalog revisions or action grants.
     out.push_str(&format!("pub const REQUIRED_CAPABILITIES: &[&str] = &{};\npub const OPTIONAL_CAPABILITIES: &[&str] = &{};\n", string_slice(required.iter().map(|id| id.as_str())), string_slice(optional.iter().map(|id| id.as_str()))));
     out.push_str(&render_resources(participant));
-    out.push_str(&render_migrations(participant));
+    out.push_str(&render_migrations(participant.resources()));
     out.push_str(&render_availability(graph, participant));
     out.push_str(&render_participant_facades(graph, participant));
     Ok(out)
@@ -994,23 +994,51 @@ fn render_app_request(
     graph: &PackageGraph,
     request: &AppRequestDefinition,
 ) -> Result<String, CodegenRustError> {
+    let mut uses = request.uses().clone();
+    if !request.states().is_empty() {
+        let (id, api) = graph
+            .packages()
+            .values()
+            .flat_map(|package| package.apis())
+            .find(|(id, _)| id.as_str() == "trellis.state@v1")
+            .ok_or_else(|| {
+                CodegenRustError::Semantic(
+                    "app State requires the trellis.state@v1 dependency".into(),
+                )
+            })?;
+        let selection = uses
+            .entry(id.clone())
+            .or_insert_with(|| InteractionSelection {
+                api: id.clone(),
+                actions: BTreeSet::new(),
+                required_capabilities: BTreeSet::new(),
+                optional_capabilities: BTreeSet::new(),
+            });
+        for (id, capability) in api.capabilities() {
+            if ["read", "write", "delete"]
+                .contains(&id.as_str().rsplit("::").next().unwrap_or_default())
+            {
+                selection.required_capabilities.insert(id.clone());
+                selection.optional_capabilities.remove(id);
+                selection.actions.extend(capability.allows.iter().cloned());
+            }
+        }
+    }
     let kind = match request.kind() {
         AppKind::Browser => "Browser",
         AppKind::Native => "Native",
     };
-    let required = request
-        .uses()
+    let required = uses
         .values()
         .flat_map(|selection| &selection.required_capabilities)
         .collect::<BTreeSet<_>>();
-    let optional = request
-        .uses()
+    let optional = uses
         .values()
         .flat_map(|selection| &selection.optional_capabilities)
         .collect::<BTreeSet<_>>();
     let mut optional_actions = Vec::new();
     let mut has_download = false;
-    for (id, selection) in request.uses() {
+    for (id, selection) in &uses {
         let api = graph
             .api(id)
             .ok_or_else(|| CodegenRustError::Semantic(format!("missing API {id}")))?;
@@ -1037,12 +1065,43 @@ fn render_app_request(
     if has_download {
         out.push_str("pub async fn download_transfer(&self, grant: &trellis_rs::client::DownloadTransferGrant) -> Result<Vec<u8>, trellis_rs::client::TrellisClientError> { self.inner.download_transfer(grant).await }\n");
     }
-    for api in request.uses().keys() {
+    for api in uses.keys() {
         let module = module_name(api.as_str());
         out.push_str(&format!("pub fn {module}(&self) -> {module}::Client {{ {module}::Client::from_generated(self.inner.clone()) }}\n"));
     }
+    for (name, state) in request.states() {
+        let ResourceDefinition::State {
+            schema,
+            version,
+            accepts,
+            ..
+        } = state
+        else {
+            continue;
+        };
+        let method = rust_ident(&key_to_snake(name.as_str()));
+        let value = type_path(schema);
+        let codec = if accepts.is_empty() {
+            format!(
+                "trellis_rs::client::ResourceCodec::new({version}).expect(\"generated version\")"
+            )
+        } else {
+            format!("migrations.{method}_codec()")
+        };
+        let migrations = if accepts.is_empty() {
+            ""
+        } else {
+            ", migrations: &Migrations"
+        };
+        let representations = std::iter::once((*version, schema)).chain(accepts.iter().map(|old| (old.version, &old.ty))).map(|(version, ty)| {
+            let schema = trellis_idl::json_schema(graph, ty).map_err(|error| CodegenRustError::Semantic(error.to_string()))?;
+            Ok(format!("crate::__types::trellis::StateRepresentation {{ version: {version}.into(), schema: {:?}.as_bytes().to_vec().into(), extra: Default::default() }}", schema.to_string()))
+        }).collect::<Result<Vec<_>, CodegenRustError>>()?;
+        out.push_str(&format!("/// Register the authored State representation with explicit CAS, then open its typed handle. Pass revision `0` for initial registration; conflicts are never retried.\npub async fn {method}(&self, expected_revision: &str, idempotency_key: trellis_rs::generated::Ulid{migrations}) -> Result<(trellis_rs::client::ConnectedStateHandle<{value}, crate::apis::trellis_state_v1::lives::Watch>, crate::apis::trellis_state_v1::rpc::RegisterOutput), trellis_rs::client::CallError<crate::apis::trellis_state_v1::rpc::RegisterError>> {{ let registration = self.inner.call::<crate::apis::trellis_state_v1::rpc::Register>(&crate::apis::trellis_state_v1::rpc::RegisterInput {{ resource_name: {:?}.to_owned().into(), expected_revision: expected_revision.to_owned().into(), idempotency_key, representation: {}, accepts: vec![{}], extra: Default::default() }}).await?; Ok((self.inner.registered_state_handle({:?}, {codec}), registration)) }}\n", name.as_str(), representations[0], representations[1..].join(","), name.as_str()));
+    }
     out.push_str("}\n");
-    for (id, selection) in request.uses() {
+    out.push_str(&render_migrations(request.states()));
+    for (id, selection) in &uses {
         let api = graph
             .api(id)
             .ok_or_else(|| CodegenRustError::Semantic(format!("missing API {id}")))?;
@@ -1152,9 +1211,9 @@ fn render_participant_facades(graph: &PackageGraph, participant: &ParticipantDef
                     "migrations: &Migrations, "
                 };
                 if *optional {
-                    out.push_str(&format!("pub fn {method}(&self, {migrations}) -> Option<trellis_rs::client::ConnectedStateHandle<{value}>> {{ self.inner.state_handle({:?}, {codec}) }}\n", name.as_str()));
+                    out.push_str(&format!("pub fn {method}(&self, {migrations}) -> Option<trellis_rs::client::ConnectedStateHandle<{value}, crate::apis::trellis_state_v1::lives::Watch>> {{ self.inner.state_handle({:?}, {codec}) }}\n", name.as_str()));
                 } else {
-                    out.push_str(&format!("pub fn {method}(&self, {migrations}) -> Result<trellis_rs::client::ConnectedStateHandle<{value}>, trellis_rs::client::TrellisClientError> {{ self.inner.state_handle({:?}, {codec}).ok_or_else(|| trellis_rs::client::TrellisClientError::AuthorizationUnavailable({:?}.into())) }}\n", name.as_str(), name.as_str()));
+                    out.push_str(&format!("pub fn {method}(&self, {migrations}) -> Result<trellis_rs::client::ConnectedStateHandle<{value}, crate::apis::trellis_state_v1::lives::Watch>, trellis_rs::client::TrellisClientError> {{ self.inner.state_handle({:?}, {codec}).ok_or_else(|| trellis_rs::client::TrellisClientError::AuthorizationUnavailable({:?}.into())) }}\n", name.as_str(), name.as_str()));
                 }
             }
             ResourceDefinition::Kv {
@@ -1447,9 +1506,10 @@ fn render_evidence(graph: &PackageGraph) -> Result<String, CodegenRustError> {
     ))
 }
 
-fn render_migrations(participant: &ParticipantDefinition) -> String {
-    let historic = participant
-        .resources()
+fn render_migrations(
+    resources: &BTreeMap<trellis_idl::ResourceName, ResourceDefinition>,
+) -> String {
+    let historic = resources
         .iter()
         .flat_map(|(name, resource)| match resource {
             ResourceDefinition::State {
@@ -1505,7 +1565,7 @@ fn render_migrations(participant: &ParticipantDefinition) -> String {
         ));
     }
     out.push_str("} }\n");
-    for (resource, resource_definition) in participant.resources() {
+    for (resource, resource_definition) in resources {
         let (ResourceDefinition::State {
             schema,
             version,
@@ -2097,6 +2157,45 @@ mod tests {
     fn generated_crate_compiles_against_current_abi() {
         let graph = graph("type Name = string; enum Status { ready; } model OldValues {} model Values { name: Name; status: Status; signed: int64; unsigned: uint64; finite: number; bytes: bytes; } api main@v1 { title \"Main\"; description \"Main API.\"; error Bad(Values); rpc Get { input Values; output Values; errors [Bad]; download; } rpc Write { input Values; output Values; } capabilities { capability read { consent_revision 1; title \"Read\"; description \"Read values.\"; consequence \"Reveals values.\"; allows { rpc Get; } } capability work { consent_revision 1; title \"Work\"; description \"Run work.\"; consequence \"Changes values.\"; allows { operation Work; } } capability write { consent_revision 1; title \"Write\"; description \"Write values.\"; consequence \"Changes values.\"; allows { rpc Write; } } } operation Work { input Values; output Values; progress Values; errors [Bad]; signals { resume Values; } upload; } } api other@v2 { title \"Other\"; description \"Other API.\"; capabilities { capability observe { consent_revision 1; title \"Observe\"; description \"Observe values.\"; consequence \"Reveals value changes.\"; allows { subscribe event Changed; live Watch; } } } event Changed { payload Values; } live Watch { input Values; event Values; } } service Backend { implements main; implements other; kv cache { title \"Cache\"; description \"Value cache.\"; schema Values; version 2; accepts { 1: OldValues; } } } service ResourceOnly { kv records { title \"Records\"; description \"KV-only service.\"; schema Values; version 1; history 4; ttl 0ms; } } app Caller { use main { required capability read; required capability work; } use other { required capability observe; } }");
         let output = tempfile::tempdir().unwrap();
+        let runtime_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
+        let builtin_manifest =
+            trellis_idl::project::read_manifest(&runtime_source.join("trellis.toml")).unwrap();
+        let dependency = compile_project(
+            &builtin_manifest,
+            trellis_idl::project::load_sources(&runtime_source, &builtin_manifest).unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let source = canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
+        let source = source.replacen(
+            '\n',
+            &format!(
+                "\ndependency d0 \"trellis\" version \"{}\" digest \"{}\";\n",
+                dependency.root_package().version(),
+                dependency.root_digest()
+            ),
+            1,
+        );
+        let manifest = PackageManifest {
+            package: PackageMetadata {
+                name: "fixture".into(),
+                version: Version::new(2, 3, 4),
+            },
+            sources: BTreeMap::from([("main".into(), "main.trellis".into())]),
+            dependencies: BTreeMap::from([(
+                "trellis".into(),
+                trellis_idl::project::Dependency {
+                    package: "trellis".into(),
+                    version: None,
+                    path: Some("../runtime".into()),
+                    registry: None,
+                },
+            )]),
+            generate: GenerateConfig::default(),
+            default_registry: None,
+            registries: BTreeMap::new(),
+        };
+        let graph = compile_project(&manifest, vec![SourceUnit { alias: "main".into(), path: "main.trellis".into(), source: format!("{source}\napp StateReader {{ state values {{ title \"Values\"; description \"Saved values\"; schema Values; version 2; accepts {{ 1: OldValues; }} }} }}") }], BTreeMap::from([("trellis".into(), dependency)])).unwrap();
         generate_rust_package(&graph, output.path(), "fixture-sdk").unwrap();
         let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../trellis")
@@ -2154,6 +2253,26 @@ async fn accepts_download_transfer(
     grant: &trellis_rs::client::DownloadTransferGrant,
 ) -> Result<Vec<u8>, trellis_rs::client::TrellisClientError> {
     client.download_transfer(grant).await
+}
+
+#[allow(dead_code)]
+async fn registers_app_state(
+    client: &fixture_sdk::apps::fixture_state_reader::Client,
+    migrations: &fixture_sdk::apps::fixture_state_reader::Migrations,
+    key: trellis_rs::generated::Ulid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (state, registration) = client.values("0", key, migrations).await?;
+    let _revision: String = registration.revision.0;
+    let mut observation = state.watch().await?;
+    if let Some(snapshot) = observation.next().await {
+        let _value: Option<trellis_rs::client::StateValue<Values>> = snapshot?;
+    }
+    observation.close().await?;
+    let _terminal = observation.closed().await;
+    if let Some(current) = state.get().await? {
+        state.replace(current.revision, &current.value).await?;
+    }
+    Ok(())
 }
 
 fn accepts_typed_kv<'a>(

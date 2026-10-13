@@ -105,7 +105,6 @@ impl trellis_rs::generated::AppRequestDescriptor for Request {
         "trellis.jobs@v1::summary",
         "trellis.state@v1::delete",
         "trellis.state@v1::read",
-        "trellis.state@v1::resourcesInspect",
         "trellis.state@v1::write",
     ];
 }
@@ -138,6 +137,9 @@ const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Devices.List"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Devices.Provision"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Devices.Remove"),
+    trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Devices.Reviews.Decide"),
+    trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Devices.Reviews.Get"),
+    trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Devices.Reviews.List"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Issuers.Revoke"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "Issuers.Rotate"),
     trellis_rs::generated::OptionalAction::rpc("trellis.auth@v1", "OAuthClients.Delete"),
@@ -232,8 +234,8 @@ const OPTIONAL_ACTIONS: &[trellis_rs::generated::OptionalAction] = &[
     trellis_rs::generated::OptionalAction::rpc("trellis.state@v1", "Delete"),
     trellis_rs::generated::OptionalAction::rpc("trellis.state@v1", "Get"),
     trellis_rs::generated::OptionalAction::rpc("trellis.state@v1", "Put"),
-    trellis_rs::generated::OptionalAction::rpc("trellis.state@v1", "Resources.Inspect"),
-    trellis_rs::generated::OptionalAction::rpc("trellis.state@v1", "Resources.Query"),
+    trellis_rs::generated::OptionalAction::rpc("trellis.state@v1", "Register"),
+    trellis_rs::generated::OptionalAction::live("trellis.state@v1", "Watch"),
 ];
 #[derive(Clone)]
 pub struct Client {
@@ -1241,6 +1243,126 @@ pub mod trellis_auth_v1 {
         ) -> Result<rpc::DevicesRemoveOutput, trellis_rs::client::CallError<rpc::DevicesRemoveError>>
         {
             self.inner.call::<rpc::DevicesRemove>(input).await
+        }
+        pub async fn devices_reviews_decide(
+            &self,
+            input: &rpc::DevicesReviewsDecideInput,
+        ) -> Result<
+            rpc::DevicesReviewsDecideOutput,
+            trellis_rs::client::CallError<rpc::DevicesReviewsDecideError>,
+        > {
+            self.inner.call::<rpc::DevicesReviewsDecide>(input).await
+        }
+        pub async fn devices_reviews_get(
+            &self,
+            input: &rpc::DevicesReviewsGetInput,
+        ) -> Result<
+            rpc::DevicesReviewsGetOutput,
+            trellis_rs::client::CallError<rpc::DevicesReviewsGetError>,
+        > {
+            self.inner.call::<rpc::DevicesReviewsGet>(input).await
+        }
+        pub async fn devices_reviews_list(
+            &self,
+            input: &rpc::DevicesReviewsListInput,
+        ) -> Result<
+            rpc::DevicesReviewsListOutput,
+            trellis_rs::client::CallError<rpc::DevicesReviewsListError>,
+        > {
+            self.inner.call::<rpc::DevicesReviewsList>(input).await
+        }
+        pub fn devices_reviews_list_pages(
+            &self,
+            input: rpc::DevicesReviewsListInput,
+        ) -> futures_util::stream::BoxStream<
+            'static,
+            Result<
+                rpc::DevicesReviewsListOutput,
+                crate::PaginationError<rpc::DevicesReviewsListError>,
+            >,
+        > {
+            let client = self.clone();
+            let mut seen = std::collections::BTreeSet::new();
+            if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+                seen.insert(cursor);
+            }
+            Box::pin(futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .devices_reviews_list(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ))
+        }
+        pub fn devices_reviews_list_items(
+            &self,
+            input: rpc::DevicesReviewsListInput,
+        ) -> futures_util::stream::BoxStream<
+            'static,
+            Result<
+                crate::__types::trellis::AuthDeviceReview,
+                crate::PaginationError<rpc::DevicesReviewsListError>,
+            >,
+        > {
+            let client = self.clone();
+            let mut seen = std::collections::BTreeSet::new();
+            if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+                seen.insert(cursor);
+            }
+            Box::pin(futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthDeviceReview>::new().into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .devices_reviews_list(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ))
         }
         pub async fn issuers_revoke(
             &self,
@@ -3865,6 +3987,7 @@ pub mod trellis_jobs_v1 {
     }
 }
 pub mod trellis_state_v1 {
+    use crate::apis::trellis_state_v1::lives;
     use crate::apis::trellis_state_v1::rpc;
     #[derive(Clone)]
     pub struct Client {
@@ -3892,113 +4015,21 @@ pub mod trellis_state_v1 {
         ) -> Result<rpc::PutOutput, trellis_rs::client::CallError<rpc::PutError>> {
             self.inner.call::<rpc::Put>(input).await
         }
-        pub async fn resources_inspect(
+        pub async fn register(
             &self,
-            input: &rpc::ResourcesInspectInput,
+            input: &rpc::RegisterInput,
+        ) -> Result<rpc::RegisterOutput, trellis_rs::client::CallError<rpc::RegisterError>>
+        {
+            self.inner.call::<rpc::Register>(input).await
+        }
+        pub async fn watch(
+            &self,
+            input: &lives::WatchInput,
         ) -> Result<
-            rpc::ResourcesInspectOutput,
-            trellis_rs::client::CallError<rpc::ResourcesInspectError>,
+            trellis_rs::LiveSubscription<lives::WatchEvent>,
+            trellis_rs::client::TrellisClientError,
         > {
-            self.inner.call::<rpc::ResourcesInspect>(input).await
-        }
-        pub async fn resources_query(
-            &self,
-            input: &rpc::ResourcesQueryInput,
-        ) -> Result<
-            rpc::ResourcesQueryOutput,
-            trellis_rs::client::CallError<rpc::ResourcesQueryError>,
-        > {
-            self.inner.call::<rpc::ResourcesQuery>(input).await
-        }
-        pub fn resources_query_pages(
-            &self,
-            input: rpc::ResourcesQueryInput,
-        ) -> futures_util::stream::BoxStream<
-            'static,
-            Result<rpc::ResourcesQueryOutput, crate::PaginationError<rpc::ResourcesQueryError>>,
-        > {
-            let client = self.clone();
-            let mut seen = std::collections::BTreeSet::new();
-            if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-                seen.insert(cursor);
-            }
-            Box::pin(futures_util::stream::try_unfold(
-                (client, input, seen, false),
-                |(client, mut input, mut seen, done)| async move {
-                    if done {
-                        return Ok(None);
-                    }
-                    let page = client
-                        .resources_query(&input)
-                        .await
-                        .map_err(crate::PaginationError::Call)?;
-                    let next = page.page.next_cursor.clone();
-                    let done = next.is_none();
-                    if let Some(cursor) = next {
-                        if !seen.insert(cursor.clone()) {
-                            return Err(crate::PaginationError::RepeatedCursor(cursor));
-                        }
-                        let limit = input.page.as_ref().and_then(|page| page.limit);
-                        input.page = Some(crate::__types::CursorQuery {
-                            cursor: Some(cursor),
-                            limit,
-                        });
-                    }
-                    Ok(Some((page, (client, input, seen, done))))
-                },
-            ))
-        }
-        pub fn resources_query_items(
-            &self,
-            input: rpc::ResourcesQueryInput,
-        ) -> futures_util::stream::BoxStream<
-            'static,
-            Result<
-                crate::__types::trellis::ResourceInspection,
-                crate::PaginationError<rpc::ResourcesQueryError>,
-            >,
-        > {
-            let client = self.clone();
-            let mut seen = std::collections::BTreeSet::new();
-            if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-                seen.insert(cursor);
-            }
-            Box::pin(futures_util::stream::try_unfold(
-                (
-                    client,
-                    input,
-                    seen,
-                    false,
-                    Vec::<crate::__types::trellis::ResourceInspection>::new().into_iter(),
-                ),
-                |(client, mut input, mut seen, mut done, mut items)| async move {
-                    loop {
-                        if let Some(item) = items.next() {
-                            return Ok(Some((item, (client, input, seen, done, items))));
-                        }
-                        if done {
-                            return Ok(None);
-                        }
-                        let page = client
-                            .resources_query(&input)
-                            .await
-                            .map_err(crate::PaginationError::Call)?;
-                        let next = page.page.next_cursor.clone();
-                        done = next.is_none();
-                        if let Some(cursor) = next {
-                            if !seen.insert(cursor.clone()) {
-                                return Err(crate::PaginationError::RepeatedCursor(cursor));
-                            }
-                            let limit = input.page.as_ref().and_then(|page| page.limit);
-                            input.page = Some(crate::__types::CursorQuery {
-                                cursor: Some(cursor),
-                                limit,
-                            });
-                        }
-                        items = page.items.into_iter();
-                    }
-                },
-            ))
+            self.inner.live::<lives::Watch>(input).await
         }
     }
 }

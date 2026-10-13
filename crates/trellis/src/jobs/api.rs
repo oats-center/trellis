@@ -122,6 +122,7 @@ pub enum JobSubmitOutcome<TPayload, TResult> {
 pub struct JobRef<TPayload, TResult> {
     identity: JobIdentity,
     seed: Job,
+    client: std::sync::Arc<crate::client::TrellisClient>,
     generations: TransportGenerationManager,
     binding: JobsBinding,
     queue: JobsQueueBinding,
@@ -142,6 +143,7 @@ impl<TPayload, TResult> Clone for JobRef<TPayload, TResult> {
         Self {
             identity: self.identity.clone(),
             seed: self.seed.clone(),
+            client: self.client.clone(),
             generations: self.generations.clone(),
             binding: self.binding.clone(),
             queue: self.queue.clone(),
@@ -157,14 +159,15 @@ where
 {
     pub(crate) fn from_runtime(
         seed: Job,
-        generations: TransportGenerationManager,
+        client: std::sync::Arc<crate::client::TrellisClient>,
         binding: JobsBinding,
         queue: JobsQueueBinding,
     ) -> Self {
         Self {
             identity: JobIdentity::from(&seed),
             seed,
-            generations,
+            generations: client.transport_generations(),
+            client,
             binding,
             queue,
             _types: PhantomData,
@@ -177,6 +180,7 @@ where
             .acquire_application_published()
             .map_err(jobs_message)?;
         let waiter = NatsJobWaiter::new(
+            self.client.clone(),
             lease.nats().clone(),
             self.queue.clone(),
             Duration::from_secs(30),

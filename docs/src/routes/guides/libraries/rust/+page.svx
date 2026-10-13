@@ -153,6 +153,25 @@ Optional resource accessors return `Option`. An enabled but unwritten State
 resource is still present and `get` returns `None`. State/KV historical
 representation handlers migrate values in memory without write-on-read.
 
+App State accessors are asynchronous: `let (state, registration) =
+client.saved_resource("0", idempotency_key).await?;`. Accepted historical versions
+add a generated `&Migrations` argument. The accessor registers the native-IDL
+projected schemas before returning the typed handle. Use `"0"` initially; an
+identical registration returns its current revision. Changing the representation
+requires an explicitly supplied current registration revision. Handle
+`RegistrationConflict` rather than retrying or overwriting automatically; existing
+representation versions cannot acquire different schemas. Registration revisions
+are distinct from value revisions returned by `get`, `create`, `set`, and `replace`.
+
+`let mut observation = state.watch().await?;` opens the generated certified Live
+State observation. `observation.next().await` returns
+`Option<Result<Option<StateValue<T>>, StateReadError>>`: the outer `None` ends the
+observation, while an inner `None` is an unwritten or deleted value. The initial
+snapshot and later updates use the same in-memory migrations as reads and CAS
+conflicts. Call `observation.close().await?` for bounded cleanup and
+`observation.closed().await` for the Live terminal outcome; dropping also closes.
+Watch does not silently reopen after transport or authorization loss.
+
 Generated providers expose `submit_<job>` and `register_<job>` methods. Job
 handlers return `Result<JobResult, JobProcessError<E>>`; keyed capacity waits do
 not consume retries, while `JobProcessError::retryable(error)` does. See

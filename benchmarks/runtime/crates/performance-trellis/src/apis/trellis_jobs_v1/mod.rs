@@ -1,6 +1,6 @@
 //! Generated API `trellis.jobs@v1`.
 pub const API_ID: &str = "trellis.jobs@v1";
-pub const API_DIGEST: &str = "te7Bc9G_CD2uXOdqe01kQgY5vIjF4ZZS_u2i69q0kB4";
+pub const API_DIGEST: &str = "2JJNrTubKg1EupQq1eaZI0W837BpHQefERdnZVgjFbo";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -292,6 +292,67 @@ pub mod rpc {
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
             GetKeyError::decode(value)
+        }
+    }
+    pub type HistoryInput = crate::__types::trellis::JobsHistoryRequest;
+    pub type HistoryOutput = crate::__types::trellis::JobsHistoryResponse;
+    pub struct History;
+    impl History {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.History";
+        pub const KEY: &'static str = "jobs.History";
+        pub const SUBJECT: &'static str = "rpc.v1.jobs.History";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.jobs@v1::history",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.jobs@v1::UnexpectedError",
+            "trellis.jobs@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = false;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum HistoryError {
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl HistoryError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.jobs@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.jobs@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for History {
+        type Input = HistoryInput;
+        type Output = HistoryOutput;
+        type Error = HistoryError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            HistoryError::decode(value)
         }
     }
     pub type InspectInput = crate::__types::trellis::JobsInspectRequest;
@@ -838,6 +899,7 @@ pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     router.register_rpc_metadata::<rpc::Cancel>();
     router.register_rpc_metadata::<rpc::DismissDLQ>();
     router.register_rpc_metadata::<rpc::GetKey>();
+    router.register_rpc_metadata::<rpc::History>();
     router.register_rpc_metadata::<rpc::Inspect>();
     router.register_rpc_metadata::<rpc::ListDLQ>();
     router.register_rpc_metadata::<rpc::ListServices>();
@@ -875,6 +937,12 @@ impl Client {
         input: &rpc::GetKeyInput,
     ) -> Result<rpc::GetKeyOutput, trellis_rs::client::CallError<rpc::GetKeyError>> {
         self.inner.call::<rpc::GetKey>(input).await
+    }
+    pub async fn history(
+        &self,
+        input: &rpc::HistoryInput,
+    ) -> Result<rpc::HistoryOutput, trellis_rs::client::CallError<rpc::HistoryError>> {
+        self.inner.call::<rpc::History>(input).await
     }
     pub async fn inspect(
         &self,
@@ -1265,6 +1333,16 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
             > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::GetKey, _, _>(handler);
+    }
+    pub fn register_history<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::HistoryInput) -> Fut
+            + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<rpc::HistoryOutput>,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::History, _, _>(handler);
     }
     pub fn register_inspect<F, Fut>(&mut self, handler: F)
     where

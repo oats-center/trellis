@@ -94,6 +94,5 @@ app Console {
   }
   use state {
     required capability delete;
-    required capability resourcesInspect;
   }
 }

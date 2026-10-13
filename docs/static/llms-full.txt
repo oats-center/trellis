@@ -1,5 +1,33 @@
 # Trellis Consumer Guide
 
+Service Jobs reconstruct retained lifecycle history through the deployment-scoped
+runtime `Jobs.History` route automatically. Use generated service job handles;
+ordinary service identities cannot read the shared JOBS stream directly. History
+pages retain original stream sequences and a fixed upper watermark. The runtime
+derives ownership from verified service authority and its current queue binding;
+users and other deployments cannot read another deployment's private job history.
+Detaching resources retains data. Explicit administrative deletion removes only
+the selected detached allocation; shared streams and other queues remain intact.
+Recreated job queues have fresh allocation-scoped delivery subjects, while saved
+purge cutoffs protect new keyed coordination from delayed old deletions.
+
+Operator CLI: `trellis clients list|get|put|disable|delete` manages public OAuth
+registrations, including exact loopback browser redirects.
+Auth client flows are fixed on every Put: browser callbacks enable Authorization
+Code + refresh; native without callbacks enables Device Code + refresh; native
+with callbacks enables both + refresh. Adding/removing native callbacks updates
+the supported flows. Kind is immutable; use a new client ID to switch kind.
+Native HTTP loopback callbacks need no development flag; browser loopback does.
+`put` reads generated AuthOAuthClientPutRequest JSON; mutations are revision-fenced. `trellis apis
+list|get|review|accept|force-replace` uses generated Auth request JSON and reviewed
+package evidence. Force replacement requires apis.forceReplace and explicit
+breakage/consent acknowledgements. Console exposes OAuth clients and API catalog.
+
+Durable event consumers verify original broker publication time. DLQ/replay retains
+that provenance in the existing journal and resolves original bytes and timestamp
+through authenticated, resource-scoped Events inspection, including after source
+expiry. Publisher headers and replay publication time never replace it.
+
 The `accountRead` capability covers account resolution, reading your current
 session and signing out of the current login and its application sessions.
 `Sessions.Me` and `Sessions.Logout` require normal selection and consent.
@@ -286,6 +314,22 @@ consumers and buckets alone does not recover job keys or stored objects.
 
 State is one typed value without a key or TTL. KV is typed history and Store is
 raw bytes. State/KV migration is direct and in-memory, with no write-on-read.
+App State declarations request native State read/write/delete capabilities and
+register JSON-schema UTF-8 bytes projected from native IDL before handle use.
+Rust access is asynchronous: `let (state, registration) =
+client.saved_resource("0", idempotency_key).await?;` (historical versions add
+`&Migrations`). TypeScript retains `client.state.savedResource`; the first operation
+registers at "0", or explicitly `await state.register("0")` to retain the revision.
+Identical registration returns the current revision. Changes require explicit CAS
+using the current registration revision; handle RegistrationConflict without blind
+retry. Version schemas are immutable. Registration and value revisions are separate.
+Typed `state.watch()` uses certified Live Watch for initial and subsequent snapshots,
+with the same in-memory migrations as reads. Rust `observation.next().await` yields
+`Option<Result<Option<StateValue<T>>, StateReadError>>`; TypeScript uses
+`for await`. Inner None/undefined means unwritten or deleted. Close observations
+explicitly for bounded cleanup; Rust drop and TypeScript iterator return also close.
+`closed()` (Rust) / `closed` (TypeScript) reports the Live terminal outcome. No silent
+reopen follows transport or authorization loss. The shared owner remains authoritative.
 Operations are durable restartable at-least-once workflows. Consumers have local
 per-process concurrency and Events-owned scoped DLQ/replay. Jobs remain private
 durable queues. Cursor pagination ends only when `nextCursor` is absent and does
@@ -319,9 +363,21 @@ and `/` as `~1`, including missing required fields.
 Service/device bootstrap sends only provisioned identity and proof inputs.
 Browser bind creates a user-login session and then performs context refresh.
 These are different identity lifecycles, not interchangeable shortcuts. A device
-companion is created only as part of device activation after its own user
-consent. It receives a separate ordinary App/Agent user session and cannot
-bootstrap independently or borrow the parent device's authority.
+companion is a native OAuth application request with independent user consent,
+credential custody and connection. Accepted deployment registration creates
+trellis.device.<deploymentId>.companion but grants no user authority. Provision
+without identityPublicKey to issue a one-use provisioning secret bound to the
+server-owned instance; /auth/device/enroll verifies durable and ephemeral key
+possession. Devices.Reviews.Get/Decide require confirmation code and revision.
+The companion separately completes normal OAuth Device Code consent and invokes
+DeviceCompanions.Attach from that authenticated grant. Declare the Auth
+deviceCompanionsManage capability in its request. A required wrapper refuses a
+missing companion; an optional wrapper can connect without it. DeviceCompanions.Revoke
+removes the association and revokes only its exact grant and refresh families,
+leaving other grants, the user login and parent authority independent.
+Removal permits the associated user or an administrator with current delegated
+principals.manage. Removing the declaration rejects new and pending consent,
+while existing independently consented grants retain ordinary refresh.
 
 Browser sign-in begins with a proof-bound request that returns `intentId`, an
 opaque signed `intent`, and `loginUrl`. The intent binds the participant,
@@ -503,8 +559,10 @@ pull-loop failures are reported by the service lifecycle, and unmatched messages
 are not acknowledged as completed work. Durable names remain Trellis-owned.
 
 Durable event success is acknowledged only after the handler succeeds. Retryable
-failure uses the declared backoff; final exhaustion is confirmed in that
-Consumer's Events DLQ before the source delivery is acknowledged. Manual replay
+failure uses the declared backoff; final exhaustion leaves delivery unacknowledged
+so Events captures the broker max-deliveries advisory into that Consumer's DLQ.
+Consumer ownership permits retained inspection and terminal replay reporting, not
+administrative Replay/Dismiss. Manual replay
 uses the same handler with a fresh delivery budget, does not rewind the original
 Consumer, and confirms `resolved` before acknowledging success. Delivery and
 application side effects remain at least once.

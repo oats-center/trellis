@@ -106,7 +106,7 @@ export type GeneratedParticipant = Readonly<{
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, GeneratedResourceDescriptor>>;
   companion?: Readonly<{
-    participant: GeneratedParticipant;
+    request: AppRequestDescriptor;
     availability: "required" | "optional";
   }>;
   packageEvidence: unknown;
@@ -559,6 +559,7 @@ export function getCallerRuntime(
 export function participantAvailability(
   participant: GeneratedParticipant,
   resourceBindings: Readonly<{
+    state?: Readonly<Record<string, string>>;
     kv?: Readonly<Record<string, unknown>>;
     store?: Readonly<Record<string, unknown>>;
     jobs?: Readonly<{ queues: Readonly<Record<string, unknown>> }>;
@@ -577,7 +578,7 @@ export function participantAvailability(
     if (descriptor.availability !== "optional") continue;
     switch (descriptor.kind) {
       case "state":
-        resources[name] = participant.kind === "device";
+        resources[name] = resourceBindings.state?.[name] !== undefined;
         break;
       case "kv":
         resources[name] = resourceBindings.kv?.[name] !== undefined;

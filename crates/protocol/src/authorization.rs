@@ -1156,7 +1156,24 @@ pub fn verify_session_request(
         ));
     }
     if let Some(reply) = &request.reply_subject {
-        if !reply.starts_with(&format!("{}.", body.inbox_prefix)) {
+        // Transfer controls and upload DATA reply on the grant's exact signal
+        // route, whose consumer coordinate must be this authenticated runtime.
+        let transfer_reply = matches!(
+            crate::transfer::validate_transfer_subject(&request.subject),
+            Ok(crate::transfer::TransferSubjectKind::Control
+                | crate::transfer::TransferSubjectKind::UploadData)
+        ) && request.subject.rsplit('.').nth(1)
+            == Some(crate::encode_subject_token(&body.runtime_id).as_str())
+            && request
+                .subject
+                .rsplitn(4, '.')
+                .take(3)
+                .eq(reply.rsplitn(4, '.').take(3))
+            && matches!(
+                crate::transfer::validate_transfer_subject(reply),
+                Ok(crate::transfer::TransferSubjectKind::Signal)
+            );
+        if !reply.starts_with(&format!("{}.", body.inbox_prefix)) && !transfer_reply {
             return Err(authorization_error(
                 AuthorizationErrorCode::ReplySubjectMismatch,
                 [],

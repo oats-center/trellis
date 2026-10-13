@@ -38,7 +38,8 @@ impl SqliteAuthorizationStore {
         let own = &authority.authorization_session_id;
         // Live data routes carry the authenticated logical runtime ID. The
         // authorization-session ID is for cutoffs, not a transport subject.
-        let own_token = trellis_protocol::encode_subject_token(&authority.runtime_id);
+        let own_runtime = &authority.runtime_id;
+        let own_token = trellis_protocol::encode_subject_token(own_runtime);
         let mut responds = false;
         let mut operation_providers = BTreeSet::new();
         for reference in &authority.apis {
@@ -210,7 +211,8 @@ impl SqliteAuthorizationStore {
                         if can_provide {
                             subscribe.insert(
                                 trellis_protocol::derive_live_observe_wildcard_subject(
-                                    subject, own,
+                                    subject,
+                                    own_runtime,
                                 )?,
                             );
                         }
@@ -256,22 +258,22 @@ impl SqliteAuthorizationStore {
                             | ActionDefinition::Operation { upload: true, .. }
                     ) {
                         if can_call {
-                            publish.insert(trellis_protocol::transfer::derive_transfer_consumer_upload_data_wildcard_subject(own)?);
-                            publish.insert(trellis_protocol::transfer::derive_transfer_consumer_control_wildcard_subject(own)?);
-                            subscribe.insert(trellis_protocol::transfer::derive_transfer_consumer_download_data_wildcard_subject(own)?);
+                            publish.insert(trellis_protocol::transfer::derive_transfer_consumer_upload_data_wildcard_subject(own_runtime)?);
+                            publish.insert(trellis_protocol::transfer::derive_transfer_consumer_control_wildcard_subject(own_runtime)?);
+                            subscribe.insert(trellis_protocol::transfer::derive_transfer_consumer_download_data_wildcard_subject(own_runtime)?);
                             subscribe.insert(
                                 trellis_protocol::transfer::derive_transfer_consumer_signal_wildcard_subject(
-                                    own,
+                                    own_runtime,
                                 )?,
                             );
                         }
                         if can_provide {
-                            subscribe.insert(trellis_protocol::transfer::derive_transfer_provider_upload_data_wildcard_subject(own)?);
-                            subscribe.insert(trellis_protocol::transfer::derive_transfer_provider_control_wildcard_subject(own)?);
-                            publish.insert(trellis_protocol::transfer::derive_transfer_provider_download_data_wildcard_subject(own)?);
+                            subscribe.insert(trellis_protocol::transfer::derive_transfer_provider_upload_data_wildcard_subject(own_runtime)?);
+                            subscribe.insert(trellis_protocol::transfer::derive_transfer_provider_control_wildcard_subject(own_runtime)?);
+                            publish.insert(trellis_protocol::transfer::derive_transfer_provider_download_data_wildcard_subject(own_runtime)?);
                             publish.insert(
                                 trellis_protocol::transfer::derive_transfer_provider_signal_wildcard_subject(
-                                    own,
+                                    own_runtime,
                                 )?,
                             );
                         }
@@ -334,10 +336,35 @@ impl SqliteAuthorizationStore {
                 subscribe.insert(format!("$O.{}.>", resource.name));
             }
             if let Some(jobs) = resources.jobs {
-                if let Some(stream) = jobs.work_stream {
-                    stream_access(&mut publish, &stream, true)?;
+                if !jobs.queues.is_empty()
+                    && matches!(&authority.binding, SessionBinding::Service { .. })
+                {
+                    publish.insert("rpc.v1.jobs.History".into());
+                }
+                publish.insert("$JS.API.STREAM.INFO.JOBS".into());
+                let work_stream = jobs.work_stream.as_deref().ok_or(AuthError::Unavailable)?;
+                if jobs
+                    .queues
+                    .values()
+                    .any(|queue| queue.key_concurrency.is_some())
+                {
+                    let bucket = format!("JOBS_KEYS_{}", jobs.namespace);
+                    stream_access(&mut publish, &format!("KV_{bucket}"), true)?;
+                    publish.insert(format!("$KV.{bucket}.>"));
+                    subscribe.insert(format!("$KV.{bucket}.>"));
                 }
                 for queue in jobs.queues.values() {
+                    for family in ["CONSUMER.INFO", "CONSUMER.MSG.NEXT"] {
+                        publish.insert(format!(
+                            "$JS.API.{family}.{work_stream}.{}",
+                            queue.consumer_name
+                        ));
+                    }
+                    publish.insert(format!("$JS.ACK.{work_stream}.{}.>", queue.consumer_name));
+                    publish.insert(format!(
+                        "$JS.API.DIRECT.GET.JOBS.{}.>",
+                        queue.publish_prefix
+                    ));
                     publish.insert(queue.work_subject.clone());
                     subscribe.insert(queue.work_subject.clone());
                     publish.insert(format!("{}.>", queue.publish_prefix));
@@ -398,6 +425,9 @@ fn stream_access(
     {
         return Err(AuthError::Denied);
     }
+    // Native NATS Object Store clients check JetStream availability before
+    // opening their already-provisioned bucket.
+    publish.insert("$JS.API.INFO".into());
     for family in ["STREAM.INFO", "STREAM.MSG.GET", "DIRECT.GET"] {
         publish.insert(format!("$JS.API.{family}.{stream}"));
     }

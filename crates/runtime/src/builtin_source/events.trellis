@@ -519,6 +519,13 @@ api events@v1 {
       consent_revision 1;
       allows { live Watch; }
     }
+    capability consumerRuntime {
+      title "Process owned Consumer replay";
+      description "Inspect retained replay evidence and report terminal outcomes for an owned Consumer.";
+      consequence "The Consumer can complete its own replay lifecycle; resource ownership is checked on every request.";
+      consent_revision 1;
+      allows { rpc Consumers.ReportDelivery; rpc DeadLetters.Inspect; }
+    }
     capability consumersInspect {
       title "Inspect Consumers";
       description "Query managed Consumers and inspect their delivery state.";

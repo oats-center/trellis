@@ -267,6 +267,7 @@ fn activation_status<C>(
             }))
         }
         "rejected" => Err(DeviceActivationError::Rejected),
+        "expired" => Err(DeviceActivationError::Expired),
         state => Err(DeviceActivationError::UnexpectedState(state.to_owned())),
     }
 }

@@ -69,7 +69,7 @@ pub use operations::{
 };
 pub(crate) use proof::{new_request_id, now_iat_seconds};
 #[doc(hidden)]
-pub use resources::{BoundStateResourceClient, ConnectedStateHandle};
+pub use resources::{BoundStateResourceClient, ConnectedStateHandle, StateWatch};
 pub use resources::{
     ConsumerDescriptor, ConsumerHandle, RawStateValue, RawStateWriteError, ResourceCodec,
     ResourceCodecError, ResourceRevision, StateHandle, StateReadError, StateResourceClient,

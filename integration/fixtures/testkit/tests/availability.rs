@@ -19,6 +19,11 @@ mod operation_interop;
 #[path = "support/operation_lifecycle.rs"]
 mod operation_lifecycle;
 
+#[path = "support/transfer_interop.rs"]
+mod transfer_interop;
+#[path = "support/state_lifecycle.rs"]
+mod state_lifecycle;
+
 fn wire<T: DeserializeOwned>(value: Json) -> T {
     serde_json::from_value(value).unwrap()
 }

@@ -195,8 +195,20 @@ impl OAuthEngine {
         runtime_id: &str,
         ephemeral_nkey: &str,
     ) -> Result<DeviceAuthorizationResponse, ErrorResponse> {
-        RequestedAuthority::parse(details)?;
+        let requested = RequestedAuthority::parse(details)?;
         self.prepare_client(client_id).await?;
+        self.server
+            .store()
+            .authority
+            .transaction(|connection| {
+                super::enrollment::validate_selection(
+                    connection,
+                    client_id.as_str(),
+                    &requested.capabilities.required,
+                    &requested.capabilities.optional,
+                )
+            })
+            .map_err(|_| ErrorResponse::new(ErrorCode::InvalidRequest))?;
         let uri = format!(
             "{}/device_authorization",
             self.server.store().authority.settings.oauth_origin

@@ -21,6 +21,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
     provider: &mut Provider<'_, P>,
     store: Arc<SqliteAuthorizationStore>,
     operational: async_nats::Client,
+    oauth: Arc<super::OAuthEngine>,
 ) {
     macro_rules! read {
         ($registration:ident, $privilege:ident, $name:literal, $operation:expr) => {{
@@ -182,9 +183,10 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
         |store, identity, input, now| change_deployment(store, identity, input, "revoked", now)
     );
     let instances = Arc::clone(&store);
+    let service_operational = operational.clone();
     provider.register_service_instances_provision(move |context, input| {
         let store = Arc::clone(&instances);
-        let operational = operational.clone();
+        let operational = service_operational.clone();
         async move {
             let identity = mutation(&context, &input.idempotency_key, Some(PlatformPrivilege::PrincipalsManage), &input).map_err(rpc_error)?;
             provision_service_instance(&store, &operational, &identity, &input, time::OffsetDateTime::now_utc().unix_timestamp()).await.map_err(|error| match error {
@@ -199,8 +201,44 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             })
         }
     });
-    provision!(register_devices_provision, |store, identity, input, now| {
-        provision_instance(store, identity, input, "device", now)
+    let devices = Arc::clone(&store);
+    provider.register_devices_provision(move |context, input| {
+        let store = devices.clone();
+        let operational = operational.clone();
+        let oauth = oauth.clone();
+        async move {
+            let identity = mutation(
+                &context,
+                &input.idempotency_key,
+                Some(PlatformPrivilege::PrincipalsManage),
+                &input,
+            )
+            .map_err(rpc_error)?;
+            let deployment = input.deployment_id.to_string();
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let active = input.identity_public_key.is_some();
+            let response = tokio::task::spawn_blocking(move || {
+                super::oauth::enrollment::provision(oauth.server.store(), &identity, &input, now)
+            })
+            .await
+            .map_err(|_| rpc_error(AuthError::Unavailable))?
+            .map_err(|error| match error {
+                AuthError::Invalid(ref code) if code == "identity_public_key_required" => {
+                    trellis_rs::service::ServerError::DeclaredRpc(trellis_rs::service::DeclaredRpcError::new(
+                        <trellis_runtime_apis::apis::trellis_auth_v1::errors::ValidationError as trellis_rs::generated::TrellisError>::TYPE,
+                        "Identity public key required",
+                        [("code", serde_json::Value::String("identity_public_key_required".into()))],
+                    ))
+                }
+                error => rpc_error(error),
+            })?;
+            if active {
+                super::resources::materialize_native_kv(&store, &operational, &deployment, now)
+                    .await
+                    .map_err(rpc_error)?;
+            }
+            Ok(response)
+        }
     });
     provision!(
         register_service_instances_enable,
@@ -459,7 +497,7 @@ pub(super) fn provision_instance(
             let provisioned = SqliteAuthorizationStore::provision_instance_in_transaction(
                 connection,
                 &deployment,
-                &public_key,
+                Some(public_key.as_ref()),
                 &input.title,
                 now,
             )?;
@@ -502,7 +540,7 @@ pub(super) fn change_instance(
     })
 }
 
-fn read_instance(
+pub(super) fn read_instance(
     connection: &Connection,
     instance_id: &str,
 ) -> Result<AuthProvisionedInstance, AuthError> {

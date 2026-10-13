@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { AuthorityProfile } from "../console/authority.ts";
-  import { resolve } from "$app/paths";
   import { afterNavigate } from "$app/navigation";
-  import { base } from "$lib/console_paths";
+  import { base, resolve } from "$lib/console_paths";
   import { page } from "$app/state";
   import type { Snippet } from "svelte";
   import type { ConnectionStatus } from "../trellis";
@@ -193,7 +192,7 @@
             <li>
               <a
                 class="btn btn-ghost btn-sm justify-start"
-                href={resolve("/console/(app)/profile")}>Account</a
+                href={resolve("/profile")}>Account</a
               >
             </li>
             <li>
@@ -237,10 +236,7 @@
 
     <aside class="trellis-sidebar flex min-h-full w-[251px] flex-col">
       <div class="flex h-[76px] items-center gap-3 px-6">
-        <a
-          href={resolve("/console/(app)/admin")}
-          aria-label="Trellis Console home"
-        >
+        <a href={resolve("/admin")} aria-label="Trellis Console home">
           <TrellisLogo
             subtitle="Console"
             markClass="trellis-logo-orange"
@@ -275,7 +271,7 @@
               {#each section.items as item (item.href)}
                 <li>
                   <a
-                    href={resolve(`/console${item.href}`)}
+                    href={resolve(item.href)}
                     class={{ active: routePath === item.href }}
                     aria-current={routePath === item.href ? "page" : undefined}
                     onclick={closeDrawer}

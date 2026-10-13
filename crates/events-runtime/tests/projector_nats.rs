@@ -308,13 +308,128 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
 
     // The same truncation must also be detected by a completely new projection.
     let rebuilt = EventsStore::open(runtime.workdir().join("rebuilt-projector.sqlite")).unwrap();
-    let projector = start_events_projector(event_runtime, rebuilt.clone(), verify)
+    let projector = start_events_projector(event_runtime, rebuilt.clone(), verify.clone())
         .await
         .unwrap();
     let rebuilt_event = wait_for_event(rebuilt.clone(), &retained).await;
     assert_eq!(rebuilt_event["verificationStatus"], "verified");
     assert_eq!(rebuilt.diagnostics().unwrap()["gapDetected"], true);
     projector.stop().await;
+
+    // Retire the real publisher session through a separately approved native
+    // administrator, then compare retained broker chronology with a new publish
+    // of exactly the same previously signed bytes.
+    let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
+        .await
+        .unwrap();
+    let native = trellis_rs::auth::NativeOAuthClient::open(
+        runtime.workdir().join("historical-admin"),
+        trellis_rs::auth::NativeCredentialScope {
+            issuer: server.issuer,
+            instance_id: server.trust.instance_id.clone(),
+            account: server.trust.account.clone(),
+            client_id: "trellis.cli".into(),
+            credential_handle: ulid::Ulid::new(),
+        },
+        server.trust,
+    )
+    .await
+    .unwrap();
+    let device = native.start_device(&serde_json::json!([
+        {"type":"trellis_capabilities","required":["trellis.auth@v1::authorizationSessionsRead", "trellis.auth@v1::authorizationSessionsRevoke"],"optional":[]},
+        {"type":"trellis_platform_privileges","required":["principals.manage"]}
+    ])).await.unwrap();
+    runtime
+        .approve_device_login("trellis.cli", device.user_code())
+        .await
+        .unwrap();
+    let session = device.complete().await.unwrap();
+    let generated = trellis_rs::generated::Client::connect_user(
+        trellis_rs::client::UserConnectOptions::new(server.nats_servers, 30_000, session),
+    )
+    .await
+    .unwrap();
+    let admin = trellis_runtime_apis::apis::trellis_auth_v1::Client::from_generated(generated);
+    let sessions = admin
+        .authorization_sessions_list(
+            &serde_json::from_value(serde_json::json!({
+                "deploymentId": publisher_identity.deployment_id(), "state": "active"
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    let raw = stream.get_raw_message(retained_sequence).await.unwrap();
+    assert!(
+        !sessions.items.is_empty(),
+        "publisher has an active session"
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut tick = tokio::time::interval(Duration::from_millis(10));
+        while time::OffsetDateTime::now_utc().unix_timestamp() <= raw.time.unix_timestamp() {
+            tick.tick().await;
+        }
+    })
+    .await
+    .unwrap();
+    for session in sessions.items {
+        admin
+            .authorization_sessions_revoke(&AuthAuthorizationSessionRevokeRequest {
+                authorization_session_id: session.authorization_session_id,
+                idempotency_key: ulid::Ulid::new().to_string().into(),
+                extra: Default::default(),
+            })
+            .await
+            .unwrap();
+    }
+    let original = trellis_protocol::OriginalEventPublication {
+        published_at: raw
+            .time
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+        stream_sequence: trellis_protocol::U64s::new(raw.sequence),
+    };
+    verify(trellis_events_runtime::EventAuthorizationInput {
+        subject: raw.subject.to_string(),
+        payload: raw.payload.to_vec(),
+        headers: Some(raw.headers.clone()),
+        original_publication: original,
+    })
+    .await
+    .expect("retirement preserves genuine pre-cutoff backlog");
+    let mut config = stream.info().await.unwrap().config.clone();
+    config.duplicate_window = Duration::from_millis(100);
+    context.update_stream(config).await.unwrap();
+    let replay_sequence = context
+        .publish_with_headers(
+            raw.subject.clone(),
+            raw.headers.clone(),
+            raw.payload.clone(),
+        )
+        .await
+        .unwrap()
+        .await
+        .unwrap()
+        .sequence;
+    assert!(replay_sequence > retained_sequence);
+    let late = stream.get_raw_message(replay_sequence).await.unwrap();
+    assert!(matches!(
+        verify(trellis_events_runtime::EventAuthorizationInput {
+            subject: late.subject.to_string(),
+            payload: late.payload.to_vec(),
+            headers: Some(late.headers),
+            original_publication: trellis_protocol::OriginalEventPublication {
+                published_at: late
+                    .time
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+                stream_sequence: trellis_protocol::U64s::new(late.sequence),
+            },
+        })
+        .await,
+        Err(EventVerificationFailure::Rejected(_))
+    ));
+    drop(admin);
     publisher.shutdown_native_runtime().await.unwrap();
     receiver.shutdown_native_runtime().await.unwrap();
     drop(observer);

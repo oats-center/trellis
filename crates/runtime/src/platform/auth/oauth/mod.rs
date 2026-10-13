@@ -8,6 +8,7 @@ mod cimd;
 mod details;
 mod device;
 mod engine;
+pub(super) mod enrollment;
 mod http;
 mod nonce;
 mod oidc;

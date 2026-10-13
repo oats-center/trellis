@@ -74,6 +74,7 @@ pub async fn discover_native_oauth(
         return Err(NativeOAuthError::InvalidResponse);
     }
     let issuer = origin.origin().ascii_serialization();
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let http = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
@@ -336,6 +337,7 @@ impl NativeOAuthClient {
         let auth =
             SessionAuth::from_seed_base64url(&URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()))
                 .map_err(|_| NativeOAuthError::Unavailable)?;
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30))

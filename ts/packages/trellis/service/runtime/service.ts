@@ -152,6 +152,7 @@ import {
   type StartNatsWorkerHostOptions,
 } from "./internal_jobs/runtime-worker.ts";
 import { startManagedJobWorkerHost } from "./internal_jobs/managed-worker.ts";
+import { readJobHistory } from "./internal_jobs/history.ts";
 import { ActiveJobCancellationRegistry } from "./internal_jobs/cancellation-registry.ts";
 import {
   createNatsJobKeyCoordinator,
@@ -1384,6 +1385,7 @@ export function createConnectedService<
       api: runtimeApi,
       contractId: args.contractId,
       contractDigest: args.contractDigest,
+      inboxPrefix: args.inboxPrefix,
       connection,
       transferSupport: {
         openOperationTransfer: (transferArgs) =>
@@ -2191,6 +2193,10 @@ function createJobLifecycleTracker(nc: NatsConnection): JobLifecycleTracker {
 }
 
 function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
+  readHistory: (
+    queue: string,
+    jobId: string,
+  ) => Promise<Array<{ seq: number; data: Uint8Array }>>;
   nc: NatsConnection;
   queueType: string;
   jobsBinding: JobsBinding;
@@ -2233,6 +2239,7 @@ function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
               "JOBS",
               args.queueBinding.publishPrefix,
               args.seed,
+              () => args.readHistory(args.queueType, args.seed.id),
             );
             if (event) {
               current = snapshotFromLifecycleEvent(
@@ -2420,6 +2427,10 @@ function createJobsFacade<
   contractDigest?: string;
   nc: NatsConnection;
   contractJobs: TJobs;
+  readHistory: (
+    queue: string,
+    jobId: string,
+  ) => Promise<Array<{ seq: number; data: Uint8Array }>>;
   transport: TrellisTransportProvider;
   acquireTimeoutMs: number;
   intakeOwner: Pick<
@@ -2526,6 +2537,7 @@ function createJobsFacade<
               );
               return Result.ok(
                 createJobRef({
+                  readHistory: args.readHistory,
                   nc: args.nc,
                   acquireTransport:
                     args.transport instanceof TransportGenerationManager
@@ -2589,6 +2601,7 @@ function createJobsFacade<
                   kind: "accepted",
                   key: outcome.key,
                   ref: createJobRef({
+                    readHistory: args.readHistory,
                     nc: args.nc,
                     acquireTransport:
                       args.transport instanceof TransportGenerationManager
@@ -2609,6 +2622,7 @@ function createJobsFacade<
                   key: outcome.key,
                   replaced: outcome.replaced,
                   ref: createJobRef({
+                    readHistory: args.readHistory,
                     nc: args.nc,
                     acquireTransport:
                       args.transport instanceof TransportGenerationManager
@@ -2733,6 +2747,14 @@ function createJobsFacade<
             }
 
             const workerOptions: StartNatsWorkerHostOptions<unknown> = {
+              getLatestLifecycleEvent: async (job) =>
+                getLatestLifecycleEvent(
+                  (await jetstreamManager(args.nc)).direct,
+                  "JOBS",
+                  queueBinding.publishPrefix,
+                  job,
+                  () => args.readHistory(queueType, job.id),
+                ),
               nats: args.nc,
               instanceId: `${args.serviceName}-worker`,
               queueTypes: [queueType],
@@ -2765,6 +2787,7 @@ function createJobsFacade<
                 let attemptActive = true;
                 const publicJob = new PublicActiveJob(
                   createJobRef({
+                    readHistory: args.readHistory,
                     nc: receivingNc,
                     queueType,
                     jobsBinding,
@@ -3339,6 +3362,12 @@ export class TrellisServiceSession<
       transport,
       acquireTimeoutMs,
       intakeOwner: this.#runtime,
+      readHistory: (queue, jobId) =>
+        readJobHistory(
+          (input) => this.#runtime.requestJobHistory(input),
+          queue,
+          jobId,
+        ),
       client: handlerTrellis,
       jobsBinding: bindings.jobs,
       workStream: bindings.jobs?.workStream,

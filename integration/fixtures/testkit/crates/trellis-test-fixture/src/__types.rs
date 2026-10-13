@@ -623,7 +623,8 @@ pub mod trellis {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub maximum_context_expires_at: Option<trellis_rs::generated::Timestamp>,
         #[serde(rename = "notAfter")]
-        pub not_after: trellis_rs::generated::Timestamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub not_after: Option<trellis_rs::generated::Timestamp>,
         #[serde(rename = "oauthGrantId")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub oauth_grant_id: Option<trellis_rs::generated::Ulid>,
@@ -1508,6 +1509,282 @@ pub mod trellis {
             formatter.write_str(self.as_ref())
         }
     }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceCompanion {
+        #[serde(rename = "clientId")]
+        pub client_id: crate::__types::trellis::AuthClientId,
+        #[serde(rename = "instanceId")]
+        pub instance_id: trellis_rs::generated::Ulid,
+        #[serde(rename = "oauthGrantId")]
+        pub oauth_grant_id: trellis_rs::generated::Ulid,
+        #[serde(rename = "requestId")]
+        pub request_id: String,
+        pub revision: crate::__types::trellis::AuthRevision,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceCompanionAttachRequest {
+        #[serde(rename = "confirmationCode")]
+        pub confirmation_code: crate::__types::trellis::AuthDeviceConfirmationCode,
+        #[serde(rename = "expectedRevision")]
+        pub expected_revision: crate::__types::trellis::AuthRevision,
+        #[serde(rename = "idempotencyKey")]
+        pub idempotency_key: crate::__types::trellis::AuthIdempotencyKey,
+        #[serde(rename = "reviewId")]
+        pub review_id: trellis_rs::generated::Ulid,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceCompanionRevokeRequest {
+        #[serde(rename = "expectedRevision")]
+        pub expected_revision: crate::__types::trellis::AuthRevision,
+        #[serde(rename = "idempotencyKey")]
+        pub idempotency_key: crate::__types::trellis::AuthIdempotencyKey,
+        #[serde(rename = "instanceId")]
+        pub instance_id: trellis_rs::generated::Ulid,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    #[serde(transparent)]
+    pub struct AuthDeviceConfirmationCode(pub String);
+    impl std::ops::Deref for AuthDeviceConfirmationCode {
+        type Target = String;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl From<String> for AuthDeviceConfirmationCode {
+        fn from(value: String) -> Self {
+            Self(value)
+        }
+    }
+    impl AsRef<str> for AuthDeviceConfirmationCode {
+        fn as_ref(&self) -> &str {
+            self.0.as_ref()
+        }
+    }
+    impl std::fmt::Display for AuthDeviceConfirmationCode {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_ref())
+        }
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceEnrollmentRequest {
+        #[serde(rename = "challengeDigest")]
+        pub challenge_digest: crate::__types::trellis::AuthDigest,
+        #[serde(rename = "confirmationCode")]
+        pub confirmation_code: crate::__types::trellis::AuthDeviceConfirmationCode,
+        #[serde(rename = "connectionId")]
+        pub connection_id: trellis_rs::generated::Ulid,
+        pub iat: crate::__types::trellis::AuthDeviceProofIssuedAt,
+        #[serde(rename = "identityKeyId")]
+        pub identity_key_id: crate::__types::trellis::AuthDigest,
+        #[serde(rename = "identityPublicKey")]
+        pub identity_public_key: crate::__types::trellis::AuthPublicKey,
+        #[serde(rename = "participantId")]
+        pub participant_id: String,
+        pub proof: crate::__types::trellis::AuthDeviceProof,
+        #[serde(rename = "provisioningSecret")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub provisioning_secret: Option<
+            crate::__types::trellis::AuthDeviceProvisioningSecret,
+        >,
+        #[serde(rename = "requestId")]
+        pub request_id: trellis_rs::generated::Ulid,
+        #[serde(rename = "sessionKey")]
+        pub session_key: crate::__types::trellis::AuthPublicKey,
+        #[serde(rename = "sessionProof")]
+        pub session_proof: crate::__types::trellis::AuthDeviceProof,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceProof {
+        pub format: String,
+        pub signature: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        PartialOrd,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    #[serde(transparent)]
+    pub struct AuthDeviceProofIssuedAt(pub crate::__types::Number);
+    impl std::ops::Deref for AuthDeviceProofIssuedAt {
+        type Target = crate::__types::Number;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl From<crate::__types::Number> for AuthDeviceProofIssuedAt {
+        fn from(value: crate::__types::Number) -> Self {
+            Self(value)
+        }
+    }
+    #[derive(
+        Clone,
+        Debug,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        serde::Serialize,
+        serde::Deserialize
+    )]
+    #[serde(transparent)]
+    pub struct AuthDeviceProvisioningSecret(pub String);
+    impl std::ops::Deref for AuthDeviceProvisioningSecret {
+        type Target = String;
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+    impl From<String> for AuthDeviceProvisioningSecret {
+        fn from(value: String) -> Self {
+            Self(value)
+        }
+    }
+    impl AsRef<str> for AuthDeviceProvisioningSecret {
+        fn as_ref(&self) -> &str {
+            self.0.as_ref()
+        }
+    }
+    impl std::fmt::Display for AuthDeviceProvisioningSecret {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_ref())
+        }
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceReview {
+        #[serde(rename = "companionClientId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub companion_client_id: Option<crate::__types::trellis::AuthClientId>,
+        #[serde(rename = "companionRequestId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub companion_request_id: Option<String>,
+        #[serde(rename = "companionRequired")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub companion_required: Option<bool>,
+        #[serde(rename = "deploymentId")]
+        pub deployment_id: trellis_rs::generated::Ulid,
+        #[serde(rename = "expiresAt")]
+        pub expires_at: trellis_rs::generated::Timestamp,
+        #[serde(rename = "instanceId")]
+        pub instance_id: trellis_rs::generated::Ulid,
+        #[serde(rename = "participantId")]
+        pub participant_id: String,
+        #[serde(rename = "reviewId")]
+        pub review_id: trellis_rs::generated::Ulid,
+        pub revision: crate::__types::trellis::AuthRevision,
+        pub state: crate::__types::trellis::AuthDeviceReviewState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceReviewDecideRequest {
+        #[serde(rename = "confirmationCode")]
+        pub confirmation_code: crate::__types::trellis::AuthDeviceConfirmationCode,
+        pub decision: crate::__types::trellis::AuthDecision,
+        #[serde(rename = "expectedRevision")]
+        pub expected_revision: crate::__types::trellis::AuthRevision,
+        #[serde(rename = "idempotencyKey")]
+        pub idempotency_key: crate::__types::trellis::AuthIdempotencyKey,
+        #[serde(rename = "reviewId")]
+        pub review_id: trellis_rs::generated::Ulid,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceReviewGetRequest {
+        #[serde(rename = "confirmationCode")]
+        pub confirmation_code: crate::__types::trellis::AuthDeviceConfirmationCode,
+        #[serde(rename = "reviewId")]
+        pub review_id: trellis_rs::generated::Ulid,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthDeviceReviewResponse {
+        pub review: crate::__types::trellis::AuthDeviceReview,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum AuthDeviceReviewState {
+        Approved,
+        Expired,
+        Pending,
+        Rejected,
+        Unknown(String),
+    }
+    impl AuthDeviceReviewState {
+        pub fn as_str(&self) -> &str {
+            match self {
+                Self::Approved => "approved",
+                Self::Expired => "expired",
+                Self::Pending => "pending",
+                Self::Rejected => "rejected",
+                Self::Unknown(value) => value,
+            }
+        }
+    }
+    impl AsRef<str> for AuthDeviceReviewState {
+        fn as_ref(&self) -> &str {
+            self.as_str()
+        }
+    }
+    impl std::fmt::Display for AuthDeviceReviewState {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_str())
+        }
+    }
+    impl serde::Serialize for AuthDeviceReviewState {
+        fn serialize<S: serde::Serializer>(
+            &self,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str(self.as_str())
+        }
+    }
+    impl<'de> serde::Deserialize<'de> for AuthDeviceReviewState {
+        fn deserialize<D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Self, D::Error> {
+            let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Ok(
+                match value.as_str() {
+                    "approved" => Self::Approved,
+                    "expired" => Self::Expired,
+                    "pending" => Self::Pending,
+                    "rejected" => Self::Rejected,
+                    _ => Self::Unknown(value),
+                },
+            )
+        }
+    }
+    pub type AuthDeviceReviewsListResponse = crate::__types::CursorPage<
+        crate::__types::trellis::AuthDeviceReview,
+    >;
     #[derive(
         Clone,
         Debug,
@@ -2725,6 +3002,12 @@ pub mod trellis {
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthResourceBinding {
+        #[serde(rename = "browserOrigin")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub browser_origin: Option<String>,
+        #[serde(rename = "clientId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub client_id: Option<String>,
         pub kind: crate::__types::trellis::AuthResourceKind,
         #[serde(rename = "localName")]
         pub local_name: String,
@@ -2733,7 +3016,8 @@ pub mod trellis {
         #[serde(rename = "ownerKind")]
         pub owner_kind: crate::__types::trellis::AuthResourceOwnerKind,
         #[serde(rename = "participantId")]
-        pub participant_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub participant_id: Option<String>,
         #[serde(rename = "resourceId")]
         pub resource_id: crate::__types::trellis::AuthDigest,
         pub revision: crate::__types::trellis::AuthRevision,
@@ -3779,6 +4063,8 @@ pub mod trellis {
         pub original_headers: std::collections::BTreeMap<String, String>,
         #[serde(rename = "originalPayload")]
         pub original_payload: crate::__types::Bytes,
+        #[serde(rename = "originalPublishedAt")]
+        pub original_published_at: String,
         #[serde(rename = "originalSubject")]
         pub original_subject: String,
         #[serde(rename = "transitionReferences")]
@@ -14566,6 +14852,37 @@ pub mod trellis {
         fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             formatter.write_str(self.as_ref())
         }
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct JobsHistoryEntry {
+        pub payload: crate::__types::Bytes,
+        pub sequence: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct JobsHistoryRequest {
+        #[serde(rename = "fromSequence")]
+        pub from_sequence: crate::__types::Uint64,
+        #[serde(rename = "jobId")]
+        pub job_id: String,
+        pub queue: String,
+        #[serde(rename = "throughSequence")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub through_sequence: Option<crate::__types::Uint64>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct JobsHistoryResponse {
+        pub entries: Vec<crate::__types::trellis::JobsHistoryEntry>,
+        #[serde(rename = "nextSequence")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub next_sequence: Option<crate::__types::Uint64>,
+        #[serde(rename = "throughSequence")]
+        pub through_sequence: crate::__types::Uint64,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct JobsInspectRequest {
@@ -27829,6 +28146,39 @@ pub mod trellis {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct StatePutResponse {
         pub entry: crate::__types::trellis::StoredState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct StateRegisterRequest {
+        pub accepts: Vec<crate::__types::trellis::StateRepresentation>,
+        #[serde(rename = "expectedRevision")]
+        pub expected_revision: crate::__types::trellis::StateRevision,
+        #[serde(rename = "idempotencyKey")]
+        pub idempotency_key: trellis_rs::generated::Ulid,
+        pub representation: crate::__types::trellis::StateRepresentation,
+        #[serde(rename = "resourceName")]
+        pub resource_name: crate::__types::trellis::StateResourceName,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct StateRegisterResponse {
+        pub revision: crate::__types::trellis::StateRevision,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct StateRegistrationConflict {
+        #[serde(rename = "currentRevision")]
+        pub current_revision: crate::__types::trellis::StateRevision,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct StateRepresentation {
+        pub schema: crate::__types::Bytes,
+        pub version: crate::__types::trellis::StateRepresentationVersion,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
     }

@@ -10,7 +10,6 @@ import { JobCancellationToken } from "./job-manager.ts";
 import { createNatsJobKeyCoordinator } from "./key-coordinator.ts";
 import {
   getConsumerInfo,
-  getLatestLifecycleEvent,
   type JobReceivingSession,
   progressAckIntervalMs,
   startJobCancellationCoverage,
@@ -37,6 +36,9 @@ export function startManagedJobWorkerHost<TResult>(
   },
 ): { ready: Promise<void>; stop(reason?: unknown): Promise<void> } {
   const queue = binding.jobs.queues[options.queueType];
+  const readLifecycle = options.getLatestLifecycleEvent;
+  if (!readLifecycle)
+    throw new Error("Managed jobs require authenticated lifecycle history");
   if (!queue) throw new Error(`Unknown jobs queue '${options.queueType}'`);
   const concurrency = options.queueConcurrency?.[options.queueType] ?? 1;
   const ackInterval = progressAckIntervalMs(queue);
@@ -71,8 +73,7 @@ export function startManagedJobWorkerHost<TResult>(
   const workers: Array<{ stop(): Promise<void> }> = [];
   const slotsStopped = Promise.withResolvers<void>();
   let heartbeat:
-    | Awaited<ReturnType<typeof startWorkerHeartbeatLoop>>
-    | undefined;
+    Awaited<ReturnType<typeof startWorkerHeartbeatLoop>> | undefined;
   let stopping = false;
   let changed = Promise.withResolvers<void>();
   const notify = () => {
@@ -89,9 +90,8 @@ export function startManagedJobWorkerHost<TResult>(
       signal.throwIfAborted();
       const change = changed.promise;
       const published = options.transport.publishedGenerationId();
-      const source = published === undefined
-        ? undefined
-        : sources.get(published);
+      const source =
+        published === undefined ? undefined : sources.get(published);
       if (source && !source.draining && !source.loss.signal.aborted) {
         // Acquisition itself may classify policy asynchronously. An aborted
         // caller stops waiting, but any eventual lease still gets released.
@@ -103,16 +103,22 @@ export function startManagedJobWorkerHost<TResult>(
         try {
           lease = await Promise.race([pending, aborted.promise]);
         } catch (error) {
-          void pending.then((late) => late?.release(), () => {});
+          void pending.then(
+            (late) => late?.release(),
+            () => {},
+          );
           throw error;
         } finally {
           signal.removeEventListener("abort", abort);
         }
         if (lease) {
           if (
-            signal.aborted || stopping || source.draining ||
+            signal.aborted ||
+            stopping ||
+            source.draining ||
             source.loss.signal.aborted ||
-            lease.generationId !== published || lease.nc !== source.nc ||
+            lease.generationId !== published ||
+            lease.nc !== source.nc ||
             options.transport.publishedGenerationId() !== published ||
             sources.get(published!) !== source
           ) {
@@ -140,10 +146,12 @@ export function startManagedJobWorkerHost<TResult>(
                   lease.generationId,
                   () => {
                     if (
-                      stopping || source.draining ||
+                      stopping ||
+                      source.draining ||
                       source.loss.signal.aborted ||
                       sources.get(lease.generationId) !== source
-                    ) return false;
+                    )
+                      return false;
                     receive = consumer.next();
                     return true;
                   },
@@ -151,13 +159,7 @@ export function startManagedJobWorkerHost<TResult>(
                 return receive ? await receive : null;
               },
             },
-            getLatestLifecycleEvent: (job) =>
-              getLatestLifecycleEvent(
-                source.jsm.direct,
-                "JOBS",
-                queue.publishPrefix,
-                job,
-              ),
+            getLatestLifecycleEvent: (job) => readLifecycle(job),
             release() {
               if (released) return;
               released = true;
@@ -229,7 +231,7 @@ export function startManagedJobWorkerHost<TResult>(
           return Promise.resolve();
         },
         dispose() {
-          return disposal ??= (async () => {
+          return (disposal ??= (async () => {
             source.draining = true;
             if (stopping) await slotsStopped.promise;
             source.loss.abort();
@@ -241,7 +243,7 @@ export function startManagedJobWorkerHost<TResult>(
             } finally {
               ownedSources.delete(source);
             }
-          })();
+          })());
         },
       };
       const previous = sources.get(target.id);
@@ -252,9 +254,9 @@ export function startManagedJobWorkerHost<TResult>(
         // Reinstatement may replace preparation on the same physical id.
         // New coverage is flushed first; the old coverage survives its work.
         await previous.drain();
-        void previous.drained.promise.then(() => previous.dispose()).catch((
-          error,
-        ) => retirementFailures.push(error));
+        void previous.drained.promise
+          .then(() => previous.dispose())
+          .catch((error) => retirementFailures.push(error));
       }
       return {
         drain: source.drain,
@@ -317,7 +319,7 @@ export function startManagedJobWorkerHost<TResult>(
   return {
     ready,
     stop(reason?: unknown) {
-      return stop ??= (async () => {
+      return (stop ??= (async () => {
         stopping = true;
         setup.abort(reason);
         cancellation.cancelForShutdown();
@@ -334,15 +336,16 @@ export function startManagedJobWorkerHost<TResult>(
           heartbeat?.stop(),
           ...[...ownedSources].map((source) => source.dispose()),
         ]);
-        const failures = [...results, ...cleanup].filter((
-          result,
-        ): result is PromiseRejectedResult => result.status === "rejected").map(
-          (result) => result.reason,
-        );
+        const failures = [...results, ...cleanup]
+          .filter(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected",
+          )
+          .map((result) => result.reason);
         if (failures.length || retirementFailures.length) {
           throw new WorkerHostStopError([...failures, ...retirementFailures]);
         }
-      })();
+      })());
     },
   };
 }

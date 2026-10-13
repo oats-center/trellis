@@ -850,6 +850,40 @@ fn signed_authority_and_exact_request_survive_serialization_but_reject_transplan
         .map(|verified| verified.digest().to_owned())
     };
     assert!(verify(&request, payload).is_ok());
+    // A signed Transfer request may reply only on its own grant's signal route.
+    let routes = trellis_protocol::transfer::derive_transfer_subjects(
+        "provider-runtime",
+        &authority.authority().runtime_id,
+        "AAAAAAAAAAAAAAAAAAAAAA",
+    )
+    .unwrap();
+    let mut transfer_request = request.clone();
+    transfer_request.subject = routes.control_subject.clone();
+    for (reply, allowed) in [
+        (routes.signal_subject.clone(), true),
+        (
+            routes
+                .signal_subject
+                .replace("AAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBB"),
+            false,
+        ),
+        (routes.control_subject.clone(), false),
+    ] {
+        transfer_request.reply_subject = Some(reply);
+        let proof = sign_session_request(&transfer_request, payload, &runtime).unwrap();
+        assert_eq!(
+            verify_session_request(SessionRequestVerificationInput {
+                authority: &authority,
+                request: &transfer_request,
+                raw_payload: payload,
+                proof: &proof,
+                policy: &policy,
+                known_revoked: false,
+            })
+            .is_ok(),
+            allowed
+        );
+    }
     assert!(verify(
         &request,
         br#"{"id":"document-1","unknown":{"retained":false}}"#

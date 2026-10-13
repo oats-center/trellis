@@ -273,6 +273,45 @@ pub(super) fn credential_snapshot(
             let resources: Value = decode(&resources)?;
             super::deployments::native_health_capability(connection)?;
             let mut required: Vec<String> = decode(&required)?;
+            if principal_kind == PrincipalKind::Device
+                && resources
+                    .get("state")
+                    .and_then(Value::as_object)
+                    .is_some_and(|state| !state.is_empty())
+            {
+                for capability in [
+                    "trellis.state@v1::read",
+                    "trellis.state@v1::write",
+                    "trellis.state@v1::delete",
+                ] {
+                    if !required.iter().any(|id| id == capability) {
+                        required.push(capability.into());
+                    }
+                }
+            }
+            if principal_kind == PrincipalKind::Service
+                && resources
+                    .get("jobs")
+                    .and_then(|jobs| jobs.get("queues"))
+                    .and_then(Value::as_object)
+                    .is_some_and(|queues| !queues.is_empty())
+                && !required
+                    .iter()
+                    .any(|id| id == super::deployments::JOB_HISTORY_CAPABILITY)
+            {
+                required.push(super::deployments::JOB_HISTORY_CAPABILITY.into());
+            }
+            if principal_kind == PrincipalKind::Service
+                && resources
+                    .get("eventConsumers")
+                    .and_then(Value::as_object)
+                    .is_some_and(|consumers| !consumers.is_empty())
+                && !required
+                    .iter()
+                    .any(|id| id == super::deployments::CONSUMER_RUNTIME_CAPABILITY)
+            {
+                required.push(super::deployments::CONSUMER_RUNTIME_CAPABILITY.into());
+            }
             if !required
                 .iter()
                 .any(|id| id == super::deployments::SELF_HEALTH_CAPABILITY)

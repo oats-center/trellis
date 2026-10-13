@@ -13,6 +13,7 @@ agent cli {
     capability capabilityGrantsGrant;
     capability capabilityGrantsRevoke;
     capability connectionsRead;
+    capability connectionsKick;
     capability deploymentsRead;
     capability deploymentsCreate;
     capability deploymentsApply;
@@ -22,6 +23,7 @@ agent cli {
     capability apisRead;
     capability apisReview;
     capability apisAccept;
+    capability apisForceReplace;
     capability oauthClientsRead;
     capability oauthClientsPut;
     capability serviceInstancesDisable;
@@ -43,6 +45,5 @@ agent cli {
   use jobs { capability query; }
   use state {
     capability delete;
-    capability resourcesInspect;
   }
 }

@@ -94,6 +94,56 @@ test("registered Console delegates administrative authority through consent and 
       .getByRole("cell", { name: username, exact: true })
       .first()
       .waitFor();
+    // Exercise the real management forms through the authenticated generated
+    // client. A reload must read the durable registration, not a local row.
+    const suffix = crypto.randomUUID();
+    const clientId = `console-development-${suffix}`;
+    await page.goto(new URL("/console/admin/clients", origin).href);
+    await page.getByRole("button", { name: "New client", exact: true }).click();
+    await page.getByLabel("Client ID", { exact: true }).fill(clientId);
+    await page.getByLabel("Title", { exact: true }).fill(clientId);
+    await page
+      .getByLabel("Redirect URIs (one per line)")
+      .fill("http://localhost:49371/callback");
+    await page.getByLabel("Loopback development client").check();
+    await page
+      .getByRole("button", { name: "Save client", exact: true })
+      .click();
+    await page.getByText("Client saved.", { exact: true }).waitFor();
+    await page.reload();
+    const clientRow = page.getByRole("row").filter({ hasText: clientId });
+    await clientRow.getByRole("button", { name: "Edit", exact: true }).click();
+    strictEqual(
+      await page.getByLabel("Redirect URIs (one per line)").inputValue(),
+      "http://localhost:49371/callback",
+    );
+    page.once("dialog", (dialog) => dialog.accept());
+    await page
+      .getByRole("button", { name: "Disable client", exact: true })
+      .click();
+    await clientRow.getByText("Disabled", { exact: true }).waitFor();
+    await clientRow.getByRole("button", { name: "Edit", exact: true }).click();
+    page.once("dialog", (dialog) => dialog.accept());
+    await page
+      .getByRole("button", { name: "Delete client", exact: true })
+      .click();
+    await page.getByText("Client deleted.", { exact: true }).waitFor();
+    strictEqual(await clientRow.count(), 0);
+    await page.goto(new URL("/console/admin/roles/new", origin).href);
+    await page
+      .getByLabel("Title", { exact: true })
+      .fill(`Console role ${suffix}`);
+    await page
+      .getByRole("checkbox", { name: /trellis.auth@v1::accountRead/ })
+      .check();
+    await page.getByRole("button", { name: "Save role", exact: true }).click();
+    await page.getByText(`Console role ${suffix}`, { exact: true }).waitFor();
+    await page.goto(new URL("/console/admin/apis", origin).href);
+    await page
+      .getByRole("button", { name: "trellis.auth@v1", exact: true })
+      .click();
+    await page.locator("pre").filter({ hasText: "OAuthClients" }).waitFor();
+    await page.goto(new URL("/console/admin/users", origin).href);
     await page.getByLabel("Open user menu", { exact: true }).click();
     await page.getByRole("button", { name: "Sign out", exact: true }).waitFor();
     const revoked = page.waitForResponse(

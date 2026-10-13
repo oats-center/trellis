@@ -117,6 +117,7 @@ pub async fn check(
     config: RuntimeConfig,
     nats_servers: Option<&str>,
 ) -> Result<RuntimeCheckReport, RuntimeError> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut report = RuntimeCheckReport {
         valid: true,
         mode: mode.to_string(),
@@ -636,6 +637,9 @@ pub async fn run_with_stop(
     options: RuntimeOptions,
     stop: Option<crate::shutdown::StopHandle>,
 ) -> Result<(), RuntimeError> {
+    // NATS TLS connects before the OAuth/Console listeners initialize rustls.
+    // Select our provider before any TLS consumer builds a client configuration.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let config = options.config;
     config.validate_for_mode(options.mode)?;
     let nats = config.resolve_nats_runtime_with(

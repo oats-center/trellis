@@ -1,5 +1,24 @@
 # Trellis For Rust Consumers
 
+Generated service job handles and workers reconstruct retained lifecycle history
+through the deployment-scoped runtime `Jobs.History` route automatically. Do not
+grant raw shared JOBS-stream read permissions. History preserves original stream
+sequences at a fixed upper watermark and uses the current service queue binding.
+Detaching resources retains data. Explicit administrative deletion removes only
+the selected detached allocation; shared streams and other queues remain intact.
+
+Operator CLI: `trellis clients list|get|put|disable|delete` manages public OAuth
+registrations, including exact loopback browser redirects.
+Auth client flows are fixed on every Put: browser callbacks enable Authorization
+Code + refresh; native without callbacks enables Device Code + refresh; native
+with callbacks enables both + refresh. Adding/removing native callbacks updates
+the supported flows. Kind is immutable; use a new client ID to switch kind.
+Native HTTP loopback callbacks need no development flag; browser loopback does.
+`put` reads generated AuthOAuthClientPutRequest JSON; mutations are revision-fenced. `trellis apis
+list|get|review|accept|force-replace` uses generated Auth request JSON and reviewed
+package evidence. Force replacement requires apis.forceReplace and explicit
+breakage/consent acknowledgements. Console exposes OAuth clients and API catalog.
+
 Identity-link approval remains a protected same-origin POST. Its no-store
 continuation page shows a navigation link to a 60-second, one-use GET handoff
 bound to the exact portal session, provider and account. Top-level navigation
@@ -167,6 +186,9 @@ implementation, API generation, and accepted action revision. They do not requir
 consumer capabilities. Delegated publication uses whole-capability membership;
 provider certificates never grant RPC caller or event-consumption rights.
 
+Durable consumers use the original broker timestamp. Targeted DLQ replay resolves
+retained original bytes and `originalPublishedAt` through authenticated Events
+inspection, even after source expiry; replay-envelope bytes cannot replace them.
 Retained events require trusted original JetStream publication metadata as well
 as a signed publisher timestamp. Both times must lie within the authority lease,
 and both must precede an ordinary revocation cutoff. Read time
@@ -265,10 +287,21 @@ attempt expiry permits a fresh transaction from the retained intent. Treat
 authorization denial separately from invalid login rather than starting a
 login loop.
 
-A generated device companion is established only through the parent device's
-activation flow and separate user consent. It receives an independent ordinary
-App/Agent user session and cannot bootstrap standalone or use the parent's
-device authority.
+Provision without identityPublicKey for a one-use, server-assigned enrollment
+secret. DeviceActivationOptions proves durable and ephemeral key possession;
+Devices.Reviews.Get/Decide require its confirmation code and expected revision.
+Accepted companion deployments register trellis.device.<deploymentId>.companion
+without granting user authority. Declare Auth's deviceCompanionsManage capability
+in the child request and obtain ordinary explicit native OAuth consent. Associate
+using DeviceCompanions.Attach from that verified user connection, then drop the
+setup client and resume the same credential handle. Supply its independent
+UserConnectOptions via DeviceConnectOptions::with_companion. Signed assignment
+must match the descriptor, native client and exact OAuth grant. Required children
+must be present; optional children may be absent. DeviceCompanions.Revoke revokes
+only the associated grant/families, preserving other grants, login and parent.
+Removal permits the associated user or an administrator with current delegated
+principals.manage. Removing the declaration rejects new and pending consent,
+while existing independently consented grants retain ordinary refresh.
 
 ## Typed Surfaces
 
@@ -306,8 +339,9 @@ authority, and scoped Events DLQ/replay. Delivery may repeat, so choose a
 side-effect strategy that handles duplicates. Subjects include the encoded
 qualified API identity and base64url parameter tokens; the signed descriptor
 binds the exact API, dotted event name, and parameter count. Success is
-acknowledged only after the handler succeeds; final exhaustion is durably
-recorded before source acknowledgement. Manual replay uses the same handler and
+acknowledged only after the handler succeeds; exhaustion is not acknowledged,
+and Events journals the broker max-deliveries advisory. Owned-Consumer inspection
+and terminal replay reporting do not grant Replay/Dismiss. Manual replay uses the same handler and
 a fresh retry budget without rewinding the original Consumer, and confirms
 resolution before acknowledgement.
 
@@ -382,6 +416,21 @@ Use generated State, KV, Store, Consumer, and Job handles. State is one typed
 value without key/TTL; KV is typed history; Store is raw bytes. State/KV direct
 historical migration runs in SDK memory without write-on-read. Resolved binding
 payloads and subjects are runtime internals.
+
+App State accessors register generated native-IDL schemas asynchronously:
+`let (state, registration) = client.saved_resource("0", idempotency_key).await?;`
+(accepted historical versions add `&Migrations`). Identical registration returns
+the current revision. Changes require an explicit current registration revision;
+handle RegistrationConflict without blind retry. A version's schema is immutable.
+Registration and stored-value revisions are separate CAS tokens. State declarations
+request native State read/write/delete capabilities; the shared authority owner
+remains authoritative.
+`let mut observation = state.watch().await?;` uses certified Live Watch.
+`observation.next().await` returns `Option<Result<Option<StateValue<T>>, StateReadError>>`:
+outer None ends observation; inner None means unwritten/deleted. Initial and later
+snapshots migrate in memory using the read codec, without writeback. Use
+`observation.close().await?` and `observation.closed().await`; drop also closes.
+No automatic reopen or retry occurs after transport/authorization loss.
 
 Generated cursor-paginated RPCs add lazy fallible page/item streams. Missing
 `next_cursor` is the sole end signal; general keyset pagination does not promise

@@ -16,6 +16,8 @@ use super::policy::capability;
 use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
 
 pub(super) const SELF_HEALTH_CAPABILITY: &str = "trellis.health@v1::selfReport";
+pub(super) const JOB_HISTORY_CAPABILITY: &str = "trellis.jobs@v1::history";
+pub(super) const CONSUMER_RUNTIME_CAPABILITY: &str = "trellis.events@v1::consumerRuntime";
 
 /// The automatically assigned runtime right must never expand into domain actions.
 pub(super) fn native_health_capability(
@@ -311,7 +313,7 @@ impl SqliteAuthorizationStore {
             Self::provision_instance_in_transaction(
                 connection,
                 &deployment,
-                &input.identity_public_key,
+                Some(&input.identity_public_key),
                 title,
                 now,
             )
@@ -430,9 +432,56 @@ impl SqliteAuthorizationStore {
             let unchanged: Option<u64> = existing.map(|deployment| connection.query_row("SELECT installed_revision FROM auth_deployment_bindings WHERE deployment_id=?1 AND implementation_digest=?2",params![deployment,participant_digest],|row|row.get(0)).optional()).transpose()?.flatten();
             let revision: u64 = match unchanged { Some(revision) => revision, None => connection.query_row("SELECT coalesce(max(revision),0)+1 FROM auth_installed_participants WHERE participant_id=?1",[&input.participant_id],|row|row.get(0))? };
             if unchanged.is_none() {
-                connection.execute("INSERT INTO auth_installed_participants(participant_id,revision,participant_kind,participant_digest,needs_digest,package_digest,evidence_digest,participant_path,companion_required,projection_json,installed_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?1,0,?8,?9)",params![input.participant_id,revision,kind,participant_digest,needs.digest(),input.evidence.root_digest,evidence_digest,json(&input.evidence)?,now])?;
+                connection.execute("INSERT INTO auth_installed_participants(participant_id,revision,participant_kind,participant_digest,needs_digest,package_digest,evidence_digest,participant_path,companion_required,projection_json,installed_at,companion_request_id,companion_request_kind) VALUES(?1,?2,?3,?4,?5,?6,?7,?1,?10,?8,?9,?11,CASE WHEN ?11 IS NULL THEN NULL ELSE 'native' END)",params![input.participant_id,revision,kind,participant_digest,needs.digest(),input.evidence.root_digest,evidence_digest,json(&input.evidence)?,now,participant.companion().is_some_and(|companion| !companion.optional),participant.companion().map(|companion|companion.request.as_str())])?;
             }
             let deployment_id = existing.map(str::to_owned).unwrap_or_else(id);
+            if let Some(companion) = participant.companion() {
+                let request = graph
+                    .packages()
+                    .values()
+                    .find_map(|package| package.app_requests().get(&companion.request))
+                    .ok_or(AuthError::NotFound)?;
+                if request.kind() != trellis_idl::AppKind::Native {
+                    return Err(AuthError::Invalid(
+                        "device companions require a native OAuth request".into(),
+                    ));
+                }
+                let mut required: Vec<_> = request
+                    .uses()
+                    .values()
+                    .flat_map(|selection| selection.required_capabilities.iter())
+                    .map(ToString::to_string)
+                    .collect();
+                if !request.states().is_empty() {
+                    required.extend(
+                        [
+                            "trellis.state@v1::read",
+                            "trellis.state@v1::write",
+                            "trellis.state@v1::delete",
+                        ]
+                        .map(str::to_owned),
+                    );
+                    required.sort();
+                    required.dedup();
+                }
+                let optional: Vec<_> = request
+                    .uses()
+                    .values()
+                    .flat_map(|selection| selection.optional_capabilities.iter())
+                    .map(ToString::to_string)
+                    .collect();
+                for name in required.iter().chain(&optional) {
+                    capability(connection, name)?;
+                }
+                let client = format!("trellis.device.{deployment_id}.companion");
+                let metadata = json(&serde_json::json!({
+                    "grant_types":["urn:ietf:params:oauth:grant-type:device_code","refresh_token"],
+                    "trellis_companion":{"deploymentId":deployment_id,"requestId":companion.request.as_str(),"required":required,"optional":optional,"participantDigest":participant_digest}
+                }))?;
+                // This registration is derived from the accepted deployment, not
+                // caller-supplied OAuth metadata. It grants no user authority.
+                connection.execute("INSERT INTO auth_oauth_clients(client_id,kind,display_name,redirect_uris_json,development,implied_capabilities_json,requested_privileges_json,metadata_json,state,revision,created_at,updated_at) VALUES(?1,'native',?2,'[]',0,'[]','[]',?3,'active',1,?4,?4) ON CONFLICT(client_id) DO UPDATE SET metadata_json=excluded.metadata_json,display_name=excluded.display_name,revision=auth_oauth_clients.revision+1,updated_at=excluded.updated_at WHERE auth_oauth_clients.metadata_json!=excluded.metadata_json",params![client,format!("{title} companion"),metadata,now])?;
+            }
             for (name, definition) in participant.resources() {
                 if let trellis_idl::ResourceDefinition::Kv {
                     history, ttl_ms, ..
@@ -477,6 +526,21 @@ impl SqliteAuthorizationStore {
                 )?;
             }
             connection.execute("INSERT INTO auth_deployment_bindings(deployment_id,installed_revision,implementation_digest,provided_apis_json,required_capabilities_json,optional_capabilities_json,resource_commitments_json,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,1) ON CONFLICT(deployment_id) DO UPDATE SET installed_revision=excluded.installed_revision,implementation_digest=excluded.implementation_digest,provided_apis_json=excluded.provided_apis_json,required_capabilities_json=excluded.required_capabilities_json,optional_capabilities_json=excluded.optional_capabilities_json,resource_commitments_json=excluded.resource_commitments_json,revision=auth_deployment_bindings.revision+1",params![deployment_id,revision,participant_digest,json(&provided)?,json(&required)?,json(&optional)?,json(&resource_commitments)?])?;
+            if kind == "service"
+                && participant.resources().values().any(|resource| {
+                    matches!(resource, trellis_idl::ResourceDefinition::Consumer { .. })
+                })
+            {
+                let cap = capability(connection, CONSUMER_RUNTIME_CAPABILITY)?;
+                let mut statement = connection
+                    .prepare("SELECT principal_id FROM auth_instances WHERE deployment_id=?1")?;
+                let principals = statement
+                    .query_map([&deployment_id], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for principal in principals {
+                    connection.execute("INSERT OR IGNORE INTO auth_direct_capabilities(grant_id,principal_id,capability_id,capability_generation,revision,expires_at,created_at) VALUES(?1,?2,?3,?4,1,?5,?6)",params![id(),principal,CONSUMER_RUNTIME_CAPABILITY,cap.identity_generation.get(),input.expires_at,now])?;
+                }
+            }
             Ok(deployment_id)
         }
     }
@@ -486,33 +550,85 @@ impl SqliteAuthorizationStore {
     pub(super) fn provision_instance_in_transaction(
         connection: &rusqlite::Connection,
         deployment: &str,
-        public_key: &str,
+        public_key: Option<&str>,
         title: &str,
         now: i64,
     ) -> Result<ProvisionedDeployment, AuthError> {
         if title.trim().is_empty() {
             return Err(AuthError::Invalid("instance title is required".into()));
         }
-        let bytes = URL_SAFE_NO_PAD
-            .decode(public_key)
-            .map_err(|_| AuthError::Denied)?;
-        let raw: [u8; 32] = bytes.try_into().map_err(|_| AuthError::Denied)?;
-        if VerifyingKey::from_bytes(&raw)
-            .map_err(|_| AuthError::Denied)?
-            .is_weak()
-            || URL_SAFE_NO_PAD.encode(raw) != public_key
-        {
-            return Err(AuthError::Denied);
-        }
+        let identity_key_id = public_key
+            .map(|public_key| {
+                let bytes = URL_SAFE_NO_PAD
+                    .decode(public_key)
+                    .map_err(|_| AuthError::Denied)?;
+                let raw: [u8; 32] = bytes.try_into().map_err(|_| AuthError::Denied)?;
+                if VerifyingKey::from_bytes(&raw)
+                    .map_err(|_| AuthError::Denied)?
+                    .is_weak()
+                    || URL_SAFE_NO_PAD.encode(raw) != public_key
+                {
+                    return Err(AuthError::Denied);
+                }
+                Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(raw)))
+            })
+            .transpose()?;
         let (participant, kind, revision, required, optional, expiry): (String, String, u64, String, String, Option<i64>) = connection.query_row("SELECT d.participant_id,d.participant_kind,b.installed_revision,b.required_capabilities_json,b.optional_capabilities_json,d.expires_at FROM auth_deployments d JOIN auth_deployment_bindings b USING(deployment_id) WHERE deployment_id=?1 AND d.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)", params![deployment, now], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?.ok_or(AuthError::Denied)?;
-        let required: Vec<String> = decode(&required)?;
+        let mut required: Vec<String> = decode(&required)?;
+        if kind == "service" || kind == "device" {
+            let evidence: String = connection.query_row(
+                "SELECT projection_json FROM auth_installed_participants WHERE participant_id=?1 AND revision=?2",
+                params![participant,revision], |row| row.get(0),
+            )?;
+            let graph = trellis_idl::compile_evidence(decode(&evidence)?)
+                .map_err(|error| AuthError::Invalid(error.to_string()))?;
+            let installed = graph
+                .packages()
+                .values()
+                .flat_map(|package| package.participants().values())
+                .find(|value| value.identity().as_str() == participant);
+            if kind == "service"
+                && installed.is_some_and(|value| {
+                    value.resources().values().any(|resource| {
+                        matches!(resource, trellis_idl::ResourceDefinition::Job { .. })
+                    })
+                })
+            {
+                required.push(JOB_HISTORY_CAPABILITY.into());
+            }
+            if kind == "service"
+                && installed.is_some_and(|value| {
+                    value.resources().values().any(|resource| {
+                        matches!(resource, trellis_idl::ResourceDefinition::Consumer { .. })
+                    })
+                })
+            {
+                required.push(CONSUMER_RUNTIME_CAPABILITY.into());
+            }
+            if kind == "device"
+                && installed.is_some_and(|value| {
+                    value.resources().values().any(|resource| {
+                        matches!(resource, trellis_idl::ResourceDefinition::State { .. })
+                    })
+                })
+            {
+                required.extend(
+                    [
+                        "trellis.state@v1::read",
+                        "trellis.state@v1::write",
+                        "trellis.state@v1::delete",
+                    ]
+                    .map(str::to_owned),
+                );
+            }
+        }
         let optional: Vec<String> = decode(&optional)?;
         let result = ProvisionedDeployment {
             participant_id: participant,
             principal_id: id(),
             deployment_id: deployment.into(),
             instance_id: id(),
-            identity_key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(raw)),
+            identity_key_id: identity_key_id.unwrap_or_default(),
         };
         let known: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM auth_provisioned_identities WHERE identity_key_id=?1)",
@@ -537,7 +653,21 @@ impl SqliteAuthorizationStore {
                 title
             ],
         )?;
-        connection.execute("INSERT INTO auth_provisioned_identities(identity_key_id,principal_id,deployment_id,instance_id,participant_id,kind,identity_public_key,state,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8)", params![result.identity_key_id,result.principal_id,deployment,result.instance_id,result.participant_id,kind,public_key,now])?;
+        if let Some(public_key) = public_key {
+            connection.execute("INSERT INTO auth_provisioned_identities(identity_key_id,principal_id,deployment_id,instance_id,participant_id,kind,identity_public_key,state,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8)", params![result.identity_key_id,result.principal_id,deployment,result.instance_id,result.participant_id,kind,public_key,now])?;
+        } else {
+            if kind != "device" {
+                return Err(AuthError::Denied);
+            }
+            connection.execute(
+                "UPDATE auth_instances SET state='disabled' WHERE instance_id=?1",
+                [&result.instance_id],
+            )?;
+            connection.execute(
+                "UPDATE auth_devices SET state='pending' WHERE principal_id=?1",
+                [&result.principal_id],
+            )?;
+        }
         native_health_capability(connection)?;
         let requested: std::collections::BTreeSet<_> = required
             .iter()

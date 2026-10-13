@@ -34,11 +34,16 @@ type __ActionNames = {
 	readonly "trellis.auth@v1:rpc:Deployments.Get": "Deployments.Get";
 	readonly "trellis.auth@v1:rpc:Deployments.List": "Deployments.List";
 	readonly "trellis.auth@v1:rpc:Deployments.Remove": "Deployments.Remove";
+	readonly "trellis.auth@v1:rpc:DeviceCompanions.Attach": "DeviceCompanions.Attach";
+	readonly "trellis.auth@v1:rpc:DeviceCompanions.Revoke": "DeviceCompanions.Revoke";
 	readonly "trellis.auth@v1:rpc:Devices.Disable": "Devices.Disable";
 	readonly "trellis.auth@v1:rpc:Devices.Enable": "Devices.Enable";
 	readonly "trellis.auth@v1:rpc:Devices.List": "Devices.List";
 	readonly "trellis.auth@v1:rpc:Devices.Provision": "Devices.Provision";
 	readonly "trellis.auth@v1:rpc:Devices.Remove": "Devices.Remove";
+	readonly "trellis.auth@v1:rpc:Devices.Reviews.Decide": "Devices.Reviews.Decide";
+	readonly "trellis.auth@v1:rpc:Devices.Reviews.Get": "Devices.Reviews.Get";
+	readonly "trellis.auth@v1:rpc:Devices.Reviews.List": "Devices.Reviews.List";
 	readonly "trellis.auth@v1:rpc:Issuers.ResolveChain": "Issuers.ResolveChain";
 	readonly "trellis.auth@v1:rpc:Issuers.Revoke": "Issuers.Revoke";
 	readonly "trellis.auth@v1:rpc:Issuers.Rotate": "Issuers.Rotate";
@@ -98,14 +103,14 @@ type __ActionNames = {
 	readonly "trellis.auth@v1:event:Issuers.Revoked": "Issuers.Revoked";
 	readonly "trellis.auth@v1:event:Issuers.Rotated": "Issuers.Rotated";
 	readonly "trellis.core@v1:rpc:Resources.Destroy": "Resources.Destroy";
-	readonly "trellis.core@v1:rpc:Resources.Inspect": "core.Resources.Inspect";
-	readonly "trellis.core@v1:rpc:Resources.Query": "core.Resources.Query";
+	readonly "trellis.core@v1:rpc:Resources.Inspect": "Resources.Inspect";
+	readonly "trellis.core@v1:rpc:Resources.Query": "Resources.Query";
 	readonly "trellis.core@v1:rpc:Surface.Status": "Surface.Status";
 	readonly "trellis.state@v1:rpc:Delete": "Delete";
 	readonly "trellis.state@v1:rpc:Get": "Get";
 	readonly "trellis.state@v1:rpc:Put": "Put";
-	readonly "trellis.state@v1:rpc:Resources.Inspect": "state.Resources.Inspect";
-	readonly "trellis.state@v1:rpc:Resources.Query": "state.Resources.Query";
+	readonly "trellis.state@v1:rpc:Register": "Register";
+	readonly "trellis.state@v1:live:Watch": "Watch";
 };
 type __Resources = {
 	readonly connections: {
@@ -151,7 +156,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "H2JoRhWPII1Fh1kl7hkDi7IgFXysGb7vVus0D-CKtqc";
+export declare const PARTICIPANT_DIGEST: "LGHIrTQJ6ifW76Huwm7r6GZUKEW6WPphODpTswMD0c0";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ConnectionsResource = ResourceDescriptors["connections"];

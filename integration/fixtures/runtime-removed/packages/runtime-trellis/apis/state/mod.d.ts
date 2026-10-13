@@ -26,6 +26,18 @@ export declare class CorruptRepresentation extends TrellisError<CorruptRepresent
 	static fromSerializable(data: unknown): CorruptRepresentation;
 	override toSerializable(): CorruptRepresentationData;
 }
+export type RegistrationConflictData = SerializableErrorData & {
+	readonly type: "trellis.state@v1::RegistrationConflict";
+} & Types1.StateRegistrationConflict;
+export declare class RegistrationConflict extends TrellisError<RegistrationConflictData> {
+	static readonly type: "trellis.state@v1::RegistrationConflict";
+	static readonly payloadCodec: typeof Types1.StateRegistrationConflictCodec;
+	override readonly name: "RegistrationConflict";
+	readonly data: RegistrationConflictData;
+	constructor(data: RegistrationConflictData);
+	static fromSerializable(data: unknown): RegistrationConflict;
+	override toSerializable(): RegistrationConflictData;
+}
 export type UnsupportedRepresentationData = SerializableErrorData & {
 	readonly type: "trellis.state@v1::UnsupportedRepresentation";
 } & Types1.StateRepresentationError;
@@ -44,10 +56,10 @@ export type GetInput = Types1.StateGetRequest;
 export type GetOutput = Types1.StateGetResponse;
 export type PutInput = Types1.StatePutRequest;
 export type PutOutput = Types1.StatePutResponse;
-export type ResourcesInspectInput = Types1.ResourcesInspectRequest;
-export type ResourcesInspectOutput = Types1.ResourcesInspectResponse;
-export type ResourcesQueryInput = Types1.ResourcesQueryRequest;
-export type ResourcesQueryOutput = Types1.ResourcesQueryResponse;
+export type RegisterInput = Types1.StateRegisterRequest;
+export type RegisterOutput = Types1.StateRegisterResponse;
+export type WatchInput = Types1.StateGetRequest;
+export type WatchEvent = Types1.StateGetResponse;
 declare const __api: {
 	readonly identity: "trellis.state@v1";
 	readonly actions: {
@@ -81,29 +93,26 @@ declare const __api: {
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Resources.Inspect": {
+		readonly "rpc:Register": {
 			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Resources.Inspect";
-			readonly subject: "rpc.v1.state.Resources.Inspect";
-			readonly input: typeof Types1.ResourcesInspectRequestCodec;
-			readonly output: typeof Types1.ResourcesInspectResponseCodec;
-			readonly errors: readonly [typeof CorruptRepresentation, typeof UnsupportedRepresentation];
+			readonly descriptorName: "rpc:Register";
+			readonly subject: "rpc.v1.state.Register";
+			readonly input: typeof Types1.StateRegisterRequestCodec;
+			readonly output: typeof Types1.StateRegisterResponseCodec;
+			readonly errors: readonly [typeof RegistrationConflict];
 			readonly download: false;
 			readonly pagination: undefined;
 		};
-		readonly "rpc:Resources.Query": {
-			readonly kind: "rpc";
-			readonly descriptorName: "rpc:Resources.Query";
-			readonly subject: "rpc.v1.state.Resources.Query";
-			readonly input: typeof Types1.ResourcesQueryRequestCodec;
-			readonly output: typeof Types1.ResourcesQueryResponseCodec;
-			readonly errors: readonly [typeof CorruptRepresentation, typeof UnsupportedRepresentation];
-			readonly download: false;
-			readonly pagination: "cursor";
+		readonly "live:Watch": {
+			readonly kind: "live";
+			readonly descriptorName: "live:Watch";
+			readonly subject: "live.v1.route.state.Watch";
+			readonly input: typeof Types1.StateGetRequestCodec;
+			readonly event: typeof Types1.StateGetResponseCodec;
 		};
 	};
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "u--S9rcV2G0Q3mmGO-xwN_8BFq1w76pMXc3sGeQJo_Y";
+export declare const API_DIGEST: "8upNJeqBsHZh8GI5jqZTLWiWNUiOnUqdBiqItkZebbQ";
 export {};

@@ -4,6 +4,63 @@ use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
 
+async fn delay_request(
+    port: u16,
+    target: String,
+) -> (
+    async_nats::Client,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_port = proxy.local_addr().unwrap().port();
+    let (arrived, pending) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    let forwarding = tokio::spawn(async move {
+        let (client, _) = proxy.accept().await.unwrap();
+        let broker = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let (client_read, mut client_write) = client.into_split();
+        let (mut broker_read, mut broker_write) = broker.into_split();
+        let inbound = tokio::spawn(async move {
+            let _ = tokio::io::copy(&mut broker_read, &mut client_write).await;
+        });
+        let mut read = tokio::io::BufReader::new(client_read);
+        let mut arrived = Some(arrived);
+        let mut resume = Some(resume);
+        loop {
+            let mut line = String::new();
+            if read.read_line(&mut line).await.unwrap() == 0 {
+                break;
+            }
+            let words: Vec<_> = line.split_whitespace().collect();
+            let mut payload = Vec::new();
+            if matches!(words.first(), Some(&"PUB") | Some(&"HPUB")) {
+                payload.resize(words.last().unwrap().parse::<usize>().unwrap() + 2, 0);
+                read.read_exact(&mut payload).await.unwrap();
+                if words[1] == target && arrived.is_some() {
+                    arrived.take().unwrap().send(()).unwrap();
+                    resume.take().unwrap().await.unwrap();
+                }
+            }
+            broker_write.write_all(line.as_bytes()).await.unwrap();
+            broker_write.write_all(&payload).await.unwrap();
+        }
+        inbound.abort();
+    });
+    (
+        async_nats::connect(format!("nats://127.0.0.1:{proxy_port}"))
+            .await
+            .unwrap(),
+        pending,
+        release,
+        forwarding,
+    )
+}
+
 // Compile a native package input, never a handwritten wire schema or resource DTO.
 fn evidence(source: String) -> trellis_idl::PackageEvidence {
     use std::{collections::BTreeMap, path::PathBuf};
@@ -46,6 +103,234 @@ fn evidence(source: String) -> trellis_idl::PackageEvidence {
             .unwrap(),
         }],
     }
+}
+
+#[tokio::test]
+async fn detached_state_retains_values_and_delayed_destroy_cannot_erase_replacement() {
+    use std::time::Duration;
+    use tokio::io::AsyncBufReadExt;
+    use trellis_runtime_apis::participants::trellis_platform::Participant;
+    let f = fixture();
+    f.store
+        .initialize_builtin_provider::<Participant>(&URL_SAFE_NO_PAD.encode([91; 32]), NOW)
+        .unwrap();
+    let package: trellis_idl::PackageEvidence =
+        serde_json::from_value(serde_json::to_value(Participant::package_evidence()).unwrap())
+            .unwrap();
+    let source = package.packages[0].source.clone();
+    let package=evidence(format!("{source}\nmodel RemovalValue {{ value: string; }} device RemovalDevice {{ state saved {{ title \"Saved\"; description \"Retained device data\"; schema RemovalValue; version 1; }} }}"));
+    let create:AuthDeploymentCreateRequest=serde_json::from_value(serde_json::json!({"packageEvidence":package,"participantId":"trellis.RemovalDevice","kind":"device","title":"State removal","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap();
+    let store = Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32])));
+    let deployment = super::super::rpc_deployments::create_deployment(
+        &store,
+        &mutation(&f.admin, &create),
+        &create,
+        NOW,
+    )
+    .unwrap()
+    .deployment
+    .deployment_id
+    .to_string();
+    let provision:AuthInstanceProvisionRequest=serde_json::from_value(serde_json::json!({"deploymentId":deployment,"identityPublicKey":URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[92;32]).verifying_key().as_bytes()),"title":"Device","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap();
+    super::super::rpc_deployments::provision_instance(
+        &store,
+        &mutation(&f.admin, &provision),
+        &provision,
+        "device",
+        NOW,
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mut server = tokio::process::Command::new(
+        std::env::var_os("TRELLIS_NATS_SERVER_BIN").unwrap_or_else(|| "nats-server".into()),
+    )
+    .args(["-js", "-a", "127.0.0.1", "-p", &port.to_string(), "-sd"])
+    .arg(directory.path())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped())
+    .kill_on_drop(true)
+    .spawn()
+    .unwrap();
+    let mut logs = tokio::io::BufReader::new(server.stderr.take().unwrap()).lines();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(line) = logs.next_line().await.unwrap() {
+            if line.contains("Server is ready") {
+                return;
+            }
+        }
+        panic!("NATS exited before readiness");
+    })
+    .await
+    .unwrap();
+    let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    let js = async_nats::jetstream::new(nats.clone());
+    let state = js
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: "trellis_state".into(),
+            description: crate::platform::state::OWNERSHIP_MARKER.into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let bindings = super::super::resources::materialize_native_kv(&store, &nats, &deployment, NOW)
+        .await
+        .unwrap();
+    let id = &bindings.state["saved"];
+    let physical: String = store
+        .transaction(|connection| {
+            Ok(connection.query_row(
+                "SELECT physical_id FROM auth_resources WHERE resource_id=?1",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    for key in [
+        format!("{physical}.device-a"),
+        format!("{physical}.device-b"),
+        "unrelated.allocation.device".into(),
+    ] {
+        state.put(key, b"retained".as_slice().into()).await.unwrap();
+    }
+    // Omission and approved reattachment retain both device namespaces.
+    store
+        .transaction(|connection| {
+            super::super::resources::detach_deployment_resources(
+                connection,
+                &deployment,
+                &Default::default(),
+                NOW + 1,
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        state
+            .get(format!("{physical}.device-a"))
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"retained"
+    );
+    super::super::resources::materialize_native_kv(&store, &nats, &deployment, NOW + 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .get(format!("{physical}.device-b"))
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"retained"
+    );
+    store
+        .transaction(|connection| {
+            super::super::resources::detach_deployment_resources(
+                connection,
+                &deployment,
+                &Default::default(),
+                NOW + 3,
+            )
+        })
+        .unwrap();
+    let resource = store
+        .transaction(|connection| read_resource(connection, id))
+        .unwrap();
+    let removal = AuthResourceRemoveRequest {
+        resource_id: resource.resource_id,
+        expected_revision: resource.revision,
+        idempotency_key: super::super::sqlite::id().into(),
+        extra: Default::default(),
+    };
+    let manual = mutation(&f.admin, &removal);
+    let (delayed_nats, pending, release, forwarding) =
+        delay_request(port, "$JS.API.STREAM.PURGE.KV_trellis_state".into()).await;
+    let delayed_store = store.clone();
+    let delayed_manual = manual.clone();
+    let delayed_removal = removal.clone();
+    let delayed = tokio::spawn(async move {
+        remove_resource(
+            &delayed_store,
+            &delayed_nats,
+            &delayed_manual,
+            &delayed_removal,
+            NOW + 4,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    remove_resource(&store, &nats, &manual, &removal, NOW + 35)
+        .await
+        .unwrap();
+    for key in [
+        format!("{physical}.device-a"),
+        format!("{physical}.device-b"),
+    ] {
+        assert!(state.get(key).await.unwrap().is_none());
+    }
+    assert_eq!(
+        state
+            .get("unrelated.allocation.device")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"retained"
+    );
+    super::super::resources::materialize_native_kv(&store, &nats, &deployment, NOW + 36)
+        .await
+        .unwrap();
+    let replacement: String = store
+        .transaction(|connection| {
+            Ok(connection.query_row(
+                "SELECT physical_id FROM auth_resources WHERE resource_id=?1",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    state
+        .put(
+            format!("{replacement}.device-a"),
+            b"replacement".as_slice().into(),
+        )
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(3), delayed)
+        .await
+        .unwrap()
+        .unwrap()
+        .is_err());
+    assert_eq!(
+        state
+            .get(format!("{replacement}.device-a"))
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"replacement"
+    );
+    assert_eq!(
+        state
+            .get("unrelated.allocation.device")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"retained"
+    );
+    forwarding.abort();
+    server.kill().await.unwrap();
 }
 
 #[tokio::test]
@@ -353,51 +638,11 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     config.description = owned_marker;
     jetstream.update_stream(config).await.unwrap();
     // Hold a real broker DELETE after its ownership check, across lease takeover.
-    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let proxy_port = proxy.local_addr().unwrap().port();
     let target = format!(
         "$JS.API.STREAM.DELETE.KV_{}",
         bindings.kv["connections"].bucket
     );
-    let (arrived, pending) = tokio::sync::oneshot::channel();
-    let (release, resume) = tokio::sync::oneshot::channel();
-    let forwarding = tokio::spawn(async move {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (client, _) = proxy.accept().await.unwrap();
-        let broker = tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .unwrap();
-        let (client_read, mut client_write) = client.into_split();
-        let (mut broker_read, mut broker_write) = broker.into_split();
-        let inbound = tokio::spawn(async move {
-            let _ = tokio::io::copy(&mut broker_read, &mut client_write).await;
-        });
-        let mut read = tokio::io::BufReader::new(client_read);
-        let mut arrived = Some(arrived);
-        let mut resume = Some(resume);
-        loop {
-            let mut line = String::new();
-            if read.read_line(&mut line).await.unwrap() == 0 {
-                break;
-            }
-            let words: Vec<_> = line.split_whitespace().collect();
-            let mut payload = Vec::new();
-            if matches!(words.first(), Some(&"PUB") | Some(&"HPUB")) {
-                payload.resize(words.last().unwrap().parse::<usize>().unwrap() + 2, 0);
-                read.read_exact(&mut payload).await.unwrap();
-                if words[1] == target && arrived.is_some() {
-                    arrived.take().unwrap().send(()).unwrap();
-                    resume.take().unwrap().await.unwrap();
-                }
-            }
-            broker_write.write_all(line.as_bytes()).await.unwrap();
-            broker_write.write_all(&payload).await.unwrap();
-        }
-        inbound.abort();
-    });
-    let delayed_nats = async_nats::connect(format!("nats://127.0.0.1:{proxy_port}"))
-        .await
-        .unwrap();
+    let (delayed_nats, pending, release, forwarding) = delay_request(port, target).await;
     let delayed_store = store.clone();
     let delayed_manual = manual.clone();
     let delayed_removal = removal.clone();

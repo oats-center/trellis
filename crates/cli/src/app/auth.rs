@@ -51,6 +51,110 @@ pub(super) async fn users(format: OutputFormat, command: UsersCommand) -> miette
     }
 }
 
+pub(super) async fn clients(command: ClientsCommand) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let result = match command {
+        ClientsCommand::List { cursor } => serde_json::to_value(
+            auth.o_auth_clients_list(&auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        ),
+        ClientsCommand::Get { client_id } => serde_json::to_value(
+            auth.o_auth_clients_get(&auth_types::AuthOAuthClientGetRequest {
+                client_id: wire(client_id)?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        ),
+        ClientsCommand::Put { input } => {
+            let request: auth_types::AuthOAuthClientPutRequest =
+                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
+                    .into_diagnostic()?;
+            serde_json::to_value(auth.o_auth_clients_put(&request).await.into_diagnostic()?)
+        }
+        ClientsCommand::Disable(args) => serde_json::to_value(
+            auth.o_auth_clients_disable(&auth_types::AuthOAuthClientMutationRequest {
+                client_id: wire(args.client_id)?,
+                expected_revision: wire(args.expected_revision.to_string())?,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        ),
+        ClientsCommand::Delete(args) => serde_json::to_value(
+            auth.o_auth_clients_delete(&auth_types::AuthOAuthClientMutationRequest {
+                client_id: wire(args.client_id)?,
+                expected_revision: wire(args.expected_revision.to_string())?,
+                idempotency_key: wire(cli_idempotency_key())?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        ),
+    }
+    .into_diagnostic()?;
+    output::print_json(&result)
+}
+
+pub(super) async fn apis(command: ApisCommand) -> miette::Result<()> {
+    let (_selection, connected) = connect_authenticated_cli_client().await?;
+    let auth = trellis_runtime_apis::apps::trellis_cli::Client::from_generated(connected)
+        .trellis_auth_v1();
+    let result = match command {
+        ApisCommand::List { cursor } => serde_json::to_value(
+            auth.apis_list(&auth_types::AuthPageRequest {
+                search: None,
+                page: Some(trellis_runtime_apis::CursorQuery {
+                    cursor,
+                    limit: Some(100),
+                }),
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        ),
+        ApisCommand::Get { api_id } => serde_json::to_value(
+            auth.apis_get(&auth_types::AuthApiGetRequest {
+                api_id: wire(api_id)?,
+                extra: Default::default(),
+            })
+            .await
+            .into_diagnostic()?,
+        ),
+        ApisCommand::Review { input } => {
+            let request: auth_types::AuthApiReviewRequest =
+                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
+                    .into_diagnostic()?;
+            serde_json::to_value(auth.apis_review(&request).await.into_diagnostic()?)
+        }
+        ApisCommand::Accept { input } => {
+            let request: auth_types::AuthApiAcceptRequest =
+                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
+                    .into_diagnostic()?;
+            serde_json::to_value(auth.apis_accept(&request).await.into_diagnostic()?)
+        }
+        ApisCommand::ForceReplace { input } => {
+            let request: auth_types::AuthApiForceReplaceRequest =
+                serde_json::from_slice(&std::fs::read(input).into_diagnostic()?)
+                    .into_diagnostic()?;
+            serde_json::to_value(auth.apis_force_replace(&request).await.into_diagnostic()?)
+        }
+    }
+    .into_diagnostic()?;
+    output::print_json(&result)
+}
+
 fn trimmed_optional(value: &Option<String>) -> Option<String> {
     value
         .as_deref()
@@ -248,6 +352,13 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
             "type": "trellis_capabilities",
             "required": Request::REQUIRED_CAPABILITIES,
             "optional": Request::OPTIONAL_CAPABILITIES,
+        }, {
+            "type": "trellis_platform_privileges",
+            "required": [],
+            "optional": [
+                "principals.manage", "roles.manage", "apis.accept",
+                "apis.forceReplace", "clients.manage", "privileges.manage",
+            ],
         }]))
         .await
         .into_diagnostic()?;

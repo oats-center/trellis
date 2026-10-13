@@ -271,6 +271,7 @@ fn migrated_events_store_orders_events_and_dead_letters_by_timestamp(
                 original: Some(OriginalEvent {
                     stream: "trellis".to_owned(),
                     sequence,
+                    published_at: occurred_at.to_owned(),
                     event_id: Some(format!("event-{sequence}")),
                     subject: "events.v1.Test.Created".to_owned(),
                     payload_bytes: Vec::new(),

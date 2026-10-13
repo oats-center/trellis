@@ -76,6 +76,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .route("/.well-known/trellis/issuer-chain", get(issuer_chain))
         .route("/token", post(token))
         .route("/device_authorization", post(super::device::start))
+        .route("/auth/device/enroll", post(super::enrollment::http_enroll))
         .route("/revoke", post(revoke))
         .layer(
             CorsLayer::new()

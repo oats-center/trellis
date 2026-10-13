@@ -37,6 +37,27 @@ the receiving transport. Keyed lease renewal is a separate fence; failure
 cancels local work and prevents stale completion. Job execution and side effects
 are at least once.
 
+Ordinary service workers and job references reconstruct lifecycle history through
+the native `Jobs.History` RPC. The runtime derives the deployment from verified
+service authority, validates the current declared queue binding, and reads only
+that deployment's job subject from the existing `JOBS` stream. Requests never
+accept a deployment or namespace. Pages preserve original stream sequences and a
+fixed first-page upper watermark, with at most 128 entries per page; concurrent
+later publications are excluded from that reconstruction. This is an authorized
+read of the authoritative stream, not a projection or another history store.
+Users cannot use this service-private resource route. Shared broker endpoints
+`$JS.API.DIRECT.GET.JOBS` and `$JS.API.STREAM.MSG.GET.JOBS` remain denied to
+ordinary identities because their payload filters are not subject-level ACLs.
+Subject-addressed latest reads remain scoped to the deployment.
+
+Native queue publish/work subject tokens include the allocation incarnation.
+Detach and reattach preserve those subjects; explicit destruction followed by
+recreation assigns fresh ones. Delayed sourced work from a destroyed allocation
+cannot reach the replacement's durable consumer. Explicit detached-resource
+removal retains shared streams and the deployment's keyed bucket, purging only
+the selected queue's data through saved sequence cutoffs; delayed old purge
+requests cannot erase replacement keyed state.
+
 A keyed delivery that cannot acquire its active slot remains blocked before the
 handler starts. The worker maintains the broker delivery lease with progress
 ACKs, so capacity waiting neither consumes another delivery attempt nor causes

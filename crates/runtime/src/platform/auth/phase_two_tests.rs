@@ -20,6 +20,8 @@ use super::*;
 
 #[path = "native_oauth_tests.rs"]
 mod native_oauth_tests;
+#[path = "state_tests.rs"]
+mod state_tests;
 use super::oauth::oauth_engine_tests;
 #[path = "initialization_capability_tests.rs"]
 mod initialization_capability_tests;

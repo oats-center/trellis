@@ -92,6 +92,10 @@ export type DeploymentsListInput = Types1.AuthPageRequest;
 export type DeploymentsListOutput = Types1.AuthDeploymentsListResponse;
 export type DeploymentsRemoveInput = Types1.AuthDeploymentMutationRequest;
 export type DeploymentsRemoveOutput = Types1.AuthDeploymentMutationResponse;
+export type DeviceCompanionsAttachInput = Types1.AuthDeviceCompanionAttachRequest;
+export type DeviceCompanionsAttachOutput = Types1.AuthDeviceCompanion;
+export type DeviceCompanionsRevokeInput = Types1.AuthDeviceCompanionRevokeRequest;
+export type DeviceCompanionsRevokeOutput = Types1.AuthMutationResult;
 export type DevicesDisableInput = Types1.AuthInstanceMutationRequest;
 export type DevicesDisableOutput = Types1.AuthInstanceMutationResponse;
 export type DevicesEnableInput = Types1.AuthInstanceMutationRequest;
@@ -102,6 +106,12 @@ export type DevicesProvisionInput = Types1.AuthInstanceProvisionRequest;
 export type DevicesProvisionOutput = Types1.AuthInstanceProvisionResponse;
 export type DevicesRemoveInput = Types1.AuthInstanceMutationRequest;
 export type DevicesRemoveOutput = Types1.AuthInstanceMutationResponse;
+export type DevicesReviewsDecideInput = Types1.AuthDeviceReviewDecideRequest;
+export type DevicesReviewsDecideOutput = Types1.AuthDeviceReviewResponse;
+export type DevicesReviewsGetInput = Types1.AuthDeviceReviewGetRequest;
+export type DevicesReviewsGetOutput = Types1.AuthDeviceReviewResponse;
+export type DevicesReviewsListInput = Types1.AuthPageRequest;
+export type DevicesReviewsListOutput = Types1.AuthDeviceReviewsListResponse;
 export type IssuersResolveChainInput = Types1.AuthIssuerChainRequest;
 export type IssuersResolveChainOutput = Types1.AuthIssuerChainResponse;
 export type IssuersRevokeInput = Types1.AuthIssuerRevokeRequest;
@@ -485,6 +495,26 @@ declare const __api: {
 			readonly download: false;
 			readonly pagination: undefined;
 		};
+		readonly "rpc:DeviceCompanions.Attach": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:DeviceCompanions.Attach";
+			readonly subject: "rpc.v1.auth.DeviceCompanions.Attach";
+			readonly input: typeof Types1.AuthDeviceCompanionAttachRequestCodec;
+			readonly output: typeof Types1.AuthDeviceCompanionCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:DeviceCompanions.Revoke": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:DeviceCompanions.Revoke";
+			readonly subject: "rpc.v1.auth.DeviceCompanions.Revoke";
+			readonly input: typeof Types1.AuthDeviceCompanionRevokeRequestCodec;
+			readonly output: typeof Types1.AuthMutationResultCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
 		readonly "rpc:Devices.Disable": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Devices.Disable";
@@ -534,6 +564,36 @@ declare const __api: {
 			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
 			readonly download: false;
 			readonly pagination: undefined;
+		};
+		readonly "rpc:Devices.Reviews.Decide": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Devices.Reviews.Decide";
+			readonly subject: "rpc.v1.auth.Devices.Reviews.Decide";
+			readonly input: typeof Types1.AuthDeviceReviewDecideRequestCodec;
+			readonly output: typeof Types1.AuthDeviceReviewResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Devices.Reviews.Get": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Devices.Reviews.Get";
+			readonly subject: "rpc.v1.auth.Devices.Reviews.Get";
+			readonly input: typeof Types1.AuthDeviceReviewGetRequestCodec;
+			readonly output: typeof Types1.AuthDeviceReviewResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: undefined;
+		};
+		readonly "rpc:Devices.Reviews.List": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:Devices.Reviews.List";
+			readonly subject: "rpc.v1.auth.Devices.Reviews.List";
+			readonly input: typeof Types1.AuthPageRequestCodec;
+			readonly output: typeof Types1.AuthDeviceReviewsListResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
 		};
 		readonly "rpc:Issuers.ResolveChain": {
 			readonly kind: "rpc";
@@ -1101,5 +1161,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "K_zP6pXNrQXivFvISCl3uHduzSt_MWff1wSEifNG8vs";
+export declare const API_DIGEST: "F0oBs3zpjt3NHA4o8DSFfpSUeCtHPPB5gIDsg3QKVcA";
 export {};

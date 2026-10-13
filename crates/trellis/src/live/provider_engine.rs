@@ -561,7 +561,7 @@ impl ProviderSessionRecord {
         let Some(headers) = message.headers.as_ref() else {
             return;
         };
-        if self
+        if let Err(error) = self
             .caller_guard
             .verify_control_request(
                 message.subject.as_str(),
@@ -570,8 +570,8 @@ impl ProviderSessionRecord {
                 headers,
             )
             .await
-            .is_err()
         {
+            tracing::debug!(?error, "live control rejected");
             return;
         }
         let Ok(control) = trellis_protocol::parse_live_control(&message.payload) else {

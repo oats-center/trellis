@@ -34,41 +34,32 @@ author wire schemas.
 ## Authentication
 
 ```text
-trellis login [--server <url>]
+trellis login <oauth-origin>
 trellis logout
 trellis whoami
 ```
 
-Login uses the browser request/bind flow, then context refresh. Local CLI state
-retains the session signing seed and nullable login metadata required for
-continuity; authorization contexts, route JWTs, transports, grants, and issuer
-keys are process-memory-only. Logout revokes the real login and clears local
-credentials.
-
-The CLI uses the installed `trellis-app.cli@v1` participant. First-admin setup
-creates its Admin `GrantBinding` atomically with the Console binding.
+Login uses public OAuth Device Code with explicit capability and optional finite
+administrative privilege consent. The registered client is `trellis.cli`; no app
+participant installation is involved. The native SDK owns durable P-256 custody,
+refresh-token rotation, locking and atomic replacement. Each process resumes
+custody and establishes fresh ephemeral runtime authority. Logout revokes the
+application refresh family and clears the selected native credentials.
 
 ## Authorization Administration
 
 ```text
-trellis identity grants get <identity-id> <participant-id>
-trellis identity grants list [--identity <identity-id>]
-trellis identity grants set <identity-id> <participant-id> ...
-trellis identity grants revoke <identity-id> <participant-id> ...
-
-trellis participants get <participant-id> [--revision <revision>]
-trellis participants install <project-or-artifact> ...
-
-trellis issuers list
-trellis issuers rotate ...
+trellis clients list|get|put|disable|delete ...
+trellis apis list|get|review|accept|force-replace ...
 trellis issuers revoke <issuer-key-id> ...
 ```
 
-Grant commands call `Auth.Grants.*` and require explicit expected revisions for
-mutations. They operate on one identity/participant binding and may assign only
-declared atoms and finite platform privileges. Participant installation compiles
-verified source-package semantics and calls `Auth.Participants.Install`; it does
-not grant authority as a side effect.
+Client registration and catalog operations call the generated `Auth.OAuthClients`
+and `Auth.Apis` families. JSON request files use generated native-contract DTOs;
+the CLI does not author a second policy or contract schema. Mutations retain
+expected revisions and idempotency keys. Force replacement requires the finite
+`apis.forceReplace` privilege and explicit breakage/consent acknowledgements.
+Client configuration supports exact registered loopback browser callbacks.
 
 Issuer commands manage the online signer. No `infra`, trust-root, certificate,
 manifest, trust-floor, offline-signing, or compatibility command exists.
@@ -105,13 +96,11 @@ output to a secure destination.
 
 ```text
 trellis users ...
-trellis portals ...
 ```
 
-These commands retain current account, user identity, portal route, login
-setting, and portal grant-override operations. Portal grant overrides select
-concrete atoms from an installed participant revision and do not create a second
-authority model.
+User commands use generated Auth account operations. The separately originated
+OAuth portal owns interactive login, device-code confirmation and consent;
+authenticated administration remains on NATS.
 
 ## Utility Commands
 

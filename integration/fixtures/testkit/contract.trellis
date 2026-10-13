@@ -1,3 +1,5 @@
+import { auth } from trellis;
+
 model Value { value: string; }
 model Status { stage: string; }
 model Preview { text: string; }
@@ -33,7 +35,11 @@ api echo@v1 {
 }
 
 service Provider { implements echo; }
+service JobsProvider {
+  job work { title "Work"; description "Private lifecycle recovery acceptance"; payload Value; result Value; }
+}
 service KvProvider {
+  store objects { title "Private objects"; description "Raw resource isolation acceptance"; ttl 0; desired_max_object 1MiB; desired_max_total 8MiB; }
   kv records {
     title "Records";
     description "Authenticated generated KV availability across connection readiness.";
@@ -49,3 +55,17 @@ app RestrictedCaller {}
 app OptionalOperationCaller { use echo { capability optionalSilent; } }
 app OperationAuthorizationCaller { use echo { required capability optionalSilent; } }
 device UnsupportedDevice {}
+device CompanionDevice {
+  state saved { title "Device saved value"; description "Installed device State authority acceptance"; schema Value; version 1; }
+  agent Companion {
+    state saved { title "User saved value"; description "Independent companion State authority acceptance"; schema Value; version 1; }
+    use auth { required capability deviceCompanionsManage; }
+    use echo { required capability invoke; }
+  }
+}
+device OptionalCompanionDevice {
+  agent optional Companion {
+    use auth { required capability deviceCompanionsManage; }
+    use echo { required capability invoke; }
+  }
+}

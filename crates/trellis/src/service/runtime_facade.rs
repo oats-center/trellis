@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_nats::header::HeaderMap;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use futures_util::{Stream, StreamExt};
@@ -130,8 +131,8 @@ impl crate::generated::RpcDescriptor for ConsumerReportDelivery {
     type Error = serde_json::Value;
 
     const API_ID: &'static str = "trellis.events@v1";
-    const DESCRIPTOR_NAME: &'static str = "rpc:Consumers.ReportDelivery";
-    const SUBJECT: &'static str = "";
+    const DESCRIPTOR_NAME: &'static str = "rpc.Consumers.ReportDelivery";
+    const SUBJECT: &'static str = "rpc.v1.events.Consumers.ReportDelivery";
     const KEY: &'static str = "events.Consumers.ReportDelivery";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
@@ -147,8 +148,8 @@ impl crate::generated::RpcDescriptor for ConsumerDeadLetterInspect {
     type Error = serde_json::Value;
 
     const API_ID: &'static str = "trellis.events@v1";
-    const DESCRIPTOR_NAME: &'static str = "rpc:DeadLetters.Inspect";
-    const SUBJECT: &'static str = "";
+    const DESCRIPTOR_NAME: &'static str = "rpc.DeadLetters.Inspect";
+    const SUBJECT: &'static str = "rpc.v1.events.DeadLetters.Inspect";
     const KEY: &'static str = "events.DeadLetters.Inspect";
     const CALLER_CAPABILITIES: &'static [&'static str] = &[];
     const DOWNLOAD: bool = false;
@@ -606,20 +607,30 @@ impl ServiceHandle {
             .map_err(|error| JobsError::Message {
                 message: error.to_string(),
             })?;
-        let key_coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
-            lease.nats().clone(),
-            &binding.jobs.namespace,
-        )
-        .await
-        .map_err(|error| JobsError::Message {
-            message: error.to_string(),
-        })?;
-        let manager = JobManager::new_with_key_coordinator(
-            TrellisJobEventPublisher::new(lease.nats().clone()),
-            binding.jobs,
-            TrellisJobMetaSource,
-            Arc::new(key_coordinator),
-        );
+        let publisher = TrellisJobEventPublisher::new(lease.nats().clone());
+        let manager = if binding
+            .jobs
+            .queues
+            .get(D::QUEUE_TYPE)
+            .is_some_and(|queue| queue.key_concurrency.is_some())
+        {
+            let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
+                lease.nats().clone(),
+                &binding.jobs.namespace,
+            )
+            .await
+            .map_err(|error| JobsError::Message {
+                message: error.to_string(),
+            })?;
+            JobManager::new_with_key_coordinator(
+                publisher,
+                binding.jobs,
+                TrellisJobMetaSource,
+                Arc::new(coordinator),
+            )
+        } else {
+            JobManager::new(publisher, binding.jobs, TrellisJobMetaSource)
+        };
         let job = manager
             .create(D::QUEUE_TYPE, payload)
             .await
@@ -636,7 +647,7 @@ impl ServiceHandle {
             })?;
         Ok(JobRef::from_runtime(
             job,
-            self.client().transport_generations(),
+            self.client().clone(),
             manager.bindings().clone(),
             queue,
         ))
@@ -1991,7 +2002,7 @@ async fn run_durable_event_pull_loop(
                 }
                 Err(error) => return Err(error.into()),
             };
-            let replay_envelope = if is_replay {
+            let mut replay_envelope = if is_replay {
                 Some(
                     serde_json::from_slice::<ConsumerReplayEnvelope>(message.payload()).map_err(
                         |error| TrellisClientError::EventSubscriptionProtocol(error.to_string()),
@@ -2001,13 +2012,36 @@ async fn run_durable_event_pull_loop(
                 None
             };
             let mut trusted_replay_publication = None;
-            if let Some(envelope) = &replay_envelope {
+            if let Some(envelope) = &mut replay_envelope {
                 if envelope.resource_id != config.resource_id
                     || envelope.original_record_sequence == 0
                 {
-                    settle!('batch, message.term().await);
+                    settle!('batch, message.nak_after(Duration::ZERO).await);
                     continue;
                 }
+                let generation = envelope.generation;
+                let reject_replay = async |reason: &str| {
+                    crate::generated::Client::from_client(Arc::clone(&client))
+                        .call::<ConsumerReportDelivery>(&ConsumerDeliveryReport {
+                            resource_id: config.resource_id.clone(),
+                            source_stream: config
+                                .replay_subscribe_options
+                                .stream
+                                .clone()
+                                .unwrap_or_default(),
+                            source_sequence: message.stream_sequence()?.to_string(),
+                            delivery_count: message.delivery_count(),
+                            delivery_proof: message.delivery_proof()?,
+                            replay_generation: Some(generation),
+                            outcome: "unreplayable".into(),
+                            error: Some(reason.into()),
+                        })
+                        .await
+                        .map_err(|error| {
+                            TrellisClientError::EventSubscriptionProtocol(error.to_string())
+                        })?;
+                    message.term().await
+                };
                 let inspected = match crate::generated::Client::from_client(Arc::clone(&client))
                     .call::<ConsumerDeadLetterInspect>(&ConsumerDeadLetterInspectInput {
                         resource_id: config.resource_id.clone(),
@@ -2030,17 +2064,21 @@ async fn run_durable_event_pull_loop(
                     }
                 };
                 let detail = inspected.get("deadLetter").unwrap_or(&inspected);
-                trusted_replay_publication =
-                    detail
-                        .get("originalPublication")
-                        .cloned()
-                        .and_then(|value| {
-                            serde_json::from_value::<trellis_protocol::OriginalEventPublication>(
-                                value,
-                            )
-                            .ok()
-                        });
                 let dead_letter = detail.get("deadLetter").unwrap_or(detail);
+                trusted_replay_publication = detail
+                    .get("originalPublishedAt")
+                    .and_then(serde_json::Value::as_str)
+                    .zip(dead_letter.get("originalSequence"))
+                    .and_then(|(published_at, sequence)| {
+                        serde_json::from_value::<trellis_protocol::U64s>(sequence.clone())
+                            .ok()
+                            .map(
+                                |stream_sequence| trellis_protocol::OriginalEventPublication {
+                                    published_at: published_at.to_owned(),
+                                    stream_sequence,
+                                },
+                            )
+                    });
                 let projected_generation = dead_letter.get("generation").and_then(|value| {
                     value
                         .as_u64()
@@ -2064,6 +2102,40 @@ async fn run_durable_event_pull_loop(
                     settle!('batch, message.ack().await);
                     continue;
                 }
+                // The signed inspection binds provenance to the retained bytes. A replay
+                // envelope alone cannot substitute another event under this timestamp.
+                let retained = detail
+                    .get("originalSubject")
+                    .and_then(serde_json::Value::as_str)
+                    .zip(
+                        detail
+                            .get("originalPayload")
+                            .and_then(serde_json::Value::as_str),
+                    )
+                    .zip(detail.get("originalHeaders").cloned());
+                let Some(((subject, payload), headers)) = retained else {
+                    if let Err(error) = reject_replay("retained event fields unavailable").await {
+                        tracing::warn!(%error, "Replay terminal report unavailable");
+                        settle!('batch, message.nak_after(Duration::from_secs(5)).await);
+                    }
+                    continue;
+                };
+                let (Ok(payload), Ok(headers)) = (
+                    STANDARD.decode(payload),
+                    serde_json::from_value::<BTreeMap<String, String>>(headers),
+                ) else {
+                    if let Err(error) = reject_replay("retained event encoding invalid").await {
+                        tracing::warn!(%error, "Replay terminal report unavailable");
+                        settle!('batch, message.nak_after(Duration::from_secs(5)).await);
+                    }
+                    continue;
+                };
+                envelope.original_subject = subject.to_owned();
+                envelope.original_payload_bytes = payload;
+                envelope.original_headers = headers
+                    .into_iter()
+                    .map(|(name, value)| (name, vec![value]))
+                    .collect();
             }
             let effective_subject = replay_envelope.as_ref().map_or_else(
                 || message.subject(),
@@ -2280,54 +2352,14 @@ async fn run_durable_event_pull_loop(
                     }
                 };
                 if result.is_err() {
-                    let error = result.err().map(|error| error.to_string());
                     if delivery >= config.max_deliver {
-                        settle!('batch, message.ack_progress().await);
-                        let report = ConsumerDeliveryReport {
-                            resource_id: config.resource_id.clone(),
-                            source_stream: if is_replay {
-                                config
-                                    .replay_subscribe_options
-                                    .stream
-                                    .clone()
-                                    .unwrap_or_default()
-                            } else {
-                                config.subscribe_options.stream.clone().unwrap_or_default()
-                            },
-                            source_sequence: message.stream_sequence()?.to_string(),
-                            delivery_count: delivery,
-                            delivery_proof: message.delivery_proof()?,
-                            replay_generation: replay_envelope
-                                .as_ref()
-                                .map(|envelope| envelope.generation),
-                            outcome: "exhausted".to_owned(),
-                            error,
-                        };
-                        let report_result =
-                            crate::generated::Client::from_client(Arc::clone(&client))
-                                .call::<ConsumerReportDelivery>(&report)
-                                .await;
-                        let reported = report_result.is_ok();
-                        if reported {
-                            let ack = message.ack().await;
-                            if let Err(error) = ack {
-                                for earlier in completed.drain(..) {
-                                    earlier.finish("ok");
-                                }
-                                observation.finish("error");
-                                if durable_event_transport_error_is_retryable(&error) {
-                                    settle_failure = true;
-                                    break 'batch;
-                                }
-                                return Err(error.into());
-                            }
-                        } else if let Err(error) = report_result {
-                            tracing::warn!(%error, group = ?config.context.group, "Delivery report unavailable");
-                        }
+                        // Exhaustion belongs to the broker advisory path; never ACK a failed delivery.
+                        let result = message.nak_after(Duration::ZERO).await;
                         for earlier in completed.drain(..) {
                             earlier.finish("ok");
                         }
-                        observation.finish(if reported { "exhausted" } else { "error" });
+                        observation.finish(if result.is_ok() { "exhausted" } else { "error" });
+                        settle!('batch, result);
                         handled = false;
                         break;
                     }
@@ -2531,6 +2563,7 @@ mod tests {
                 digest: "sha256:test".to_string(),
             },
             ServiceResourceBindings {
+                state: BTreeMap::new(),
                 event_consumers: BTreeMap::from([(
                     "projection".to_string(),
                     EventConsumerResourceBinding {

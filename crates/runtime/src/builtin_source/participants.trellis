@@ -187,7 +187,6 @@ app console {
     capability delete;
     capability read;
     capability write;
-    capability resourcesInspect;
   }
   use core {
     capability resources_destroy;

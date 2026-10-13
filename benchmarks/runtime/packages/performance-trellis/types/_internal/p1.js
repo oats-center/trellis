@@ -146,7 +146,7 @@ export const AuthAuthorizationSessionCodec = codecs.recursive(() => codecs.named
 	identityKeyId: codecs.optional(codecs.ref(() => AuthKeyIdCodec)),
 	loginSessionId: codecs.optional(codecs.ulid),
 	maximumContextExpiresAt: codecs.optional(codecs.timestamp),
-	notAfter: codecs.timestamp,
+	notAfter: codecs.optional(codecs.timestamp),
 	oauthGrantId: codecs.optional(codecs.ulid),
 	principalId: codecs.ulid,
 	principalKind: codecs.ref(() => AuthPrincipalKindCodec),
@@ -387,6 +387,79 @@ export const AuthDeploymentsListResponseCodec = codecs.recursive(() => codecs.na
 	page: codecs.model({ nextCursor: codecs.optional(codecs.string) })
 })));
 export const AuthDescriptionCodec = codecs.recursive(() => codecs.named("trellis.AuthDescription", codecs.string));
+export const AuthDeviceCompanionCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceCompanion", codecs.model({
+	clientId: codecs.ref(() => AuthClientIdCodec),
+	instanceId: codecs.ulid,
+	oauthGrantId: codecs.ulid,
+	requestId: codecs.string,
+	revision: codecs.ref(() => AuthRevisionCodec)
+})));
+export const AuthDeviceCompanionAttachRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceCompanionAttachRequest", codecs.model({
+	confirmationCode: codecs.ref(() => AuthDeviceConfirmationCodeCodec),
+	expectedRevision: codecs.ref(() => AuthRevisionCodec),
+	idempotencyKey: codecs.ref(() => AuthIdempotencyKeyCodec),
+	reviewId: codecs.ulid
+})));
+export const AuthDeviceCompanionRevokeRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceCompanionRevokeRequest", codecs.model({
+	expectedRevision: codecs.ref(() => AuthRevisionCodec),
+	idempotencyKey: codecs.ref(() => AuthIdempotencyKeyCodec),
+	instanceId: codecs.ulid
+})));
+export const AuthDeviceConfirmationCodeCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceConfirmationCode", codecs.string));
+export const AuthDeviceEnrollmentRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceEnrollmentRequest", codecs.model({
+	challengeDigest: codecs.ref(() => AuthDigestCodec),
+	confirmationCode: codecs.ref(() => AuthDeviceConfirmationCodeCodec),
+	connectionId: codecs.ulid,
+	iat: codecs.ref(() => AuthDeviceProofIssuedAtCodec),
+	identityKeyId: codecs.ref(() => AuthDigestCodec),
+	identityPublicKey: codecs.ref(() => AuthPublicKeyCodec),
+	participantId: codecs.string,
+	proof: codecs.ref(() => AuthDeviceProofCodec),
+	provisioningSecret: codecs.optional(codecs.ref(() => AuthDeviceProvisioningSecretCodec)),
+	requestId: codecs.ulid,
+	sessionKey: codecs.ref(() => AuthPublicKeyCodec),
+	sessionProof: codecs.ref(() => AuthDeviceProofCodec)
+})));
+export const AuthDeviceProofCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceProof", codecs.model({
+	format: codecs.string,
+	signature: codecs.string
+})));
+export const AuthDeviceProofIssuedAtCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceProofIssuedAt", codecs.f64));
+export const AuthDeviceProvisioningSecretCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceProvisioningSecret", codecs.string));
+export const AuthDeviceReviewCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceReview", codecs.model({
+	companionClientId: codecs.optional(codecs.ref(() => AuthClientIdCodec)),
+	companionRequestId: codecs.optional(codecs.string),
+	companionRequired: codecs.optional(codecs.bool),
+	deploymentId: codecs.ulid,
+	expiresAt: codecs.timestamp,
+	instanceId: codecs.ulid,
+	participantId: codecs.string,
+	reviewId: codecs.ulid,
+	revision: codecs.ref(() => AuthRevisionCodec),
+	state: codecs.ref(() => AuthDeviceReviewStateCodec)
+})));
+export const AuthDeviceReviewDecideRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceReviewDecideRequest", codecs.model({
+	confirmationCode: codecs.ref(() => AuthDeviceConfirmationCodeCodec),
+	decision: codecs.ref(() => AuthDecisionCodec),
+	expectedRevision: codecs.ref(() => AuthRevisionCodec),
+	idempotencyKey: codecs.ref(() => AuthIdempotencyKeyCodec),
+	reviewId: codecs.ulid
+})));
+export const AuthDeviceReviewGetRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceReviewGetRequest", codecs.model({
+	confirmationCode: codecs.ref(() => AuthDeviceConfirmationCodeCodec),
+	reviewId: codecs.ulid
+})));
+export const AuthDeviceReviewResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceReviewResponse", codecs.model({ review: codecs.ref(() => AuthDeviceReviewCodec) })));
+export const AuthDeviceReviewStateCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceReviewState", codecs.openEnum([
+	"approved",
+	"expired",
+	"pending",
+	"rejected"
+])));
+export const AuthDeviceReviewsListResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthDeviceReviewsListResponse", codecs.model({
+	items: codecs.list(codecs.ref(() => AuthDeviceReviewCodec)),
+	page: codecs.model({ nextCursor: codecs.optional(codecs.string) })
+})));
 export const AuthDigestCodec = codecs.recursive(() => codecs.named("trellis.AuthDigest", codecs.string));
 export const AuthEffectiveAccessResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthEffectiveAccessResponse", codecs.model({
 	capabilities: codecs.list(codecs.ref(() => AuthEffectiveCapabilityCodec)),
@@ -717,11 +790,13 @@ export const AuthProvisionedInstanceCodec = codecs.recursive(() => codecs.named(
 export const AuthPublicClientKindCodec = codecs.recursive(() => codecs.named("trellis.AuthPublicClientKind", codecs.openEnum(["browser", "native"])));
 export const AuthPublicKeyCodec = codecs.recursive(() => codecs.named("trellis.AuthPublicKey", codecs.string));
 export const AuthResourceBindingCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceBinding", codecs.model({
+	browserOrigin: codecs.optional(codecs.string),
+	clientId: codecs.optional(codecs.string),
 	kind: codecs.ref(() => AuthResourceKindCodec),
 	localName: codecs.string,
 	ownerId: codecs.ulid,
 	ownerKind: codecs.ref(() => AuthResourceOwnerKindCodec),
-	participantId: codecs.string,
+	participantId: codecs.optional(codecs.string),
 	resourceId: codecs.ref(() => AuthDigestCodec),
 	revision: codecs.ref(() => AuthRevisionCodec),
 	state: codecs.ref(() => AuthResourceStateCodec)
@@ -1025,6 +1100,7 @@ export const EventsDeadLetterDetailCodec = codecs.recursive(() => codecs.named("
 	deadLetter: codecs.ref(() => EventsDeadLetterCodec),
 	originalHeaders: codecs.map(codecs.string),
 	originalPayload: codecs.bytes,
+	originalPublishedAt: codecs.string,
 	originalSubject: codecs.string,
 	transitionReferences: codecs.list(codecs.u64),
 	verificationStatus: codecs.ref(() => EventsDeadLetterVerificationStatusCodec)
@@ -2427,6 +2503,21 @@ export const JobsGetKeyResponsequeuedItemCodec = codecs.recursive(() => codecs.n
 	jobId: codecs.ref(() => JobsGetKeyResponsequeuedItemJobIdCodec)
 })));
 export const JobsGetKeyResponsequeuedItemJobIdCodec = codecs.recursive(() => codecs.named("trellis.JobsGetKeyResponsequeuedItemJobId", codecs.string));
+export const JobsHistoryEntryCodec = codecs.recursive(() => codecs.named("trellis.JobsHistoryEntry", codecs.model({
+	payload: codecs.bytes,
+	sequence: codecs.u64
+})));
+export const JobsHistoryRequestCodec = codecs.recursive(() => codecs.named("trellis.JobsHistoryRequest", codecs.model({
+	fromSequence: codecs.u64,
+	jobId: codecs.string,
+	queue: codecs.string,
+	throughSequence: codecs.optional(codecs.u64)
+})));
+export const JobsHistoryResponseCodec = codecs.recursive(() => codecs.named("trellis.JobsHistoryResponse", codecs.model({
+	entries: codecs.list(codecs.ref(() => JobsHistoryEntryCodec)),
+	nextSequence: codecs.optional(codecs.u64),
+	throughSequence: codecs.u64
+})));
 export const JobsInspectRequestCodec = codecs.recursive(() => codecs.named("trellis.JobsInspectRequest", codecs.model({ id: codecs.ref(() => JobsInspectRequestIdCodec) })));
 export const JobsInspectRequestIdCodec = codecs.recursive(() => codecs.named("trellis.JobsInspectRequestId", codecs.string));
 export const JobsInspectResponseCodec = codecs.recursive(() => codecs.named("trellis.JobsInspectResponse", codecs.model({
@@ -4292,6 +4383,19 @@ export const StatePutRequestCodec = codecs.recursive(() => codecs.named("trellis
 	value: codecs.bytes
 })));
 export const StatePutResponseCodec = codecs.recursive(() => codecs.named("trellis.StatePutResponse", codecs.model({ entry: codecs.ref(() => StoredStateCodec) })));
+export const StateRegisterRequestCodec = codecs.recursive(() => codecs.named("trellis.StateRegisterRequest", codecs.model({
+	accepts: codecs.list(codecs.ref(() => StateRepresentationCodec)),
+	expectedRevision: codecs.ref(() => StateRevisionCodec),
+	idempotencyKey: codecs.ulid,
+	representation: codecs.ref(() => StateRepresentationCodec),
+	resourceName: codecs.ref(() => StateResourceNameCodec)
+})));
+export const StateRegisterResponseCodec = codecs.recursive(() => codecs.named("trellis.StateRegisterResponse", codecs.model({ revision: codecs.ref(() => StateRevisionCodec) })));
+export const StateRegistrationConflictCodec = codecs.recursive(() => codecs.named("trellis.StateRegistrationConflict", codecs.model({ currentRevision: codecs.ref(() => StateRevisionCodec) })));
+export const StateRepresentationCodec = codecs.recursive(() => codecs.named("trellis.StateRepresentation", codecs.model({
+	schema: codecs.bytes,
+	version: codecs.ref(() => StateRepresentationVersionCodec)
+})));
 export const StateRepresentationErrorCodec = codecs.recursive(() => codecs.named("trellis.StateRepresentationError", codecs.model({
 	representationVersion: codecs.ref(() => StateRepresentationVersionCodec),
 	resourceName: codecs.ref(() => StateResourceNameCodec)

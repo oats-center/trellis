@@ -178,6 +178,7 @@ export type {
   RuntimeStateStoreShape,
   SessionCaller,
   StateFacade,
+  StateWatch,
   TrellisEventHeader,
   TrellisEventMessage,
   ValueStateStoreClient,

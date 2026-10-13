@@ -136,36 +136,34 @@ function isCustomNatsRuntimeDeps(
   return args.jsm !== undefined && args.js !== undefined;
 }
 
-export type StartNatsWorkerHostOptions<TResult> =
-  & StartNatsRuntimeDeps
-  & {
-    instanceId: string;
-    queueTypes?: string[];
-    queueConcurrency?: Record<string, number>;
-    heartbeatPublisher?: {
-      publish(subject: string, payload: Uint8Array): void | Promise<void>;
-    };
-    heartbeatIntervalMs?: number;
-    version?: string;
-    nowIso?: () => string;
-    manager: JobManager<unknown, TResult>;
-    getProjectedJob?: (
-      job: Job<unknown, TResult>,
-    ) => Promise<Job<unknown, TResult> | undefined>;
-    getLatestLifecycleEvent?: (
-      job: Job<unknown, TResult>,
-    ) => Promise<ResolvedLifecycleEvent | undefined>;
-    validatePayload?: (
-      args: PayloadValidationArgs<TResult>,
-    ) => Promise<void> | void;
-    validateResult?: (
-      args: ResultValidationArgs<TResult>,
-    ) => Promise<void> | void;
-    handler: (
-      job: ActiveJob<unknown, TResult>,
-      session: JobReceivingSession<TResult>,
-    ) => Promise<TResult>;
+export type StartNatsWorkerHostOptions<TResult> = StartNatsRuntimeDeps & {
+  instanceId: string;
+  queueTypes?: string[];
+  queueConcurrency?: Record<string, number>;
+  heartbeatPublisher?: {
+    publish(subject: string, payload: Uint8Array): void | Promise<void>;
   };
+  heartbeatIntervalMs?: number;
+  version?: string;
+  nowIso?: () => string;
+  manager: JobManager<unknown, TResult>;
+  getProjectedJob?: (
+    job: Job<unknown, TResult>,
+  ) => Promise<Job<unknown, TResult> | undefined>;
+  getLatestLifecycleEvent?: (
+    job: Job<unknown, TResult>,
+  ) => Promise<ResolvedLifecycleEvent | undefined>;
+  validatePayload?: (
+    args: PayloadValidationArgs<TResult>,
+  ) => Promise<void> | void;
+  validateResult?: (
+    args: ResultValidationArgs<TResult>,
+  ) => Promise<void> | void;
+  handler: (
+    job: ActiveJob<unknown, TResult>,
+    session: JobReceivingSession<TResult>,
+  ) => Promise<TResult>;
+};
 
 /** @internal Immutable transport inputs retained until a bounded receive and its disposition settle. */
 export type JobReceivingSession<TResult> = {
@@ -207,11 +205,9 @@ type StartQueueWorkerLoopOptions<TResult> = {
 };
 
 /** @internal Converts a native consumer to one broker-bounded receiving slot input. */
-export function toWorkerConsumer(
-  consumer: {
-    next(options: { expires: number }): Promise<JsMsg | null>;
-  },
-): WorkerConsumerLike {
+export function toWorkerConsumer(consumer: {
+  next(options: { expires: number }): Promise<JsMsg | null>;
+}): WorkerConsumerLike {
   return {
     async next(): Promise<WorkMessageLike | null> {
       const msg = await consumer.next({ expires: 1_000 });
@@ -364,9 +360,11 @@ export function startQueueWorkerLoop<TResult>(
         session = await options.acquireSession(acquisition.signal);
       } catch (error) {
         if (
-          stopping && (error === acquisition.signal.reason ||
+          stopping &&
+          (error === acquisition.signal.reason ||
             (error instanceof DOMException && error.name === "AbortError"))
-        ) break;
+        )
+          break;
         throw error;
       }
       let retryReceive = false;
@@ -417,8 +415,7 @@ export function startQueueWorkerLoop<TResult>(
             continue;
           }
           const job = jobFromWorkEvent(event) as
-            | Job<unknown, TResult>
-            | undefined;
+            Job<unknown, TResult> | undefined;
           if (!job) {
             await disposition("ack");
             continue;
@@ -472,10 +469,10 @@ export function startQueueWorkerLoop<TResult>(
 
           let currentJob = latestLifecycle
             ? {
-              ...job,
-              state: latestLifecycle.state,
-              tries: latestLifecycle.tries,
-            }
+                ...job,
+                state: latestLifecycle.state,
+                tries: latestLifecycle.tries,
+              }
             : job;
           let outcome;
           do {
@@ -507,17 +504,17 @@ export function startQueueWorkerLoop<TResult>(
               {
                 validateResult: options.validateResult
                   ? (result, resultJob) =>
-                    options.validateResult!({
-                      schema: options.resultSchema,
-                      result,
-                      job: resultJob,
-                    })
+                      options.validateResult!({
+                        schema: options.resultSchema,
+                        result,
+                        job: resultJob,
+                      })
                   : undefined,
               },
             );
             if (outcome.outcome === "deferred") {
               await new Promise((resolve) =>
-                setTimeout(resolve, options.progressAckIntervalMs ?? 1_000)
+                setTimeout(resolve, options.progressAckIntervalMs ?? 1_000),
               );
               latestLifecycle = session.getLatestLifecycleEvent
                 ? await session.getLatestLifecycleEvent(job)
@@ -527,7 +524,7 @@ export function startQueueWorkerLoop<TResult>(
                 latestLifecycle?.runSequence !== undefined &&
                 (event.eventType !== latestLifecycle.runEventType ||
                   (msg.info?.lifecycleSequence !==
-                      latestLifecycle.runSequence &&
+                    latestLifecycle.runSequence &&
                     (latestLifecycle.runEventType === "retried" ||
                       lifecycleWorkDecision(latestLifecycle) !== "skip-ack")))
               ) {
@@ -542,17 +539,18 @@ export function startQueueWorkerLoop<TResult>(
               }
               currentJob = latestLifecycle
                 ? {
-                  ...job,
-                  state: latestLifecycle.state,
-                  tries: latestLifecycle.tries,
-                }
+                    ...job,
+                    state: latestLifecycle.state,
+                    tries: latestLifecycle.tries,
+                  }
                 : job;
             }
           } while (outcome.outcome === "deferred" && !token.isCancelled());
           const ackAction = ackActionForOutcome(outcome);
           if (ackAction === "ack") {
             if (
-              outcome.outcome === "expired" || outcome.outcome === "dead" ||
+              outcome.outcome === "expired" ||
+              outcome.outcome === "dead" ||
               outcome.outcome === "stale"
             ) {
               await cleanupTerminalKeyState(session.manager, job);
@@ -589,11 +587,14 @@ export function startQueueWorkerLoop<TResult>(
         // library's finite-pull heartbeat timeout or broker no-responders status.
         // Configuration, permission and missing-resource errors remain terminal;
         // fixed hosts keep their existing failure reporting.
-        retryReceive = session.physicalLoss !== undefined &&
-          !session.physicalLoss.aborted && error instanceof JetStreamError &&
+        retryReceive =
+          session.physicalLoss !== undefined &&
+          !session.physicalLoss.aborted &&
+          error instanceof JetStreamError &&
           (error.message === "heartbeats missed" ||
-            ("code" in error && (error.code === 503 ||
-              (error.code === 409 && error.message === "server shutdown"))));
+            ("code" in error &&
+              (error.code === 503 ||
+                (error.code === 409 && error.message === "server shutdown"))));
         if (!session.physicalLoss?.aborted && !retryReceive) throw error;
         recordTrellisError(error, {
           surface: "job",
@@ -654,8 +655,8 @@ export async function startNatsWorkerHostFromBinding<TResult>(
   binding: JobsRuntimeBinding,
   options: StartNatsWorkerHostOptions<TResult>,
 ): Promise<{ workerCount(): number; stop(): Promise<void> }> {
-  const queueTypes = options.queueTypes ??
-    Object.keys(binding.jobs.queues).sort();
+  const queueTypes =
+    options.queueTypes ?? Object.keys(binding.jobs.queues).sort();
   const queueConcurrency: Record<string, number> = {};
   for (const queueType of queueTypes) {
     const queue = binding.jobs.queues[queueType];
@@ -676,23 +677,25 @@ export async function startNatsWorkerHostFromBinding<TResult>(
 
   const cancellation = new JobCancellationToken();
   const heartbeatLoops = options.heartbeatPublisher
-    ? await Promise.all(queueTypes.map((queueType) => {
-      const queue = binding.jobs.queues[queueType];
-      if (!queue) {
-        throw new Error(`Worker queue '${queueType}' is not configured`);
-      }
-      return startWorkerHeartbeatLoop({
-        publisher: options.heartbeatPublisher!,
-        service: binding.jobs.serviceName,
-        subjectService: binding.jobs.namespace,
-        jobType: queueType,
-        instanceId: options.instanceId,
-        concurrency: queueConcurrency[queueType],
-        version: options.version,
-        intervalMs: options.heartbeatIntervalMs,
-        nowIso: options.nowIso,
-      });
-    }))
+    ? await Promise.all(
+        queueTypes.map((queueType) => {
+          const queue = binding.jobs.queues[queueType];
+          if (!queue) {
+            throw new Error(`Worker queue '${queueType}' is not configured`);
+          }
+          return startWorkerHeartbeatLoop({
+            publisher: options.heartbeatPublisher!,
+            service: binding.jobs.serviceName,
+            subjectService: binding.jobs.namespace,
+            jobType: queueType,
+            instanceId: options.instanceId,
+            concurrency: queueConcurrency[queueType],
+            version: options.version,
+            intervalMs: options.heartbeatIntervalMs,
+            nowIso: options.nowIso,
+          });
+        }),
+      )
     : [];
 
   const workers: Array<{ stop(): Promise<void> }> = [];
@@ -704,17 +707,19 @@ export async function startNatsWorkerHostFromBinding<TResult>(
       const jsm = isCustomNatsRuntimeDeps(options)
         ? options.jsm
         : await jetstreamManager(options.nats);
-      const js = isCustomNatsRuntimeDeps(options) ? options.js : {
-        consumers: {
-          getConsumerFromInfo(info: ConsumerInfoLike) {
-            return toWorkerConsumer(
-              jetstream(options.nats).consumers.getConsumerFromInfo(
-                info as ConsumerInfo,
-              ),
-            );
-          },
-        },
-      };
+      const js = isCustomNatsRuntimeDeps(options)
+        ? options.js
+        : {
+            consumers: {
+              getConsumerFromInfo(info: ConsumerInfoLike) {
+                return toWorkerConsumer(
+                  jetstream(options.nats).consumers.getConsumerFromInfo(
+                    info as ConsumerInfo,
+                  ),
+                );
+              },
+            },
+          };
       const info = await getConsumerInfo(jsm, binding.workStream, queue);
       coverages.push(
         await startJobCancellationCoverage(
@@ -736,15 +741,16 @@ export async function startNatsWorkerHostFromBinding<TResult>(
           consumer,
           release() {},
           getProjectedJob: options.getProjectedJob,
-          getLatestLifecycleEvent: options.getLatestLifecycleEvent ??
+          getLatestLifecycleEvent:
+            options.getLatestLifecycleEvent ??
             (direct
               ? (job) =>
-                getLatestLifecycleEvent(
-                  direct,
-                  binding.workStream,
-                  queue.publishPrefix,
-                  job,
-                )
+                  getLatestLifecycleEvent(
+                    direct,
+                    binding.workStream,
+                    queue.publishPrefix,
+                    job,
+                  )
               : undefined),
         };
 
@@ -776,8 +782,9 @@ export async function startNatsWorkerHostFromBinding<TResult>(
       coverages.map((coverage) => coverage.stop()),
     );
     const failures = [...settled, ...coverageSettled]
-      .filter((result): result is PromiseRejectedResult =>
-        result.status === "rejected"
+      .filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
       )
       .map((result) => result.reason);
     if (failures.length) throw new WorkerHostStopError([error, ...failures]);
@@ -798,8 +805,9 @@ export async function startNatsWorkerHostFromBinding<TResult>(
         coverages.map((coverage) => coverage.stop()),
       );
       const failures = [...results, ...coverageResults]
-        .filter((result): result is PromiseRejectedResult =>
-          result.status === "rejected"
+        .filter(
+          (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
         )
         .map((result) => result.reason);
       if (failures.length > 0) {
@@ -820,9 +828,8 @@ function retryDelayMs(
 }
 
 export function progressAckIntervalMs(queue: JobsQueueBinding): number {
-  const wait = queue.backoffMs.length > 0
-    ? Math.min(...queue.backoffMs)
-    : queue.ackWaitMs;
+  const wait =
+    queue.backoffMs.length > 0 ? Math.min(...queue.backoffMs) : queue.ackWaitMs;
   if (!Number.isInteger(wait) || wait < 1) {
     throw new Error(
       `Worker queue '${queue.queueType}' has invalid acknowledgement wait ${wait}ms; expected a positive whole millisecond`,
@@ -859,16 +866,18 @@ export async function getConsumerInfo<T>(
 }
 
 function isStreamNotFoundError(error: unknown): boolean {
-  return error instanceof Error && (
-    error.name === "StreamNotFoundError" ||
-    error.message.includes("stream not found")
+  return (
+    error instanceof Error &&
+    (error.name === "StreamNotFoundError" ||
+      error.message.includes("stream not found"))
   );
 }
 
 function isConsumerNotFoundError(error: unknown): boolean {
-  return error instanceof Error && (
-    error.name === "ConsumerNotFoundError" ||
-    error.message.includes("consumer not found")
+  return (
+    error instanceof Error &&
+    (error.name === "ConsumerNotFoundError" ||
+      error.message.includes("consumer not found"))
   );
 }
 
@@ -893,54 +902,65 @@ export async function getLatestLifecycleEvent(
   stream: string,
   publishPrefix: string,
   job: Job,
+  history?: () => Promise<Array<{ data: Uint8Array; seq: number }>>,
 ): Promise<ResolvedLifecycleEvent | undefined> {
   try {
-    const last = await direct.getMessage(stream, {
-      last_by_subj: `${publishPrefix}.${job.id}.*`,
-    });
-    if (!last) return undefined;
-    // Observation volume must not add recovery reads. Each transition subject
-    // has an independent cursor, then the accepted-state fold uses broker order.
-    const histories = await Promise.all([
-      "created",
-      "retried",
-      "started",
-      "retry",
-      "completed",
-      "failed",
-      "cancelled",
-      "expired",
-      "skipped",
-      "stale",
-      "dead",
-      "dismissed",
-    ].map(async (eventType) => {
-      const messages: Array<{ data: Uint8Array; seq: number }> = [];
-      let seq = 1;
-      while (seq <= last.seq) {
-        let msg;
-        try {
-          msg = await direct.getMessage(stream, {
-            next_by_subj: `${publishPrefix}.${job.id}.${eventType}`,
-            seq,
-          });
-        } catch (error) {
-          if (isMessageNotFoundError(error)) break;
-          throw error;
-        }
-        if (!msg || msg.seq > last.seq) break;
-        seq = msg.seq + 1;
-        messages.push(msg);
-      }
-      return messages;
-    }));
+    let histories: Array<Array<{ data: Uint8Array; seq: number }>>;
+    if (history) {
+      histories = [await history()];
+    } else {
+      const last = await direct.getMessage(stream, {
+        last_by_subj: `${publishPrefix}.${job.id}.*`,
+      });
+      if (!last) return undefined;
+      // Observation volume must not add recovery reads. Each transition subject
+      // has an independent cursor, then the accepted-state fold uses broker order.
+      histories = await Promise.all(
+        [
+          "created",
+          "retried",
+          "started",
+          "retry",
+          "completed",
+          "failed",
+          "cancelled",
+          "expired",
+          "skipped",
+          "stale",
+          "dead",
+          "dismissed",
+        ].map(async (eventType) => {
+          const messages: Array<{ data: Uint8Array; seq: number }> = [];
+          let seq = 1;
+          while (seq <= last.seq) {
+            let msg;
+            try {
+              msg = await direct.getMessage(stream, {
+                next_by_subj: `${publishPrefix}.${job.id}.${eventType}`,
+                seq,
+              });
+            } catch (error) {
+              if (isMessageNotFoundError(error)) break;
+              throw error;
+            }
+            if (!msg || msg.seq > last.seq) break;
+            seq = msg.seq + 1;
+            messages.push(msg);
+          }
+          return messages;
+        }),
+      );
+    }
     let current: ResolvedLifecycleEvent | undefined;
     for (const msg of histories.flat().sort((a, b) => a.seq - b.seq)) {
       const event = parseWorkPayloadEvent(msg.data);
       if (
-        !event || event.jobId !== job.id || event.service !== job.service ||
+        !event ||
+        event.jobId !== job.id ||
+        event.service !== job.service ||
         event.jobType !== job.type
-      ) continue;
+      )
+        continue;
       if (!current) {
         if (event.eventType === "created") {
           current = { ...event, runSequence: msg.seq, runEventType: "created" };
@@ -957,9 +977,10 @@ export async function getLatestLifecycleEvent(
         cancelled: ["pending", "retry", "active"],
         expired: ["pending", "retry", "active"],
         skipped: ["pending", "retry"],
-        stale: current.tries === 0 && event.tries === 0
-          ? ["pending", "active"]
-          : ["active"],
+        stale:
+          current.tries === 0 && event.tries === 0
+            ? ["pending", "active"]
+            : ["active"],
         dead: ["active", "retry", "failed", "expired"],
         dismissed: ["dead"],
         retried: ["failed", "dead"],
@@ -967,15 +988,14 @@ export async function getLatestLifecycleEvent(
       if (
         !allowed[event.eventType]?.includes(current.state) ||
         event.previousState !== current.state
-      ) continue;
+      )
+        continue;
       current = {
         ...event,
-        runSequence: event.eventType === "retried"
-          ? msg.seq
-          : current.runSequence,
-        runEventType: event.eventType === "retried"
-          ? "retried"
-          : current.runEventType,
+        runSequence:
+          event.eventType === "retried" ? msg.seq : current.runSequence,
+        runEventType:
+          event.eventType === "retried" ? "retried" : current.runEventType,
       };
     }
     return current;
@@ -991,10 +1011,11 @@ export async function getLatestLifecycleEvent(
 }
 
 function isMessageNotFoundError(error: unknown): boolean {
-  return error instanceof Error && (
-    error.name === "MessageNotFoundError" ||
-    error.message.includes("message not found") ||
-    error.message.includes("no message found")
+  return (
+    error instanceof Error &&
+    (error.name === "MessageNotFoundError" ||
+      error.message.includes("message not found") ||
+      error.message.includes("no message found"))
   );
 }
 

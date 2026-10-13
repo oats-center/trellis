@@ -1,5 +1,28 @@
 # Trellis
 
+Service Jobs reconstruct retained lifecycle history through the deployment-scoped
+runtime `Jobs.History` route automatically. Use generated service job handles;
+ordinary service identities cannot read the shared JOBS stream directly.
+Detaching resources retains data. Explicit administrative deletion removes only
+the selected detached allocation; shared streams and other queues remain intact.
+
+Operator CLI: `trellis clients list|get|put|disable|delete` manages public OAuth
+registrations, including exact loopback browser redirects.
+Auth client flows are fixed on every Put: browser callbacks enable Authorization
+Code + refresh; native without callbacks enables Device Code + refresh; native
+with callbacks enables both + refresh. Adding/removing native callbacks updates
+the supported flows. Kind is immutable; use a new client ID to switch kind.
+Native HTTP loopback callbacks need no development flag; browser loopback does.
+`put` reads generated AuthOAuthClientPutRequest JSON; mutations are revision-fenced. `trellis apis
+list|get|review|accept|force-replace` uses generated Auth request JSON and reviewed
+package evidence. Force replacement requires apis.forceReplace and explicit
+breakage/consent acknowledgements. Console exposes OAuth clients and API catalog.
+
+Durable event consumers verify original broker publication time. DLQ/replay retains
+that provenance in the existing journal and resolves original bytes and timestamp
+through authenticated, resource-scoped Events inspection, including after source
+expiry. Publisher headers and replay publication time never replace it.
+
 Cold OAuth resume verifies signed issuer successors from the retained pin using
 GET /.well-known/trellis/issuer-chain at the selected OAuth origin and persists
 successor trust before spending a refresh token. Unavailable or invalid chains
@@ -46,6 +69,15 @@ participant's typed API. Connected calls run over NATS; the libraries own
 bootstrap, proofs, authorization, and connection lifecycle.
 
 ## Scope
+
+App State uses native-IDL projected registration with explicit CAS. Rust generated
+accessors are async and return `(handle, registration)`; TypeScript handles register
+before use and expose `register(expectedRevision, idempotencyKey)`. Start at "0";
+identical registration returns its revision, changes require explicit current
+revision, and conflicts never trigger blind retry. Typed `watch()` uses certified
+Live initial/update snapshots and in-memory migrations. Unwritten/deleted snapshots
+are None/undefined. Close observations; transport/authorization loss does not silently
+reopen them. See the language guides for ownership and terminal-outcome APIs.
 
 Own-context bootstrap signs the exact physical socket's broker `attachmentId`
 and verifies its echoed signed registry ID; overlapping sockets never select
@@ -285,9 +317,20 @@ connection, not transport reconnection. Cleanup retains the generation lease.
 Whole-buffer helpers retain the entire object; bounded source buffering is not a
 whole-process memory guarantee. Native ObjectStore links are unsupported.
 Services/devices bootstrap with identity and proof inputs only, while browsers
-bind a user login and then refresh. A device companion is established only by
-activation-owned separate consent and cannot bootstrap as a standalone
-participant. Authorization contexts, route JWTs, transports, grants, and issuer
+bind a user login and then refresh. Device enrollment consumes a one-use
+administrator-issued secret with durable and ephemeral possession proofs;
+Devices.Reviews.Get/Decide require its confirmation code and current revision.
+A declared native companion uses ordinary explicit OAuth consent through its
+current accepted declaration; removing it rejects new/pending consent without
+revoking existing independently consented grants. Association removal by its
+user or a currently delegated principals.manage administrator revokes only the
+associated grant and families. The dedicated OAuth client is the
+deployment-scoped client trellis.device.<deploymentId>.companion. Registration
+grants no user authority. Its verified user caller associates the grant through
+DeviceCompanions.Attach; parent credentials cannot substitute. Removing the
+association revokes that exact grant/families, not other grants or the user login.
+Parent and child maintain separate connections and revocation. Authorization
+contexts, route JWTs, transports, grants, and issuer
 keys remain process-memory-only. Requests/events carry context digest, matching
 redundant `session-key`, and a message-specific proof.
 
@@ -305,8 +348,9 @@ without automatically sending the user through another login.
 
 Events use API-qualified subjects and base64url parameter tokens; their signed
 descriptor binds the exact API, dotted event name, and parameter count. Durable
-delivery acknowledges success only after the handler succeeds; final exhaustion
-is durably recorded in the per-Consumer DLQ before acknowledgement. Manual
+delivery acknowledges success only after the handler succeeds; exhausted deliveries
+are not acknowledged. Events captures broker max-deliveries advisories into the
+per-Consumer DLQ. Consumer ownership does not grant Replay/Dismiss authority. Manual
 replay uses the same handler and a fresh delivery budget without rewinding the
 original Consumer, and successful replay is durably resolved before
 acknowledgement. Live observations and Operation watchers are authorized live

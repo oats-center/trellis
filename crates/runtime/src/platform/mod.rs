@@ -12,6 +12,7 @@ pub mod bootstrap;
 mod builtin_live_provider;
 mod console;
 mod live_provider;
+mod state;
 
 pub(crate) use builtin_live_provider::{
     connect_builtin_live_provider, prepare_builtin_live_provider, read_builtin_live_provider,

@@ -15,6 +15,9 @@ pub struct BootstrapBinding {
 #[serde(rename_all = "camelCase")]
 #[doc = concat!("Public Trellis data type `", stringify!(ServiceResourceBindings), "`.")]
 pub struct ServiceResourceBindings {
+    /// Logical State resource identities keyed by contract-local name; never broker access grants.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub state: BTreeMap<String, String>,
     /// KV/state resources keyed by contract-local resource name.
     #[doc = concat!("The `", stringify!(kv), "` value.")]
     pub kv: BTreeMap<String, KvResourceBinding>,

@@ -1017,12 +1017,40 @@ fn render_app_request(
     request: &AppRequestDefinition,
     modules: &BTreeMap<String, String>,
 ) -> Result<String, CodegenTsError> {
+    let mut uses = request.uses().clone();
+    if !request.states().is_empty() {
+        let (id, api) = graph
+            .packages()
+            .values()
+            .flat_map(|package| package.apis())
+            .find(|(id, _)| id.as_str() == "trellis.state@v1")
+            .ok_or_else(|| {
+                CodegenTsError::Idl("app State requires the trellis.state@v1 dependency".into())
+            })?;
+        let selection =
+            uses.entry(id.clone())
+                .or_insert_with(|| trellis_idl::InteractionSelection {
+                    api: id.clone(),
+                    actions: BTreeSet::new(),
+                    required_capabilities: BTreeSet::new(),
+                    optional_capabilities: BTreeSet::new(),
+                });
+        for (id, capability) in api.capabilities() {
+            if ["read", "write", "delete"]
+                .contains(&id.as_str().rsplit("::").next().unwrap_or_default())
+            {
+                selection.required_capabilities.insert(id.clone());
+                selection.optional_capabilities.remove(id);
+                selection.actions.extend(capability.allows.iter().cloned());
+            }
+        }
+    }
     let mut lines = vec![
         "import type { AppRequestDescriptor } from \"@oatscenter/trellis/generated\";".to_owned(),
     ];
     let api_modules = api_modules(graph);
     let mut aliases = BTreeMap::new();
-    for (index, id) in request.uses().keys().enumerate() {
+    for (index, id) in uses.keys().enumerate() {
         let alias = format!("Api{index}");
         lines.push(format!(
             "import * as {alias} from \"../../apis/{}/mod.ts\";",
@@ -1040,13 +1068,11 @@ fn render_app_request(
         AppKind::Browser => "browser",
         AppKind::Native => "native",
     };
-    let required = request
-        .uses()
+    let required = uses
         .values()
         .flat_map(|selection| &selection.required_capabilities)
         .collect::<BTreeSet<_>>();
-    let optional = request
-        .uses()
+    let optional = uses
         .values()
         .flat_map(|selection| &selection.optional_capabilities)
         .collect::<BTreeSet<_>>();
@@ -1063,7 +1089,7 @@ fn render_app_request(
     let mut use_types = Vec::new();
     let mut use_values = Vec::new();
     let mut name_counts = BTreeMap::new();
-    for id in request.uses().keys() {
+    for id in uses.keys() {
         for action in find_api(graph, id)?.actions().keys() {
             *name_counts
                 .entry(action.name.to_ascii_lowercase())
@@ -1072,7 +1098,7 @@ fn render_app_request(
     }
     let mut name_types = Vec::new();
     let mut name_values = Vec::new();
-    for (id, selection) in request.uses() {
+    for (id, selection) in &uses {
         let api = find_api(graph, id)?;
         let mut action_types = Vec::new();
         let mut action_values = Vec::new();
@@ -1126,17 +1152,39 @@ fn render_app_request(
     lines.push(format!("export const request: AppRequestDescriptor & {{ readonly id: {}; readonly kind: {}; readonly requiredCapabilities: readonly [{required}]; readonly optionalCapabilities: readonly [{optional}]; readonly uses: readonly [{}]; readonly actionNames: {{ {} }}; readonly states: {{", js_string(request.identity().as_str()), js_string(kind), use_types.join(", "), name_types.join(" ")));
     for (name, state) in request.states() {
         lines.push(format!(
-            "readonly {}: {};",
+            "readonly {}: {} & {{ readonly registration: {{ readonly representation: {{ readonly version: number; readonly schema: Uint8Array }}; readonly accepts: readonly {{ readonly version: number; readonly schema: Uint8Array }}[] }} }};",
             property_name(name.as_str()),
             render_resource_type(state, modules)
         ));
     }
     lines.push(format!("}} }} = {{ id: {}, kind: {}, requiredCapabilities: [{required}], optionalCapabilities: [{optional}], uses: [{}], actionNames: {{ {} }}, states: {{", js_string(request.identity().as_str()), js_string(kind), use_values.join(", "), name_values.join(", ")));
     for (name, state) in request.states() {
+        let ResourceDefinition::State {
+            schema,
+            version,
+            accepts,
+            ..
+        } = state
+        else {
+            continue;
+        };
+        let representations = std::iter::once((*version, schema))
+            .chain(accepts.iter().map(|old| (old.version, &old.ty)))
+            .map(|(version, ty)| {
+                let schema = trellis_idl::json_schema(graph, ty)
+                    .map_err(|error| CodegenTsError::Idl(error.to_string()))?;
+                Ok(format!(
+                    "{{ version: {version}, schema: new TextEncoder().encode({}) }}",
+                    js_string(&schema.to_string())
+                ))
+            })
+            .collect::<Result<Vec<_>, CodegenTsError>>()?;
         lines.push(format!(
-            "{}: {},",
+            "{}: {{ ...{}, registration: {{ representation: {}, accepts: [{}] }} }},",
             property_name(name.as_str()),
-            render_resource(state, modules)
+            render_resource(state, modules),
+            representations[0],
+            representations[1..].join(", ")
         ));
     }
     lines.push("} };\nexport type Request = typeof request;\nexport default request;\n".into());
@@ -1172,6 +1220,45 @@ fn render_participant(
     participant: &ParticipantDefinition,
     modules: &BTreeMap<String, String>,
 ) -> Result<String, CodegenTsError> {
+    let mut uses = participant.uses().clone();
+    if participant.kind() == ParticipantKind::Device
+        && participant
+            .resources()
+            .values()
+            .any(|resource| matches!(resource, ResourceDefinition::State { .. }))
+    {
+        let (id, api) = graph
+            .packages()
+            .values()
+            .flat_map(|package| package.apis())
+            .find(|(id, _)| id.as_str() == "trellis.state@v1")
+            .ok_or_else(|| {
+                CodegenTsError::Idl("device State requires the trellis.state@v1 dependency".into())
+            })?;
+        let selection =
+            uses.entry(id.clone())
+                .or_insert_with(|| trellis_idl::InteractionSelection {
+                    api: id.clone(),
+                    actions: BTreeSet::new(),
+                    required_capabilities: BTreeSet::new(),
+                    optional_capabilities: BTreeSet::new(),
+                });
+        for (id, capability) in api.capabilities() {
+            if ["read", "write", "delete"]
+                .contains(&id.as_str().rsplit("::").next().unwrap_or_default())
+            {
+                selection.required_capabilities.insert(id.clone());
+                selection.optional_capabilities.remove(id);
+                selection.actions.extend(
+                    capability
+                        .allows
+                        .iter()
+                        .filter(|action| action.action.name != "Register")
+                        .cloned(),
+                );
+            }
+        }
+    }
     let path = participant
         .identity()
         .as_str()
@@ -1187,7 +1274,7 @@ fn render_participant(
     let referenced = participant
         .implements()
         .iter()
-        .chain(participant.uses().keys())
+        .chain(uses.keys())
         .collect::<BTreeSet<_>>();
     let mut aliases = BTreeMap::new();
     let api_modules = api_modules(graph);
@@ -1283,7 +1370,7 @@ fn render_participant(
     ));
     let needs = graph.participant_needs(participant.identity());
     lines.push("  readonly uses: readonly [".into());
-    for (api, selection) in participant.uses() {
+    for (api, selection) in &uses {
         lines.push(format!(
             "    {{ readonly api: typeof {}.API; readonly actions: readonly [",
             aliases[api.as_str()]
@@ -1384,7 +1471,7 @@ fn render_participant(
     ));
     let needs = graph.participant_needs(participant.identity());
     lines.push("  uses: [".into());
-    for (api, selection) in participant.uses() {
+    for (api, selection) in &uses {
         lines.push(format!(
             "    {{ api: {}.API, actions: [",
             aliases[api.as_str()]
@@ -2211,6 +2298,14 @@ mod tests {
     use trellis_idl::SourceUnit;
 
     fn graph(source: &str) -> PackageGraph {
+        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
+        let manifest = trellis_idl::project::read_manifest(&runtime.join("trellis.toml")).unwrap();
+        let dependency = trellis_idl::compile_project(
+            &manifest,
+            trellis_idl::project::load_sources(&runtime, &manifest).unwrap(),
+            BTreeMap::new(),
+        )
+        .unwrap();
         trellis_idl::compile_project(
             &PackageManifest {
                 package: PackageMetadata {
@@ -2218,7 +2313,15 @@ mod tests {
                     version: "2.3.4".parse().unwrap(),
                 },
                 sources: BTreeMap::from([("main".into(), "contract.trellis".into())]),
-                dependencies: BTreeMap::new(),
+                dependencies: BTreeMap::from([(
+                    "trellis".into(),
+                    trellis_idl::project::Dependency {
+                        package: "trellis".into(),
+                        version: None,
+                        path: Some("../runtime".into()),
+                        registry: None,
+                    },
+                )]),
                 generate: GenerateConfig::default(),
                 default_registry: None,
                 registries: BTreeMap::new(),
@@ -2228,7 +2331,7 @@ mod tests {
                 path: "contract.trellis".into(),
                 source: source.into(),
             }],
-            BTreeMap::new(),
+            BTreeMap::from([("trellis".into(), dependency)]),
         )
         .unwrap()
     }
@@ -2285,6 +2388,7 @@ mod tests {
 import { apps } from "./index.js";
 import { codecs } from "@oatscenter/trellis/generated";
 import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
+import type { ConnectedTrellisClient } from "@oatscenter/trellis";
 
 const requested: AppRequestDescriptor = apps.Viewer.request;
 const codec = apps.Sensor_Console.request.states.values.codec;
@@ -2299,6 +2403,20 @@ if (decoded.count !== 18446744073709551615n || decoded.data[2] !== 255 || decode
   throw new Error("Generated app-local State codec corrupted the value");
 }
 export { requested, decoded };
+export async function useState(client: ConnectedTrellisClient<typeof apps.Sensor_Console.request>) {
+  const state = client.state.values;
+  const registration = (await state.register("0")).orThrow();
+  const observation = (await state.watch()).orThrow();
+  for await (const snapshot of observation) {
+    if (snapshot) (await state.replace(snapshot.revision, snapshot.value)).orThrow();
+    break;
+  }
+  (await observation.close()).orThrow();
+  await observation.closed;
+  const current = (await state.get()).orThrow();
+  if (current) (await state.replace(current.revision, current.value)).orThrow();
+  return registration.revision;
+}
 "#).unwrap();
 
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");

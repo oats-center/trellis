@@ -135,6 +135,14 @@ pub(crate) fn caller_headers(
     headers.insert("proof", proof.as_str());
     headers.insert("request-id", request.request_id.as_str());
     headers.insert("iat", request.issued_at.to_string().as_str());
+    headers.insert(
+        "Trellis-Api-Generation",
+        request.api_generation.get().to_string().as_str(),
+    );
+    headers.insert(
+        "Trellis-Accepted-Revision",
+        request.accepted_revision.get().to_string().as_str(),
+    );
     for (name, values) in frame_headers(descriptor)?.iter() {
         for value in values {
             headers.append(name.clone(), value.clone());

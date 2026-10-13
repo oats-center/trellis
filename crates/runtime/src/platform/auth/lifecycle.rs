@@ -353,6 +353,7 @@ impl SqliteAuthorizationStore {
     ) -> Result<String, AuthError> {
         self.mutate(identity,"oauth.approve",approval,now,|connection| {
             if identity.actor!=approval.principal_id || approval.expires_at<=now || approval.remember_until.is_some_and(|expiry|expiry<=now) {return Err(AuthError::Denied);}
+            super::oauth::enrollment::validate_selection(connection,&approval.client_id,&approval.selection.required,&approval.selection.optional)?;
             let login_expiry:Option<i64>=connection.query_row("SELECT l.expires_at FROM auth_login_sessions l JOIN auth_principals p USING(principal_id) WHERE l.login_session_id=?1 AND l.principal_id=?2 AND l.revoked_at IS NULL AND l.expires_at>?3 AND p.state='active'",params![approval.login_session_id,approval.principal_id,now],|row|row.get(0)).optional()?;
             let login_expiry=login_expiry.ok_or(AuthError::Denied)?;
             if let Some(presentation) = &approval.presentation {

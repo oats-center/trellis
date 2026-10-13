@@ -56,6 +56,25 @@ and Store remains raw object bytes. Optional resources are `undefined`; an
 available but unwritten State resource returns no value. State/KV representation
 migrations happen in SDK memory and do not rewrite stored bytes.
 
+App State declarations generate schema registration and explicit requests for
+State read, write, and delete capabilities. Retain `const state =
+client.state.savedResource`. The first operation registers its native-IDL
+projected schemas at expected revision `"0"`. You can instead call
+`(await state.register("0")).orThrow()` explicitly to retain the registration
+revision. Identical registration returns the current revision. To change a
+representation, explicitly pass the current registration revision to
+`state.register(revision, idempotencyKey)` and handle `RegistrationConflict`.
+Conflicts are not retried; existing representation versions cannot change schema.
+Registration revisions and value revisions are separate CAS tokens.
+
+`const observation = (await state.watch()).orThrow()` opens certified Live State
+observation. Iterate `for await (const snapshot of observation)` for the initial
+snapshot and later updates; `undefined` means unwritten or deleted. Values use
+the same in-memory migrations as reads and CAS conflicts. Leaving iteration or
+calling `observation.close()` releases the observation; `observation.closed`
+resolves to its Live terminal outcome. Watch does not silently reopen after
+transport or authorization loss.
+
 Generated service participants expose declared jobs through `service.jobs`.
 Keyed capacity waits happen before handler execution and do not consume retry
 attempts; retryable handler errors do. See

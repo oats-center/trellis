@@ -926,3 +926,278 @@ async fn cli_server_managed_nats() {
     );
     // Drop stops the test-owned server and removes its pid file.
 }
+
+#[test]
+fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
+    let workdir = WorkdirGuard::new();
+    let bundle = workdir.0.join("reserved-origin");
+    let initialized = cli_command()
+        .args(["init", "config", "--out"])
+        .arg(&bundle)
+        .output()
+        .expect("initialize ordinary server bundle");
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let path = bundle.join("config.toml");
+    let original = fs::read_to_string(&path).unwrap();
+    // Equal public origins are observable even when listener ports differ,
+    // including an application allowlist entry behind a reverse proxy.
+    for configured in [
+        original.replace(
+            "public_origin = \"http://localhost:3000\"",
+            "public_origin = \"http://localhost:3001\"",
+        ),
+        original.replace(
+            "origins = [\"http://localhost:3000\"]",
+            "origins = [\"http://localhost:3000\", \"http://localhost:3001\"]",
+        ),
+    ] {
+        fs::write(&path, configured).unwrap();
+        let output = server_command(&workdir.0)
+            .args(["all", "--config"])
+            .arg(&path)
+            .output()
+            .expect("run ordinary production startup");
+        assert!(
+            !output.status.success(),
+            "reserved OAuth origin started successfully"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("differ from every configured application origin"),
+            "startup did not report the reserved-origin error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn server_starts_with_https_oauth_and_external_tls_nats() {
+    let workdir = WorkdirGuard::new();
+    let bundle = workdir.0.join("tls");
+    let ports = [(); 5].map(|_| TcpListener::bind(("127.0.0.1", 0)).unwrap());
+    let [http, nats, monitor, websocket, oauth] = ports
+        .each_ref()
+        .map(|port| port.local_addr().unwrap().port());
+    drop(ports);
+    let initialized = cli_command()
+        .args(["init", "config", "--out"])
+        .arg(&bundle)
+        .args([
+            "--trellis-port",
+            &http.to_string(),
+            "--nats-port",
+            &nats.to_string(),
+            "--nats-monitor-port",
+            &monitor.to_string(),
+            "--nats-ws-port",
+            &websocket.to_string(),
+            "--nats-server-url",
+            &format!("tls://127.0.0.1:{nats}"),
+            "--nats-websocket-url",
+            &format!("wss://127.0.0.1:{websocket}"),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let certificate = bundle.join("certificate.pem");
+    let key = bundle.join("private-key.pem");
+    let generated = Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:P-256",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=Trellis TLS acceptance",
+            "-addext",
+            "basicConstraints=critical,CA:FALSE",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1,IP:127.0.0.2",
+            "-keyout",
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&certificate)
+        .output()
+        .unwrap();
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let tls = format!(
+        "tls {{ cert_file: {:?}; key_file: {:?} }}",
+        certificate.display().to_string(),
+        key.display().to_string()
+    );
+    let nats_config = bundle.join("nats/nats.conf");
+    fs::write(
+        &nats_config,
+        format!(
+            "{}\n{tls}\n",
+            fs::read_to_string(&nats_config)
+                .unwrap()
+                .replace("no_tls: true", &tls)
+                .replace(
+                    "store_dir: /data",
+                    &format!("store_dir: {}", bundle.join("jetstream").display())
+                )
+        ),
+    )
+    .unwrap();
+    let jwt = bundle.join("nats/jwt.conf");
+    fs::write(
+        &jwt,
+        fs::read_to_string(&jwt)
+            .unwrap()
+            .replace("/data/jwt", &bundle.join("jwt").display().to_string()),
+    )
+    .unwrap();
+    let config = bundle.join("config.toml");
+    let origin = format!("https://127.0.0.2:{oauth}");
+    let mut configured = fs::read_to_string(&config)
+        .unwrap()
+        .replace("http://localhost:3001", &origin)
+        .replace("port = 3001", &format!("port = {oauth}"))
+        .replace(
+            "bind_address = \"127.0.0.1\"",
+            "bind_address = \"127.0.0.2\"",
+        )
+        .replace(
+            "mode = \"loopback_development\"",
+            &format!(
+                "mode = \"tls\"\ncertificate_chain = {:?}\nprivate_key = {:?}",
+                certificate.display().to_string(),
+                key.display().to_string()
+            ),
+        );
+    configured.push_str("\n[paths]\n");
+    for name in ["data", "state", "cache", "runtime", "logs"] {
+        configured.push_str(&format!(
+            "{name} = {:?}\n",
+            bundle.join(name).display().to_string()
+        ));
+    }
+    fs::write(&config, configured).unwrap();
+    let bootstrap = server_command(&workdir.0)
+        .args(["bootstrap-admin", "--config"])
+        .arg(&config)
+        .args([
+            "--username",
+            "tls-admin",
+            "--password",
+            "tls-fixture-password",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        bootstrap.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
+    let broker_log = bundle.join("nats.log");
+    let binary = std::env::var_os("TRELLIS_TEST_NATS_BIN").unwrap_or_else(|| "nats-server".into());
+    let mut broker = ChildGuard::spawn(
+        Command::new(binary)
+            .arg("-c")
+            .arg(&nats_config)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(fs::File::create(&broker_log).unwrap())),
+        "TLS NATS",
+    );
+    wait_until(
+        || port_accepts(nats),
+        &mut broker,
+        &broker_log,
+        "TLS NATS listener",
+    )
+    .await;
+    let server_log = bundle.join("server.log");
+    let mut server = ChildGuard::spawn(
+        server_command(&workdir.0)
+            .args(["all", "--config"])
+            .arg(&config)
+            .env("SSL_CERT_FILE", &certificate)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(fs::File::create(&server_log).unwrap())),
+        "TLS Trellis server",
+    );
+    wait_until(
+        || port_accepts(http),
+        &mut server,
+        &server_log,
+        "runtime connected to TLS NATS",
+    )
+    .await;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .add_root_certificate(
+            reqwest::Certificate::from_pem(&fs::read(&certificate).unwrap()).unwrap(),
+        )
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let metadata: Value = client
+        .get(format!("{origin}/.well-known/oauth-authorization-server"))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(metadata["issuer"], origin);
+    assert!(
+        client
+            .get(format!(
+                "http://127.0.0.2:{oauth}/.well-known/oauth-authorization-server"
+            ))
+            .send()
+            .await
+            .is_err(),
+        "OAuth TLS must not accept plaintext"
+    );
+    let untrusted = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    assert!(
+        untrusted
+            .get(format!("{origin}/.well-known/oauth-authorization-server"))
+            .send()
+            .await
+            .is_err(),
+        "the private fixture CA must not be trusted without configuration"
+    );
+    // A real WSS upgrade reaches the broker through a verified TLS connection.
+    let upgraded = client
+        .get(format!("https://127.0.0.1:{websocket}/"))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upgraded.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
+    server.signal_term();
+    assert!(server.wait_for_exit(SHUTDOWN_TIMEOUT).unwrap().success());
+    broker.signal_term();
+    assert!(broker.wait_for_exit(SHUTDOWN_TIMEOUT).unwrap().success());
+}

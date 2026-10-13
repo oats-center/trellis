@@ -9,6 +9,7 @@
     "./auth": "./auth.ts",
     "./auth/browser": "./auth/browser.ts",
     "./device": "./device.ts",
+    "./native": "./native.ts",
     "./service": "./service/mod.ts",
     "./telemetry": "./telemetry.ts",
     "./telemetry/browser": "./telemetry/browser.ts",
@@ -34,12 +35,7 @@
     "dev": "deno run --watch main.ts"
   },
   "compilerOptions": {
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "dom.asynciterable",
-      "deno.ns"
-    ],
+    "lib": ["dom", "dom.iterable", "dom.asynciterable", "deno.ns"],
     "verbatimModuleSyntax": true
   }
 }

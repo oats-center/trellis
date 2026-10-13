@@ -18,6 +18,190 @@ use oauth_as::{
 use sha2::{Digest as _, Sha256};
 
 #[tokio::test]
+async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes() {
+    let mut f = fixture();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let grant = PolicyMutation::CapabilityGrant {
+        principal_id: f.admin.clone(),
+        capability_id: f.read.clone(),
+        expected_revision: 0,
+        expires_at: None,
+    };
+    f.store
+        .apply_policy(&mutation(&f.admin, &grant), &grant, now)
+        .unwrap();
+    let guest = f.store.create_portal_session(now).unwrap();
+    let login = f
+        .store
+        .portal_local_login(
+            &guest.cookie,
+            &guest.csrf,
+            &URL_SAFE_NO_PAD.encode([87; 32]),
+            "admin",
+            "a strong bootstrap password",
+            &id(),
+            now,
+        )
+        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    f.store.settings.oauth_origin = origin.clone();
+    let authority = Arc::new(f.store);
+    let engine = Arc::new(
+        OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
+    );
+    let router = super::super::oauth::router(engine.clone(), vec!["nats://127.0.0.1:4222".into()]);
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let host = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let http = reqwest::Client::new();
+    let callback = "http://127.0.0.1:9123/callback";
+    let verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    let details = serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}]).to_string();
+    let mut revision = 0;
+    for (kind, callbacks) in [("native", false), ("native", true), ("browser", true)] {
+        let mut input: trellis_runtime_apis::__types::trellis::AuthOAuthClientPutRequest = serde_json::from_value(serde_json::json!({"clientId":"managed-client","kind":kind,"title":"Managed client","description":"Flow transition","redirectUris":if callbacks {vec![callback]}else{vec![]},"development":true,"impliedConsent":[],"expectedRevision":revision.to_string(),"idempotencyKey":id()})).unwrap();
+        if kind == "browser" {
+            assert!(matches!(
+                super::super::rpc_credentials::put_client(
+                    &authority,
+                    &mutation(&f.admin, &input),
+                    &input,
+                    now
+                ),
+                Err(AuthError::Invalid(_))
+            ));
+            // Kind fixes credential binding semantics; use a separate browser
+            // registration rather than reinterpreting outstanding native grants.
+            input.client_id = "managed-browser".to_owned().into();
+            input.expected_revision = 0.into();
+        }
+        let updated = super::super::rpc_credentials::put_client(
+            &authority,
+            &mutation(&f.admin, &input),
+            &input,
+            now,
+        )
+        .unwrap();
+        revision = updated.client.revision.0 .0;
+        let key = EcdsaP256Key::generate("managed-client");
+        let ephemeral = nkeys::KeyPair::new_user();
+        let runtime = URL_SAFE_NO_PAD.encode([88; 16]);
+        let device_uri = format!("{origin}/device_authorization");
+        let device = http
+            .post(&device_uri)
+            .header("DPoP", dpop(&key, &runtime, &ephemeral, &device_uri).await)
+            .form(&[
+                ("client_id", input.client_id.as_ref()),
+                ("authorization_details", details.as_str()),
+                ("trellis_runtime_id", runtime.as_str()),
+                ("trellis_session_nkey", ephemeral.public_key().as_str()),
+            ])
+            .send()
+            .await
+            .unwrap();
+        if kind == "native" {
+            assert_eq!(device.status(), reqwest::StatusCode::OK);
+            let device: oauth_as::device::DeviceAuthorizationResponse =
+                device.json().await.unwrap();
+            assert!(!device.device_code.is_empty());
+        } else {
+            assert_eq!(
+                device.json::<serde_json::Value>().await.unwrap()["error"],
+                "unauthorized_client"
+            );
+        }
+        if !callbacks {
+            continue;
+        }
+        let mut approval = grant_request(&f.admin, &login.login_session_id, &f.read, &f.write, now);
+        approval.client_id = input.client_id.to_string();
+        approval.public_jwk = serde_json::to_value(key.public_jwk()).unwrap();
+        approval.durable_dpop_jkt = key.public_jwk().thumbprint();
+        approval.binding_kind = kind.into();
+        approval.binding_value = if kind == "browser" {
+            "http://127.0.0.1:9123".into()
+        } else {
+            approval.durable_dpop_jkt.clone()
+        };
+        approval.approved = vec![f.read.clone()];
+        approval.declined = vec![f.write.clone()];
+        let request = AuthorizationRequest::from_pairs(vec![
+            ("response_type", "code".into()),
+            ("client_id", input.client_id.to_string()),
+            ("redirect_uri", callback.into()),
+            (
+                "code_challenge",
+                URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+            ),
+            ("code_challenge_method", "S256".into()),
+            ("dpop_jkt", approval.durable_dpop_jkt.clone()),
+            ("authorization_details", details.clone()),
+        ]);
+        let code = engine
+            .approve(&request, &mutation(&f.admin, &approval), &approval)
+            .await
+            .unwrap();
+        let token_uri = format!("{origin}/token");
+        let redemption = [
+            ("grant_type", "authorization_code".to_owned()),
+            ("client_id", input.client_id.to_string()),
+            ("code", code.code.as_str().to_owned()),
+            ("redirect_uri", callback.into()),
+            ("code_verifier", verifier.into()),
+            ("trellis_runtime_id", runtime.clone()),
+            ("trellis_session_nkey", ephemeral.public_key()),
+        ];
+        let first = http
+            .post(&token_uri)
+            .header("DPoP", dpop(&key, &runtime, &ephemeral, &token_uri).await)
+            .form(&redemption)
+            .send()
+            .await
+            .unwrap();
+        let nonce = first.headers()["dpop-nonce"].to_str().unwrap().to_owned();
+        let mut redemption_request = http
+            .post(&token_uri)
+            .header(
+                "DPoP",
+                dpop_with_nonce(&key, &runtime, &ephemeral, &token_uri, Some(&nonce)).await,
+            )
+            .form(&redemption);
+        if kind == "browser" {
+            redemption_request = redemption_request.header("Origin", "http://127.0.0.1:9123");
+        }
+        let response = redemption_request.send().await.unwrap();
+        let status = response.status();
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(status, reqwest::StatusCode::OK, "{kind}: {body}");
+        let tokens: TrellisTokenResponse = serde_json::from_value(body).unwrap();
+        let issued = authority
+            .admit_oauth(
+                tokens.trellis_admission.as_bytes(),
+                &ephemeral.public_key(),
+                "_INBOX.managed",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64,
+            )
+            .unwrap();
+        assert_eq!(issued.authority.unsigned.principal_id.to_string(), f.admin);
+    }
+    stop.send(()).unwrap();
+    host.await.unwrap();
+}
+
+#[tokio::test]
 async fn cimd_client_cannot_receive_administrative_delegation_from_a_privileged_user() {
     use oauth_as::cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument};
     let f = fixture();
@@ -1685,7 +1869,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         ("dpop_jkt",key.public_jwk().thumbprint()),("trellis_dpop_jwk",serde_json::to_string(&key.public_jwk()).unwrap()),
         ("authorization_details",serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}]).to_string()),
     ]);
-    let response = http.get(authorize).send().await.unwrap();
+    let response = http.get(authorize.as_str()).send().await.unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
     let login_url = url::Url::parse(&format!(
         "{origin}{}",
@@ -1915,6 +2099,86 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
             .collect::<Vec<_>>(),
         vec![&f.read]
     );
+    // The declined optional choice must stay declined when the account later
+    // acquires it. An explicit one-time approval must not overwrite that memory.
+    let grant_write = PolicyMutation::CapabilityGrant {
+        principal_id: f.admin.clone(),
+        capability_id: f.write.clone(),
+        expected_revision: 0,
+        expires_at: None,
+    };
+    authority
+        .apply_policy(&mutation(&f.admin, &grant_write), &grant_write, now)
+        .unwrap();
+    for approve_once in [true, false] {
+        let response = http
+            .get(authorize.as_str())
+            .header(
+                "Cookie",
+                format!("{cookie}; __Host-trellis-portal-csrf={csrf}"),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);
+        let consent_url = url::Url::parse(&format!(
+            "{origin}{}",
+            response.headers()["location"].to_str().unwrap()
+        ))
+        .unwrap();
+        let transaction = consent_url
+            .query_pairs()
+            .find(|(key, _)| key == "transaction")
+            .unwrap()
+            .1
+            .into_owned();
+        let view: serde_json::Value = http
+            .get(format!("{origin}/portal/authorization/{transaction}"))
+            .header(
+                "Cookie",
+                format!("{cookie}; __Host-trellis-portal-csrf={csrf}"),
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(view["capabilities"].is_array(), "consent view: {view}");
+        let optional = view["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|capability| capability["capabilityId"] == f.write)
+            .unwrap();
+        assert_eq!(optional["available"], true);
+        assert_eq!(
+            optional["selected"], false,
+            "remembered decline survives new entitlement and approve-once"
+        );
+        if approve_once {
+            let callback = http
+                .post(format!("{origin}/portal/approve"))
+                .header("Origin", &origin)
+                .header("Cookie", &cookie)
+                .form(&[
+                    ("csrf", csrf.as_str()),
+                    ("transaction", transaction.as_str()),
+                    ("presentation", view["presentationId"].as_str().unwrap()),
+                    ("decision", "approve"),
+                    ("approved", f.read.as_str()),
+                    ("approved", f.write.as_str()),
+                    ("remember", "false"),
+                ])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(callback.status(), reqwest::StatusCode::SEE_OTHER);
+            let callback =
+                url::Url::parse(callback.headers()["location"].to_str().unwrap()).unwrap();
+            assert!(callback.query_pairs().any(|(key, _)| key == "code"));
+        }
+    }
     let logout = http
         .post(format!("{origin}/portal/logout"))
         .header("Origin", &origin)

@@ -32,7 +32,7 @@ fn participant_kind_label(kind: &trellis_protocol::PrincipalKind) -> &'static st
 
 use super::events::{EVENT_ID_HEADER, EVENT_TIME_HEADER};
 use crate::client::operations::OperationTransport;
-use crate::client::proof::{base64url_decode, new_request_id, now_iat_seconds};
+use crate::client::proof::{new_request_id, now_iat_seconds};
 use crate::client::transfer::{get_download_grant, DownloadTransferGrant};
 use crate::client::transfer::{put_upload_grant, FileInfo, UploadTransferGrant};
 use crate::client::{
@@ -81,7 +81,6 @@ pub struct DeviceConnectOptions<'a, C> {
     trust: crate::client::RuntimeAuthorizationTrust,
     participant_id: &'a str,
     identity_seed_base64url: &'a str,
-    companion_installation_seed_base64url: Option<&'a str>,
     companion: Option<UserConnectOptions<'a>>,
     timeout_ms: u64,
     name: Option<&'a str>,
@@ -105,7 +104,6 @@ impl<'a, C: crate::generated::ParticipantDescriptor> DeviceConnectOptions<'a, C>
             trust,
             participant_id: C::ID,
             identity_seed_base64url,
-            companion_installation_seed_base64url: None,
             companion: None,
             timeout_ms: crate::service::DEFAULT_TIMEOUT_MS,
             name: None,
@@ -129,12 +127,6 @@ impl<'a, C> DeviceConnectOptions<'a, C> {
     /// Attach optional display metadata without changing device identity.
     pub fn with_name(mut self, name: &'a str) -> Self {
         self.name = Some(name);
-        self
-    }
-
-    /// Attach the root-derived installation seed for the descriptor's exact companion.
-    pub fn with_companion_installation_seed(mut self, seed_base64url: &'a str) -> Self {
-        self.companion_installation_seed_base64url = Some(seed_base64url);
         self
     }
 
@@ -438,6 +430,7 @@ struct ServiceBootstrapAuthorization {
 struct CompanionBootstrapAuthorization {
     request_id: String,
     oauth_grant_id: String,
+    client_id: String,
     required: bool,
 }
 
@@ -480,58 +473,25 @@ pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDesc
         "identityPublicKey": identity_auth.session_key,
         "challengeDigest": challenge_digest,
         "confirmationCode": confirmation_code,
-        "packageEvidence": C::package_evidence(),
-        "participantPath": C::PATH,
-        "packageDigest": C::package_evidence().root_digest(),
     });
     if let Some(provisioning_secret) = provisioning_secret {
         request["provisioningSecret"] = serde_json::Value::String(provisioning_secret.to_owned());
     }
-    match (C::COMPANION, opts.companion_installation_seed_base64url) {
-        (Some(companion), Some(seed)) => {
-            let installation = SessionAuth::from_seed_base64url(seed)?;
-            let companion_kind = match companion.kind {
-                crate::generated::AppKind::Browser => "browser",
-                crate::generated::AppKind::Native => "native",
-            };
-            let claim = serde_json::json!({
-                "requestId": companion.request_id,
-                "kind": companion_kind,
-                "installationPublicKey": installation.session_key,
-            });
-            let digest = trellis_protocol::digest_json(&serde_json::json!({
-                "format": "trellis.device.user-companion.v1",
-                "origin": origin,
-                "enrollment": request,
-                "claim": claim,
-            }))
-            .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-            let digest = base64url_decode(&digest)?;
-            request["companion"] = serde_json::json!({
-                "requestId": companion.request_id,
-                "kind": companion_kind,
-                "installationPublicKey": installation.session_key,
-                "requestProof": installation.sign_bytes(&digest),
-            });
-        }
-        (Some(_), None) => {
-            return Err(TrellisClientError::Bootstrap(
-                "device companion installation seed is required".to_owned(),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(TrellisClientError::Bootstrap(
-                "device descriptor has no companion".to_owned(),
-            ));
-        }
-        (None, None) => {}
-    }
+    let mut session_request = request.clone();
+    session_request["identityKeyId"] = session_auth.key_id().into();
+    let session_input = SessionProofInput::device_enrollment(NativeBootstrapSessionProofInput {
+        origin: origin.clone(),
+        unsigned_request: session_request,
+    })
+    .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
     let input = SessionProofInput::device_enrollment(NativeBootstrapSessionProofInput {
         origin: origin.clone(),
         unsigned_request: request.clone(),
     })
     .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
     request["proof"] = serde_json::to_value(identity_auth.sign_session_proof(&input)?)?;
+    request["sessionProof"] =
+        serde_json::to_value(session_auth.sign_session_proof(&session_input)?)?;
     let response = super::http_client_builder()?
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_millis(opts.timeout_ms))
@@ -1323,36 +1283,43 @@ impl TrellisClient {
             authorization.resource_runtime,
         ));
         if let Some(companion) = authorization.companion {
-            if companion_descriptor
-                .is_none_or(|descriptor| descriptor.request_id != companion.request_id.as_str())
-            {
+            if companion_descriptor.is_none_or(|descriptor| {
+                descriptor.request_id != companion.request_id.as_str()
+                    || descriptor.required != companion.required
+            }) {
                 return Err(TrellisClientError::Bootstrap(
                     "device bootstrap companion does not match its descriptor".into(),
                 ));
             }
-            let companion_session = companion_session.ok_or_else(|| {
-                TrellisClientError::Bootstrap("device companion OAuth session is required".into())
-            })?;
-            if companion_session
-                .session
-                .admission
-                .credential
-                .oauth_grant_id
-                != companion.oauth_grant_id
-                || companion_session.session.trust.instance_id
-                    != context.unsigned.trellis_instance_id
-                || companion_session.session.trust.account != context.unsigned.audience_nats_account
-            {
-                return Err(TrellisClientError::AuthorizationUnavailable(
-                    "companion grant assignment mismatch".into(),
-                ));
-            }
-            match Self::connect_user(companion_session).await {
-                Ok(child) => connected.companion = Some(Arc::new(child)),
-                Err(error) if !companion.required => {
-                    tracing::warn!(%error, "optional device companion could not connect");
+            if let Some(companion_session) = companion_session {
+                if companion_session
+                    .session
+                    .admission
+                    .credential
+                    .oauth_grant_id
+                    != companion.oauth_grant_id
+                    || companion_session.session.admission.credential.client_id
+                        != companion.client_id
+                    || companion_session.session.trust.instance_id
+                        != context.unsigned.trellis_instance_id
+                    || companion_session.session.trust.account
+                        != context.unsigned.audience_nats_account
+                {
+                    return Err(TrellisClientError::AuthorizationUnavailable(
+                        "companion grant assignment mismatch".into(),
+                    ));
                 }
-                Err(error) => return Err(error),
+                match Self::connect_user(companion_session).await {
+                    Ok(child) => connected.companion = Some(Arc::new(child)),
+                    Err(error) if !companion.required => {
+                        tracing::warn!(%error, "optional device companion could not connect");
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else if companion.required {
+                return Err(TrellisClientError::Bootstrap(
+                    "device companion OAuth session is required".into(),
+                ));
             }
         } else if companion_descriptor.is_some_and(|descriptor| descriptor.required) {
             return Err(TrellisClientError::Bootstrap(

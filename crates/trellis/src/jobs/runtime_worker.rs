@@ -603,6 +603,7 @@ where
 {
     consumer: consumer::PullConsumer,
     lifecycle_stream: stream::Stream<()>,
+    history_client: Option<Arc<crate::client::TrellisClient>>,
     queue: JobsQueueBinding,
     manager: JobManager<P, M>,
     cancellation: JobCancellationToken,
@@ -634,6 +635,7 @@ where
     let WorkerLoopResources {
         consumer,
         lifecycle_stream,
+        history_client,
         queue,
         manager,
         cancellation,
@@ -795,6 +797,7 @@ where
             &mut parsed_job,
             work_sequence,
             work_event.event_type,
+            history_client.as_deref(),
         )
         .await?;
         if decision == ProjectedWorkDecision::OldRunAck {
@@ -1386,6 +1389,7 @@ where
             run_prepared_queue_worker_with_cancellation(
                 worker_nats,
                 WorkerLoopResources {
+                    history_client: None,
                     consumer,
                     lifecycle_stream,
                     queue,
@@ -1553,102 +1557,118 @@ async fn stream_work_decision(
     work: &mut Job,
     work_sequence: u64,
     work_event_type: JobEventType,
+    history_client: Option<&crate::client::TrellisClient>,
 ) -> Result<ProjectedWorkDecision, RuntimeWorkerError> {
-    let canonical = job_event_subject(
-        &work.service,
-        &work.job_type,
-        &work.id,
-        JobEventType::Created,
-    );
-    let mut subjects = vec![
-        format!("{publish_prefix}.{}.*", work.id),
-        format!(
-            "{}.*",
-            canonical
-                .rsplit_once('.')
-                .expect("event subject has type")
-                .0
-        ),
-    ];
-    subjects.sort();
-    subjects.dedup();
-    let mut watermark = 0;
-    for subject in &subjects {
-        if let Some(last) = latest_lifecycle_message(lifecycle_stream, subject)
+    let mut transitions = if let Some(client) = history_client {
+        super::history::read(client, &work.job_type, &work.id)
             .await
             .map_err(|details| RuntimeWorkerError::LifecycleRead {
-                stream: JOBS_STREAM.to_owned(),
-                subject: subject.clone(),
+                stream: JOBS_STREAM.into(),
+                subject: format!("{publish_prefix}.{}.*", work.id),
                 details,
             })?
-        {
-            watermark = watermark.max(last.sequence);
-        }
-    }
-    // Keep observation volume out of recovery. Scan transition subjects in
-    // parallel, then apply the accepted-state fold in broker sequence order.
-    let mut scans = FuturesUnordered::new();
-    for prefix in subjects {
-        let prefix = prefix.strip_suffix(".*").expect("job wildcard subject");
-        for event_type in [
+    } else {
+        let canonical = job_event_subject(
+            &work.service,
+            &work.job_type,
+            &work.id,
             JobEventType::Created,
-            JobEventType::Retried,
-            JobEventType::Started,
-            JobEventType::Retry,
-            JobEventType::Completed,
-            JobEventType::Failed,
-            JobEventType::Cancelled,
-            JobEventType::Expired,
-            JobEventType::Skipped,
-            JobEventType::Stale,
-            JobEventType::Dead,
-            JobEventType::Dismissed,
-        ] {
-            let subject = format!("{prefix}.{}", event_type.as_token());
-            scans.push(async move {
-                let mut transitions = Vec::new();
-                let mut sequence = 1;
-                while sequence <= watermark {
-                    let message = match lifecycle_stream
-                        .direct_get_next_for_subject(&subject, Some(sequence))
-                        .await
-                    {
-                        Ok(message) => message,
-                        Err(error) if error.kind() == stream::DirectGetErrorKind::NotFound => break,
-                        Err(error) => {
-                            return Err(RuntimeWorkerError::LifecycleRead {
-                                stream: JOBS_STREAM.to_string(),
-                                subject: subject.clone(),
-                                details: error.to_string(),
-                            })
-                        }
-                    };
-                    sequence = message.sequence + 1;
-                    if message.sequence > watermark {
-                        break;
-                    }
-                    let event =
-                        serde_json::from_slice::<JobEvent>(&message.payload).map_err(|error| {
-                            RuntimeWorkerError::LifecycleDecode {
-                                stream: JOBS_STREAM.to_string(),
-                                subject: subject.clone(),
-                                details: error.to_string(),
-                            }
-                        })?;
-                    transitions.push((message.sequence, event));
-                }
-                Ok::<_, RuntimeWorkerError>(transitions)
-            });
+        );
+        let mut subjects = vec![
+            format!("{publish_prefix}.{}.*", work.id),
+            format!(
+                "{}.*",
+                canonical
+                    .rsplit_once('.')
+                    .expect("event subject has type")
+                    .0
+            ),
+        ];
+        subjects.sort();
+        subjects.dedup();
+        let mut watermark = 0;
+        for subject in &subjects {
+            if let Some(last) = latest_lifecycle_message(lifecycle_stream, subject)
+                .await
+                .map_err(|details| RuntimeWorkerError::LifecycleRead {
+                    stream: JOBS_STREAM.to_owned(),
+                    subject: subject.clone(),
+                    details,
+                })?
+            {
+                watermark = watermark.max(last.sequence);
+            }
         }
-    }
-    let mut transitions = Vec::new();
-    while let Some(scan) = scans.next().await {
-        transitions.extend(scan?.into_iter().filter(|(_, event)| {
-            event.service == work.service
-                && event.job_type == work.job_type
-                && event.job_id == work.id
-        }));
-    }
+        // Keep observation volume out of recovery. Scan transition subjects in
+        // parallel, then apply the accepted-state fold in broker sequence order.
+        let mut scans = FuturesUnordered::new();
+        for prefix in subjects {
+            let prefix = prefix.strip_suffix(".*").expect("job wildcard subject");
+            for event_type in [
+                JobEventType::Created,
+                JobEventType::Retried,
+                JobEventType::Started,
+                JobEventType::Retry,
+                JobEventType::Completed,
+                JobEventType::Failed,
+                JobEventType::Cancelled,
+                JobEventType::Expired,
+                JobEventType::Skipped,
+                JobEventType::Stale,
+                JobEventType::Dead,
+                JobEventType::Dismissed,
+            ] {
+                let subject = format!("{prefix}.{}", event_type.as_token());
+                scans.push(async move {
+                    let mut transitions = Vec::new();
+                    let mut sequence = 1;
+                    while sequence <= watermark {
+                        let message = match lifecycle_stream
+                            .direct_get_next_for_subject(&subject, Some(sequence))
+                            .await
+                        {
+                            Ok(message) => message,
+                            Err(error) if error.kind() == stream::DirectGetErrorKind::NotFound => {
+                                break
+                            }
+                            Err(error) => {
+                                return Err(RuntimeWorkerError::LifecycleRead {
+                                    stream: JOBS_STREAM.to_string(),
+                                    subject: subject.clone(),
+                                    details: error.to_string(),
+                                })
+                            }
+                        };
+                        sequence = message.sequence + 1;
+                        if message.sequence > watermark {
+                            break;
+                        }
+                        let event = serde_json::from_slice::<JobEvent>(&message.payload).map_err(
+                            |error| RuntimeWorkerError::LifecycleDecode {
+                                stream: JOBS_STREAM.to_string(),
+                                subject: subject.clone(),
+                                details: error.to_string(),
+                            },
+                        )?;
+                        transitions.push((message.sequence, event));
+                    }
+                    Ok::<_, RuntimeWorkerError>(transitions)
+                });
+            }
+        }
+        let mut transitions = Vec::new();
+        while let Some(scan) = scans.next().await {
+            transitions.extend(scan?.into_iter().filter(|(_, event)| {
+                event.service == work.service
+                    && event.job_type == work.job_type
+                    && event.job_id == work.id
+            }));
+        }
+        transitions
+    };
+    transitions.retain(|(_, event)| {
+        event.service == work.service && event.job_type == work.job_type && event.job_id == work.id
+    });
     transitions.sort_by_key(|(sequence, _)| *sequence);
     let mut current: Option<Job> = None;
     let mut run_sequence = None;
@@ -1741,40 +1761,9 @@ async fn latest_lifecycle_message(
     subject: &str,
 ) -> Result<Option<async_nats::jetstream::message::StreamMessage>, String> {
     match lifecycle_stream.direct_get_last_for_subject(subject).await {
-        Ok(message) => return Ok(Some(message)),
-        Err(error) if matches!(error.kind(), stream::DirectGetErrorKind::NotFound) => {}
-        Err(direct_error) => match lifecycle_stream
-            .get_last_raw_message_by_subject(subject)
-            .await
-        {
-            Ok(message) => return Ok(Some(message)),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    stream::LastRawMessageErrorKind::NoMessageFound
-                ) => {}
-            Err(error) => {
-                return Err(format!(
-                    "direct get failed: {direct_error}; raw get failed: {error}"
-                ));
-            }
-        },
-    }
-
-    match lifecycle_stream
-        .get_last_raw_message_by_subject(subject)
-        .await
-    {
         Ok(message) => Ok(Some(message)),
-        Err(error)
-            if matches!(
-                error.kind(),
-                stream::LastRawMessageErrorKind::NoMessageFound
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(format!("raw get failed: {error}")),
+        Err(error) if error.kind() == stream::DirectGetErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read job lifecycle: {error}")),
     }
 }
 
@@ -1944,6 +1933,7 @@ where
     sources_changed: tokio::sync::Notify,
     tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     manager: crate::client::TransportGenerationManager,
+    history_client: Arc<crate::client::TrellisClient>,
     /// Set once the host is stopped, so no later candidate can resurrect it.
     stopped: std::sync::atomic::AtomicBool,
     /// The first unexpected worker failure, surfaced to `join`.
@@ -2110,6 +2100,7 @@ where
                             run_prepared_queue_worker_with_cancellation(
                                 source.nats.clone(),
                                 WorkerLoopResources {
+                                    history_client: Some(owner.history_client.clone()),
                                     consumer,
                                     lifecycle_stream,
                                     queue,
@@ -2417,6 +2408,7 @@ where
         sources_changed: tokio::sync::Notify::new(),
         tasks: std::sync::Mutex::new(Vec::new()),
         manager: client.transport_generations(),
+        history_client: client.clone(),
         stopped: std::sync::atomic::AtomicBool::new(false),
         failure: Arc::new(tokio::sync::Notify::new()),
         failure_message: Arc::new(std::sync::Mutex::new(None)),
@@ -2676,6 +2668,7 @@ mod tests {
             let cleanup = cleanups.clone();
             tasks.push(tokio::spawn(super::run_prepared_queue_worker_loop(
                 super::WorkerLoopResources {
+                    history_client: None,
                     consumer,
                     lifecycle_stream: js.get_stream_no_info("JOBS").await.unwrap(),
                     queue: binding,
@@ -2859,6 +2852,7 @@ mod tests {
         let count = executions.clone();
         let worker = tokio::spawn(super::run_prepared_queue_worker_loop(
             super::WorkerLoopResources {
+                history_client: None,
                 consumer: consumer.clone(),
                 lifecycle_stream: js.get_stream_no_info("JOBS").await.unwrap(),
                 queue,
@@ -3104,6 +3098,7 @@ mod tests {
         let release = Arc::new(tokio::sync::Notify::new());
         let worker = tokio::spawn(super::run_prepared_queue_worker_loop(
             super::WorkerLoopResources {
+                history_client: None,
                 consumer: consumer.clone(),
                 lifecycle_stream: jetstream.get_stream_no_info("JOBS").await.unwrap(),
                 queue: queue.clone(),
@@ -3192,6 +3187,7 @@ mod tests {
                 Duration::from_secs(5),
                 super::run_prepared_queue_worker_loop(
                     super::WorkerLoopResources {
+                        history_client: None,
                         consumer: consumer.clone(),
                         lifecycle_stream: jetstream.get_stream_no_info("JOBS").await.unwrap(),
                         queue: queue.clone(),

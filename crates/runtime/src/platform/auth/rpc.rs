@@ -23,9 +23,10 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     super::rpc_policy_aggregates::register_policy_aggregate_rpc(provider, store.clone());
     super::rpc_resources::register_resource_rpc(provider, store.clone(), operational.clone());
     super::rpc_users::register_user_rpc(provider, store.clone());
-    super::rpc_users::register_user_provider_rpc(provider, oauth);
+    super::rpc_users::register_user_provider_rpc(provider, oauth.clone());
     super::rpc_credentials::register_credential_rpc(provider, store.clone());
-    super::rpc_deployments::register_deployment_rpc(provider, store.clone(), operational);
+    super::oauth::enrollment::register_rpc(provider, store.clone(), operational.clone());
+    super::rpc_deployments::register_deployment_rpc(provider, store.clone(), operational, oauth);
     let users = store.clone();
     provider.register_users_list(move |context, input| {
         let store = users.clone();

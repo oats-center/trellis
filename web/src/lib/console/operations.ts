@@ -113,15 +113,6 @@ function jobsFeed(name: string): ConsoleOperation {
   };
 }
 
-function stateRpc(name: string): ConsoleOperation {
-  return {
-    api: apis.state.API.identity,
-    surface: "rpc",
-    name,
-    action: "call",
-  };
-}
-
 /**
  * Every console operation, keyed by generated client method name.
  *
@@ -210,6 +201,16 @@ export const CONSOLE_OPERATIONS = {
   authorizationSessionsRevoke: authRpc("AuthorizationSessions.Revoke"),
   capabilitiesList: authRpc("Capabilities.List", "roles.manage"),
   issuersRevoke: authRpc("Issuers.Revoke"),
+  oAuthClientsList: authRpc("OAuthClients.List", "clients.manage"),
+  oAuthClientsGet: authRpc("OAuthClients.Get", "clients.manage"),
+  oAuthClientsPut: authRpc("OAuthClients.Put", "clients.manage"),
+  oAuthClientsDisable: authRpc("OAuthClients.Disable", "clients.manage"),
+  oAuthClientsDelete: authRpc("OAuthClients.Delete", "clients.manage"),
+  apisList: authRpc("Apis.List", "apis.accept"),
+  apisGet: authRpc("Apis.Get", "apis.accept"),
+  apisReview: authRpc("Apis.Review", "apis.accept"),
+  apisAccept: authRpc("Apis.Accept", "apis.accept"),
+  apisForceReplace: authRpc("Apis.ForceReplace", "apis.forceReplace"),
 
   // Events: primary query, optional panels, actions, watch.
   eventsQuery: eventsRpc("Query"),
@@ -245,10 +246,6 @@ export const CONSOLE_OPERATIONS = {
   jobsReplayDLQ: jobsRpc("ReplayDLQ"),
   jobsDismissDLQ: jobsRpc("DismissDLQ"),
   jobsWatch: jobsFeed("Watch"),
-
-  // State: administrative resource inspection only.
-  resourcesInspect: stateRpc("Resources.Inspect"),
-  resourcesQuery: stateRpc("Resources.Query"),
 } as const satisfies Record<string, ConsoleOperation>;
 
 /** Generated client method names that have a registered exact operation. */

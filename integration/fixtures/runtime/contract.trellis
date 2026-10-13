@@ -115,6 +115,7 @@ service OperationProvider {
 }
 service OperationCaller { use runtime { required capability work; } }
 agent EchoCaller { use runtime { required capability echo; } }
+agent TransferCaller { use runtime { required capability transport; required capability download; } }
 app Caller {
   use runtime { required capability transport; required capability download; }
   state saved { title "Saved"; description "Caller-owned saved value."; schema Saved; version 1; }
@@ -122,6 +123,9 @@ app Caller {
 }
 app StateCaller {
   state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
+}
+agent NativeStateCaller {
+  state savedResource { title "Saved resource"; description "Native State acceptance value."; schema ResourceValue; version 1; }
 }
 app Denied { use runtime; }
 app JobsAdmin { use jobs { required capability query; required capability inspect; required capability retry; required capability dlqReplay; } }

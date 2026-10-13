@@ -891,6 +891,27 @@ model StateDeleteRequest {
   resourceName: StateResourceName;
 }
 
+model StateRepresentation {
+  version: StateRepresentationVersion;
+  schema: bytes;
+}
+
+model StateRegisterRequest {
+  resourceName: StateResourceName;
+  representation: StateRepresentation;
+  accepts: list<StateRepresentation>;
+  expectedRevision: StateRevision;
+  idempotencyKey: ulid;
+}
+
+model StateRegisterResponse {
+  revision: StateRevision;
+}
+
+model StateRegistrationConflict {
+  currentRevision: StateRevision;
+}
+
 model StateDeleteResponse {
   deleted: bool;
 }
@@ -3780,6 +3801,7 @@ model EventsDeadLetterDetail {
   deadLetter: EventsDeadLetter;
   originalHeaders: map<string>;
   originalPayload: bytes;
+  originalPublishedAt: string;
   originalSubject: string;
   transitionReferences: list<uint64>;
   verificationStatus: EventsDeadLetterVerificationStatus;
@@ -4011,4 +4033,21 @@ enum EventsRowVerificationStatus {
 
 enum EventsNotFoundErrorDataType {
   NotFoundError;
+}
+model JobsHistoryRequest {
+  queue: string;
+  jobId: string;
+  fromSequence: uint64;
+  throughSequence?: uint64;
+}
+
+model JobsHistoryEntry {
+  sequence: uint64;
+  payload: bytes;
+}
+
+model JobsHistoryResponse {
+  entries: list<JobsHistoryEntry>;
+  throughSequence: uint64;
+  nextSequence?: uint64;
 }

@@ -1,4 +1,6 @@
 import {
+  JobsHistoryRequest,
+  JobsHistoryResponse,
   JobsSummaryRequest,
   JobsSummaryResponse,
   Empty,
@@ -413,6 +415,11 @@ api jobs@v1 {
   error NotFoundError(JobsNotFoundErrorData);
   error UnexpectedError;
   error ValidationError;
+  rpc History {
+    input JobsHistoryRequest;
+    output JobsHistoryResponse;
+    errors [UnexpectedError, ValidationError];
+  }
   rpc Cancel {
     input JobsCancelRequest;
     output JobsCancelResponse;
@@ -476,6 +483,13 @@ api jobs@v1 {
     event JobsWatchFrame;
   }
   capabilities {
+    capability history {
+      title "Read own job history";
+      description "Read authoritative lifecycle history for an owned job resource.";
+      consequence "Only the verified service deployment's job history is returned.";
+      consent_revision 1;
+      allows { rpc History; }
+    }
     capability query {
       title "Query jobs";
       description "Find jobs matching query filters.";

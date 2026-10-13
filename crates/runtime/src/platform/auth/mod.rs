@@ -17,6 +17,8 @@ mod own_context;
 pub(crate) use own_context::OwnContextService;
 mod policy;
 mod resources;
+mod state;
+pub(crate) use state::StateDeclaration;
 mod revocation;
 mod rpc;
 mod rpc_credentials;

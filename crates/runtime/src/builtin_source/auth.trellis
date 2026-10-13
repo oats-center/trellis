@@ -110,6 +110,13 @@ import {
   AuthInstanceProvisionResponse,
   AuthInstanceMutationRequest,
   AuthInstanceMutationResponse,
+  AuthDeviceReviewGetRequest,
+  AuthDeviceReviewResponse,
+  AuthDeviceReviewsListResponse,
+  AuthDeviceReviewDecideRequest,
+  AuthDeviceCompanionAttachRequest,
+  AuthDeviceCompanion,
+  AuthDeviceCompanionRevokeRequest,
   AuthResourcesListRequest,
   AuthResourcesListResponse,
   AuthResourceGetRequest,
@@ -215,6 +222,11 @@ api auth@v1 {
   rpc OIDCRoleMappings.Delete { input AuthOIDCRoleMappingDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // principals.manage; only service/device implementations can be deployed.
+  rpc Devices.Reviews.Get { input AuthDeviceReviewGetRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Reviews.List { input AuthPageRequest; output AuthDeviceReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Devices.Reviews.Decide { input AuthDeviceReviewDecideRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc DeviceCompanions.Attach { input AuthDeviceCompanionAttachRequest; output AuthDeviceCompanion; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc DeviceCompanions.Revoke { input AuthDeviceCompanionRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Deployments.Create { input AuthDeploymentCreateRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Deployments.Get { input AuthDeploymentGetRequest; output AuthDeploymentGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Deployments.List { input AuthPageRequest; output AuthDeploymentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
@@ -616,18 +628,27 @@ api auth@v1 {
       allows { rpc ServiceInstances.Remove; }
     }
     capability devicesRead {
+      // Enrollment reads require either administrative authority or the exact
+      // device-local confirmation code, checked by the handler.
       consent_revision 1;
       title "Read devices";
       description "List provisioned device instances; also requires principals.manage.";
       consequence "Reveals device identity and lifecycle state.";
-      allows { rpc Devices.List; }
+      allows { rpc Devices.List; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; }
     }
     capability devicesProvision {
       consent_revision 1;
       title "Provision devices";
       description "Provision a device identity; also requires principals.manage.";
       consequence "Creates a device and returns its one-time provisioning secret.";
-      allows { rpc Devices.Provision; }
+      allows { rpc Devices.Provision; rpc Devices.Reviews.Decide; }
+    }
+    capability deviceCompanionsManage {
+      consent_revision 1;
+      title "Associate a device companion";
+      description "Associate this explicitly consented native OAuth grant with a reviewed device, or revoke that exact association and grant.";
+      consequence "The confirmed device may recognize this separate user connection; removing the association revokes this grant and its refresh families.";
+      allows { rpc Devices.Reviews.Get; rpc DeviceCompanions.Attach; rpc DeviceCompanions.Revoke; }
     }
     capability devicesEnable {
       consent_revision 1;

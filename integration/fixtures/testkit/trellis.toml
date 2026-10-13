@@ -8,5 +8,8 @@ echo = "contract.trellis"
 [generate.rust]
 output = "crates/trellis-test-fixture"
 
+[generate.typescript]
+output = "packages/trellis-test-fixture"
+
 [dependencies]
 trellis = { package = "trellis", path = "../../../crates/runtime" }

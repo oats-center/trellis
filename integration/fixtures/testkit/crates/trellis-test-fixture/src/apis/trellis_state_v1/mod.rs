@@ -1,6 +1,6 @@
 //! Generated API `trellis.state@v1`.
 pub const API_ID: &str = "trellis.state@v1";
-pub const API_DIGEST: &str = "u--S9rcV2G0Q3mmGO-xwN_8BFq1w76pMXc3sGeQJo_Y";
+pub const API_DIGEST: &str = "8upNJeqBsHZh8GI5jqZTLWiWNUiOnUqdBiqItkZebbQ";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -110,6 +110,60 @@ pub mod errors {
     impl std::error::Error for CorruptRepresentation {}
     impl trellis_rs::generated::TrellisError for CorruptRepresentation {
         const TYPE: &'static str = "trellis.state@v1::CorruptRepresentation";
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct RegistrationConflict {
+        #[serde(flatten)]
+        pub error: trellis_rs::generated::SerializableErrorData,
+    }
+    impl RegistrationConflict {
+        pub fn payload(
+            &self,
+        ) -> Result<
+            crate::__types::trellis::StateRegistrationConflict,
+            serde_json::Error,
+        > {
+            let mut payload = self.error.extra.clone();
+            payload
+                .insert(
+                    "id".to_owned(),
+                    serde_json::Value::String(self.error.id.clone()),
+                );
+            payload
+                .insert(
+                    "type".to_owned(),
+                    serde_json::Value::String(self.error.error_type.clone()),
+                );
+            payload
+                .insert(
+                    "message".to_owned(),
+                    serde_json::Value::String(self.error.message.clone()),
+                );
+            if let Some(context) = &self.error.context {
+                payload
+                    .insert(
+                        "context".to_owned(),
+                        serde_json::Value::Object(context.clone()),
+                    );
+            }
+            if let Some(trace_id) = &self.error.trace_id {
+                payload
+                    .insert(
+                        "traceId".to_owned(),
+                        serde_json::Value::String(trace_id.clone()),
+                    );
+            }
+            serde_json::from_value(serde_json::Value::Object(payload))
+        }
+    }
+    impl std::fmt::Display for RegistrationConflict {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.error.message)
+        }
+    }
+    impl std::error::Error for RegistrationConflict {}
+    impl trellis_rs::generated::TrellisError for RegistrationConflict {
+        const TYPE: &'static str = "trellis.state@v1::RegistrationConflict";
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct UnsupportedRepresentation {
@@ -348,55 +402,47 @@ pub mod rpc {
             PutError::decode(value)
         }
     }
-    pub type ResourcesInspectInput = crate::__types::trellis::ResourcesInspectRequest;
-    pub type ResourcesInspectOutput = crate::__types::trellis::ResourcesInspectResponse;
-    pub struct ResourcesInspect;
-    impl ResourcesInspect {
+    pub type RegisterInput = crate::__types::trellis::StateRegisterRequest;
+    pub type RegisterOutput = crate::__types::trellis::StateRegisterResponse;
+    pub struct Register;
+    impl Register {
         pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Resources.Inspect";
-        pub const KEY: &'static str = "state.Resources.Inspect";
-        pub const SUBJECT: &'static str = "rpc.v1.state.Resources.Inspect";
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.Register";
+        pub const KEY: &'static str = "state.Register";
+        pub const SUBJECT: &'static str = "rpc.v1.state.Register";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.state@v1::resourcesInspect",
+            "trellis.state@v1::write",
         ];
         pub const ERRORS: &'static [&'static str] = &[
-            "trellis.state@v1::CorruptRepresentation",
-            "trellis.state@v1::UnsupportedRepresentation",
+            "trellis.state@v1::RegistrationConflict",
         ];
         pub const DOWNLOAD: bool = false;
         pub const CURSOR_PAGINATION: bool = false;
     }
     #[derive(Clone, Debug, PartialEq)]
-    pub enum ResourcesInspectError {
-        CorruptRepresentation(super::errors::CorruptRepresentation),
-        UnsupportedRepresentation(super::errors::UnsupportedRepresentation),
+    pub enum RegisterError {
+        RegistrationConflict(super::errors::RegistrationConflict),
     }
-    impl ResourcesInspectError {
+    impl RegisterError {
         pub fn decode(
             value: serde_json::Value,
         ) -> Result<Option<Self>, serde_json::Error> {
             let error_type = value.get("type").and_then(serde_json::Value::as_str);
             match error_type {
-                Some("trellis.state@v1::CorruptRepresentation") => {
+                Some("trellis.state@v1::RegistrationConflict") => {
                     trellis_rs::generated::decode_typed_error::<
-                        super::errors::CorruptRepresentation,
+                        super::errors::RegistrationConflict,
                     >(value)
-                        .map(|value| value.map(Self::CorruptRepresentation))
-                }
-                Some("trellis.state@v1::UnsupportedRepresentation") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnsupportedRepresentation,
-                    >(value)
-                        .map(|value| value.map(Self::UnsupportedRepresentation))
+                        .map(|value| value.map(Self::RegistrationConflict))
                 }
                 _ => Ok(None),
             }
         }
     }
-    impl trellis_rs::generated::RpcDescriptor for ResourcesInspect {
-        type Input = ResourcesInspectInput;
-        type Output = ResourcesInspectOutput;
-        type Error = ResourcesInspectError;
+    impl trellis_rs::generated::RpcDescriptor for Register {
+        type Input = RegisterInput;
+        type Output = RegisterOutput;
+        type Error = RegisterError;
         const API_ID: &'static str = super::API_ID;
         const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
         const SUBJECT: &'static str = Self::SUBJECT;
@@ -406,82 +452,42 @@ pub mod rpc {
         fn decode_error(
             value: serde_json::Value,
         ) -> Result<Option<Self::Error>, serde_json::Error> {
-            ResourcesInspectError::decode(value)
-        }
-    }
-    pub type ResourcesQueryInput = crate::__types::trellis::ResourcesQueryRequest;
-    pub type ResourcesQueryOutput = crate::__types::trellis::ResourcesQueryResponse;
-    pub struct ResourcesQuery;
-    impl ResourcesQuery {
-        pub const API_ID: &'static str = super::API_ID;
-        pub const DESCRIPTOR_NAME: &'static str = "rpc.Resources.Query";
-        pub const KEY: &'static str = "state.Resources.Query";
-        pub const SUBJECT: &'static str = "rpc.v1.state.Resources.Query";
-        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
-            "trellis.state@v1::resourcesInspect",
-        ];
-        pub const ERRORS: &'static [&'static str] = &[
-            "trellis.state@v1::CorruptRepresentation",
-            "trellis.state@v1::UnsupportedRepresentation",
-        ];
-        pub const DOWNLOAD: bool = false;
-        pub const CURSOR_PAGINATION: bool = true;
-    }
-    #[derive(Clone, Debug, PartialEq)]
-    pub enum ResourcesQueryError {
-        CorruptRepresentation(super::errors::CorruptRepresentation),
-        UnsupportedRepresentation(super::errors::UnsupportedRepresentation),
-    }
-    impl ResourcesQueryError {
-        pub fn decode(
-            value: serde_json::Value,
-        ) -> Result<Option<Self>, serde_json::Error> {
-            let error_type = value.get("type").and_then(serde_json::Value::as_str);
-            match error_type {
-                Some("trellis.state@v1::CorruptRepresentation") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::CorruptRepresentation,
-                    >(value)
-                        .map(|value| value.map(Self::CorruptRepresentation))
-                }
-                Some("trellis.state@v1::UnsupportedRepresentation") => {
-                    trellis_rs::generated::decode_typed_error::<
-                        super::errors::UnsupportedRepresentation,
-                    >(value)
-                        .map(|value| value.map(Self::UnsupportedRepresentation))
-                }
-                _ => Ok(None),
-            }
-        }
-    }
-    impl trellis_rs::generated::RpcDescriptor for ResourcesQuery {
-        type Input = ResourcesQueryInput;
-        type Output = ResourcesQueryOutput;
-        type Error = ResourcesQueryError;
-        const API_ID: &'static str = super::API_ID;
-        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
-        const SUBJECT: &'static str = Self::SUBJECT;
-        const KEY: &'static str = Self::KEY;
-        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
-        const DOWNLOAD: bool = Self::DOWNLOAD;
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            ResourcesQueryError::decode(value)
+            RegisterError::decode(value)
         }
     }
 }
 pub mod operations {}
 pub mod events {}
-pub mod lives {}
+pub mod lives {
+    pub type WatchInput = crate::__types::trellis::StateGetRequest;
+    pub type WatchEvent = crate::__types::trellis::StateGetResponse;
+    pub struct Watch;
+    impl Watch {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "live.Watch";
+        pub const KEY: &'static str = "state.Watch";
+        pub const SUBJECT: &'static str = "live.v1.route.state.Watch";
+        pub const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.state@v1::read",
+        ];
+    }
+    impl trellis_rs::generated::LiveDescriptor for Watch {
+        type Input = WatchInput;
+        type Event = WatchEvent;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = Self::SUBSCRIBE_CAPABILITIES;
+    }
+}
 /// Registers metadata for every RPC in this API.
 pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     let _ = router;
     router.register_rpc_metadata::<rpc::Delete>();
     router.register_rpc_metadata::<rpc::Get>();
     router.register_rpc_metadata::<rpc::Put>();
-    router.register_rpc_metadata::<rpc::ResourcesInspect>();
-    router.register_rpc_metadata::<rpc::ResourcesQuery>();
+    router.register_rpc_metadata::<rpc::Register>();
 }
 #[derive(Clone)]
 pub struct Client {
@@ -509,120 +515,20 @@ impl Client {
     ) -> Result<rpc::PutOutput, trellis_rs::client::CallError<rpc::PutError>> {
         self.inner.call::<rpc::Put>(input).await
     }
-    pub async fn resources_inspect(
+    pub async fn register(
         &self,
-        input: &rpc::ResourcesInspectInput,
+        input: &rpc::RegisterInput,
+    ) -> Result<rpc::RegisterOutput, trellis_rs::client::CallError<rpc::RegisterError>> {
+        self.inner.call::<rpc::Register>(input).await
+    }
+    pub async fn watch(
+        &self,
+        input: &lives::WatchInput,
     ) -> Result<
-        rpc::ResourcesInspectOutput,
-        trellis_rs::client::CallError<rpc::ResourcesInspectError>,
+        trellis_rs::LiveSubscription<lives::WatchEvent>,
+        trellis_rs::client::TrellisClientError,
     > {
-        self.inner.call::<rpc::ResourcesInspect>(input).await
-    }
-    pub async fn resources_query(
-        &self,
-        input: &rpc::ResourcesQueryInput,
-    ) -> Result<
-        rpc::ResourcesQueryOutput,
-        trellis_rs::client::CallError<rpc::ResourcesQueryError>,
-    > {
-        self.inner.call::<rpc::ResourcesQuery>(input).await
-    }
-    pub fn resources_query_pages(
-        &self,
-        input: rpc::ResourcesQueryInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<
-            rpc::ResourcesQueryOutput,
-            crate::PaginationError<rpc::ResourcesQueryError>,
-        >,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (client, input, seen, false),
-                |(client, mut input, mut seen, done)| async move {
-                    if done {
-                        return Ok(None);
-                    }
-                    let page = client
-                        .resources_query(&input)
-                        .await
-                        .map_err(crate::PaginationError::Call)?;
-                    let next = page.page.next_cursor.clone();
-                    let done = next.is_none();
-                    if let Some(cursor) = next {
-                        if !seen.insert(cursor.clone()) {
-                            return Err(crate::PaginationError::RepeatedCursor(cursor));
-                        }
-                        let limit = input.page.as_ref().and_then(|page| page.limit);
-                        input.page = Some(crate::__types::CursorQuery {
-                            cursor: Some(cursor),
-                            limit,
-                        });
-                    }
-                    Ok(Some((page, (client, input, seen, done))))
-                },
-            ),
-        )
-    }
-    pub fn resources_query_items(
-        &self,
-        input: rpc::ResourcesQueryInput,
-    ) -> futures_util::stream::BoxStream<
-        'static,
-        Result<
-            crate::__types::trellis::ResourceInspection,
-            crate::PaginationError<rpc::ResourcesQueryError>,
-        >,
-    > {
-        let client = self.clone();
-        let mut seen = std::collections::BTreeSet::new();
-        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
-            seen.insert(cursor);
-        }
-        Box::pin(
-            futures_util::stream::try_unfold(
-                (
-                    client,
-                    input,
-                    seen,
-                    false,
-                    Vec::<crate::__types::trellis::ResourceInspection>::new().into_iter(),
-                ),
-                |(client, mut input, mut seen, mut done, mut items)| async move {
-                    loop {
-                        if let Some(item) = items.next() {
-                            return Ok(Some((item, (client, input, seen, done, items))));
-                        }
-                        if done {
-                            return Ok(None);
-                        }
-                        let page = client
-                            .resources_query(&input)
-                            .await
-                            .map_err(crate::PaginationError::Call)?;
-                        let next = page.page.next_cursor.clone();
-                        done = next.is_none();
-                        if let Some(cursor) = next {
-                            if !seen.insert(cursor.clone()) {
-                                return Err(crate::PaginationError::RepeatedCursor(cursor));
-                            }
-                            let limit = input.page.as_ref().and_then(|page| page.limit);
-                            input.page = Some(crate::__types::CursorQuery {
-                                cursor: Some(cursor),
-                                limit,
-                            });
-                        }
-                        items = page.items.into_iter();
-                    }
-                },
-            ),
-        )
+        self.inner.live::<lives::Watch>(input).await
     }
 }
 pub struct Provider<'a, P> {
@@ -664,28 +570,24 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
     {
         self.runtime.register_rpc::<rpc::Put, _, _>(handler);
     }
-    pub fn register_resources_inspect<F, Fut>(&mut self, handler: F)
+    pub fn register_register<F, Fut>(&mut self, handler: F)
     where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::ResourcesInspectInput,
-            ) -> Fut + Send + Sync + 'static,
+        F: Fn(trellis_rs::service::ServiceHandlerContext, rpc::RegisterInput) -> Fut
+            + Send + Sync + 'static,
         Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::ResourcesInspectOutput>,
+                Output = trellis_rs::service::HandlerResult<rpc::RegisterOutput>,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::ResourcesInspect, _, _>(handler);
+        self.runtime.register_rpc::<rpc::Register, _, _>(handler);
     }
-    pub fn register_resources_query<F, Fut>(&mut self, handler: F)
+    pub fn register_watch<F, S>(&mut self, handler: F)
     where
-        F: Fn(
-                trellis_rs::service::ServiceHandlerContext,
-                rpc::ResourcesQueryInput,
-            ) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<
-                Output = trellis_rs::service::HandlerResult<rpc::ResourcesQueryOutput>,
+        F: Fn(trellis_rs::service::ServiceLiveHandlerContext, lives::WatchInput) -> S
+            + Send + Sync + 'static,
+        S: futures_util::Stream<
+                Item = Result<lives::WatchEvent, trellis_rs::service::ServerError>,
             > + Send + 'static,
     {
-        self.runtime.register_rpc::<rpc::ResourcesQuery, _, _>(handler);
+        self.runtime.register_live::<lives::Watch, _, _>(handler);
     }
 }

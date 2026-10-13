@@ -1203,9 +1203,11 @@ fn legal_dead_letter_successor(
             DeadLetterState::Resolved,
             DeadLetterCause::ReplaySucceeded,
         )
-        | ("replayPending" | "replaying", DeadLetterState::Dead, DeadLetterCause::Exhausted) => {
-            next.generation == current_generation
-        }
+        | (
+            "replayPending" | "replaying",
+            DeadLetterState::Dead,
+            DeadLetterCause::Exhausted | DeadLetterCause::ReplayUnreplayable,
+        ) => next.generation == current_generation,
         _ => false,
     }
 }
@@ -1757,6 +1759,7 @@ mod tests {
                 original: Some(OriginalEvent {
                     stream: "trellis".to_owned(),
                     sequence,
+                    published_at: timestamp.to_owned(),
                     event_id: Some(format!("event-{sequence}")),
                     subject: "events.v1.orders.Created".to_owned(),
                     payload_bytes: Vec::new(),
@@ -1931,6 +1934,7 @@ mod tests {
             original: Some(OriginalEvent {
                 stream: "trellis".to_owned(),
                 sequence: 42,
+                published_at: "2026-01-01T00:00:00Z".to_owned(),
                 event_id: Some("event-42".to_owned()),
                 subject: "events.v1.orders.Created".to_owned(),
                 payload_bytes: vec![0, 1, 255],

@@ -332,8 +332,8 @@ impl SqliteAuthorizationStore {
         for (name, definition) in installed.resources() {
             let name = name.as_str();
             let present = match definition {
-                trellis_idl::ResourceDefinition::State { .. }
-                | trellis_idl::ResourceDefinition::Kv { .. } => runtime.kv.contains_key(name),
+                trellis_idl::ResourceDefinition::State { .. } => runtime.state.contains_key(name),
+                trellis_idl::ResourceDefinition::Kv { .. } => runtime.kv.contains_key(name),
                 trellis_idl::ResourceDefinition::Store { .. } => runtime.store.contains_key(name),
                 trellis_idl::ResourceDefinition::Job { .. } => runtime
                     .jobs
@@ -347,17 +347,17 @@ impl SqliteAuthorizationStore {
                 return Err(AuthError::Unavailable);
             }
         }
-        // auth_device_companions has a grant association, but provisioning does
-        // not populate it yet. A required companion cannot be represented by a
-        // fabricated participant/login assignment.
-        if installed
-            .companion()
-            .is_some_and(|companion| !companion.optional)
-        {
-            return Err(AuthError::Unavailable);
-        }
+        let companion = if let Some(definition) = installed.companion() {
+            let client = format!("trellis.device.{deployment}.companion");
+            let grant: Option<String> = connection.query_row(
+                "SELECT c.oauth_grant_id FROM auth_device_companions c JOIN auth_oauth_grants g USING(oauth_grant_id) JOIN auth_login_sessions l USING(login_session_id) JOIN auth_principals p ON p.principal_id=g.principal_id WHERE c.instance_id=?1 AND c.state='active' AND c.companion_request_id=?2 AND g.client_id=?3 AND g.binding_kind='native' AND g.revoked_at IS NULL AND g.expires_at>?4 AND l.revoked_at IS NULL AND l.expires_at>?4 AND p.state='active' AND EXISTS(SELECT 1 FROM auth_oauth_families f WHERE f.oauth_grant_id=g.oauth_grant_id AND f.revoked_at IS NULL AND f.expires_at>?4)",
+                params![instance,definition.request.as_str(),client,authority.issued_at],|row|row.get(0)).optional()?;
+            grant.map(|grant| json!({"requestId":definition.request.as_str(),"oauthGrantId":grant,"clientId":client,"required":!definition.optional}))
+        } else {
+            None
+        };
         Ok(Some(
-            json!({"participantId":participant,"participantDigest":digest,"resourceRuntime":runtime,"companion":null}),
+            json!({"participantId":participant,"participantDigest":digest,"resourceRuntime":runtime,"companion":companion}),
         ))
     }
 

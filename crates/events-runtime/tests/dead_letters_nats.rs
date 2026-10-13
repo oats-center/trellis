@@ -9,13 +9,12 @@ use std::time::Duration;
 use async_nats::jetstream::{self, consumer, stream, AckKind};
 use futures_util::StreamExt;
 use trellis_events_runtime::dead_letters::{
-    dead_letter_id, DeadLetterState, DeliveryOutcome, DeliveryReport, OriginalEvent,
-    ReplayEnvelope, DLQ_STREAM, DLQ_SUBJECTS, REPLAY_STREAM, REPLAY_SUBJECTS,
+    dead_letter_id, DeadLetterState, OriginalEvent, ReplayEnvelope, DLQ_STREAM, DLQ_SUBJECTS,
+    REPLAY_STREAM, REPLAY_SUBJECTS,
 };
 use trellis_events_runtime::{
     start_dead_letter_projector, start_exhaustion_advisory_loop, start_replay_dispatcher,
-    ConsumerBinding, ConsumerBindingResolver, DeadLetterJournal, DeliveryReportError,
-    DeliveryReporter, EventsStore,
+    ConsumerBinding, ConsumerBindingResolver, DeadLetterJournal, DeliveryReporter, EventsStore,
 };
 use trellis_rs::service::EventVerificationFailure;
 
@@ -273,7 +272,7 @@ async fn exhaustion_advisory_journals_before_ack_and_records_expired_source_gap(
 }
 
 #[tokio::test]
-async fn fabricated_delivery_is_rejected_and_replay_survives_process_boundaries() {
+async fn retained_replay_survives_process_boundaries() {
     let (_server, _directory, client) = start_nats().await;
     let context = jetstream::new(client.clone());
     context
@@ -318,17 +317,6 @@ async fn fabricated_delivery_is_rejected_and_replay_survives_process_boundaries(
         .get_stream("EVENTS_TEST")
         .await
         .expect("open event stream");
-    let consumer = event_stream
-        .create_consumer(consumer::pull::Config {
-            durable_name: Some("consumer-test".to_owned()),
-            filter_subject: "events.test.>".to_owned(),
-            ack_policy: consumer::AckPolicy::Explicit,
-            max_deliver: 4,
-            max_ack_pending: 1,
-            ..Default::default()
-        })
-        .await
-        .expect("create consumer");
     let source_sequence = context
         .publish("events.test.Created", "payload".into())
         .await
@@ -336,77 +324,23 @@ async fn fabricated_delivery_is_rejected_and_replay_survives_process_boundaries(
         .await
         .expect("confirm source")
         .sequence;
-    // Publish acknowledgement precedes the broker's asynchronous consumer notification.
-    let mut messages = consumer
-        .batch()
-        .max_messages(1)
-        .expires(Duration::from_millis(500))
-        .messages()
-        .await
-        .expect("fetch source");
-    let pending = messages
-        .next()
-        .await
-        .expect("source delivery")
-        .expect("valid source delivery");
-    let delivery_proof = pending
-        .message
-        .reply
-        .expect("acknowledgement subject")
-        .to_string();
-    client
-        .request(delivery_proof.clone(), AckKind::Progress.into())
-        .await
-        .expect("broker confirms pending delivery proof");
-    let binding = ConsumerBinding {
-        resource_id: "consumer-resource".to_owned(),
-        owner_kind: "deployment".to_owned(),
-        owner_id: "deployment".to_owned(),
-        participant_id: "participant".to_owned(),
-        local_name: "events".to_owned(),
-        stream: "EVENTS_TEST".to_owned(),
-        consumer_name: "consumer-test".to_owned(),
-        filter_subjects: vec!["events.test.>".to_owned()],
-        replay_consumer_name: "replay-test".to_owned(),
-    };
-    let reporter = DeliveryReporter::new(
-        client.clone(),
-        journal.clone(),
-        Arc::new(Resolver(binding)),
-        Arc::new(|_| {
-            Box::pin(async { Err(EventVerificationFailure::Rejected("not reached".to_owned())) })
-        }),
-    );
-    let fabricated = reporter
-        .report(
-            "consumer-resource",
-            DeliveryReport {
-                resource_id: "consumer-resource".to_owned(),
-                source_stream: "EVENTS_TEST".to_owned(),
-                source_sequence,
-                delivery_count: 4,
-                delivery_proof: Some(delivery_proof),
-                replay_generation: None,
-                outcome: DeliveryOutcome::Exhausted,
-                error: Some("fabricated".to_owned()),
-            },
-        )
-        .await;
-    assert!(matches!(
-        fabricated,
-        Err(DeliveryReportError::Validation(_))
-    ));
+    let raw = event_stream.get_raw_message(source_sequence).await.unwrap();
+    let published_at = raw
+        .time
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
     let original = OriginalEvent {
-        stream: "trellis".to_owned(),
-        sequence: 42,
-        event_id: Some("event-42".to_owned()),
-        subject: "events.v1.orders.Created".to_owned(),
-        payload_bytes: br#"{"orderId":"42"}"#.to_vec(),
-        headers: BTreeMap::from([("Trellis-Auth-Context".to_owned(), vec!["proof".to_owned()])]),
-        api_id: Some("orders@v1".to_owned()),
-        event_name: Some("Created".to_owned()),
-        context_digest: Some("digest".to_owned()),
-        verification_status: "verified".to_owned(),
+        stream: "EVENTS_TEST".to_owned(),
+        sequence: source_sequence,
+        published_at: published_at.clone(),
+        event_id: None,
+        subject: raw.subject.to_string(),
+        payload_bytes: raw.payload.to_vec(),
+        headers: BTreeMap::new(),
+        api_id: None,
+        event_name: None,
+        context_digest: None,
+        verification_status: "malformed".to_owned(),
     };
     let (created, _) = journal
         .create_dead(
@@ -465,7 +399,17 @@ async fn fabricated_delivery_is_rejected_and_replay_survives_process_boundaries(
         .expect("read replay record");
     let envelope: ReplayEnvelope = serde_json::from_slice(&replay.payload).expect("decode replay");
     assert_eq!(envelope.dead_letter_id, created.id);
-    assert_eq!(envelope.original_payload_bytes, br#"{"orderId":"42"}"#);
+    assert_eq!(envelope.original_payload_bytes, b"payload");
+    // Source retention and a new journal handle must not replace original broker
+    // chronology with the later replay publication's timestamp.
+    event_stream.delete_message(source_sequence).await.unwrap();
+    let reopened = DeadLetterJournal::open(client.clone()).await.unwrap();
+    let retained = reopened.original(&replaying).await.unwrap().unwrap();
+    assert_eq!(retained.published_at, published_at);
+    assert_eq!(retained.sequence, source_sequence);
+    assert_eq!(retained.stream, "EVENTS_TEST");
+    assert_eq!(retained.payload_bytes, envelope.original_payload_bytes);
+    assert!(replay.time > raw.time);
 
     let store = EventsStore::open_in_memory().expect("open projection");
     let projector = start_dead_letter_projector(client, store.clone())
@@ -479,7 +423,13 @@ async fn fabricated_delivery_is_rejected_and_replay_survives_process_boundaries(
         "replaying"
     );
     journal
-        .report_replay_outcome(&created.id, 1, true, 1, None)
+        .report_replay_outcome(
+            &created.id,
+            1,
+            trellis_events_runtime::dead_letters::DeliveryOutcome::Succeeded,
+            1,
+            None,
+        )
         .await
         .expect("resolve replay");
     for _ in 0..100 {

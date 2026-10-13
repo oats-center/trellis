@@ -79,6 +79,7 @@ where
         .map_err(error)?;
     lease.nats().flush().await.map_err(error)?;
     let (sender, receiver) = oneshot::channel();
+    let (cancel, cancelled) = oneshot::channel();
     let task = tokio::spawn(run_upload(
         client,
         lease,
@@ -88,8 +89,10 @@ where
         store,
         on_progress,
         sender,
+        cancelled,
     ));
     Ok(UploadTransferCompletion {
+        cancellation: Some(cancel),
         receiver,
         task: Some(task),
     })
@@ -128,6 +131,7 @@ async fn run_upload<C, F>(
     store: C,
     on_progress: F,
     sender: oneshot::Sender<protocol::UploadTransferCompletionResult>,
+    mut cancelled: oneshot::Receiver<()>,
 ) -> Result<(), ServerError>
 where
     C: StoreResourceClient,
@@ -213,10 +217,18 @@ where
                     publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Credit { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone(), received_seq: U64s::new(session.received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed.seq), consumed_bytes: U64s::new(consumed.bytes) }).await?;
                     reported_seq = consumed.seq; reported_bytes = consumed.bytes; scheduler.clear();
                 },
+                _ = &mut cancelled => {
+                    session.abort().await;
+                    return Err(error("operation upload cancelled"));
+                },
                 message = control.next() => {
                     let message = message.ok_or_else(|| error("upload control subscription closed"))?;
                     let descriptor = match wire::descriptor(&message, &grant.transfer_id, TransferDirection::Send) { Ok(value) => value, Err(_) => continue };
-                    if descriptor.kind != TransferFrameKind::Control || peer.verify_caller(&message, &descriptor, &grant.provider.connection_id, &grant.signal_subject).await.is_err() { continue; }
+                    if descriptor.kind != TransferFrameKind::Control { continue; }
+                    if let Err(error) = peer.verify_caller(&message, &descriptor, &grant.provider.connection_id, &grant.signal_subject).await {
+                        tracing::debug!(%error, "rejected upload control authority");
+                        continue;
+                    }
                     let body = parse_transfer_control(&message.payload).map_err(error)?;
                     let seq = body.control_seq().get();
                     if seq == control_seq {

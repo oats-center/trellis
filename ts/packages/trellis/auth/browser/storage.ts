@@ -299,7 +299,7 @@ export class BrowserSessionStore {
    */
   async #saveRefreshToken(
     token: string | undefined,
-    grant: OAuthRecord["grant"] = this.#record.grant,
+    grant: OAuthRecord["grant"],
     recoveryRequired = false,
   ): Promise<Result<void, AuthError>> {
     try {
@@ -432,7 +432,10 @@ export class BrowserSessionStore {
         }
         // Authenticate first own authority before committing a rotated secret.
         await install(rotated.value);
-        const saved = await this.#saveRefreshToken(rotated.refreshToken);
+        const saved = await this.#saveRefreshToken(
+          rotated.refreshToken,
+          this.#record.grant,
+        );
         if (saved.isErr()) return err(saved.error);
         return ok(rotated.value);
       });

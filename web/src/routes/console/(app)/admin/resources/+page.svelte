@@ -260,7 +260,7 @@
               >
               <td
                 ><span class="trellis-identifier block overflow-x-auto text-xs"
-                  >{resource.participantId}</span
+                  >{resource.participantId ?? resource.clientId ?? "—"}</span
                 ></td
               >
               <td

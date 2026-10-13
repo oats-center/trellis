@@ -777,11 +777,11 @@ impl Client {
 
     /// Construct a generated typed State resource handle.
     #[doc(hidden)]
-    pub fn state_handle<T>(
+    pub fn state_handle<T, D: 'static>(
         &self,
         name: &str,
         codec: crate::client::ResourceCodec<T>,
-    ) -> Option<crate::client::ConnectedStateHandle<T>>
+    ) -> Option<crate::client::ConnectedStateHandle<T, D>>
     where
         T: Codec + Send + 'static,
     {
@@ -796,6 +796,27 @@ impl Client {
                     self.client.watch_availability(),
                 )
             })
+    }
+
+    /// Construct an app State handle after the generated Register RPC succeeds.
+    /// App authority is checked by the shared connection owner on every request.
+    #[doc(hidden)]
+    pub fn registered_state_handle<T, D: 'static>(
+        &self,
+        name: &str,
+        codec: crate::client::ResourceCodec<T>,
+    ) -> crate::client::ConnectedStateHandle<T, D>
+    where
+        T: Codec + Send + 'static,
+    {
+        let mut handle = crate::client::StateHandle::from_generated(
+            name,
+            codec,
+            crate::client::BoundStateResourceClient::new(self.client.clone()),
+            self.client.watch_availability(),
+        );
+        handle.registered_app = true;
+        handle
     }
 
     /// Open a generated typed KV resource handle from its current installation binding.

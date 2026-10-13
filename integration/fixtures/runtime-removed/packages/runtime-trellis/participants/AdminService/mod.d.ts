@@ -31,11 +31,16 @@ type __ActionNames = {
 	readonly "trellis.auth@v1:rpc:Deployments.Get": "Deployments.Get";
 	readonly "trellis.auth@v1:rpc:Deployments.List": "Deployments.List";
 	readonly "trellis.auth@v1:rpc:Deployments.Remove": "Deployments.Remove";
+	readonly "trellis.auth@v1:rpc:DeviceCompanions.Attach": "DeviceCompanions.Attach";
+	readonly "trellis.auth@v1:rpc:DeviceCompanions.Revoke": "DeviceCompanions.Revoke";
 	readonly "trellis.auth@v1:rpc:Devices.Disable": "Devices.Disable";
 	readonly "trellis.auth@v1:rpc:Devices.Enable": "Devices.Enable";
 	readonly "trellis.auth@v1:rpc:Devices.List": "Devices.List";
 	readonly "trellis.auth@v1:rpc:Devices.Provision": "Devices.Provision";
 	readonly "trellis.auth@v1:rpc:Devices.Remove": "Devices.Remove";
+	readonly "trellis.auth@v1:rpc:Devices.Reviews.Decide": "Devices.Reviews.Decide";
+	readonly "trellis.auth@v1:rpc:Devices.Reviews.Get": "Devices.Reviews.Get";
+	readonly "trellis.auth@v1:rpc:Devices.Reviews.List": "Devices.Reviews.List";
 	readonly "trellis.auth@v1:rpc:Issuers.ResolveChain": "Issuers.ResolveChain";
 	readonly "trellis.auth@v1:rpc:Issuers.Revoke": "Issuers.Revoke";
 	readonly "trellis.auth@v1:rpc:Issuers.Rotate": "Issuers.Rotate";
@@ -147,7 +152,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "7ZHsZl6lL880JEaFir5hnw-bFQ32WtBN6z2q1XLuUrA";
+export declare const PARTICIPANT_DIGEST: "seqyctaxlrjTfry6WchbdZp4FQbYlPm-QqPhNiSDfEI";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never]: Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never]: Handles[Name] | undefined };

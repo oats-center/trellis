@@ -112,6 +112,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let sampler_store = store.clone();
     let loops = RuntimeLoops::start(jobs_runtime, &resources, store).await?;
     let sampler_nats = context.trellis_nats.clone();
+    let context_nats = context.trellis_nats.clone();
     let live_owner = context
         .live_providers
         .receiver(crate::platform::LiveProviderRole::Jobs);
@@ -134,6 +135,12 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 return Ok(());
             };
             let mut router = router;
+            history::register(
+                &mut router,
+                platform_storage.path.clone(),
+                context_nats,
+                owner.clone(),
+            );
             router.set_live_owner(owner.clone());
             let validator = owner.runtime_validator(JOBS_API_ID);
             run_builtin_authenticated_router(owner, router, validator).await
@@ -160,3 +167,4 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         join,
     })
 }
+mod history;

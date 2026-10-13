@@ -30,6 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION"),
     ));
     tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
         .with(
             telemetry
                 .tracer()
@@ -49,7 +51,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("CONSUMER_ONLY").as_deref() == Ok("true") {
         return run_consumer_only(&url, &identity).await;
     }
-    let mut service = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    let server = trellis_rs::auth::discover_native_oauth(&url).await?;
+    let mut service = Participant::connect(ServiceConnectOptions::new(
+        server.nats_servers,
+        server.trust,
+        &identity,
+    ))
+    .await?;
     let seen = Arc::new(Mutex::new(BTreeSet::new()));
     let stats = Arc::new(Mutex::new(DeliveryStats::default()));
     let event_options = if std::env::var("EPHEMERAL").as_deref() == Ok("true") {
@@ -168,7 +176,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Event Subscribe authority, so explicit ephemeral must fail fast.
 async fn run_consumer_only(url: &str, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     use runtime_trellis::participants::runtime_trellis_event_service_consumer_only::Participant as ConsumerOnly;
-    let service = ConsumerOnly::connect(ServiceConnectOptions::new(url, identity)).await?;
+    let server = trellis_rs::auth::discover_native_oauth(url).await?;
+    let service = ConsumerOnly::connect(ServiceConnectOptions::new(
+        server.nats_servers,
+        server.trust,
+        identity,
+    ))
+    .await?;
     let outcome = service
         .listen_event::<Alpha, _, _>(
             |_event, _| async { Ok(()) },
