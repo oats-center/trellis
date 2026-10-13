@@ -582,3 +582,7 @@ Transient updates carry operationId, sequence, timestamp, update and snapshot.
 OIDC role freshness follows the selected provider/subject identity, not merely
 the user's latest login at that provider. Other linked identities cannot supply
 or remove its roles; direct grants remain independent.
+
+Native and Device Code authorization never inherits registered-browser implied
+consent. Explicit requested-capability approval and Device Code confirmation are
+still required for registered native clients.

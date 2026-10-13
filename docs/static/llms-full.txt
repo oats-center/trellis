@@ -21,6 +21,10 @@ OIDC claim refresh is scoped to the selected provider and upstream subject; a
 second linked identity cannot add or remove another identity's mapped roles.
 Direct grants remain independent of upstream role loss and claim freshness.
 
+Configured implied consent applies only to registered browser bindings and their
+bounded capability subset. Native and Device Code clients require explicit user
+approval even when registered; Device Code confirmation remains mandatory.
+
 Identity-link approval remains a protected same-origin POST. Its no-store
 continuation page shows a navigation link to a 60-second, one-use GET handoff
 bound to the exact portal session, provider and account. Top-level navigation

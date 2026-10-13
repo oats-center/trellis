@@ -190,7 +190,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         display_name: "Device-only native client".into(),
         redirect_uris: Vec::new(),
         development: false,
-        implied_capabilities: Vec::new(),
+        implied_capabilities: vec![f.read.clone()],
         eligible_privileges: Vec::new(),
         metadata: serde_json::json!({
             "grant_types": ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]
@@ -327,6 +327,25 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         assert_eq!(consent.status(), reqwest::StatusCode::OK);
         let consent: serde_json::Value = consent.json().await.unwrap();
         assert_eq!(consent["deviceUserCode"], flow.user_code());
+        let implicit = http
+            .post(format!("{origin}/portal/approve"))
+            .header("Origin", &origin)
+            .header("Cookie", cookies.join("; "))
+            .form(&[
+                ("csrf", csrf.as_str()),
+                ("transaction", transaction.as_str()),
+                ("presentation", consent["presentationId"].as_str().unwrap()),
+                ("decision", "approve"),
+                ("confirm_device", flow.user_code()),
+            ])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            implicit.json::<serde_json::Value>().await.unwrap(),
+            serde_json::json!({"error":"access_denied"}),
+            "even trusted Device Code clients need explicit requested-capability approval"
+        );
         let approved = http
             .post(format!("{origin}/portal/approve"))
             .header("Origin", &origin)

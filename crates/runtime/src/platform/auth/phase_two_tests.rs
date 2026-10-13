@@ -1561,6 +1561,72 @@ fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
 }
 
 #[test]
+fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_choices() {
+    let f = fixture();
+    let login = f
+        .store
+        .issue_authority(&f.admission, None, NOW)
+        .unwrap()
+        .authority
+        .unsigned
+        .login_session_id
+        .unwrap();
+    let mut client = ClientRegistration {
+        client_id: "native-client".into(),
+        kind: "native".into(),
+        display_name: "Registered native client".into(),
+        redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
+        development: false,
+        implied_capabilities: vec![f.read.clone()],
+        eligible_privileges: vec![],
+        metadata: serde_json::json!({}),
+        expected_revision: 1,
+    };
+    f.store
+        .register_client(&mutation(&f.admin, &client), &client, NOW)
+        .unwrap();
+    let mut request = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
+    request.approved.clear();
+    assert!(
+        matches!(
+            f.store
+                .approve_grant(&mutation(&f.principal, &request), &request, NOW),
+            Err(AuthError::RequiredMissing)
+        ),
+        "a registered native client cannot substitute preapproval for user consent"
+    );
+
+    client.client_id = "trusted-browser".into();
+    client.kind = "browser".into();
+    client.redirect_uris = vec!["https://trusted.example/callback".into()];
+    client.expected_revision = 0;
+    f.store
+        .register_client(&mutation(&f.admin, &client), &client, NOW)
+        .unwrap();
+    request.client_id = client.client_id;
+    request.binding_kind = "browser".into();
+    request.binding_value = "https://trusted.example".into();
+    let grant = f
+        .store
+        .approve_grant(&mutation(&f.principal, &request), &request, NOW)
+        .unwrap();
+    let mut admission = f.admission.clone();
+    admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
+    admission.credential = Credential::OAuthGrant(grant);
+    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    assert!(issued
+        .authority
+        .unsigned
+        .capabilities
+        .iter()
+        .any(|cap| cap.capability_id == f.read));
+    assert!(
+        issued.optional_unavailable.contains(&f.write),
+        "trust in the client cannot approve capabilities outside its configured subset"
+    );
+}
+
+#[test]
 fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_consent() {
     let f = fixture();
     let source = SOURCE

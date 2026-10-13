@@ -363,3 +363,6 @@ can forward their own updates without receiving caller Observe authority.
 
 OIDC claim refresh is scoped to the selected provider and upstream subject; a
 second linked identity cannot add or remove another identity's mapped roles.
+
+Configured implied consent applies only to registered browser bindings. Native
+and Device Code clients require explicit user approval even when registered.

@@ -125,6 +125,11 @@ a localhost redirect establishes trust. CIMD and unregistered clients remain
 ineligible for platform privileges, and OAuth/application origin isolation is
 unchanged.
 
+Registered-client implied capability consent is browser-only and limited to the
+configured subset, the requested selection and the user's current entitlement.
+It never substitutes for native approval; Device Code flows additionally require
+the matching user-code confirmation.
+
 Dex is exclusively a real upstream OIDC test dependency, not a deployment
 component. Trellis validates upstream nonce, signature, issuer, and audience
 before translating verified claims through its own role mapping and consent.

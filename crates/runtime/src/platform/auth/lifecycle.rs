@@ -397,7 +397,9 @@ impl SqliteAuthorizationStore {
                 },
             };
             if kind!=approval.binding_kind {return Err(AuthError::Denied);}
-            let implied:Vec<String>=decode(&implied)?;
+            // Registered browser trust cannot stand in for a native user's
+            // explicit approval, including Device Authorization Grant consent.
+            let implied:Vec<String>=if kind=="browser" {decode(&implied)?} else {Vec::new()};
             let eligible:Vec<PlatformPrivilege>=decode(&eligible)?;
             let entitled=entitlements(connection,&approval.principal_id,Some(&approval.login_session_id),now)?;
             if approval.presentation.is_some() && approval.selection.required.iter().any(|name|!entitled.contains_key(name)) {
