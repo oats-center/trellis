@@ -104,6 +104,19 @@ fences for takeover. Live cancellation retains authenticated owner-specific
 session control routing, not the queued open subject. No global routing directory
 or persistent caller-to-provider selection is involved.
 
+Canonical start subjects carry the generated API's major version. Established
+owner-directed subjects retain the fixed `operation.v1` transport-family prefix
+and encode the full API identity, including that API major. These versions are
+independent. Implementation-only providers can subscribe to their own
+deployment-scoped transient-update forwarding subject without selecting caller
+Observe authority; that maintenance right grants no observation of another
+deployment or caller authority.
+
+Durable references and repository records use the canonical
+`<version-qualified API identity>:operation:<action name>` in both SDKs. Generated
+method aliases are only language ergonomics: a same-named action added to another
+API cannot rename an existing Operation or merge its repository scope.
+
 Upload/download staging is platform-managed rather than mapped to a participant
 Store. Committed staged bytes survive executor replacement. An interrupted
 in-flight upload is invalidated and restarted from byte zero. Generated transfer

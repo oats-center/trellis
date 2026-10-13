@@ -13,6 +13,9 @@ use trellis_test_fixture::participants::trellis_test_fixture_kv_provider::{Parti
 use trellis_test_fixture::types::Value;
 use trellis_testkit::TrellisTestRuntime;
 
+#[path = "support/operation_interop.rs"]
+mod operation_interop;
+
 fn wire<T: DeserializeOwned>(value: Json) -> T {
     serde_json::from_value(value).unwrap()
 }
@@ -271,7 +274,7 @@ async fn kick_connection(runtime: &TrellisTestRuntime, before: &[u64]) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn optional_operation_approval_decline_reduction_and_authorized_expansion() {
-    use runtime_trellis::apis::runtime_trellis_optional_availability_v1::rpc::ReadInput as OperationValue;
+    use runtime_trellis::apis::runtime_trellis_optional_availability_v2::rpc::ReadInput as OperationValue;
     use runtime_trellis::apps::runtime_trellis_native_optional_extend::{Client, Request};
     use runtime_trellis::participants::runtime_trellis_native_optional_provider as native_provider;
     use std::sync::{
@@ -291,10 +294,10 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
     let observed = executions.clone();
     let mut provider = native_provider::Provider::new(&mut service);
     provider
-        .runtime_trellis_optional_availability_v1()
+        .runtime_trellis_optional_availability_v2()
         .register_read(|_, input| async move { Ok(input) });
     provider
-        .runtime_trellis_optional_availability_v1()
+        .runtime_trellis_optional_availability_v2()
         .register_extend(move |_, input, operation| {
             let observed = observed.clone();
             async move {
@@ -331,7 +334,7 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
     )
     .await
     .unwrap();
-    let approved = Client::from_generated(base.clone()).runtime_trellis_optional_availability_v1();
+    let approved = Client::from_generated(base.clone()).runtime_trellis_optional_availability_v2();
     let retained = approved.extend();
     let input = OperationValue {
         value: "approved".into(),
@@ -385,7 +388,7 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
     .await
     .unwrap();
     let declined =
-        Client::from_generated(declined_base.clone()).runtime_trellis_optional_availability_v1();
+        Client::from_generated(declined_base.clone()).runtime_trellis_optional_availability_v2();
     assert_eq!(declined.read(&input).await.unwrap().value, "approved");
     assert!(declined.extend().start(&input).await.is_err());
     assert_eq!(executions.load(Ordering::SeqCst), 2);

@@ -236,6 +236,9 @@ export type UpdateOperationEvent<
   TUpdate = unknown,
 > = {
   type: "update";
+  operationId: string;
+  sequence: number;
+  timestamp: string;
   update: TUpdate;
   snapshot: OperationSnapshot<TProgress, TOutput>;
 };
@@ -561,7 +564,7 @@ export function controlSubject(
   const { apiId, apiVersion } = descriptor.permissions.invoke;
   if (
     parts[0] !== "operations" ||
-    parts[1] !== "v1" ||
+    parts[1] !== apiVersion ||
     parts.length < 4 ||
     !apiId ||
     !apiVersion ||

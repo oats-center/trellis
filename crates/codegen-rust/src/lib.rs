@@ -728,7 +728,11 @@ fn render_action(
     action: &ActionDefinition,
 ) -> Result<String, CodegenRustError> {
     let rust_name = type_name(name);
-    let key = format!("{}.{}", api.name(), name);
+    let key = if matches!(action, ActionDefinition::Operation { .. }) {
+        format!("{}:operation:{name}", api.identity())
+    } else {
+        format!("{}.{}", api.name(), name)
+    };
     let version = format!("v{}", api.major());
     let capabilities = |direction| action_capabilities(api, action_kind(action), name, direction);
     match action {
@@ -821,7 +825,7 @@ fn render_action(
             }
             out.push_str(&format!(
                 "pub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = {:?}; pub const CALLER_CAPABILITIES: &'static [&'static str] = &{}; pub const ERRORS: &'static [&'static str] = &{}; pub const UPLOAD: bool = {upload}; }}\n",
-                format!("operation.{name}"), format!("operations.{version}.{key}"),
+                format!("operation.{name}"), format!("operations.{version}.{}.{name}", api.name()),
                 string_slice(capabilities(InteractionDirection::Invoke)), qualified_errors(api, errors),
             ));
             out.push_str(&render_action_errors(api, &rust_name, errors));

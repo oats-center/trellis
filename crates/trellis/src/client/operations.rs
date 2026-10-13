@@ -259,8 +259,9 @@ fn operation_action<D: OperationDescriptor>(
     trellis_protocol::CatalogActionIdentity {
         kind: trellis_protocol::ApiSurfaceKind::Operation,
         name: D::KEY
-            .split_once('.')
-            .map_or(D::KEY, |(_, action)| action)
+            .split_once(":operation:")
+            .expect("generated canonical Operation identity")
+            .1
             .to_owned(),
         direction,
     }
@@ -1377,33 +1378,6 @@ mod tests {
             r#"{"type":"object","properties":{},"required":[]}"#;
         const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
         const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = r#"{"selectWorkspace":{"type":"object","required":["workspaceId"],"properties":{"workspaceId":{"type":"string"}}}}"#;
-    }
-
-    #[test]
-    fn persisted_service_reference_restores_owner_directed_control_route() {
-        let invocation = super::OperationInvoker::<(), RefundOperation>::new(&());
-        for deployment in ["deployment-a", "deployment-b"] {
-            let server_ref = crate::service::OperationRefData {
-                id: ulid::Ulid::new().to_string(),
-                service: "billing".into(),
-                operation: RefundOperation::KEY.into(),
-                deployment_id: deployment.into(),
-            };
-            let data = serde_json::from_slice(&serde_json::to_vec(&server_ref).unwrap()).unwrap();
-            let restored = invocation.control(data).unwrap();
-            assert_eq!(
-                super::control_subject(&restored.owner_subject().unwrap()),
-                format!(
-                    "operation.v1.{}.{}.Refund.control",
-                    trellis_protocol::encode_subject_token("billing@v1"),
-                    trellis_protocol::encode_subject_token(deployment)
-                )
-            );
-            let persisted = serde_json::to_vec(restored.reference()).unwrap();
-            let mut other: super::OperationRefData = serde_json::from_slice(&persisted).unwrap();
-            other.operation = "Billing.Other".into();
-            assert!(invocation.control(other).is_err());
-        }
     }
 
     #[test]

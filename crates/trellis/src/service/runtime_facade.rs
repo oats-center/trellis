@@ -1343,7 +1343,10 @@ impl<C> ConnectedServiceRuntime<C> {
         self.registered_subjects.insert(D::SUBJECT.to_owned());
         // A start selects an eligible provider; subsequent controls target that
         // operation's deployment-owned repository rather than another provider.
-        let action = D::KEY.split_once('.').map_or(D::KEY, |(_, name)| name);
+        let action = D::KEY
+            .split_once(":operation:")
+            .expect("generated canonical Operation identity")
+            .1;
         let owner_subject = trellis_protocol::derive_bound_operation_subject(
             D::API_ID,
             &self.provider_deployment_id,

@@ -9,6 +9,14 @@ Already-open browser tabs refresh discovery from retained trust before spending
 refresh tokens. Native renewal uses the current maintenance attachment through
 verified authority promotion, including after transport replacement.
 
+Operations use the canonical `<API identity>@v<major>:operation:<action>` identity
+across SDKs, storage and complete references; generated aliases are not durable
+identities. Canonical starts honor that API major, while owner-directed controls
+retain the fixed `operation.v1` transport family. Implementation-only providers
+can forward their own updates without receiving caller Observe authority.
+Rust generated `OperationRef::reference()` exposes the complete serializable
+reference for restoring control without starting another execution.
+
 Identity-link approval remains a protected same-origin POST. Its no-store
 continuation page shows a navigation link to a 60-second, one-use GET handoff
 bound to the exact portal session, provider and account. Top-level navigation

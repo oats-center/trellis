@@ -653,7 +653,10 @@ where
         principal_id: caller.principal_id.clone(),
         binding: caller.binding.clone(),
     };
-    let action_name = D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action);
+    let action_name = D::KEY
+        .split_once(":operation:")
+        .expect("generated canonical Operation identity")
+        .1;
     let observer_action = LiveAction {
         api_id: D::API_ID.to_owned(),
         identity: CatalogActionIdentity {

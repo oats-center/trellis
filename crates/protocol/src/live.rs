@@ -678,8 +678,8 @@ pub struct LiveOfferConsumer {
     pub session_key: String,
     /// Consumer principal id.
     pub principal_id: String,
-    /// Consumer participant id.
-    pub participant_id: String,
+    /// Exact consumer binding from its verified logical-session authority.
+    pub binding: crate::SessionBinding,
 }
 
 /// Fixed v1 session limits carried by a signed offer.
@@ -2245,7 +2245,10 @@ mod tests {
                 connection_id: "C".into(),
                 session_key: "KC".into(),
                 principal_id: "pru".into(),
-                participant_id: "pau".into(),
+                binding: crate::SessionBinding::Browser {
+                    client_id: "app".into(),
+                    origin: "https://app.example".into(),
+                },
             },
             limits: LiveOfferLimits {
                 max_data_body_bytes: 1_044_480,

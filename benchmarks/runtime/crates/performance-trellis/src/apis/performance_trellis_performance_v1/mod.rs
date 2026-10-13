@@ -150,7 +150,7 @@ pub mod operations {
     impl AwaitCancellation {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.AwaitCancellation";
-        pub const KEY: &'static str = "performance.AwaitCancellation";
+        pub const KEY: &'static str = "performance-trellis.performance@v1:operation:AwaitCancellation";
         pub const SUBJECT: &'static str = "operations.v1.performance.AwaitCancellation";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "performance-trellis.performance@v1::workloads",
@@ -191,7 +191,7 @@ pub mod operations {
     impl AwaitObject {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.AwaitObject";
-        pub const KEY: &'static str = "performance.AwaitObject";
+        pub const KEY: &'static str = "performance-trellis.performance@v1:operation:AwaitObject";
         pub const SUBJECT: &'static str = "operations.v1.performance.AwaitObject";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "performance-trellis.performance@v1::workloads",
@@ -230,7 +230,7 @@ pub mod operations {
     impl QueueKeyed {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.QueueKeyed";
-        pub const KEY: &'static str = "performance.QueueKeyed";
+        pub const KEY: &'static str = "performance-trellis.performance@v1:operation:QueueKeyed";
         pub const SUBJECT: &'static str = "operations.v1.performance.QueueKeyed";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "performance-trellis.performance@v1::workloads",
@@ -269,7 +269,7 @@ pub mod operations {
     impl QueueWork {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.QueueWork";
-        pub const KEY: &'static str = "performance.QueueWork";
+        pub const KEY: &'static str = "performance-trellis.performance@v1:operation:QueueWork";
         pub const SUBJECT: &'static str = "operations.v1.performance.QueueWork";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "performance-trellis.performance@v1::workloads",
@@ -308,7 +308,7 @@ pub mod operations {
     impl Upload {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.Upload";
-        pub const KEY: &'static str = "performance.Upload";
+        pub const KEY: &'static str = "performance-trellis.performance@v1:operation:Upload";
         pub const SUBJECT: &'static str = "operations.v1.performance.Upload";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "performance-trellis.performance@v1::workloads",
@@ -348,7 +348,7 @@ pub mod operations {
     impl Work {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.Work";
-        pub const KEY: &'static str = "performance.Work";
+        pub const KEY: &'static str = "performance-trellis.performance@v1:operation:Work";
         pub const SUBJECT: &'static str = "operations.v1.performance.Work";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "performance-trellis.performance@v1::workloads",

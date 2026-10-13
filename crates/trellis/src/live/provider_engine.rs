@@ -255,7 +255,7 @@ impl ProviderSessionRecord {
                 connection_id: consumer.connection_id.clone(),
                 session_key: trellis_protocol::encode_subject_token(&consumer.session_key),
                 principal_id: consumer.principal_id.clone(),
-                participant_id: consumer.participant_id().to_owned(),
+                binding: consumer.binding.clone(),
             },
             limits,
         };

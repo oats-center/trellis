@@ -496,7 +496,10 @@ impl Router {
                 trellis_protocol::derive_bound_operation_subject(
                     api_id,
                     deployment,
-                    &self.descriptor_name(action),
+                    action
+                        .split_once(":operation:")
+                        .expect("generated canonical Operation identity")
+                        .1,
                 )
                 .expect("generated operation metadata must form a valid owner subject")
             },
@@ -646,7 +649,11 @@ impl Router {
         D: OperationDescriptor + 'static,
     {
         let subject = D::SUBJECT.to_owned();
-        let name = self.descriptor_name(D::KEY);
+        let name = D::KEY
+            .split_once(":operation:")
+            .expect("generated canonical Operation identity")
+            .1
+            .to_owned();
         let metadata_handler = || {
             Box::new(
                 |_, _| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
@@ -837,7 +844,7 @@ impl Router {
                 permission: RoutePermissionSpec::Static(
                     D::API_ID.to_owned(),
                     ApiSurfaceKind::Operation,
-                    self.descriptor_name(D::KEY),
+                    D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1.to_owned(),
                     PermissionAction::Invoke,
                 ),
                 route_token: self.intern_route(D::API_ID, D::KEY),
@@ -883,7 +890,7 @@ impl Router {
                 },
                 permission: RoutePermissionSpec::OperationControl(
                     D::API_ID.to_owned(),
-                    self.descriptor_name(D::KEY),
+                    D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1.to_owned(),
                 ),
                 route_token: self.intern_route(D::API_ID, D::KEY),
                 unary_rpc: false,
@@ -1206,16 +1213,26 @@ where
     TUpdate: serde::Serialize + 'static,
 {
     let mut sent_initial_snapshot = false;
+    let mut current_snapshot = None;
     Box::pin(
         events
             .map(move |event| match event {
                 Ok(OperationLiveEvent::Snapshot(snapshot)) => {
+                    let value = match serde_json::to_value(&snapshot) {
+                        Ok(value) => value,
+                        Err(error) => return Some(Err(error.into())),
+                    };
+                    current_snapshot = Some(value);
                     let index = usize::from(sent_initial_snapshot);
                     sent_initial_snapshot = true;
                     Some(operation_watch_frame::<D>(index, snapshot, &schemas))
                 }
                 Ok(OperationLiveEvent::Update(update)) if include_updates => {
-                    Some(operation_update_frame(update, schemas.update.as_ref()))
+                    Some(operation_update_frame(
+                        update,
+                        schemas.update.as_ref(),
+                        current_snapshot.as_ref(),
+                    ))
                 }
                 Ok(OperationLiveEvent::Update(_)) => None,
                 Err(error) => Some(Err(error)),
@@ -1227,6 +1244,7 @@ where
 fn operation_update_frame<TUpdate>(
     update: crate::client::OperationUpdateEvent<TUpdate>,
     update_schema: Option<&PreparedSchema>,
+    snapshot: Option<&serde_json::Value>,
 ) -> Result<Bytes, ServerError>
 where
     TUpdate: serde::Serialize,
@@ -1236,6 +1254,9 @@ where
         ServerError::Nats("operation update stream is missing its declared schema".to_string())
     })?;
     schema.validate(&update_value)?;
+    let snapshot = snapshot.ok_or_else(|| {
+        ServerError::Nats("operation update preceded its initial snapshot".into())
+    })?;
     Ok(Bytes::from(serde_json::to_vec(&serde_json::json!({
         "kind": "event",
         "sequence": update.sequence,
@@ -1245,6 +1266,7 @@ where
             "sequence": update.sequence,
             "timestamp": update.timestamp,
             "update": update_value,
+            "snapshot": snapshot,
         }
     }))?))
 }

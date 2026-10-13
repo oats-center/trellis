@@ -33,6 +33,8 @@ export type GeneratedActionDescriptor = Readonly<{
   payload?: GeneratedCodec;
   event?: GeneratedCodec;
   progress?: GeneratedCodec;
+  /** Operation's transient-update codec, distinct from durable progress. */
+  update?: GeneratedCodec;
   errors?: readonly RuntimeRpcErrorClass[];
   signals?: Readonly<Record<string, GeneratedCodec>>;
   parameters?: readonly (readonly string[])[];
@@ -329,22 +331,16 @@ function runtimeDescriptor(
         input: descriptor.input as Codec<unknown>,
         output: descriptor.output,
         progress: descriptor.progress,
-        update: descriptor.progress,
+        update: descriptor.update,
         permissions: {
           invoke: permission(api.identity, descriptor, "invoke"),
           observe: permission(api.identity, descriptor, "observe"),
           cancel: permission(api.identity, descriptor, "cancel"),
           control: Object.fromEntries(
-            Object.keys(descriptor.signals ?? {}).map((name) => {
-              const control = permission(api.identity, descriptor, "control");
-              return [
-                name,
-                {
-                  ...control,
-                  surfaceName: `${control.surfaceName}.${name}`,
-                },
-              ];
-            }),
+            Object.keys(descriptor.signals ?? {}).map((name) => [
+              name,
+              permission(api.identity, descriptor, "control"),
+            ]),
           ),
         },
         signals: Object.fromEntries(

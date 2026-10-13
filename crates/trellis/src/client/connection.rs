@@ -2325,6 +2325,17 @@ impl TrellisClient {
                 "Trellis-Session-Request",
                 serde_json::to_string(&request)?.as_str(),
             );
+            headers.insert("authorization-context", request.authority_digest.as_str());
+            headers.insert("iat", request.issued_at.to_string().as_str());
+            headers.insert("request-id", request.request_id.as_str());
+            headers.insert(
+                "Trellis-Api-Generation",
+                request.api_generation.get().to_string().as_str(),
+            );
+            headers.insert(
+                "Trellis-Accepted-Revision",
+                request.accepted_revision.get().to_string().as_str(),
+            );
             headers.insert("proof", proof.as_str());
             headers.insert("session-key", self.auth.session_key.as_str());
             let mut trace_pairs = Vec::new();

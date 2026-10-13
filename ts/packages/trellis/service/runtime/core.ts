@@ -3095,6 +3095,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   sequence: latest.sequence,
                   event: {
                     type: "update",
+                    operationId,
+                    sequence,
+                    timestamp: envelope.occurredAt,
                     update: wireUpdate,
                     snapshot: latest.snapshot,
                   },
@@ -3188,17 +3191,19 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   }
 
   override operationHandle(
-    operation: string,
+    operationName: string,
   ): OperationRegistration<unknown, unknown, unknown, undefined, BaseError> {
     const ctx = this.api["operations"]?.[
-      operation as keyof typeof this.api.operations
+      operationName as keyof typeof this.api.operations
     ] as RegisteredRuntimeOperationDesc | undefined;
     if (!ctx) {
       throw new Error(
-        `Unknown operation '${operation.toString()}'. Did you forget to include its API module?`,
+        `Unknown operation '${operationName}'. Did you forget to include its API module?`,
       );
     }
-    const route = routeToken("operation", String(operation));
+    const permission = ctx.permissions.invoke;
+    const operation = `${permission.apiId}@${permission.apiVersion}:operation:${permission.surfaceName}`;
+    const route = routeToken("operation", operation);
     const own = this.auth.authorityOwner?.own();
     const binding = own?.authority.binding;
     own?.release();

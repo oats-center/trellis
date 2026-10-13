@@ -626,7 +626,10 @@ where
                 subject: context.subject.clone(),
                 session_key: context.session_key.clone().unwrap_or_default(),
             })?;
-        let name = D::KEY.split_once('.').map_or(D::KEY, |(_, name)| name);
+        let name = D::KEY
+            .split_once(":operation:")
+            .expect("generated canonical Operation identity")
+            .1;
         let permission_matches = context
             .required_permission
             .as_ref()
@@ -1171,8 +1174,9 @@ where
                         api: D::API_ID.to_owned(),
                         surface: ApiSurfaceKind::Operation,
                         name: D::KEY
-                            .split_once('.')
-                            .map_or(D::KEY, |(_, name)| name)
+                            .split_once(":operation:")
+                            .expect("generated canonical Operation identity")
+                            .1
                             .to_owned(),
                         action: PermissionAction::Cancel,
                         signal: None,
@@ -1914,7 +1918,7 @@ where
                                         .and_then(|value| serde_json::from_str::<trellis_protocol::SessionRequest>(value.as_str()).ok())
                                     else { continue; };
                                     if session_request.api_id != D::API_ID
-                                        || session_request.action != D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action)
+                                        || session_request.action != D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1
                                     { continue; }
                                     let request = RequestContext {
                                         session_request: Some(session_request),
@@ -2203,7 +2207,10 @@ fn operation_update_subject<D: OperationDescriptor>(
     deployment_id: &str,
     operation_id: &str,
 ) -> String {
-    let action = D::KEY.split_once('.').map_or(D::KEY, |(_, action)| action);
+    let action = D::KEY
+        .split_once(":operation:")
+        .expect("generated canonical Operation identity")
+        .1;
     let start = trellis_protocol::derive_bound_operation_subject(D::API_ID, deployment_id, action)
         .expect("generated operation metadata must form a valid bound subject");
     format!("{start}.updates.{operation_id}")
@@ -2438,8 +2445,9 @@ fn operation_upload_grant<D: OperationDescriptor>(
             action: trellis_protocol::CatalogActionIdentity {
                 kind: trellis_protocol::ApiSurfaceKind::Operation,
                 name: D::KEY
-                    .split_once('.')
-                    .map_or(D::KEY, |(_, action)| action)
+                    .split_once(":operation:")
+                    .expect("generated canonical Operation identity")
+                    .1
                     .to_owned(),
                 direction: trellis_protocol::PermissionAction::Invoke,
             },
@@ -2889,8 +2897,9 @@ where
             api_generation: api.generation,
             accepted_revision: api.accepted_revision,
             action: D::KEY
-                .split_once('.')
-                .map_or(D::KEY, |(_, action)| action)
+                .split_once(":operation:")
+                .expect("generated canonical Operation identity")
+                .1
                 .to_owned(),
             subject: self.update_subject.clone(),
             reply_subject: Some(reply.clone()),

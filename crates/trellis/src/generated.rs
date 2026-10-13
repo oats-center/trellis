@@ -471,7 +471,8 @@ pub trait OperationDescriptor: Send + Sync + 'static {
     const DESCRIPTOR_NAME: &'static str;
     /// Concrete Operation start subject.
     const SUBJECT: &'static str;
-    /// Exact whole-Operation permission/action key.
+    /// Canonical durable identity: `<API_ID>:operation:<action name>`.
+    /// Independent of generated method aliases and transport-family versions.
     const KEY: &'static str;
     /// Capability requirements declared for callers.
     const CALLER_CAPABILITIES: &'static [&'static str];
@@ -1057,6 +1058,12 @@ where
     /// Durable Operation id.
     pub fn id(&self) -> &str {
         self.inner.id()
+    }
+
+    /// Complete durable reference for serialization and later owner-directed control.
+    /// Restoring it does not grant authority or start another execution.
+    pub fn reference(&self) -> &crate::client::OperationRefData {
+        self.inner.reference()
     }
 
     /// Read the current durable snapshot.

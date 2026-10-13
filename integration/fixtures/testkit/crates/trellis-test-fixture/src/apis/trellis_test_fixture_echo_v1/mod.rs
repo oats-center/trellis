@@ -47,7 +47,7 @@ pub mod operations {
     impl OptionalSilent {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.OptionalSilent";
-        pub const KEY: &'static str = "echo.OptionalSilent";
+        pub const KEY: &'static str = "trellis-test-fixture.echo@v1:operation:OptionalSilent";
         pub const SUBJECT: &'static str = "operations.v1.echo.OptionalSilent";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "trellis-test-fixture.echo@v1::optionalSilent",
@@ -86,7 +86,7 @@ pub mod operations {
     impl Silent {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.Silent";
-        pub const KEY: &'static str = "echo.Silent";
+        pub const KEY: &'static str = "trellis-test-fixture.echo@v1:operation:Silent";
         pub const SUBJECT: &'static str = "operations.v1.echo.Silent";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "trellis-test-fixture.echo@v1::invoke",
@@ -127,7 +127,7 @@ pub mod operations {
     impl UpdateOnly {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.UpdateOnly";
-        pub const KEY: &'static str = "echo.UpdateOnly";
+        pub const KEY: &'static str = "trellis-test-fixture.echo@v1:operation:UpdateOnly";
         pub const SUBJECT: &'static str = "operations.v1.echo.UpdateOnly";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "trellis-test-fixture.echo@v1::invoke",
@@ -174,7 +174,7 @@ pub mod operations {
     impl Upload {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.Upload";
-        pub const KEY: &'static str = "echo.Upload";
+        pub const KEY: &'static str = "trellis-test-fixture.echo@v1:operation:Upload";
         pub const SUBJECT: &'static str = "operations.v1.echo.Upload";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "trellis-test-fixture.echo@v1::upload",
@@ -216,7 +216,7 @@ pub mod operations {
     impl Work {
         pub const API_ID: &'static str = super::API_ID;
         pub const DESCRIPTOR_NAME: &'static str = "operation.Work";
-        pub const KEY: &'static str = "echo.Work";
+        pub const KEY: &'static str = "trellis-test-fixture.echo@v1:operation:Work";
         pub const SUBJECT: &'static str = "operations.v1.echo.Work";
         pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
             "trellis-test-fixture.echo@v1::invoke",

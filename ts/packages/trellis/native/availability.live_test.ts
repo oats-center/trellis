@@ -256,6 +256,15 @@ test(
       let executions = 0;
       await service.handleExtend(async ({ input, op }) => {
         executions++;
+        if (input.value === "live updates") {
+          const emit = await op.nextSignal("Continue").orThrow();
+          await op
+            .emitUpdate({ value: "provider-only forwarded update" })
+            .orThrow();
+          await op.acknowledgeSignal(emit.sequence).orThrow();
+          const finish = await op.nextSignal("Continue").orThrow();
+          await op.acknowledgeSignal(finish.sequence).orThrow();
+        }
         return await op.complete(input).orThrow();
       });
       const clientId = `optional-${ulid()}`;
@@ -397,11 +406,44 @@ test(
       const expanded = await retained.start().orThrow();
       assert.equal((await expanded.wait().orThrow()).output?.value, "approved");
       assert.equal(executions, 3);
+      const streaming = await approved
+        .extend({ value: "live updates" })
+        .start()
+        .orThrow();
+      const observation = await streaming
+        .live({ updates: true, signal: context.signal })
+        .orThrow();
+      const events = observation[Symbol.asyncIterator]();
+      try {
+        // Receiving the initial snapshot establishes the actual provider watch
+        // before the signal asks the implementation-only provider to publish.
+        assert.equal((await events.next()).done, false);
+        await streaming.signal("Continue", { value: "emit" }).orThrow();
+        while (true) {
+          const next = await events.next();
+          assert.equal(next.done, false, "updates must precede completion");
+          if (next.value.type === "update") {
+            assert.equal(
+              next.value.update.value,
+              "provider-only forwarded update",
+            );
+            break;
+          }
+        }
+        await streaming.signal("Continue", { value: "finish" }).orThrow();
+        assert.equal(
+          (await streaming.wait().orThrow()).output?.value,
+          "live updates",
+        );
+        assert.equal(executions, 4);
+      } finally {
+        await observation.close();
+      }
       await declined.refreshAuthority();
       assert.ok(
         (await declined.extend({ value: "still declined" }).start()).isErr(),
       );
-      assert.equal(executions, 3);
+      assert.equal(executions, 4);
     } finally {
       for (const stop of close.reverse()) await stop();
       await rm(directory, { recursive: true, force: true });

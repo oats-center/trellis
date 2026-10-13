@@ -573,3 +573,8 @@ Refresh-successor checkpointing is restricted to actual refresh exchanges.
 Rejected cross-user Device Code reauthorization leaves prior custody usable.
 Retained browser OAuth clients refresh discovery from durable cross-tab trust
 before consuming a refresh token; no client recreation or page reload is needed.
+
+Operation identity is `<version-qualified API>:operation:<action>`, independent
+of generated method aliases. Starts honor the descriptor API major; controls and
+observation keep the fixed `operation.v1` family and encoded owner/API identity.
+Transient updates carry operationId, sequence, timestamp, update and snapshot.

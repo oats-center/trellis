@@ -181,6 +181,9 @@ impl SqliteAuthorizationStore {
                                 // native caller authorization at dispatch.
                                 subscribe.insert(format!("{base}.observe.*.*"));
                                 publish.insert(format!("{base}.updates.*"));
+                                // Forward this deployment's updates to its live
+                                // observers without requiring caller entitlement.
+                                subscribe.insert(format!("{base}.updates.*"));
                                 // Private owner reconciliation is restricted to
                                 // this accepted deployment implementation.
                                 publish.insert(format!("{base}.reconcile.*"));

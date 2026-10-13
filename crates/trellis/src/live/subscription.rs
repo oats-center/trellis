@@ -691,11 +691,23 @@ impl ConsumerControl {
         };
         let (proof, _) = self.auth.create_request_proof(&request, body)?;
         let mut headers = async_nats::HeaderMap::new();
+        headers.insert(
+            "Trellis-Session-Request",
+            serde_json::to_string(&request)?.as_str(),
+        );
         headers.insert("authorization-context", context_digest);
         headers.insert("session-key", self.auth.session_key.as_str());
         headers.insert("proof", proof.as_str());
         headers.insert("iat", iat.to_string().as_str());
         headers.insert("request-id", request_id.as_str());
+        headers.insert(
+            "Trellis-Api-Generation",
+            request.api_generation.get().to_string().as_str(),
+        );
+        headers.insert(
+            "Trellis-Accepted-Revision",
+            request.accepted_revision.get().to_string().as_str(),
+        );
         Ok((headers, request_id))
     }
 }

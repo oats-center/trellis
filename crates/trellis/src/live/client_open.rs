@@ -134,6 +134,14 @@ pub(crate) async fn open_client_session(
     headers.insert("proof", proof.as_str());
     headers.insert("request-id", request_id.as_str());
     headers.insert("iat", request.issued_at.to_string().as_str());
+    headers.insert(
+        "Trellis-Api-Generation",
+        request.api_generation.get().to_string().as_str(),
+    );
+    headers.insert(
+        "Trellis-Accepted-Revision",
+        request.accepted_revision.get().to_string().as_str(),
+    );
     let mut subscriber =
         tokio::time::timeout_at(step_timeout(), lease.nats().subscribe(reply.clone()))
             .await
@@ -514,7 +522,7 @@ pub(crate) fn verify_offer_claims(
     if consumer_digest.is_empty()
         || consumer.connection_id != offer.consumer.connection_id
         || consumer.principal_id != offer.consumer.principal_id
-        || consumer.participant_id() != offer.consumer.participant_id
+        || consumer.binding != offer.consumer.binding
         || trellis_protocol::encode_subject_token(&consumer.session_key)
             != offer.consumer.session_key
     {
@@ -1170,7 +1178,10 @@ mod tests {
                 connection_id: "C".into(),
                 session_key: "KC".into(),
                 principal_id: "pru".into(),
-                participant_id: "pau".into(),
+                binding: trellis_protocol::SessionBinding::Browser {
+                    client_id: "app".into(),
+                    origin: "https://app.example".into(),
+                },
             },
             limits: LiveOfferLimits {
                 max_data_body_bytes: 1_044_480,
@@ -1273,7 +1284,6 @@ mod tests {
     fn signed_offer(kind: LiveSessionKind, base: &str) -> LiveOffer {
         let mut offer = offer(kind, base);
         offer.consumer.session_key = trellis_protocol::encode_subject_token("consumer");
-        offer.consumer.participant_id.clear();
         offer
     }
 

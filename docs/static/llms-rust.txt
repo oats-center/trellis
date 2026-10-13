@@ -493,3 +493,10 @@ session and signing out of the current login and its application sessions.
 Native OAuth renewal leases the current maintenance transport after HTTP refresh,
 and retains it through signer lookup and verified authority promotion. Replacing
 the physical NATS generation does not pin renewal to the original socket.
+
+Generated Operation keys are `<version-qualified API>:operation:<action>`, not
+method aliases. `OperationRef::reference()` exposes the complete serializable
+owner reference; restore it with the invoker's `control(reference)` without
+starting another execution. Both SDKs verify the exact consumer binding in Live
+offers. Operation updates carry operationId, sequence, timestamp and the unchanged
+observed snapshot alongside the declared update payload.
