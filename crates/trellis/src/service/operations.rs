@@ -1853,38 +1853,34 @@ where
                 )) => {
                     let update_deployment_id = deployment_id.clone();
                     let (terminal_tx, terminal_rx) = tokio::sync::oneshot::channel();
-                    let mut terminal_tx = Some(terminal_tx);
+                    let terminal_tx = Some(terminal_tx);
                     stream::select(
-                        durable.scan(false, move |stopped, record| {
-                            let result = if *stopped {
-                                return futures_util::future::ready(None);
-                            } else {
-                                if record.is_err() {
-                                    *stopped = true;
+                        stream::unfold(
+                            (durable, false, terminal_tx, deployment_id, context),
+                            |(mut durable, stopped, mut terminal_tx, deployment_id, context)| async move {
+                                if stopped {
+                                    return None;
+                                }
+                                let record = durable.next().await?;
+                                let mut stopped = record.as_ref().is_ok_and(|record| record.record.snapshot.state.is_terminal());
+                                let result = record.and_then(|record| {
+                                    Self::authorize_record(
+                                        &deployment_id,
+                                        &context,
+                                        &record.record,
+                                        PermissionAction::Observe,
+                                    )?;
+                                    typed_snapshot(record.record.snapshot)
+                                }).map(OperationLiveEvent::Snapshot);
+                                stopped |= result.is_err();
+                                if stopped {
                                     if let Some(terminal_tx) = terminal_tx.take() {
                                         let _ = terminal_tx.send(());
                                     }
                                 }
-                                record
-                                    .and_then(|record| {
-                                        *stopped = record.record.snapshot.state.is_terminal();
-                                        if *stopped {
-                                            if let Some(terminal_tx) = terminal_tx.take() {
-                                                let _ = terminal_tx.send(());
-                                            }
-                                        }
-                                        Self::authorize_record(
-                                            &deployment_id,
-                                            &context,
-                                            &record.record,
-                                            PermissionAction::Observe,
-                                        )?;
-                                        typed_snapshot(record.record.snapshot)
-                                    })
-                                    .map(OperationLiveEvent::Snapshot)
-                            };
-                            futures_util::future::ready(Some(result))
-                        }),
+                                Some((result, (durable, stopped, terminal_tx, deployment_id, context)))
+                            },
+                        ),
                         stream::unfold(
                             (
                                 updates,
@@ -3450,31 +3446,6 @@ mod tests {
         const PROGRESS_SCHEMA_JSON: Option<&'static str> = Some("{}");
         const OUTPUT_SCHEMA_JSON: &'static str = "{}";
         const UPDATE_SCHEMA_JSON: Option<&'static str> = Some("{}");
-        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
-    }
-
-    const STATUS_SCHEMA_JSON: &str = r#"{"type":"object","properties":{"stage":{"type":"string"}},"required":["stage"],"additionalProperties":false}"#;
-    const PREVIEW_SCHEMA_JSON: &str = r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}"#;
-
-    /// Durable progress and live updates declare distinct schemas.
-    struct PreviewOperation;
-
-    impl OperationDescriptor for PreviewOperation {
-        type Input = Value;
-        type Progress = Value;
-        type Output = Value;
-        type Update = Value;
-        type UpdateEvidence = DeclaredOperationUpdates;
-        type Error = OperationFailure;
-
-        const API_ID: &'static str = "test.previews@v1";
-        const KEY: &'static str = "preview";
-        const SUBJECT: &'static str = "operations.v1.test.preview";
-        const CANCELABLE: bool = true;
-        const INPUT_SCHEMA_JSON: &'static str = "{}";
-        const PROGRESS_SCHEMA_JSON: Option<&'static str> = Some(STATUS_SCHEMA_JSON);
-        const OUTPUT_SCHEMA_JSON: &'static str = "{}";
-        const UPDATE_SCHEMA_JSON: Option<&'static str> = Some(PREVIEW_SCHEMA_JSON);
         const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
     }
 
@@ -5331,132 +5302,6 @@ mod tests {
         );
         assert_eq!(recovered.owner_epoch, 2);
         nats.stop().unwrap();
-    }
-
-    /// The declared update schema validates transient previews on the live
-    /// channel while the durable snapshot keeps only status and terminal output.
-    #[tokio::test]
-    async fn declared_update_schema_keeps_previews_out_of_durable_progress() {
-        let source = tempfile::tempdir().unwrap();
-        trellis_bootstrap::generate_nats_bootstrap(&trellis_bootstrap::NatsBootstrapOptions::new(
-            source.path(),
-        ))
-        .unwrap();
-        let state = tempfile::tempdir().unwrap();
-        let nats = trellis_local_nats::LocalNats::builder()
-            .binary(trellis_local_nats::NatsBinarySource::DownloadPinned)
-            .cache_dir(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../target/trellis-test-cache"),
-            )
-            .source(source.path())
-            .temporary_state()
-            .ephemeral_ports()
-            .output(trellis_local_nats::NatsOutput::Log {
-                path: state.path().join("nats.log"),
-                mirror: false,
-            })
-            .start()
-            .unwrap();
-        let client = async_nats::ConnectOptions::new()
-            .credentials_file(source.path().join("creds/trellis-auth.creds"))
-            .await
-            .unwrap()
-            .connect(nats.nats_url())
-            .await
-            .unwrap();
-        let jetstream = async_nats::jetstream::new(client.clone());
-        let bucket = format!("trellis_test_operation_channels_{}", ulid::Ulid::new());
-        let repository = KvOperationRepository::new(
-            jetstream
-                .create_key_value(async_nats::jetstream::kv::Config {
-                    bucket,
-                    history: 10,
-                    ..Default::default()
-                })
-                .await
-                .unwrap(),
-        );
-        let staging_bucket = format!(
-            "trellis_test_operation_channels_staging_{}",
-            ulid::Ulid::new()
-        );
-        jetstream
-            .create_object_store(async_nats::jetstream::object_store::Config {
-                bucket: staging_bucket.clone(),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        let staging = BoundStoreResourceClient::new(client.clone(), staging_bucket);
-        let id = ulid::Ulid::new().to_string();
-        repository
-            .create(operation(
-                id.clone(),
-                PreviewOperation::API_ID,
-                PreviewOperation::KEY,
-            ))
-            .await
-            .unwrap();
-
-        let claimed = now_ms();
-        repository
-            .claim(&id, "executor", claimed, claimed + 30_000)
-            .await
-            .unwrap();
-        let control = control::<PreviewOperation>(
-            repository.clone(),
-            client.clone(),
-            staging.clone(),
-            "executor",
-            &id,
-        )
-        .await;
-
-        // Durable progress carries the status-only schema.
-        let snapshot = control
-            .progress(json!({"stage": "transcribing"}))
-            .await
-            .unwrap();
-        assert_eq!(snapshot.progress, Some(json!({"stage": "transcribing"})));
-
-        // A preview matching the declared update schema passes that channel's
-        // validation and reaches authenticated delivery. This unit harness
-        // holds no publisher, so delivery itself is exercised by the live
-        // watch tests; the distinct error proves schema acceptance.
-        let accepted = control
-            .emit_update(json!({"text": "partial transcription"}))
-            .await
-            .expect_err("unit harness has no authenticated publisher");
-        assert!(
-            matches!(accepted, ServerError::Nats(ref message) if message.contains("publisher")),
-            "schema-valid preview reaches delivery: {accepted:?}"
-        );
-
-        // A progress-shaped payload is rejected by the update channel's own schema.
-        let rejected = control
-            .emit_update(json!({"stage": "transcribing"}))
-            .await
-            .expect_err("the update schema rejects a progress payload");
-        assert!(
-            matches!(
-                rejected,
-                ServerError::Validation { .. } | ServerError::SchemaValidation { .. }
-            ),
-            "the update channel validates its declared schema: {rejected:?}"
-        );
-
-        // Rejected previews never mutate the durable snapshot or terminal output.
-        let durable = repository.get(&id).await.unwrap().unwrap().record;
-        assert_eq!(
-            durable.snapshot.progress,
-            Some(json!({"stage": "transcribing"}))
-        );
-        assert!(durable.snapshot.output.is_none());
-
-        // Terminal output is the operation's own output schema.
-        let completed = control.complete(json!({"answer": "done"})).await.unwrap();
-        assert_eq!(completed.output, Some(json!({"answer": "done"})));
     }
 }
 

@@ -17,6 +17,131 @@ use trellis_rs::service::OperationCancellationReason;
 use trellis_testkit::TrellisTestRuntime;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transient_previews_preserve_durable_progress_through_completion() {
+    use trellis_rs::client::OperationEvent;
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::operations::WorkContinueSignal;
+    use trellis_test_fixture::apps::trellis_test_fixture_agent_caller::{Client, Request};
+    use trellis_test_fixture::participants::trellis_test_fixture_provider::{
+        Participant, Provider,
+    };
+    use trellis_test_fixture::types::{Preview, Status, Value};
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Participant>("preview-provider")
+        .await
+        .unwrap();
+    let mut service = Participant::connect(identity.connect_options())
+        .await
+        .unwrap();
+    let mut provider = Provider::new(&mut service);
+    provider
+        .trellis_test_fixture_echo_v1()
+        .register_work(|_, input, operation| async move {
+            operation
+                .progress(Status {
+                    stage: "transcribing".into(),
+                    extra: Default::default(),
+                })
+                .await?;
+            let mut signals = operation.signals().await?;
+            let preview = signals.next().await.expect("preview signal")?;
+            operation
+                .emit_update(Preview {
+                    text: "partial preview".into(),
+                    extra: Default::default(),
+                })
+                .await?;
+            operation
+                .acknowledge_signal(preview.signal_sequence)
+                .await?;
+            let finish = signals.next().await.expect("completion signal")?;
+            operation.acknowledge_signal(finish.signal_sequence).await?;
+            operation.complete(input).await?;
+            Ok(())
+        });
+    drop(provider);
+    let serving = tokio::spawn(service.run());
+    let admin = administrator(&runtime).await;
+    let me = admin.sessions_me(&wire(json!({}))).await.unwrap();
+    for capability in Request::REQUIRED_CAPABILITIES {
+        admin.capability_grants_grant(&wire(json!({"principalId":me.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    }
+    let identity = runtime
+        .register_client::<Request>("preview-caller")
+        .await
+        .unwrap();
+    let base = GeneratedClient::connect_user(identity.connect_options())
+        .await
+        .unwrap();
+    let api = Client::from_generated(base).trellis_test_fixture_echo_v1();
+    let input = Value {
+        value: "final output".into(),
+        extra: Default::default(),
+    };
+    let operation = api.work().start(&input).await.unwrap();
+    let mut events = operation.live_with_updates().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        events.next().await.unwrap().unwrap();
+        operation
+            .signal::<WorkContinueSignal>(&input)
+            .await
+            .unwrap();
+        loop {
+            if let OperationEvent::Update { update } = events.next().await.unwrap().unwrap() {
+                assert_eq!(update.update.text, "partial preview");
+                break;
+            }
+        }
+        let durable = operation.get().await.unwrap();
+        assert_eq!(durable.progress.unwrap().stage, "transcribing");
+        assert!(durable.output.is_none());
+        operation
+            .signal::<WorkContinueSignal>(&input)
+            .await
+            .unwrap();
+        loop {
+            match events.next().await.unwrap().unwrap() {
+                OperationEvent::Completed { snapshot } => {
+                    assert_eq!(snapshot.progress.unwrap().stage, "transcribing");
+                    assert_eq!(snapshot.output.unwrap().value, "final output");
+                    break;
+                }
+                OperationEvent::Failed { snapshot } | OperationEvent::Cancelled { snapshot } => {
+                    panic!("unexpected terminal: {snapshot:?}")
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            events.next().await.is_none(),
+            "terminal observation ends normally"
+        );
+    })
+    .await
+    .unwrap();
+    let restored = api
+        .work()
+        .control(
+            serde_json::from_slice(&serde_json::to_vec(operation.reference()).unwrap()).unwrap(),
+        )
+        .unwrap();
+    let durable = restored.get().await.unwrap();
+    assert_eq!(durable.progress.unwrap().stage, "transcribing");
+    assert_eq!(durable.output.unwrap().value, "final output");
+    let mut terminal_watch = restored.live().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        assert!(matches!(terminal_watch.next().await.unwrap().unwrap(), OperationEvent::Completed { snapshot } if snapshot.state == OperationState::Completed));
+        assert!(terminal_watch.next().await.is_none());
+    }).await.unwrap();
+    terminal_watch.close().await.unwrap();
+    events.close().await.unwrap();
+    serving.abort();
+    let _ = serving.await;
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn signed_cancel_waits_for_the_handlers_joined_blocking_child() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
     let identity = runtime
