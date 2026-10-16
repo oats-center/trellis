@@ -47,7 +47,7 @@ or add synthetic fault hooks solely for tests.
 
 ### Test Ownership
 
-Executable Rust and Deno tests are the catalog. Cross-language behavior is
+Executable Rust and Node tests are the catalog. Cross-language behavior is
 proved by the smallest live test that crosses the real transport boundary;
 Rust-only runtime behavior remains in ordinary Rust integration tests.
 
@@ -74,9 +74,9 @@ original host releases broker-backed ownership and reap it before normal managed
 restart. There is no shared-runner registry, tenant allocator, artifact
 manifest, or host-wide scheduler.
 
-Rust and TypeScript live tests use ordinary Rust and Deno discovery. The normal
+Rust and TypeScript live tests use ordinary Rust and Node discovery. The normal
 Check runs both discovered suites against real Trellis infrastructure. Focused
-local runs select tests through the native Rust and Deno test runners rather
+local runs select tests through the native Rust and Node test runners rather
 than a second registry or scheduler.
 
 The external `trellis-testkit` Rust harness links the real production runtime

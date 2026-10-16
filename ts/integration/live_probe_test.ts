@@ -1,10 +1,21 @@
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { assert, assertEquals } from "@std/assert";
-import { fromFileUrl, join } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createInterface } from "node:readline";
+import { env, kill } from "node:process";
+import { ulid } from "ulid";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
+import { z } from "zod";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
+import { spawnTracked, type ProcessExit } from "./_support/process.ts";
 
 const BUSY_TOTAL = 1026n;
 const TWO_HEARTBEATS_MS = 21_000;
@@ -22,13 +33,10 @@ type KeyState = {
   waiters: Array<() => void>;
 };
 
-type ProviderRuntime = {
-  trellisUrl: string;
-  registerService: (opts: {
-    name: string;
-    contract: typeof participants.LiveProbeProvider.participant;
-  }) => Promise<{ seed: string }>;
-};
+type ProviderRuntime = Pick<
+  TrellisTestRuntime,
+  "oauthIssuer" | "registerService"
+>;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,15 +46,15 @@ function delay(ms: number): Promise<void> {
 async function startTsProvider(
   runtime: ProviderRuntime,
   replica?: { name: string; seed: string },
-): Promise<
-  { stop: () => Promise<void>; exit: Promise<void> }
-> {
-  const identity = replica ?? await runtime.registerService({
-    name: `live-probe-ts-${crypto.randomUUID()}`,
-    contract: participants.LiveProbeProvider.participant,
-  });
+): Promise<{ stop: () => Promise<void>; exit: Promise<void> }> {
+  const identity =
+    replica ??
+    (await runtime.registerService({
+      name: `live-probe-ts-${ulid()}`,
+      contract: participants.LiveProbeProvider.participant,
+    }));
   const service = await TrellisService.connect({
-    trellisUrl: runtime.trellisUrl,
+    trellisUrl: runtime.oauthIssuer,
     participant: participants.LiveProbeProvider.participant,
     name: replica?.name,
     seed: identity.seed,
@@ -164,18 +172,14 @@ async function runProbeScenario(
         }
       >;
     };
-    release: (
-      input: {
-        runId: string;
-        streamId: string;
-        throughIndex: bigint;
-        finish: boolean;
-        fail: boolean;
-      },
-    ) => { orThrow: () => Promise<unknown> };
-    inspect: (
-      input: { runId: string; streamId: string },
-    ) => {
+    release: (input: {
+      runId: string;
+      streamId: string;
+      throughIndex: bigint;
+      finish: boolean;
+      fail: boolean;
+    }) => { orThrow: () => Promise<unknown> };
+    inspect: (input: { runId: string; streamId: string }) => {
       orThrow: () => Promise<{
         starts: bigint;
         active: bigint;
@@ -185,7 +189,7 @@ async function runProbeScenario(
     };
   },
 ): Promise<void> {
-  const runId = crypto.randomUUID();
+  const runId = ulid();
   const busy = await caller.watch({ runId, streamId: "busy" }).orThrow();
   const quiet = await caller.watch({ runId, streamId: "quiet" }).orThrow();
   const busyIndexes: bigint[] = [];
@@ -199,84 +203,93 @@ async function runProbeScenario(
     quietDone = true;
   })();
   try {
-    await caller.release({
-      runId,
-      streamId: "busy",
-      throughIndex: 1025n,
-      finish: false,
-      fail: false,
-    }).orThrow();
+    await caller
+      .release({
+        runId,
+        streamId: "busy",
+        throughIndex: 1025n,
+        finish: false,
+        fail: false,
+      })
+      .orThrow();
     await runtime.waitFor(() => busyIndexes.length >= 1025, {
       timeoutMs: 30_000,
     });
 
-    const midpoint = await caller.inspect({ runId, streamId: "busy" })
+    const midpoint = await caller
+      .inspect({ runId, streamId: "busy" })
       .orThrow();
-    assertEquals(midpoint.starts, 1n, "one busy source start");
-    assertEquals(midpoint.emitted, 1025n, "1025 busy frames emitted");
+    assert.deepEqual(midpoint.starts, 1n, "one busy source start");
+    assert.deepEqual(midpoint.emitted, 1025n, "1025 busy frames emitted");
 
     await delay(TWO_HEARTBEATS_MS);
 
-    await caller.release({
-      runId,
-      streamId: "quiet",
-      throughIndex: 1n,
-      finish: true,
-      fail: false,
-    }).orThrow();
+    await caller
+      .release({
+        runId,
+        streamId: "quiet",
+        throughIndex: 1n,
+        finish: true,
+        fail: false,
+      })
+      .orThrow();
     await runtime.waitFor(() => quietIndexes.length >= 1, {
       timeoutMs: 30_000,
     });
     await quietTask;
     assert(quietDone, "quiet source ends after its released frame");
-    assertEquals(
+    assert.deepEqual(
       quietIndexes,
       [1n],
       "quiet delivered exactly its released frame",
     );
 
-    await caller.release({
-      runId,
-      streamId: "busy",
-      throughIndex: BUSY_TOTAL,
-      finish: true,
-      fail: false,
-    }).orThrow();
+    await caller
+      .release({
+        runId,
+        streamId: "busy",
+        throughIndex: BUSY_TOTAL,
+        finish: true,
+        fail: false,
+      })
+      .orThrow();
     await busyTask;
-    assertEquals(busyIndexes.length, 1026, "1026 busy frames delivered");
+    assert.deepEqual(busyIndexes.length, 1026, "1026 busy frames delivered");
     for (let index = 0; index < busyIndexes.length; index += 1) {
-      assertEquals(
+      assert.deepEqual(
         busyIndexes[index],
         BigInt(index + 1),
         "frames stay ordered",
       );
     }
 
-    const busyStatus = await caller.inspect({ runId, streamId: "busy" })
+    const busyStatus = await caller
+      .inspect({ runId, streamId: "busy" })
       .orThrow();
-    assertEquals(busyStatus.starts, 1n, "no busy restart");
-    assertEquals(busyStatus.active, 0n, "busy source fully cleaned up");
-    assertEquals(busyStatus.cleanups, 1n, "one busy cleanup");
-    assertEquals(busyStatus.emitted, 1026n, "exact busy emission count");
-    const quietStatus = await caller.inspect({ runId, streamId: "quiet" })
+    assert.deepEqual(busyStatus.starts, 1n, "no busy restart");
+    assert.deepEqual(busyStatus.active, 0n, "busy source fully cleaned up");
+    assert.deepEqual(busyStatus.cleanups, 1n, "one busy cleanup");
+    assert.deepEqual(busyStatus.emitted, 1026n, "exact busy emission count");
+    const quietStatus = await caller
+      .inspect({ runId, streamId: "quiet" })
       .orThrow();
-    assertEquals(quietStatus.starts, 1n, "no quiet restart");
-    assertEquals(quietStatus.active, 0n, "quiet source fully cleaned up");
-    assertEquals(quietStatus.cleanups, 1n, "one quiet cleanup");
-    assertEquals(quietStatus.emitted, 1n, "exact quiet emission count");
+    assert.deepEqual(quietStatus.starts, 1n, "no quiet restart");
+    assert.deepEqual(quietStatus.active, 0n, "quiet source fully cleaned up");
+    assert.deepEqual(quietStatus.cleanups, 1n, "one quiet cleanup");
+    assert.deepEqual(quietStatus.emitted, 1n, "exact quiet emission count");
   } finally {
     await Promise.race([busyTask, delay(1_000)]);
     await Promise.race([quietTask, delay(1_000)]);
   }
 }
 
-Deno.test("V3 TypeScript caller drives TypeScript liveprobe provider", async () => {
+test("V3 TypeScript caller drives TypeScript liveprobe provider", async () => {
   await withTrellisRuntime(async (runtime) => {
     const provider = await startTsProvider(runtime);
     try {
       const caller = await runtime.connectClient({
         name: "v3-ts-ts",
-        contract: participants.LiveProbeCaller.participant,
+        contract: apps.LiveProbeCaller.request,
       });
       try {
         await runProbeScenario(runtime, caller);
@@ -290,27 +303,25 @@ Deno.test("V3 TypeScript caller drives TypeScript liveprobe provider", async () 
   });
 });
 
-Deno.test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
+test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
-      name: `live-probe-rust-${crypto.randomUUID()}`,
+      name: "live-probe-rust",
       contract: participants.LiveProbeProvider.participant,
     });
-    const process = new Deno.Command("setsid", {
-      args: rustFixtureArgv("live_probe"),
+    const process = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
       env: {
-        TRELLIS_URL: runtime.trellisUrl,
+        ...env,
+        TRELLIS_URL: runtime.oauthIssuer,
         TRELLIS_IDENTITY_SEED: identity.seed,
-        CARGO_TARGET_DIR: fromFileUrl(
+        CARGO_TARGET_DIR: fileURLToPath(
           new URL("../../target", import.meta.url),
         ),
       },
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
+    });
     let providerOutput = "";
     const decoder = new TextDecoder();
-    const capture = async (stream: ReadableStream<Uint8Array>) => {
+    const capture = async (stream: AsyncIterable<Uint8Array>) => {
       for await (const chunk of stream) {
         providerOutput = (providerOutput + decoder.decode(chunk)).slice(
           -16_384,
@@ -322,36 +333,42 @@ Deno.test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
       capture(process.stderr),
     ]);
     let exited = false;
-    const status = process.status.then((value) => {
+    const status = process.exited.then((value) => {
       exited = true;
       return value;
     });
     try {
       const caller = await runtime.connectClient({
         name: "v3-ts-rust",
-        contract: participants.LiveProbeCaller.participant,
+        contract: apps.LiveProbeCaller.request,
       });
       try {
-        await runtime.waitFor(async () => {
-          if (exited) {
-            throw new Error(
-              `Rust liveprobe provider exited: ${
-                JSON.stringify(await status)
-              }\n${providerOutput.trimEnd() || "<no provider output>"}`,
+        await runtime.waitFor(
+          async () => {
+            if (exited) {
+              throw new Error(
+                `Rust liveprobe provider exited: ${JSON.stringify(
+                  await status,
+                )}\n${providerOutput.trimEnd() || "<no provider output>"}`,
+              );
+            }
+            const result = await caller.inspect(
+              {
+                runId: "readiness",
+                streamId: "readiness",
+              },
+              { timeout: 1_000 },
             );
-          }
-          const result = await caller.inspect({
-            runId: "readiness",
-            streamId: "readiness",
-          }, { timeout: 1_000 });
-          return result.isOk();
-        }, { timeoutMs: 120_000 });
+            return result.isOk();
+          },
+          { timeoutMs: 120_000 },
+        );
         await runProbeScenario(runtime, caller);
       } finally {
         await caller.connection.close();
       }
     } finally {
-      if (!exited) Deno.kill(-process.pid, "SIGTERM");
+      if (!exited && process.pid !== undefined) kill(-process.pid, "SIGTERM");
       await status;
       await drain;
     }
@@ -360,130 +377,116 @@ Deno.test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
 
 /** Run the Rust `live_probe_caller` leg and return its bounded JSON summary. */
 async function runRustLiveProbeCaller(
-  runtime: {
-    trellisUrl: string;
-    workdir: string;
-    completeClientAuth: (opts: {
-      loginUrl: string;
-      sessionKey: string;
-      mode: "session_key";
-    }) => Promise<unknown>;
-  },
+  runtime: TrellisTestRuntime,
   configDir: string,
 ): Promise<Record<string, number>> {
-  const child = new Deno.Command("setsid", {
-    args: rustFixtureArgv("live_probe_caller"),
+  const child = spawnTracked("setsid", rustFixtureArgv("live_probe_caller"), {
     env: {
-      TRELLIS_URL: runtime.trellisUrl,
+      ...process.env,
+      TRELLIS_URL: runtime.oauthIssuer,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
-      CARGO_TARGET_DIR: fromFileUrl(
-        new URL("../../target", import.meta.url),
-      ),
+      CARGO_TARGET_DIR: fileURLToPath(new URL("../../target", import.meta.url)),
     },
-    stdout: "piped",
-    stderr: "inherit",
-  }).spawn();
-  const reader = child.stdout.pipeThrough(new TextDecoderStream()).getReader();
-  const loginMarker = "liveprobe login ";
+  });
+  child.stderr.pipe(process.stderr);
+  const loginMarker = "NATIVE_LOGIN ";
   const resultMarker = "LIVE_PROBE_CALLER_RESULT ";
   let output = "";
-  let loginDone = false;
   let result: Record<string, number> | undefined;
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    output += chunk.value;
-    if (!loginDone && output.includes(loginMarker)) {
-      loginDone = true;
-      const loginUrl = output.split(loginMarker)[1]?.trim().split(/\s/)[0];
-      assert(loginUrl, output);
-      await runtime.completeClientAuth({
-        loginUrl,
-        sessionKey: "completed-by-rust",
-        mode: "session_key",
+  for await (const line of createInterface({ input: child.stdout })) {
+    output += `${line}\n`;
+    if (line.startsWith(loginMarker)) {
+      const login = z
+        .object({
+          clientId: z.string(),
+          userCode: z.string(),
+          verificationUri: z.string().url(),
+        })
+        .parse(JSON.parse(line.slice(loginMarker.length)));
+      assert.equal(new URL(login.verificationUri).origin, runtime.oauthIssuer);
+      await runtime.authorizeNativeUserCode({
+        clientId: login.clientId,
+        userCode: login.userCode,
+        contract: apps.LiveProbeCaller.request,
       });
     }
-    if (result === undefined) {
-      const start = output.indexOf(resultMarker);
-      if (start >= 0) {
-        const end = output.indexOf("\n", start);
-        if (end >= 0) {
-          result = JSON.parse(
-            output.slice(start + resultMarker.length, end),
-          ) as Record<string, number>;
-        }
-      }
-    }
+    if (line.startsWith(resultMarker))
+      result = z
+        .record(z.string(), z.number())
+        .parse(JSON.parse(line.slice(resultMarker.length)));
   }
-  const status = await child.status;
-  assert(status.success, `Rust liveprobe caller failed: ${output}`);
+  const status = await child.exited;
+  assert.equal(status.code, 0, `Rust liveprobe caller failed: ${output}`);
   assert(result, `Rust liveprobe caller produced no result: ${output}`);
   return result;
 }
 
 function assertProbeSummary(summary: Record<string, number>): void {
-  assertEquals(summary.busyFrames, 1026, "1026 busy frames delivered");
-  assertEquals(summary.quietFrames, 1, "one quiet frame delivered");
-  assertEquals(summary.busyStarts, 1, "one busy source start");
-  assertEquals(summary.busyCleanups, 1, "one busy cleanup");
-  assertEquals(summary.busyActive, 0, "busy source fully cleaned up");
-  assertEquals(summary.busyEmitted, 1026, "exact busy emission count");
-  assertEquals(summary.quietStarts, 1, "one quiet source start");
-  assertEquals(summary.quietCleanups, 1, "one quiet cleanup");
-  assertEquals(summary.quietActive, 0, "quiet source fully cleaned up");
-  assertEquals(summary.quietEmitted, 1, "exact quiet emission count");
+  assert.deepEqual(summary.busyFrames, 1026, "1026 busy frames delivered");
+  assert.deepEqual(summary.quietFrames, 1, "one quiet frame delivered");
+  assert.deepEqual(summary.busyStarts, 1, "one busy source start");
+  assert.deepEqual(summary.busyCleanups, 1, "one busy cleanup");
+  assert.deepEqual(summary.busyActive, 0, "busy source fully cleaned up");
+  assert.deepEqual(summary.busyEmitted, 1026, "exact busy emission count");
+  assert.deepEqual(summary.quietStarts, 1, "one quiet source start");
+  assert.deepEqual(summary.quietCleanups, 1, "one quiet cleanup");
+  assert.deepEqual(summary.quietActive, 0, "quiet source fully cleaned up");
+  assert.deepEqual(summary.quietEmitted, 1, "exact quiet emission count");
 }
 
 /** Start the Rust `live_probe` provider process. */
 function startRustProvider(runtime: ProviderRuntime): {
-  status: Promise<Deno.CommandStatus>;
+  status: Promise<ProcessExit>;
   kill: () => void;
 } {
   let pid: number | undefined;
   const statusPromise = runtime
     .registerService({
-      name: `live-probe-rust-${crypto.randomUUID()}`,
+      name: "live-probe-rust",
       contract: participants.LiveProbeProvider.participant,
     })
     .then((identity) => {
-      const child = new Deno.Command("setsid", {
-        args: rustFixtureArgv("live_probe"),
+      const child = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
         env: {
-          TRELLIS_URL: runtime.trellisUrl,
+          ...env,
+          TRELLIS_URL: runtime.oauthIssuer,
           TRELLIS_IDENTITY_SEED: identity.seed,
-          CARGO_TARGET_DIR: fromFileUrl(
+          CARGO_TARGET_DIR: fileURLToPath(
             new URL("../../target", import.meta.url),
           ),
         },
-        stdout: "inherit",
-        stderr: "inherit",
-      }).spawn();
+      });
+      child.stdout.pipe(process.stdout);
+      child.stderr.pipe(process.stderr);
       pid = child.pid;
-      return child.status;
+      return child.exited;
     });
   return {
     status: statusPromise,
     kill: () => {
-      if (pid !== undefined) Deno.kill(-pid, "SIGTERM");
+      if (pid !== undefined) process.kill(-pid, "SIGTERM");
     },
   };
 }
 
-Deno.test("V3 Rust caller drives TypeScript liveprobe provider", async () => {
+test("V3 Rust caller drives TypeScript liveprobe provider", async () => {
   await withTrellisRuntime(async (runtime) => {
     const provider = await startTsProvider(runtime);
     const installer = await runtime.connectClient({
       name: "v3-rust-ts-installer",
-      contract: participants.LiveProbeCaller.participant,
+      contract: apps.LiveProbeCaller.request,
     });
     try {
-      await runtime.waitFor(async () => {
-        const result = await installer.inspect(
-          { runId: "readiness", streamId: "readiness" },
-          { timeout: 1_000 },
-        );
-        return result.isOk();
-      }, { timeoutMs: 120_000 });
+      await runtime.waitFor(
+        async () => {
+          const result = await installer.inspect(
+            { runId: "readiness", streamId: "readiness" },
+            { timeout: 1_000 },
+          );
+          return result.isOk();
+        },
+        { timeoutMs: 120_000 },
+      );
       assertProbeSummary(
         await runRustLiveProbeCaller(runtime, "v3-rust-ts-caller"),
       );
@@ -495,21 +498,24 @@ Deno.test("V3 Rust caller drives TypeScript liveprobe provider", async () => {
   });
 });
 
-Deno.test("V3 Rust caller drives Rust liveprobe provider", async () => {
+test("V3 Rust caller drives Rust liveprobe provider", async () => {
   await withTrellisRuntime(async (runtime) => {
     const provider = startRustProvider(runtime);
     const installer = await runtime.connectClient({
       name: "v3-rust-rust-installer",
-      contract: participants.LiveProbeCaller.participant,
+      contract: apps.LiveProbeCaller.request,
     });
     try {
-      await runtime.waitFor(async () => {
-        const result = await installer.inspect(
-          { runId: "readiness", streamId: "readiness" },
-          { timeout: 1_000 },
-        );
-        return result.isOk();
-      }, { timeoutMs: 120_000 });
+      await runtime.waitFor(
+        async () => {
+          const result = await installer.inspect(
+            { runId: "readiness", streamId: "readiness" },
+            { timeout: 1_000 },
+          );
+          return result.isOk();
+        },
+        { timeoutMs: 120_000 },
+      );
       assertProbeSummary(
         await runRustLiveProbeCaller(runtime, "v3-rust-rust-caller"),
       );
@@ -521,21 +527,25 @@ Deno.test("V3 Rust caller drives Rust liveprobe provider", async () => {
   });
 });
 
-Deno.test("T18 one failing live source leaves another session and an RPC functional", async () => {
+test("T18 one failing live source leaves another session and an RPC functional", async () => {
   await withTrellisRuntime(async (runtime) => {
     const provider = await startTsProvider(runtime);
     const caller = await runtime.connectClient({
-      name: `t18-caller-${crypto.randomUUID()}`,
-      contract: participants.LiveProbeCaller.participant,
+      name: `t18-caller-${ulid()}`,
+      contract: apps.LiveProbeCaller.request,
     });
-    const runId = `t18-${crypto.randomUUID()}`;
+    const runId = `t18-${ulid()}`;
     try {
-      const failing = await caller.watch({ runId, streamId: "failing" })
+      const failing = await caller
+        .watch({ runId, streamId: "failing" })
         .orThrow();
-      const survivor = await caller.watch({ runId, streamId: "survivor" })
+      const survivor = await caller
+        .watch({ runId, streamId: "survivor" })
         .orThrow();
       const failingPump = (async () => {
-        for await (const _frame of failing) { /* drain to activation */ }
+        for await (const _frame of failing) {
+          /* drain to activation */
+        }
       })().catch(() => undefined);
       const survivorFrames: bigint[] = [];
       const survivorTask = (async () => {
@@ -544,46 +554,60 @@ Deno.test("T18 one failing live source leaves another session and an RPC functio
       await runtime.waitFor(
         async () =>
           (await caller.inspect({ runId, streamId: "failing" })).orThrow()
-              .active === 1n &&
+            .active === 1n &&
           (await caller.inspect({ runId, streamId: "survivor" })).orThrow()
-              .active === 1n,
+            .active === 1n,
         { timeoutMs: 30_000 },
       );
 
       // Fail one source and release one frame on the other.
-      await caller.release({
-        runId,
-        streamId: "failing",
-        throughIndex: 1n,
-        finish: false,
-        fail: true,
-      }).orThrow();
-      await caller.release({
-        runId,
-        streamId: "survivor",
-        throughIndex: 1n,
-        finish: false,
-        fail: false,
-      }).orThrow();
+      await caller
+        .release({
+          runId,
+          streamId: "failing",
+          throughIndex: 1n,
+          finish: false,
+          fail: true,
+        })
+        .orThrow();
+      await caller
+        .release({
+          runId,
+          streamId: "survivor",
+          throughIndex: 1n,
+          finish: false,
+          fail: false,
+        })
+        .orThrow();
 
       await runtime.waitFor(() => survivorFrames.length >= 1, {
         timeoutMs: 30_000,
       });
       const failedEnd = await failing.closed;
       await failingPump;
-      assertEquals(
+      assert.deepEqual(
         failedEnd.reason,
         "source_error",
         "the failing source ends the session as a source error",
       );
-      assertEquals(survivorFrames, [1n], "the surviving session delivers");
+      assert.deepEqual(survivorFrames, [1n], "the surviving session delivers");
       // An unrelated finite RPC on the same provider stays functional.
-      const survivorStatus = await caller.inspect({
-        runId,
-        streamId: "survivor",
-      }).orThrow();
-      assertEquals(survivorStatus.active, 1n, "the survivor source is active");
-      assertEquals(survivorStatus.emitted, 1n, "exactly its released frame");
+      const survivorStatus = await caller
+        .inspect({
+          runId,
+          streamId: "survivor",
+        })
+        .orThrow();
+      assert.deepEqual(
+        survivorStatus.active,
+        1n,
+        "the survivor source is active",
+      );
+      assert.deepEqual(
+        survivorStatus.emitted,
+        1n,
+        "exactly its released frame",
+      );
 
       await survivor.close().orThrow();
       await survivorTask;
@@ -601,37 +625,39 @@ Deno.test("T18 one failing live source leaves another session and an RPC functio
   });
 });
 
-Deno.test("T17 owner-directed live controls route to the accepting replica", async () => {
+test("T17 owner-directed live controls route to the accepting replica", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
-      name: `t17-replica-${crypto.randomUUID()}`,
+      name: `t17-replica-${ulid()}`,
       contract: participants.LiveProbeProvider.participant,
     });
     // Two replicas of one selected deployment share the provider route.
     const replicaA = await startTsProvider(runtime, {
-      name: `t17-a-${crypto.randomUUID()}`,
+      name: `t17-a-${ulid()}`,
       seed: identity.seed,
     });
     const replicaB = await startTsProvider(runtime, {
-      name: `t17-b-${crypto.randomUUID()}`,
+      name: `t17-b-${ulid()}`,
       seed: identity.seed,
     });
     const caller = await runtime.connectClient({
-      name: `t17-caller-${crypto.randomUUID()}`,
-      contract: participants.LiveProbeCaller.participant,
+      name: `t17-caller-${ulid()}`,
+      contract: apps.LiveProbeCaller.request,
     });
-    const runId = `t17-${crypto.randomUUID()}`;
+    const runId = `t17-${ulid()}`;
     try {
       // The opening is accepted by exactly one replica; the owner-directed
       // close control must reach that same replica for the session to end
       // normally instead of stalling until the liveness bound.
       const feed = await caller.watch({ runId, streamId: "s" }).orThrow();
       const pump = (async () => {
-        for await (const _frame of feed) { /* drain to activation */ }
+        for await (const _frame of feed) {
+          /* drain to activation */
+        }
       })().catch(() => undefined);
       await feed.close().orThrow();
       const end = await feed.closed;
-      assertEquals(
+      assert.deepEqual(
         end.reason,
         "cancelled",
         "owner-directed close ends the session",
@@ -639,14 +665,17 @@ Deno.test("T17 owner-directed live controls route to the accepting replica", asy
       await pump;
 
       // The deployment still serves a fresh session afterwards.
-      const second = await caller.watch({ runId: `${runId}-2`, streamId: "s" })
+      const second = await caller
+        .watch({ runId: `${runId}-2`, streamId: "s" })
         .orThrow();
       const secondPump = (async () => {
-        for await (const _frame of second) { /* drain to activation */ }
+        for await (const _frame of second) {
+          /* drain to activation */
+        }
       })().catch(() => undefined);
       await second.close().orThrow();
       const secondEnd = await second.closed;
-      assertEquals(
+      assert.deepEqual(
         secondEnd.reason,
         "cancelled",
         "the deployment still serves",
@@ -660,21 +689,25 @@ Deno.test("T17 owner-directed live controls route to the accepting replica", asy
   });
 });
 
-Deno.test("T18 one failing live source leaves another session and an RPC functional", async () => {
+test("T18 one failing live source leaves another session and an RPC functional", async () => {
   await withTrellisRuntime(async (runtime) => {
     const provider = await startTsProvider(runtime);
     const caller = await runtime.connectClient({
-      name: `t18-caller-${crypto.randomUUID()}`,
-      contract: participants.LiveProbeCaller.participant,
+      name: `t18-caller-${ulid()}`,
+      contract: apps.LiveProbeCaller.request,
     });
-    const runId = `t18-${crypto.randomUUID()}`;
+    const runId = `t18-${ulid()}`;
     try {
-      const failing = await caller.watch({ runId, streamId: "failing" })
+      const failing = await caller
+        .watch({ runId, streamId: "failing" })
         .orThrow();
-      const survivor = await caller.watch({ runId, streamId: "survivor" })
+      const survivor = await caller
+        .watch({ runId, streamId: "survivor" })
         .orThrow();
       const failingPump = (async () => {
-        for await (const _frame of failing) { /* drain to activation */ }
+        for await (const _frame of failing) {
+          /* drain to activation */
+        }
       })().catch(() => undefined);
       const survivorFrames: bigint[] = [];
       const survivorTask = (async () => {
@@ -683,46 +716,60 @@ Deno.test("T18 one failing live source leaves another session and an RPC functio
       await runtime.waitFor(
         async () =>
           (await caller.inspect({ runId, streamId: "failing" })).orThrow()
-              .active === 1n &&
+            .active === 1n &&
           (await caller.inspect({ runId, streamId: "survivor" })).orThrow()
-              .active === 1n,
+            .active === 1n,
         { timeoutMs: 30_000 },
       );
 
       // Fail one source and release one frame on the other.
-      await caller.release({
-        runId,
-        streamId: "failing",
-        throughIndex: 1n,
-        finish: false,
-        fail: true,
-      }).orThrow();
-      await caller.release({
-        runId,
-        streamId: "survivor",
-        throughIndex: 1n,
-        finish: false,
-        fail: false,
-      }).orThrow();
+      await caller
+        .release({
+          runId,
+          streamId: "failing",
+          throughIndex: 1n,
+          finish: false,
+          fail: true,
+        })
+        .orThrow();
+      await caller
+        .release({
+          runId,
+          streamId: "survivor",
+          throughIndex: 1n,
+          finish: false,
+          fail: false,
+        })
+        .orThrow();
 
       await runtime.waitFor(() => survivorFrames.length >= 1, {
         timeoutMs: 30_000,
       });
       const failedEnd = await failing.closed;
       await failingPump;
-      assertEquals(
+      assert.deepEqual(
         failedEnd.reason,
         "source_error",
         "the failing source ends the session as a source error",
       );
-      assertEquals(survivorFrames, [1n], "the surviving session delivers");
+      assert.deepEqual(survivorFrames, [1n], "the surviving session delivers");
       // An unrelated finite RPC on the same provider stays functional.
-      const survivorStatus = await caller.inspect({
-        runId,
-        streamId: "survivor",
-      }).orThrow();
-      assertEquals(survivorStatus.active, 1n, "the survivor source is active");
-      assertEquals(survivorStatus.emitted, 1n, "exactly its released frame");
+      const survivorStatus = await caller
+        .inspect({
+          runId,
+          streamId: "survivor",
+        })
+        .orThrow();
+      assert.deepEqual(
+        survivorStatus.active,
+        1n,
+        "the survivor source is active",
+      );
+      assert.deepEqual(
+        survivorStatus.emitted,
+        1n,
+        "exactly its released frame",
+      );
 
       await survivor.close().orThrow();
       await survivorTask;

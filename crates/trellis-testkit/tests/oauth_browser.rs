@@ -57,7 +57,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
         .unwrap();
     let result = std::process::Command::new("node")
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .args(["--test", "ts/browser/oauth_accounts.browser_test.ts"])
+        .args(["--test", "ts/browser/oauth_accounts.browser_driver.ts"])
         .env("TRELLIS_TEST_CONSOLE_URL", runtime.trellis_url())
         .env("TRELLIS_TEST_OAUTH_ORIGIN", runtime.oauth_origin())
         .env("TRELLIS_TEST_ADMIN_USERNAME", runtime.admin_username())

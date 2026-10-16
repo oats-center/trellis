@@ -3,7 +3,7 @@ import type { Codec } from "@oatscenter/trellis/generated";
 import { apis, apps } from "../../trellis/index.js";
 
 /** Generated native application selections used by the registered test administrator. */
-export const adminParticipant = apps.cli.request;
+export const adminParticipant: typeof apps.cli.request = apps.cli.request;
 
 export const ADMIN_USERNAME = "admin";
 
@@ -16,12 +16,38 @@ function adminMethod<I, O>(
   return {
     input: descriptor.input,
     output: descriptor.output,
+    // Dispatch erases the method's model type; the generated client validates
+    // and encodes it. Decoding here would incorrectly treat bigint models as wire JSON.
     call: (client: AdminClient, value: unknown) => call(client, value as I),
   } as const;
 }
 
 /** @internal Concrete Auth RPCs available to the shared test host. */
 export const adminMethods = {
+  authUsersGet: adminMethod(
+    apis.auth.API.actions["rpc:Users.Get"],
+    (client, input) => client.usersGet(input).orThrow(),
+  ),
+  authUsersUpdate: adminMethod(
+    apis.auth.API.actions["rpc:Users.Update"],
+    (client, input) => client.usersUpdate(input).orThrow(),
+  ),
+  authAuthorizationSessionsRevoke: adminMethod(
+    apis.auth.API.actions["rpc:AuthorizationSessions.Revoke"],
+    (client, input) => client.authorizationSessionsRevoke(input).orThrow(),
+  ),
+  authDevicesReviewsGet: adminMethod(
+    apis.auth.API.actions["rpc:Devices.Reviews.Get"],
+    (client, input) => client.devicesReviewsGet(input).orThrow(),
+  ),
+  authDevicesReviewsDecide: adminMethod(
+    apis.auth.API.actions["rpc:Devices.Reviews.Decide"],
+    (client, input) => client.devicesReviewsDecide(input).orThrow(),
+  ),
+  authUsersResolve: adminMethod(
+    apis.auth.API.actions["rpc:Users.Resolve"],
+    (client, input) => client.usersResolve(input).orThrow(),
+  ),
   authCapabilitiesList: adminMethod(
     apis.auth.API.actions["rpc:Capabilities.List"],
     (client, input) => client.capabilitiesList(input).orThrow(),
@@ -30,17 +56,21 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Connections.List"],
     (client, input) => client.connectionsList(input).orThrow(),
   ),
+  authConnectionsKick: adminMethod(
+    apis.auth.API.actions["rpc:Connections.Kick"],
+    (client, input) => client.connectionsKick(input).orThrow(),
+  ),
+  authAuthorizationSessionsList: adminMethod(
+    apis.auth.API.actions["rpc:AuthorizationSessions.List"],
+    (client, input) => client.authorizationSessionsList(input).orThrow(),
+  ),
+  authResourcesList: adminMethod(
+    apis.auth.API.actions["rpc:Resources.List"],
+    (client, input) => client.resourcesList(input).orThrow(),
+  ),
   authDevicesProvision: adminMethod(
     apis.auth.API.actions["rpc:Devices.Provision"],
     (client, input) => client.devicesProvision(input).orThrow(),
-  ),
-  stateResourcesInspect: adminMethod(
-    apis.state.API.actions["rpc:Resources.Inspect"],
-    (client, input) => client.resourcesInspect(input).orThrow(),
-  ),
-  stateResourcesQuery: adminMethod(
-    apis.state.API.actions["rpc:Resources.Query"],
-    (client, input) => client.resourcesQuery(input).orThrow(),
   ),
   authDeploymentsCreate: adminMethod(
     apis.auth.API.actions["rpc:Deployments.Create"],
@@ -77,6 +107,14 @@ export const adminMethods = {
   authCapabilityGrantsGrant: adminMethod(
     apis.auth.API.actions["rpc:CapabilityGrants.Grant"],
     (client, input) => client.capabilityGrantsGrant(input).orThrow(),
+  ),
+  authCapabilityGrantsList: adminMethod(
+    apis.auth.API.actions["rpc:CapabilityGrants.List"],
+    (client, input) => client.capabilityGrantsList(input).orThrow(),
+  ),
+  authCapabilityGrantsRevoke: adminMethod(
+    apis.auth.API.actions["rpc:CapabilityGrants.Revoke"],
+    (client, input) => client.capabilityGrantsRevoke(input).orThrow(),
   ),
   authServiceInstancesProvision: adminMethod(
     apis.auth.API.actions["rpc:ServiceInstances.Provision"],

@@ -78,7 +78,7 @@ not clear IndexedDB as a routine recovery technique.
 
 ## Verify a browser consumer
 
-Keep Vite aliases, npm/JSR imports, and TypeScript path mappings aligned with
+Keep Vite aliases, npm imports, and TypeScript path mappings aligned with
 the generated module's imports. Run the app's normal `svelte-check` and
 production build, then exercise login, a generated call, disconnect/reconnect,
 and logout against a real runtime. See [the Svelte AI guide](/llms-svelte.txt)

@@ -3,11 +3,9 @@ import {
   createTrellisApp,
   type TrellisClientFor,
 } from "@oatscenter/trellis-svelte";
-import { participants } from "../../trellis/index.js";
+import { apps } from "../../trellis/index.js";
 
-export type TrellisDemoAppClient = TrellisClientFor<
-  typeof participants.App.participant
->;
+export type TrellisDemoAppClient = TrellisClientFor<typeof apps.App.request>;
 
 const defaultTrellisUrl = "http://localhost:3000";
 
@@ -18,14 +16,16 @@ export const trellisUrl = new URL(
   .replace(/\/$/, "");
 
 export const trellisApp = createTrellisApp({
-  participant: participants.App.participant,
+  request: apps.App.request,
   trellisUrl,
 });
 
+/** Returns the generated browser app client from the current provider context. */
 export function getTrellis(): TrellisDemoAppClient {
   return trellisApp.getTrellis();
 }
 
+/** Returns the current provider-owned transport connection. */
 export function getConnection() {
   return trellisApp.getConnection();
 }

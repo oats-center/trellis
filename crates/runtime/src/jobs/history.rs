@@ -1,18 +1,14 @@
-use std::path::PathBuf;
-
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use sha2::{Digest, Sha256};
-use trellis_rs::service::{LiveProviderOwner, Router, ServerError, ServiceResourceBindings};
+use trellis_rs::service::{LiveProviderOwner, Router, ServerError};
 use trellis_runtime_apis::apis::trellis_jobs_v1::rpc::History;
 
 pub(super) fn register(
     router: &mut Router,
-    path: PathBuf,
+    evidence: crate::resource_evidence::ResourceEvidenceReader,
     nats: async_nats::Client,
     owner: LiveProviderOwner,
 ) {
     router.register_rpc::<History, _, _>(move |request, input| {
-        let path = path.clone();
+        let evidence = evidence.clone();
         let nats = nats.clone();
         let owner = owner.clone();
         async move {
@@ -20,31 +16,23 @@ pub(super) fn register(
             let forbidden = || forbidden(&session_key);
             let verified = request.verified_request().ok_or_else(forbidden)?;
             let authority = verified.authority();
-            let trellis_protocol::SessionBinding::Service { deployment_id, participant_id, .. } =
+            let trellis_protocol::SessionBinding::Service { deployment_id, participant_id, instance_id } =
                 &authority.authority().binding else { return Err(forbidden()); };
             if input.job_id.is_empty() || input.job_id.bytes().any(|c| !c.is_ascii_alphanumeric() && c != b'-' && c != b'_') {
                 return Err(forbidden());
             }
-            let deployment_id = deployment_id.clone();
-            let participant_id = participant_id.clone();
-            let queue = input.queue.clone();
-            let expected = authority.authority().resource_bindings_digest.clone();
-            let resource_session_key = session_key.clone();
-            let prefix = tokio::task::spawn_blocking(move || -> Result<String, ServerError> {
-                let connection = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
-                    .map_err(|error|ServerError::Nats(error.to_string()))?;
-                let json: String = connection.query_row(
-                    "SELECT b.resource_commitments_json FROM auth_deployment_bindings b JOIN auth_resources r ON r.owner_id=b.deployment_id AND r.binding_revision=b.revision JOIN auth_deployments d ON d.deployment_id=b.deployment_id WHERE b.deployment_id=?1 AND r.owner_kind='deployment' AND r.participant_id=?2 AND r.kind='job' AND r.local_name=?3 AND r.state='ready' AND d.state='active'",
-                    rusqlite::params![deployment_id,participant_id,queue], |row|row.get(0)).map_err(|_|crate::jobs::history::forbidden(&resource_session_key))?;
-                let value: serde_json::Value = serde_json::from_str(&json).map_err(|error|ServerError::Nats(error.to_string()))?;
-                let canonical = trellis_protocol::canonicalize_json(&value).map_err(|error|ServerError::Nats(error.to_string()))?;
-                if expected.as_deref() != Some(URL_SAFE_NO_PAD.encode(Sha256::digest(canonical.as_bytes())).as_str()) {
-                    return Err(crate::jobs::history::forbidden(&resource_session_key));
-                }
-                let bindings: ServiceResourceBindings = serde_json::from_value(value).map_err(|error|ServerError::Nats(error.to_string()))?;
-                bindings.jobs.and_then(|jobs|jobs.queues.get(&queue).map(|queue|queue.publish_prefix.clone()))
-                    .ok_or_else(||crate::jobs::history::forbidden(&resource_session_key))
-            }).await.map_err(|error|ServerError::Nats(error.to_string()))??;
+            use trellis_runtime_apis::types::{AuthResourceBindingsQueryRequest,AuthResourceEvidenceKind};
+            let rows = evidence.query(AuthResourceBindingsQueryRequest {
+                kind:AuthResourceEvidenceKind::JobQueue,
+                instance_id:Some(instance_id.parse().map_err(|_|forbidden())?),
+                owner_id:Some(deployment_id.parse().map_err(|_|forbidden())?),
+                participant_id:Some(participant_id.clone()),local_name:Some(input.queue.clone()),
+                resource_id:None,page:None,extra:Default::default(),
+            }).await.map_err(ServerError::Nats)?;
+            let expected = authority.authority().resource_bindings_digest.as_deref().ok_or_else(forbidden)?;
+            let binding = rows.into_iter().find(|row| row.resource_bindings_digest.as_ref().is_some_and(|digest|digest.as_ref()==expected))
+                .and_then(|row|row.job).ok_or_else(forbidden)?;
+            let prefix = binding.publish_prefix;
             owner.runtime_authorization_owner().assert_current(authority).map_err(|_|forbidden())?;
             request.authorize_handler_request()?;
             let js = async_nats::jetstream::new(nats);

@@ -2,7 +2,8 @@ use super::*;
 use crate::platform::auth::phase_two_tests::{fixture, mutation, NOW};
 
 #[test]
-fn device_aggregate_apply_fences_old_software_and_remove_cannot_revive_identity() {
+fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_cannot_revive_identity()
+{
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use sha2::{Digest as _, Sha256};
     let f = fixture();
@@ -107,10 +108,11 @@ fn device_aggregate_apply_fences_old_software_and_remove_cannot_revive_identity(
         ..unchanged.clone()
     };
     let applied = apply_deployment(&f.store, &mutation(&f.admin, &apply), &apply, NOW + 2).unwrap();
-    assert!(matches!(
-        f.store.issue_authority(&admission, None, NOW + 2),
-        Err(AuthError::Denied)
-    ));
+    let pinned = f.store.issue_authority(&admission, None, NOW + 2).unwrap();
+    assert_eq!(
+        pinned.authority.unsigned.capabilities,
+        issued.authority.unsigned.capabilities
+    );
     assert_eq!(
         apply_deployment(&f.store, &unchanged_identity, &unchanged, NOW + 3)
             .unwrap()

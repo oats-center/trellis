@@ -898,7 +898,7 @@ function getQueueBinding(
  * replace execution state or attempts.
  */
 export async function getLatestLifecycleEvent(
-  direct: DirectMessageReader,
+  direct: DirectMessageReader | undefined,
   stream: string,
   publishPrefix: string,
   job: Job,
@@ -909,6 +909,7 @@ export async function getLatestLifecycleEvent(
     if (history) {
       histories = [await history()];
     } else {
+      if (!direct) throw new Error("Job lifecycle history reader unavailable");
       const last = await direct.getMessage(stream, {
         last_by_subj: `${publishPrefix}.${job.id}.*`,
       });

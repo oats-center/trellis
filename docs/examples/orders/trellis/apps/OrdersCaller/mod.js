@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/orders/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export const request = {
 	id: "acme-orders.OrdersCaller",
-	kind: "browser",
+	kind: "native",
 	requiredCapabilities: ["acme-orders.orders@v1::create"],
 	optionalCapabilities: [],
 	uses: [{

@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/orders/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export declare const request: AppRequestDescriptor & {
 	readonly id: "acme-orders.OrdersCaller";
-	readonly kind: "browser";
+	readonly kind: "native";
 	readonly requiredCapabilities: readonly ["acme-orders.orders@v1::create"];
 	readonly optionalCapabilities: readonly [];
 	readonly uses: readonly [{

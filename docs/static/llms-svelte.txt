@@ -136,7 +136,7 @@ app Dashboard {
 }
 ```
 
-## Vite, npm, JSR, and `svelte-check`
+## Vite, npm, and `svelte-check`
 
 Native generation does not execute TypeScript or require a Vite plugin. The
 application's bundler and type checker still need to resolve imports from the
@@ -144,7 +144,7 @@ one generated package and the installed Trellis packages. Its executable `.js`
 and `.d.ts` require no consumer transpilation or Trellis CLI. Commit generated
 output for ordinary clone builds. Use the
 resolver configuration appropriate to that application; the checked-in app demo
-illustrates one Deno/Vite setup, not a required frontend stack.
+illustrates one npm/Vite setup, not a required frontend stack.
 
 When an import fails, inspect its actual generated specifier and the installed
 package exports. Regenerate stale code rather than editing generated imports.

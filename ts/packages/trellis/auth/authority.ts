@@ -40,6 +40,8 @@ const authorityLeaseToken = Symbol("verified authority lease");
 
 type RecordObject = { [key: string]: JsonValue };
 type CachedAuthority = {
+  /** Private admission candidates cannot serve application frames before commit. */
+  unpublished?: boolean;
   handle: SessionAuthorityHandle;
   authority: SessionAuthority;
   digest: string;
@@ -99,6 +101,10 @@ export class VerifiedAuthority {
   /** Content address of the exact immutable signed context. */
   get digest(): string {
     return this.#entry.digest;
+  }
+  /** Whether checked transport publication has released this private candidate. @internal */
+  get published(): boolean {
+    return !this.#entry.unpublished;
   }
   /** Internal verifier access requires the module-private lease token. */
   entry(token: typeof authorityLeaseToken): CachedAuthority {
@@ -207,8 +213,10 @@ export class SessionAuthorityOwner {
   #watch?: ConsumerMessages;
   #mirrorEpoch = 0;
   #mirrorCovered = false;
+  #mirrorUpdates: Promise<void> = Promise.resolve();
   #mirrorFailed = false;
   #mirrorStop?: () => void;
+  #mirrorPreparationStop?: () => void;
   #ownPreparationEpoch = 0;
   #rotationSequence: bigint;
   readonly #initialIssuers: readonly AuthorityIssuerKey[];
@@ -300,24 +308,15 @@ export class SessionAuthorityOwner {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(name))
         throw new Error("invalid authority registry");
     }
-    const epoch = ++this.#mirrorEpoch;
-    this.#metadataTransport = {
+    this.#mirrorPreparationStop?.();
+    const epoch = this.#mirrorEpoch + 1;
+    let promoted = false;
+    const metadataTransport = {
       nats,
       inboxPrefix: options.inboxPrefix ?? "_INBOX",
       signal: options.signal,
     };
-    this.#mirrorCovered = false;
-    this.#mirrorFailed = false;
-    this.#mirrorStop?.();
-    this.#watch?.stop();
-    this.#watch = undefined;
-    for (const listener of this.#listeners) {
-      try {
-        listener();
-      } catch {
-        /* coverage is already fenced */
-      }
-    }
+    if (!this.#mirrorCovered) this.#metadataTransport = metadataTransport;
     const ready = Promise.withResolvers<void>();
     void ready.promise.catch(() => undefined);
     let watch: ConsumerMessages | undefined;
@@ -326,13 +325,18 @@ export class SessionAuthorityOwner {
     let applied = 0;
     let revision = 0;
     let boundary: number | undefined;
+    let prepared = false;
     let ordered = Promise.resolve();
     const current = () =>
-      epoch === this.#mirrorEpoch && !this.#stopped && !ended;
+      (promoted
+        ? epoch === this.#mirrorEpoch
+        : this.#mirrorPreparationStop === abort) &&
+      !this.#stopped &&
+      !ended;
     const fail = (error: Error, transportLost = false) => {
       if (ended) return;
       ended = true;
-      if (epoch === this.#mirrorEpoch) {
+      if (promoted && epoch === this.#mirrorEpoch) {
         this.#mirrorCovered = false;
         this.#mirrorFailed = !transportLost && !nats.isClosed();
         for (const listener of this.#listeners) {
@@ -361,11 +365,27 @@ export class SessionAuthorityOwner {
     const cover = () => {
       check();
       if (
+        (promoted || prepared) &&
         boundary !== undefined &&
         applied >= boundary &&
         applied === received
       ) {
         const changed = !this.#mirrorCovered;
+        if (!promoted) {
+          const previousStop = this.#mirrorStop;
+          // The current mirror remains authoritative until the candidate has
+          // applied its complete authenticated snapshot and queued updates.
+          promoted = true;
+          this.#mirrorEpoch = epoch;
+          this.#mirrorStop = abort;
+          this.#mirrorPreparationStop = undefined;
+          this.#watch = watch;
+          this.#mirrorUpdates = ordered;
+          this.#metadataTransport = metadataTransport;
+          this.#material = material;
+          this.#mirrorFailed = false;
+          previousStop?.();
+        }
         this.#mirrorCovered = true;
         clearTimeout(timer);
         ready.resolve();
@@ -381,7 +401,7 @@ export class SessionAuthorityOwner {
     };
     options.signal?.addEventListener("abort", abort, { once: true });
     const statuses = nats.status();
-    this.#mirrorStop = abort;
+    this.#mirrorPreparationStop = abort;
     void (async () => {
       try {
         for await (const status of statuses) {
@@ -398,13 +418,14 @@ export class SessionAuthorityOwner {
     void nats
       .closed()
       .then(() => fail(new Error("authority mirror connection closed")));
+    let material: RoKV;
     const setup = (async () => {
       check();
-      const material = await new Kvm(nats).open(binding.materialBucket, {
+      material = await new Kvm(nats).open(binding.materialBucket, {
         bindOnly: true,
       });
       check();
-      this.#material = material;
+      if (!this.#mirrorCovered) this.#material = material;
       await this.#advanceTrust(BigInt(binding.rotationSequence));
       check();
       const inbox = createInbox(options.inboxPrefix);
@@ -444,7 +465,7 @@ export class SessionAuthorityOwner {
           received = sequence;
           revision = message.info.streamSequence;
           // Fence authority synchronously at ingress until this update is applied.
-          this.#mirrorCovered = false;
+          if (promoted) this.#mirrorCovered = false;
           ordered = ordered
             .then(async () => {
               check();
@@ -469,11 +490,11 @@ export class SessionAuthorityOwner {
             .catch((error) =>
               fail(error instanceof Error ? error : new Error(String(error))),
             );
+          if (promoted) this.#mirrorUpdates = ordered;
         },
         abort_on_missing_resource: true,
       });
       check();
-      this.#watch = watch;
       const events = watch.status();
       void (async () => {
         try {
@@ -505,6 +526,11 @@ export class SessionAuthorityOwner {
       check();
       boundary = info.delivered.consumer_seq + info.num_pending;
       await ordered;
+      // Do not clear an ingress fence belonging to the predecessor while its
+      // already-received revocations are still being authenticated.
+      await this.#settleMirrorUpdates();
+      check();
+      prepared = true;
       cover();
       await ready.promise;
       check();
@@ -584,7 +610,7 @@ export class SessionAuthorityOwner {
     );
   }
 
-  /** A terminal loss of the current revocation mirror, distinct from bounded replacement initialization. */
+  /** Loss of current revocation coverage requiring private snapshot recovery. */
   get coverageLost(): boolean {
     return this.#mirrorFailed;
   }
@@ -626,12 +652,14 @@ export class SessionAuthorityOwner {
     readonly digest: string;
     readonly authority: Readonly<SessionAuthority>;
     assertPreparedCurrent(): void;
+    retain(): VerifiedAuthority;
     commit(): void;
     dispose(): void;
   }> {
     const epoch = ++this.#ownPreparationEpoch;
     const mirrorEpoch = this.#mirrorEpoch;
     const candidate = await this.#verify(bytes, "live");
+    candidate.unpublished = true;
     try {
       if (
         candidate.authority.runtimeId !== expected.runtimeId ||
@@ -658,12 +686,21 @@ export class SessionAuthorityOwner {
         digest: candidate.digest,
         authority: candidate.authority,
         assertPreparedCurrent,
+        retain: () => {
+          assertPreparedCurrent();
+          return VerifiedAuthority.acquire(
+            authorityLeaseToken,
+            this,
+            candidate,
+          );
+        },
         commit: () => {
           if (finished) return;
           assertPreparedCurrent();
           finished = true;
           const previous = this.#own;
           this.#own = candidate;
+          candidate.unpublished = false;
           this.#ownAvailable = true;
           if (previous) {
             previous.retired = true;
@@ -680,7 +717,8 @@ export class SessionAuthorityOwner {
         dispose: () => {
           if (finished) return;
           finished = true;
-          candidate.handle.free();
+          candidate.retired = true;
+          if (!candidate.references) candidate.handle.free();
         },
       };
     } catch (error) {
@@ -705,6 +743,7 @@ export class SessionAuthorityOwner {
 
   /** Resolve immutable peer material once per digest, bounded independently from active local identity. */
   async peer(digest: string): Promise<VerifiedAuthority> {
+    await this.#settleMirrorUpdates();
     if (this.#own?.digest === digest) return this.own();
     let entry = this.#peers.get(digest);
     if (!entry) {
@@ -718,6 +757,7 @@ export class SessionAuthorityOwner {
           try {
             if (verified.digest !== digest)
               throw new Error("authority digest mismatch");
+            await this.#settleMirrorUpdates();
             this.assertCurrent(verified);
             this.#prunePeers(verified.byteLength);
             if (
@@ -743,6 +783,7 @@ export class SessionAuthorityOwner {
       }
       entry = await pending;
     }
+    await this.#settleMirrorUpdates();
     this.assertCurrent(entry);
     this.#peers.delete(digest);
     this.#peers.set(digest, entry);
@@ -803,6 +844,7 @@ export class SessionAuthorityOwner {
         response.providerCertificateDigest,
       );
       const issuer = await this.#issuer(String(certificate.record.issuerKeyId));
+      await this.#settleMirrorUpdates();
       const verified = await verifySessionResponseWasm({
         providerHandle: provider.entry(authorityLeaseToken).handle,
         response,
@@ -821,6 +863,7 @@ export class SessionAuthorityOwner {
         ),
       });
       if (!verified.ok) throw new Error(verified.error.code);
+      await this.#settleMirrorUpdates();
       provider.assertCurrent();
       if (
         provider.authority.binding.kind !== "service" &&
@@ -1012,6 +1055,19 @@ export class SessionAuthorityOwner {
     }
   }
 
+  async #settleMirrorUpdates(): Promise<void> {
+    const epoch = this.#mirrorEpoch;
+    let updates: Promise<void>;
+    do {
+      updates = this.#mirrorUpdates;
+      await updates;
+      if (epoch !== this.#mirrorEpoch)
+        throw new Error("authority mirror superseded");
+    } while (updates !== this.#mirrorUpdates);
+    // This waits only for updates already received, never for lost coverage or
+    // a replacement mirror. Callers still perform their normal live checks.
+  }
+
   /** Recheck observed revocation and expiry after every cold asynchronous boundary. */
   assertCurrent(entry: CachedAuthority): void {
     if (this.#stopped || this.#overloaded || !this.#mirrorCovered)
@@ -1176,6 +1232,8 @@ export class SessionAuthorityOwner {
     this.#mirrorCovered = false;
     this.#mirrorStop?.();
     this.#mirrorStop = undefined;
+    this.#mirrorPreparationStop?.();
+    this.#mirrorPreparationStop = undefined;
     this.#watch?.stop();
     this.#watch = undefined;
     for (const entry of [
@@ -1472,6 +1530,7 @@ export class SessionAuthorityOwner {
     }
     try {
       if (purpose === "live") {
+        await this.#settleMirrorUpdates();
         if (mirrorEpoch !== this.#mirrorEpoch)
           throw new Error("authority verification coverage superseded");
         this.assertCurrent(entry);

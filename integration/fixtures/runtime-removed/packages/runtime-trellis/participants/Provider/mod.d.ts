@@ -4,6 +4,7 @@ import * as types from "./types.js";
 export { types };
 import * as Api0 from "../../apis/runtime/mod.js";
 type __ActionNames = {
+	readonly "runtime-trellis.runtime@v1:rpc:Download": "Download";
 	readonly "runtime-trellis.runtime@v1:rpc:Echo": "Echo";
 	readonly "runtime-trellis.runtime@v1:operation:Upload": "Upload";
 	readonly "runtime-trellis.runtime@v1:operation:Work": "Work";
@@ -46,7 +47,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "QoYCx2sfFzWC-vDpMMaBz9RHoOICtpON-1ViRmNIpDc";
+export declare const PARTICIPANT_DIGEST: "33vOZ-ju1M1BF_GieF3DjMksG6ZXOPwslvO7mEcEht0";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "required" ? Name : never]: Handles[Name] } & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name]["availability"] extends "optional" ? Name : never]: Handles[Name] | undefined };

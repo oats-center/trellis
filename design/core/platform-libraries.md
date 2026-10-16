@@ -33,7 +33,7 @@ connection walkthroughs, and exact public signatures belong in:
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
 | `@oatscenter/trellis`              | Canonical core Trellis runtime package: client/device helpers, Result helpers, transfers, and generated-contract support | Frontend apps, services, CLI tools  |
 | `@oatscenter/trellis/service`      | Service-side runtime facade, extracted handler types, and service-only helpers                                           | Backend services                    |
-| `@oatscenter/trellis/service`      | Shared Node-compatible native service runtime                                                                            | Node and Deno services              |
+| `@oatscenter/trellis/service`      | Shared Node-compatible native service runtime                                                                            | Node 24 services                    |
 | `@oatscenter/trellis/auth`         | Full auth helper and auth protocol surface, including browser bind helpers                                               | Apps, services, docs, tests         |
 | `@oatscenter/trellis/auth/browser` | Browser-only auth and portal-flow helper facade                                                                          | Browser apps, custom portals        |
 | `@oatscenter/trellis/participant`  | Participant metadata and canonical runtime types                                                                         | Generated code and tooling          |

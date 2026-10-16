@@ -9,8 +9,6 @@ export type {
 } from "./src/types.ts";
 export type {
   TrellisNativeSource,
-  TrellisTestClientAuth,
-  TrellisTestClientKey,
   TrellisTestClientParticipant,
   TrellisTestConnectedClient,
   TrellisTestParticipant,

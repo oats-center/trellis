@@ -216,6 +216,10 @@ pub struct NativeOAuthSession {
 }
 
 impl NativeOAuthSession {
+    pub(crate) fn take_issuer_rotations(&mut self) -> Vec<SignedIssuerRotation> {
+        std::mem::take(&mut self.client.issuer_rotations)
+    }
+
     /// Rotate using current trust authenticated by the connection's authority
     /// owner, retaining the runtime, session signing key, and exclusive custody.
     /// Ambiguous responses require a new authorization flow, never token retry.
@@ -270,6 +274,7 @@ pub struct NativeOAuthClient {
     trust: RuntimeAuthorizationTrust,
     auth: SessionAuth,
     runtime_id: String,
+    issuer_rotations: Vec<SignedIssuerRotation>,
 }
 
 /// An outstanding RFC 8628 flow. Only the user-facing code and verification URI
@@ -349,6 +354,7 @@ impl NativeOAuthClient {
             trust,
             auth,
             runtime_id: URL_SAFE_NO_PAD.encode(rand::random::<[u8; 16]>()),
+            issuer_rotations: Vec::new(),
         })
     }
 
@@ -431,6 +437,7 @@ impl NativeOAuthClient {
             return Err(NativeOAuthError::TrustUnavailable);
         }
         let mut authenticated = self.trust.clone();
+        let mut verified_rotations = Vec::new();
         if target.issuer.key_id != authenticated.issuer.key_id {
             let request = AuthIssuerChainRequest {
                 pinned_key_id: authenticated.issuer.key_id.clone().into(),
@@ -488,6 +495,7 @@ impl NativeOAuthClient {
                 if !seen.insert(authenticated.issuer.key_id.clone()) {
                     return Err(NativeOAuthError::TrustUnavailable);
                 }
+                verified_rotations.push(rotation);
             }
         }
         if authenticated.issuer != target.issuer
@@ -507,6 +515,7 @@ impl NativeOAuthClient {
         .map_err(|_| NativeOAuthError::RecoveryRequired)?
         .map_err(NativeOAuthError::Custody)?;
         self.trust = authenticated;
+        self.issuer_rotations = verified_rotations;
         Ok(())
     }
 

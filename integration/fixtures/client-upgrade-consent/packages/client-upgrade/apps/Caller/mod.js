@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/upgrade/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export const request = {
 	id: "client-upgrade-fixture.Caller",
-	kind: "browser",
+	kind: "native",
 	requiredCapabilities: ["client-upgrade-fixture.upgrade@v1::read_documents"],
 	optionalCapabilities: [],
 	uses: [{

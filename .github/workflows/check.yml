@@ -16,7 +16,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DENO_VERSION: 2.9.4
   NODE_VERSION: 24
   CARGO_TERM_COLOR: always
   RUSTUP_INIT_SKIP_PATH_CHECK: "yes"
@@ -44,10 +43,10 @@ jobs:
       - name: Expose Rust toolchain binaries
         run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Reset isolated installation state
         run: rm -rf target
@@ -152,20 +151,18 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
-      # The web build resolves SvelteKit's internal modules through the shared
-      # ts/ import map, so the TypeScript workspace's node_modules must exist.
-      - name: Install TypeScript workspace dependencies
-        run: deno install --config ts/deno.json
+      - name: Install Node workspace dependencies
+        run: npm ci
 
       # Consume the already-generated API artifacts and protocol WASM; do not
       # re-run the developer wrapper that recompiles xtask and the WASM.
       - name: Build embedded browser apps
-        run: deno task -c web/deno.json build:embedded
+        run: npm run browser:embedded
 
       - name: Upload embedded browser apps
         uses: actions/upload-artifact@v4
@@ -207,10 +204,10 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
@@ -325,10 +322,10 @@ jobs:
       - name: Expose Rust toolchain binaries
         run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
@@ -385,24 +382,20 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
 
       - name: Check formatting
-        run: deno fmt -c ts/deno.json --check
+        run: npm exec -- prettier --check ts/packages ts/tools
 
       - name: Check TypeScript packages
-        run: >-
-          deno check -c ts/deno.json
-          ts/packages/trellis/index.ts
-          ts/packages/trellis-svelte/src/index.ts
-          ts/packages/trellis-svelte/src/context.svelte.ts
-          ts/packages/trellis-testkit/index.ts
+        run: npm run check:sdk
 
       - name: Check TypeScript integration
-        run: deno task -c ts/integration/deno.json check
+        run: npm run check:integration
 
       - name: Download producer-built adapter-test runtime
         uses: actions/download-artifact@v4
@@ -417,7 +410,7 @@ jobs:
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
-        run: deno task -c ts/deno.json test
+        run: npm run test:sdk
 
   demos:
     name: Demo consumers
@@ -439,10 +432,10 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Download protocol WASM
         uses: actions/download-artifact@v4
@@ -478,8 +471,8 @@ jobs:
 
       - name: Check TypeScript demos with packaged dependencies
         run: |
-          deno task -c ts/deno.json packages:build:npm:installed
-          deno run -A -c ts/deno.json ts/tools/package_build/demo_consumers.ts
+          npm run build:packages
+          node ts/tools/package_build/demo_consumers.ts
 
       - name: Verify TypeScript publication
         run: bash scripts/release-ts-dry-run.sh
@@ -490,6 +483,7 @@ jobs:
           name: npm-packages
           path: |
             ts/packages/result/npm
+            ts/packages/trellis-testkit/npm
             ts/packages/trellis/npm
             ts/packages/trellis-svelte/npm
           retention-days: 3
@@ -694,10 +688,10 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -712,7 +706,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Run TypeScript live integration
-        run: deno task -c ts/deno.json test:integration
+        run: npm ci && npm run test:integration
 
   examples:
     name: Documented examples
@@ -734,10 +728,10 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -760,9 +754,9 @@ jobs:
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
         run: |
-          deno task -c ts/packages/result/deno.json build:npm
-          deno task -c ts/packages/trellis/deno.json build:npm:installed
-          deno run -A -c ts/deno.json ts/tools/package_build/orders_example.ts
+          npm ci
+          npm run build:packages
+          node ts/tools/package_build/orders_example.ts
 
   ui-hosting:
     name: Built-in UI hosting
@@ -790,10 +784,10 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -808,30 +802,23 @@ jobs:
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
       - name: Prepare web development server
-        working-directory: web
-        run: deno run -A --frozen @sveltejs/kit sync
-
-      - name: Set up Node for the Playwright installer
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+        run: npm ci
 
       - name: Install pinned Chromium and browser dependencies
         working-directory: ts
         run: npm exec --yes --package=playwright@1.59.1 -- playwright install --with-deps chromium
 
       - name: Test built-in UI hosting
-        working-directory: ts
-        env:
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-        run: deno task test:browser:ui-hosting
-
-      - name: Test functional browser journeys
-        working-directory: ts
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-        run: deno task test:browser:auth
+        run: npm run test:browser:ui-hosting
+
+      - name: Test functional browser journeys
+        env:
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+        run: npm run test:browser:auth
 
   console:
     name: Console (${{ matrix.suite }})
@@ -843,7 +830,7 @@ jobs:
       matrix:
         suite:
           - services_devices
-          - portals_grants
+          - clients_roles
           - users_sessions
           - observability
           - navigation_permissions
@@ -868,10 +855,10 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -891,7 +878,8 @@ jobs:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
           SUITE: ${{ matrix.suite }}
         run: |
-          deno test -A -c ts/browser/deno.json \
+          npm ci
+          node --experimental-transform-types --test \
             "ts/browser/console_${SUITE}.browser_test.ts"
 
       - name: Upload sanitized failure artifacts
@@ -1052,10 +1040,10 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       # The runtime image base is debian:bookworm-slim, so compile in the same
       # release (rust:bookworm) on Linux x86-64.
@@ -1191,7 +1179,7 @@ jobs:
 
   typescript-testkit-package:
     name: Stage exact TypeScript testkit release input
-    needs: [install, wasm, build-targets-linux]
+    needs: [install, wasm, demos, build-targets-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1208,25 +1196,30 @@ jobs:
           pattern: trellis-cli-*
           merge-multiple: true
           path: dist/native
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-packages
+          path: ts/packages
       - name: Generate pins from the verified Check archives and stage the package
-        run: deno run -A -c ts/deno.json ts/tools/stage_testkit.ts dist/native dist/testkit-jsr
-      - name: Resolve unreleased SDK dependencies in an isolated verification workspace
-        run: deno run -A -c ts/deno.json ts/tools/prepare_testkit_verification.ts dist/testkit-jsr
-      - name: Dry-run the staged JSR publication input
-        working-directory: dist/testkit-jsr
-        run: deno publish --dry-run --allow-slow-types --allow-dirty
-      - name: Check and test the exact staged package
-        working-directory: dist/testkit-jsr
-        run: deno check index.ts && deno test -A tests
+        run: node ts/tools/stage_testkit.ts dist/native dist/testkit-npm
+      - name: Dry-run the staged npm publication input
+        run: npm publish --dry-run --access public dist/testkit-npm
+      - name: Test the installed staged package through public clients
+        run: |
+          mkdir -p dist/runtime
+          tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C dist/runtime
+          TRELLIS_TEST_CLI_BIN="$PWD/dist/runtime/trellis" TRELLIS_TEST_SERVER_BIN="$PWD/dist/runtime/trellis-server" \
+            node ts/tools/verify_testkit_package.ts dist/testkit-npm ts/packages/result/npm ts/packages/trellis/npm
       - name: Freeze the staged package
-        run: tar -C dist/testkit-jsr -czf dist/testkit-jsr.tar.gz .
+        run: tar -C dist/testkit-npm -czf dist/testkit-npm.tar.gz .
       - uses: actions/upload-artifact@v4
         with:
-          name: check-testkit-jsr
-          path: dist/testkit-jsr.tar.gz
+          name: check-testkit-npm
+          path: dist/testkit-npm.tar.gz
           retention-days: 3
 
   acceptance:

@@ -1038,6 +1038,9 @@ where
     };
 
     if context.verified_request().is_none() {
+        if let Err(error) = &result {
+            tracing::debug!(subject = %context.subject, %error, "service request dropped before verification");
+        }
         if let Some(unary) = &mut unary {
             unary.finish(dispatch, None);
         }
@@ -1110,73 +1113,96 @@ pub async fn sign_verified_reply(
         ));
     }
     let owner = client.authorization_owner();
-    let provider = owner
-        .own_authority()
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
     let nats = context
         .transport
         .lease()
         .map(|lease| lease.nats().clone())
         .unwrap_or_else(|| client.nats());
-    let certificate = owner
-        .authorize_provider(&nats, &provider, &opening.api_id, action)
-        .await
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
-    let binding = provider
-        .authority()
-        .provider_bindings
-        .iter()
-        .find(|binding| {
-            binding.api_id == opening.api_id && binding.generation == opening.api_generation
-        })
-        .ok_or_else(|| ServerError::Nats("provider generation does not match opening".into()))?;
-    if certificate.generation != opening.api_generation {
-        return Err(ServerError::Nats(
-            "provider certificate generation mismatch".into(),
-        ));
+    let deadline = client.transport_deadline();
+    loop {
+        let _published = client
+            .acquire_transport(&[], &[], deadline)
+            .await
+            .map_err(|error| ServerError::Nats(error.to_string()))?;
+        let provider = owner
+            .own_authority()
+            .map_err(|error| ServerError::Nats(error.to_string()))?;
+        let result = async {
+            let certificate = owner
+                .authorize_provider(&nats, &provider, &opening.api_id, action)
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            let binding = provider
+                .authority()
+                .provider_bindings
+                .iter()
+                .find(|binding| {
+                    binding.api_id == opening.api_id && binding.generation == opening.api_generation
+                })
+                .ok_or_else(|| {
+                    ServerError::Nats("provider generation does not match opening".into())
+                })?;
+            if certificate.generation != opening.api_generation {
+                return Err(ServerError::Nats(
+                    "provider certificate generation mismatch".into(),
+                ));
+            }
+            let response = trellis_protocol::SessionResponse {
+                trellis_instance_id: provider.authority().trellis_instance_id.clone(),
+                audience_nats_account: provider.authority().audience_nats_account.clone(),
+                provider_authority_digest: provider.digest().to_owned(),
+                provider_certificate_digest: binding.provider_certificate_digest.clone(),
+                api_id: opening.api_id.clone(),
+                api_generation: opening.api_generation,
+                action: opening.action.clone(),
+                request_authority_digest: opening.authority_digest.clone(),
+                request_id: opening.request_id.clone(),
+                request_proof_digest: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(verified.digest()),
+                subject: reply.reply_to.clone(),
+                kind: if reply.is_error {
+                    trellis_protocol::SessionResponseKind::Error
+                } else {
+                    trellis_protocol::SessionResponseKind::Success
+                },
+                issued_at: owner.policy().now_unix_seconds,
+            };
+            let proof = client
+                .auth()
+                .create_response_proof(&response, &reply.payload)
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            owner
+                .assert_current(&provider)
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            // Admission authorized this finite work; only the provider must still be
+            // current when signing against the retained opening transcript.
+            owner
+                .assert_issuer_current(&certificate.issuer_key_id)
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "Trellis-Session-Response",
+                serde_json::to_string(&response)?,
+            );
+            headers.insert("proof", proof.as_str());
+            if reply.is_error {
+                headers.insert("status", "error");
+            }
+            Ok(headers)
+        }
+        .await;
+        // Cold certificate reads may overlap ordinary own-authority promotion.
+        // Reacquire only the local signing snapshot; never redispatch the handler
+        // or retransmit its request, and retain the original signing deadline.
+        if result.is_err()
+            && owner
+                .own_authority()
+                .map_or(true, |current| current.digest() != provider.digest())
+        {
+            continue;
+        }
+        return result;
     }
-    let response = trellis_protocol::SessionResponse {
-        trellis_instance_id: provider.authority().trellis_instance_id.clone(),
-        audience_nats_account: provider.authority().audience_nats_account.clone(),
-        provider_authority_digest: provider.digest().to_owned(),
-        provider_certificate_digest: binding.provider_certificate_digest.clone(),
-        api_id: opening.api_id.clone(),
-        api_generation: opening.api_generation,
-        action: opening.action.clone(),
-        request_authority_digest: opening.authority_digest.clone(),
-        request_id: opening.request_id.clone(),
-        request_proof_digest: base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(verified.digest()),
-        subject: reply.reply_to.clone(),
-        kind: if reply.is_error {
-            trellis_protocol::SessionResponseKind::Error
-        } else {
-            trellis_protocol::SessionResponseKind::Success
-        },
-        issued_at: owner.policy().now_unix_seconds,
-    };
-    let proof = client
-        .auth()
-        .create_response_proof(&response, &reply.payload)
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
-    owner
-        .assert_current(&provider)
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
-    // Admission authorized this finite work; only the provider must still be
-    // current when signing against the retained opening transcript.
-    owner
-        .assert_issuer_current(&certificate.issuer_key_id)
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "Trellis-Session-Response",
-        serde_json::to_string(&response)?,
-    );
-    headers.insert("proof", proof.as_str());
-    if reply.is_error {
-        headers.insert("status", "error");
-    }
-    Ok(headers)
 }
 
 async fn publish_response<H: RequestHandler>(
@@ -1318,7 +1344,9 @@ where
                             }
                         }
                         Ok(DispatchResponse::NoReply) => {}
-                        Err(_) => {}
+                        Err(error) => {
+                            tracing::debug!(%subject, %error, "service request rejected before handler dispatch");
+                        }
                     }
                     Ok::<(), ServerError>(())
                 });

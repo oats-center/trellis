@@ -6,31 +6,29 @@
  * to serve real frames afterwards.
  */
 
-import { assert, assertEquals } from "@std/assert";
-import { expandGlobSync } from "@std/fs";
-import { participants as webParticipants } from "trellis-web-generated";
+import assert from "node:assert/strict";
+import { globSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { test } from "node:test";
+import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Reads every managed live-provider seed file keyed by absolute path. */
 function seedBytes(workdir: string): Record<string, string> {
   const seeds: Record<string, string> = {};
-  for (
-    const entry of expandGlobSync("**/live-providers/*.seed", {
-      root: workdir,
-      includeDirs: false,
-    })
-  ) {
-    seeds[entry.path] = new TextDecoder().decode(Deno.readFileSync(entry.path));
+  for (const entry of globSync("**/live-providers/*.seed", { cwd: workdir })) {
+    const path = join(workdir, entry);
+    seeds[path] = readFileSync(path, "utf8");
   }
   return seeds;
 }
 
-Deno.test("BI05 live provider identity is stable across a control-plane restart", async () => {
+test("BI05 live provider identity is stable across a control-plane restart", async () => {
   await withTrellisRuntime(async (runtime) => {
     const client = await runtime.connectClient({
       name: "bi05-before",
-      contract: webParticipants.Console.participant,
+      contract: apps.Observer.request,
     });
     const feed = await client.healthWatch({}).orThrow();
     const first = await feed[Symbol.asyncIterator]().next();
@@ -46,7 +44,7 @@ Deno.test("BI05 live provider identity is stable across a control-plane restart"
 
     await runtime.restart();
 
-    assertEquals(
+    assert.deepEqual(
       seedBytes(runtime.workdir),
       before,
       "live provider seeds must not rotate across a restart",
@@ -54,7 +52,7 @@ Deno.test("BI05 live provider identity is stable across a control-plane restart"
 
     const restarted = await runtime.connectClient({
       name: "bi05-after",
-      contract: webParticipants.Console.participant,
+      contract: apps.Observer.request,
     });
     const feedAfter = await restarted.healthWatch({}).orThrow();
     const frame = await feedAfter[Symbol.asyncIterator]().next();

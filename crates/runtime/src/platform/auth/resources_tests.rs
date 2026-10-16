@@ -141,6 +141,22 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         }
     );
     assert!(health_bindings.kv.is_empty());
+    let interrupted = async_nats::connect(format!("nats://127.0.0.1:{port}"))
+        .await
+        .unwrap();
+    interrupted.drain().await.unwrap();
+    assert!(matches!(
+        super::super::resources::materialize_native_kv(
+            &store,
+            &interrupted,
+            &deployment.deployment_id,
+            NOW,
+        )
+        .await,
+        Err(AuthError::Broker(_))
+    ));
+    // A failed first allocation has never admitted a provider; it may finish on
+    // the ordinary retry, unlike loss of previously committed storage below.
     let binding = super::super::resources::materialize_native_kv(
         &store,
         &nats,
@@ -425,7 +441,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
             super::super::resources::detach_deployment_resources(
                 connection,
                 &deployment,
-                &std::collections::BTreeSet::from(["other".into()]),
+                &std::collections::BTreeSet::from([("state".into(), "other".into())]),
                 NOW + 5,
             )
         })
@@ -604,6 +620,32 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
             .starts_with(&format!("{}.work.", jobs.namespace))),
         "delayed old purge preserves replacement keyed coordination"
     );
+    // Losing coordinator ownership must not turn a provisioning retry into an
+    // empty coordinator that admits overlapping work for an already active key.
+    jetstream
+        .delete_key_value(format!("JOBS_KEYS_{}", jobs.namespace))
+        .await
+        .unwrap();
+    for now in [NOW + 9, NOW + 10] {
+        let outcome =
+            super::super::resources::materialize_native_kv(&store, &nats, &deployment, now).await;
+        assert!(matches!(outcome, Err(AuthError::Broker(_))), "{outcome:?}");
+        assert!(
+            trellis_rs::jobs::keys::NatsKeyCoordinator::open_for_service(
+                nats.clone(),
+                &jobs.namespace,
+            )
+            .await
+            .is_err()
+        );
+    }
+    assert!(work
+        .get_first_raw_message_by_subject(
+            &replacement.jobs.as_ref().unwrap().queues["work"].work_subject,
+            0,
+        )
+        .await
+        .is_ok());
     server.kill().await.unwrap();
 }
 

@@ -187,6 +187,7 @@ impl RequestContext {
     }
 
     /// Retain a production-verified opening for downstream controls and response signing.
+    /// Additional permission checks on the same request preserve its original reply action.
     pub fn retain_verified_request(
         &self,
         request: crate::client::VerifiedAuthorizationRequest,
@@ -204,7 +205,9 @@ impl RequestContext {
                 "verified request already installed".into(),
             ));
         }
-        *slot = Some(request);
+        if slot.is_none() {
+            *slot = Some(request);
+        }
         Ok(())
     }
 }

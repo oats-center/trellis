@@ -39,6 +39,24 @@ export declare const SavedCodec: {
 	decode(value: unknown): Saved;
 	encode(value: Saved): unknown;
 };
+export type Update = {
+	readonly nested: UpdateDetail;
+	readonly value: string;
+	readonly [key: string]: unknown;
+};
+export declare const UpdateCodec: {
+	decode(value: unknown): Update;
+	encode(value: Update): unknown;
+};
+export type UpdateDetail = {
+	readonly count: bigint;
+	readonly payload: Uint8Array;
+	readonly [key: string]: unknown;
+};
+export declare const UpdateDetailCodec: {
+	decode(value: unknown): UpdateDetail;
+	encode(value: UpdateDetail): unknown;
+};
 export type Value = {
 	readonly value: string;
 	readonly [key: string]: unknown;

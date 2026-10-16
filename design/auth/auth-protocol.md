@@ -264,8 +264,10 @@ the descriptor and every other event-specific field, so a parameterized event
 cannot be mistaken for a longer event name that produces the same NATS subject.
 Concrete parameter tokens are canonical UTF-8 encoded as unpadded base64url.
 Events produced inside a context validity window remain historically verifiable
-after ordinary context expiry, but explicit context or issuer revocation
-invalidates them.
+after ordinary context expiry and issuer retirement. Both signed event time and
+original broker publication time must precede a signed session-revocation cutoff;
+replaying older signed bytes after that cutoff is rejected. Compromised issuers
+remain unusable.
 
 The Events journal stores raw headers and payload plus context digest and useful
 principal/connection/login projections. It never stores a duplicate complete

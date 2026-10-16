@@ -233,7 +233,7 @@ CREATE TABLE auth_user_profiles (
 CREATE TABLE auth_local_credentials (
     principal_id TEXT PRIMARY KEY REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
     normalized_username TEXT NOT NULL UNIQUE CHECK (length(normalized_username) > 0),
-    password_hash TEXT NOT NULL CHECK (length(password_hash) > 0),
+    password_hash TEXT CHECK (password_hash IS NULL OR length(password_hash) > 0),
     hash_profile INTEGER NOT NULL CHECK (hash_profile >= 1),
     failed_attempts INTEGER NOT NULL DEFAULT 0 CHECK (failed_attempts >= 0),
     locked_until INTEGER CHECK (locked_until BETWEEN 0 AND 9007199254740991),
@@ -849,6 +849,7 @@ CREATE TABLE auth_attachments (
     created_at INTEGER NOT NULL,
     admitted_at INTEGER,
     closed_at INTEGER,
+    kicked_at INTEGER,
     UNIQUE (server_id, broker_client_id, attachment_id),
     FOREIGN KEY (context_digest, authorization_session_id)
         REFERENCES auth_session_authorities(context_digest, authorization_session_id)

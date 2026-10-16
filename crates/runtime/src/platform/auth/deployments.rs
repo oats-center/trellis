@@ -501,15 +501,24 @@ impl SqliteAuthorizationStore {
                     }
                 }
             }
-            let resource_names = participant
+            let resource_identities = participant
                 .resources()
-                .keys()
-                .map(ToString::to_string)
+                .iter()
+                .map(|(name, definition)| {
+                    let kind = match definition {
+                        trellis_idl::ResourceDefinition::Kv { .. } => "kv",
+                        trellis_idl::ResourceDefinition::Store { .. } => "store",
+                        trellis_idl::ResourceDefinition::Consumer { .. } => "consumer",
+                        trellis_idl::ResourceDefinition::Job { .. } => "job",
+                        trellis_idl::ResourceDefinition::State { .. } => "state",
+                    };
+                    (kind.to_owned(), name.to_string())
+                })
                 .collect();
             super::resources::detach_deployment_resources(
                 connection,
                 &deployment_id,
-                &resource_names,
+                &resource_identities,
                 now,
             )?;
             let mut resource_commitments = input.resource_commitments.clone();
@@ -517,7 +526,7 @@ impl SqliteAuthorizationStore {
                 .get_mut("kv")
                 .and_then(serde_json::Value::as_object_mut)
             {
-                kv.retain(|name, _| resource_names.contains(name));
+                kv.retain(|name, _| resource_identities.contains(&("kv".to_owned(), name.clone())));
             }
             if existing.is_none() {
                 connection.execute(

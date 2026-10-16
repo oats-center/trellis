@@ -36,6 +36,8 @@ mod ownership;
 /// Platform subsystem scaffold and bootstrap services.
 pub mod platform;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
+mod resource_evidence;
+#[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 mod resources;
 #[cfg(feature = "sqlite-storage")]
 /// SQLite storage for built-in runtime subsystems.

@@ -5,6 +5,8 @@ import {
   isErr,
 } from "@oatscenter/result";
 import { connectAdmitted } from "../auth/connection.ts";
+import { verifyOAuthAdmissionWasm } from "../auth/protocol_wasm.ts";
+import { utf8 } from "../auth/utils.ts";
 import { loadDefaultRuntimeTransport } from "../runtime_transport.ts";
 import type { AppRequestDescriptor } from "../generated_support.ts";
 import type { ClientOpts } from "../client.ts";
@@ -49,7 +51,7 @@ export function connectNativeSession(
       let connected: NativeSessionConnection | undefined;
       try {
         custody = session.claimConnection();
-        let first = session.admission;
+        let admission = session.admission;
         const trust = session.trust;
         connected = await connectAdmitted({
           servers: [...options.servers],
@@ -64,11 +66,17 @@ export function connectNativeSession(
           signal: options.signal,
           transport: await loadDefaultRuntimeTransport(),
           admission: async () => {
-            if (first) {
-              const admission = first;
-              first = "";
-              return admission;
-            }
+            // A transport attempt does not spend OAuth custody. Reuse only
+            // admission the shared verifier still accepts under current pins.
+            const verified = await verifyOAuthAdmissionWasm(utf8(admission), {
+              issuer: (connected?.owner.trustSnapshot ?? trust).issuer,
+              trellisInstanceId: trust.instanceId,
+              audienceNatsAccount: trust.account,
+              ephemeralNkey: session.auth.sessionNkey,
+              nowUnixSeconds: session.auth.currentIat(),
+              maximumLifetimeSeconds: 300,
+            });
+            if (verified.ok) return admission;
             if (!connected)
               throw new AuthError({ reason: "OAuthRecoveryRequired" });
             const refreshed = (
@@ -77,7 +85,8 @@ export function connectNativeSession(
               })
             ).take();
             if (isErr(refreshed)) throw refreshed.error;
-            return refreshed.admission;
+            admission = refreshed.admission;
+            return admission;
           },
         });
         custody.bindOwner(connected.owner);

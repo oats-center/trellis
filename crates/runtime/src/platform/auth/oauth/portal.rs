@@ -235,7 +235,7 @@ impl SqliteAuthorizationStore {
         let (session_id, principal, hash, version): (String, String, String, u64) = {
             let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
             let session: String = connection.query_row("SELECT portal_session_id FROM auth_portal_sessions WHERE cookie_hash=?1 AND csrf_hash=?2 AND expires_at>?3 AND login_session_id IS NULL", params![cookie_hash,csrf_hash,now], |row| row.get(0)).optional()?.ok_or(AuthError::Denied)?;
-            let credentials = connection.query_row("SELECT c.principal_id,c.password_hash,c.version FROM auth_local_credentials c JOIN auth_principals p ON p.principal_id=c.principal_id WHERE c.normalized_username=?1 AND p.state='active'", [username.to_lowercase()], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,u64>(2)?))).optional()?;
+            let credentials = connection.query_row("SELECT c.principal_id,c.password_hash,c.version FROM auth_local_credentials c JOIN auth_principals p ON p.principal_id=c.principal_id WHERE c.normalized_username=?1 AND c.password_hash IS NOT NULL AND p.state='active'", [username.to_lowercase()], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,u64>(2)?))).optional()?;
             let Some((principal, hash, version)) = credentials else {
                 drop(connection);
                 // Perform the normal hash work for absent/disabled users too.

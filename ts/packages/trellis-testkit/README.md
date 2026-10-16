@@ -1,7 +1,7 @@
 # @oatscenter/trellis-testkit
 
-Deno helpers that own a real Trellis/NATS runtime for service-repository tests.
-Use ordinary `deno test -A`; there is no runner, matrix, or case registration.
+Node helpers that own a real Trellis/NATS runtime for service-repository tests.
+Use ordinary `node --test`; there is no runner, matrix, or case registration.
 
 ## Generated Participants
 
@@ -92,6 +92,6 @@ builds, and `TRELLIS_TEST_SERVER_BIN` / `TRELLIS_TEST_CLI_BIN` environment
 variables. Run all or a native filter:
 
 ```sh
-deno test -A -c ts/integration/deno.json ts/integration
-deno test -A -c ts/integration/deno.json --filter 'generated runtime workflows' ts/integration
+npm run test:integration
+npm run test:integration -- --test-name-pattern='generated runtime workflows' ts/integration/runtime_test.ts
 ```

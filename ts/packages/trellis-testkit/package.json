@@ -3,8 +3,24 @@
   "version": "0.100.0",
   "license": "Apache-2.0",
   "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
   "exports": "./index.ts",
+  "scripts": {
+    "build": "node scripts/build_npm.ts",
+    "check": "tsc --project tsconfig.json",
+    "test": "node ../../tools/run_unit_tests.ts .",
+    "test:live": "node --experimental-transform-types --test tests/*.live.test.ts"
+  },
   "dependencies": {
-    "@oatscenter/trellis": "0.100.0"
+    "@nats-io/nats-core": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0",
+    "@oatscenter/result": "0.100.0",
+    "@oatscenter/trellis": "0.100.0",
+    "smol-toml": "^1.9.1",
+    "tar": "^7.5.22",
+    "ulid": "^3.0.2",
+    "zod": "^4.3.6"
   }
 }

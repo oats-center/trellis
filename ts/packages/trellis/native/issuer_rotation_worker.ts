@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { apps } from "../../trellis-testkit/trellis/index.js";
+import { apps } from "../../../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
 import { NativeOAuthClient, type NativeOAuthSession } from "../native.ts";
 
@@ -27,8 +27,8 @@ if (mode === "login") {
     issuer,
     directory,
     clientId: "trellis.cli",
-    request: apps.cli.request,
-    approvedCapabilities: apps.cli.request.requiredCapabilities,
+    request: apps.Denied.request,
+    approvedCapabilities: apps.Denied.request.requiredCapabilities,
     username: "admin",
     password: "a strong bootstrap password",
   });
@@ -51,8 +51,8 @@ if (mode === "login") {
           directory,
           clientId: previous.scope.clientId,
           client,
-          request: apps.cli.request,
-          approvedCapabilities: apps.cli.request.requiredCapabilities,
+          request: apps.Denied.request,
+          approvedCapabilities: apps.Denied.request.requiredCapabilities,
           username: "other-user",
           password: "another strong local password",
         }),

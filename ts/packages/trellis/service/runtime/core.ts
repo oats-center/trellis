@@ -5,6 +5,7 @@ import {
   type NatsConnection,
 } from "@nats-io/nats-core";
 import { Pointer, Value } from "typebox/value";
+import type { VerifiedAuthority } from "../../auth/authority.ts";
 import {
   type PermissionAtom,
   routeQueueGroup,
@@ -657,11 +658,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       get: (operationId) =>
         AsyncResult.from(
           (async () => {
-            const runtime = await this.#resolveOperation(operationId);
-            if (!runtime) {
+            const durable = await this.loadOperationRecord(operationId);
+            if (
+              !durable ||
+              durable.deploymentId !== this.#operationDeploymentId
+            ) {
               return err(this.#operationNotFoundError(operationId));
             }
-            return ok(runtime.snapshot);
+            return ok(durable.snapshot);
           })(),
         ),
       started: (operationId) =>
@@ -738,40 +742,66 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     return AsyncResult.from(
       (async () => {
         while (true) {
-          const runtime = await this.#resolveOperation(operationId);
-          if (!runtime) {
+          const durable = await this.loadOperationRecord(operationId);
+          if (
+            !durable ||
+            durable.deploymentId !== this.#operationDeploymentId
+          ) {
             return err(this.#operationNotFoundError(operationId));
           }
 
-          const durable = await this.loadOperationRecord(operationId);
-          if (durable && durable.revision > runtime.revision) {
-            runtime.revision = durable.revision;
-            runtime.snapshot = durable.snapshot;
-            runtime.sequence = durable.sequence;
-            runtime.signalSequence = durable.signalSequence;
-            runtime.signals = durable.signals;
-            runtime.terminal =
-              durable.snapshot.state === "completed" ||
-              durable.snapshot.state === "failed" ||
-              durable.snapshot.state === "cancelled";
-            if (durable.cancelRequestedAt) {
-              runtime.cancelRequestedAt = durable.cancelRequestedAt;
-            }
-          }
-
-          const queued = runtime.signals.find(
+          const queued = durable.signals.find(
             (signal) => !signal.acknowledged && signal.sequence > afterSequence,
           );
           if (queued) {
             return ok(queued);
           }
-          if (runtime.terminal) {
-            return err(this.#operationAlreadyTerminalError(runtime));
+          if (
+            durable.snapshot.state === "completed" ||
+            durable.snapshot.state === "failed" ||
+            durable.snapshot.state === "cancelled"
+          ) {
+            return err(this.#operationAlreadyTerminalError(durable));
           }
           await new Promise((resolve) => setTimeout(resolve, 50));
         }
       })(),
     );
+  }
+
+  /**
+   * Load authoritative state, retiring the owning execution before a failed read
+   * reaches its handler. Infrastructure loss is not a business failure, and a
+   * late read failure must not retire a replacement execution's fence.
+   */
+  override async loadOperationRecord(
+    operationId: string,
+  ): Promise<DurableOperationRecord | null> {
+    const runtime = this.#operations.get(operationId);
+    const fence = this.#activeOperationFences.get(operationId);
+    try {
+      if (
+        fence &&
+        !runtime?.cancelRequestedAt &&
+        this.#operationTransport.get(operationId)?.nc.isClosed()
+      ) {
+        throw new Error("operation execution transport unavailable");
+      }
+      return await super.loadOperationRecord(operationId);
+    } catch (cause) {
+      if (
+        runtime &&
+        fence &&
+        this.#operations.get(operationId) === runtime &&
+        this.#activeOperationFences.get(operationId) === fence
+      ) {
+        runtime.cancellation.abort("operation state unavailable");
+        if (!runtime.cancelRequestedAt) {
+          this.#releaseOperationFence(operationId, fence);
+        }
+      }
+      throw cause;
+    }
   }
 
   async #resolveOperation(
@@ -1543,6 +1573,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   async #requestOperationCancellation(
     runtime: RuntimeOperationRecord,
     admission = false,
+    fence?: RuntimeOperationFence,
   ): Promise<RuntimeOperationSnapshot> {
     // Join the same per-operation frame queue as progress/complete/fail so a
     // cancellation request and a handler completion cannot interleave on the
@@ -1551,6 +1582,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       for (let retry = 0; ; retry++) {
         const durable = await this.loadOperationRecord(runtime.id);
         if (!durable) throw this.#operationNotFoundError(runtime.id);
+        if (
+          fence &&
+          (this.#activeOperationFences.get(runtime.id) !== fence ||
+            !this.#ownsOperation(durable, fence))
+        ) {
+          throw this.#operationNotFoundError(runtime.id);
+        }
         runtime.revision = durable.revision;
         runtime.snapshot = durable.snapshot;
         runtime.terminal = isTerminalRuntimeOperationSnapshot(durable.snapshot);
@@ -1611,9 +1649,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         )
           return err(this.#operationNotFoundError(runtime.id));
         try {
-          return ok(await this.#requestOperationCancellation(runtime));
+          return ok(
+            await this.#requestOperationCancellation(runtime, false, fence),
+          );
         } catch (cause) {
-          if (cause instanceof OperationAlreadyTerminalError) return err(cause);
+          if (
+            cause instanceof OperationAlreadyTerminalError ||
+            cause instanceof OperationNotFoundError
+          )
+            return err(cause);
           return err(new UnexpectedError({ cause }));
         }
       })(),
@@ -1749,6 +1793,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         "provider",
       );
       metadata.set("proof", authorization.proof);
+      metadata.set(
+        "Trellis-Session-Request",
+        JSON.stringify(authorization.request),
+      );
       metadata.set("iat", String(authorization.iat));
       metadata.set("request-id", authorization.requestId);
       metadata.set("authorization-context", authorization.contextDigest);
@@ -1991,13 +2039,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   }
 
   #operationAlreadyTerminalError(
-    runtime: RuntimeOperationRecord,
+    runtime: RuntimeOperationRecord | DurableOperationRecord,
   ): OperationAlreadyTerminalError {
     return new OperationAlreadyTerminalError({
-      operationId: runtime.id,
+      operationId:
+        "invocationId" in runtime ? runtime.invocationId : runtime.id,
       state: runtime.snapshot.state,
       operation: runtime.operation,
-      service: runtime.service,
+      service: runtime.snapshot.service,
     });
   }
 
@@ -2048,10 +2097,18 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       BaseError
     >
   > {
-    if (runtime.terminal) {
+    const durable = await this.loadOperationRecord(runtime.id);
+    if (!durable || durable.deploymentId !== this.#operationDeploymentId) {
+      return err(this.#operationNotFoundError(runtime.id));
+    }
+    if (
+      durable.snapshot.state === "completed" ||
+      durable.snapshot.state === "failed" ||
+      durable.snapshot.state === "cancelled"
+    ) {
       return err(this.#operationAlreadyTerminalError(runtime));
     }
-    const replay = runtime.signals.find(
+    const replay = durable.signals.find(
       (signal) => signal.requestId === requestId,
     );
     if (replay) {
@@ -2078,10 +2135,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         signal: replay.signal,
         signalSequence: replay.sequence,
         acceptedAt: replay.acceptedAt,
-        snapshot: runtime.snapshot,
+        snapshot: durable.snapshot,
       });
     }
-    if (runtime.signals.length >= 100) {
+    if (durable.signals.length >= 100) {
       return err(
         new ValidationError({
           errors: [
@@ -2134,33 +2191,35 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       );
     }
 
-    runtime.signalSequence += 1;
     const acceptedAt = new Date().toISOString();
     const signal: RuntimeOperationSignal = {
       operationId: runtime.id,
-      sequence: runtime.signalSequence,
+      sequence: durable.signalSequence + 1,
       requestId,
       signal: control.signal,
       ...(control.input !== undefined ? { input: control.input } : {}),
       acceptedAt,
       acknowledged: false,
     };
-    runtime.signals.push(signal);
+    const { invocationId, ...persisted } = durable;
+    const staged: RuntimeOperationRecord = {
+      ...runtime,
+      ...persisted,
+      id: invocationId,
+      signalSequence: signal.sequence,
+      signals: [...durable.signals, signal],
+    };
     try {
-      await this.saveOperationRecord(runtime);
+      await this.saveOperationRecord(staged);
     } catch (cause) {
-      this.#operations.delete(runtime.id);
       if (retry < 3 && isOperationRevisionConflict(cause)) {
-        const current = await this.#resolveOperation(runtime.id);
-        if (current) {
-          return await this.#acceptSignal(
-            current,
-            ctx,
-            control,
-            requestId,
-            retry + 1,
-          );
-        }
+        return await this.#acceptSignal(
+          runtime,
+          ctx,
+          control,
+          requestId,
+          retry + 1,
+        );
       }
       recordCatalogCounter("trellis.operation.ownership.events", 1, {
         "trellis.action": "control",
@@ -2170,6 +2229,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       });
       throw cause;
     }
+    runtime.revision = staged.revision;
+    runtime.cancelRequestedAt = staged.cancelRequestedAt;
+    runtime.signalSequence = staged.signalSequence;
+    runtime.signals = staged.signals;
     recordCatalogCounter("trellis.operation.ownership.events", 1, {
       "trellis.action": "control",
       "trellis.outcome": "ok",
@@ -2185,7 +2248,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       signal: signal.signal,
       signalSequence: signal.sequence,
       acceptedAt,
-      snapshot: runtime.snapshot,
+      snapshot: staged.snapshot,
     });
   }
 
@@ -2429,6 +2492,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         id: number;
         nc: NatsConnection;
         contextDigest: string;
+        retainAuthority?: () => VerifiedAuthority;
         lease?: () => TransportLease;
       }): Promise<{
         drain: () => Promise<void>;
@@ -2445,6 +2509,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           liveObservation = await this.#createOperationLiveProvider(ctx, {
             nc: target.nc,
             lease: target.lease,
+            retainAuthority: target.retainAuthority,
           });
         } catch (error) {
           // A generation-owned candidate must not activate with a half-built
@@ -2563,55 +2628,61 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             continue;
           }
 
-          let runtime: RuntimeOperationRecord | null;
-          try {
-            runtime = await this.#resolveOperation(control.operationId);
-          } catch (cause) {
-            respondControlError(
-              msg,
-              cause instanceof Error ? cause : new Error(String(cause)),
-            );
-            continue;
-          }
-          if (!runtime) {
-            respondControlError(
-              msg,
-              this.#operationNotFoundError(control.operationId),
-            );
-            continue;
-          }
-
-          if (
-            !this.#matchesOperationRoute(runtime, operation, ctx, value.caller)
-          ) {
-            respondControlError(
-              msg,
-              this.#operationNotFoundError(control.operationId),
-            );
-            continue;
-          }
-          if (control.action === "watch") {
-            const opening = parseOperationWatchOpen(request);
-            if (!opening) {
-              respondControlError(
-                msg,
-                new TransportError({
-                  code: "trellis.live.invalid_request",
-                  message:
-                    "Operation watch requires a live observation envelope.",
-                  hint: "Use the live Operation watch client.",
-                }),
-              );
-              continue;
-            }
-            if (!liveProvider) {
-              respondControlError(
-                msg,
-                new AuthError({ reason: "authorization_unavailable" }),
-              );
-              continue;
-            }
+          // Reads must not expose (or mutate) the execution's speculative
+          // snapshot while a fenced persistence attempt is still in flight.
+          if (control.action === "get" || control.action === "watch") {
             try {
+              const durable = await this.loadOperationRecord(
+                control.operationId,
+              );
+              if (
+                !durable ||
+                durable.deploymentId !== this.#operationDeploymentId ||
+                !this.#matchesOperationRoute(
+                  durable,
+                  operation,
+                  ctx,
+                  value.caller,
+                )
+              ) {
+                respondControlError(
+                  msg,
+                  this.#operationNotFoundError(control.operationId),
+                );
+                continue;
+              }
+              if (control.action === "get") {
+                void this.respondWithPayload(
+                  msg,
+                  JSON.stringify({
+                    kind: "snapshot",
+                    snapshot: durable.snapshot,
+                  }),
+                  undefined,
+                  { responseKind: "success" },
+                );
+                continue;
+              }
+              const opening = parseOperationWatchOpen(request);
+              if (!opening) {
+                respondControlError(
+                  msg,
+                  new TransportError({
+                    code: "trellis.live.invalid_request",
+                    message:
+                      "Operation watch requires a live observation envelope.",
+                    hint: "Use the live Operation watch client.",
+                  }),
+                );
+                continue;
+              }
+              if (!liveProvider) {
+                respondControlError(
+                  msg,
+                  new AuthError({ reason: "authorization_unavailable" }),
+                );
+                continue;
+              }
               await liveProvider.offer(
                 msg,
                 controlSubject.slice(0, -".control".length),
@@ -2651,16 +2722,33 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             continue;
           }
 
-          if (control.action === "get") {
-            void this.respondWithPayload(
+          let runtime: RuntimeOperationRecord | null;
+          try {
+            runtime = await this.#resolveOperation(control.operationId);
+          } catch (cause) {
+            respondControlError(
               msg,
-              JSON.stringify({ kind: "snapshot", snapshot: runtime.snapshot }),
-              undefined,
-              { responseKind: "success" },
+              cause instanceof Error ? cause : new Error(String(cause)),
+            );
+            continue;
+          }
+          if (!runtime) {
+            respondControlError(
+              msg,
+              this.#operationNotFoundError(control.operationId),
             );
             continue;
           }
 
+          if (
+            !this.#matchesOperationRoute(runtime, operation, ctx, value.caller)
+          ) {
+            respondControlError(
+              msg,
+              this.#operationNotFoundError(control.operationId),
+            );
+            continue;
+          }
           if (control.action === "cancel") {
             if (runtime.terminal) {
               if (runtime.cancelRequestedAt) {
@@ -2723,11 +2811,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             }
 
             try {
-              const accepted = await this.#acceptSignal(
-                runtime,
-                ctx,
-                control,
-                msg.headers?.get("request-id") ?? ulid(),
+              const current = runtime;
+              const accepted = await this.#queueOperationFrame(current, () =>
+                this.#acceptSignal(
+                  current,
+                  ctx,
+                  control,
+                  msg.headers?.get("request-id") ?? ulid(),
+                ),
               );
               const acceptedValue = accepted.take();
               if (isErr(acceptedValue)) {
@@ -2798,15 +2889,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     target: {
       nc: NatsConnection;
       lease?: () => TransportLease;
+      retainAuthority?: () => VerifiedAuthority;
     },
   ): Promise<OperationLiveObservation | undefined> {
     const cache = this.auth.authorityOwner;
-    // Reconstruct from the connection's *installed application authority*,
-    // captured once before any await, never the historic immutable CONNECT
-    // digest this physical generation was admitted with. On a safe survivor
-    // after a growth or reduction that admitted digest can name an evicted or
-    // superseded context, so it must not gate a healthy survivor's provider;
-    // the socket and lease below still belong to this generation.
+    // Candidate installs borrow their verified private authority through the
+    // ingress target. Ordinary registration uses current installed authority,
+    // never a survivor's historical CONNECT digest, which may be superseded.
+    // The observation socket and transport lease still belong to this generation.
     const digest =
       typeof this.auth.contextDigest === "function"
         ? this.auth.contextDigest()
@@ -2816,11 +2906,16 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     if (!observe) return undefined;
     const apiId = `${observe.apiId}@${observe.apiVersion}`;
     const action = toCatalogAction(observe);
-    const ownGuard = await LiveAuthorityGuard.retain(cache, digest, {
-      kind: "local-provider",
-      apiId,
-      action,
-    });
+    const ownGuard = await LiveAuthorityGuard.retain(
+      cache,
+      digest,
+      {
+        kind: "local-provider",
+        apiId,
+        action,
+      },
+      target.retainAuthority,
+    );
     let provider: LiveProvider | undefined;
     let observeSub: ReturnType<NatsConnection["subscribe"]> | undefined;
     try {
@@ -2950,6 +3045,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     // replaces in place on an identity-preserving caller refresh; `caller` is
     // only the opening evidence recorded on the session.
     let updateSub: ReturnType<NatsConnection["subscribe"]> | undefined;
+    let updateLease: TransportLease | undefined;
     let durableWatch: AsyncIterator<unknown> | undefined;
     let updates: Promise<void> = Promise.resolve();
     let terminalSeen = false;
@@ -2964,9 +3060,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
     const arbiter = new OperationObserverArbiter(emit);
 
     try {
-      // Subscribe on the operation's receiving generation so transient updates
-      // published there after a newer generation takes over are still observed.
-      const watchNats = this.#operationNats(operationId);
+      // Observation owns a live carrier independently of execution. The old
+      // executor's pin may already be disconnected while its durable lease
+      // awaits takeover; all admitted carriers receive the same update subject.
+      if (includeUpdates && this.#transport) {
+        updateLease = await this.#transport.acquireCurrent({ signal });
+      }
+      const watchNats = updateLease?.nc ?? this.#nats;
       updateSub = includeUpdates
         ? watchNats.subscribe(
             `${operationControlSubject(ctx, this.#operationDeploymentId ?? "").slice(0, -".control".length)}.updates.${operationId}`,
@@ -2978,9 +3078,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       durableWatch = watchIterator as AsyncIterator<unknown>;
       if (signal.aborted) throw new Error("operation watch aborted");
       if (updateSub) await watchNats.flush();
-      const current = await this.#resolveOperation(operationId);
+      const current = await this.loadOperationRecord(operationId);
       if (
         !current ||
+        current.deploymentId !== this.#operationDeploymentId ||
         !this.#matchesOperationRoute(current, operation, ctx, caller)
       ) {
         throw this.#operationNotFoundError(operationId);
@@ -3172,6 +3273,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       stop();
       signal.removeEventListener("abort", stop);
       await updates.catch(() => {});
+      updateLease?.release();
     }
   }
 
@@ -3703,6 +3805,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   if (
                     !durable ||
                     durable.snapshot.state === "cancelled" ||
+                    this.#activeOperationFences.get(runtime.id) !== fence ||
                     !this.#ownsOperation(durable, fence)
                   ) {
                     outcome = "lost";
@@ -3786,6 +3889,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               })
               .catch(() => {
                 runtime.cancellation.abort("operation state unavailable");
+                if (!runtime.cancelRequestedAt) {
+                  this.#releaseOperationFence(runtime.id, fence);
+                }
                 clearInterval(cancellationWatch);
               })
               .finally(() => {

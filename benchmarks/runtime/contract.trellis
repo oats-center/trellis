@@ -1,3 +1,5 @@
+import { auth } from trellis;
+
 model Value { value: string; }
 model Empty {}
 model KeyedValue { key: string; value: string; }
@@ -34,7 +36,12 @@ service Provider {
   consumer changes { title "Changes"; description "Measured durable event delivery."; events [performance.Changed]; concurrency 1; replay new; }
 }
 
-app Caller {
+agent Caller {
   use performance { required capability workloads; }
+  use auth { required capability accountRead; }
   state saved { title "Saved"; description "Measured client state round trips."; schema Value; version 1; }
+}
+
+app BrowserCaller {
+  use performance { required capability workloads; }
 }

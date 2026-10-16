@@ -11,8 +11,8 @@ authority, transport, and generated caller/provider boundaries.
 
 ## Prerequisites
 
-Install `@oatscenter/trellis-testkit` and `@std/assert` in the example's Deno
-project. Have a matching `trellis-server` executable available. The
+Install Node 24 and `@oatscenter/trellis-testkit` in the example's npm
+project. The testkit resolves matching native CLI/server executables. The
 helper downloads pinned NATS binaries on first use, which requires network
 access. Use the committed generated package, or run `trellis generate` after
 authoring changes. The ordinary live test does not need the Trellis CLI or API
@@ -23,37 +23,38 @@ cache.
 Create `service_test.ts`:
 
 ```ts
-import { assertEquals, assertMatch } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "orders-trellis";
+import { apps, participants } from "./trellis/index.js";
 import { createOrder } from "./service.ts";
 
-Deno.test("orders caller invokes the real service", async () => {
+test("orders caller invokes the real service", async () => {
   const runtime = await TrellisTestRuntime.start();
   try {
     const identity = await runtime.registerService({
       name: "orders",
-      contract: participants.acmeOrdersService.participant,
+      contract: participants.OrdersService.participant,
     });
     const service = await TrellisService.connect({
-      participant: participants.acmeOrdersService.participant,
+      participant: participants.OrdersService.participant,
       name: "orders-service",
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       seed: identity.seed,
     }).orThrow();
     let exit: Promise<unknown> | undefined;
     try {
-      await service.handleOrdersCreate(createOrder);
+      await service.handleCreate(createOrder);
       exit = service.wait().catch((error: unknown) => error);
       const client = await runtime.connectClient({
         name: "caller",
-        contract: participants.acmeOrdersCaller.participant,
+        contract: apps.OrdersCaller.request,
       });
-      const order = await client.ordersCreate({ customerId: "customer-1" })
+      const order = await client.create({ customerId: "customer-1" })
         .orThrow();
-      assertEquals(order.customerId, "customer-1");
-      assertMatch(order.orderId, /^[0-9a-f-]{36}$/);
+      assert.equal(order.customerId, "customer-1");
+      assert.match(order.orderId, /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
     } finally {
       await service.stop();
       const failure = await exit;
@@ -65,8 +66,7 @@ Deno.test("orders caller invokes the real service", async () => {
 });
 ```
 
-The explicit ephemeral authorization store belongs to this isolated test; the
-production entrypoint uses a durable file store. The test helper tracks and
+The runtime owns isolated on-disk state. The test helper tracks and
 closes connected clients. The service is stopped before the runtime, even if an
 assertion fails; lifecycle failures are rethrown rather than hidden.
 
@@ -75,7 +75,7 @@ assertion fails; lifecycle failures are rethrown rather than hidden.
 In a standalone service project (no Trellis executables or `nsc` required on `PATH`):
 
 ```sh
-deno test -A service_test.ts
+node --test service_test.ts
 ```
 
 The released testkit acquires its exact-version native CLI/server from SHA-256-pinned
@@ -87,8 +87,8 @@ and broker; `firstAdmin: "browser-flow"` opts into the first-admin browser flow.
 In the checked-in or copied Orders example:
 
 ```sh
-deno task check
-deno task test
+npm run check
+npm test
 ```
 
 Expected result: one passing test, with all child processes stopped.

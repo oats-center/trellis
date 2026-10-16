@@ -44,11 +44,11 @@ struct CheckArgs {
     mode: RuntimeMode,
 }
 
-/// Seed the first local administrator with a username and password without a browser flow.
+/// Initialize the first local administrator with a password or a one-time setup link.
 #[derive(Clone, Debug, Eq, PartialEq, clap::Args)]
 struct BootstrapAdminArgs {
     /// Login username for the first administrator.
-    #[arg(long)]
+    #[arg(long, default_value = "admin")]
     username: String,
     /// Password in argv. Prefer --password-stdin outside interactive shells.
     #[arg(long, conflicts_with = "password_stdin")]
@@ -60,6 +60,15 @@ struct BootstrapAdminArgs {
 
 #[derive(Debug, clap::Args)]
 struct ServerArgs {
+    /// Starting administrator username; defaults to admin on a fresh installation.
+    #[arg(long, global = true)]
+    admin_username: Option<String>,
+    /// Starting administrator password. Omit to receive a one-time setup link.
+    #[arg(long, global = true, conflicts_with = "admin_password_stdin")]
+    admin_password: Option<String>,
+    /// Read the starting administrator password from standard input.
+    #[arg(long, global = true)]
+    admin_password_stdin: bool,
     /// Override the profile's config.toml.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -116,6 +125,9 @@ enum NatsPolicy {
 
 #[derive(Debug, Eq, PartialEq)]
 struct StartupPolicy {
+    admin_username: Option<String>,
+    admin_password: Option<String>,
+    admin_password_stdin: bool,
     operation: Operation,
     mode: RuntimeMode,
     paths: ServerPaths,
@@ -159,6 +171,9 @@ impl StartupPolicy {
         args: Args,
         get: impl Fn(&str) -> Option<std::ffi::OsString>,
     ) -> miette::Result<Self> {
+        let admin_username = args.server.admin_username.clone();
+        let admin_password = args.server.admin_password.clone();
+        let admin_password_stdin = args.server.admin_password_stdin;
         let (operation, server, mode, reset_admin, bootstrap_admin) = match args.operation {
             Some(OperationArgs::Check(check)) => {
                 if args.reset_admin {
@@ -186,6 +201,11 @@ impl StartupPolicy {
                 None,
             ),
         };
+        if (admin_username.is_some() || admin_password.is_some() || admin_password_stdin)
+            && operation != Operation::Run
+        {
+            return Err(miette!("--admin-username, --admin-password, and --admin-password-stdin are startup options; use --username and --password options with bootstrap-admin"));
+        }
         let paths = if server.system {
             ServerPaths::system(server.config)?
         } else {
@@ -256,6 +276,9 @@ impl StartupPolicy {
             None => None,
         };
         Ok(Self {
+            admin_username,
+            admin_password,
+            admin_password_stdin,
             operation,
             mode,
             paths,
@@ -291,22 +314,17 @@ fn load_runtime_config(
 
 impl ServerPaths {
     fn system(config: Option<PathBuf>) -> miette::Result<Self> {
-        #[cfg(not(target_os = "linux"))]
-        return Err(miette!("--system is supported only on Linux"));
-
-        #[cfg(target_os = "linux")]
-        {
-            let config_root = PathBuf::from("/etc/trellis");
-            Ok(Self::new(
-                config_root.clone(),
-                PathBuf::from("/var/lib/trellis"),
-                PathBuf::from("/var/lib/trellis"),
-                PathBuf::from("/var/cache/trellis"),
-                PathBuf::from("/run/trellis"),
-                PathBuf::from("/var/log/trellis"),
-                config.unwrap_or_else(|| config_root.join("config.toml")),
-            ))
-        }
+        let defaults = RuntimePathDefaults::system_profile().into_diagnostic()?;
+        let config_root = PathBuf::from("/etc/trellis");
+        Ok(Self::new(
+            config_root.clone(),
+            defaults.data,
+            defaults.state,
+            defaults.cache,
+            defaults.runtime,
+            defaults.logs,
+            config.unwrap_or_else(|| config_root.join("config.toml")),
+        ))
     }
 
     fn user(
@@ -324,21 +342,19 @@ impl ServerPaths {
                 .join("trellis")
         };
         let config_root = root("XDG_CONFIG_HOME", ".config");
-        let state_root = root("XDG_STATE_HOME", ".local/state");
-        let (runtime_root, runtime_fallback_root) = match get("XDG_RUNTIME_DIR") {
-            Some(path) => (PathBuf::from(path).join("trellis"), None),
-            None => {
-                let root = private_runtime_fallback();
-                (root.join("trellis"), Some(root))
-            }
+        let defaults = RuntimePathDefaults::user_profile(&get).into_diagnostic()?;
+        let runtime_fallback_root = if get("XDG_RUNTIME_DIR").is_none() {
+            defaults.runtime.parent().map(Path::to_path_buf)
+        } else {
+            None
         };
         let mut paths = Self::new(
             config_root.clone(),
-            root("XDG_DATA_HOME", ".local/share"),
-            state_root.clone(),
-            root("XDG_CACHE_HOME", ".cache"),
-            runtime_root,
-            state_root.join("log"),
+            defaults.data,
+            defaults.state,
+            defaults.cache,
+            defaults.runtime,
+            defaults.logs,
             config.unwrap_or_else(|| config_root.join("config.toml")),
         );
         paths.runtime_fallback_root = runtime_fallback_root;
@@ -378,14 +394,6 @@ impl ManagedNatsPaths {
             log: paths.logs.join("nats-server.log"),
         }
     }
-}
-
-fn private_runtime_fallback() -> PathBuf {
-    #[cfg(unix)]
-    let user = unsafe { libc::geteuid() }.to_string();
-    #[cfg(not(unix))]
-    let user = env::var("USERNAME").unwrap_or_else(|_| "user".to_string());
-    env::temp_dir().join(format!("trellis-runtime-{user}"))
 }
 
 fn create_secure_directory(path: &Path) -> miette::Result<()> {
@@ -473,16 +481,45 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
     let (config, paths) = load_runtime_config(&policy)?;
 
     if let Some(bootstrap) = policy.bootstrap_admin.as_ref() {
-        let password = resolve_bootstrap_password(bootstrap)?;
-        let principal = trellis_runtime::platform::seed_admin_credentials(
+        let password =
+            resolve_bootstrap_password(bootstrap.password.as_deref(), bootstrap.password_stdin)?;
+        let (principal, account_url) = trellis_runtime::platform::initialize_admin_credentials(
             &config,
             &bootstrap.username,
-            &password,
+            password.as_deref(),
         )
         .await
         .into_diagnostic()?;
         println!("seeded local administrator '{principal}'");
+        if let Some(url) = account_url {
+            println!("{}", serde_json::json!({"adminAccountUrl":url}));
+        }
         return Ok(());
+    }
+    if policy.admin_username.is_some()
+        || policy.admin_password.is_some()
+        || policy.admin_password_stdin
+    {
+        if policy.operation != Operation::Run
+            || policy.reset_admin
+            || !matches!(policy.mode, RuntimeMode::All | RuntimeMode::Platform)
+        {
+            return Err(miette!("initial administrator options require a fresh platform startup and cannot be combined with --reset-admin"));
+        }
+        let password = resolve_bootstrap_password(
+            policy.admin_password.as_deref(),
+            policy.admin_password_stdin,
+        )?;
+        let (_, account_url) = trellis_runtime::platform::initialize_admin_credentials(
+            &config,
+            policy.admin_username.as_deref().unwrap_or("admin"),
+            password.as_deref(),
+        )
+        .await
+        .into_diagnostic()?;
+        if let Some(url) = account_url {
+            println!("{}", serde_json::json!({"adminAccountUrl":url}));
+        }
     }
     if let Some(root) = &policy.paths.runtime_fallback_root {
         if paths.runtime.starts_with(root) {
@@ -653,11 +690,14 @@ async fn main() -> miette::Result<()> {
 
 /// Resolve the bootstrap password from argv or standard input. Stdin is preferred so the
 /// secret does not appear in the process list or shell history.
-fn resolve_bootstrap_password(args: &BootstrapAdminArgs) -> miette::Result<String> {
-    if let Some(password) = args.password.as_ref() {
-        return Ok(password.clone());
+fn resolve_bootstrap_password(
+    password: Option<&str>,
+    password_stdin: bool,
+) -> miette::Result<Option<String>> {
+    if let Some(password) = password {
+        return Ok(Some(password.to_owned()));
     }
-    if args.password_stdin {
+    if password_stdin {
         let mut password = String::new();
         std::io::stdin()
             .read_line(&mut password)
@@ -666,11 +706,9 @@ fn resolve_bootstrap_password(args: &BootstrapAdminArgs) -> miette::Result<Strin
         if password.is_empty() {
             return Err(miette!("--password-stdin received an empty password"));
         }
-        return Ok(password);
+        return Ok(Some(password));
     }
-    Err(miette!(
-        "bootstrap-admin requires --password or --password-stdin"
-    ))
+    Ok(None)
 }
 
 #[cfg(test)]

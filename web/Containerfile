@@ -1,18 +1,15 @@
-FROM --platform=$BUILDPLATFORM docker.io/denoland/deno:2.9.4 AS build
+FROM --platform=$BUILDPLATFORM docker.io/library/node:24-bookworm-slim AS build
 
 WORKDIR /app
 
-COPY deno.json /app/deno.json
+COPY package.json package-lock.json tsconfig.base.json /app/
 COPY ts /app/ts
 COPY web /app/web
+COPY portal /app/portal
+COPY docs /app/docs
 COPY art /app/art
 
-WORKDIR /app/ts
-RUN deno install --frozen
-
-WORKDIR /app/web
-
-RUN deno task build:prepared
+RUN npm ci && npm run build:prepared --workspace @trellis/console
 
 FROM docker.io/library/nginx:1.29-alpine
 

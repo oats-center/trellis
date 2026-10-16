@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/echo/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export const request = {
 	id: "trellis-test-fixture.OptionalOperationCaller",
-	kind: "browser",
+	kind: "native",
 	requiredCapabilities: [],
 	optionalCapabilities: ["trellis-test-fixture.echo@v1::optionalSilent"],
 	uses: [{

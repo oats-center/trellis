@@ -217,9 +217,13 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         "retained SDK Health descriptor staging file {}",
         sdk_health_staging.display()
     );
-    let descriptor =
-        trellis_codegen_rust::render_runtime_event(&graph, "trellis.health@v1", "Heartbeat")
-            .into_diagnostic()?;
+    let descriptor = trellis_codegen_rust::render_runtime_action(
+        &graph,
+        "trellis.health@v1",
+        trellis_idl::ActionKind::Event,
+        "Heartbeat",
+    )
+    .into_diagnostic()?;
     std::fs::write(&sdk_health_staging, descriptor).into_diagnostic()?;
     let status = Command::new("rustfmt")
         .args(["--edition", "2021"])
@@ -229,6 +233,30 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
     miette::ensure!(
         status.success(),
         "rustfmt failed for generated Health descriptor"
+    );
+    let sdk_state = root.join("crates/trellis/src/runtime_state.rs");
+    let sdk_state_staging = root.join("crates/trellis/src/.runtime_state.rs.generated");
+    miette::ensure!(
+        !sdk_state_staging.exists(),
+        "retained SDK State descriptor staging file {}",
+        sdk_state_staging.display()
+    );
+    let descriptor = trellis_codegen_rust::render_runtime_action(
+        &graph,
+        "trellis.state@v1",
+        trellis_idl::ActionKind::Live,
+        "Watch",
+    )
+    .into_diagnostic()?;
+    std::fs::write(&sdk_state_staging, descriptor).into_diagnostic()?;
+    let status = Command::new("rustfmt")
+        .args(["--edition", "2021"])
+        .arg(&sdk_state_staging)
+        .status()
+        .into_diagnostic()?;
+    miette::ensure!(
+        status.success(),
+        "rustfmt failed for generated State descriptor"
     );
     if target.exists() {
         std::fs::rename(&target, &backup).into_diagnostic()?;
@@ -243,6 +271,7 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         std::fs::remove_dir_all(backup).into_diagnostic()?;
     }
     std::fs::rename(&sdk_health_staging, &sdk_health).into_diagnostic()?;
+    std::fs::rename(&sdk_state_staging, &sdk_state).into_diagnostic()?;
     std::fs::rename(&sdk_types_staging, &sdk_types).into_diagnostic()?;
     let target = root.join("ts/packages/trellis/internal_sdk/generated");
     let staging = root.join("ts/packages/trellis/internal_sdk/.generated-staging");

@@ -375,8 +375,8 @@ pub(super) fn apply_deployment(
         let resources: String = connection.query_row("SELECT resource_commitments_json FROM auth_deployment_bindings WHERE deployment_id=?1", [&deployment], |row| row.get(0))?;
         let provisioning = deployment_input(connection, &input.package_evidence, &current.participant_id, serde_json::from_str(&resources)?)?;
         SqliteAuthorizationStore::install_deployment_in_transaction(connection, &provisioning, Some(&deployment), &current.title, now)?;
-        // Applying evidence does not claim existing processes installed new software.
-        connection.execute("UPDATE auth_instances SET state='stale',version=version+1,updated_at=?2 WHERE deployment_id=?1 AND state='active' AND installed_revision!=(SELECT installed_revision FROM auth_deployment_bindings WHERE deployment_id=?1)", params![deployment, now])?;
+        // Processes retain their installed revision. Current policy projects and
+        // fences their pinned authority; a newer deployment is not a revocation.
         SqliteAuthorizationStore::policy_changed(connection, &super::EnforcementScope::Deployment(deployment.clone()), now)?;
         Ok(AuthDeploymentMutationResponse { deployment: read_deployment(connection, &deployment)?, enforcement: None, extra: Default::default() })
     })
@@ -443,11 +443,17 @@ pub(super) fn change_deployment(
                 "UPDATE auth_deployment_bindings SET revision=revision+1 WHERE deployment_id=?1",
                 [&deployment],
             )?;
-            if state != "active" {
-                super::resources::detach_deployment_resources(connection, &deployment, &Default::default(), now)?;
-                connection.execute("UPDATE auth_deployment_bindings SET resource_commitments_json='{}' WHERE deployment_id=?1", [&deployment])?;
+            if state != "revoked" {
+                // Lifecycle changes retain the same materialization. Advance only
+                // evidence that was current before this transition, never stale state.
+                connection.execute(
+                    "UPDATE auth_resources SET binding_revision=binding_revision+1 WHERE owner_kind='deployment' AND owner_id=?1 AND state='ready' AND binding_revision=?2",
+                    params![deployment, current.revision.0.0],
+                )?;
             }
             if state == "revoked" {
+                super::resources::detach_deployment_resources(connection, &deployment, &Default::default(), now)?;
+                connection.execute("UPDATE auth_deployment_bindings SET resource_commitments_json='{}' WHERE deployment_id=?1", [&deployment])?;
                 connection.execute(
                     "UPDATE auth_provisioned_identities SET state='revoked',revoked_at=?2 WHERE deployment_id=?1 AND state='active'",
                     params![deployment, now],

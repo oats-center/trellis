@@ -357,7 +357,10 @@ export class NativeOAuthClient {
       if (!this.#lease.refreshAvailable)
         throw new AuthError({ reason: "OAuthRecoveryRequired" });
       if (this.#owner) this.#lease.retainTrust(this.#owner);
-      else await this.#prepareTrust(options.signal);
+      // Authenticate the selected origin before spending the one-use secret.
+      // An unavailable origin leaves custody intact; an ambiguous token POST
+      // still retains the strict spent marker and requires explicit recovery.
+      await this.#prepareTrust(options.signal);
       const token = this.#lease.beginRotation();
       try {
         return await this.#install(

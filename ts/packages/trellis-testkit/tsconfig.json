@@ -1,0 +1,12 @@
+{
+  "extends": "../trellis/tsconfig.npm.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "rootDir": ".."
+  },
+  "files": ["index.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}

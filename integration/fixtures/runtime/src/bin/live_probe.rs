@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
-use trellis_rs::service::{ServerError, ServiceConnectOptions};
+use trellis_rs::service::ServerError;
 use trellis_rs::LiveCancellation;
 
 const MAX_THROUGH_INDEX: i64 = 1_026;
@@ -229,7 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The outage acceptance case keeps a refresh/reconnect alive across a
     // deliberately unavailable transport; opt into a longer ordinary SDK
     // timeout without changing the production default.
-    let mut options = ServiceConnectOptions::new(&url, &identity);
+    let mut options = trellis_runtime_acceptance::service_options(&url, &identity).await?;
     if let Ok(raw_timeout_ms) = std::env::var("TRELLIS_TIMEOUT_MS") {
         options = options.with_timeout_ms(raw_timeout_ms.parse()?);
     }

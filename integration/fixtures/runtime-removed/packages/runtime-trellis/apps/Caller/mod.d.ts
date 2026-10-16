@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/runtime/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export declare const request: AppRequestDescriptor & {
 	readonly id: "runtime-trellis.Caller";
-	readonly kind: "browser";
+	readonly kind: "native";
 	readonly requiredCapabilities: readonly ["runtime-trellis.runtime@v1::transport"];
 	readonly optionalCapabilities: readonly [];
 	readonly uses: readonly [{

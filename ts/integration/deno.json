@@ -1,6 +1,0 @@
-{
-  "extends": "../deno.json",
-  "tasks": {
-    "check": "deno check ./_support/*.ts ./*_test.ts"
-  }
-}

@@ -28,7 +28,8 @@ Deduplication does not span deployments. An uncertain start must not be
 automatically retried through the canonical API queue: another deployment could
 accept a second operation with the same invocation ID. Callers may admit
 that same ID/input with `cancellationRequested: true`, requiring both Invoke and
-Cancel authority before any durable write. An absent invocation persists
+Cancel authority before any durable write. Additional permission checks retain
+the original verified Invoke opening for admission reply signing. An absent invocation persists
 cancellation intent before owner admission; an existing matching nonterminal
 invocation merges it monotonically through CAS. Intent is not part of the
 business-input digest. Terminal replay is unchanged, and a late normal start
@@ -47,6 +48,17 @@ fences all owner mutations. After expiry a replica may resume nonterminal work
 with persisted progress and unacknowledged signals. Side effects can repeat and
 are not transactionally rolled back; handlers use operation ID/resume context to
 make them idempotent.
+If loss of authoritative state or the execution's receiving carrier interrupts
+an execution before cancellation has been observed, any failed state read or
+watcher retires its local fence before
+returning the infrastructure error to handler code, and its heartbeat must stop
+renewing that epoch. A handler cannot turn this interruption into a durable
+business failure. Recovery waits for the existing durable lease to expire;
+reconnecting transport alone does not revive the interrupted execution. This is
+distinct from known cancellation cleanup, which retains its lease until cleanup
+succeeds.
+Observation owns its own healthy carrier; an executor's disconnected receiving
+carrier must not prevent observing retained state while its lease awaits takeover.
 
 Service registrations expose an owner-fenced local `control(operationId)` for
 durable mutations. `reconcile(operationId)` instead routes to the current owner,
@@ -55,6 +67,11 @@ with stored input, verified caller, and persisted progress. A live lease is
 never stolen; expired leases use ordinary claim/recovery. Reconciliation
 serializes with that owner's execution and returns the latest durable snapshot.
 A provider instance cannot use `control` to borrow another instance's fence.
+
+Get and a watcher's initial snapshot read the persisted record, not the handler's
+speculative execution snapshot. A committed write remains visible even when its
+acknowledgement was lost. Reads do not refresh the active execution's mutable
+record while its fenced write is in flight.
 
 Watch installs its owned durable-watch and optional executor-update
 subscriptions, then rereads the authoritative durable record so
@@ -67,7 +84,9 @@ buffer fails only that observer with a slow-consumer outcome. Lease-only writes
 do not invent business progress. When a terminal snapshot is observed, update
 admission freezes, already admitted updates are emitted, then the terminal
 snapshot and normal END follow. Signals are persisted before acceptance and may
-repeat until handler acknowledgement. Cancellation is persisted; stale owners
+repeat until handler acknowledgement. Handlers read only persisted signals;
+acceptance and acknowledgement serialize with state updates on the same local
+operation frame queue. Cancellation is persisted; stale owners
 cannot complete after losing their fence. Typed updates are live-only and never
 replace durable progress. A cancellation request remains nonterminal while the
 current handler cleans up; the owner continues renewing its lease and blocks

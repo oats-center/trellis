@@ -10,6 +10,8 @@ import {
   type BrowserOAuthAdmission,
 } from "./auth/browser/oauth.ts";
 import { connectAdmitted } from "./auth/connection.ts";
+import { verifyOAuthAdmissionWasm } from "./auth/protocol_wasm.ts";
+import { utf8 } from "./auth/utils.ts";
 import type { RuntimeTransport } from "./runtime_transport.ts";
 import {
   observeTrellisConnection,
@@ -105,7 +107,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
         const oauth = opened;
         let connected: Awaited<ReturnType<typeof connectAdmitted>> | undefined;
         const connectOAuth = async (admission: BrowserOAuthAdmission) => {
-          let firstAdmission = admission.admission;
+          let credential = admission.admission;
           const servers = admission.metadata.trellis.natsEndpoints.filter(
             (endpoint) =>
               endpoint.startsWith("ws://") || endpoint.startsWith("wss://"),
@@ -125,14 +127,23 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
             signal: args.signal,
             transport: deps.transport,
             admission: async () => {
-              if (firstAdmission) {
-                const value = firstAdmission;
-                firstAdmission = "";
-                return value;
-              }
+              const verified = await verifyOAuthAdmissionWasm(
+                utf8(credential),
+                {
+                  issuer: (connected?.owner.trustSnapshot ?? admission.trust)
+                    .issuer,
+                  trellisInstanceId: admission.trust.instanceId,
+                  audienceNatsAccount: admission.trust.account,
+                  ephemeralNkey: admission.auth.sessionNkey,
+                  nowUnixSeconds: admission.auth.currentIat(),
+                  maximumLifetimeSeconds: 300,
+                },
+              );
+              if (verified.ok) return credential;
               const next = (await oauth.resume()).take();
               if (isErr(next)) throw next.error;
-              return next.admission;
+              credential = next.admission;
+              return credential;
             },
           });
           try {

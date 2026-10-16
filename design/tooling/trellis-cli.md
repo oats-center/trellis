@@ -102,6 +102,15 @@ User commands use generated Auth account operations. The separately originated
 OAuth portal owns interactive login, device-code confirmation and consent;
 authenticated administration remains on NATS.
 
+Fresh administrator initialization uses `trellis init admin --config <path>`.
+`--username` defaults to `admin`; `--password` or `--password-stdin` sets initial
+credentials. With neither, the command returns a one-time password-setup URL on
+the isolated OAuth origin. Runtime startup offers corresponding
+`--admin-username`, `--admin-password`, and `--admin-password-stdin` options and
+uses the same atomic initialization. Existing administrator credentials are never
+overwritten by these options. `--reset-admin` is explicit local recovery using
+the existing password-reset flow, not administrative authority recreation.
+
 ## Utility Commands
 
 ```text

@@ -19,39 +19,63 @@ use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};
 use crate::{StorageBackend, SubsystemName};
 
 #[derive(Clone)]
-struct SqliteConsumerResolver {
-    path: std::path::PathBuf,
+pub(crate) struct ConsumerBindingReader {
+    evidence: crate::resource_evidence::ResourceEvidenceReader,
 }
 
-/// Owner-captured inventory reader; telemetry never calls the business resolver.
-#[derive(Clone)]
-pub(crate) struct ConsumerTelemetryReader {
-    path: std::path::PathBuf,
-}
-
-impl ConsumerTelemetryReader {
-    pub(crate) fn new(path: std::path::PathBuf) -> Self {
-        Self { path }
+impl ConsumerBindingReader {
+    pub(crate) async fn read(&self) -> Result<Vec<ConsumerBinding>, String> {
+        use trellis_runtime_apis::types::{
+            AuthResourceBindingsQueryRequest, AuthResourceEvidenceKind,
+        };
+        let rows = self
+            .evidence
+            .query(AuthResourceBindingsQueryRequest {
+                kind: AuthResourceEvidenceKind::EventConsumer,
+                instance_id: None,
+                owner_id: None,
+                participant_id: None,
+                local_name: None,
+                resource_id: None,
+                page: None,
+                extra: Default::default(),
+            })
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.resource_bindings_digest.is_some())
+            .filter_map(|row| {
+                let binding = row.event_consumer?;
+                Some(ConsumerBinding {
+                    resource_id: row.resource_id.to_string(),
+                    owner_kind: "deployment".into(),
+                    owner_id: row.owner_id.to_string(),
+                    participant_id: row.participant_id,
+                    local_name: row.local_name,
+                    stream: binding.stream,
+                    consumer_name: binding.consumer,
+                    filter_subjects: binding.filter_subjects,
+                    replay_consumer_name: binding.replay_consumer,
+                })
+            })
+            .collect())
     }
-
-    pub(crate) fn read(&self) -> Result<Vec<ConsumerBinding>, String> {
-        list_consumers(&self.path)
-    }
 }
 
-impl ConsumerBindingResolver for SqliteConsumerResolver {
+impl ConsumerBindingResolver for ConsumerBindingReader {
     fn by_resource<'a>(
         &'a self,
         resource_id: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Option<ConsumerBinding>, String>> + Send + 'a>,
     > {
-        let path = self.path.clone();
         let resource_id = resource_id.to_owned();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || lookup_consumer(&path, Some(&resource_id), None))
-                .await
-                .map_err(|error| error.to_string())?
+            Ok(self
+                .read()
+                .await?
+                .into_iter()
+                .find(|binding| binding.resource_id == resource_id))
         })
     }
 
@@ -62,12 +86,13 @@ impl ConsumerBindingResolver for SqliteConsumerResolver {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Option<ConsumerBinding>, String>> + Send + 'a>,
     > {
-        let path = self.path.clone();
         let physical = (stream.to_owned(), consumer_name.to_owned());
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || lookup_consumer(&path, None, Some(&physical)))
-                .await
-                .map_err(|error| error.to_string())?
+            Ok(self.read().await?.into_iter().find(|binding| {
+                (physical.0 == binding.stream && physical.1 == binding.consumer_name)
+                    || (physical.0 == trellis_events_runtime::REPLAY_STREAM
+                        && physical.1 == binding.replay_consumer_name)
+            }))
         })
     }
 
@@ -76,87 +101,8 @@ impl ConsumerBindingResolver for SqliteConsumerResolver {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<ConsumerBinding>, String>> + Send + '_>,
     > {
-        let path = self.path.clone();
-        Box::pin(async move {
-            tokio::task::spawn_blocking(move || list_consumers(&path))
-                .await
-                .map_err(|error| error.to_string())?
-        })
+        Box::pin(self.read())
     }
-}
-
-fn lookup_consumer(
-    path: &std::path::Path,
-    resource_id: Option<&str>,
-    physical: Option<&(String, String)>,
-) -> Result<Option<ConsumerBinding>, String> {
-    Ok(list_consumers(path)?.into_iter().find(|binding| {
-        resource_id.is_none_or(|wanted| wanted == binding.resource_id)
-            && physical.is_none_or(|wanted| {
-                (wanted.0 == binding.stream && wanted.1 == binding.consumer_name)
-                    || (wanted.0 == trellis_events_runtime::REPLAY_STREAM
-                        && wanted.1 == binding.replay_consumer_name)
-            })
-    }))
-}
-
-fn list_consumers(path: &std::path::Path) -> Result<Vec<ConsumerBinding>, String> {
-    let connection = rusqlite::Connection::open(path).map_err(|error| error.to_string())?;
-    let mut statement = connection
-        .prepare(
-            "SELECT owner_kind,owner_id,participant_id,local_name,binding_id,provider_identity
-             FROM auth_resource_binding_evidence
-             WHERE resource_kind='eventConsumer' AND state='available'",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-            ))
-        })
-        .map_err(|error| error.to_string())?;
-    let mut bindings = Vec::new();
-    for row in rows {
-        let (owner_kind, owner_id, participant_id, local_name, binding_id, provider) =
-            row.map_err(|error| error.to_string())?;
-        let provider: serde_json::Value =
-            serde_json::from_str(&provider).map_err(|error| error.to_string())?;
-        let Some(stream) = provider.get("stream").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        let Some(consumer) = provider.get("consumer").and_then(serde_json::Value::as_str) else {
-            continue;
-        };
-        bindings.push(ConsumerBinding {
-            resource_id: binding_id,
-            owner_kind,
-            owner_id,
-            participant_id,
-            local_name,
-            stream: stream.to_owned(),
-            consumer_name: consumer.to_owned(),
-            filter_subjects: provider
-                .get("filter_subjects")
-                .and_then(serde_json::Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .collect(),
-            replay_consumer_name: provider
-                .get("replay_consumer")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-        });
-    }
-    Ok(bindings)
 }
 
 fn runtime_error(error: ServerError) -> RuntimeError {
@@ -179,18 +125,20 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .config
         .events_storage_backend()
         .map_err(RuntimeError::Config)?;
-    let StorageBackend::Sqlite(platform_storage) = context
-        .config
-        .platform_storage_backend()
-        .map_err(RuntimeError::Config)?;
     let store = EventsStore::open(&storage.path)
         .map_err(|error| RuntimeError::Nats(format!("failed to open Events SQLite: {error}")))?;
     let events_runtime =
         trellis_rs::service::EventsRuntime::from_nats(context.trellis_nats.clone());
-    let resolver: Arc<dyn ConsumerBindingResolver> = Arc::new(SqliteConsumerResolver {
-        path: platform_storage.path.clone(),
-    });
-    let consumer_telemetry = ConsumerTelemetryReader::new(platform_storage.path.clone());
+    let evidence = crate::resource_evidence::ResourceEvidenceReader::new(
+        context
+            .live_providers
+            .receiver(crate::platform::LiveProviderRole::Events),
+        stop.clone(),
+    );
+    let consumer_telemetry = ConsumerBindingReader {
+        evidence: evidence.clone(),
+    };
+    let resolver: Arc<dyn ConsumerBindingResolver> = Arc::new(consumer_telemetry.clone());
     let query = EventsQuery::new(store.clone(), events_runtime.clone(), Arc::clone(&resolver));
     let mut router = trellis_events_runtime::build_router_with_query(query.clone());
     let event_owner = context
@@ -360,7 +308,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .live_providers
         .receiver(crate::platform::LiveProviderRole::Events);
     let management_stop = task_stop.clone();
-    let management_path = platform_storage.path.clone();
+    let management_evidence = evidence;
     let management_resolver = Arc::clone(&resolver);
     let authorizer = Arc::new(
         move |request: RequestContext,
@@ -369,7 +317,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
               method: &'static str| {
             let mut owner = management_owner.clone();
             let stop = management_stop.clone();
-            let path = management_path.clone();
+            let evidence = management_evidence.clone();
             let resolver = Arc::clone(&management_resolver);
             Box::pin(async move {
                 let verified = request
@@ -412,26 +360,50 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         _ => false,
                     };
                     if owns_binding && action != ManagementAction::Control {
-                        use base64::Engine as _;
-                        use sha2::Digest as _;
-                        let deployment = binding.owner_id.clone();
-                        let digest = tokio::task::spawn_blocking(move || -> Result<String, String> {
-                            let connection = rusqlite::Connection::open_with_flags(path,
-                                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| error.to_string())?;
-                            let json: String = connection.query_row(
-                                "SELECT resource_commitments_json FROM auth_deployment_bindings WHERE deployment_id=?1",
-                                [deployment], |row| row.get(0)).map_err(|error| error.to_string())?;
-                            let value: serde_json::Value = serde_json::from_str(&json).map_err(|error| error.to_string())?;
-                            let canonical = trellis_protocol::canonicalize_json(&value).map_err(|error| error.to_string())?;
-                            Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(canonical.as_bytes())))
-                        }).await.map_err(|error| ServerError::Nats(error.to_string()))?
+                        use trellis_runtime_apis::types::{
+                            AuthResourceBindingsQueryRequest, AuthResourceEvidenceKind,
+                        };
+                        let records = evidence
+                            .query(AuthResourceBindingsQueryRequest {
+                                kind: AuthResourceEvidenceKind::EventConsumer,
+                                instance_id: Some(match &caller.binding {
+                                    trellis_protocol::SessionBinding::Service {
+                                        instance_id,
+                                        ..
+                                    }
+                                    | trellis_protocol::SessionBinding::Device {
+                                        instance_id,
+                                        ..
+                                    } => instance_id.parse().map_err(|_| {
+                                        events_forbidden("Consumer instance is unavailable")
+                                    })?,
+                                    _ => {
+                                        return Err(events_forbidden(
+                                            "Consumer instance is unavailable",
+                                        ))
+                                    }
+                                }),
+                                owner_id: Some(binding.owner_id.parse().map_err(|_| {
+                                    events_forbidden("Consumer owner is unavailable")
+                                })?),
+                                participant_id: Some(binding.participant_id.clone()),
+                                local_name: Some(binding.local_name.clone()),
+                                resource_id: Some(resource_id.clone().into()),
+                                page: None,
+                                extra: Default::default(),
+                            })
+                            .await
                             .map_err(ServerError::Nats)?;
+                        let digest = records
+                            .into_iter()
+                            .find_map(|row| row.resource_bindings_digest)
+                            .ok_or_else(|| events_forbidden("Consumer resource is unavailable"))?;
                         if verified
                             .authority()
                             .authority()
                             .resource_bindings_digest
                             .as_deref()
-                            == Some(&digest)
+                            == Some(digest.as_ref())
                         {
                             authority_owner
                                 .assert_current(&authority)

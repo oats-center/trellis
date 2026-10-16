@@ -1,92 +1,63 @@
-import { assert, assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as earlier } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("capability discovery preserves exact installed snapshots and distinguishes current API definitions", async () => {
+test("capability discovery pages the currently accepted API definitions", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const previous = await runtime.contracts.install({
+    const apiId = "runtime-trellis.events@v1";
+    await runtime.contracts.install({
       contract: earlier.EventService.participant,
     });
-    await runtime.contracts.install({ contract: earlier.Alpha.participant });
-    const sourceApi = "runtime-trellis.events@v1";
-    const oldCatalog = await runtime.callAdminRpc("authCapabilitiesList", {
-      participantId: previous.participantId,
-      revision: previous.installedRevision,
-      sourceApi,
+    const before = await runtime.callAdminRpc("authCapabilitiesList", {
+      apiId,
     });
-    assert(oldCatalog.items.length > 0);
-    const current = await runtime.contracts.install({
+    const oldInspect = before.items.find(
+      (item) => item.identity.capabilityId === `${apiId}::inspect`,
+    );
+    assert(oldInspect);
+    await runtime.contracts.install({
       contract: participants.EventService.participant,
     });
-    const currentCatalog = await runtime.callAdminRpc("authCapabilitiesList", {
-      participantId: current.participantId,
-      revision: current.installedRevision,
-      sourceApi,
+    const current = await runtime.callAdminRpc("authCapabilitiesList", {
+      apiId,
     });
-    assert(currentCatalog.items.length > 0);
-    assert(currentCatalog.items[0].apiDigest !== oldCatalog.items[0].apiDigest);
+    const inspect = current.items.find(
+      (item) => item.identity.capabilityId === oldInspect.identity.capabilityId,
+    );
+    assert(inspect);
     assert(
-      currentCatalog.items[0].allows.length > oldCatalog.items[0].allows.length,
+      inspect.allows.length > oldInspect.allows.length,
+      "discovery must expose the newly accepted inspection action",
     );
-    const retained = await runtime.callAdminRpc("authCapabilitiesList", {
-      participantId: previous.participantId,
-      revision: previous.installedRevision,
-      sourceApi,
-    });
-    assertEquals(
-      retained.items,
-      oldCatalog.items,
-      "upgrading the participant must not change discovery for its retained revision",
-    );
-    const latest = await runtime.callAdminRpc("authCapabilitiesList", {
-      participantId: current.participantId,
-      sourceApi,
-    });
-    assertEquals(latest.items, currentCatalog.items);
-
-    // The old Alpha installation still references the old definition. Walk one
-    // entry per page to prove variants are neither overwritten nor skipped.
     const discovered = [];
     let cursor: string | undefined;
     do {
       const page = await runtime.callAdminRpc("authCapabilitiesList", {
-        sourceApi,
+        apiId,
         page: { limit: 1, cursor },
       });
       discovered.push(...page.items);
       cursor = page.page.nextCursor ?? undefined;
     } while (cursor);
-    assertEquals(
-      new Set(discovered.map((item) => item.apiDigest)),
-      new Set([
-        oldCatalog.items[0].apiDigest,
-        currentCatalog.items[0].apiDigest,
-      ]),
-    );
-    assertEquals(
+    assert.deepEqual(discovered, current.items);
+    assert.equal(
+      new Set(
+        discovered.map(
+          (item) =>
+            `${item.identity.capabilityId}@${item.identity.identityGeneration}`,
+        ),
+      ).size,
       discovered.length,
-      oldCatalog.items.length + currentCatalog.items.length,
     );
-
-    // Once every current installation uses the new API, old definitions leave
-    // global discovery but remain available through the historical scope.
     await runtime.contracts.install({
-      contract: participants.Alpha.participant,
+      contract: participants.EventService.participant,
     });
-    const updated = await runtime.callAdminRpc("authCapabilitiesList", {
-      sourceApi,
-    });
-    assertEquals(
-      updated.items,
-      currentCatalog.items,
-      "identical API definitions from multiple participants deduplicate",
+    assert.deepEqual(
+      (await runtime.callAdminRpc("authCapabilitiesList", { apiId })).items,
+      current.items,
+      "reinstalling the accepted package must not duplicate capability definitions",
     );
-    const historical = await runtime.callAdminRpc("authCapabilitiesList", {
-      participantId: previous.participantId,
-      revision: previous.installedRevision,
-      sourceApi,
-    });
-    assertEquals(historical.items, oldCatalog.items);
   });
 });

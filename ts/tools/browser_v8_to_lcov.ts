@@ -1,7 +1,9 @@
-import { fromFileUrl, isAbsolute, join, relative, resolve } from "@std/path";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import v8ToIstanbul from "v8-to-istanbul";
 
-const tsRoot = fromFileUrl(new URL("../", import.meta.url));
+const tsRoot = fileURLToPath(new URL("../", import.meta.url));
 const repoRoot = resolve(tsRoot, "..");
 
 type V8Range = {
@@ -77,7 +79,7 @@ export async function convertBrowserV8Coverage(
 ): Promise<string> {
   const coverage: IstanbulCoverage = {};
   for (const input of await coverageFiles(options.inputDir)) {
-    for (const script of readV8Coverage(await Deno.readTextFile(input))) {
+    for (const script of readV8Coverage(await readFile(input, "utf8"))) {
       const scriptPath = await localScriptPath(script.url, options.buildDir);
       if (scriptPath === undefined) continue;
 
@@ -99,7 +101,7 @@ export async function convertBrowserV8Coverage(
 async function scriptSources(
   scriptPath: string,
 ): Promise<{ source: string; sourceMap?: { sourcemap: SourceMap } }> {
-  const source = await Deno.readTextFile(scriptPath);
+  const source = await readFile(scriptPath, "utf8");
   const sourceMap = await readSourceMap(`${scriptPath}.map`);
   return sourceMap === undefined
     ? { source }
@@ -109,10 +111,11 @@ async function scriptSources(
 async function readSourceMap(path: string): Promise<SourceMap | undefined> {
   try {
     return rewriteSourceMapSources(
-      readSourceMapJson(await Deno.readTextFile(path)),
+      readSourceMapJson(await readFile(path, "utf8")),
     );
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return undefined;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return undefined;
     throw error;
   }
 }
@@ -120,8 +123,10 @@ async function readSourceMap(path: string): Promise<SourceMap | undefined> {
 function readSourceMapJson(raw: string): SourceMap {
   const parsed: unknown = JSON.parse(raw);
   if (
-    !isRecord(parsed) || typeof parsed.version !== "number" ||
-    !Array.isArray(parsed.sources) || typeof parsed.mappings !== "string"
+    !isRecord(parsed) ||
+    typeof parsed.version !== "number" ||
+    !Array.isArray(parsed.sources) ||
+    typeof parsed.mappings !== "string"
   ) {
     throw new Error("browser source map has an invalid shape");
   }
@@ -149,9 +154,8 @@ function readSourceMapJson(raw: string): SourceMap {
     sources: parsed.sources,
     sourcesContent: parsed.sourcesContent,
     mappings: parsed.mappings,
-    sourceRoot: typeof parsed.sourceRoot === "string"
-      ? parsed.sourceRoot
-      : undefined,
+    sourceRoot:
+      typeof parsed.sourceRoot === "string" ? parsed.sourceRoot : undefined,
   };
 }
 
@@ -170,7 +174,8 @@ function rewriteSourcePath(source: string): string {
     return resolve(tsRoot, "portals/login", stripped);
   }
   if (
-    stripped.startsWith("packages/") || stripped.startsWith("apps/") ||
+    stripped.startsWith("packages/") ||
+    stripped.startsWith("apps/") ||
     stripped.startsWith("services/")
   ) {
     return resolve(tsRoot, stripped);
@@ -183,80 +188,84 @@ function rewriteSourcePath(source: string): string {
 
 function excludedBrowserCoveragePath(path: string, buildDir: string): boolean {
   const normalized = path.replaceAll("\\", "/");
-  return normalized.includes("/node_modules/") ||
+  return (
+    normalized.includes("/node_modules/") ||
     normalized.includes("/generated/client-optimized/") ||
     normalized.endsWith("/generated/root.js") ||
     normalized.endsWith("/generated/root.svelte") ||
     normalized.endsWith("/__vite-browser-external") ||
-    isInside(buildDir, path);
+    isInside(buildDir, path)
+  );
 }
 
 export function coverageToLcov(coverage: IstanbulCoverage): string {
-  const records = Object.keys(coverage).sort().map((path) => {
-    const file = coverage[path];
-    const lines = new Map<number, number>();
-    for (const [id, statement] of Object.entries(file.statementMap)) {
-      lines.set(
-        statement.start.line,
-        Math.max(lines.get(statement.start.line) ?? 0, file.s[id] ?? 0),
-      );
-    }
-
-    const functions = Object.keys(file.fnMap).sort(compareNumberStrings);
-    const branches = Object.keys(file.branchMap).sort(compareNumberStrings);
-    const lineEntries = [...lines.entries()].sort(([left], [right]) =>
-      left - right
-    );
-    const output = ["TN:", `SF:${file.path}`];
-
-    for (const id of functions) {
-      const fn = file.fnMap[id];
-      output.push(`FN:${fn.decl.start.line},${fn.name}`);
-    }
-    for (const id of functions) {
-      output.push(`FNDA:${file.f[id] ?? 0},${file.fnMap[id].name}`);
-    }
-    output.push(`FNF:${functions.length}`);
-    output.push(
-      `FNH:${functions.filter((id) => (file.f[id] ?? 0) > 0).length}`,
-    );
-
-    for (const [line, count] of lineEntries) output.push(`DA:${line},${count}`);
-    output.push(`LF:${lineEntries.length}`);
-    output.push(
-      `LH:${lineEntries.filter(([, count]) => count > 0).length}`,
-    );
-
-    for (const id of branches) {
-      const branch = file.branchMap[id];
-      const counts = file.b[id] ?? [];
-      for (const [index, count] of counts.entries()) {
-        output.push(`BRDA:${branch.loc.start.line},${id},${index},${count}`);
+  const records = Object.keys(coverage)
+    .sort()
+    .map((path) => {
+      const file = coverage[path];
+      const lines = new Map<number, number>();
+      for (const [id, statement] of Object.entries(file.statementMap)) {
+        lines.set(
+          statement.start.line,
+          Math.max(lines.get(statement.start.line) ?? 0, file.s[id] ?? 0),
+        );
       }
-    }
-    output.push(`BRF:${branches.length}`);
-    output.push(
-      `BRH:${
-        branches.filter((id) => (file.b[id] ?? []).some((count) => count > 0))
-          .length
-      }`,
-    );
-    output.push("end_of_record");
-    return output.join("\n");
-  });
+
+      const functions = Object.keys(file.fnMap).sort(compareNumberStrings);
+      const branches = Object.keys(file.branchMap).sort(compareNumberStrings);
+      const lineEntries = [...lines.entries()].sort(
+        ([left], [right]) => left - right,
+      );
+      const output = ["TN:", `SF:${file.path}`];
+
+      for (const id of functions) {
+        const fn = file.fnMap[id];
+        output.push(`FN:${fn.decl.start.line},${fn.name}`);
+      }
+      for (const id of functions) {
+        output.push(`FNDA:${file.f[id] ?? 0},${file.fnMap[id].name}`);
+      }
+      output.push(`FNF:${functions.length}`);
+      output.push(
+        `FNH:${functions.filter((id) => (file.f[id] ?? 0) > 0).length}`,
+      );
+
+      for (const [line, count] of lineEntries)
+        output.push(`DA:${line},${count}`);
+      output.push(`LF:${lineEntries.length}`);
+      output.push(`LH:${lineEntries.filter(([, count]) => count > 0).length}`);
+
+      for (const id of branches) {
+        const branch = file.branchMap[id];
+        const counts = file.b[id] ?? [];
+        for (const [index, count] of counts.entries()) {
+          output.push(`BRDA:${branch.loc.start.line},${id},${index},${count}`);
+        }
+      }
+      output.push(`BRF:${branches.length}`);
+      output.push(
+        `BRH:${
+          branches.filter((id) => (file.b[id] ?? []).some((count) => count > 0))
+            .length
+        }`,
+      );
+      output.push("end_of_record");
+      return output.join("\n");
+    });
   return records.length === 0 ? "" : `${records.join("\n")}\n`;
 }
 
 async function coverageFiles(inputDir: string): Promise<string[]> {
   const files: string[] = [];
   try {
-    for await (const entry of Deno.readDir(inputDir)) {
-      if (entry.isFile && entry.name.endsWith(".json")) {
+    for (const entry of await readdir(inputDir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith(".json")) {
         files.push(join(inputDir, entry.name));
       }
     }
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return [];
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return [];
     throw error;
   }
   return files.sort();
@@ -272,7 +281,8 @@ function readV8Coverage(raw: string): readonly V8ScriptCoverage[] {
 
 function readScriptCoverage(value: unknown): V8ScriptCoverage {
   if (
-    !isRecord(value) || typeof value.url !== "string" ||
+    !isRecord(value) ||
+    typeof value.url !== "string" ||
     !Array.isArray(value.functions)
   ) {
     throw new Error("browser V8 script coverage has an invalid shape");
@@ -285,8 +295,10 @@ function readScriptCoverage(value: unknown): V8ScriptCoverage {
 
 function readFunctionCoverage(value: unknown): V8FunctionCoverage {
   if (
-    !isRecord(value) || typeof value.functionName !== "string" ||
-    typeof value.isBlockCoverage !== "boolean" || !Array.isArray(value.ranges)
+    !isRecord(value) ||
+    typeof value.functionName !== "string" ||
+    typeof value.isBlockCoverage !== "boolean" ||
+    !Array.isArray(value.ranges)
   ) {
     throw new Error("browser V8 function coverage has an invalid shape");
   }
@@ -299,8 +311,10 @@ function readFunctionCoverage(value: unknown): V8FunctionCoverage {
 
 function readRange(value: unknown): V8Range {
   if (
-    !isRecord(value) || typeof value.startOffset !== "number" ||
-    typeof value.endOffset !== "number" || typeof value.count !== "number"
+    !isRecord(value) ||
+    typeof value.startOffset !== "number" ||
+    typeof value.endOffset !== "number" ||
+    typeof value.count !== "number"
   ) {
     throw new Error("browser V8 coverage range has an invalid shape");
   }
@@ -395,7 +409,8 @@ function readRangeLocation(value: unknown): RangeLocation {
 
 function readLocation(value: unknown): Location {
   if (
-    !isRecord(value) || typeof value.line !== "number" ||
+    !isRecord(value) ||
+    typeof value.line !== "number" ||
     typeof value.column !== "number"
   ) {
     throw new Error("Istanbul location has an invalid shape");
@@ -449,9 +464,10 @@ async function localScriptPath(
   const candidate = resolve(buildDir, `.${path}`);
   if (!isInside(buildDir, candidate)) return undefined;
   try {
-    return (await Deno.stat(candidate)).isFile ? candidate : undefined;
+    return (await stat(candidate)).isFile() ? candidate : undefined;
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return undefined;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return undefined;
     throw error;
   }
 }
@@ -478,8 +494,8 @@ function mergeCoverage(
       existing.f[id] = (existing.f[id] ?? 0) + count;
     }
     for (const [id, counts] of Object.entries(file.b)) {
-      existing.b[id] = counts.map((count, index) =>
-        (existing.b[id]?.[index] ?? 0) + count
+      existing.b[id] = counts.map(
+        (count, index) => (existing.b[id]?.[index] ?? 0) + count,
       );
     }
   }
@@ -551,7 +567,7 @@ function helpText(): string {
   return `Convert browser CDP V8 coverage to LCOV.
 
 Usage:
-  deno run -A tools/browser_v8_to_lcov.ts [options]
+  node ts/tools/browser_v8_to_lcov.ts [options]
 
 Options:
   --input-dir <dir>  Raw browser V8 JSON directory. Defaults to coverage/browser.
@@ -561,19 +577,22 @@ Options:
   --help, -h         Print this help text.`;
 }
 
-if (import.meta.main) {
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
   try {
-    const options = parseArgs(Deno.args);
+    const options = parseArgs(process.argv.slice(2));
     if (options.help) {
       console.log(helpText());
-      Deno.exit(0);
+      process.exit(0);
     }
     const lcov = await convertBrowserV8Coverage(options);
-    await Deno.mkdir(resolve(options.output, ".."), { recursive: true });
-    await Deno.writeTextFile(options.output, lcov);
+    await mkdir(resolve(options.output, ".."), { recursive: true });
+    await writeFile(options.output, lcov);
     if (options.appendTo !== undefined) {
-      const existing = await Deno.readTextFile(options.appendTo);
-      await Deno.writeTextFile(
+      const existing = await readFile(options.appendTo, "utf8");
+      await writeFile(
         options.appendTo,
         `${existing}${
           existing.endsWith("\n") || existing === "" ? "" : "\n"
@@ -582,6 +601,6 @@ if (import.meta.main) {
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
-    Deno.exit(1);
+    process.exitCode = 1;
   }
 }

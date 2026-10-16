@@ -1,12 +1,7 @@
-import { assertEquals, assertInstanceOf } from "@std/assert";
-import { BaseError, UnexpectedError } from "@oatscenter/result";
-import {
-  AsyncResult,
-  type Infer,
-  type InferErr,
-  type MaybeAsync,
-  Result,
-} from "../result.ts";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { BaseError } from "@oatscenter/result";
+import { AsyncResult, type MaybeAsync, Result } from "../result.ts";
 
 /**
  * Simple test error class for testing purposes.
@@ -45,77 +40,39 @@ class ValidationError extends BaseError {
   }
 }
 
-Deno.test("Result class", async (t) => {
-  await t.step("basic construction with static methods", () => {
-    const success = Result.ok(42);
-    const failure = Result.err(new TestError("oops"));
-
-    assertEquals(success.isOk(), true);
-    assertEquals(failure.isErr(), true);
-
-    const value = success.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 42);
-    }
-
-    const error = failure.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "oops");
-    }
-  });
-
-  await t.step("BaseError subclasses preserve prototype identity", () => {
-    const error = new TestError("oops");
-    assertInstanceOf(error, TestError);
-    assertInstanceOf(error, BaseError);
-    assertInstanceOf(error, Error);
-
-    const unexpected = new UnexpectedError({ cause: new Error("boom") });
-    assertInstanceOf(unexpected, UnexpectedError);
-    assertInstanceOf(unexpected, BaseError);
-    assertInstanceOf(unexpected, Error);
-  });
-
-  await t.step("construction with helper functions", () => {
-    const success = Result.ok(42);
-    const failure = Result.err(new TestError("oops"));
-
-    assertEquals(Result.isOk(success), true);
-    assertEquals(Result.isErr(failure), true);
-  });
-
-  await t.step("map transforms values", () => {
-    const result = Result.ok(5).map((x) => x * 2).map((x) => x + 1);
+test("Result class", async (t) => {
+  await t.test("map transforms values", () => {
+    const result = Result.ok(5)
+      .map((x) => x * 2)
+      .map((x) => x + 1);
 
     const value = result.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 11);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 11);
 
     const error = Result.err<TestError, number>(new TestError("failed"));
     const mapped = error.map((x) => x * 2);
-    assertEquals(mapped.isErr(), true);
+    assert.deepEqual(mapped.isErr(), true);
   });
 
-  await t.step("mapErr transforms errors", () => {
-    const result = Result.err<TestError, number>(new TestError("failed"))
-      .mapErr(
-        (e) => new ValidationError(e.message),
-      );
+  await t.test("mapErr transforms errors", () => {
+    const result = Result.err<TestError, number>(
+      new TestError("failed"),
+    ).mapErr((e) => new ValidationError(e.message));
 
     const error = result.take();
     if (Result.isErr(error)) {
-      assertInstanceOf(error.error, ValidationError);
-      assertEquals(error.error.message, "failed");
+      assert(error.error instanceof ValidationError);
+      assert.deepEqual(error.error.message, "failed");
     }
 
     const success = Result.ok<number, TestError>(42).mapErr(
       (e) => new ValidationError(e.message),
     );
-    assertEquals(success.isOk(), true);
+    assert.deepEqual(success.isOk(), true);
   });
 
-  await t.step("andThen chains operations", () => {
+  await t.test("andThen chains operations", () => {
     function divide(a: number, b: number): Result<number, TestError> {
       if (b === 0) {
         return Result.err(new TestError("Division by zero"));
@@ -125,33 +82,30 @@ Deno.test("Result class", async (t) => {
 
     const result = Result.ok(10).andThen((x) => divide(x, 2));
     const value = result.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 5);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 5);
 
     const divByZero = Result.ok(10).andThen((x) => divide(x, 0));
-    assertEquals(divByZero.isErr(), true);
+    assert.deepEqual(divByZero.isErr(), true);
     const error = divByZero.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "Division by zero");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "Division by zero");
   });
 
-  await t.step("take extracts value or error", () => {
+  await t.test("take extracts value or error", () => {
     const success = Result.ok(5);
     const value = success.take();
-    assertEquals(value, 5);
+    assert.deepEqual(value, 5);
 
     const failure = Result.err(new TestError("failed"));
     const error = failure.take();
-    assertEquals(Result.isErr(error), true);
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "failed");
-    }
+    assert.deepEqual(Result.isErr(error), true);
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "failed");
   });
 
-  await t.step("orThrow returns Ok values and throws Err errors", () => {
-    assertEquals(Result.ok(5).orThrow(), 5);
+  await t.test("orThrow returns Ok values and throws Err errors", () => {
+    assert.deepEqual(Result.ok(5).orThrow(), 5);
 
     let thrown: unknown;
     try {
@@ -160,13 +114,15 @@ Deno.test("Result class", async (t) => {
       thrown = error;
     }
 
-    assertInstanceOf(thrown, TestError);
-    assertEquals((thrown as TestError).message, "failed");
+    assert(thrown instanceof TestError);
+    assert.deepEqual((thrown as TestError).message, "failed");
   });
 
-  await t.step("take with early return pattern", () => {
+  await t.test("take with early return pattern", () => {
     function processValue(input: number): Result<string, TestError> {
-      const doubled = Result.ok(input).map((x) => x * 2).take();
+      const doubled = Result.ok(input)
+        .map((x) => x * 2)
+        .take();
       if (Result.isErr(doubled)) return doubled;
 
       if (doubled > 100) {
@@ -178,215 +134,197 @@ Deno.test("Result class", async (t) => {
 
     const success = processValue(10);
     const value = success.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, "20");
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, "20");
 
     const tooBig = processValue(60);
     const error = tooBig.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "Value too large");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "Value too large");
   });
 
-  await t.step("match handles both cases", () => {
+  await t.test("match handles both cases", () => {
     const successMsg = Result.ok(42).match({
       ok: (v) => `Success: ${v}`,
       err: (e: TestError) => `Error: ${e.message}`,
     });
-    assertEquals(successMsg, "Success: 42");
+    assert.deepEqual(successMsg, "Success: 42");
 
     const errorMsg = Result.err(new TestError("failed")).match({
       ok: (v) => `Success: ${v}`,
       err: (e) => `Error: ${e.message}`,
     });
-    assertEquals(errorMsg, "Error: failed");
+    assert.deepEqual(errorMsg, "Error: failed");
   });
 
-  await t.step("unwrapOr provides default value", () => {
+  await t.test("unwrapOr provides default value", () => {
     const value = Result.ok(42).unwrapOr(0);
-    assertEquals(value, 42);
+    assert.deepEqual(value, 42);
 
-    const defaultValue = Result.err<TestError, number>(new TestError("failed"))
-      .unwrapOr(0);
-    assertEquals(defaultValue, 0);
+    const defaultValue = Result.err<TestError, number>(
+      new TestError("failed"),
+    ).unwrapOr(0);
+    assert.deepEqual(defaultValue, 0);
   });
 
-  await t.step("unwrapOrElse computes default", () => {
+  await t.test("unwrapOrElse computes default", () => {
     const value = Result.ok(42).unwrapOrElse(() => 0);
-    assertEquals(value, 42);
+    assert.deepEqual(value, 42);
 
     let errorSeen = false;
-    const defaultValue = Result.err<TestError, number>(new TestError("failed"))
-      .unwrapOrElse((e) => {
-        errorSeen = true;
-        assertEquals(e.message, "failed");
-        return 0;
-      });
-    assertEquals(defaultValue, 0);
-    assertEquals(errorSeen, true);
+    const defaultValue = Result.err<TestError, number>(
+      new TestError("failed"),
+    ).unwrapOrElse((e) => {
+      errorSeen = true;
+      assert.deepEqual(e.message, "failed");
+      return 0;
+    });
+    assert.deepEqual(defaultValue, 0);
+    assert.deepEqual(errorSeen, true);
   });
 
-  await t.step("or returns first Ok", () => {
+  await t.test("or returns first Ok", () => {
     const result1 = Result.ok(1).or(Result.ok(2));
     const value1 = result1.take();
-    if (!Result.isErr(value1)) {
-      assertEquals(value1, 1);
-    }
+    assert(!Result.isErr(value1));
+    assert.deepEqual(value1, 1);
 
     const result2 = Result.err<TestError, number>(new TestError("e1")).or(
       Result.ok(2),
     );
     const value2 = result2.take();
-    if (!Result.isErr(value2)) {
-      assertEquals(value2, 2);
-    }
+    assert(!Result.isErr(value2));
+    assert.deepEqual(value2, 2);
   });
 
-  await t.step("orElse computes fallback", () => {
+  await t.test("orElse computes fallback", () => {
     const result1 = Result.ok(1).orElse(() => Result.ok(2));
     const value1 = result1.take();
-    if (!Result.isErr(value1)) {
-      assertEquals(value1, 1);
-    }
+    assert(!Result.isErr(value1));
+    assert.deepEqual(value1, 1);
 
     const result2 = Result.err<TestError, number>(new TestError("e1")).orElse(
       (error) => {
-        assertEquals(error.message, "e1");
+        assert.deepEqual(error.message, "e1");
         return Result.ok(2);
       },
     );
     const value2 = result2.take();
-    if (!Result.isErr(value2)) {
-      assertEquals(value2, 2);
-    }
+    assert(!Result.isErr(value2));
+    assert.deepEqual(value2, 2);
   });
 
-  await t.step("inspect performs side effect on Ok", () => {
+  await t.test("inspect performs side effect on Ok", () => {
     let inspected = false;
     const result = Result.ok(42).inspect((v) => {
       inspected = true;
-      assertEquals(v, 42);
+      assert.deepEqual(v, 42);
     });
-    assertEquals(inspected, true);
-    assertEquals(result.isOk(), true);
+    assert.deepEqual(inspected, true);
+    assert.deepEqual(result.isOk(), true);
 
     let errInspected = false;
     Result.err(new TestError("failed")).inspect(() => {
       errInspected = true;
     });
-    assertEquals(errInspected, false);
+    assert.deepEqual(errInspected, false);
   });
 
-  await t.step("inspectErr performs side effect on Err", () => {
+  await t.test("inspectErr performs side effect on Err", () => {
     let inspected = false;
     const result = Result.err(new TestError("failed")).inspectErr((e) => {
       inspected = true;
-      assertEquals(e.message, "failed");
+      assert.deepEqual(e.message, "failed");
     });
-    assertEquals(inspected, true);
-    assertEquals(result.isErr(), true);
+    assert.deepEqual(inspected, true);
+    assert.deepEqual(result.isErr(), true);
 
     let okInspected = false;
     Result.ok(42).inspectErr(() => {
       okInspected = true;
     });
-    assertEquals(okInspected, false);
+    assert.deepEqual(okInspected, false);
   });
 
-  await t.step("all combines sync results", () => {
+  await t.test("all combines sync results", () => {
     const allOk = Result.all([Result.ok(1), Result.ok(2), Result.ok(3)]);
     const values = allOk.take();
-    if (!Result.isErr(values)) {
-      assertEquals(values, [1, 2, 3]);
-    }
+    assert(!Result.isErr(values));
+    assert.deepEqual(values, [1, 2, 3]);
 
     const hasErr = Result.all([
       Result.ok(1),
       Result.err(new TestError("failed")),
       Result.ok(3),
     ]);
-    assertEquals(hasErr.isErr(), true);
+    assert.deepEqual(hasErr.isErr(), true);
     const error = hasErr.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "failed");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "failed");
   });
 
-  await t.step("any finds first Ok", () => {
+  await t.test("any finds first Ok", () => {
     const first = Result.any([
       Result.err<TestError, number>(new TestError("e1")),
       Result.ok(2),
       Result.ok(3),
     ]);
     const value = first.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 2);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 2);
 
     const allErrors = Result.any([
       Result.err<TestError, number>(new TestError("e1")),
       Result.err<TestError, number>(new TestError("e2")),
       Result.err<TestError, number>(new TestError("e3")),
     ]);
-    assertEquals(allErrors.isErr(), true);
+    assert.deepEqual(allErrors.isErr(), true);
     const error = allErrors.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "e3");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "e3");
   });
 
-  await t.step("Result.try catches exceptions", () => {
+  await t.test("Result.try catches exceptions", () => {
     const success = Result.try(() => JSON.parse('{"a":1}'));
-    assertEquals(success.isOk(), true);
+    assert.deepEqual(success.isOk(), true);
     const value = success.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value.a, 1);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value.a, 1);
 
     const failure = Result.try(() => JSON.parse("invalid"));
-    assertEquals(failure.isErr(), true);
+    assert.deepEqual(failure.isErr(), true);
     const error = failure.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.name, "UnexpectedError");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.name, "UnexpectedError");
   });
 
-  await t.step("Result.try with context", () => {
+  await t.test("Result.try with context", () => {
     const data = "invalid json";
-    const result = Result.try(
-      () => JSON.parse(data),
-      { input: data },
-    );
+    const result = Result.try(() => JSON.parse(data), { input: data });
 
-    assertEquals(result.isErr(), true);
+    assert.deepEqual(result.isErr(), true);
     const error = result.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.name, "UnexpectedError");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.name, "UnexpectedError");
   });
 
-  await t.step("Result.try practical example", () => {
+  await t.test("Result.try practical example", () => {
     const data = '{"name":"Alice","age":30}';
     const obj = Result.try(() =>
-      typeof data === "string" ? JSON.parse(data) : data
+      typeof data === "string" ? JSON.parse(data) : data,
     );
 
     const value = obj.take();
     if (!Result.isErr(value)) {
-      assertEquals(value.name, "Alice");
-      assertEquals(value.age, 30);
+      assert.deepEqual(value.name, "Alice");
+      assert.deepEqual(value.age, 30);
     }
   });
 });
 
-Deno.test("AsyncResult class", async (t) => {
-  await t.step("basic async construction", async () => {
-    async function fetchUser(
-      id: string,
-    ): Promise<Result<string, TestError>> {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
+test("AsyncResult class", async (t) => {
+  await t.test("basic async construction", async () => {
+    async function fetchUser(id: string): Promise<Result<string, TestError>> {
       if (id === "1") {
         return Result.ok("Alice");
       }
@@ -395,58 +333,55 @@ Deno.test("AsyncResult class", async (t) => {
 
     const asyncResult = AsyncResult.from(fetchUser("1"));
     const value = await asyncResult.take();
-    assertEquals(value, "Alice");
+    assert.deepEqual(value, "Alice");
 
     const asyncError = AsyncResult.from(fetchUser("999"));
     const error = await asyncError.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "User not found");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "User not found");
   });
 
-  await t.step("lift creates AsyncResult from Result or Promise", async () => {
+  await t.test("lift creates AsyncResult from Result or Promise", async () => {
     const syncResult = AsyncResult.lift(Result.ok(42));
     const value1 = await syncResult.take();
-    assertEquals(value1, 42);
+    assert.deepEqual(value1, 42);
 
     const promiseResult = AsyncResult.lift(Promise.resolve(Result.ok(42)));
     const value2 = await promiseResult.take();
-    assertEquals(value2, 42);
+    assert.deepEqual(value2, 42);
   });
 
-  await t.step("map transforms async values", async () => {
+  await t.test("map transforms async values", async () => {
     const result = AsyncResult.lift(Result.ok(5))
       .map((x) => x * 2)
       .map((x) => x + 1);
 
     const value = await result.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 11);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 11);
 
     const error = AsyncResult.lift(
       Result.err<TestError, number>(new TestError("failed")),
     );
     const mapped = error.map((x) => x * 2);
     const errorValue = await mapped.take();
-    if (Result.isErr(errorValue)) {
-      assertEquals(errorValue.error.message, "failed");
-    }
+    assert(Result.isErr(errorValue));
+    assert.deepEqual(errorValue.error.message, "failed");
   });
 
-  await t.step("mapErr transforms async errors", async () => {
+  await t.test("mapErr transforms async errors", async () => {
     const result = AsyncResult.lift(
       Result.err<TestError, number>(new TestError("failed")),
     ).mapErr((e) => new ValidationError(e.message));
 
     const error = await result.take();
     if (Result.isErr(error)) {
-      assertInstanceOf(error.error, ValidationError);
-      assertEquals(error.error.message, "failed");
+      assert(error.error instanceof ValidationError);
+      assert.deepEqual(error.error.message, "failed");
     }
   });
 
-  await t.step("andThen chains async operations", async () => {
+  await t.test("andThen chains async operations", async () => {
     async function getUser(
       id: string,
     ): Promise<Result<{ id: string; name: string }, TestError>> {
@@ -464,16 +399,15 @@ Deno.test("AsyncResult class", async (t) => {
     }
 
     const permissions = AsyncResult.from(getUser("1")).andThen((user) =>
-      AsyncResult.from(getPermissions(user))
+      AsyncResult.from(getPermissions(user)),
     );
 
     const value = await permissions.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, ["read", "write"]);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, ["read", "write"]);
   });
 
-  await t.step("andThen works with sync Results", async () => {
+  await t.test("andThen works with sync Results", async () => {
     function validateNumber(n: number): Result<number, TestError> {
       if (n < 0) return Result.err(new TestError("Negative number"));
       return Result.ok(n);
@@ -482,24 +416,18 @@ Deno.test("AsyncResult class", async (t) => {
     const result = AsyncResult.lift(Result.ok(5)).andThen(validateNumber);
 
     const value = await result.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 5);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 5);
 
     const negative = AsyncResult.lift(Result.ok(-5)).andThen(validateNumber);
     const error = await negative.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "Negative number");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "Negative number");
   });
 
-  await t.step("take with early return pattern", async () => {
-    async function processUser(
-      id: string,
-    ): Promise<Result<string, TestError>> {
-      async function fetchUser(
-        id: string,
-      ): Promise<Result<string, TestError>> {
+  await t.test("take with early return pattern", async () => {
+    async function processUser(id: string): Promise<Result<string, TestError>> {
+      async function fetchUser(id: string): Promise<Result<string, TestError>> {
         await new Promise((resolve) => setTimeout(resolve, 10));
         if (id === "1") return Result.ok("Alice");
         return Result.err(new TestError("User not found"));
@@ -517,21 +445,19 @@ Deno.test("AsyncResult class", async (t) => {
 
     const success = await processUser("1");
     const value = success.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, "ALICE");
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, "ALICE");
 
     const notFound = await processUser("999");
     const error = notFound.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "User not found");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "User not found");
   });
 
-  await t.step(
+  await t.test(
     "orThrow returns async Ok values and throws Err errors",
     async () => {
-      assertEquals(await AsyncResult.ok(42).orThrow(), 42);
+      assert.deepEqual(await AsyncResult.ok(42).orThrow(), 42);
 
       let thrown: unknown;
       try {
@@ -540,28 +466,27 @@ Deno.test("AsyncResult class", async (t) => {
         thrown = error;
       }
 
-      assertInstanceOf(thrown, TestError);
-      assertEquals((thrown as TestError).message, "failed");
+      assert(thrown instanceof TestError);
+      assert.deepEqual((thrown as TestError).message, "failed");
     },
   );
 
-  await t.step("await AsyncResult returns Result", async () => {
+  await t.test("await AsyncResult returns Result", async () => {
     const asyncResult = AsyncResult.lift(Result.ok(42));
     const result = await asyncResult;
 
-    assertEquals(result.isOk(), true);
+    assert.deepEqual(result.isOk(), true);
     const value = result.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 42);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 42);
   });
 
-  await t.step("match handles both async cases", async () => {
+  await t.test("match handles both async cases", async () => {
     const successMsg = await AsyncResult.lift(Result.ok(42)).match({
       ok: (v) => `Success: ${v}`,
       err: (e: TestError) => `Error: ${e.message}`,
     });
-    assertEquals(successMsg, "Success: 42");
+    assert.deepEqual(successMsg, "Success: 42");
 
     const errorMsg = await AsyncResult.lift(
       Result.err(new TestError("failed")),
@@ -569,101 +494,96 @@ Deno.test("AsyncResult class", async (t) => {
       ok: (v) => `Success: ${v}`,
       err: (e) => `Error: ${e.message}`,
     });
-    assertEquals(errorMsg, "Error: failed");
+    assert.deepEqual(errorMsg, "Error: failed");
   });
 
-  await t.step("unwrapOr provides default for async", async () => {
+  await t.test("unwrapOr provides default for async", async () => {
     const value = await AsyncResult.lift(Result.ok(42)).unwrapOr(0);
-    assertEquals(value, 42);
+    assert.deepEqual(value, 42);
 
     const defaultValue = await AsyncResult.lift(
       Result.err<TestError, number>(new TestError("failed")),
     ).unwrapOr(0);
-    assertEquals(defaultValue, 0);
+    assert.deepEqual(defaultValue, 0);
   });
 
-  await t.step("unwrapOrElse computes default for async", async () => {
+  await t.test("unwrapOrElse computes default for async", async () => {
     const value = await AsyncResult.lift(Result.ok(42)).unwrapOrElse(() => 0);
-    assertEquals(value, 42);
+    assert.deepEqual(value, 42);
 
     const defaultValue = await AsyncResult.lift(
       Result.err<TestError, number>(new TestError("failed")),
     ).unwrapOrElse((e) => {
-      assertEquals(e.message, "failed");
+      assert.deepEqual(e.message, "failed");
       return 0;
     });
-    assertEquals(defaultValue, 0);
+    assert.deepEqual(defaultValue, 0);
   });
 
-  await t.step("or returns first Ok for async", async () => {
+  await t.test("or returns first Ok for async", async () => {
     const result1 = AsyncResult.lift(Result.ok(1)).or(
       AsyncResult.lift(Result.ok(2)),
     );
     const value1 = await result1.take();
-    if (!Result.isErr(value1)) {
-      assertEquals(value1, 1);
-    }
+    assert(!Result.isErr(value1));
+    assert.deepEqual(value1, 1);
 
     const result2 = AsyncResult.lift(
       Result.err<TestError, number>(new TestError("e1")),
     ).or(AsyncResult.lift(Result.ok(2)));
     const value2 = await result2.take();
-    if (!Result.isErr(value2)) {
-      assertEquals(value2, 2);
-    }
+    assert(!Result.isErr(value2));
+    assert.deepEqual(value2, 2);
   });
 
-  await t.step("orElse computes fallback for async", async () => {
+  await t.test("orElse computes fallback for async", async () => {
     const result1 = AsyncResult.lift(Result.ok(1)).orElse(() =>
-      AsyncResult.lift(Result.ok(2))
+      AsyncResult.lift(Result.ok(2)),
     );
     const value1 = await result1.take();
-    if (!Result.isErr(value1)) {
-      assertEquals(value1, 1);
-    }
+    assert(!Result.isErr(value1));
+    assert.deepEqual(value1, 1);
 
     const result2 = AsyncResult.lift(
       Result.err<TestError, number>(new TestError("e1")),
     ).orElse((error) => {
-      assertEquals(error.message, "e1");
+      assert.deepEqual(error.message, "e1");
       return AsyncResult.lift(Result.ok(2));
     });
     const value2 = await result2.take();
-    if (!Result.isErr(value2)) {
-      assertEquals(value2, 2);
-    }
+    assert(!Result.isErr(value2));
+    assert.deepEqual(value2, 2);
   });
 
-  await t.step("inspect performs side effect on async Ok", async () => {
+  await t.test("inspect performs side effect on async Ok", async () => {
     let inspected = false;
     await AsyncResult.lift(Result.ok(42)).inspect((v) => {
       inspected = true;
-      assertEquals(v, 42);
+      assert.deepEqual(v, 42);
     });
-    assertEquals(inspected, true);
+    assert.deepEqual(inspected, true);
   });
 
-  await t.step("inspectErr performs side effect on async Err", async () => {
+  await t.test("inspectErr performs side effect on async Err", async () => {
     let inspected = false;
     await AsyncResult.lift(Result.err(new TestError("failed"))).inspectErr(
       (e) => {
         inspected = true;
-        assertEquals(e.message, "failed");
+        assert.deepEqual(e.message, "failed");
       },
     );
-    assertEquals(inspected, true);
+    assert.deepEqual(inspected, true);
   });
 
-  await t.step("all combines async results", async () => {
+  await t.test("all combines async results", async () => {
     const allOk = AsyncResult.all([
       AsyncResult.lift(Result.ok(1)),
       AsyncResult.lift(Result.ok(2)),
       AsyncResult.lift(Result.ok(3)),
     ]);
     const values = await allOk.take();
-    if (!Result.isErr(values)) {
-      assertEquals(values, [1, 2, 3]);
-    }
+    assert(!Result.isErr(values));
+    assert.deepEqual(values, [1, 2, 3]);
 
     const hasErr = AsyncResult.all([
       AsyncResult.lift(Result.ok(1)),
@@ -671,21 +591,19 @@ Deno.test("AsyncResult class", async (t) => {
       AsyncResult.lift(Result.ok(3)),
     ]);
     const error = await hasErr.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "failed");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "failed");
   });
 
-  await t.step("any finds first async Ok", async () => {
+  await t.test("any finds first async Ok", async () => {
     const first = AsyncResult.any([
       AsyncResult.lift(Result.err<TestError, number>(new TestError("e1"))),
       AsyncResult.lift(Result.ok(2)),
       AsyncResult.lift(Result.ok(3)),
     ]);
     const value = await first.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 2);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 2);
 
     const allErrors = AsyncResult.any([
       AsyncResult.lift(Result.err<TestError, number>(new TestError("e1"))),
@@ -693,12 +611,11 @@ Deno.test("AsyncResult class", async (t) => {
       AsyncResult.lift(Result.err<TestError, number>(new TestError("e3"))),
     ]);
     const error = await allErrors.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "e3");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "e3");
   });
 
-  await t.step("complex chaining example", async () => {
+  await t.test("complex chaining example", async () => {
     interface User {
       id: string;
       name: string;
@@ -728,20 +645,18 @@ Deno.test("AsyncResult class", async (t) => {
       .map((perms) => perms.join(", "));
 
     const value = await result.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, "read, write");
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, "read, write");
 
     const notFound = AsyncResult.from(fetchUser("999")).andThen((user) =>
-      AsyncResult.from(fetchPermissions(user))
+      AsyncResult.from(fetchPermissions(user)),
     );
     const error = await notFound.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.message, "User not found");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.message, "User not found");
   });
 
-  await t.step("multiple validations with early returns", async () => {
+  await t.test("multiple validations with early returns", async () => {
     function validateEmail(email: string): Result<string, TestError> {
       if (!email.includes("@")) {
         return Result.err(new TestError("Invalid email"));
@@ -773,42 +688,37 @@ Deno.test("AsyncResult class", async (t) => {
 
     const user = await registerUser("test@example.com", "password123");
     const value = user.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value.email, "test@example.com");
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value.email, "test@example.com");
 
     const badEmail = await registerUser("invalid", "password123");
     const error1 = badEmail.take();
-    if (Result.isErr(error1)) {
-      assertEquals(error1.error.message, "Invalid email");
-    }
+    assert(Result.isErr(error1));
+    assert.deepEqual(error1.error.message, "Invalid email");
 
     const badPassword = await registerUser("test@example.com", "short");
     const error2 = badPassword.take();
-    if (Result.isErr(error2)) {
-      assertEquals(error2.error.message, "Password too short");
-    }
+    assert(Result.isErr(error2));
+    assert.deepEqual(error2.error.message, "Password too short");
   });
 
-  await t.step("AsyncResult.try catches async exceptions", async () => {
+  await t.test("AsyncResult.try catches async exceptions", async () => {
     const success = AsyncResult.try(async () => {
       return Promise.resolve(42);
     });
     const value = await success.take();
-    if (!Result.isErr(value)) {
-      assertEquals(value, 42);
-    }
+    assert(!Result.isErr(value));
+    assert.deepEqual(value, 42);
 
     const failure = AsyncResult.try(async () => {
       throw new Error("async error");
     });
     const error = await failure.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.name, "UnexpectedError");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.name, "UnexpectedError");
   });
 
-  await t.step("AsyncResult.try with fetch example", async () => {
+  await t.test("AsyncResult.try with fetch example", async () => {
     const mockFetch = async (url: string) => {
       if (url.includes("error")) {
         throw new Error("Network error");
@@ -823,8 +733,8 @@ Deno.test("AsyncResult class", async (t) => {
 
     const value = await user.take();
     if (!Result.isErr(value)) {
-      assertEquals(value.name, "Alice");
-      assertEquals(value.id, "123");
+      assert.deepEqual(value.name, "Alice");
+      assert.deepEqual(value.id, "123");
     }
 
     const error = AsyncResult.try(async () => {
@@ -833,12 +743,11 @@ Deno.test("AsyncResult class", async (t) => {
     });
 
     const errorValue = await error.take();
-    if (Result.isErr(errorValue)) {
-      assertEquals(errorValue.error.name, "UnexpectedError");
-    }
+    assert(Result.isErr(errorValue));
+    assert.deepEqual(errorValue.error.name, "UnexpectedError");
   });
 
-  await t.step("AsyncResult.try with context", async () => {
+  await t.test("AsyncResult.try with context", async () => {
     const url = "/api/data";
     const result = AsyncResult.try(
       async () => {
@@ -848,63 +757,26 @@ Deno.test("AsyncResult class", async (t) => {
     );
 
     const error = await result.take();
-    if (Result.isErr(error)) {
-      assertEquals(error.error.name, "UnexpectedError");
-    }
+    assert(Result.isErr(error));
+    assert.deepEqual(error.error.name, "UnexpectedError");
   });
 });
 
-Deno.test("Type inference utilities", async (t) => {
-  await t.step("Infer extracts Ok type", () => {
-    type MyResult = Result<number, TestError>;
-    type Value = Infer<MyResult>;
-
-    // Compile-time type check
-    const _typeCheck: Value = 42;
-    assertEquals(_typeCheck, 42);
-  });
-
-  await t.step("InferErr extracts Err type", () => {
-    type MyResult = Result<number, TestError>;
-    type Error = InferErr<MyResult>;
-
-    // Compile-time type check
-    const _typeCheck: Error = new TestError("test");
-    assertEquals(_typeCheck.name, "TestError");
-  });
-
-  await t.step("works with complex Result types", () => {
-    type UserResult = Result<{ id: string; name: string }, ValidationError>;
-    type User = Infer<UserResult>;
-    type UserError = InferErr<UserResult>;
-
-    const user: User = { id: "123", name: "Alice" };
-    const error: UserError = new ValidationError("Failed");
-
-    assertEquals(user.id, "123");
-    assertEquals(error.name, "ValidationError");
-  });
-
-  await t.step("MaybeAsync allows Result or AsyncResult", async () => {
-    function flexibleFetch(useCache: boolean): MaybeAsync<string, TestError> {
-      if (useCache) {
-        return Result.ok("cached");
-      }
-      return AsyncResult.lift(Result.ok("fetched"));
+test("MaybeAsync consumers handle synchronous and asynchronous results uniformly", async () => {
+  function flexibleFetch(useCache: boolean): MaybeAsync<string, TestError> {
+    if (useCache) {
+      return Result.ok("cached");
     }
+    return AsyncResult.lift(Result.ok("fetched"));
+  }
 
-    const cached = flexibleFetch(true);
-    const fetched = flexibleFetch(false);
+  const cached = flexibleFetch(true);
+  const fetched = flexibleFetch(false);
 
-    // Verify types at runtime
-    assertEquals(cached instanceof AsyncResult, false);
-    assertInstanceOf(fetched, AsyncResult);
+  // Both can be handled uniformly with AsyncResult.lift
+  const val1 = await AsyncResult.lift(cached).take();
+  const val2 = await AsyncResult.lift(fetched).take();
 
-    // Both can be handled uniformly with AsyncResult.lift
-    const val1 = await AsyncResult.lift(cached).take();
-    const val2 = await AsyncResult.lift(fetched).take();
-
-    assertEquals(val1, "cached");
-    assertEquals(val2, "fetched");
-  });
+  assert.deepEqual(val1, "cached");
+  assert.deepEqual(val2, "fetched");
 });

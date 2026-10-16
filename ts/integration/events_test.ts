@@ -1,83 +1,110 @@
 import { credsAuthenticator } from "@nats-io/nats-core";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { fromFileUrl, join } from "@std/path";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { env, execPath } from "node:process";
+import { Readable } from "node:stream";
+import { TextDecoderStream } from "node:stream/web";
+import { codecs } from "@oatscenter/trellis/generated";
+import { ulid } from "ulid";
 import { AuthError, Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import {
-  apis as webApis,
-  participants as webParticipants,
-} from "trellis-web-generated";
+import { apis as webApis } from "../../web/trellis/index.js";
+import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
+import { spawnTracked } from "./_support/process.ts";
 
-Deno.test("Auth connection lifecycle events survive the fenced outbox", async () => {
+test("Auth connection lifecycle events survive the fenced outbox", async () => {
   await withTrellisRuntime(async (runtime) => {
     let phase = "initial-lifecycle";
     const admin = await runtime.connectClient({
       name: "auth-events-admin",
-      contract: webParticipants.Console.participant,
+      contract: adminParticipant,
     });
     await runtime.registerService({
       name: "auth-events-provider",
       contract: participants.EventService.participant,
     });
     const qualified = "events.v1.dHJlbGxpcy5hdXRoQHYx.Connections";
-    const lifecycleRows = async (connectionId: string, name: string) => {
+    const lifecycleRows = async (
+      attachmentId: string,
+      name: "Opened" | "Closed" | "Kicked",
+    ) => {
       const query = await admin.eventsQuery({
         subject: `${qualified}.${name}`,
       });
       if (query.isErr()) {
-        console.error(JSON.stringify({
-          event: "auth-lifecycle-query-failed",
-          phase,
-          connectionId,
-          name,
-          error: query.error.toSerializable(),
-        }));
+        console.error(
+          JSON.stringify({
+            event: "auth-lifecycle-query-failed",
+            phase,
+            attachmentId,
+            name,
+            error: query.error.toSerializable(),
+          }),
+        );
       }
       const rows = query.orThrow().items;
       const matching = [];
       for (const row of rows) {
-        const detail =
-          (await admin.eventsInspect({ eventId: row.eventId }).orThrow()).event;
-        const payload = JSON.parse(new TextDecoder().decode(detail.payload));
-        if (payload.connectionId === connectionId) {
+        const detail = (
+          await admin.eventsInspect({ eventId: row.eventId }).orThrow()
+        ).event;
+        const payload = webApis.auth.API.actions[
+          `event:Connections.${name}`
+        ].payload.decode(JSON.parse(new TextDecoder().decode(detail.payload)));
+        if (payload.attachmentId === attachmentId) {
           matching.push({ row, detail, payload });
         }
       }
       return matching;
     };
-    const waitForEvent = async (connectionId: string, name: string) => {
-      const { detail, payload } = await runtime.waitFor(async () => {
-        const rows = await lifecycleRows(connectionId, name);
-        return rows.length === 1 ? rows[0] : undefined;
-      }, { timeoutMs: 30_000, intervalMs: 100 });
-      assertEquals(detail.row.subject, `${qualified}.${name}`);
-      webApis.auth.API.actions[
-        `event:Connections.${name}` as
-          | "event:Connections.Opened"
-          | "event:Connections.Closed"
-          | "event:Connections.Kicked"
-      ].payload.decode(payload);
-      assertEquals(payload.connectionId, connectionId);
+    const waitForEvent = async (
+      attachmentId: string,
+      name: "Opened" | "Closed" | "Kicked",
+    ) => {
+      const { detail, payload } = await runtime.waitFor(
+        async () => {
+          const rows = await lifecycleRows(attachmentId, name);
+          return rows.length === 1 ? rows[0] : undefined;
+        },
+        { timeoutMs: 30_000, intervalMs: 100 },
+      );
+      assert.deepEqual(detail.row.subject, `${qualified}.${name}`);
+      assert.deepEqual(payload.attachmentId, attachmentId);
       return payload;
     };
-    const connectionFor = async (participantId: string) =>
+    const connectionFor = async (clientId: string) =>
       await runtime.waitFor(async () => {
-        const sessions = (await admin.sessionsList({
-          participantId,
-          state: "active",
-        }).orThrow()).items;
+        const sessions = (
+          await runtime.callAdminRpc("authAuthorizationSessionsList", {
+            clientId,
+            state: "active",
+          })
+        ).items;
         for (const session of sessions) {
-          const connection = (await admin.connectionsList({
-            sessionId: session.sessionId,
-          }).orThrow()).items[0];
+          const connection = (
+            await runtime.callAdminRpc("authConnectionsList", {
+              authorizationSessionId: session.authorizationSessionId,
+              state: "admitted",
+            })
+          ).items[0];
           if (connection) {
-            return { ...connection, principalId: session.principalId };
+            return {
+              ...connection,
+              loginSessionId: session.loginSessionId,
+              principalId: session.principalId,
+            };
           }
         }
         return false;
@@ -85,51 +112,48 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
 
     const openedClient = await runtime.connectClient({
       name: "auth-events-open-close",
-      contract: participants.Alpha.participant,
+      contract: apps.Alpha.request,
     });
-    const opened = await connectionFor(participants.Alpha.participant.id);
-    const openedPayload = await waitForEvent(opened.connectionId, "Opened");
-    assertEquals(
-      openedPayload.participantId,
-      participants.Alpha.participant.id,
+    const opened = await connectionFor(apps.Alpha.request.id);
+    const openedPayload = await waitForEvent(opened.attachmentId, "Opened");
+    assert.deepEqual(
+      openedPayload.authorizationSessionId,
+      opened.authorizationSessionId,
     );
-    assertEquals(openedPayload.principalId, opened.principalId);
-    assertEquals(
-      await lifecycleRows(opened.connectionId, "Opened").then((r) => r.length),
+    assert.deepEqual(openedPayload.principalId, opened.principalId);
+    assert.deepEqual(
+      await lifecycleRows(opened.attachmentId, "Opened").then((r) => r.length),
       1,
     );
 
     await openedClient.connection.close();
-    await waitForEvent(opened.connectionId, "Closed");
-    assertEquals(
-      await lifecycleRows(opened.connectionId, "Closed").then((r) => r.length),
+    await waitForEvent(opened.attachmentId, "Closed");
+    assert.deepEqual(
+      await lifecycleRows(opened.attachmentId, "Closed").then((r) => r.length),
       1,
     );
 
     const kickedClient = await runtime.connectClient({
       name: "auth-events-kick",
-      contract: participants.Beta.participant,
+      contract: apps.Beta.request,
     });
-    const kicked = await connectionFor(participants.Beta.participant.id);
-    const session = (await admin.sessionsList({
-      participantId: participants.Beta.participant.id,
-      state: "active",
-    }).orThrow()).items.find((entry) =>
-      entry.sessionId === kicked.loginSessionId
-    );
+    const kicked = await connectionFor(apps.Beta.request.id);
+    const session = (
+      await runtime.callAdminRpc("authSessionsList", {
+        participantId: apps.Beta.request.id,
+        state: "active",
+      })
+    ).items.find((entry) => entry.loginSessionId === kicked.loginSessionId);
     if (!session) throw new Error("kick session missing");
     const revoke = {
-      sessionId: session.sessionId,
-      expectedVersion: session.version,
-      idempotencyKey: crypto.randomUUID(),
-      reason: "auth lifecycle event test",
+      loginSessionId: session.loginSessionId,
+      idempotencyKey: ulid(),
     };
-    await admin.sessionsRevoke(revoke).orThrow();
-    await admin.sessionsRevoke(revoke).orThrow();
-    const kickedPayload = await waitForEvent(kicked.connectionId, "Kicked");
-    assertEquals(kickedPayload.reason, revoke.reason);
-    assertEquals(
-      await lifecycleRows(kicked.connectionId, "Kicked").then((r) => r.length),
+    await runtime.callAdminRpc("authSessionsRevoke", revoke);
+    await runtime.callAdminRpc("authSessionsRevoke", revoke);
+    await waitForEvent(kicked.attachmentId, "Kicked");
+    assert.deepEqual(
+      await lifecycleRows(kicked.attachmentId, "Kicked").then((r) => r.length),
       1,
     );
     await kickedClient.connection.close().catch(() => undefined);
@@ -137,7 +161,7 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(
+        await readFile(
           join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
@@ -145,7 +169,9 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
     try {
       const manager = await jetstreamManager(nats);
       const eventStream = (await manager.streams.list().next()).find((stream) =>
-        stream.config.subjects?.some((subject) => subject.startsWith("events."))
+        stream.config.subjects?.some((subject) =>
+          subject.startsWith("events."),
+        ),
       );
       if (!eventStream) throw new Error("event stream missing");
       const streamConfig = eventStream.config;
@@ -156,29 +182,29 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
       });
       const recoveryClient = await runtime.connectClient({
         name: "auth-events-recovery",
-        contract: participants.Alpha.participant,
+        contract: apps.Alpha.request,
       });
-      const recovery = await connectionFor(participants.Alpha.participant.id);
-      assertEquals(
-        (await lifecycleRows(recovery.connectionId, "Opened")).length,
+      const recovery = await connectionFor(apps.Alpha.request.id);
+      assert.deepEqual(
+        (await lifecycleRows(recovery.attachmentId, "Opened")).length,
         0,
       );
       await manager.streams.update(streamConfig.name, streamConfig);
       phase = "host-restarting";
       await runtime.restart();
       phase = "outbox-replay-after-restart";
-      await waitForEvent(recovery.connectionId, "Opened");
-      assertEquals(
-        await lifecycleRows(recovery.connectionId, "Opened").then((r) =>
-          r.length
+      await waitForEvent(recovery.attachmentId, "Opened");
+      assert.deepEqual(
+        await lifecycleRows(recovery.attachmentId, "Opened").then(
+          (r) => r.length,
         ),
         1,
       );
-      assertEquals(
+      assert.deepEqual(
         new Set([
-          opened.connectionId,
-          kicked.connectionId,
-          recovery.connectionId,
+          opened.attachmentId,
+          kicked.attachmentId,
+          recovery.attachmentId,
         ]).size,
         3,
       );
@@ -189,76 +215,89 @@ Deno.test("Auth connection lifecycle events survive the fenced outbox", async ()
   });
 });
 
-Deno.test("runtime Events transports Health.StatusChanged on its qualified subject", async () => {
+test("runtime Events transports Health.StatusChanged on its qualified subject", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const nats = await connect({
-      servers: runtime.natsUrl,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
-      ),
+    const identity = await runtime.registerService({
+      name: "health-events",
+      contract: participants.Provider.participant,
+    });
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: participants.Provider.participant,
+      seed: identity.seed,
+      runtime: { health: { publishIntervalMs: 1000 } },
+    }).orThrow();
+    let healthy = true;
+    service.health.add("acceptance", () => ({
+      status: healthy ? "ok" : "failed",
+    }));
+    const exit = service.wait().catch((error: unknown) => error);
+    const reader = await runtime.connectClient({
+      name: "health-event-reader",
+      contract: adminParticipant,
     });
     try {
-      const manager = await jetstreamManager(nats);
-      const subject = "events.v1.dHJlbGxpcy5oZWFsdGhAdjE.StatusChanged";
-      const now = new Date().toISOString();
-      const heartbeat = {
-        sample: { id: "01J00000000000000000000000", time: now },
-        participant: {
-          name: "Health transport test",
-          kind: "service",
-          instanceId: "instance",
-          contractId: "acme.test@v1",
-          contractDigest: "digest",
-          startedAt: now,
-          publishIntervalMs: "30000",
-          runtime: "typescript",
-        },
-        reportedStatus: "healthy",
-        checks: [],
-      };
-      const js = jetstream(nats);
-      await js.publish(
-        "health.v1.heartbeat.service.YWNtZS50ZXN0QHYx.ZGlnZXN0.ZGVwbG95bWVudA.aW5zdGFuY2U.session",
-        new TextEncoder().encode(JSON.stringify(heartbeat)),
+      const descriptor = webApis.health.API.actions["event:StatusChanged"];
+      // The first sample initializes Health; only subsequent transitions emit
+      // StatusChanged. Wait for the initial projection before changing it.
+      await runtime.waitFor(async () =>
+        (await reader.healthQuery({}).orThrow()).items.some(
+          (item) =>
+            item.contractId === participants.Provider.participant.id &&
+            item.effectiveStatus === "healthy",
+        ),
       );
-      heartbeat.sample.id = "01J00000000000000000000001";
-      heartbeat.reportedStatus = "unhealthy";
-      await js.publish(
-        "health.v1.heartbeat.service.YWNtZS50ZXN0QHYx.ZGlnZXN0.ZGVwbG95bWVudA.aW5zdGFuY2U.session",
-        new TextEncoder().encode(JSON.stringify(heartbeat)),
-      );
-      const message = await runtime.waitFor(async () => {
-        const streams = await manager.streams.list().next();
-        const stream = streams.find((entry) =>
-          entry.config.subjects?.some((filter) => filter.startsWith("events."))
-        );
-        if (!stream) return false;
-        try {
-          return await manager.streams.getMessage(stream.config.name, {
-            last_by_subj: subject,
-          });
-        } catch {
-          return false;
-        }
-      });
-      assertEquals(message.subject, subject);
-      assertEquals(
-        JSON.parse(new TextDecoder().decode(message.data)).status,
-        "unhealthy",
-      );
+      for (const status of ["degraded", "healthy"] as const) {
+        healthy = status === "healthy";
+        await runtime.waitFor(async () => {
+          const rows = await reader
+            .eventsQuery({ subject: descriptor.subject })
+            .orThrow();
+          const observed = [];
+          for (const row of rows.items) {
+            const detail = await reader
+              .eventsInspect({ eventId: row.eventId })
+              .orThrow();
+            const payload = descriptor.payload.decode(
+              JSON.parse(new TextDecoder().decode(detail.event.payload)),
+            );
+            observed.push({
+              instanceId: payload.participant.instanceId,
+              status: payload.status,
+            });
+            if (
+              payload.participant.instanceId === identity.instanceId &&
+              payload.status === status
+            )
+              return payload;
+          }
+          throw new Error(
+            JSON.stringify(
+              {
+                workdir: runtime.workdir,
+                expected: { instanceId: identity.instanceId, status },
+                health: (await reader.healthQuery({}).orThrow()).items,
+                events: observed,
+              },
+              (_key, value: unknown) =>
+                typeof value === "bigint" ? value.toString() : value,
+            ),
+          );
+        });
+      }
     } finally {
-      await nats.close();
+      await service.stop();
+      await exit;
+      await reader.connection.close();
     }
   });
 });
 
-Deno.test("Events projector retains rejected unsafe times and advances", async () => {
+test("Events projector retains rejected unsafe times and advances", async () => {
   await withTrellisRuntime(async (runtime) => {
     const admin = await runtime.connectClient({
       name: "unsafe-event-time-admin",
-      contract: webParticipants.Console.participant,
+      contract: adminParticipant,
     });
     await runtime.registerService({
       name: "unsafe-event-time-provider",
@@ -266,12 +305,12 @@ Deno.test("Events projector retains rejected unsafe times and advances", async (
     });
     const alpha = await runtime.connectClient({
       name: "unsafe-event-time",
-      contract: participants.Alpha.participant,
+      contract: apps.Alpha.request,
     });
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(
+        await readFile(
           join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
@@ -281,7 +320,7 @@ Deno.test("Events projector retains rejected unsafe times and advances", async (
       await alpha.publishAlpha({ site: "time", value: "source" }).orThrow();
       const manager = await jetstreamManager(nats);
       const stream = (await manager.streams.list().next()).find((entry) =>
-        entry.config.subjects?.some((filter) => filter.startsWith("events."))
+        entry.config.subjects?.some((filter) => filter.startsWith("events.")),
       );
       if (!stream) throw new Error("event stream missing");
       const source = await manager.streams.getMessage(stream.config.name, {
@@ -290,17 +329,16 @@ Deno.test("Events projector retains rejected unsafe times and advances", async (
       if (!source?.header) throw new Error("source event headers missing");
 
       const js = jetstream(nats);
-      for (
-        const [id, eventTime] of [
-          ["unsafe-time-9999", "9999-12-31T23:59:59.999999999Z"],
-          ["unsafe-time-garbage", "garbage"],
-        ]
-      ) {
+      for (const [id, eventTime] of [
+        ["unsafe-time-9999", "9999-12-31T23:59:59.999999999Z"],
+        ["unsafe-time-garbage", "garbage"],
+      ]) {
         source.header.set("Nats-Msg-Id", id);
         source.header.set("Trellis-Event-Time", eventTime);
         await js.publish(subject, source.data, { headers: source.header });
       }
-      await alpha.publishAlpha({ site: "time", value: "after-unsafe" })
+      await alpha
+        .publishAlpha({ site: "time", value: "after-unsafe" })
         .orThrow();
       const after = await manager.streams.getMessage(stream.config.name, {
         last_by_subj: subject,
@@ -308,28 +346,29 @@ Deno.test("Events projector retains rejected unsafe times and advances", async (
       const afterId = after?.header?.get("Nats-Msg-Id");
       if (!afterId) throw new Error("subsequent event id missing");
 
-      for (
-        const [id, rawTime, safeTime] of [
-          [
-            "unsafe-time-9999",
-            "9999-12-31T23:59:59.999999999Z",
-            "2262-04-11T23:47:16.854775807Z",
-          ],
-          ["unsafe-time-garbage", "garbage", "1970-01-01T00:00:00Z"],
-        ]
-      ) {
-        const row = await runtime.waitFor(async () =>
-          (await admin.eventsQuery({ search: id }).orThrow()).items[0] || false
+      for (const [id, rawTime, safeTime] of [
+        [
+          "unsafe-time-9999",
+          "9999-12-31T23:59:59.999999999Z",
+          "2262-04-11T23:47:16.854775807Z",
+        ],
+        ["unsafe-time-garbage", "garbage", "1970-01-01T00:00:00Z"],
+      ]) {
+        const row = await runtime.waitFor(
+          async () =>
+            (await admin.eventsQuery({ search: id }).orThrow()).items[0] ||
+            false,
         );
-        assertEquals(row.eventTime, safeTime);
-        assertEquals(row.verificationStatus === "verified", false);
+        assert.deepEqual(row.eventTime, safeTime);
+        assert.deepEqual(row.verificationStatus === "verified", false);
         const detail = (await admin.eventsInspect({ eventId: id }).orThrow())
           .event;
-        assertEquals(detail.headers["Trellis-Event-Time"], rawTime);
+        assert.deepEqual(detail.headers["Trellis-Event-Time"], rawTime);
       }
-      await runtime.waitFor(async () =>
-        (await admin.eventsQuery({ search: afterId }).orThrow()).items.length >
-          0
+      await runtime.waitFor(
+        async () =>
+          (await admin.eventsQuery({ search: afterId }).orThrow()).items
+            .length > 0,
       );
     } finally {
       await nats.close();
@@ -337,7 +376,7 @@ Deno.test("Events projector retains rejected unsafe times and advances", async (
   });
 });
 
-Deno.test("Rust durable events match registrations and retain unhandled messages", async () => {
+test("Rust durable events match registrations and retain unhandled messages", async () => {
   for (const reverse of [false, true]) {
     await withTrellisRuntime(async (runtime) => {
       const identity = await runtime.registerService({
@@ -345,25 +384,26 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
         contract: participants.EventService.participant,
       });
       const eventsArgv = rustFixtureArgv("events");
-      const process = new Deno.Command(eventsArgv[0], {
-        args: eventsArgv.slice(1),
-        env: {
-          TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_IDENTITY_SEED: identity.seed,
-          REVERSE: String(reverse),
-        },
-        stdout: "inherit",
-        stderr: "inherit",
-      }).spawn();
+      const start = () =>
+        spawnTracked(eventsArgv[0], eventsArgv.slice(1), {
+          env: {
+            ...env,
+            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_IDENTITY_SEED: identity.seed,
+            REVERSE: String(reverse),
+          },
+          stdio: "inherit",
+        });
+      let process = start();
       let exited = false;
-      const status = process.status.then((status) => {
+      let status = process.exited.then((status) => {
         exited = true;
         return status;
       });
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config/trellis/nats/creds/trellis-auth.creds",
@@ -374,75 +414,72 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
       try {
         const alpha = await runtime.connectClient({
           name: "alpha",
-          contract: participants.Alpha.participant,
+          contract: apps.Alpha.request,
         });
         const beta = await runtime.connectClient({
           name: "beta",
-          contract: participants.Beta.participant,
+          contract: apps.Beta.request,
         });
-        await runtime.waitFor(async () => {
-          if (exited) {
-            throw new Error(
-              `event service exited: ${JSON.stringify(await status)}`,
-            );
-          }
-          return (await alpha.observed({}, { timeout: 1000 })).isOk();
-        }, { timeoutMs: 120_000 });
+        await runtime.waitFor(
+          async () => {
+            if (exited) {
+              throw new Error(
+                `event service exited: ${JSON.stringify(await status)}`,
+              );
+            }
+            return (await alpha.observed({}, { timeout: 1000 })).isOk();
+          },
+          { timeoutMs: 120_000 },
+        );
         await alpha.publishAlpha({ site: "one", value: "alpha" }).orThrow();
         await beta.publishBeta({ site: "one", value: "beta-one" }).orThrow();
         await beta.publishBeta({ site: "two", value: "beta-two" }).orThrow();
-        await runtime.waitFor(async () => {
-          const observed = await alpha.observed({}).orThrow();
-          return observed.values.length === 3 && observed;
-        }).then((observed) =>
-          assertEquals(observed.values, ["alpha", "beta-one", "beta-two"])
-        );
+        await runtime
+          .waitFor(async () => {
+            const observed = await alpha.observed({}).orThrow();
+            return observed.values.length === 3 && observed;
+          })
+          .then((observed) =>
+            assert.deepEqual(observed.values, [
+              "alpha",
+              "beta-one",
+              "beta-two",
+            ]),
+          );
 
         const manager = await jetstreamManager(nats);
         const streams = await manager.streams.list().next();
         const eventStream = streams.find((stream) =>
           stream.config.subjects?.some((subject) =>
-            subject.startsWith("events.")
-          )
+            subject.startsWith("events."),
+          ),
         );
         if (!eventStream) throw new Error("event stream missing");
-        const consumers = (await manager.consumers.list(eventStream.config.name)
-          .next()).filter((consumer) =>
-            consumer.config.filter_subjects?.includes(
-              "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
-            )
-          );
-        assertEquals(consumers.length, 1);
-        const admin = await runtime.connectClient({
-          name: "events-admin",
-          contract: webParticipants.Console.participant,
-        });
-        const existingSessions = new Set(
-          (await admin.sessionsList({
-            participantId: participants.Alpha.participant.id,
-            state: "active",
-          }).orThrow()).items.map((entry) => entry.sessionId),
+        const consumers = (
+          await manager.consumers.list(eventStream.config.name).next()
+        ).filter((consumer) =>
+          consumer.config.filter_subjects?.includes(
+            "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
+          ),
         );
+        assert.deepEqual(consumers.length, 1);
         const revokedAlpha = await runtime.connectClient({
           name: "cold-revoked-alpha",
-          contract: participants.Alpha.participant,
+          contract: apps.Alpha.request,
         });
-        const revokedSession = (await admin.sessionsList({
-          participantId: participants.Alpha.participant.id,
-          state: "active",
-        }).orThrow()).items.find((entry) =>
-          !existingSessions.has(entry.sessionId)
-        );
-        if (!revokedSession) throw new Error("revoked alpha session missing");
+        const revokedSession = revokedAlpha.ownAuthority.current;
+        assert(revokedSession?.loginSessionId);
         await manager.consumers.pause(
           eventStream.config.name,
           consumers[0].name,
           new Date(Date.now() + 60_000),
         );
-        await revokedAlpha.publishAlpha({
-          site: "revoked",
-          value: "cold-revoked",
-        }).orThrow();
+        await revokedAlpha
+          .publishAlpha({
+            site: "revoked",
+            value: "before-cutoff",
+          })
+          .orThrow();
         const revokedEvent = await manager.streams.getMessage(
           eventStream.config.name,
           {
@@ -455,66 +492,95 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
         if (!revokedEvent || !revokedDigest) {
           throw new Error("cold revoked Rust event context missing");
         }
-        await admin.sessionsRevoke({
-          sessionId: revokedSession.sessionId,
-          expectedVersion: revokedSession.version,
-          idempotencyKey: crypto.randomUUID(),
-          reason: "cold Rust provider acceptance",
-        }).orThrow();
-        let contextStream: string | undefined;
-        let contextSubjectPrefix: string | undefined;
-        for (const stream of streams) {
-          for (const subject of stream.config.subjects ?? []) {
-            if (!subject.startsWith("$KV.") || !subject.endsWith(">")) continue;
-            const prefix = subject.slice(0, -1);
-            try {
-              const stored = await manager.streams.getMessage(
-                stream.config.name,
-                { last_by_subj: `${prefix}${revokedDigest}` },
-              );
-              if (!stored) continue;
-              contextStream = stream.config.name;
-              contextSubjectPrefix = prefix;
-              break;
-            } catch {
-              // This KV stream does not own authorization contexts.
-            }
-          }
-          if (contextStream) break;
-        }
-        if (!contextStream || !contextSubjectPrefix) {
-          throw new Error("authorization context stream missing");
-        }
+        // The signed cutoff has whole-second precision. Put the original
+        // broker publication strictly before that boundary, not on either side
+        // depending on scheduling within the current second.
+        const publishedSecond = Math.floor(Date.now() / 1000);
+        await runtime.waitFor(
+          () => Math.floor(Date.now() / 1000) > publishedSecond,
+        );
+        await runtime.callAdminRpc("authSessionsRevoke", {
+          loginSessionId: codecs.ulid.decode(revokedSession.loginSessionId),
+          idempotencyKey: ulid(),
+        });
         await runtime.waitFor(async () =>
-          Boolean(
-            await manager.streams.getMessage(contextStream, {
-              last_by_subj:
-                `${contextSubjectPrefix}revocation.${revokedDigest}`,
-            }),
-          )
+          (
+            await runtime.callAdminRpc("authAuthorizationSessionsList", {
+              principalId: codecs.ulid.decode(revokedSession.principalId),
+              state: "revoked",
+            })
+          ).items.some(
+            (session) =>
+              session.loginSessionId === revokedSession.loginSessionId,
+          ),
         );
         await manager.consumers.resume(
           eventStream.config.name,
           consumers[0].name,
         );
+        await runtime.waitFor(
+          async () =>
+            (
+              await manager.consumers.info(
+                eventStream.config.name,
+                consumers[0].name,
+              )
+            ).ack_floor.stream_seq >= revokedEvent.seq,
+        );
+        assert(
+          (await alpha.observed({}).orThrow()).values.includes("before-cutoff"),
+        );
+
+        // A fresh provider has no cached context or event-ID history. Replay
+        // the unchanged signed bytes at a genuinely later broker time; change
+        // only the broker deduplication key, which is not publication authority.
+        process.kill("SIGTERM");
+        await status;
+        exited = false;
+        process = start();
+        status = process.exited.then((status) => {
+          exited = true;
+          return status;
+        });
         await runtime.waitFor(async () =>
-          (await manager.consumers.info(
-            eventStream.config.name,
-            consumers[0].name,
-          )).ack_floor.stream_seq >= revokedEvent.seq
+          (await alpha.observed({}, { timeout: 1000 })).isOk(),
         );
-        assertEquals(
-          (await alpha.observed({}).orThrow()).values.includes("cold-revoked"),
-          false,
+        assert.deepEqual((await alpha.observed({}).orThrow()).values, []);
+        revokedEvent.header.set("Nats-Msg-Id", ulid());
+        const replayed = await jetstream(nats).publish(
+          revokedEvent.subject,
+          revokedEvent.data,
+          { headers: revokedEvent.header },
         );
+        await beta
+          .publishBeta({ site: "after-restart", value: "valid-after-restart" })
+          .orThrow();
+        await runtime.waitFor(async () =>
+          (await alpha.observed({}).orThrow()).values.includes(
+            "valid-after-restart",
+          ),
+        );
+        await runtime.waitFor(
+          async () =>
+            (
+              await manager.consumers.info(
+                eventStream.config.name,
+                consumers[0].name,
+              )
+            ).ack_floor.stream_seq >= replayed.seq,
+        );
+        assert.deepEqual((await alpha.observed({}).orThrow()).values, [
+          "valid-after-restart",
+        ]);
         await alpha.dropAlpha({}).orThrow();
         await alpha.publishAlpha({ site: "one", value: "unhandled" }).orThrow();
-        await beta.publishBeta({ site: "three", value: "beta-after-drop" })
+        await beta
+          .publishBeta({ site: "three", value: "beta-after-drop" })
           .orThrow();
         await runtime.waitFor(async () =>
           (await alpha.observed({}).orThrow()).values.includes(
             "beta-after-drop",
-          )
+          ),
         );
         await runtime.waitFor(async () => {
           const info = await manager.consumers.info(
@@ -523,11 +589,9 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
           );
           return info.num_ack_pending === 1 && info.num_redelivered > 0;
         });
-        assertEquals((await alpha.observed({}).orThrow()).values, [
-          "alpha",
+        assert.deepEqual((await alpha.observed({}).orThrow()).values, [
           "beta-after-drop",
-          "beta-one",
-          "beta-two",
+          "valid-after-restart",
         ]);
 
         // A real consumer failure must terminate the owning service, not a dummy registration task.
@@ -535,18 +599,14 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
           eventStream.config.name,
           consumers[0].name,
         );
-        await runtime.waitFor(
-          () => exited,
-          { timeoutMs: 15_000 },
-        );
-        assertEquals((await status).success, false);
-        const disabled = await runtime.services.disableInstance({
-          instanceId: identity.instanceId,
-          expectedVersion: 1n,
-          idempotencyKey: crypto.randomUUID(),
+        await runtime.waitFor(() => exited, { timeoutMs: 15_000 });
+        assert.notEqual((await status).code, 0);
+        await runtime.services.disableInstance({
+          instanceId: codecs.ulid.decode(identity.instanceId),
+          expectedRevision: 1n,
+          idempotencyKey: ulid(),
           reason: "event stream regression complete",
         });
-        assertEquals(disabled.instance.state, "disabled");
       } finally {
         if (!exited) process.kill("SIGTERM");
         await status;
@@ -557,7 +617,7 @@ Deno.test("Rust durable events match registrations and retain unhandled messages
 });
 
 for (const sdk of ["rust", "typescript"] as const) {
-  Deno.test(`${sdk} durable delivery leases, DLQ replay, and crash recovery`, async () => {
+  test(`${sdk} durable delivery leases, DLQ replay, and crash recovery`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const identity = await runtime.registerService({
         name: `delivery-${sdk}`,
@@ -566,50 +626,40 @@ for (const sdk of ["rust", "typescript"] as const) {
       const start = (crash: boolean) => {
         if (sdk === "rust") {
           const eventsArgv = rustFixtureArgv("events");
-          return new Deno.Command(eventsArgv[0], {
-            args: eventsArgv.slice(1),
+          return spawnTracked(eventsArgv[0], eventsArgv.slice(1), {
             env: {
-              TRELLIS_URL: runtime.trellisUrl,
+              ...env,
+              TRELLIS_URL: runtime.oauthIssuer,
               TRELLIS_IDENTITY_SEED: identity.seed,
               REVERSE: "false",
               CRASH: String(crash),
             },
-            stdout: "inherit",
-            stderr: "inherit",
-          }).spawn();
+            stdio: "inherit",
+          });
         }
-        return new Deno.Command(Deno.execPath(), {
-          args: [
-            "run",
-            "--allow-env",
-            "--allow-net",
-            "--allow-read",
-            "--allow-sys",
-            "--config",
-            fromFileUrl(
-              new URL(
-                "../../integration/fixtures/runtime/deno.json",
-                import.meta.url,
-              ),
-            ),
-            fromFileUrl(
+        return spawnTracked(
+          execPath,
+          [
+            "--experimental-transform-types",
+            fileURLToPath(
               new URL(
                 "../../integration/fixtures/runtime/events.ts",
                 import.meta.url,
               ),
             ),
-            runtime.trellisUrl,
+            runtime.oauthIssuer,
             identity.seed,
           ],
-          env: { CRASH: String(crash) },
-          stdout: "inherit",
-          stderr: "inherit",
-        }).spawn();
+          {
+            env: { ...env, CRASH: String(crash) },
+            stdio: "inherit",
+          },
+        );
       };
 
       const alpha = await runtime.connectClient({
         name: `delivery-alpha-${sdk}`,
-        contract: participants.Alpha.participant,
+        contract: apps.Alpha.request,
       });
       let process = start(true);
       try {
@@ -627,14 +677,15 @@ for (const sdk of ["rust", "typescript"] as const) {
           );
           return entry || false;
         });
+        assert(consumer.ackWaitMs !== undefined);
 
         await alpha.publishAlpha({ site: sdk, value: "slow" }).orThrow();
         const slow = await runtime.waitFor(async () => {
           const stats = await alpha.deliveryStats({}).orThrow();
           return stats.successes.includes("slow") && stats;
         });
-        assertEquals(slow.maxActive, 1n);
-        assertEquals(slow.attempts.length, 1);
+        assert.deepEqual(slow.maxActive, 1n);
+        assert.deepEqual(slow.attempts.length, 1);
 
         await alpha.publishAlpha({ site: sdk, value: "fail" }).orThrow();
         const retried = await runtime.waitFor(async () => {
@@ -643,58 +694,69 @@ for (const sdk of ["rust", "typescript"] as const) {
           const stats = result.orThrow();
           return stats.attempts.length >= 4 ? stats : false;
         });
-        assertEquals(retried.attempts.length, 4);
+        assert.deepEqual(retried.attempts.length, 4);
         const failed = await runtime.waitFor(async () => {
-          const rows = (await runtime.events.deadLettersQuery({
-            resourceId: consumer.resourceId,
-            state: ["dead"],
-          })).items;
-          return rows.find((row) =>
-            row.lastError?.includes("fixture handler failure")
-          ) || false;
+          const rows = (
+            await runtime.events.deadLettersQuery({
+              resourceId: consumer.resourceId,
+              state: ["dead"],
+            })
+          ).items;
+          return rows[0] || false;
         });
-        assertStringIncludes(failed.lastError ?? "", "fixture handler failure");
+        assert.equal(failed.state, "dead");
         const afterFailure = await alpha.deliveryStats({}).orThrow();
         const retryTimes = afterFailure.attempts.slice(-3).map(Number);
+        const [first, second, third] = retryTimes;
         if (
-          retryTimes.length !== 3 || retryTimes[1]! - retryTimes[0]! < 100 ||
-          retryTimes[2]! - retryTimes[1]! < 220
+          first === undefined ||
+          second === undefined ||
+          third === undefined ||
+          second - first < 100 ||
+          third - second < 220
         ) {
           throw new Error(
             `declared backoff not observed: ${retryTimes.join(",")}`,
           );
         }
-        assertEquals(
-          (await runtime.events.deadLettersQuery({
-            resourceId: consumer.resourceId,
-          }))
-            .items.filter((row) => row.deadLetterId === failed.deadLetterId)
+        assert.deepEqual(
+          (
+            await runtime.events.deadLettersQuery({
+              resourceId: consumer.resourceId,
+            })
+          ).items.filter((row) => row.deadLetterId === failed.deadLetterId)
             .length,
           1,
         );
 
         await alpha.publishAlpha({ site: sdk, value: "replay" }).orThrow();
         const replayable = await runtime.waitFor(async () => {
-          const rows = (await runtime.events.deadLettersQuery({
-            resourceId: consumer.resourceId,
-            state: ["dead"],
-          })).items;
-          return rows.find((row) => row.deadLetterId !== failed.deadLetterId) ||
-            false;
+          const rows = (
+            await runtime.events.deadLettersQuery({
+              resourceId: consumer.resourceId,
+              state: ["dead"],
+            })
+          ).items;
+          return (
+            rows.find((row) => row.deadLetterId !== failed.deadLetterId) ||
+            false
+          );
         });
         let flooding = true;
         const flood = (async () => {
           let sequence = 0;
           while (flooding) {
             const published = `original-${sequence++}`;
-            await alpha.publishAlpha({
-              site: sdk,
-              value: published,
-            }).orThrow();
+            await alpha
+              .publishAlpha({
+                site: sdk,
+                value: published,
+              })
+              .orThrow();
             await runtime.waitFor(async () =>
               (await alpha.deliveryStats({}).orThrow()).successes.includes(
                 published,
-              )
+              ),
             );
           }
         })();
@@ -707,22 +769,27 @@ for (const sdk of ["rust", "typescript"] as const) {
             requestId: crypto.randomUUID(),
           });
           const activeReplay = await runtime.waitFor(async () => {
-            const row = (await runtime.events.deadLettersQuery({
-              resourceId: consumer.resourceId,
-            })).items.find((row) =>
-              row.deadLetterId === replayable.deadLetterId
-            );
-            return row && row.generation === replayable.generation + 1 &&
-                ["replaying", "resolved"].includes(row.state)
+            const row = (
+              await runtime.events.deadLettersQuery({
+                resourceId: consumer.resourceId,
+              })
+            ).items.find((row) => row.deadLetterId === replayable.deadLetterId);
+            return row &&
+              row.generation === replayable.generation + 1 &&
+              ["replaying", "resolved"].includes(row.state)
               ? row
               : false;
           });
-          assertEquals(activeReplay.generation, replayable.generation + 1);
-          await runtime.waitFor(async () => {
-            const result = await alpha.deliveryStats({}, { timeout: 1_000 });
-            return result.isOk() &&
-              result.orThrow().successes.includes("replay");
-          }, { timeoutMs: 5_000 });
+          assert.deepEqual(activeReplay.generation, replayable.generation + 1);
+          await runtime.waitFor(
+            async () => {
+              const result = await alpha.deliveryStats({}, { timeout: 1_000 });
+              return (
+                result.isOk() && result.orThrow().successes.includes("replay")
+              );
+            },
+            { timeoutMs: 5_000 },
+          );
         } finally {
           flooding = false;
           await flood;
@@ -731,93 +798,106 @@ for (const sdk of ["rust", "typescript"] as const) {
           throw new Error(`${sdk} replay was starved by original traffic`);
         }
         await runtime.waitFor(async () =>
-          (await runtime.events.deadLettersQuery({
-            resourceId: consumer.resourceId,
-            state: ["resolved"],
-          })).items.some((row) => row.deadLetterId === replayable.deadLetterId)
+          (
+            await runtime.events.deadLettersQuery({
+              resourceId: consumer.resourceId,
+              state: ["resolved"],
+            })
+          ).items.some((row) => row.deadLetterId === replayable.deadLetterId),
         );
-        assertEquals(
-          (await runtime.events.deadLettersQuery({
-            resourceId: consumer.resourceId,
-            state: ["dead"],
-          })).items.find((row) => row.deadLetterId === failed.deadLetterId)
+        assert.deepEqual(
+          (
+            await runtime.events.deadLettersQuery({
+              resourceId: consumer.resourceId,
+              state: ["dead"],
+            })
+          ).items.find((row) => row.deadLetterId === failed.deadLetterId)
             ?.state,
           "dead",
         );
-        assertEquals(
-          (await alpha.deliveryStats({}).orThrow()).successes.filter((value) =>
-            value === "replay"
+        assert.deepEqual(
+          (await alpha.deliveryStats({}).orThrow()).successes.filter(
+            (value) => value === "replay",
           ).length,
           1,
         );
 
         await alpha.publishAlpha({ site: sdk, value: "crash" }).orThrow();
-        await runtime.waitFor(async () =>
-          (await alpha.deliveryStats({}).orThrow()).active === 1n
+        await runtime.waitFor(
+          async () => (await alpha.deliveryStats({}).orThrow()).active === 1n,
         );
         process.kill("SIGKILL");
-        await process.status;
+        await process.exited;
         process = start(false);
         await runtime.waitFor(
           async () =>
             (await alpha.deliveryStats({}, { timeout: 1_000 })).isOk(),
           { timeoutMs: 120_000 },
         );
-        await runtime.waitFor(async () =>
-          (await alpha.deliveryStats({}).orThrow()).successes.includes("crash")
+        // SIGKILL cannot acknowledge its in-flight delivery. Recovery waits
+        // for the real broker lease rather than the harness's shorter default.
+        await runtime.waitFor(
+          async () =>
+            (await alpha.deliveryStats({}).orThrow()).successes.includes(
+              "crash",
+            ),
+          { timeoutMs: Number(consumer.ackWaitMs) * 2 },
         );
       } finally {
         try {
           process.kill("SIGTERM");
-        } catch { /* already exited */ }
-        await process.status;
+        } catch {
+          /* already exited */
+        }
+        await process.exited;
       }
     });
   });
 }
 
-Deno.test("explicit ephemeral delivery works alongside a declared durable consumer", async () => {
+test("explicit ephemeral delivery works alongside a declared durable consumer", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: `ephemeral-both-${crypto.randomUUID()}`,
       contract: participants.EventServiceBoth.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.EventServiceBoth.participant,
       seed: identity.seed,
     }).orThrow();
     try {
       const received: string[] = [];
-      await service.onAlpha(
-        ({ event }) => {
-          received.push(event.value);
-        },
-        {},
-        { mode: "ephemeral" },
-      ).orThrow();
+      await service
+        .onAlpha(
+          ({ event }) => {
+            received.push(event.value);
+          },
+          {},
+          { mode: "ephemeral" },
+        )
+        .orThrow();
       await service.onBeta(() => {}, {}, { mode: "ephemeral" }).orThrow();
       await service.handleObserved(() => Result.ok({ values: [...received] }));
 
       const alpha = await runtime.connectClient({
         name: `ephemeral-both-alpha-${crypto.randomUUID()}`,
-        contract: participants.Alpha.participant,
+        contract: apps.Alpha.request,
       });
-      await alpha.publishAlpha({ site: "both", value: "ephemeral" })
-        .orThrow();
+      await alpha.publishAlpha({ site: "both", value: "ephemeral" }).orThrow();
       const observed = await runtime.waitFor(async () => {
         const value = await alpha.observed({}).orThrow();
         return value.values.includes("ephemeral") ? value : false;
       });
-      assertEquals(observed.values, ["ephemeral"]);
+      assert.deepEqual(observed.values, ["ephemeral"]);
       // The declared durable consumer is provisioned by bootstrap and stays
       // independent of the explicit ephemeral listener.
       const consumers = await runtime.events.consumersQuery({});
-      assertEquals(
+      assert.deepEqual(
         consumers.items.some((item) =>
           item.filterSubjects.includes(
             "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
-          )
+          ),
         ),
         true,
         "the declared durable consumer remains provisioned",
@@ -828,14 +908,14 @@ Deno.test("explicit ephemeral delivery works alongside a declared durable consum
   });
 });
 
-Deno.test("a declared durable consumer without Event Subscribe rejects explicit ephemeral", async () => {
+test("a declared durable consumer without Event Subscribe rejects explicit ephemeral", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: `consumer-only-${crypto.randomUUID()}`,
       contract: participants.EventServiceConsumerOnly.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.EventServiceConsumerOnly.participant,
       seed: identity.seed,
     }).orThrow();
@@ -846,20 +926,20 @@ Deno.test("a declared durable consumer without Event Subscribe rejects explicit 
       } catch (error) {
         failure = error;
       }
-      assertEquals(
+      assert.deepEqual(
         failure instanceof AuthError,
         true,
         "explicit ephemeral without Event Subscribe must fail with a typed AuthError",
       );
       if (failure instanceof AuthError) {
-        assertStringIncludes(
-          String(failure.message),
-          "Event Subscribe",
+        assert.ok(
+          failure.message.includes("Event Subscribe"),
           "the failure names the missing authority",
         );
       }
       // The default durable listener still works for the declared consumer.
-      await service.onAlpha(() => {}, {}, { mode: "durable", group: "events" })
+      await service
+        .onAlpha(() => {}, {}, { mode: "durable", group: "events" })
         .orThrow();
     } finally {
       await service.stop();
@@ -867,26 +947,27 @@ Deno.test("a declared durable consumer without Event Subscribe rejects explicit 
   });
 });
 
-Deno.test("Rust consumer-only service rejects explicit ephemeral at the runtime boundary", async () => {
+test("Rust consumer-only service rejects explicit ephemeral at the runtime boundary", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: `consumer-only-rust-${crypto.randomUUID()}`,
       contract: participants.EventServiceConsumerOnly.participant,
     });
     const eventsArgv = rustFixtureArgv("events");
-    const process = new Deno.Command(eventsArgv[0], {
-      args: eventsArgv.slice(1),
+    const process = spawnTracked(eventsArgv[0], eventsArgv.slice(1), {
       env: {
-        TRELLIS_URL: runtime.trellisUrl,
+        ...env,
+        TRELLIS_URL: runtime.oauthIssuer,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CONSUMER_ONLY: "true",
         EPHEMERAL: "true",
       },
-      stdout: "piped",
-      stderr: "inherit",
-    }).spawn();
+      stdio: ["ignore", "pipe", "inherit"],
+    });
     try {
-      const reader = process.stdout.pipeThrough(new TextDecoderStream())
+      assert(process.stdout);
+      const reader = Readable.toWeb(process.stdout)
+        .pipeThrough(new TextDecoderStream())
         .getReader();
       let output = "";
       while (!output.includes("EPHEMERAL_REJECTED")) {
@@ -894,49 +975,51 @@ Deno.test("Rust consumer-only service rejects explicit ephemeral at the runtime 
         if (chunk.done) break;
         output += chunk.value;
       }
-      assertStringIncludes(
-        output,
-        "EPHEMERAL_REJECTED",
+      assert.ok(
+        output.includes("EPHEMERAL_REJECTED"),
         "Rust explicit ephemeral must fail fast",
       );
-      assertStringIncludes(
-        output,
-        "Event Subscribe",
+      assert.ok(
+        output.includes("Event Subscribe"),
         "Rust failure names the missing authority",
       );
-      assertEquals(output.includes("EPHEMERAL_ACCEPTED"), false);
+      assert.deepEqual(output.includes("EPHEMERAL_ACCEPTED"), false);
     } finally {
       try {
         process.kill("SIGTERM");
-      } catch { /* already exited */ }
-      await process.status;
+      } catch {
+        /* already exited */
+      }
+      await process.exited;
     }
   });
 });
 
-Deno.test("a subscriber-only service receives explicit ephemeral delivery with no durable consumer", async () => {
+test("a subscriber-only service receives explicit ephemeral delivery with no durable consumer", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: `subscriber-only-${crypto.randomUUID()}`,
       contract: participants.EventSubscriberService.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.EventSubscriberService.participant,
       seed: identity.seed,
     }).orThrow();
     try {
       const received: string[] = [];
-      await service.onAlpha(
-        ({ event }) => {
-          received.push(event.value);
-        },
-        {},
-        { mode: "ephemeral" },
-      ).orThrow();
+      await service
+        .onAlpha(
+          ({ event }) => {
+            received.push(event.value);
+          },
+          {},
+          { mode: "ephemeral" },
+        )
+        .orThrow();
       const alpha = await runtime.connectClient({
         name: `subscriber-only-publisher-${crypto.randomUUID()}`,
-        contract: participants.Alpha.participant,
+        contract: apps.Alpha.request,
       });
       const value = `ephemeral-${crypto.randomUUID()}`;
       await alpha.publishAlpha({ site: "test", value }).orThrow();
@@ -944,11 +1027,11 @@ Deno.test("a subscriber-only service receives explicit ephemeral delivery with n
         timeoutMs: 15_000,
       });
       const consumers = await runtime.events.consumersQuery({});
-      assertEquals(
+      assert.deepEqual(
         consumers.items.some((item) =>
           item.filterSubjects.includes(
             "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Alpha",
-          )
+          ),
         ),
         false,
         "explicit ephemeral must not create a durable consumer",

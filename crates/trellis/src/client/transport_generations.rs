@@ -1023,9 +1023,9 @@ impl ManagerInner {
         let previous = *self.published.borrow();
         if previous != next_id {
             // Publication makes this admitted carrier available to private
-            // maintenance, not to application work. The single owner mirror
-            // restores usability only after its authenticated snapshot on this
-            // exact generation; an old epoch cannot authorize the replacement.
+            // maintenance, not to fresh application work. A healthy predecessor
+            // mirror may still cover retained work, but this exact generation
+            // remains fenced until its authenticated snapshot is checked.
             self.contexts.owner.fence_revocation_coverage();
             self.contexts.set_transport_ready(false);
             self.published.send_replace(next_id);
@@ -2129,13 +2129,12 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
         }
         let desired = match inner.contexts.own_transport_snapshot() {
             Ok(snapshot) => snapshot,
-            Err(TrellisClientError::Protocol(trellis_protocol::ProtocolError::Authorization {
-                code: trellis_protocol::AuthorizationErrorCode::SessionRevoked,
-                ..
-            })) => {
-                // A session cutoff forbids renewing that opening, but it does
-                // not revoke the native credential. Fence the old attachments
-                // and use ordinary fresh admission to learn the current root.
+            Err(_) => {
+                // Expiry, issuer retirement, or a session cutoff forbids renewing
+                // that opening, but does not itself revoke the native credential.
+                // Verify that credential before fencing attachments, then use
+                // ordinary fresh admission to learn the current signed root.
+                inner.contexts.connect_token(&inner.auth)?;
                 // Never pass the retired context as an expected attachment.
                 let retired = {
                     let _transition = inner.contexts.lock_own_transition()?;
@@ -2166,7 +2165,6 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
                 close_generation(&recovered, GenerationIntakeRetireReason::Superseded);
                 continue;
             }
-            Err(_) => return Ok(()),
         };
         let desired_policy_digest = desired.policy.digest()?;
         let now = inner.contexts.corrected_now_seconds()?;

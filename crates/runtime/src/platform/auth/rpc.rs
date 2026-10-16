@@ -22,6 +22,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     super::rpc_policy::register_policy_rpc(provider, store.clone());
     super::rpc_policy_aggregates::register_policy_aggregate_rpc(provider, store.clone());
     super::rpc_resources::register_resource_rpc(provider, store.clone(), operational.clone());
+    super::rpc_resource_bindings::register(provider, store.clone());
     super::rpc_users::register_user_rpc(provider, store.clone());
     super::rpc_users::register_user_provider_rpc(provider, oauth.clone());
     super::rpc_credentials::register_credential_rpc(provider, store.clone());
@@ -36,7 +37,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 let limit = input.page.as_ref().and_then(|page| page.limit).unwrap_or(50);
                 if !(1..=200).contains(&limit) {return Err(AuthError::Invalid("invalid page limit".into()));}
                 let cursor = input.page.as_ref().and_then(|page| page.cursor.as_deref()).unwrap_or("");
-                let mut statement = connection.prepare("SELECT p.principal_id FROM auth_principals p LEFT JOIN auth_user_profiles u USING(principal_id) LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.kind='user' AND p.principal_id>?1 AND (?2 IS NULL OR instr(lower(coalesce(c.normalized_username,'')),lower(?2))>0 OR instr(lower(coalesce(u.display_name,p.principal_id)),lower(?2))>0) ORDER BY p.principal_id LIMIT ?3")?;
+                let mut statement = connection.prepare("SELECT p.principal_id FROM auth_principals p LEFT JOIN auth_user_profiles u USING(principal_id) LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.kind='user' AND p.principal_id>?1 AND (?2 IS NULL OR instr(lower(coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),'')),lower(?2))>0 OR instr(lower(coalesce(u.display_name,p.principal_id)),lower(?2))>0) ORDER BY p.principal_id LIMIT ?3")?;
                 let mut rows = statement.query_map(rusqlite::params![cursor,input.search.as_ref().map(|search|search.as_ref()),limit+1], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 let next_cursor = (rows.len()>limit as usize).then(|| rows[limit as usize-1].clone());
                 rows.truncate(limit as usize);

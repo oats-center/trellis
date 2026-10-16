@@ -71,6 +71,14 @@ impl LiveProviderOwner {
         self.client.runtime_nats()
     }
 
+    /// Call generated service APIs through this provider's ordinary authenticated client.
+    #[cfg(feature = "runtime-internals")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn runtime_generated_client(&self) -> crate::generated::Client {
+        crate::generated::Client::from_client(self.client.clone())
+    }
+
     /// Verify built-in requests through this connection's shared authority owner.
     #[cfg(feature = "runtime-internals")]
     #[doc(hidden)]

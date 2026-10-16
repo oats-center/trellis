@@ -158,6 +158,8 @@ export type PlatformPrivilegesRevokeInput = Types0.AuthPlatformRevokeRequest;
 export type PlatformPrivilegesRevokeOutput = Types0.AuthMutationResult;
 export type PrincipalsEffectiveAccessInput = Types0.AuthPrincipalRequest;
 export type PrincipalsEffectiveAccessOutput = Types0.AuthEffectiveAccessResponse;
+export type ResourceBindingsQueryInput = Types0.AuthResourceBindingsQueryRequest;
+export type ResourceBindingsQueryOutput = Types0.AuthResourceBindingsQueryResponse;
 export type ResourcesGetInput = Types0.AuthResourceGetRequest;
 export type ResourcesGetOutput = Types0.AuthResourceGetResponse;
 export type ResourcesListInput = Types0.AuthResourcesListRequest;
@@ -825,6 +827,16 @@ declare const __api: {
 			readonly download: false;
 			readonly pagination: undefined;
 		};
+		readonly "rpc:ResourceBindings.Query": {
+			readonly kind: "rpc";
+			readonly descriptorName: "rpc:ResourceBindings.Query";
+			readonly subject: "rpc.v1.auth.ResourceBindings.Query";
+			readonly input: typeof Types0.AuthResourceBindingsQueryRequestCodec;
+			readonly output: typeof Types0.AuthResourceBindingsQueryResponseCodec;
+			readonly errors: readonly [typeof AuthError, typeof UnexpectedError, typeof ValidationError];
+			readonly download: false;
+			readonly pagination: "cursor";
+		};
 		readonly "rpc:Resources.Get": {
 			readonly kind: "rpc";
 			readonly descriptorName: "rpc:Resources.Get";
@@ -1161,5 +1173,5 @@ declare const __api: {
 	readonly packageEvidence: unknown;
 };
 export declare const API: typeof __api;
-export declare const API_DIGEST: "F0oBs3zpjt3NHA4o8DSFfpSUeCtHPPB5gIDsg3QKVcA";
+export declare const API_DIGEST: "7UyD3Qyp_KLIJhXRTc8PziADrZUywEdSGM08LQfuheY";
 export {};

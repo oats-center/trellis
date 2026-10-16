@@ -764,6 +764,9 @@ async fn attach_authorization_provider(
         let mut own_changes = watcher.subscribe_changes();
         let mut initial_ready = Some(ready_tx);
         let mut retry_ms = 100u64;
+        let mut active: Option<
+            tokio_util::task::AbortOnDropHandle<Result<(), TrellisClientError>>,
+        > = None;
         loop {
             if generations.terminal().is_some() {
                 return;
@@ -807,30 +810,45 @@ async fn attach_authorization_provider(
                         return Err(error);
                     }
                 };
-                let (_shutdown, shutdown) = tokio::sync::watch::channel(false);
+                let generation_id = lease.generation_id();
                 let (snapshot_ready, snapshot) = tokio::sync::oneshot::channel();
-                let mirror = watcher.run_revocations(lease.nats(), shutdown, snapshot_ready);
-                tokio::pin!(mirror);
-                tokio::select! {
+                let candidate_owner = watcher.clone();
+                let mut mirror = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                    let (_shutdown, shutdown) = tokio::sync::watch::channel(false);
+                    candidate_owner.run_revocations(lease.nats(), shutdown, snapshot_ready).await
+                }));
+                tokio::pin!(snapshot);
+                loop { tokio::select! {
                     biased;
                     _ = stop_rx.changed() => return Ok(false),
                     _ = generations.wait_terminal() => return Ok(false),
                     _ = publications.changed() => return Ok(true),
                     result = &mut mirror => {
-                        result?;
+                        result.map_err(|_| TrellisClientError::AuthorizationUnavailable("retirement mirror task interrupted".into()))??;
                         return Err(TrellisClientError::AuthorizationUnavailable("authorization retirement mirror ended".into()));
                     }
-                    ready = snapshot => {
-                        ready.map_err(|error| TrellisClientError::AuthorizationUnavailable(error.to_string()))?;
+                    result = async {
+                        match active.as_mut() {
+                            Some(previous) => previous.await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        active = None;
+                        authorization_contexts.set_transport_ready(false);
+                        tracing::warn!(?result, "predecessor retirement mirror ended during preparation");
                     }
-                }
+                    ready = &mut snapshot => {
+                        ready.map_err(|error| TrellisClientError::AuthorizationUnavailable(error.to_string()))?;
+                        break;
+                    }
+                } }
                 // A complete snapshot does not authorize a retired own session.
                 // Pin the exact carrier and installation through the final swap.
                 let resumed = {
                     let transition = authorization_contexts.lock_own_transition()?;
                     generations.commit_published_if_current(
                         &transition,
-                        lease.generation_id(),
+                        generation_id,
                         || {
                             if watcher.own_authority().is_err() {
                                 return false;
@@ -844,6 +862,8 @@ async fn attach_authorization_provider(
                     watcher.own_authority()?;
                     return Err(TrellisClientError::AuthorizationUnavailable("own authority is unavailable after retirement snapshot".into()));
                 }
+                // Only a complete checked replacement retires the healthy mirror.
+                active = Some(mirror);
                 retry_ms = 100;
                 if let Some(ready) = initial_ready.take() {
                     let _ = ready.send(());
@@ -854,8 +874,9 @@ async fn attach_authorization_provider(
                         _ = stop_rx.changed() => return Ok(false),
                         _ = generations.wait_terminal() => return Ok(false),
                         _ = publications.changed() => return Ok(true),
-                        result = &mut mirror => {
-                            result?;
+                        result = active.as_mut().expect("published retirement mirror") => {
+                            active = None;
+                            result.map_err(|_| TrellisClientError::AuthorizationUnavailable("retirement mirror task interrupted".into()))??;
                             return Err(TrellisClientError::AuthorizationUnavailable("authorization retirement mirror ended".into()));
                         }
                         changed = own_changes.recv() => {
@@ -1439,38 +1460,16 @@ impl TrellisClient {
                             "native OAuth recovery required".into(),
                         )
                     })?;
-                    let carrier = if session.admission.credential.issuer_key_id
-                        != authorization_contexts.owner.current_trust()?.issuer.key_id
-                    {
-                        let carrier = generations.acquire_published()?;
-                        authorization_contexts
-                            .owner
-                            .issuer(carrier.nats(), &session.admission.credential.issuer_key_id)
-                            .await?;
-                        Some(carrier)
-                    } else {
-                        None
-                    };
+                    authorization_contexts
+                        .owner
+                        .install_oauth_rotations(session.take_issuer_rotations())
+                        .await?;
                     authorization_contexts
                         .replace_oauth_admission(&session.auth, session.admission.clone())?;
-                    // Signer resolution retires the old authority's issuer. Keep
-                    // this current maintenance lease through checked replacement.
-                    if let Some(carrier) = carrier {
-                        crate::client::authorization::install_prepared_authorization(
-                            &crate::client::authorization::AuthorizationRefreshRuntime {
-                                contexts: authorization_contexts.clone(),
-                                auth: Arc::new(session.auth.clone()),
-                                generations: generations.clone(),
-                            },
-                            Some(carrier),
-                        )
-                        .await?;
-                    } else {
-                        // A known signer needs no material lookup. Preserve fresh
-                        // admission recovery when the previous session is retired.
-                        authorization_contexts.request_refresh();
-                        generations.authorization_promoted();
-                    }
+                    // HTTP authenticates rotation from the retained pin. Wake ordinary
+                    // fresh admission even when no previous NATS attachment survives.
+                    authorization_contexts.request_refresh();
+                    generations.authorization_promoted();
                     Ok(())
                 }
                 .await;
@@ -2321,6 +2320,8 @@ impl TrellisClient {
                 lease.nats().send_request(
                     subject,
                     async_nats::Request::new()
+                        // The enclosing timeout owns the caller's configured deadline.
+                        .timeout(None)
                         .inbox(reply)
                         .headers(headers)
                         .payload(Bytes::from(payload)),
@@ -2395,7 +2396,8 @@ impl TrellisClient {
                     &proof,
                 )
                 .await?;
-            self.authorization_owner().assert_current(&own)?;
+            self.authorization_owner()
+                .assert_accepted_request_current(&own)?;
             if response.kind == trellis_protocol::SessionResponseKind::Error {
                 return Err(TrellisClientError::RpcError(
                     RpcErrorPayload::from_json_slice(&message.payload)?,

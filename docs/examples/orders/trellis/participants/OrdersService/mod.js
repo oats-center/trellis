@@ -18,12 +18,12 @@ const __participant = participantDescriptor({
 	resources: {},
 	packageEvidence: {
 		"packages": [{
-			"digest": "cWiSxZBCYDlkzieAmB-za_9OAau2Me3TlZbY00w_kSk",
+			"digest": "Z2ViZWSjhAgPBu4SB68Hm-xkYTNXBfTGhZxua-HrDhk",
 			"name": "acme-orders",
-			"source": "package \"acme-orders\";\nmodel CreateOrderRequest {\n  customerId: string;\n}\n\nmodel CreateOrderResponse {\n  customerId: string;\n  orderId: string;\n}\n\napi orders@v1 {\n  title \"Orders\";\n  description \"Minimal service walkthrough.\";\n  rpc Create {\n    input CreateOrderRequest;\n    output CreateOrderResponse;\n  }\n  capabilities {\n    capability create {\n      title \"Create orders\";\n      description \"Create an order for a customer.\";\n      consequence \"The caller may create customer orders.\";\n      consent_revision 1;\n      allows {\n        rpc Create;\n      }\n    }\n  }\n}\n\nservice OrdersService {\n  implements orders;\n}\n\napp OrdersCaller {\n  use orders {\n    required capability create;\n  }\n}\n\n",
+			"source": "package \"acme-orders\";\nmodel CreateOrderRequest {\n  customerId: string;\n}\n\nmodel CreateOrderResponse {\n  customerId: string;\n  orderId: string;\n}\n\napi orders@v1 {\n  title \"Orders\";\n  description \"Minimal service walkthrough.\";\n  rpc Create {\n    input CreateOrderRequest;\n    output CreateOrderResponse;\n  }\n  capabilities {\n    capability create {\n      title \"Create orders\";\n      description \"Create an order for a customer.\";\n      consequence \"The caller may create customer orders.\";\n      consent_revision 1;\n      allows {\n        rpc Create;\n      }\n    }\n  }\n}\n\nservice OrdersService {\n  implements orders;\n}\n\nagent OrdersCaller {\n  use orders {\n    required capability create;\n  }\n}\n\n",
 			"version": "1.0.0"
 		}],
-		"rootDigest": "cWiSxZBCYDlkzieAmB-za_9OAau2Me3TlZbY00w_kSk",
+		"rootDigest": "Z2ViZWSjhAgPBu4SB68Hm-xkYTNXBfTGhZxua-HrDhk",
 		"rootPackage": "acme-orders"
 	}
 });

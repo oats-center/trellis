@@ -206,7 +206,8 @@ async fn cimd_client_cannot_receive_administrative_delegation_from_a_privileged_
     use oauth_as::cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument};
     let f = fixture();
     let client_id = "https://public.example/client.json";
-    let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":"Public client","redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]});
+    // Public metadata cannot assert an Auth-owned companion enrollment binding.
+    let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":"Public client","redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"],"trellis_companion":{"deploymentId":id(),"requestId":"public.Companion"}});
     let body = serde_json::to_vec(&metadata).unwrap();
     let mut policy = CimdPolicy::new();
     policy.redirect_uris_same_origin = false;
@@ -643,7 +644,7 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let device: oauth_as::device::DeviceAuthorizationResponse = response.json().await.unwrap();
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let browser = tokio::process::Command::new("node")
-        .args(["--test", "ts/browser/oauth_portal.browser_test.ts"])
+        .args(["--test", "ts/browser/oauth_portal.browser_driver.ts"])
         .env(
             "TRELLIS_TEST_OAUTH_VERIFICATION_URI",
             &device.verification_uri,

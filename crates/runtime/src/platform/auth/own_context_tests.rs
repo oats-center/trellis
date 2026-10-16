@@ -271,7 +271,7 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
             store.resolve_authority(&issued.digest).unwrap(),
             issued.authority
         );
-        let effects = store.claim_effects(256, now, 10).unwrap();
+        let effects = store.claim_effects(256, now, 10, false).unwrap();
         assert!(!effects.iter().any(|effect| effect.kind == "kick"));
         let revoke = effects
             .iter()
@@ -281,7 +281,7 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
             })
             .unwrap();
         store.complete_effect(revoke, now).unwrap();
-        let effects = store.claim_effects(256, now, 10).unwrap();
+        let effects = store.claim_effects(256, now, 10, false).unwrap();
         let kick = effects
             .iter()
             .find(|effect| effect.kind == "kick" && effect.payload["attachmentId"] == attachment)
@@ -289,7 +289,7 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
         store.complete_effect(kick, now).unwrap();
         while store.enforce_next_page(now).unwrap().is_some() {}
         assert!(store
-            .claim_effects(256, now, 10)
+            .claim_effects(256, now, 10, false)
             .unwrap()
             .iter()
             .all(|effect| effect.kind != "session_revoke" && effect.kind != "kick"));

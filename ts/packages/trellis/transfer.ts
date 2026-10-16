@@ -56,6 +56,24 @@ export type ReceiveTransferGrant =
   import("./auth/protocol_wasm.ts").TransferReceiveGrantWire;
 /** Runtime-owned prepared transfer session. */
 export type TransferGrant = import("./auth/protocol_wasm.ts").TransferGrantWire;
+
+/**
+ * Decode an untrusted transfer grant with the shared Rust/WASM wire validator.
+ * This validates its shape and bounds; the transfer handle still authenticates
+ * the provider and checks session authority before acquiring transport.
+ */
+export function decodeTransferGrant(
+  value: unknown,
+): ResultType<TransferGrant, TransferError> {
+  try {
+    return Result.ok(
+      transferParseGrant(new TextEncoder().encode(JSON.stringify(value))),
+    );
+  } catch (cause) {
+    return Result.err(new TransferError({ operation: "decodeGrant", cause }));
+  }
+}
+
 /** Supported streaming upload sources. */
 export type TransferBody =
   | Uint8Array

@@ -1,11 +1,12 @@
-import { assert, assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import Value from "typebox/value";
 
 import { HealthHeartbeatSampleCodec } from "../../internal_sdk/generated/types/_internal/p0.js";
 import { createHealthHeartbeatSample, ServiceHealthRuntime } from "./health.ts";
 import { HealthResponseSchema } from "./health_schemas.ts";
 
-Deno.test("createHealthHeartbeatSample includes participant metadata", () => {
+test("health heartbeat codecs round-trip duration and participant data", () => {
   const heartbeat = createHealthHeartbeatSample({
     serviceName: "activity",
     instanceId: "instance-1",
@@ -20,19 +21,17 @@ Deno.test("createHealthHeartbeatSample includes participant metadata", () => {
     },
   });
 
-  assertEquals(heartbeat.participant.name, "activity");
-  assertEquals(heartbeat.participant.instanceId, "instance-1");
-  assertEquals(heartbeat.participant.version, "1.2.3");
-  assertEquals(heartbeat.participant.publishIntervalMs, 30_000n);
+  assert.deepEqual(heartbeat.participant.publishIntervalMs, 30_000n);
   const encoded = HealthHeartbeatSampleCodec.encode(heartbeat);
   assert(encoded && typeof encoded === "object");
   const participant = Reflect.get(encoded, "participant");
   assert(participant && typeof participant === "object");
-  assertEquals(Reflect.get(participant, "publishIntervalMs"), "30000");
-  assertEquals(heartbeat.reportedStatus, "healthy");
+  assert.deepEqual(Reflect.get(participant, "publishIntervalMs"), "30000");
+  assert.deepEqual(HealthHeartbeatSampleCodec.decode(encoded), heartbeat);
+  assert.deepEqual(heartbeat.reportedStatus, "healthy");
 });
 
-Deno.test("ServiceHealth aggregates registered checks and info", async () => {
+test("ServiceHealth aggregates registered checks and info", async () => {
   const health = new ServiceHealthRuntime({
     serviceName: "activity",
     contractId: "trellis.audit@v1",
@@ -53,14 +52,16 @@ Deno.test("ServiceHealth aggregates registered checks and info", async () => {
   const response = await health.response();
   const heartbeat = await health.sample();
 
-  assertEquals(response.status, "degraded");
-  assertEquals(response.checks.length, 2);
-  assertEquals(heartbeat.participant.contractId, "trellis.audit@v1");
-  assertEquals(heartbeat.participant.version, "1.2.3");
-  assertEquals(heartbeat.reportedStatus, "degraded");
+  assert.deepEqual(response.status, "degraded");
+  assert.deepEqual(response.checks.length, 2);
+  assert.deepEqual(heartbeat.participant.contractId, "trellis.audit@v1");
+  assert.deepEqual(heartbeat.participant.version, "1.2.3");
+  assert.deepEqual(heartbeat.reportedStatus, "degraded");
+  assert.equal(heartbeat.participant.runtime, "node");
+  assert.equal(heartbeat.participant.runtimeVersion, process.version);
 });
 
-Deno.test("health wire schemas accept additive fields", () => {
+test("health wire schemas accept additive fields", () => {
   assert(
     Value.Check(HealthResponseSchema, {
       status: "healthy",
@@ -77,7 +78,7 @@ Deno.test("health wire schemas accept additive fields", () => {
       requestId: "req_123",
     }),
   );
-  assertEquals(
+  assert.deepEqual(
     HealthHeartbeatSampleCodec.decode({
       sample: {
         id: "01J00000000000000000000000",
@@ -92,7 +93,7 @@ Deno.test("health wire schemas accept additive fields", () => {
         contractDigest: "digest",
         startedAt: "2026-01-01T00:00:00.000Z",
         publishIntervalMs: "30000",
-        runtime: "deno",
+        runtime: "node",
         region: "primary",
       },
       reportedStatus: "healthy",

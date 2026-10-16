@@ -131,6 +131,7 @@ export type OperationRef<
   service: string;
   operation: string;
   deploymentId: string;
+  /** Read the persisted snapshot, not speculative handler state. */
   get(): AsyncResult<
     OperationSnapshot<TProgress, TOutput>,
     OperationControlError | UnexpectedError

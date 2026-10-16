@@ -230,10 +230,10 @@ app Reader {
     let request = graph.root_package().app_requests().values().next().unwrap();
     for selection in request.uses().values() {
         let expected = match selection.api.as_str() {
-            "trellis.auth@v1" => "Capabilities.List",
-            "trellis.state@v1" => "Get",
-            "trellis.core@v1" => "Surface.Status",
-            _ => "Query",
+            "trellis.auth@v1" => vec!["Capabilities.List"],
+            "trellis.state@v1" => vec!["Get", "Watch"],
+            "trellis.core@v1" => vec!["Surface.Status"],
+            _ => vec!["Query"],
         };
         assert_eq!(
             selection
@@ -241,7 +241,7 @@ app Reader {
                 .iter()
                 .map(|action| action.action.name.as_str())
                 .collect::<Vec<_>>(),
-            [expected]
+            expected
         );
     }
 }

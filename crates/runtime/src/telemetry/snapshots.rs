@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use trellis_rs::telemetry::instruments::{self, ObservableFamily};
 use trellis_rs::telemetry::KeyValue;
 
-use crate::events::ConsumerTelemetryReader;
+use crate::events::ConsumerBindingReader;
 use crate::platform::auth::{AuthError, AuthorizationTelemetrySnapshot, SqliteAuthorizationStore};
 use crate::shutdown::StopHandle;
 use trellis_events_runtime::storage::EventsStore;
@@ -503,7 +503,7 @@ impl ComponentReadiness {
 /// Runs the declared-Consumer inventory sampler until the runtime stops.
 pub(crate) async fn run_consumer_sampler(
     runtime: EventsRuntime,
-    reader: ConsumerTelemetryReader,
+    reader: ConsumerBindingReader,
     store: EventsStore,
     stop: StopHandle,
 ) {
@@ -535,28 +535,13 @@ pub(crate) async fn run_consumer_sampler(
     // The stored generation is the broker-created timestamp, so a recreated
     // consumer restarts its progress clock instead of inheriting the old one.
     let mut progress: HashMap<(String, String), ConsumerProgress> = HashMap::new();
-    let mut outstanding: Option<
-        OutstandingRead<Result<Vec<trellis_events_runtime::ConsumerBinding>, String>>,
-    > = None;
     loop {
-        if let Some(read) = outstanding.as_ref() {
-            if !read.is_finished() {
-                tokio::select! {
-                    _ = tokio::time::sleep(SAMPLER_INTERVAL) => continue,
-                    _ = stop.stopped() => return,
-                }
-            }
-        }
-        if let Some(mut read) = outstanding.take() {
-            let poll = SourcePoll::start();
-            let _ = read_within_poll(&poll, &mut read).await;
-        }
         tokio::select! {
             _ = tokio::time::sleep(SAMPLER_INTERVAL) => {}
             _ = stop.stopped() => return,
         }
         // One deadline for the whole source poll: broker inventory, DLQ
-        // inventory, and SQLite inventory share it.
+        // inventory, and authenticated resource evidence share it.
         let poll = SourcePoll::start();
         // Every read assigned to this source must succeed before the snapshot is
         // published with a fresh timestamp. A failed read retains the previous
@@ -583,14 +568,8 @@ pub(crate) async fn run_consumer_sampler(
                 continue;
             }
         };
-        let read_reader = reader.clone();
-        let Some(mut read) = start_bounded_read(&poll, move || read_reader.read()).await else {
-            source.record_failure("events", "timeout");
-            continue;
-        };
-        let bindings_result = read_within_poll(&poll, &mut read).await;
+        let bindings_result = poll.within(reader.read()).await;
         let Some(bindings_result) = bindings_result else {
-            outstanding = Some(read);
             source.record_failure("events", "timeout");
             continue;
         };
@@ -1026,43 +1005,6 @@ fn established_projection_id(store: &SqliteJobsStore) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::SqliteStore;
-    use crate::{SqliteStorageConfig, SubsystemName};
-
-    #[tokio::test]
-    async fn late_inventory_read_keeps_observation_time_and_finishes_before_replacement() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("platform.sqlite");
-        SqliteStore::new(
-            SubsystemName::Platform,
-            SqliteStorageConfig {
-                path: path.clone(),
-                journal_mode: Some("delete".to_owned()),
-                busy_timeout_ms: Some(2_500),
-                single_writer: Some(true),
-            },
-        )
-        .migrate()
-        .unwrap();
-        let blocker = rusqlite::Connection::open(&path).unwrap();
-        blocker.execute_batch("BEGIN EXCLUSIVE").unwrap();
-        let reader = ConsumerTelemetryReader::new(path);
-        let source = SnapshotSource::register(Some("events"), &[ObservableFamily::ConsumerMissing]);
-        source.publish(vec![(ObservableFamily::ConsumerMissing, 3.0, Vec::new())]);
-        let observed = source.values.lock().unwrap().observed_at;
-        let poll = SourcePoll::start();
-        let mut read = start_bounded_read(&poll, move || reader.read())
-            .await
-            .unwrap();
-        assert!(read_within_poll(&poll, &mut read).await.is_none());
-        source.record_failure("events", "timeout");
-        assert_eq!(source.values.lock().unwrap().observed_at, observed);
-        assert_eq!(source.values.lock().unwrap().gauges[0].1, 3.0);
-        assert!(!read.is_finished());
-        blocker.execute_batch("ROLLBACK").unwrap();
-        assert!(read.join.await.unwrap().unwrap().is_empty());
-    }
-
     #[tokio::test]
     async fn disabled_metrics_owner_starts_no_sampler_work() {
         // The default process has no claimed telemetry mode, so metrics are

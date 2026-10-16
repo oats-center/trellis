@@ -189,21 +189,19 @@ export class TrellisConnection {
     return this.#authorityAvailability?.() ?? this.#availability;
   }
 
-  /** Check advisory action membership projected by the live signed-authority owner. @internal */
+  /** Check advisory action membership; undefined means live authority is unavailable. @internal */
   allowsAction(
     apiId: string,
     kind: string,
     name: string,
     direction: string,
-  ): boolean {
-    return (
-      this.#ownAuthority?.current?.actions.some(
-        (allowed) =>
-          allowed.apiId === apiId &&
-          allowed.action.kind === kind &&
-          allowed.action.name === name &&
-          allowed.action.direction === direction,
-      ) ?? false
+  ): boolean | undefined {
+    return this.#ownAuthority?.current?.actions.some(
+      (allowed) =>
+        allowed.apiId === apiId &&
+        allowed.action.kind === kind &&
+        allowed.action.name === name &&
+        allowed.action.direction === direction,
     );
   }
 

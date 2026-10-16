@@ -9,6 +9,7 @@ import { ulid } from "ulid";
 import {
   deriveDeviceConfirmationCode,
   deriveDeviceIdentity,
+  requestDeviceEnrollment,
 } from "../auth/device_activation.ts";
 import type {
   TrellisDeviceActivatedActivationState,
@@ -22,7 +23,14 @@ import {
 } from "../device.ts";
 import { TransportError } from "../errors/index.ts";
 import { trellisCrypto } from "../auth/crypto.ts";
-import { base64urlDecode, base64urlEncode } from "../auth/utils.ts";
+import {
+  base64urlDecode,
+  base64urlEncode,
+  sha256,
+  utf8,
+} from "../auth/utils.ts";
+import { createAuth } from "../auth/session_auth.ts";
+import { participantEvidence } from "../participant_runtime/participant.ts";
 
 const PendingActivationStateSchema = Type.Object({
   status: Type.Literal("pending"),
@@ -457,6 +465,8 @@ async function createActivationRequiredStatus<
 
 /**
  * Reports native device activation status and hides local activation persistence details.
+ * Completed activation is rechecked against Auth using the retained challenge;
+ * local completion alone never grants device access or creates a new review.
  */
 export async function checkDeviceActivation<
   TContract extends TrellisDeviceActivationArgs["participant"],
@@ -471,6 +481,33 @@ export async function checkDeviceActivation<
     statePath: args.statePath,
   });
   const localState = await store.load();
+  if (localState?.status === "activated") {
+    const identity = await deriveDeviceIdentity(
+      normalizeRootSecret(args.rootSecret),
+    );
+    const enrollment = await requestDeviceEnrollment({
+      trellisUrl: args.trellisUrl,
+      publicIdentityKey: identity.publicIdentityKey,
+      identitySeed: identity.identitySeed,
+      sessionIdentity: await createAuth({
+        sessionKeySeed: base64urlEncode(
+          crypto.getRandomValues(new Uint8Array(32)),
+        ),
+      }),
+      connectionId: ulid(),
+      participantId: args.participant.identity,
+      ...participantEvidence(args.participant),
+      challengeDigest: base64urlEncode(await sha256(utf8(localState.nonce))),
+      confirmationCode: await deriveDeviceConfirmationCode({
+        activationKey: identity.activationKey,
+        publicIdentityKey: identity.publicIdentityKey,
+        nonce: localState.nonce,
+      }),
+    });
+    return enrollment.state === "approved"
+      ? activatedStatus()
+      : { status: "not_ready", reason: "activation_rejected" };
+  }
   try {
     return await createActivationRequiredStatus({
       checkArgs: args,

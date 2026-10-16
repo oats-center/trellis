@@ -101,7 +101,7 @@ export type {
   StoreStatus,
   StoreWaitOptions,
 } from "./store.ts";
-export { FileInfoSchema } from "./transfer.ts";
+export { decodeTransferGrant, FileInfoSchema } from "./transfer.ts";
 export type {
   FileInfo,
   ReceiveTransferGrant,

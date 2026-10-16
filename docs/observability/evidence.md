@@ -80,30 +80,28 @@ podman run -d --rm --name trellis-obs-native --network host \
 Then:
 
 ```sh
-export TRELLIS_TEST_SERVER_BIN="$PWD/rust/target/debug/trellis-server"
+export TRELLIS_TEST_SERVER_BIN="$PWD/target/release/trellis-server"
+export TRELLIS_TEST_CLI_BIN="$PWD/target/release/trellis"
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 export OTEL_TRACES_SAMPLER=always_on
 export OTEL_METRIC_EXPORT_INTERVAL=1000
 export OTEL_BSP_SCHEDULE_DELAY=100
 export TRELLIS_OBS_CAPTURE_ENDPOINT=http://127.0.0.1:4318
 
-deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts \
-  --filter 'collector enabled'
-deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts \
-  --filter 'TS service connection observes'
-deno test -A -c ts/integration/deno.json ts/integration/observability_test.ts \
-  --filter 'TS Live active'
-deno test -A -c ts/integration/deno.json ts/integration/runtime_test.ts \
-  --filter 'surviving replica reclaims an expired operation lease'
-deno test -A -c ts/integration/deno.json ts/integration/kv_telemetry_test.ts \
-  --filter 'one bounded storage'
-OTEL_SDK_DISABLED=true deno test -A -c ts/integration/deno.json \
-  ts/integration/kv_telemetry_test.ts --filter 'telemetry disabled'
-deno test -A -c ts/integration/deno.json ts/integration/events_test.ts \
-  --filter 'rust durable delivery leases, DLQ replay, and crash recovery'
+npm run test:integration -- ts/integration/observability_test.ts
+npm run test:integration -- \
+  --test-name-pattern='surviving replica reclaims an expired operation lease' \
+  ts/integration/runtime_test.ts
+npm run test:integration -- \
+  --test-name-pattern='one bounded storage' ts/integration/kv_telemetry_test.ts
+OTEL_SDK_DISABLED=true npm run test:integration -- \
+  --test-name-pattern='telemetry disabled' ts/integration/kv_telemetry_test.ts
+npm run test:integration -- \
+  --test-name-pattern='rust durable delivery leases, DLQ replay, and crash recovery' \
+  ts/integration/events_test.ts
 TRELLIS_OBS_BROWSER_CAPTURE_ENDPOINT=http://127.0.0.1:4318 \
-  deno test -A -c ts/browser/deno.json ts/browser/console_login.browser_test.ts \
-  --filter 'browser admin bootstrap'
+  node --experimental-transform-types --test --test-name-pattern='browser admin bootstrap' \
+  ts/browser/console_login.browser_test.ts
 curl --fail http://127.0.0.1:9464/metrics
 jq -s -f docs/observability/verify-capture.jq "$CAPTURE_DIR/traces.json"
 ```

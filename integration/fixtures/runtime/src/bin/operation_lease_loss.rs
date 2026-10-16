@@ -3,7 +3,7 @@ use runtime_trellis::types::{Update, UpdateDetail, Value};
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use tokio::sync::Notify;
-use trellis_rs::service::{OperationCancellationReason, ServerError, ServiceConnectOptions};
+use trellis_rs::service::{OperationCancellationReason, ServerError};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,10 +26,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    let mut service = Participant::connect(ServiceConnectOptions::new(
-        &std::env::var("TRELLIS_URL")?,
-        &std::env::var("TRELLIS_IDENTITY_SEED")?,
-    ))
+    let mut service = Participant::connect(
+        trellis_runtime_acceptance::service_options(
+            &std::env::var("TRELLIS_URL")?,
+            &std::env::var("TRELLIS_IDENTITY_SEED")?,
+        )
+        .await?,
+    )
     .await?;
     let mut provider = Provider::new(&mut service);
     let mut api = provider.runtime_trellis_runtime_v1();

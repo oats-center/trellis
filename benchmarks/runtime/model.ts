@@ -7,11 +7,18 @@ export const WorkerOptions = z.object({
   trellisUrl: z.url(),
   httpUrl: z.url().optional(),
   serviceSeed: z.string().optional(),
-  seeds: z.array(z.string()).default([]),
+  credentialHandles: z.array(z.ulid()).default([]),
+  username: z.string(),
   password: z.string(),
   samples: z.number().int().positive(),
   calls: z.number().int().positive(),
-  sizes: z.array(z.number().int().positive().max(64 * 1024 * 1024)),
+  sizes: z.array(
+    z
+      .number()
+      .int()
+      .positive()
+      .max(64 * 1024 * 1024),
+  ),
   sessionCounts: z.array(z.number().int().positive()),
   idleSeconds: z.number().positive(),
   cpuTicks: z.number().int().positive(),
@@ -56,9 +63,8 @@ export function payload(size: number): Uint8Array<ArrayBuffer> {
 /** SHA-256 of a completed body, for independent transfer integrity verification. */
 export async function digest(bytes: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", new Uint8Array(bytes));
-  return Array.from(
-    new Uint8Array(hash),
-    (byte) => byte.toString(16).padStart(2, "0"),
+  return Array.from(new Uint8Array(hash), (byte) =>
+    byte.toString(16).padStart(2, "0"),
   ).join("");
 }
 
@@ -93,7 +99,9 @@ export function summarize(samples: Sample[]) {
       }`,
   );
   return Array.from(groups, ([name, rows]) => {
-    const values = rows.filter((row) => !row.error).map((row) => row.durationMs)
+    const values = rows
+      .filter((row) => !row.error)
+      .map((row) => row.durationMs)
       .sort((a, b) => a - b);
     const percentile = (fraction: number) =>
       values.length
@@ -106,32 +114,37 @@ export function summarize(samples: Sample[]) {
       submitted: rows.filter((row) => !row.loadGeneratorDrop).length,
       drops: rows.filter((row) => row.loadGeneratorDrop).length,
       phases: Object.fromEntries(
-        ([
-          "connectMs",
-          "firstRpcMs",
-          "setupMs",
-          "firstByteMs",
-          "cancellationMs",
-          "schedulerDelayMs",
-          "documentTtfbMs",
-          "navigationReadyMs",
-          "transferredBytes",
-        ] as const).map((key) => {
-          const values = rows.filter((row) =>
-            !row.error && row[key] !== undefined
-          ).map((row) => row[key]!).sort((a, b) => a - b);
+        (
+          [
+            "connectMs",
+            "firstRpcMs",
+            "setupMs",
+            "firstByteMs",
+            "cancellationMs",
+            "schedulerDelayMs",
+            "documentTtfbMs",
+            "navigationReadyMs",
+            "transferredBytes",
+          ] as const
+        ).map((key) => {
+          const values = rows
+            .filter((row) => !row.error && row[key] !== undefined)
+            .map((row) => row[key]!)
+            .sort((a, b) => a - b);
           return [
             key,
             values.length
               ? (values[Math.floor((values.length - 1) / 2)] +
-                values[Math.floor(values.length / 2)]) / 2
+                  values[Math.floor(values.length / 2)]) /
+                2
               : null,
           ];
         }),
       ),
       medianMs: values.length
         ? (values[Math.floor((values.length - 1) / 2)] +
-          values[Math.floor(values.length / 2)]) / 2
+            values[Math.floor(values.length / 2)]) /
+          2
         : null,
       p95Ms: values.length >= 20 ? percentile(0.95) : null,
       // Small connect/transfer cohorts do not support a useful p99 claim.

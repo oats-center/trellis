@@ -3,7 +3,7 @@
 pub struct Request;
 impl trellis_rs::generated::AppRequestDescriptor for Request {
     const ID: &'static str = "trellis-test-fixture.Caller";
-    const KIND: trellis_rs::generated::AppKind = trellis_rs::generated::AppKind::Browser;
+    const KIND: trellis_rs::generated::AppKind = trellis_rs::generated::AppKind::Native;
     const REQUIRED_CAPABILITIES: &'static [&'static str] = &[
         "trellis-test-fixture.echo@v1::invoke",
         "trellis-test-fixture.echo@v1::upload",

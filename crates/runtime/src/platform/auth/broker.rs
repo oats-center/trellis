@@ -134,8 +134,9 @@ impl SqliteAuthorizationStore {
         system: &Client,
         now: i64,
     ) -> Result<usize, AuthError> {
+        let started = std::time::Instant::now();
         let enforcement_progress = self.enforce_next_page(now)?.is_some();
-        let effects = self.claim_effects(8, now, 10)?;
+        let effects = self.claim_effects(8, now, 10, false)?;
         // An empty enforcement page still advances durable work. In particular,
         // startup must drain bootstrap scopes before accepting policy mutations.
         let mut completed = usize::from(enforcement_progress);
@@ -212,14 +213,17 @@ impl SqliteAuthorizationStore {
                     }
                     _ => return Err(AuthError::Invalid("unknown committed effect".into())),
                 }
-                self.complete_effect(&effect, now)
+                Ok::<(), AuthError>(())
             }
             .await;
+            // Broker waits consume this batch's claim lifetime, too.
+            let settled_at =
+                now.saturating_add(i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX));
             match result {
-                Ok(()) => completed += 1,
+                Ok(()) => completed += usize::from(self.complete_effect(&effect, settled_at)?),
                 Err(error) => {
                     tracing::warn!(action_id=%effect.action_id,kind=%effect.kind,attempt=effect.attempts,error=%error,"Auth effect remains pending");
-                    self.retry_effect(&effect, now)?;
+                    self.retry_effect(&effect, settled_at)?;
                     failure = Some(error);
                 }
             }

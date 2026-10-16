@@ -5,6 +5,7 @@ import {
   type NatsConnection,
   type Subscription,
 } from "@nats-io/nats-core";
+import type { VerifiedAuthority } from "../../auth/authority.ts";
 import type { StoreError } from "../../errors/index.ts";
 import {
   installConnectionAvailability,
@@ -430,6 +431,7 @@ export type ServiceProviderIngress = {
     id: number;
     nc: NatsConnection;
     contextDigest: string;
+    retainAuthority?: () => VerifiedAuthority;
     lease?: () => TransportLease;
     /**
      * Push each owning ingress's concrete cleanup scope into the manager before
@@ -2233,9 +2235,8 @@ function createJobRef<TPayload, TResult, TUpdate = unknown>(args: {
               observer.watch(args.queueBinding, args.seed.id);
               await nc.flush();
             }
-            const jsm = await jetstreamManager(nc);
             const event = await getLatestLifecycleEvent(
-              jsm.direct,
+              undefined,
               "JOBS",
               args.queueBinding.publishPrefix,
               args.seed,
@@ -2749,14 +2750,14 @@ function createJobsFacade<
             const workerOptions: StartNatsWorkerHostOptions<unknown> = {
               getLatestLifecycleEvent: async (job) =>
                 getLatestLifecycleEvent(
-                  (await jetstreamManager(args.nc)).direct,
+                  undefined,
                   "JOBS",
                   queueBinding.publishPrefix,
                   job,
                   () => args.readHistory(queueType, job.id),
                 ),
               nats: args.nc,
-              instanceId: `${args.serviceName}-worker`,
+              instanceId: ulid(),
               queueTypes: [queueType],
               queueConcurrency: {
                 [queueType]: registration.concurrency,
@@ -3122,11 +3123,12 @@ export function connectTrellisServiceWithRuntimeDeps<
           provisioned,
           "service",
           {
-            onPreActivate: async (generation) => {
+            onPreActivate: async (generation, retainAuthority) => {
               await ingress?.install({
                 id: generation.id,
                 nc: generation.nc,
                 contextDigest: generation.contextDigest,
+                retainAuthority,
                 lease: () => generation.lease(),
                 registerDisposal: (handle) =>
                   generation.registerDisposal(handle),
@@ -3217,6 +3219,7 @@ export function connectTrellisServiceWithRuntimeDeps<
           registerDisposal: (handle) => generation.registerDisposal(handle),
         });
         service[SERVICE_TRANSPORT_LIFETIME] = manager;
+        transitionConnectionAvailability(service.connection, true, "connected");
         return Result.ok(service);
       } catch (cause) {
         telemetry.dispose();

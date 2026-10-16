@@ -2903,38 +2903,43 @@ fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
         NOW + 1,
     );
     drain(&f.store, NOW + 1);
-    let effects = f.store.claim_effects(256, NOW + 1, 2).unwrap();
+    let effects = f.store.claim_effects(256, NOW + 1, 2, false).unwrap();
     assert!(!effects.iter().any(|effect| effect.kind == "kick"));
     let revoke = effects
         .iter()
         .find(|effect| effect.kind == "session_revoke")
         .unwrap();
-    assert!(matches!(
-        f.store.complete_effect(revoke, NOW + 3),
-        Err(AuthError::Conflict)
-    ));
+    assert!(!f.store.complete_effect(revoke, NOW + 3).unwrap());
+    assert!(!f.store.retry_effect(revoke, NOW + 3).unwrap());
+    let stale_revoke = revoke.clone();
     drop(f.store);
     let restarted = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
-    let effects = restarted.claim_effects(256, NOW + 3, 10).unwrap();
+    let effects = restarted.claim_effects(256, NOW + 3, 10, false).unwrap();
     let revoke = effects
         .iter()
         .find(|effect| effect.kind == "session_revoke")
         .unwrap();
-    restarted.complete_effect(revoke, NOW + 3).unwrap();
-    let effects = restarted.claim_effects(256, NOW + 3, 10).unwrap();
+    assert!(!restarted.complete_effect(&stale_revoke, NOW + 3).unwrap());
+    assert!(!restarted.retry_effect(&stale_revoke, NOW + 3).unwrap());
+    assert!(restarted.complete_effect(revoke, NOW + 3).unwrap());
+    let effects = restarted.claim_effects(256, NOW + 3, 10, false).unwrap();
     let kick = effects.iter().find(|effect| effect.kind == "kick").unwrap();
-    restarted.retry_effect(kick, NOW + 3).unwrap();
+    assert!(restarted.retry_effect(kick, NOW + 3).unwrap());
     assert!(restarted
-        .claim_effects(256, NOW + 3, 10)
+        .claim_effects(256, NOW + 3, 10, false)
         .unwrap()
         .is_empty());
-    let retried = restarted.claim_effects(256, NOW + 4, 10).unwrap();
-    restarted
+    let retried = restarted.claim_effects(256, NOW + 4, 10, false).unwrap();
+    assert!(restarted
         .complete_effect(
             retried.iter().find(|effect| effect.kind == "kick").unwrap(),
             NOW + 4,
         )
-        .unwrap();
+        .unwrap());
+    assert!(restarted
+        .claim_effects(256, NOW + 4, 10, false)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]

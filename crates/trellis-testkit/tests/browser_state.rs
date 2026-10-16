@@ -70,7 +70,7 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
     drop(admin);
     let mut child = std::process::Command::new("node")
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .arg("ts/browser/state.browser_test.ts")
+        .arg("ts/browser/state.browser_driver.ts")
         .env("TRELLIS_TEST_OAUTH_ORIGIN", runtime.oauth_origin())
         .env("TRELLIS_TEST_ADMIN_USERNAME", runtime.admin_username())
         .env("TRELLIS_TEST_ADMIN_PASSWORD", runtime.admin_password())

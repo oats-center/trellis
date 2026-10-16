@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    "module": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "allowJs": true,
+    "types": ["node"],
+    "paths": {
+      "@oatscenter/result": ["../packages/result/mod.ts"],
+      "@oatscenter/trellis": ["../packages/trellis/index.ts"],
+      "@oatscenter/trellis/*": ["../packages/trellis/*"],
+      "@oatscenter/trellis-testkit": ["../packages/trellis-testkit/index.ts"],
+      "trellis-web-generated": ["../../web/trellis/index.js"]
+    }
+  },
+  "include": ["*.ts", "_support/*.ts", "../browser/*.ts"]
+}

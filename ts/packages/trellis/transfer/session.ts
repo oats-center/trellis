@@ -551,13 +551,13 @@ export function transferWait<T>(
   promise: PromiseLike<T>,
   signal: AbortSignal,
 ): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
     const aborted = () => {
       signal.removeEventListener("abort", aborted);
       reject(signal.reason);
     };
-    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) reject(signal.reason);
+    else signal.addEventListener("abort", aborted, { once: true });
     Promise.resolve(promise).then(
       (value) => {
         signal.removeEventListener("abort", aborted);

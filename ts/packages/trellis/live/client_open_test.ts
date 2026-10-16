@@ -6,7 +6,8 @@
  * not through a toy equality helper.
  */
 
-import { assertThrows } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import { encodeEventSubjectParameterToken } from "../helpers.ts";
 import type { LiveOfferWire } from "../auth/protocol_wasm.ts";
@@ -64,45 +65,42 @@ function offer(): LiveOfferWire {
   };
 }
 
-Deno.test("P09 an offer with a mutated consumer tuple is rejected", () => {
+test("P09 an offer with a mutated consumer tuple is rejected", () => {
   const mutated = offer();
   mutated.consumer.binding = {
     kind: "browser",
     clientId: "console",
     origin: "https://other.example",
   };
-  assertThrows(
+  assert.throws(
     () =>
       verifyOfferClaims({
         offer: mutated,
         localContextDigest: "digest",
         local: LOCAL,
       }),
-    Error,
-    "opening caller",
+    (error: unknown) =>
+      error instanceof Error && error.message.includes("opening caller"),
   );
 });
 
-Deno.test("P09 an offer without a pinned local context is rejected", () => {
-  assertThrows(
+test("P09 an offer without a pinned local context is rejected", () => {
+  assert.throws(
     () =>
       verifyOfferClaims({
         offer: offer(),
         localContextDigest: undefined,
         local: LOCAL,
       }),
-    Error,
-    "opening caller",
+    (error: unknown) =>
+      error instanceof Error && error.message.includes("opening caller"),
   );
 });
 
-Deno.test(
-  "P09 the opening runtime and complete browser binding are accepted",
-  () => {
-    verifyOfferClaims({
-      offer: offer(),
-      localContextDigest: "digest",
-      local: LOCAL,
-    });
-  },
-);
+test("P09 the opening runtime and complete browser binding are accepted", () => {
+  verifyOfferClaims({
+    offer: offer(),
+    localContextDigest: "digest",
+    local: LOCAL,
+  });
+});

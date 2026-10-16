@@ -221,19 +221,21 @@ pub(super) fn credential_snapshot(
         }
         Credential::ProvisionedIdentity(identity) => {
             let row:Option<(String,String,String,String,String,String,String,String,String,Option<i64>)>=connection.query_row(
-                "SELECT i.principal_id,i.deployment_id,i.instance_id,i.participant_id,i.kind,b.required_capabilities_json,b.optional_capabilities_json,b.provided_apis_json,b.resource_commitments_json,d.expires_at FROM auth_provisioned_identities i JOIN auth_principals p ON p.principal_id=i.principal_id JOIN auth_deployments d ON d.deployment_id=i.deployment_id AND d.participant_id=i.participant_id JOIN auth_instances r ON r.instance_id=i.instance_id AND r.deployment_id=i.deployment_id AND r.principal_id=i.principal_id JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id AND b.installed_revision=r.installed_revision WHERE i.identity_key_id=?1 AND i.state='active' AND p.state='active' AND p.kind=i.kind AND d.state='active' AND r.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)",params![identity,now],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?))).optional()?;
+                 "SELECT i.principal_id,i.deployment_id,i.instance_id,i.participant_id,i.kind,b.required_capabilities_json,b.optional_capabilities_json,b.provided_apis_json,b.resource_commitments_json,d.expires_at FROM auth_provisioned_identities i JOIN auth_principals p ON p.principal_id=i.principal_id JOIN auth_deployments d ON d.deployment_id=i.deployment_id AND d.participant_id=i.participant_id JOIN auth_instances r ON r.instance_id=i.instance_id AND r.deployment_id=i.deployment_id AND r.principal_id=i.principal_id JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id WHERE i.identity_key_id=?1 AND i.state='active' AND p.state='active' AND p.kind=i.kind AND d.state='active' AND r.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)",params![identity,now],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?))).optional()?;
             let (
                 principal,
                 deployment,
                 instance,
                 participant,
                 kind,
-                required,
-                optional,
-                provided,
-                resources,
+                _required,
+                _optional,
+                _provided,
+                _resources,
                 deadline,
             ) = row.ok_or(AuthError::Denied)?;
+            let projection =
+                super::native_projection::project_instance(connection, &instance, now)?;
             let (principal_kind, binding) = match kind.as_str() {
                 "service" => (
                     PrincipalKind::Service,
@@ -259,7 +261,7 @@ pub(super) fn credential_snapshot(
                 }
                 _ => return Err(AuthError::Denied),
             };
-            let provided: Vec<ProviderImplementation> = decode(&provided)?;
+            let provided = projection.provided;
             let providers = provided
                 .into_iter()
                 .map(|provider| AuthorityProvider {
@@ -270,9 +272,9 @@ pub(super) fn credential_snapshot(
                     provider_certificate_digest: String::new(),
                 })
                 .collect();
-            let resources: Value = decode(&resources)?;
+            let resources = projection.resources;
             super::deployments::native_health_capability(connection)?;
-            let mut required: Vec<String> = decode(&required)?;
+            let mut required = projection.required;
             if principal_kind == PrincipalKind::Device
                 && resources
                     .get("state")
@@ -325,7 +327,7 @@ pub(super) fn credential_snapshot(
                 login_session_id: None,
                 selection: CapabilitySelection {
                     required,
-                    optional: decode(&optional)?,
+                    optional: projection.optional,
                 },
                 approved: None,
                 consent_deadlines: BTreeMap::new(),
@@ -589,12 +591,8 @@ impl SqliteAuthorizationStore {
             ..
         } = &current.binding
         {
-            let provided: String = connection.query_row(
-                "SELECT provided_apis_json FROM auth_deployment_bindings WHERE deployment_id=?1",
-                [deployment_id],
-                |row| row.get(0),
-            )?;
-            let provided: Vec<ProviderImplementation> = decode(&provided)?;
+            let provided =
+                super::native_projection::project_instance(connection, instance_id, now)?.provided;
             for provider in &mut providers {
                 let implementation = provided
                     .iter()

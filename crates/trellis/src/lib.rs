@@ -79,6 +79,10 @@ pub mod telemetry;
 extern crate self as trellis_rs;
 mod runtime_health;
 
+/// Native-IDL-generated State descriptor support for generated device clients.
+#[doc(hidden)]
+pub mod runtime_state;
+
 // Generated from the built-in native IDL by `cargo xtask install`.
 #[path = "internal_types.rs"]
 #[doc(hidden)]

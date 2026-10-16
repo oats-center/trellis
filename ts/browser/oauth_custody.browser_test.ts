@@ -1,4 +1,4 @@
-import { deepStrictEqual as assertEquals } from "node:assert/strict";
+import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -238,7 +238,7 @@ test("browser OAuth custody survives Chromium restart without exporting private 
       },
       { origin, handle, otherHandle, publicJwk, trust },
     );
-    assertEquals(result, {
+    assert.deepEqual(result, {
       token: "confidential-refresh-one",
       verified: true,
       otherToken: undefined,

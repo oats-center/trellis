@@ -1,5 +1,13 @@
-import { assert, assertEquals } from "@std/assert";
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { types } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { statSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { text } from "node:stream/consumers";
+import { createInterface } from "node:readline";
+import { spawnTracked } from "../integration/_support/process.ts";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import {
@@ -10,10 +18,9 @@ import {
 } from "./browser_test_support.ts";
 
 function cliBinary(): string {
-  const binary = Deno.env.get("TRELLIS_TEST_CLI_BIN") ??
-    "target/debug/trellis";
+  const binary = process.env["TRELLIS_TEST_CLI_BIN"] ?? "target/debug/trellis";
   try {
-    Deno.statSync(binary);
+    statSync(binary);
   } catch {
     throw new Error(
       `the trellis CLI binary is missing at ${binary}; build it or set TRELLIS_TEST_CLI_BIN`,
@@ -21,8 +28,6 @@ function cliBinary(): string {
   }
   return binary;
 }
-
-type RuntimeLike = Parameters<typeof launchProfile>[0];
 
 function jsonOutput(stdout: string): Record<string, unknown> {
   return JSON.parse(
@@ -34,102 +39,102 @@ async function runCli(
   args: readonly string[],
   configHome: string,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
-  const child = new Deno.Command(cliBinary(), {
-    args: [...args],
-    env: { XDG_CONFIG_HOME: configHome },
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
+  const child = spawnTracked(cliBinary(), args, {
+    env: { ...process.env, XDG_CONFIG_HOME: configHome },
+  });
   const [status, stdout, stderr] = await Promise.all([
-    child.status,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
+    child.exited,
+    text(child.stdout),
+    text(child.stderr),
   ]);
-  return { code: status.code, stdout, stderr };
+  return { code: status.code ?? 1, stdout, stderr };
 }
 
-Deno.test("CLI login authorizes independent runtime keys through one durable login", async () => {
+test("CLI login authorizes independent runtime keys through one durable login", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
-    const configHome = await Deno.makeTempDir({ prefix: "trellis-cli-login-" });
+    const configHome = await mkdtemp(join(tmpdir(), "trellis-cli-login-"));
 
-    const child = new Deno.Command(cliBinary(), {
-      args: ["--format", "json", "login", runtime.trellisUrl],
-      env: { XDG_CONFIG_HOME: configHome },
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
-
-    let progress = "";
-    const progressReader = child.stderr.pipeThrough(new TextDecoderStream())
-      .getReader();
-    while (!progress.includes("loginUrl")) {
-      const chunk = await progressReader.read();
-      assert(
-        !chunk.done,
-        `CLI exited before printing a login URL: ${progress}`,
-      );
-      progress += chunk.value;
-    }
-    const loginUrl = JSON.parse(
-      progress.trim().split("\n").find((line) => line.includes("loginUrl"))!,
-    ).loginUrl as string;
-    assert(loginUrl.startsWith(runtime.trellisUrl));
-
-    const context = await launchProfile(runtime);
+    const child = spawnTracked(
+      cliBinary(),
+      ["--format", "json", "login", runtime.oauthIssuer],
+      { env: { ...process.env, XDG_CONFIG_HOME: configHome } },
+    );
+    const stdout = text(child.stdout);
     try {
-      const page = await context.newPage();
-      const pageErrors: string[] = [];
-      page.on("pageerror", (error) => pageErrors.push(String(error)));
-      await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
-      await signInIfPrompted(page, {
-        username: runtime.adminUsername,
-        password: runtime.adminPassword,
-      });
-      await approveConsentIfRequired(page, 15_000);
-      assertEquals(pageErrors, []);
+      let progress = "";
+      const progressReader = createInterface({ input: child.stderr })[
+        Symbol.asyncIterator
+      ]();
+      while (!progress.includes("loginUrl")) {
+        const chunk = await progressReader.next();
+        assert(
+          !chunk.done,
+          `CLI exited before printing a login URL: ${progress}`,
+        );
+        progress += `${chunk.value}\n`;
+      }
+      const challenge = JSON.parse(
+        progress
+          .trim()
+          .split("\n")
+          .find((line) => line.includes("loginUrl"))!,
+      );
+      const loginUrl = challenge.loginUrl;
+      assert.equal(new URL(loginUrl).origin, runtime.oauthIssuer);
+
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const pageErrors: string[] = [];
+        page.on("pageerror", (error) => pageErrors.push(String(error)));
+        await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
+        await page
+          .getByLabel("Device code", { exact: true })
+          .fill(challenge.userCode);
+        await page.getByRole("button", { name: /continue|review/i }).click();
+        await signInIfPrompted(page, {
+          username: runtime.adminUsername,
+          password: runtime.adminPassword,
+        });
+        await approveConsentIfRequired(page, 15_000);
+        assert.deepEqual(pageErrors, []);
+      } finally {
+        await context.close();
+      }
+
+      while (true) {
+        const chunk = await progressReader.next();
+        if (chunk.done) break;
+        progress += `${chunk.value}\n`;
+      }
+      assert.deepEqual((await child.exited).code, 0, progress);
+      const login = jsonOutput(await stdout);
+      assert(login.principalId, JSON.stringify(login));
+
+      // Every `whoami` run opens its own connection with a runtime key it
+      // generates locally and calls the deployment-bound Sessions.Me through the
+      // stored durable login, so both runs must authenticate the same user.
+      const first = await runCli(["--format", "json", "whoami"], configHome);
+      assert.deepEqual(first.code, 0, first.stderr);
+      assert.deepEqual(
+        types.AuthSessionsMeResponseCodec.decode(jsonOutput(first.stdout))
+          .principal.principalId,
+        login.principalId,
+      );
+
+      const second = await runCli(["--format", "json", "whoami"], configHome);
+      assert.deepEqual(second.code, 0, second.stderr);
+      assert.deepEqual(
+        types.AuthSessionsMeResponseCodec.decode(jsonOutput(second.stdout))
+          .principal.principalId,
+        login.principalId,
+      );
     } finally {
-      await context.close();
+      if (child.exitCode === null && child.signalCode === null)
+        child.kill("SIGTERM");
+      await child.exited;
+      await rm(configHome, { recursive: true, force: true });
     }
-
-    while (true) {
-      const chunk = await progressReader.read();
-      if (chunk.done) break;
-      progress += chunk.value;
-    }
-    assertEquals((await child.status).code, 0, progress);
-    const login = jsonOutput(
-      new TextDecoder().decode(await new Response(child.stdout).arrayBuffer()),
-    );
-    assert(login.sessionKey, JSON.stringify(login));
-    assert(login.userId, JSON.stringify(login));
-
-    // Every `whoami` run opens its own connection with a runtime key it
-    // generates locally and calls the deployment-bound Sessions.Me through the
-    // stored durable login, so both runs must authenticate the same user.
-    const first = await runCli(["--format", "json", "whoami"], configHome);
-    assertEquals(first.code, 0, first.stderr);
-    assertEquals(jsonOutput(first.stdout).userId, login.userId);
-
-    const second = await runCli(["--format", "json", "whoami"], configHome);
-    assertEquals(second.code, 0, second.stderr);
-    assertEquals(jsonOutput(second.stdout).userId, login.userId);
-
-    const provisioned = await runtime.registerService({
-      name: "listed-service",
-      contract: participants.Provider.participant,
-    });
-    const instances = await runCli(
-      ["--format", "json", "svc", "test", "instances"],
-      configHome,
-    );
-    assertEquals(instances.code, 0, instances.stderr);
-    const listed = jsonOutput(instances.stdout).instances;
-    assert(Array.isArray(listed));
-    assert(
-      listed.some((item) =>
-        item.instanceId === provisioned.instanceId && item.state === "active"
-      ),
-    );
   }, browserRuntimeOptions());
 });

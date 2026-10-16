@@ -75,16 +75,8 @@ function detectRuntime(): {
   runtime: HealthHeartbeatSample["participant"]["runtime"];
   runtimeVersion?: string;
 } {
-  const maybeDeno = Reflect.get(globalThis, "Deno") as
-    | { version?: { deno?: string } }
-    | undefined;
-  if (maybeDeno?.version?.deno) {
-    return { runtime: "deno", runtimeVersion: maybeDeno.version.deno };
-  }
-
   const maybeProcess = Reflect.get(globalThis, "process") as
-    | { version?: string }
-    | undefined;
+    { version?: string } | undefined;
   if (typeof maybeProcess?.version === "string") {
     return { runtime: "node", runtimeVersion: maybeProcess.version };
   }
@@ -246,7 +238,7 @@ export class ServiceHealthRuntime implements ServiceHealth {
   async checks(): Promise<HealthCheckResult[]> {
     return await Promise.all(
       Array.from(this.#checks.entries()).map(([name, check]) =>
-        runServiceHealthCheck(name, check)
+        runServiceHealthCheck(name, check),
       ),
     );
   }

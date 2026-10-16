@@ -722,6 +722,44 @@ model AuthResourcesListRequest { ownerKind?: AuthResourceOwnerKind; ownerId?: ul
 type AuthResourcesListResponse = CursorPage<AuthResourceBinding>;
 model AuthResourceRemoveRequest { resourceId: AuthDigest; expectedRevision: AuthRevision; idempotencyKey: AuthIdempotencyKey; }
 
+enum AuthResourceEvidenceKind { jobQueue; eventConsumer; }
+enum AuthResourceEvidenceState { available; unavailable; stale; }
+model AuthJobResourceEvidence {
+  namespace: string;
+  workStream: string;
+  consumer: string;
+  publishPrefix: string;
+  workSubject: string;
+}
+model AuthEventConsumerEvidence {
+  stream: string;
+  consumer: string;
+  replayConsumer: string;
+  filterSubjects: list<string>;
+}
+model AuthResourceEvidence {
+  resourceId: AuthDigest;
+  ownerId: ulid;
+  participantId: string;
+  installedRevision: AuthRevision;
+  localName: string;
+  kind: AuthResourceEvidenceKind;
+  state: AuthResourceEvidenceState;
+  resourceBindingsDigest?: AuthDigest;
+  job?: AuthJobResourceEvidence;
+  eventConsumer?: AuthEventConsumerEvidence;
+}
+model AuthResourceBindingsQueryRequest {
+  kind: AuthResourceEvidenceKind;
+  instanceId?: ulid;
+  ownerId?: ulid;
+  participantId?: string;
+  localName?: string;
+  resourceId?: AuthDigest;
+  page?: CursorQuery;
+}
+type AuthResourceBindingsQueryResponse = CursorPage<AuthResourceEvidence>;
+
 model AuthSecurityEvent {
   eventId: ulid;
   occurredAt: timestamp;

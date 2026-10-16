@@ -26,7 +26,6 @@ concurrency:
 env:
   CARGO_HTTP_MULTIPLEXING: false
   CARGO_TERM_COLOR: always
-  DENO_VERSION: 2.9.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: 24
   REGISTRY: ghcr.io
@@ -330,10 +329,10 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
@@ -532,12 +531,21 @@ jobs:
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
+      - name: Download the exact staged testkit publication input
+        uses: actions/download-artifact@v4
+        with:
+          name: check-testkit-npm
+          path: dist
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Publish packages
+        # Consume Check's exact frozen testkit, never restage it during release.
         shell: bash
         run: |
           set -euo pipefail
@@ -601,191 +609,25 @@ jobs:
             publish_or_skip "$pkg" "$name" "$version"
           done
 
+          # The verified pinned testkit is published only after SDK dependencies.
+          mkdir -p dist/testkit-npm
+          tar -xzf dist/testkit-npm.tar.gz -C dist/testkit-npm
+          npm ci
+          smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
+          mkdir -p "$smoke_root/home"
+          HOME="$smoke_root/home" TRELLIS_TEST_CACHE_DIR="$smoke_root/cache" TMPDIR="$smoke_root" \
+            node ts/tools/verify_testkit_package.ts dist/testkit-npm
+          pkg=dist/testkit-npm
+          name=$(node -p "require('./${pkg}/package.json').name")
+          version=$(node -p "require('./${pkg}/package.json').version")
+          publish_or_skip "$pkg" "$name" "$version"
+
           echo "Published ${#published[@]} package(s)"
           for item in "${published[@]}"; do
             echo "  published: $item"
           done
 
           echo "Skipped ${#skipped[@]} package(s)"
-          for item in "${skipped[@]}"; do
-            echo "  skipped: $item"
-          done
-
-  publish-jsr:
-    name: Publish JSR packages
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
-    needs:
-      - prepare-release
-      - github-release
-    runs-on: [self-hosted, Linux, X64]
-    permissions:
-      contents: read
-      id-token: write
-      actions: read
-    env:
-      RELEASE_VERSION: ${{ needs.prepare-release.outputs.release-version }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ts/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
-
-      - name: Download the exact staged testkit publication input
-        uses: actions/download-artifact@v4
-        with:
-          name: check-testkit-jsr
-          path: dist
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Extract the exact staged testkit
-        run: mkdir -p dist/testkit-jsr && tar -xzf dist/testkit-jsr.tar.gz -C dist/testkit-jsr
-
-      - name: Publish JSR packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          published=()
-          skipped=()
-
-          # JSR cannot follow the workspace's local package paths. Rewrite every
-          # '@oatscenter/*' mapping to its published JSR specifier, using each
-          # package's own exports map so subpaths stay exact; trellis-svelte
-          # generates the equivalent manifest for itself.
-          deno eval '
-            const version = Deno.env.get("RELEASE_VERSION");
-            const read = (path) => JSON.parse(Deno.readTextFileSync(path));
-            const manifests = {
-              "trellis": "ts/packages/trellis/deno.json",
-              "result": "ts/packages/result/deno.json",
-              "trellis-svelte": "ts/packages/trellis-svelte/deno.json",
-            };
-            const exportsByFile = (dir) => {
-              const raw = read(manifests[dir]).exports;
-              const map = typeof raw === "string" ? { ".": raw } : raw;
-              return Object.fromEntries(
-                Object.entries(map).map(([key, value]) => [
-                  value.startsWith("./") ? value.slice(2) : value,
-                  key,
-                ]),
-              );
-            };
-            const tables = Object.fromEntries(
-              Object.keys(manifests).map((dir) => [dir, exportsByFile(dir)]),
-            );
-            const root = read("ts/deno.json");
-            for (const [name, spec] of Object.entries(root.imports ?? {})) {
-              if (!spec.startsWith("./packages/")) continue;
-              const [dir, ...rest] = spec.slice("./packages/".length).split("/");
-              const key = tables[dir]?.[rest.join("/")];
-              if (key === undefined) continue;
-              root.imports[name] = `jsr:@oatscenter/${dir}@^${version}${
-                key === "." ? "" : key.slice(1)
-              }`;
-            }
-            Deno.writeTextFileSync("ts/deno.json", JSON.stringify(root, null, 2) + "\n");
-          '
-
-          package_field() {
-            local manifest="$1"
-            local field="$2"
-            deno eval 'const manifest = JSON.parse(await Deno.readTextFile(Deno.args[0])); console.log(manifest[Deno.args[1]]);' "$manifest" "$field"
-          }
-
-          jsr_package_exists() {
-            local package_name="$1"
-            local package_version="$2"
-            curl -fsL -o /dev/null "https://jsr.io/${package_name}/${package_version}_meta.json"
-          }
-
-          wait_for_jsr_package() {
-            local package_name="$1"
-            local package_version="$2"
-
-            for attempt in {1..30}; do
-              if jsr_package_exists "$package_name" "$package_version"; then
-                return 0
-              fi
-              printf 'Waiting for %s@%s to appear on JSR (%s/30)\n' "$package_name" "$package_version" "$attempt"
-              sleep 10
-            done
-
-            echo "::error::${package_name}@${package_version} did not appear on JSR"
-            return 1
-          }
-
-          publish_or_skip() {
-            local package_dir="$1"
-            local manifest="${package_dir}/deno.json"
-            local package_name
-            local package_version
-            package_name="$(package_field "$manifest" name)"
-            package_version="$(package_field "$manifest" version)"
-
-            if jsr_package_exists "$package_name" "$package_version"; then
-              echo "Skipping ${package_name}@${package_version} (already published)"
-              skipped+=("${package_name}@${package_version}")
-              wait_for_jsr_package "$package_name" "$package_version"
-              return 0
-            fi
-
-            (cd "$package_dir" && time deno publish --allow-slow-types --allow-dirty)
-            published+=("${package_name}@${package_version}")
-            wait_for_jsr_package "$package_name" "$package_version"
-          }
-
-          publish_or_skip ts/packages/result
-          publish_or_skip ts/packages/trellis
-          # GitHub release assets already exist. With fresh state and no source
-          # override, exercise the exact staged package's pinned acquisition and
-          # a real generated RPC before authorizing its publication.
-          smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
-          deno_bin="$(command -v deno)"
-          mkdir -p "$smoke_root/home"
-          PATH='' HOME="$smoke_root/home" TRELLIS_TEST_CACHE_DIR="$smoke_root/cache" TMPDIR="$smoke_root" \
-            "$deno_bin" run -A --config dist/testkit-jsr/deno.json \
-              dist/testkit-jsr/tests/release_smoke.ts
-          publish_or_skip dist/testkit-jsr
-
-          TRELLIS_SVELTE_JSR_RUNTIME_DEPENDENCY_VERSION="${RELEASE_VERSION}" \
-            deno task -c ts/packages/trellis-svelte/deno.json build:npm
-          publish_or_skip ts/packages/trellis-svelte/jsr
-
-          echo "Published ${#published[@]} JSR package(s)"
-          for item in "${published[@]}"; do
-            echo "  published: $item"
-          done
-
-          echo "Skipped ${#skipped[@]} JSR package(s)"
           for item in "${skipped[@]}"; do
             echo "  skipped: $item"
           done

@@ -115,7 +115,7 @@ fn physical_kick_queues_exact_attachment_without_retiring_its_logical_session() 
         .issue_authority(&f.admission, Some(&session), NOW + 3)
         .unwrap();
     assert_eq!(renewed.authority.unsigned.authorization_session_id, session);
-    let effects = f.store.claim_effects(256, NOW + 3, 30).unwrap();
+    let effects = f.store.claim_effects(256, NOW + 3, 30, false).unwrap();
     let kicks: Vec<_> = effects
         .iter()
         .filter(|effect| effect.kind == "kick")

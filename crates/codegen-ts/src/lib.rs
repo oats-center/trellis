@@ -2420,20 +2420,41 @@ export async function useState(client: ConnectedTrellisClient<typeof apps.Sensor
 "#).unwrap();
 
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let output = std::process::Command::new("deno")
-            .args(["check", "--no-lock", "-c"])
-            .arg(repo.join("ts/deno.json"))
+        assert!(std::process::Command::new("node")
+            .args([
+                "-e",
+                "require('node:fs').symlinkSync(process.argv[1], process.argv[2], 'junction')"
+            ])
+            .arg(repo.join("node_modules"))
+            .arg(root.join("node_modules"))
+            .status()
+            .unwrap()
+            .success());
+        let output = std::process::Command::new("node")
+            .arg(repo.join("node_modules/typescript/bin/tsc"))
+            .args([
+                "--noEmit",
+                "--strict",
+                "--target",
+                "ES2022",
+                "--lib",
+                "ESNext,DOM,DOM.Iterable",
+                "--module",
+                "NodeNext",
+                "--allowImportingTsExtensions",
+                "--resolveJsonModule",
+            ])
             .arg(root.join("consumer.ts"))
             .output()
             .unwrap();
         assert!(
             output.status.success(),
-            "{}",
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        let output = std::process::Command::new("deno")
-            .args(["run", "--no-lock", "-A", "-c"])
-            .arg(repo.join("ts/deno.json"))
+        let output = std::process::Command::new("node")
+            .arg("--experimental-transform-types")
             .arg(root.join("consumer.ts"))
             .output()
             .unwrap();
@@ -2483,15 +2504,37 @@ export { progress, update, fallbackProgress, fallbackUpdate, wrongProgress, wron
         )
         .unwrap();
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let output = std::process::Command::new("deno")
-            .args(["check", "--no-lock", "-c"])
-            .arg(repo.join("ts/deno.json"))
+        assert!(std::process::Command::new("node")
+            .args([
+                "-e",
+                "require('node:fs').symlinkSync(process.argv[1], process.argv[2], 'junction')"
+            ])
+            .arg(repo.join("node_modules"))
+            .arg(root.join("node_modules"))
+            .status()
+            .unwrap()
+            .success());
+        let output = std::process::Command::new("node")
+            .arg(repo.join("node_modules/typescript/bin/tsc"))
+            .args([
+                "--noEmit",
+                "--strict",
+                "--target",
+                "ES2022",
+                "--lib",
+                "ESNext,DOM,DOM.Iterable",
+                "--module",
+                "NodeNext",
+                "--allowImportingTsExtensions",
+                "--resolveJsonModule",
+            ])
             .arg(root.join("consumer.ts"))
             .output()
             .unwrap();
         assert!(
             output.status.success(),
-            "{}",
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
         fs::remove_dir_all(root).unwrap();

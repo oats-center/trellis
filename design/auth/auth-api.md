@@ -133,8 +133,10 @@ participant, local name, kind, revision, and lifecycle state. List supports dire
 owner filters without joining only active deployments. The finite
 `principals.manage` privilege is required in addition to the route capability.
 
-Deployment omission, Disable, and Remove detach resources and remove binding
-authority while retaining physical data. No lifecycle path automatically destroys
+Declaration omission and deployment Remove detach resources and remove binding
+authority while retaining physical data. Disable preserves allocations and binding
+commitments but retires sessions and denies admission while disabled; Enable reuses
+those retained bindings without reapplying the contract. No lifecycle path automatically destroys
 an allocation. `Resources.Remove` is an explicit permanent deletion choice for a
 detached owned KV at its expected revision. Its typed idempotent result fences a
 durable manual intent before the ownership-checked broker deletion. The same
@@ -207,9 +209,19 @@ changes emit ordered typed events through the transactional post-commit queue.
 Participant installation precedes the corresponding grant-change event.
 Superseded contexts are durably revoked before connection kicks are attempted.
 
-Auth's own event publisher uses the ordinary event authorization path and a
-durably prepared body/proof tuple. The Events journal retains the context digest
-rather than copying authorization state.
+Attachment admission, closure, and confirmed kicks enqueue their declared
+`Connections.Opened`, `Connections.Closed`, and `Connections.Kicked`
+`AuthSecurityEvent` in the transition's SQL transaction. A confirmed kick is
+recorded separately from disconnect observation, so either callback order emits
+one closure and one kick event. Outbox retries retain the event ID, occurrence
+time, subject, descriptor, and generated payload.
+
+Auth's event publisher uses its ordinary admitted provider and signs each
+publication with current authority; it does not retain an expired proof.
+Publication failure retains durable work. Publication starts after provider
+admission, independently of the enforcement worker needed to establish that
+admission. The Events journal retains the context digest rather than copying
+authorization state.
 
 ## Non-Goals
 

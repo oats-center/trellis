@@ -15,8 +15,7 @@ mod live_provider;
 mod state;
 
 pub(crate) use builtin_live_provider::{
-    connect_builtin_live_provider, prepare_builtin_live_provider, read_builtin_live_provider,
-    BuiltinLiveProviderConnectOptions,
+    connect_builtin_live_provider, prepare_builtin_live_provider, BuiltinLiveProviderConnectOptions,
 };
 pub(crate) use live_provider::{
     await_live_owner, load_live_provider_seed, LiveProviderRole, LiveProviderSlots,
@@ -59,6 +58,31 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
     let storage = auth::OAuthStorage::new(store.clone(), &auth::read_custody_key(custody)?)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let initialized: bool = store
+        .has_administrator()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let account_url = if !initialized {
+        storage
+            .initialize_local_administrator(
+                &context.config.public_origin(),
+                "admin",
+                None,
+                now_seconds()?,
+            )
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?
+            .1
+    } else if context.reset_admin {
+        Some(
+            storage
+                .reset_local_administrator(now_seconds()?)
+                .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    if let Some(url) = account_url {
+        println!("{}", serde_json::json!({"adminAccountUrl":url}));
+    }
     let engine = Arc::new(
         auth::OAuthEngine::new(storage)
             .map_err(|error| RuntimeError::Platform(error.to_string()))?,
@@ -210,15 +234,55 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         });
         let provider_stop = task_stop.clone();
         tasks.spawn(async move {
+            let event_store = provider_store.clone();
             let provider = tokio::select! {
                 () = provider_stop.stopped() => return Ok(()),
                 result = bootstrap::connect_platform_provider(
                     provider_store, provider_oauth, provider_operational, provider_servers, &provider_seed,
                 ) => result?,
             };
+            let publisher = provider.event_publisher();
+            let publications = async {
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        () = provider_stop.stopped() => break Ok::<(), RuntimeError>(()),
+                        _ = interval.tick() => {}
+                    }
+                    // Claim each publication immediately before sending it, so
+                    // a slow broker cannot consume another event's lease.
+                    for _ in 0..8 {
+                        let Some(effect) = event_store.claim_effects(1, now_seconds()?, 10, true)
+                            .map_err(|error| RuntimeError::Platform(error.to_string()))?
+                            .into_iter().next() else { break; };
+                        let result = async {
+                            let text = |key: &str| effect.payload[key].as_str().ok_or(auth::AuthError::Unavailable);
+                            let body = &effect.payload["event"];
+                            let event = trellis_rs::client::PreparedTrellisEvent::restore(
+                                text("subject")?,
+                                serde_json::to_vec(body)?.into(),
+                                text("descriptor")?,
+                                body["eventId"].as_str().ok_or(auth::AuthError::Unavailable)?,
+                                body["occurredAt"].as_str().ok_or(auth::AuthError::Unavailable)?,
+                            ).map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
+                            publisher.publish_prepared(&event).await
+                                .map_err(|error| auth::AuthError::Broker(error.to_string()))
+                        }.await;
+                        let now = now_seconds()?;
+                        match result {
+                            Ok(()) => event_store.complete_effect(&effect, now),
+                            Err(error) => {
+                                tracing::warn!(action_id=%effect.action_id, attempt=effect.attempts, %error, "Auth event publication remains pending");
+                                event_store.retry_effect(&effect, now)
+                            }
+                        }.map_err(|error| RuntimeError::Platform(error.to_string()))?;
+                    }
+                }
+            };
             tokio::select! {
-                () = provider_stop.stopped() => Ok(()),
                 result = provider.run() => result.map_err(|error| RuntimeError::Platform(error.to_string())),
+                result = publications => result,
             }
         });
         let first = tokio::select! {
@@ -327,6 +391,22 @@ pub async fn seed_admin_credentials(
     username: &str,
     password: &str,
 ) -> Result<String, RuntimeError> {
+    initialize_admin_credentials(config, username, Some(password))
+        .await
+        .map(|result| result.0)
+}
+
+/// Initialize the first administrator using an optional password. Without a
+/// password, returns a one-time setup URL on the isolated OAuth origin.
+///
+/// # Errors
+/// Refuses an already initialized installation, invalid credentials, missing
+/// custody, or failed atomic account/client initialization.
+pub async fn initialize_admin_credentials(
+    config: &RuntimeConfig,
+    username: &str,
+    password: Option<&str>,
+) -> Result<(String, Option<String>), RuntimeError> {
     let crate::StorageBackend::Sqlite(storage) = config
         .platform_storage_backend()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
@@ -338,7 +418,11 @@ pub async fn seed_admin_credentials(
         .resolve_nats_runtime_with(None)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let keys = callout_keys(config, &nats)?;
-    let auth = SqliteAuthorizationStore::open(&store, config, keys.target_account())?;
+    let auth = Arc::new(SqliteAuthorizationStore::open(
+        &store,
+        config,
+        keys.target_account(),
+    )?);
     let now = now_seconds()?;
     auth.initialize_issuer(now)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
@@ -348,13 +432,35 @@ pub async fn seed_admin_credentials(
         .and_then(|value| value.local_identity.as_ref())
         .and_then(|value| value.password_min_length)
         .unwrap_or(12);
-    if password.len() < usize::from(minimum) {
+    if password.is_some_and(|password| password.len() < usize::from(minimum)) {
         return Err(RuntimeError::Platform(
             "administrator password does not meet configured minimum length".into(),
         ));
     }
-    auth.seed_administrator_and_console(&config.public_origin(), username, password, now)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))
+    let custody = config
+        .auth
+        .as_ref()
+        .and_then(|auth| auth.oauth_storage_key_file.as_deref())
+        .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
+    let storage = auth::OAuthStorage::new(auth.clone(), &auth::read_custody_key(custody)?)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let initialized: bool = auth
+        .has_administrator()
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    if initialized {
+        return Err(RuntimeError::Platform(
+            "administrator is already initialized; use explicit reset recovery".into(),
+        ));
+    }
+    if let Some(password) = password {
+        auth.seed_administrator_and_console(&config.public_origin(), username, password, now)
+            .map(|principal| (principal, None))
+            .map_err(|error| RuntimeError::Platform(error.to_string()))
+    } else {
+        storage
+            .initialize_local_administrator(&config.public_origin(), username, None, now)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))
+    }
 }
 
 // Resource evidence must never be reused after restoring a mismatched NATS store.

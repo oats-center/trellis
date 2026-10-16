@@ -19,21 +19,22 @@ use super::sqlite::{decode, digest, json, AuthError, SqliteAuthorizationStore};
 pub(super) fn detach_deployment_resources(
     connection: &rusqlite::Connection,
     deployment: &str,
-    keep: &BTreeSet<String>,
+    keep: &BTreeSet<(String, String)>,
     now: i64,
 ) -> Result<(), AuthError> {
-    let mut statement = connection.prepare("SELECT resource_id,local_name,state FROM auth_resources WHERE owner_kind='deployment' AND owner_id=?1")?;
+    let mut statement = connection.prepare("SELECT resource_id,kind,local_name,state FROM auth_resources WHERE owner_kind='deployment' AND owner_id=?1")?;
     let resources = statement
         .query_map([deployment], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (resource, name, state) in resources {
-        if keep.contains(&name) || state == "detached" || state == "destroying" {
+    for (resource, kind, name, state) in resources {
+        if keep.contains(&(kind, name)) || state == "detached" || state == "destroying" {
             continue;
         }
         // A provider allocation in flight must finish before deployment changes.
@@ -67,6 +68,8 @@ struct ResourcePlan {
     installed_revision: u64,
     binding_revision: u64,
     kv: BTreeMap<String, NativeAllocation>,
+    materialized: BTreeSet<String>,
+    key_bucket_materialized: bool,
 }
 
 /// Materialize installed declarations using the operational connection, then
@@ -80,7 +83,7 @@ pub(crate) async fn materialize_native_kv(
 ) -> Result<ServiceResourceBindings, AuthError> {
     let plan = store.transaction(|connection| {
         let (principal,participant,installed_revision,binding_revision,evidence):(String,String,u64,u64,String)=connection.query_row(
-            "SELECT i.principal_id,d.participant_id,b.installed_revision,b.revision,p.projection_json FROM auth_deployments d JOIN auth_deployment_bindings b USING(deployment_id) JOIN auth_installed_participants p ON p.participant_id=d.participant_id AND p.revision=b.installed_revision JOIN auth_instances i ON i.deployment_id=d.deployment_id AND i.installed_revision=b.installed_revision JOIN auth_principals a ON a.principal_id=i.principal_id WHERE d.deployment_id=?1 AND d.state='active' AND i.state='active' AND a.state='active'",
+            "SELECT i.principal_id,d.participant_id,b.installed_revision,b.revision,p.projection_json FROM auth_deployments d JOIN auth_deployment_bindings b USING(deployment_id) JOIN auth_installed_participants p ON p.participant_id=d.participant_id AND p.revision=b.installed_revision JOIN auth_instances i ON i.deployment_id=d.deployment_id JOIN auth_principals a ON a.principal_id=i.principal_id WHERE d.deployment_id=?1 AND d.state='active' AND i.state='active' AND a.state='active'",
             [deployment],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
         let evidence:PackageEvidence=decode(&evidence)?;
         let graph=compile_evidence(evidence).map_err(|error|AuthError::Invalid(error.to_string()))?;
@@ -149,6 +152,13 @@ pub(crate) async fn materialize_native_kv(
                 state,
             });
         }
+        let mut materialized = BTreeSet::new();
+        let mut previous_jobs = connection.prepare("SELECT actual_json FROM auth_resource_binding_evidence WHERE owner_kind='deployment' AND owner_id=?1 AND resource_kind='jobQueue'")?;
+        let mut key_bucket_materialized = false;
+        for binding in previous_jobs.query_map([deployment], |row| row.get::<_, String>(0))? {
+            let binding: trellis_rs::service::JobsQueueResourceBinding = decode(&binding?)?;
+            key_bucket_materialized |= binding.key_concurrency.is_some();
+        }
         for (name, allocation) in &mut kv {
             if let Some(declaration) = &allocation.state {
                 let mut history = connection.prepare("SELECT commitment_json FROM auth_resource_history WHERE resource_id=?1")?;
@@ -160,10 +170,11 @@ pub(crate) async fn materialize_native_kv(
                     }
                 }
             }
-            let current: Option<(String,String)> = connection.query_row("SELECT state,allocation_id FROM auth_resources WHERE resource_id=?1", [&allocation.resource_id], |row| Ok((row.get(0)?,row.get(1)?))).optional()?;
-            if let Some((state, incarnation)) = current {
+            let current: Option<(String,String,bool)> = connection.query_row("SELECT state,allocation_id,actual_json IS NOT NULL FROM auth_resources WHERE resource_id=?1", [&allocation.resource_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            if let Some((state, incarnation, previously_materialized)) = current {
                 if state == "destroying" { return Err(AuthError::Conflict); }
                 allocation.allocation_id = incarnation;
+                if previously_materialized { materialized.insert(allocation.resource_id.clone()); }
             }
             if let Some(consumer) = &mut allocation.consumer {
                 consumer.consumer_name = format!("TRELLIS_RESOURCE_{}_{}",allocation.resource_id,allocation.allocation_id);
@@ -179,7 +190,7 @@ pub(crate) async fn materialize_native_kv(
             }
             connection.execute("INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,owner_id,participant_id,kind,local_name,commitment_json,state,binding_revision,revision,created_at,updated_at,physical_id) VALUES(?1,?9,'deployment',?2,?3,?10,?4,?5,'pending',?6,1,?7,?7,?8) ON CONFLICT(resource_id) DO UPDATE SET state='pending',updated_at=excluded.updated_at",params![allocation.resource_id,deployment,participant,name,json(allocation)?,binding_revision,now,format!("TRELLIS_RESOURCE_{}_{}",allocation.resource_id,allocation.allocation_id),allocation.allocation_id,allocation.kind])?;
         }
-        Ok(ResourcePlan {principal,deployment:deployment.into(),participant,installed_revision,binding_revision,kv})
+        Ok(ResourcePlan {principal,deployment:deployment.into(),participant,installed_revision,binding_revision,kv,materialized,key_bucket_materialized})
     })?;
     let jetstream = async_nats::jetstream::new(operational.clone());
     // Empty projections are valid only after inspecting the installed declaration set.
@@ -206,6 +217,9 @@ pub(crate) async fn materialize_native_kv(
                     }
                 }
                 Err(error) if matches!(error.kind(),async_nats::jetstream::context::ConsumerInfoErrorKind::NotFound) => {
+                    if plan.materialized.contains(&allocation.resource_id) {
+                        return Err(AuthError::Broker(format!("previously materialized Job consumer '{}' is missing", binding.consumer_name)));
+                    }
                     stream.create_consumer_strict(async_nats::jetstream::consumer::pull::Config {
                         durable_name: Some(binding.consumer_name.clone()),
                         description: Some(marker.clone()),
@@ -229,6 +243,9 @@ pub(crate) async fn materialize_native_kv(
                         if config.description.as_deref() != Some(key_marker.as_str()) || config.storage != async_nats::jetstream::stream::StorageType::File || config.max_age != Duration::ZERO || config.subjects != vec![format!("$KV.{key_bucket}.>")] { return Err(AuthError::Conflict); }
                     }
                     Err(error) if matches!(error.kind(),async_nats::jetstream::context::GetStreamErrorKind::JetStream(error) if error.error_code()==async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND) => {
+                        if plan.key_bucket_materialized {
+                            return Err(AuthError::Broker(format!("previously materialized Job key bucket '{key_bucket}' is missing")));
+                        }
                         jetstream.create_key_value(async_nats::jetstream::kv::Config { bucket:key_bucket, description:key_marker, history:1, storage:async_nats::jetstream::stream::StorageType::File, ..Default::default() }).await.map_err(|error|AuthError::Broker(error.to_string()))?;
                     }
                     Err(error) => return Err(AuthError::Broker(error.to_string())),
@@ -253,6 +270,9 @@ pub(crate) async fn materialize_native_kv(
                         }
                     }
                     Err(error) if matches!(error.kind(),async_nats::jetstream::context::ConsumerInfoErrorKind::NotFound) => {
+                        if plan.materialized.contains(&allocation.resource_id) {
+                            return Err(AuthError::Broker(format!("previously materialized Event consumer '{consumer_name}' is missing")));
+                        }
                         stream.create_consumer_strict(async_nats::jetstream::consumer::pull::Config {
                             durable_name: Some(consumer_name.clone()),
                             description: Some(marker.clone()),
@@ -275,6 +295,9 @@ pub(crate) async fn materialize_native_kv(
             match jetstream.get_stream(&stream_name).await {
                 Ok(_) => (),
                 Err(error) if matches!(error.kind(),async_nats::jetstream::context::GetStreamErrorKind::JetStream(error) if error.error_code()==async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND) => {
+                    if plan.materialized.contains(&allocation.resource_id) {
+                        return Err(AuthError::Broker(format!("previously materialized object store '{bucket}' is missing")));
+                    }
                     jetstream.create_object_store(async_nats::jetstream::object_store::Config {
                         bucket: bucket.clone(),
                         description: Some(marker.clone()),
@@ -314,6 +337,9 @@ pub(crate) async fn materialize_native_kv(
                 .await
                 .map_err(|error| AuthError::Broker(error.to_string()))?,
             Err(error) if matches!(error.kind(),async_nats::jetstream::context::GetStreamErrorKind::JetStream(error) if error.error_code()==async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND) => {
+                if plan.materialized.contains(&allocation.resource_id) {
+                    return Err(AuthError::Broker(format!("previously materialized KV bucket '{bucket}' is missing")));
+                }
                 jetstream
                     .create_key_value(async_nats::jetstream::kv::Config {
                         bucket: bucket.clone(),

@@ -98,6 +98,11 @@ required before acknowledging source work. Both Rust and TypeScript lifecycle
 publishers await the broker acknowledgement; typed live updates use core NATS
 without requiring a durable stream.
 
+Keyed Created and Started lifecycle events carry concurrency metadata from the
+successful admission and slot-acquisition transitions. The Jobs projection uses
+that evidence to associate queued and active jobs with their key; `GetKey`
+requires the projection and coordinator membership to agree before returning.
+
 Key paths compile to typed scalar accessors. Optional or nonscalar leaves are
 compile errors. Existing collision-safe key encoding and reject/coalesce/
 replace-oldest queue behavior remain.

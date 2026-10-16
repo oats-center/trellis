@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use trellis_jobs_runtime::{
     jobs_admin_resources, start_jobs_projector, start_worker_presence_projector,
-    JobResourceResolver, JobsAdminResources, JobsProjectorHandle, JobsQuery,
-    SqliteJobResourceResolver, SqliteJobsStore, WorkerPresenceProjectorHandle,
+    JobResourceResolver, JobsAdminResources, JobsProjectorHandle, JobsQuery, SqliteJobsStore,
+    WorkerPresenceProjectorHandle,
 };
 use trellis_rs::service::{internal::run_builtin_authenticated_router, ServerError};
 
@@ -14,6 +14,7 @@ use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};
 use crate::{StorageBackend, SubsystemName};
 
 const JOBS_API_ID: &str = "trellis.jobs@v1";
+mod resolver;
 
 fn runtime_error(error: ServerError) -> RuntimeError {
     RuntimeError::Nats(error.to_string())
@@ -93,15 +94,17 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .map_err(|error| RuntimeError::Nats(format!("failed to open Jobs SQLite: {error}")))?;
     let jobs_runtime = trellis_rs::jobs::JobsRuntime::from_nats(context.trellis_nats.clone());
     let resources = jobs_admin_resources();
-    let StorageBackend::Sqlite(platform_storage) = context
-        .config
-        .platform_storage_backend()
-        .map_err(RuntimeError::Config)?;
-    let resolver: Arc<dyn JobResourceResolver> = Arc::new(SqliteJobResourceResolver::new(
-        platform_storage.path.clone(),
-        context.trellis_nats.clone(),
-        resources.jobs_stream.clone(),
-    ));
+    let evidence = crate::resource_evidence::ResourceEvidenceReader::new(
+        context
+            .live_providers
+            .receiver(crate::platform::LiveProviderRole::Jobs),
+        stop.clone(),
+    );
+    let resolver: Arc<dyn JobResourceResolver> = Arc::new(resolver::AuthJobResourceResolver {
+        evidence: evidence.clone(),
+        nats: context.trellis_nats.clone(),
+        jobs_stream: resources.jobs_stream.clone(),
+    });
     let query = JobsQuery::with_store(jobs_runtime.clone(), store.clone(), Arc::clone(&resolver));
     let mut router = trellis_jobs_runtime::build_router_with_query(query);
     trellis_jobs_runtime::register_jobs_watch_live(
@@ -135,12 +138,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 return Ok(());
             };
             let mut router = router;
-            history::register(
-                &mut router,
-                platform_storage.path.clone(),
-                context_nats,
-                owner.clone(),
-            );
+            history::register(&mut router, evidence, context_nats, owner.clone());
             router.set_live_owner(owner.clone());
             let validator = owner.runtime_validator(JOBS_API_ID);
             run_builtin_authenticated_router(owner, router, validator).await

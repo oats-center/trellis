@@ -7,7 +7,8 @@
     "types": ["node", "svelte"],
     "strict": true,
     "verbatimModuleSyntax": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["src/**/*.ts", "src/**/*.svelte"],
   "exclude": ["src/**/*_test.ts", "src/**/*.test.ts", "src/**/*.spec.ts"]

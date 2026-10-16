@@ -67,6 +67,7 @@ type __ActionNames = {
 	readonly "trellis.auth@v1:rpc:PlatformPrivileges.List": "PlatformPrivileges.List";
 	readonly "trellis.auth@v1:rpc:PlatformPrivileges.Revoke": "PlatformPrivileges.Revoke";
 	readonly "trellis.auth@v1:rpc:Principals.EffectiveAccess": "Principals.EffectiveAccess";
+	readonly "trellis.auth@v1:rpc:ResourceBindings.Query": "ResourceBindings.Query";
 	readonly "trellis.auth@v1:rpc:Resources.Get": "Resources.Get";
 	readonly "trellis.auth@v1:rpc:Resources.List": "Resources.List";
 	readonly "trellis.auth@v1:rpc:Resources.Remove": "Resources.Remove";
@@ -156,7 +157,7 @@ export declare const participant: {
 	readonly __runtimeTypes?: typeof __participant.__runtimeTypes;
 	readonly packageEvidence: unknown;
 };
-export declare const PARTICIPANT_DIGEST: "LGHIrTQJ6ifW76Huwm7r6GZUKEW6WPphODpTswMD0c0";
+export declare const PARTICIPANT_DIGEST: "Q4yP_ugdXI1xZ825OyMvE1Vpn6tqmV02p3YFgEZLcBE";
 export type Participant = typeof participant;
 export type ResourceDescriptors = typeof participant.resources;
 export type ConnectionsResource = ResourceDescriptors["connections"];

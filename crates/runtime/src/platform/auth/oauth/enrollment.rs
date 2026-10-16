@@ -237,14 +237,27 @@ pub(in crate::platform::auth) fn validate_selection(
     required: &Vec<String>,
     optional: &Vec<String>,
 ) -> Result<(), AuthError> {
-    let metadata: String = connection
+    let metadata: Option<String> = connection
         .query_row(
             "SELECT metadata_json FROM auth_oauth_clients WHERE client_id=?1",
             [client],
             |row| row.get(0),
         )
-        .optional()?
-        .ok_or(AuthError::Denied)?;
+        .optional()?;
+    let Some(metadata) = metadata else {
+        // Only managed clients have Auth-owned companion bindings. A validated
+        // CIMD client may request ordinary consent, never assert such a binding.
+        let known: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM auth_cimd_clients WHERE client_id=?1)",
+            [client],
+            |row| row.get(0),
+        )?;
+        return if known {
+            Ok(())
+        } else {
+            Err(AuthError::Denied)
+        };
+    };
     let metadata: Value = serde_json::from_str(&metadata)?;
     let Some(deployment) = metadata["trellis_companion"]["deploymentId"].as_str() else {
         return Ok(());

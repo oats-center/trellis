@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   clearPreservedDeviceActivationCallbackState,
@@ -7,24 +8,8 @@ import {
   preserveDeviceActivationCallbackState,
 } from "./callback_state.ts";
 
-function createStorage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
-  const values = new Map<string, string>();
-
-  return {
-    getItem(key) {
-      return values.get(key) ?? null;
-    },
-    setItem(key, value) {
-      values.set(key, value);
-    },
-    removeItem(key) {
-      values.delete(key);
-    },
-  };
-}
-
-Deno.test("device activation callback state round-trips through storage", () => {
-  const storage = createStorage();
+test("device activation callback state round-trips through Node Web Storage", () => {
+  const storage = sessionStorage;
   clearPreservedDeviceActivationCallbackState(storage);
 
   preserveDeviceActivationCallbackState(storage, {
@@ -32,27 +17,25 @@ Deno.test("device activation callback state round-trips through storage", () => 
     callbackToken: "callback-token",
   });
 
-  assertEquals(getPreservedDeviceActivationCallbackState(storage), {
+  assert.deepEqual(getPreservedDeviceActivationCallbackState(storage), {
     flowId: "device-flow",
     callbackToken: "callback-token",
   });
 
   clearPreservedDeviceActivationCallbackState(storage);
-  assertEquals(getPreservedDeviceActivationCallbackState(storage), null);
+  assert.deepEqual(getPreservedDeviceActivationCallbackState(storage), null);
 });
 
-Deno.test("device activation auth callback only matches explicit callback markers", () => {
-  assertEquals(
+test("device activation auth callback only matches explicit callback markers", () => {
+  assert.deepEqual(
     isDeviceActivationAuthCallback(
-      new URL(
-        "https://auth.example.com/login/device?flowId=device-flow",
-      ),
+      new URL("https://auth.example.com/login/device?flowId=device-flow"),
       { flowId: "device-flow", callbackToken: "callback-token" },
     ),
     false,
   );
 
-  assertEquals(
+  assert.deepEqual(
     isDeviceActivationAuthCallback(
       new URL(
         "https://auth.example.com/login/device?portalCallback=callback-token&flowId=auth-flow",

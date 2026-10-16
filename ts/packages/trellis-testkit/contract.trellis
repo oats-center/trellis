@@ -13,6 +13,8 @@ agent cli {
     capability capabilityGrantsGrant;
     capability capabilityGrantsRevoke;
     capability connectionsRead;
+    capability authorizationSessionsRead;
+    capability authorizationSessionsRevoke;
     capability connectionsKick;
     capability deploymentsRead;
     capability deploymentsCreate;
@@ -20,6 +22,7 @@ agent cli {
     capability deploymentsEnable;
     capability deploymentsDisable;
     capability devicesProvision;
+    capability devicesRead;
     capability apisRead;
     capability apisReview;
     capability apisAccept;
@@ -29,12 +32,16 @@ agent cli {
     capability serviceInstancesDisable;
     capability serviceInstancesProvision;
     capability usersCreate;
+    capability usersRead;
+    capability usersUpdate;
     capability usersPasswordReset;
     capability sessionsRead;
     capability sessionsRevoke;
     required capability identitiesRead;
+    required capability accountRead;
   }
   use events {
+    capability inspect;
     capability consumersInspect;
     capability deadLettersDismiss;
     capability deadLettersInspect;

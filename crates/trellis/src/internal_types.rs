@@ -1744,6 +1744,17 @@ pub mod trellis {
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
     }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthEventConsumerEvidence {
+        pub consumer: String,
+        #[serde(rename = "filterSubjects")]
+        pub filter_subjects: Vec<String>,
+        #[serde(rename = "replayConsumer")]
+        pub replay_consumer: String,
+        pub stream: String,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
     #[derive(
         Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
     )]
@@ -1913,6 +1924,19 @@ pub mod trellis {
         #[serde(rename = "keyId")]
         pub key_id: crate::__types::trellis::AuthKeyId,
         pub rotation: crate::__types::trellis::AuthSignedBlob,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthJobResourceEvidence {
+        pub consumer: String,
+        pub namespace: String,
+        #[serde(rename = "publishPrefix")]
+        pub publish_prefix: String,
+        #[serde(rename = "workStream")]
+        pub work_stream: String,
+        #[serde(rename = "workSubject")]
+        pub work_subject: String,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
     }
@@ -2737,6 +2761,139 @@ pub mod trellis {
         pub state: crate::__types::trellis::AuthResourceState,
         #[serde(flatten)]
         pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthResourceBindingsQueryRequest {
+        #[serde(rename = "instanceId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub instance_id: Option<trellis_rs::generated::Ulid>,
+        pub kind: crate::__types::trellis::AuthResourceEvidenceKind,
+        #[serde(rename = "localName")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub local_name: Option<String>,
+        #[serde(rename = "ownerId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub owner_id: Option<trellis_rs::generated::Ulid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub page: Option<crate::__types::CursorQuery>,
+        #[serde(rename = "participantId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub participant_id: Option<String>,
+        #[serde(rename = "resourceId")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub resource_id: Option<crate::__types::trellis::AuthDigest>,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    pub type AuthResourceBindingsQueryResponse =
+        crate::__types::CursorPage<crate::__types::trellis::AuthResourceEvidence>;
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    pub struct AuthResourceEvidence {
+        #[serde(rename = "eventConsumer")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub event_consumer: Option<crate::__types::trellis::AuthEventConsumerEvidence>,
+        #[serde(rename = "installedRevision")]
+        pub installed_revision: crate::__types::trellis::AuthRevision,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub job: Option<crate::__types::trellis::AuthJobResourceEvidence>,
+        pub kind: crate::__types::trellis::AuthResourceEvidenceKind,
+        #[serde(rename = "localName")]
+        pub local_name: String,
+        #[serde(rename = "ownerId")]
+        pub owner_id: trellis_rs::generated::Ulid,
+        #[serde(rename = "participantId")]
+        pub participant_id: String,
+        #[serde(rename = "resourceBindingsDigest")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub resource_bindings_digest: Option<crate::__types::trellis::AuthDigest>,
+        #[serde(rename = "resourceId")]
+        pub resource_id: crate::__types::trellis::AuthDigest,
+        pub state: crate::__types::trellis::AuthResourceEvidenceState,
+        #[serde(flatten)]
+        pub extra: serde_json::Map<String, serde_json::Value>,
+    }
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum AuthResourceEvidenceKind {
+        EventConsumer,
+        JobQueue,
+        Unknown(String),
+    }
+    impl AuthResourceEvidenceKind {
+        pub fn as_str(&self) -> &str {
+            match self {
+                Self::EventConsumer => "eventConsumer",
+                Self::JobQueue => "jobQueue",
+                Self::Unknown(value) => value,
+            }
+        }
+    }
+    impl AsRef<str> for AuthResourceEvidenceKind {
+        fn as_ref(&self) -> &str {
+            self.as_str()
+        }
+    }
+    impl std::fmt::Display for AuthResourceEvidenceKind {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_str())
+        }
+    }
+    impl serde::Serialize for AuthResourceEvidenceKind {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str(self.as_str())
+        }
+    }
+    impl<'de> serde::Deserialize<'de> for AuthResourceEvidenceKind {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Ok(match value.as_str() {
+                "eventConsumer" => Self::EventConsumer,
+                "jobQueue" => Self::JobQueue,
+                _ => Self::Unknown(value),
+            })
+        }
+    }
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum AuthResourceEvidenceState {
+        Available,
+        Stale,
+        Unavailable,
+        Unknown(String),
+    }
+    impl AuthResourceEvidenceState {
+        pub fn as_str(&self) -> &str {
+            match self {
+                Self::Available => "available",
+                Self::Stale => "stale",
+                Self::Unavailable => "unavailable",
+                Self::Unknown(value) => value,
+            }
+        }
+    }
+    impl AsRef<str> for AuthResourceEvidenceState {
+        fn as_ref(&self) -> &str {
+            self.as_str()
+        }
+    }
+    impl std::fmt::Display for AuthResourceEvidenceState {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(self.as_str())
+        }
+    }
+    impl serde::Serialize for AuthResourceEvidenceState {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_str(self.as_str())
+        }
+    }
+    impl<'de> serde::Deserialize<'de> for AuthResourceEvidenceState {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+            Ok(match value.as_str() {
+                "available" => Self::Available,
+                "stale" => Self::Stale,
+                "unavailable" => Self::Unavailable,
+                _ => Self::Unknown(value),
+            })
+        }
     }
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     pub struct AuthResourceGetRequest {

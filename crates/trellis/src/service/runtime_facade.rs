@@ -602,8 +602,8 @@ impl ServiceHandle {
             })?;
         let lease = self
             .client()
-            .transport_generations()
-            .acquire_application_published()
+            .acquire_transport(&[], &[], self.client().transport_deadline())
+            .await
             .map_err(|error| JobsError::Message {
                 message: error.to_string(),
             })?;
@@ -1929,17 +1929,30 @@ async fn run_durable_event_pull_loop(
     loop {
         let is_replay = replay;
         replay = !replay;
-        let messages = match client
-            .event_messages::<serde_json::Value>(
-                if is_replay {
-                    config.replay_subscribe_options.clone()
-                } else {
-                    config.subscribe_options.clone()
-                },
-                None,
-                Some(1),
-            )
-            .await
+        let (messages, auth) = match async {
+            let lease = client
+                .acquire_transport(&[], &[], client.transport_deadline())
+                .await?;
+            let verifier = LocalAuthVerifier::new(
+                client.authorization_owner().clone(),
+                lease.nats().clone(),
+                auth.api_id(),
+            );
+            let messages = client
+                .event_messages_with_transport::<serde_json::Value>(
+                    lease,
+                    if is_replay {
+                        config.replay_subscribe_options.clone()
+                    } else {
+                        config.subscribe_options.clone()
+                    },
+                    None,
+                    Some(1),
+                )
+                .await?;
+            Ok::<_, TrellisClientError>((messages, verifier))
+        }
+        .await
         {
             Ok(messages) => messages,
             Err(error)

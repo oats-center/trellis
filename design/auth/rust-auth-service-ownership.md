@@ -28,6 +28,21 @@ installs canonical built-in participants, ensures first-admin account flow,
 rebuilds context/revocation KV mirrors, starts Auth HTTP/RPC/Callout/event
 subsystems, and reports readiness only after required publication succeeds.
 
+Fresh initialization atomically creates the protected administrator, accepted
+built-in authority, and bundled public-client registrations before provider
+admission. The username defaults to `admin`. An explicit initial password installs
+its verifier; otherwise the username is reserved with no password verifier and
+initialization issues a one-time `password_reset` flow. The replay response is
+sealed under existing OAuth custody in the same initialization transaction.
+The browser changes credentials, never creates administrator authority.
+
+Password-reset flows record issuance authority: an ordinary authorization session
+or the local operator. Ordinary RPC issuance still rejects the protected admin.
+Local initialization/recovery may issue its reset; redemption checks the bound
+principal, credential revision, protection status, token expiry, and portal CSRF.
+Explicit local recovery revokes prior pending links. Restart neither replaces
+credentials nor silently issues a new link.
+
 The runtime configuration contains only online issuer seed path and context/JWT
 policy. Offline root, certificate, manifest, and trust-floor configuration and
 CLI tooling do not exist.

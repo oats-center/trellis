@@ -236,7 +236,7 @@ pub async fn check(
             error.to_string(),
         ),
     }
-    if expected_resources.requires(SubsystemName::Platform) {
+    if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
         let keys = crate::platform::callout_keys(&config, &nats)?;
         let authorization = config.resolve_authorization()?;
         if let Err(error) =
@@ -942,45 +942,46 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
                 .map(|value| value.runtime_servers.as_str()),
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let read_only;
-    let (store, provision) = match context.authorization_store.get() {
-        Some(store) => (store, true),
+    let store = context.authorization_store.get();
+    let trust = match store {
+        Some(store) => store
+            .runtime_authorization_trust()
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
         None => {
-            let keys = crate::platform::callout_keys(&context.config, &nats)?;
-            read_only = Arc::new(
-                crate::platform::auth::SqliteAuthorizationStore::open_read_only(
-                    context.stores.platform()?,
-                    &context.config,
-                    keys.target_account(),
-                )?,
-            );
-            (&read_only, false)
+            let origin = context
+                .config
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.oauth.as_ref())
+                .map(|oauth| oauth.origin.as_str())
+                .ok_or_else(|| {
+                    RuntimeError::Platform(
+                        "the selected Auth origin is required for split roles".into(),
+                    )
+                })?;
+            trellis_rs::auth::discover_native_oauth(origin)
+                .await
+                .map_err(|error| {
+                    RuntimeError::Platform(format!("discover configured Auth origin: {error}"))
+                })?
+                .trust
         }
     };
     for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
         let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
-        let deployment = if provision {
-            crate::platform::prepare_builtin_live_provider(
-                role,
-                store,
-                &context.trellis_nats,
-                &identity_seed,
+        let deployment = if let Some(store) = store {
+            Some(
+                crate::platform::prepare_builtin_live_provider(
+                    role,
+                    store,
+                    &context.trellis_nats,
+                    &identity_seed,
+                )
+                .await?,
             )
-            .await?
         } else {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-                .ok_or_else(|| {
-                    RuntimeError::Platform("current time is outside the supported range".into())
-                })?;
-            crate::platform::read_builtin_live_provider(role, store, &identity_seed, now)
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?
+            None
         };
-        let trust = store
-            .runtime_authorization_trust()
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let client = crate::platform::connect_builtin_live_provider(
             role,
             &identity_seed,
@@ -990,17 +991,31 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
                     .split(',')
                     .map(|server| server.trim().to_owned())
                     .collect(),
-                trust,
-                expected_principal_id: deployment.principal_id,
-                expected_binding: trellis_protocol::SessionBinding::Service {
-                    participant_id: deployment.participant_id,
-                    deployment_id: deployment.deployment_id,
-                    instance_id: deployment.instance_id,
-                },
+                trust: trust.clone(),
                 timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
             },
         )
         .await?;
+        if let Some(deployment) = deployment {
+            let authority = client
+                .authorization_context()
+                .map_err(|error| RuntimeError::Platform(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeError::Platform("built-in provider has no installed authority".into())
+                })?;
+            if authority.context.unsigned.principal_id != deployment.principal_id
+                || authority.context.unsigned.binding
+                    != (trellis_protocol::SessionBinding::Service {
+                        participant_id: deployment.participant_id,
+                        deployment_id: deployment.deployment_id,
+                        instance_id: deployment.instance_id,
+                    })
+            {
+                return Err(RuntimeError::Platform(
+                    "installed built-in authority does not match provisioning".into(),
+                ));
+            }
+        }
         context.live_providers.install(
             role,
             trellis_rs::service::LiveProviderOwner::from_connected_client(Arc::new(client)),

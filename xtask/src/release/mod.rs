@@ -17,11 +17,6 @@ use versioning::{
     require_stable_version, version_base, write_github_env,
 };
 
-const RELEASE_JS_INTERNAL_NPM_VERSION_FILES: &[&str] = &[
-    "ts/packages/trellis/scripts/build_npm.ts",
-    "ts/packages/trellis-svelte/scripts/build_npm.ts",
-    "ts/packages/trellis/tests/publishing_targets_test.ts",
-];
 #[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
 pub(crate) enum ReleaseCommand {
     #[command(name = "check-versions")]
@@ -180,8 +175,7 @@ mod tests {
     use super::versioning::{
         collect_versions, prepare_release, rewrite_cargo_manifest_versions,
         rewrite_cargo_manifest_versions_for_release, rewrite_js_internal_npm_dependency_versions,
-        rewrite_json_manifest_internal_jsr_dependency_versions, rewrite_json_manifest_version,
-        version_base, ReleaseVersion,
+        rewrite_json_manifest_version, version_base, ReleaseVersion,
     };
     use super::{parse_release_command, ReleaseCommand};
     use std::fs;
@@ -268,7 +262,7 @@ mod tests {
             original,
             "0.8.2",
             "0.9.0",
-            std::path::Path::new("deno.json"),
+            std::path::Path::new("package.json"),
         )
         .expect("rewrite json version");
         assert_eq!(
@@ -278,21 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_json_manifest_updates_internal_jsr_dependencies() {
-        let original = "{\n  \"imports\": {\n    \"@oatscenter/trellis\": \"jsr:@oatscenter/trellis@^0.8.2\",\n    \"@oatscenter/trellis/sdk/auth\": \"jsr:@oatscenter/trellis@^0.8.2/sdk/auth\",\n    \"@std/path\": \"jsr:@std/path@^1.1.4\"\n  }\n}\n";
-        let updated = rewrite_json_manifest_internal_jsr_dependency_versions(
-            original,
-            "0.8.2",
-            "0.8.2-rc.1",
-            std::path::Path::new("deno.json"),
-        )
-        .expect("rewrite jsr dependencies");
-        assert!(updated.contains("@oatscenter/trellis@^0.8.2-rc.1"));
-        assert!(updated.contains("@std/path@^1.1.4"));
-    }
-
-    #[test]
-    fn prepare_release_updates_internal_jsr_dependency_versions() {
+    fn prepare_release_updates_internal_npm_dependency_versions() {
         let root = temp_repo_root();
         fs::create_dir_all(&root).expect("mkdir repo");
         fs::write(
@@ -300,12 +280,12 @@ mod tests {
             "[workspace.package]\nversion = \"0.8.2\"\n",
         )
         .expect("write workspace manifest");
-        let manifest = root.join("ts/packages/trellis-testkit/deno.json");
+        let manifest = root.join("ts/packages/trellis-testkit/package.json");
         fs::create_dir_all(manifest.parent().expect("manifest parent"))
             .expect("mkdir manifest parent");
         fs::write(
             &manifest,
-            "{\n  \"name\": \"@oatscenter/trellis-testkit\",\n  \"version\": \"0.8.2\",\n  \"imports\": {\n    \"@oatscenter/trellis\": \"jsr:@oatscenter/trellis@^0.8.2\"\n  }\n}\n",
+            "{\n  \"name\": \"@oatscenter/trellis-testkit\",\n  \"version\": \"0.8.2\",\n  \"dependencies\": {\n    \"@oatscenter/trellis\": \"^0.8.2\",\n    \"zod\": \"^4.0.0\"\n  }\n}\n",
         )
         .expect("write manifest");
         prepare_release(
@@ -316,9 +296,14 @@ mod tests {
             },
         )
         .expect("prepare release");
-        assert!(fs::read_to_string(&manifest)
-            .expect("read updated manifest")
-            .contains("0.8.2-rc.1"));
+        let updated: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(updated["version"], "0.8.2-rc.1");
+        assert_eq!(
+            updated["dependencies"]["@oatscenter/trellis"],
+            "^0.8.2-rc.1"
+        );
+        assert_eq!(updated["dependencies"]["zod"], "^4.0.0");
         fs::remove_dir_all(root).expect("remove temp repo");
     }
 
@@ -455,17 +440,18 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_js_internal_npm_dependency_versions_updates_build_scripts() {
-        let original = "const dependencies = {\n  \"@oatscenter/result\": \"^0.8.2\",\n  \"@oatscenter/trellis\": \"~0.8.2\",\n};\n";
+    fn rewrite_npm_dependency_versions_preserves_ranges() {
+        let original = "{\n  \"dependencies\": {\n    \"@oatscenter/result\": \"^0.8.2\",\n    \"@oatscenter/trellis\": \"~0.8.2\"\n  }\n}\n";
         let updated = rewrite_js_internal_npm_dependency_versions(
             original,
             "0.8.2",
             "0.9.0",
-            std::path::Path::new("build_npm.ts"),
+            std::path::Path::new("package.json"),
         )
         .expect("rewrite js internal npm dependencies");
-        assert!(updated.contains("^0.9.0"));
-        assert!(updated.contains("~0.9.0"));
+        let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(updated["dependencies"]["@oatscenter/result"], "^0.9.0");
+        assert_eq!(updated["dependencies"]["@oatscenter/trellis"], "~0.9.0");
     }
 
     #[test]
@@ -474,11 +460,11 @@ mod tests {
         fs::create_dir_all(root.join("ts/packages/trellis")).expect("mkdir package");
         fs::create_dir_all(root.join("web")).expect("mkdir app");
         fs::write(
-            root.join("ts/packages/trellis/deno.json"),
+            root.join("ts/packages/trellis/package.json"),
             "{\"version\":\"0.8.2\"}\n",
         )
         .expect("write package manifest");
-        fs::write(root.join("web/deno.json"), "{\"version\":\"0.0.0\"}\n")
+        fs::write(root.join("web/package.json"), "{\"version\":\"0.0.0\"}\n")
             .expect("write app manifest");
         fs::write(
             root.join("Cargo.toml"),

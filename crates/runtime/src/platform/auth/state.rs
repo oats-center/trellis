@@ -79,11 +79,10 @@ impl SqliteAuthorizationStore {
             return Err(AuthError::Denied);
         };
         self.transaction(|connection| {
-            let resources: Option<String> = connection.query_row(
-                "SELECT b.resource_commitments_json FROM auth_instances i JOIN auth_deployments d USING(deployment_id) JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id AND b.installed_revision=i.installed_revision JOIN auth_devices v ON v.principal_id=i.principal_id AND v.deployment_id=i.deployment_id WHERE i.principal_id=?1 AND i.instance_id=?2 AND i.deployment_id=?3 AND d.participant_id=?4 AND i.state='active' AND d.state='active' AND v.state='active'",
-                params![principal,instance_id,deployment_id,participant_id], |row| row.get(0),
-            ).optional()?;
-            let resources: Value = decode(&resources.ok_or(AuthError::Denied)?)?;
+            let projection = super::native_projection::project_instance(connection,instance_id,time::OffsetDateTime::now_utc().unix_timestamp())?;
+            let active: bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_devices WHERE principal_id=?1 AND deployment_id=?2 AND state='active')",params![principal,deployment_id],|row|row.get(0))?;
+            if !active || projection.principal_id != principal || projection.deployment_id != *deployment_id || projection.participant_id != *participant_id {return Err(AuthError::Denied);}
+            let resources = projection.resources;
             if bindings_digest != Some(digest(&resources)?.as_str()) { return Err(AuthError::Denied); }
             let resource_id = resources.get("state").and_then(|state| state.get(resource_name)).and_then(Value::as_str).ok_or(AuthError::Denied)?;
             let commitment: Option<(String,String,String)> = connection.query_row(

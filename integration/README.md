@@ -1,7 +1,7 @@
 # Live Integration
 
 Tests protect observable behavior, security/data integrity, exact wire
-compatibility, and real regressions. Executable Cargo and Deno tests are the
+compatibility, and real regressions. Executable Cargo and Node tests are the
 catalog; there is no matrix, shared-runtime assignment, or custom scheduler.
 
 Prepare generated artifacts and build the two binaries once:
@@ -16,14 +16,15 @@ export TRELLIS_TEST_CLI_BIN="$PWD/target/debug/trellis"
 Use ordinary discovery and native filters:
 
 ```sh
-cargo test --manifest-path Cargo.toml -p trellis-rs \
-  --features live-integration --test integration -- --test-threads=1 --nocapture
-deno test -A -c ts/integration/deno.json ts/integration
+cargo test --manifest-path Cargo.toml --workspace
+npm run test:integration
 ```
 
-The ordinary `deno task -c ts/deno.json test:integration` runner executes four
-test files concurrently by default. Set `DENO_JOBS` to override that limit.
-Direct `deno test` runs remain serial unless passed `--parallel`. Each Deno test
+The ordinary `npm run test:integration` runner executes four
+test files concurrently by default. Set `TRELLIS_TEST_CONCURRENCY` to override that limit.
+Pass Node test flags and paths after `--`, for example
+`npm run test:integration -- --test-name-pattern='generated runtime workflows' ts/integration/runtime_test.ts`.
+Each Node test
 owns and stops its real NATS and Trellis processes. The Rust testkit instead
 owns the linked production runtime task and real NATS process; CLI/server
 executables are required only for TypeScript and executable-specific acceptance.
@@ -38,7 +39,7 @@ those patches). The artifact-only package consumer verifies the released-style
 closure without a source checkout or either Trellis executable.
 
 Use the cheapest real boundary. SQLite outbox commit/rollback belongs in the
-ordinary Deno package suite, not a live server test. Generated consumers should
+ordinary Node package suite, not a live server test. Generated consumers should
 compile and run; do not inspect generated source strings, AST shape, helper
 selection, internal call counts, or test inventories. Keep realistic negative
 security and data-loss tests. Exact vectors belong in

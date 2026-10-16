@@ -23,13 +23,12 @@ or participant.
 The generated ESM package contains executable `.js`, `.d.ts`, and
 `package.json`, at the source package version, with the published runtime
 dependency matching the CLI. It needs no consumer transpiler or Trellis CLI.
-Install it with ordinary package tooling, for example `npm install ./trellis`;
-Deno projects can map the package name to `./trellis/index.js` in their own
-imports. Generation creates no Deno configuration and never edits the consumer's
-manifest. Commit output when clones should build without regeneration or the
+Install it with ordinary package tooling, for example `npm install ./trellis`.
+Generation never edits the consumer's manifest. Commit output when clones
+should build without regeneration or the
 Trellis source-package cache.
 
-Use `@oatscenter/trellis/service` for service bootstrap in Node or Deno. Pass
+Use `@oatscenter/trellis/service` for service bootstrap in Node 24. Pass
 `participant` and the immutable provisioned identity `seed` to
 `TrellisService.connect(...)`; `name` is optional. Automatic telemetry can be
 disabled with `telemetry: false`, while `runtime` configures service logging,

@@ -10,11 +10,36 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tracing_subscriber::prelude::*;
 use trellis_rs::jobs::JobProcessError;
-use trellis_rs::service::ServiceConnectOptions;
 use trellis_rs::telemetry::{init_from_env, TelemetryIdentity, TelemetryRole};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().nth(1).as_deref() == Some("builtin-evidence") {
+        use trellis_rs::generated::ParticipantDescriptor;
+        use trellis_runtime_apis::participants;
+        let (participant_id, package_evidence) = match std::env::args().nth(2).as_deref() {
+            Some("health") => (
+                participants::trellis_health_runtime::Participant::ID,
+                participants::trellis_health_runtime::Participant::package_evidence(),
+            ),
+            Some("jobs") => (
+                participants::trellis_jobs_runtime::Participant::ID,
+                participants::trellis_jobs_runtime::Participant::package_evidence(),
+            ),
+            Some("events") => (
+                participants::trellis_events_runtime::Participant::ID,
+                participants::trellis_events_runtime::Participant::package_evidence(),
+            ),
+            _ => return Err("unknown built-in role".into()),
+        };
+        println!(
+            "{}",
+            serde_json::to_string(
+                &serde_json::json!({"participantId":participant_id,"packageEvidence":package_evidence})
+            )?
+        );
+        return Ok(());
+    }
     let telemetry = init_from_env(TelemetryIdentity::new(
         "runtime-rust-provider",
         TelemetryRole::Service,
@@ -33,7 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut service = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    let mut service =
+        Participant::connect(trellis_runtime_acceptance::service_options(&url, &identity).await?)
+            .await?;
     let mut provider = Provider::new(&mut service);
     provider
         .runtime_trellis_runtime_v1()

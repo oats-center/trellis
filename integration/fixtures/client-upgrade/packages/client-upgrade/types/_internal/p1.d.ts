@@ -965,6 +965,17 @@ export declare const AuthErrorDetailsCodec: {
 	decode(value: unknown): AuthErrorDetails;
 	encode(value: AuthErrorDetails): unknown;
 };
+export type AuthEventConsumerEvidence = {
+	readonly consumer: string;
+	readonly filterSubjects: Array<string>;
+	readonly replayConsumer: string;
+	readonly stream: string;
+	readonly [key: string]: unknown;
+};
+export declare const AuthEventConsumerEvidenceCodec: {
+	decode(value: unknown): AuthEventConsumerEvidence;
+	encode(value: AuthEventConsumerEvidence): unknown;
+};
 export type AuthExistingPassword = string;
 export declare const AuthExistingPasswordCodec: {
 	decode(value: unknown): AuthExistingPassword;
@@ -1109,6 +1120,18 @@ export type AuthIssuerRotateResponse = {
 export declare const AuthIssuerRotateResponseCodec: {
 	decode(value: unknown): AuthIssuerRotateResponse;
 	encode(value: AuthIssuerRotateResponse): unknown;
+};
+export type AuthJobResourceEvidence = {
+	readonly consumer: string;
+	readonly namespace: string;
+	readonly publishPrefix: string;
+	readonly workStream: string;
+	readonly workSubject: string;
+	readonly [key: string]: unknown;
+};
+export declare const AuthJobResourceEvidenceCodec: {
+	decode(value: unknown): AuthJobResourceEvidence;
+	encode(value: AuthJobResourceEvidence): unknown;
 };
 export type AuthKeyId = string;
 export declare const AuthKeyIdCodec: {
@@ -1641,6 +1664,67 @@ export type AuthResourceBinding = {
 export declare const AuthResourceBindingCodec: {
 	decode(value: unknown): AuthResourceBinding;
 	encode(value: AuthResourceBinding): unknown;
+};
+export type AuthResourceBindingsQueryRequest = {
+	readonly instanceId?: ReturnType<typeof codecs.ulid.decode>;
+	readonly kind: AuthResourceEvidenceKind;
+	readonly localName?: string;
+	readonly ownerId?: ReturnType<typeof codecs.ulid.decode>;
+	readonly page?: {
+		readonly cursor?: string;
+		readonly limit?: number;
+		readonly [key: string]: unknown;
+	};
+	readonly participantId?: string;
+	readonly resourceId?: AuthDigest;
+	readonly [key: string]: unknown;
+};
+export declare const AuthResourceBindingsQueryRequestCodec: {
+	decode(value: unknown): AuthResourceBindingsQueryRequest;
+	encode(value: AuthResourceBindingsQueryRequest): unknown;
+};
+export type AuthResourceBindingsQueryResponse = {
+	readonly items: Array<AuthResourceEvidence>;
+	readonly page: {
+		readonly nextCursor?: string;
+		readonly [key: string]: unknown;
+	};
+	readonly [key: string]: unknown;
+};
+export declare const AuthResourceBindingsQueryResponseCodec: {
+	decode(value: unknown): AuthResourceBindingsQueryResponse;
+	encode(value: AuthResourceBindingsQueryResponse): unknown;
+};
+export type AuthResourceEvidence = {
+	readonly eventConsumer?: AuthEventConsumerEvidence;
+	readonly installedRevision: AuthRevision;
+	readonly job?: AuthJobResourceEvidence;
+	readonly kind: AuthResourceEvidenceKind;
+	readonly localName: string;
+	readonly ownerId: ReturnType<typeof codecs.ulid.decode>;
+	readonly participantId: string;
+	readonly resourceBindingsDigest?: AuthDigest;
+	readonly resourceId: AuthDigest;
+	readonly state: AuthResourceEvidenceState;
+	readonly [key: string]: unknown;
+};
+export declare const AuthResourceEvidenceCodec: {
+	decode(value: unknown): AuthResourceEvidence;
+	encode(value: AuthResourceEvidence): unknown;
+};
+export type AuthResourceEvidenceKind = "eventConsumer" | "jobQueue" | (string & {
+	readonly __openEnum?: never;
+});
+export declare const AuthResourceEvidenceKindCodec: {
+	decode(value: unknown): AuthResourceEvidenceKind;
+	encode(value: AuthResourceEvidenceKind): unknown;
+};
+export type AuthResourceEvidenceState = "available" | "stale" | "unavailable" | (string & {
+	readonly __openEnum?: never;
+});
+export declare const AuthResourceEvidenceStateCodec: {
+	decode(value: unknown): AuthResourceEvidenceState;
+	encode(value: AuthResourceEvidenceState): unknown;
 };
 export type AuthResourceGetRequest = {
 	readonly resourceId: AuthDigest;

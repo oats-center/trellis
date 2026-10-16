@@ -14,5 +14,5 @@ packages.
 
 This walkthrough implements one RPC end to end. The operations, jobs, State, and
 store guides expand those features independently; it is not a complete IDL
-grammar reference. Deno, environment variables, and UUIDs are demonstration
+grammar reference. Node and environment variables are demonstration
 choices, not Trellis requirements.

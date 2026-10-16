@@ -4,10 +4,9 @@ import {
   JetStreamError,
   jetstreamManager,
 } from "@nats-io/jetstream";
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { deadline } from "@nats-io/nats-core";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { join } from "@std/path";
 import { NativeTransportGate } from "../packages/trellis-testkit/src/native_gate.ts";
 import { startTrellisRuntime } from "./_support/runtime.ts";
 import { TcpProxy } from "../packages/trellis-testkit/src/runtime.ts";
@@ -19,16 +18,14 @@ import {
   WorkerLoopStopError,
 } from "../packages/trellis/service/runtime/internal_jobs/runtime-worker.ts";
 
-Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops during recovery", async () => {
-  const workdir = await Deno.makeTempDir({
-    prefix: "jobs-receiving-recovery-",
-  });
+test("managed Jobs slot recovers a real missed-heartbeat receive and stops during recovery", async () => {
   const nats = await startTrellisRuntime();
   const gate = new NativeTransportGate();
-  const proxy = TcpProxy.start(nats.natsUrl, { scheme: "nats", gate });
+  const proxy = await TcpProxy.start(nats.natsUrl, { scheme: "nats", gate });
   const nc = await nats.connectNats({
     servers: proxy.url,
   });
+  const managerNc = await nats.connectNats();
   let slot: Awaited<ReturnType<typeof startQueueWorkerLoop>> | undefined;
   let hold = gate.armResponseHold(
     "$JS.API.CONSUMER.MSG.NEXT.ADAPTER_JOBS.recovery",
@@ -36,7 +33,7 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
   const finishHandler = Promise.withResolvers<void>();
   try {
     const js = jetstream(nc);
-    const jsm = await jetstreamManager(await nats.connectNats());
+    const jsm = await jetstreamManager(managerNc);
     const prefix = "adapter.jobs.recovery.work";
     await jsm.streams.add({
       name: "ADAPTER_JOBS",
@@ -83,7 +80,7 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
       cancellationRegistry: new ActiveJobCancellationRegistry(),
       acquireSession(signal) {
         signal.throwIfAborted();
-        assertEquals(
+        assert.deepEqual(
           releases,
           acquisitions,
           "the settled session must be released before reacquisition",
@@ -114,7 +111,7 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
         });
       },
       handler: async (_job, session) => {
-        assertEquals(session.nc, nc);
+        assert.deepEqual(session.nc, nc);
         handlerCount++;
         handled.resolve();
         await finishHandler.promise;
@@ -124,13 +121,13 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
     await deadline(hold.held, 5_000);
     const firstError = await deadline(failures[0]!.promise, 5_000);
     assert(firstError instanceof JetStreamError);
-    assertEquals(firstError.message, "heartbeats missed");
-    assertEquals(nc.isClosed(), false);
+    assert.deepEqual(firstError.message, "heartbeats missed");
+    assert.deepEqual(nc.isClosed(), false);
     await hold.release();
     const created = await manager.create("work", {});
     await waitFor(() => handlerCount === 1);
     await handled.promise;
-    assertEquals(
+    assert.deepEqual(
       releases,
       acquisitions - 1,
       "accepted handler retains its receiving session",
@@ -141,9 +138,11 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
       last_by_subj: `${prefix}.${created.id}.completed`,
     });
     assert(completed);
-    assertEquals(JSON.parse(completed.string()).result, { recovered: true });
+    assert.deepEqual(JSON.parse(completed.string()).result, {
+      recovered: true,
+    });
     await nc.flush();
-    assertEquals(
+    assert.deepEqual(
       (await jsm.consumers.info("ADAPTER_JOBS", "recovery")).num_ack_pending,
       0,
     );
@@ -153,7 +152,7 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
     await deadline(hold.held, 5_000);
     const secondError = await deadline(failures[1]!.promise, 5_000);
     assert(secondError instanceof JetStreamError);
-    assertEquals(secondError.message, "heartbeats missed");
+    assert.deepEqual(secondError.message, "heartbeats missed");
     await deadline(recoveryReleased.promise, 5_000);
     // Let the slot enter its post-release recovery wait, without a timer sleep.
     await Promise.resolve();
@@ -161,13 +160,13 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
     const stoppedAcquisitions = acquisitions;
     await hold.release();
     await nc.flush();
-    assertEquals(
+    assert.deepEqual(
       acquisitions,
       stoppedAcquisitions,
       "stop during recovery must not acquire another receive",
     );
-    assertEquals(releases, acquisitions);
-    assertEquals(handlerCount, 1);
+    assert.deepEqual(releases, acquisitions);
+    assert.deepEqual(handlerCount, 1);
     hold = gate.armResponseHold(
       "$JS.API.CONSUMER.MSG.NEXT.ADAPTER_JOBS.recovery",
     );
@@ -201,11 +200,11 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
     });
     await deadline(hold.held, 5_000);
     await deadline(fixedFailure.promise, 5_000);
-    await assertRejects(
+    await assert.rejects(
       () => deadline(slot!.stop(), 5_000),
       WorkerLoopStopError,
     );
-    assertEquals(
+    assert.deepEqual(
       fixedReleases,
       1,
       "fixed host reports the receive failure after releasing ownership",
@@ -215,9 +214,9 @@ Deno.test("managed Jobs slot recovers a real missed-heartbeat receive and stops 
     await hold.release();
     await slot?.stop().catch(() => {});
     await nc.close();
-    proxy.stop();
+    await managerNc.close();
+    await proxy.stop();
     await nats.stop();
-    await Deno.remove(workdir, { recursive: true });
   }
 });
 

@@ -64,6 +64,7 @@ type __ActionNames = {
 	readonly "trellis.auth@v1:rpc:PlatformPrivileges.List": "PlatformPrivileges.List";
 	readonly "trellis.auth@v1:rpc:PlatformPrivileges.Revoke": "PlatformPrivileges.Revoke";
 	readonly "trellis.auth@v1:rpc:Principals.EffectiveAccess": "Principals.EffectiveAccess";
+	readonly "trellis.auth@v1:rpc:ResourceBindings.Query": "ResourceBindings.Query";
 	readonly "trellis.auth@v1:rpc:Resources.Get": "Resources.Get";
 	readonly "trellis.auth@v1:rpc:Resources.List": "Resources.List";
 	readonly "trellis.auth@v1:rpc:Resources.Remove": "Resources.Remove";

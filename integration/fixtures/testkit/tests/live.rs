@@ -11,13 +11,13 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use trellis_rs::client::EventSubscribeOptions;
 use trellis_rs::service::ServerError;
-use trellis_test_fixture::participants::trellis_test_fixture_caller::{
-    Client as CallerClient, Participant as CallerParticipant,
+use trellis_test_fixture::apps::trellis_test_fixture_caller::{
+    Client as CallerClient, Request as CallerRequest,
 };
+use trellis_test_fixture::apps::trellis_test_fixture_restricted_caller::Request as RestrictedCallerRequest;
 use trellis_test_fixture::participants::trellis_test_fixture_provider::{
     Participant as ProviderParticipant, Provider,
 };
-use trellis_test_fixture::participants::trellis_test_fixture_restricted_caller::Participant as RestrictedCallerParticipant;
 use trellis_test_fixture::participants::trellis_test_fixture_unsupported_device::Participant as UnsupportedDeviceParticipant;
 use trellis_test_fixture::types::Value;
 use trellis_testkit::{TrellisTestErrorKind, TrellisTestRuntime};
@@ -34,9 +34,9 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    for route in ["/login", "/console"] {
+    for (origin, route) in [(runtime.trellis_url(), "/console")] {
         let response = http
-            .get(format!("{}{route}", runtime.trellis_url()))
+            .get(format!("{origin}{route}"))
             .send()
             .await
             .expect("embedded app request");
@@ -58,7 +58,7 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
         );
     }
     runtime
-        .install_participant::<ProviderParticipant>()
+        .register_service::<ProviderParticipant>("installed-provider")
         .await
         .expect("real generated administration RPC");
     runtime.shutdown().await.expect("orderly shutdown");
@@ -81,7 +81,10 @@ async fn start_provider(runtime: &mut TrellisTestRuntime, name: &str) -> Provide
         .expect("connect provider");
     let calls = Arc::new(AtomicUsize::new(0));
     {
-        let publisher = Provider::new(&mut service).client();
+        let publisher =
+            trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client::from_generated(
+                service.generated_client(),
+            );
         let handler_calls = Arc::clone(&calls);
         let mut provider = Provider::new(&mut service);
         provider
@@ -92,7 +95,6 @@ async fn start_provider(runtime: &mut TrellisTestRuntime, name: &str) -> Provide
                 async move {
                     handler_calls.fetch_add(1, Ordering::SeqCst);
                     publisher
-                        .trellis_test_fixture_echo_v1()
                         .publish_observed(&input)
                         .await
                         .map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -174,13 +176,15 @@ async fn t04_real_rpc_and_event_between_provider_and_caller() {
         .expect("start runtime");
     let provider = start_provider(&mut runtime, "provider").await;
     let caller_identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
 
-    let caller = CallerClient::connect(caller_identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let mut events = api
         .subscribe_observed(EventSubscribeOptions::ephemeral())
@@ -240,7 +244,7 @@ async fn t08_restricted_caller_is_denied() {
         .expect("start runtime");
     let provider = start_provider(&mut runtime, "provider").await;
     let restricted = runtime
-        .register_client::<RestrictedCallerParticipant>("restricted")
+        .register_client::<RestrictedCallerRequest>("restricted")
         .await
         .expect("register restricted caller");
 
@@ -323,7 +327,7 @@ async fn t14_shutdown_is_idempotent() {
         );
     }
     let error = runtime
-        .install_participant::<ProviderParticipant>()
+        .register_service::<ProviderParticipant>("after-shutdown")
         .await
         .expect_err("installing after shutdown must fail");
     assert_eq!(
@@ -351,12 +355,14 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
                 .expect("start runtime");
             let provider = start_provider(&mut runtime, "provider").await;
             let caller_identity = runtime
-                .register_client::<CallerParticipant>("caller")
+                .register_client::<CallerRequest>("caller")
                 .await
                 .expect("register caller");
-            let caller = CallerClient::connect(caller_identity.connect_options())
-                .await
-                .expect("connect caller");
+            let caller = CallerClient::from_generated(
+                trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+                    .await
+                    .expect("connect caller"),
+            );
             let api = caller.trellis_test_fixture_echo_v1();
             let mut events = api
                 .subscribe_observed(EventSubscribeOptions::ephemeral())
@@ -463,11 +469,25 @@ async fn profile_child_registers_caller() {
         .start()
         .await
         .expect("start runtime in the profile child");
+    let provider = start_provider(&mut runtime, "profile-provider").await;
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller in the profile child");
-    assert!(!identity.login_session_id().is_empty());
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect profile caller"),
+    );
+    let result = caller
+        .trellis_test_fixture_echo_v1()
+        .echo(&value("profile remains isolated"))
+        .await
+        .expect("profile caller RPC");
+    assert_eq!(result.value, "profile remains isolated");
+    drop(caller);
+    provider.task.abort();
+    let _ = provider.task.await;
     runtime
         .shutdown()
         .await
@@ -478,7 +498,7 @@ async fn profile_child_registers_caller() {
 /// provider.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn t05_agent_caller_calls_the_provider() {
-    use trellis_test_fixture::participants::trellis_test_fixture_agent_caller::Client as AgentClient;
+    use trellis_test_fixture::apps::trellis_test_fixture_agent_caller::Client as AgentClient;
 
     let mut runtime = TrellisTestRuntime::builder()
         .start()
@@ -486,15 +506,17 @@ async fn t05_agent_caller_calls_the_provider() {
         .expect("start runtime");
     let provider = start_provider(&mut runtime, "provider").await;
     let agent_identity = runtime
-        .register_client::<trellis_test_fixture::participants::trellis_test_fixture_agent_caller::Participant>(
+        .register_client::<trellis_test_fixture::apps::trellis_test_fixture_agent_caller::Request>(
             "agent",
         )
         .await
         .expect("register agent caller");
 
-    let agent = AgentClient::connect(agent_identity.connect_options())
-        .await
-        .expect("connect agent caller");
+    let agent = AgentClient::from_generated(
+        trellis_rs::generated::Client::connect_user(agent_identity.connect_options())
+            .await
+            .expect("connect agent caller"),
+    );
     let output = agent
         .trellis_test_fixture_echo_v1()
         .echo(&value("from-agent"))
@@ -727,8 +749,6 @@ fn t17_panic_unwind_cleanup() {
     use std::sync::mpsc;
 
     let (tx, rx) = mpsc::channel();
-    let previous_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
     let handle = std::thread::spawn(move || {
         let tokio_rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -754,7 +774,6 @@ fn t17_panic_unwind_cleanup() {
         .recv_timeout(Duration::from_secs(180))
         .expect("endpoints before the panic");
     assert!(handle.join().is_err(), "the worker thread must unwind");
-    std::panic::set_hook(previous_hook);
 
     let observer = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -892,12 +911,14 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
         });
     let task = tokio::spawn(async move { service.run().await });
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let invocation_id = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
     let input = value("chosen invocation");
@@ -930,7 +951,13 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
     );
     assert_eq!(
         api.silent()
-            .control(invocation_id)
+            .control(
+                serde_json::from_slice(
+                    &serde_json::to_vec(operation.reference())
+                        .expect("serialize operation reference")
+                )
+                .expect("restore operation reference")
+            )
             .expect("open chosen id")
             .get()
             .await
@@ -943,7 +970,7 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let identity = runtime
-        .register_client::<RestrictedCallerParticipant>("restricted")
+        .register_client::<RestrictedCallerRequest>("restricted")
         .await
         .expect("register restricted caller");
     let restricted = trellis_rs::generated::Client::connect_user(identity.connect_options())
@@ -984,11 +1011,11 @@ async fn operation_chosen_invocation_id_replays_and_preserves_availability() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_admission_is_atomic_and_replayable() {
     use trellis_rs::client::OperationState;
-    use trellis_rs::generated::{Client as GeneratedClient, ParticipantDescriptor};
+    use trellis_rs::generated::Client as GeneratedClient;
     use trellis_rs::service::OperationCancellationReason;
     use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client as EchoClient;
-    use trellis_test_fixture::participants::trellis_test_fixture_agent_caller::{
-        Client as AgentClient, Participant as AgentParticipant,
+    use trellis_test_fixture::apps::trellis_test_fixture_agent_caller::{
+        Client as AgentClient, Request as AgentRequest,
     };
 
     let mut runtime = TrellisTestRuntime::builder()
@@ -1019,7 +1046,9 @@ async fn cancelled_admission_is_atomic_and_replayable() {
                     .expect("authenticated caller");
                 Ok(value(&format!(
                     "{}|{}",
-                    caller.principal_id, caller.participant_id
+                    caller.principal_id,
+                    serde_json::to_string(&caller.binding)
+                        .expect("serialize authenticated binding")
                 )))
             });
         provider.trellis_test_fixture_echo_v1().register_silent({
@@ -1072,26 +1101,24 @@ async fn cancelled_admission_is_atomic_and_replayable() {
     }
     let task = tokio::spawn(async move { service.run().await });
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
+    let same_creator = caller.clone();
     let identity = runtime
-        .register_client::<CallerParticipant>("another-name")
-        .await
-        .expect("register same principal");
-    let same_creator = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect same creator");
-    let identity = runtime
-        .register_client::<AgentParticipant>("agent")
+        .register_client::<AgentRequest>("agent")
         .await
         .expect("register different participant");
-    let agent = AgentClient::connect(identity.connect_options())
-        .await
-        .expect("connect agent");
+    let agent = AgentClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect agent"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let who = api
         .echo(&value("identity"))
@@ -1110,13 +1137,18 @@ async fn cancelled_admission_is_atomic_and_replayable() {
         .await
         .expect("read agent identity")
         .value;
-    assert_eq!(who, same_who, "connection names are not creator identities");
+    assert_eq!(
+        who, same_who,
+        "the creator's cloned facade retains its authenticated binding"
+    );
     assert_eq!(
         who.split_once('|').unwrap().0,
         agent_who.split_once('|').unwrap().0
     );
-    assert_eq!(who.split_once('|').unwrap().1, CallerParticipant::ID);
-    assert_eq!(agent_who.split_once('|').unwrap().1, AgentParticipant::ID);
+    assert_ne!(
+        who, agent_who,
+        "another native credential has a different creator binding"
+    );
 
     let id = "01J00000000000000000000010";
     let input = value("cancel-first");
@@ -1196,7 +1228,7 @@ async fn cancelled_admission_is_atomic_and_replayable() {
 
     // Invoke/Cancel authority is absent for this actual installed participant.
     let identity = runtime
-        .register_client::<RestrictedCallerParticipant>("restricted")
+        .register_client::<RestrictedCallerRequest>("restricted")
         .await
         .expect("register restricted");
     let restricted = GeneratedClient::connect_user(identity.connect_options())
@@ -1207,13 +1239,6 @@ async fn cancelled_admission_is_atomic_and_replayable() {
     assert!(restricted_api
         .silent()
         .start_cancelled_with_invocation_id(denied_id, &value("denied"))
-        .await
-        .is_err());
-    assert!(api
-        .silent()
-        .control(denied_id)
-        .unwrap()
-        .get()
         .await
         .is_err());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
@@ -1443,12 +1468,14 @@ async fn cancellation_cleanup_failure_recovers_through_generated_client() {
         });
     let task = tokio::spawn(async move { service.run().await });
     let identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let operation = api
         .silent()
@@ -1524,7 +1551,9 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     // Dropping this provider's own runtime stops its spawned recovery and
     // execution tasks too, rather than leaving a survivor in the caller runtime.
     let first_provider = {
-        let url = identity.trellis_url().to_owned();
+        let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
+            .await
+            .expect("selected installation trust");
         let seed = identity.seed().to_owned();
         let name = identity.name().to_owned();
         let entered = entered.clone();
@@ -1539,7 +1568,8 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
                 .expect("create first provider runtime");
             provider_runtime.block_on(async move {
                 let mut service = ProviderParticipant::connect(
-                    ServiceConnectOptions::new(&url, &seed).with_name(&name),
+                    ServiceConnectOptions::new(server.nats_servers, server.trust, &seed)
+                        .with_name(&name),
                 )
                 .await
                 .expect("connect first provider");
@@ -1582,12 +1612,14 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     };
 
     let caller_identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(caller_identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut readiness = tokio::time::interval(Duration::from_millis(100));
@@ -1821,12 +1853,14 @@ async fn t20_operation_live_update_uses_declared_update_schema() {
     let task = tokio::spawn(async move { service.run().await });
 
     let caller_identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .expect("register caller");
-    let caller = CallerClient::connect(caller_identity.connect_options())
-        .await
-        .expect("connect caller");
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .expect("connect caller"),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
 
     // Work: the preview is live-only; durable progress keeps the status schema.

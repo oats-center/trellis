@@ -1,5 +1,17 @@
 # Trellis For Rust Consumers
 
+Console and the isolated OAuth listener require HTTPS outside explicit loopback
+development. The HTTP insecure-origin allowlist does not relax that requirement.
+
+Local runtime startup initializes protected administrator `admin` and returns a
+one-time `adminAccountUrl` password-setup link unless an initial password was
+supplied. Configure fresh credentials with startup `--admin-username`,
+`--admin-password`, or `--admin-password-stdin`; explicit initialization is
+`trellis init admin --config <path> --username admin` with optional `--password`
+or `--password-stdin`. Links expire after five minutes. Restart preserves
+credentials; `--reset-admin` is explicit local recovery through the same account
+flow. Ordinary RPC reset privileges do not authorize protected-admin recovery.
+
 Generated service job handles and workers reconstruct retained lifecycle history
 through the deployment-scoped runtime `Jobs.History` route automatically. Do not
 grant raw shared JOBS-stream read permissions. History preserves original stream
@@ -84,10 +96,24 @@ successor trust before spending a refresh token. Unavailable or invalid chains
 leave it unspent. A successfully returned new token survives later issuer
 verification failure, but its admission remains unusable until authenticated.
 Never retry an ambiguously spent predecessor.
+Node-native and browser peers reuse admission only while shared verification accepts its
+lifetime and current pinned trust; transport loss alone does not spend refresh
+custody. Renewal checks the selected HTTP origin before spending the token. An
+ambiguous token POST still requires explicit recovery, with no application-request
+retransmission or revocation reset.
+Store object deletion and replacement clean up chunks only in the admitted
+identity's allocated Object Store streams, including Operation staging. This
+does not authorize KV purge, stream destruction, or cross-owner Store access.
 
 Live authority requires an applied initial revocation snapshot and current
 coverage. Lost coverage makes retained handles unavailable until recovery;
 epoch fencing prevents retired watchers from changing successor coverage.
+Rust and TypeScript stage mirror rollover without stopping a healthy predecessor.
+Its verified coverage protects retained work until authenticated replacement
+replay completes; fresh application IO on the replacement remains fenced until
+its checked snapshot is ready. Actual mirror loss remains unavailable, and known
+revocations survive failure, cancellation, and replacement. Recovery never replays
+application requests.
 
 Native applications pass a verified `NativeOAuthSession` and explicit broker
 endpoints to `UserConnectOptions::new(nats_servers, timeout_ms, session)`. The SDK
@@ -154,7 +180,9 @@ Retry the same request after broker failure; retained allocations are never dest
 
 Auth.Resources.List/Get include all allocation states, including detached, with
 digest resourceId, ownerKind (user/deployment), ownerId, and explicit state.
-Deployment version omission, Disable, and Remove detach and retain resource data;
+Declaration omission and deployment Remove detach and retain resource data;
+Disable preserves resource bindings but revokes sessions and denies admission.
+Enable reuses retained bindings without reapplying the contract or recreating storage;
 there is no automatic resource deletion. Compatible re-add reuses retained data.
 Explicit admin Resources.Remove permanently deletes only the selected detached
 owned KV at expectedRevision after checking its physical ownership marker. Retry
@@ -163,6 +191,13 @@ Removal execution is exclusively claimed and incarnation-fenced. Recreating a
 deleted logical resource uses a fresh allocation and physical bucket, so delayed
 deletion cannot touch replacement data; compatible reattachment keeps the original.
 KV history/TTL reductions that could lose retained data are rejected.
+
+Auth Connections.Opened/Closed/Kicked publish generated AuthSecurityEvent values
+through the admitted Auth provider. Event IDs and occurrence times survive durable
+outbox retries; consumers should identify attachments by attachmentId and logical
+authority by authorizationSessionId, not retired connection/session-key fields.
+An expired delivery claim alone does not stop Auth: stale workers cannot
+acknowledge or reschedule the intent, which remains recoverable by its next owner.
 
 Declare whole capabilities in native IDL, not individual RPC/event grants:
 `required capability read;` is required and `capability export;` is optional.
@@ -179,6 +214,11 @@ Capability discovery does not grant authority, and capability groups are not
 presets expanded into saved exact-action grants. API authors set positive
 `consent_revision` values; Auth owns acceptance and action/membership introduction
 counters.
+
+Request verification checks caller grants against the caller's exact signed
+catalog reference, independently of the provider's pinned implementation and
+certificate. Compatible accepted revisions within one API generation need not
+match; neither catalog grants additional rights to the other party.
 
 Provider-owned events require an exact issuer-verified event-publish action in
 the certificate bound to the signed native authority, deployment, instance,
@@ -381,11 +421,16 @@ its original lifecycle sequence through broker source metadata. Old-run
 deliveries are acknowledged without touching newer-run coordination. Deferred
 work rereads lifecycle state before acquisition.
 
+Stopping an RPC caller's wait does not undo work already accepted by the
+service. Use explicit Operation cancellation for caller-visible business work.
+
 Operation get, watch, signal, and cancel remain bound to the creator principal
 plus participant across reconnects rather than to one session key. A durable
 Operation's watcher is a separate live session: it reconciles the current
 authoritative snapshot once its transport is ready, then yields ordered typed
-transient updates and terminal state; not-yet-delivered nonterminal snapshots
+transient updates and terminal state. Get and initial watcher snapshots expose
+persisted state, not speculative handler state; a committed write may be visible
+after its ACK is lost. Not-yet-delivered nonterminal snapshots
 may be conflated, but transient updates are not silently dropped. Opening or
 closing a watcher never starts, cancels, or completes the durable work.
 Completed, failed, and cancelled records are immutable. Rust operation handlers
@@ -416,6 +461,14 @@ Use generated State, KV, Store, Consumer, and Job handles. State is one typed
 value without key/TTL; KV is typed history; Store is raw bytes. State/KV direct
 historical migration runs in SDK memory without write-on-read. Resolved binding
 payloads and subjects are runtime internals.
+First-time provisioning can resume an interrupted allocation. Missing previously
+materialized consumers, KV/object stores, Job keyed coordination, or Operation
+storage fail closed; retries must not replace lost durable state with empty data.
+Restore coherent durable state before resuming affected execution.
+Runtime Jobs/Events resource evidence uses authenticated `Auth.ResourceBindings.Query`
+with separate kind-scoped read capabilities and current binding digests. Split
+roles never read another role's SQLite database. This is a runtime-internal
+boundary; application services continue using generated resource handles.
 
 App State accessors register generated native-IDL schemas asynchronously:
 `let (state, registration) = client.saved_resource("0", idempotency_key).await?;`
@@ -431,6 +484,8 @@ outer None ends observation; inner None means unwritten/deleted. Initial and lat
 snapshots migrate in memory using the read codec, without writeback. Use
 `observation.close().await?` and `observation.closed().await`; drop also closes.
 No automatic reopen or retry occurs after transport/authorization loss.
+Device State Watch descriptors are generated from native IDL into the SDK;
+State-only devices need no built-in API package dependency.
 
 Generated cursor-paginated RPCs add lazy fallible page/item streams. Missing
 `next_cursor` is the sole end signal; general keyset pagination does not promise
@@ -464,6 +519,10 @@ resume the Operation to reconcile its durable result before retrying.
 Streaming grants contain logical session identities and runtime subjects only,
 never physical storage details. Transfers remain pinned through authority growth;
 physical disconnect interrupts them, and interrupted uploads restart from zero.
+TypeScript peers decode download RPC grants with the Result-returning
+`decodeTransferGrant` helper backed by the same Rust/WASM wire parser. This is
+structural decoding, not a substitute for the transfer runtime's authority checks.
+
 Operation watch transfer progress may be coalesced, remains monotonic, and ends
 with exact persisted `transferredBytes`; do not assume one event per frame.
 Cancellation is authenticated; before commit it aborts staging, after commit it
@@ -495,7 +554,7 @@ layouts; applications own migration of any retained older database.
 ## Test And Verify
 
 Run generation and the consuming project's own Cargo checks. A real-runtime test
-can launch a Rust service from a Deno test using `@oatscenter/trellis-testkit`
+can launch a Rust service from a Node test using `@oatscenter/trellis-testkit`
 and its `TrellisTestRuntime`, which automatically acquires exact-version
 SHA-256-pinned CLI/server release archives and delegates configuration and
 managed NATS to those production commands (no installed Trellis executables or
@@ -542,6 +601,10 @@ session and signing out of the current login and its application sessions.
 Native OAuth renewal leases the current maintenance transport after HTTP refresh,
 and retains it through signer lookup and verified authority promotion. Replacing
 the physical NATS generation does not pin renewal to the original socket.
+
+Native providers finish accepted RPCs across ordinary authority promotion by
+reacquiring a coherent current signing snapshot within one configured deadline.
+Handlers are not redispatched; provider, issuer, expiry and revocation checks remain mandatory.
 
 Generated Operation keys are `<version-qualified API>:operation:<action>`, not
 method aliases. `OperationRef::reference()` exposes the complete serializable

@@ -153,7 +153,7 @@ inventories, or evidence ledgers to enforce this section.
   clients, or synthetic failure hooks when a real boundary can prove the
   invariant.
 - Live integration uses real NATS and Trellis infrastructure. Executable Rust
-  and Deno tests are the catalog; separate matrices and inventory reconciliation
+  and Node tests are the catalog; separate matrices and inventory reconciliation
   are not maintained. Hidden skips are forbidden.
 - Tests must exercise behavior realizable in an ordinary production build. Do
   not add or retain `test-support` features, test-only runtime constructors,

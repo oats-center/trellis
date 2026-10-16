@@ -2,10 +2,52 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trellis_protocol::{SignedSessionRevocation, SESSION_REVOCATION_FORMAT_V1};
+use trellis_runtime_apis::{apis::trellis_auth_v1::events, types::AuthSecurityEvent};
 
 use super::authorization_sessions::{loses_authority, session_credential};
 use super::policy::evaluate;
 use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
+
+fn enqueue_attachment_event<D>(
+    connection: &Connection,
+    attachment: &str,
+    now: i64,
+) -> Result<(), AuthError>
+where
+    D: trellis_rs::client::EventDescriptor<Event = AuthSecurityEvent>,
+{
+    let (principal, session): (String, String) = connection.query_row(
+        "SELECT s.principal_id,a.authorization_session_id FROM auth_attachments a JOIN auth_authorization_sessions s ON s.authorization_session_id=a.authorization_session_id WHERE a.attachment_id=?1",
+        [attachment],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let occurred_at = time::OffsetDateTime::from_unix_timestamp(now)
+        .map_err(|_| AuthError::Unavailable)?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| AuthError::Unavailable)?;
+    let event = AuthSecurityEvent {
+        event_id: id().parse().map_err(|_| AuthError::Unavailable)?,
+        occurred_at: occurred_at.parse().map_err(|_| AuthError::Unavailable)?,
+        principal_id: Some(principal.parse().map_err(|_| AuthError::Unavailable)?),
+        authorization_session_id: Some(session.parse().map_err(|_| AuthError::Unavailable)?),
+        attachment_id: Some(attachment.parse().map_err(|_| AuthError::Unavailable)?),
+        issuer_key_id: None,
+        enforcement: None,
+        extra: Default::default(),
+    };
+    enqueue_effect(
+        connection,
+        "event",
+        &serde_json::json!({
+            "subject": D::SUBJECT,
+            "descriptor": D::descriptor_identity().map_err(|_| AuthError::Unavailable)?,
+            "event": event,
+        }),
+        None,
+        now,
+    )?;
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) enum EnforcementScope {
@@ -310,6 +352,7 @@ impl SqliteAuthorizationStore {
                 session_authority:json(&issued.authority)?,registry,issued_at:now,expires_at:issued.authority.unsigned.expires_at.min(now.saturating_add(30)),
             },&self.signer)?;
             connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,context_digest,ephemeral_nkey,broker_user_nkey,transport_policy_digest,transport_policy_json,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'admitted',?10,?10)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.context_digest,attachment.ephemeral_nkey,broker_user_nkey,attachment.transport_policy_digest,json(&policy)?,now])?;
+            enqueue_attachment_event::<events::ConnectionsOpened>(connection, &attachment.attachment_id, now)?;
             Ok(Ok((attachment, policy)))
         })?
     }
@@ -324,7 +367,10 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<(), AuthError> {
         self.transaction(|connection| {
-            connection.execute("UPDATE auth_attachments SET state='closed',closed_at=?1 WHERE server_id=?2 AND broker_client_id=?3 AND (broker_user_nkey=?4 OR ?4='trellis.auth.v1:'||attachment_id) AND state IN ('pending','admitted')", params![now,server,cid,nkey])?;
+            let closed: Option<String> = connection.query_row("UPDATE auth_attachments SET state='closed',closed_at=?1 WHERE server_id=?2 AND broker_client_id=?3 AND (broker_user_nkey=?4 OR ?4='trellis.auth.v1:'||attachment_id) AND state IN ('pending','admitted') RETURNING attachment_id", params![now,server,cid,nkey], |row| row.get(0)).optional()?;
+            if let Some(attachment) = closed {
+                enqueue_attachment_event::<events::ConnectionsClosed>(connection, &attachment, now)?;
+            }
             Ok(())
         })
     }
@@ -392,13 +438,14 @@ impl SqliteAuthorizationStore {
         limit: usize,
         now: i64,
         lease_seconds: u32,
+        events: bool,
     ) -> Result<Vec<PendingEffect>, AuthError> {
         if !(1..=256).contains(&limit) || lease_seconds == 0 {
             return Err(AuthError::Invalid("invalid effect claim bounds".into()));
         }
         self.transaction(|connection| {
-            let mut statement=connection.prepare("SELECT action_id,kind,payload_json,attempts FROM auth_post_commit_actions a WHERE next_attempt_at<=?1 AND (claimed_until IS NULL OR claimed_until<=?1) AND (predecessor_action_id IS NULL OR NOT EXISTS(SELECT 1 FROM auth_post_commit_actions p WHERE p.action_id=a.predecessor_action_id)) ORDER BY created_at,action_id LIMIT ?2")?;
-            let rows=statement.query_map(params![now,limit as u64],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,u64>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut statement=connection.prepare("SELECT action_id,kind,payload_json,attempts FROM auth_post_commit_actions a WHERE next_attempt_at<=?1 AND ((kind='event')=?3) AND (claimed_until IS NULL OR claimed_until<=?1) AND (predecessor_action_id IS NULL OR NOT EXISTS(SELECT 1 FROM auth_post_commit_actions p WHERE p.action_id=a.predecessor_action_id)) ORDER BY created_at,action_id LIMIT ?2")?;
+            let rows=statement.query_map(params![now,limit as u64,events],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,u64>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
             let mut effects=Vec::new();
             for (action_id,kind,payload,attempts) in rows {
                 let claim_token=id();
@@ -409,30 +456,39 @@ impl SqliteAuthorizationStore {
         })
     }
 
+    /// False leaves expired or superseded work untouched for its next owner.
     pub(crate) fn complete_effect(
         &self,
         effect: &PendingEffect,
         now: i64,
-    ) -> Result<(), AuthError> {
+    ) -> Result<bool, AuthError> {
         self.transaction(|connection| {
             let work:Option<Option<String>>=connection.query_row("SELECT enforcement_work_id FROM auth_post_commit_actions WHERE action_id=?1 AND claim_token=?2 AND claimed_until>?3",params![effect.action_id,effect.claim_token,now],|row|row.get(0)).optional()?;
-            let Some(work)=work else {return Err(AuthError::Conflict);};
+            let Some(work)=work else {return Ok(false);};
             if effect.kind=="kick" {
-                if let Some(attachment)=effect.payload["attachmentId"].as_str() {connection.execute("UPDATE auth_attachments SET state='closed',closed_at=?1 WHERE attachment_id=?2",params![now,attachment])?;}
+                if let Some(attachment)=effect.payload["attachmentId"].as_str() {
+                    if connection.execute("UPDATE auth_attachments SET state='closed',closed_at=?1 WHERE attachment_id=?2 AND state!='closed'",params![now,attachment])? != 0 {
+                        enqueue_attachment_event::<events::ConnectionsClosed>(connection, attachment, now)?;
+                    }
+                    if connection.execute("UPDATE auth_attachments SET kicked_at=?1 WHERE attachment_id=?2 AND kicked_at IS NULL",params![now,attachment])? != 0 {
+                        enqueue_attachment_event::<events::ConnectionsKicked>(connection, attachment, now)?;
+                    }
+                }
                 if let Some(work)=work {connection.execute("UPDATE auth_enforcement_work SET pending_kicks=max(0,pending_kicks-1) WHERE work_id=?1",[work])?;}
             }
             connection.execute("DELETE FROM auth_post_commit_actions WHERE action_id=?1 AND claim_token=?2",params![effect.action_id,effect.claim_token])?;
-            Ok(())
+            Ok(true)
         })
     }
 
-    pub(crate) fn retry_effect(&self, effect: &PendingEffect, now: i64) -> Result<(), AuthError> {
+    /// False never reschedules an expired or superseded claim's work.
+    pub(crate) fn retry_effect(&self, effect: &PendingEffect, now: i64) -> Result<bool, AuthError> {
         self.transaction(|connection| {
             // Persist a static diagnostic, not a provider error string or secret.
             let delay=1_i64.checked_shl(effect.attempts.min(8) as u32).unwrap_or(256);
-            if connection.execute("UPDATE auth_post_commit_actions SET attempts=attempts+1,next_attempt_at=?1,claimed_until=NULL,claim_token=NULL,last_error='delivery_unavailable' WHERE action_id=?2 AND claim_token=?3 AND claimed_until>?4",params![now.saturating_add(delay),effect.action_id,effect.claim_token,now])?!=1 {return Err(AuthError::Conflict);}
+            if connection.execute("UPDATE auth_post_commit_actions SET attempts=attempts+1,next_attempt_at=?1,claimed_until=NULL,claim_token=NULL,last_error='delivery_unavailable' WHERE action_id=?2 AND claim_token=?3 AND claimed_until>?4",params![now.saturating_add(delay),effect.action_id,effect.claim_token,now])?!=1 {return Ok(false);}
             connection.execute("UPDATE auth_enforcement_work SET failed_kicks=failed_kicks+1 WHERE work_id=(SELECT enforcement_work_id FROM auth_post_commit_actions WHERE action_id=?1 AND kind='kick')",[&effect.action_id])?;
-            Ok(())
+            Ok(true)
         })
     }
 

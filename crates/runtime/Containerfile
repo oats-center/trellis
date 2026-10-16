@@ -50,32 +50,26 @@ RUN apt-get update \
 
 FROM docker.io/library/rust:bookworm AS builder
 
-ARG DENO_VERSION=2.9.4
-ARG TARGETARCH
+COPY --from=docker.io/library/node:24-bookworm-slim /usr/local /usr/local
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl unzip \
+    && apt-get install --yes --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the repository-supported Deno and the WASM target the canonical build
-# needs for the protocol bindings.
-RUN case "${TARGETARCH}" in \
-      amd64) deno_arch=x86_64 ;; \
-      arm64) deno_arch=aarch64 ;; \
-      *) echo "unsupported TARGETARCH ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && curl --fail --location --retry 3 \
-         "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-${deno_arch}-unknown-linux-gnu.zip" \
-         --output /tmp/deno.zip \
-    && unzip -d /usr/local/bin /tmp/deno.zip \
-    && rm /tmp/deno.zip \
-    && deno --version \
+# Install the WASM target the canonical build needs for the protocol bindings.
+RUN node --version && npm --version \
+    && rustup component add rustfmt \
     && rustup target add wasm32-unknown-unknown
 
 WORKDIR /src
-COPY . .
+COPY . /source
 
-RUN cargo run --manifest-path xtask/Cargo.toml -- \
+# Keep generated directories in this writable layer: overlayfs cannot atomically
+# rename a directory inherited from an earlier COPY layer. Staging through COPY
+# also honors .dockerignore on both Podman and Docker.
+RUN cp -a /source/. . \
+    && npm ci \
+    && cargo run --manifest-path xtask/Cargo.toml -- \
       build --release -p trellis-cli -p trellis-server
 
 FROM docker.io/library/debian:bookworm-slim AS runtime

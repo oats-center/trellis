@@ -145,19 +145,27 @@ pub struct InitCommand {
 pub enum InitSubcommand {
     /// Generate Trellis runtime config and NATS bootstrap material.
     Config(Box<InitConfigArgs>),
-    /// Seed an initial admin account and linked identity.
+    /// Initialize the protected administrator with a password or setup link.
     Admin(InitAdminArgs),
 }
 
 #[cfg(feature = "runtime")]
 #[derive(Debug, Args)]
-/// Seed an initial admin account and linked identity in Trellis service storage.
+/// Initialize the protected administrator in the configured runtime storage.
 pub struct InitAdminArgs {
-    #[arg(long, value_name = "PROVIDER:SUBJECT")]
-    /// Provider identity for the first admin account.
-    pub identity: String,
-
-    #[arg(long, default_value = "/var/lib/trellis/trellis.sqlite")]
-    /// Trellis service SQLite database path.
-    pub db_path: PathBuf,
+    /// Use the Linux system/FHS host profile instead of the user profile.
+    #[arg(long)]
+    pub system: bool,
+    /// Runtime configuration identifying the installation and custody files.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Starting administrator username.
+    #[arg(long, default_value = "admin")]
+    pub username: String,
+    /// Starting password; omit for a one-time password-setup link.
+    #[arg(long, conflicts_with = "password_stdin")]
+    pub password: Option<String>,
+    /// Read the starting password from stdin instead of argv.
+    #[arg(long)]
+    pub password_stdin: bool,
 }

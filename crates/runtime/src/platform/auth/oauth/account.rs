@@ -30,13 +30,19 @@ use trellis_runtime_apis::__types::trellis::{
 #[derive(Serialize, Deserialize)]
 struct Payload {
     actor: String,
-    requester_session: Option<String>,
+    reset_authority: Option<PasswordResetAuthority>,
     credential_version: Option<u64>,
     username: Option<String>,
     provider_revision: Option<u64>,
     protected: bool,
     #[serde(default)]
     handoff: Option<LinkHandoff>,
+}
+
+#[derive(Serialize, Deserialize)]
+enum PasswordResetAuthority {
+    AuthorizationSession(String),
+    LocalOperator,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -135,7 +141,7 @@ pub(crate) fn create_reset(
         let (username, version): (Option<String>, Option<u64>) = connection.query_row("SELECT coalesce(c.normalized_username,(SELECT provider_subject FROM auth_provider_identities WHERE principal_id=p.principal_id AND provider='local')),c.version FROM auth_principals p LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND p.state='active'", [&target], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(AuthError::NotFound)?;
         let username = username.ok_or(AuthError::Denied)?;
         let token = token()?;
-        let payload = Payload { actor: identity.actor.clone(), requester_session: Some(requester_session.to_owned()), username: Some(username), credential_version: version, provider_revision: None, protected, handoff: None };
+        let payload = Payload { actor: identity.actor.clone(), reset_authority: Some(PasswordResetAuthority::AuthorizationSession(requester_session.to_owned())), username: Some(username), credential_version: version, provider_revision: None, protected, handoff: None };
         insert(connection, &token, "password_reset", &target, None, &payload, now)?;
         let response = AuthPasswordResetCreateResponse { token, expires_at: super::super::rpc_users::timestamp(now + 300)?, extra: Default::default() };
         storage.encode("account-response", &lookup, &response).map_err(|_| AuthError::Unavailable)
@@ -164,7 +170,7 @@ pub(crate) fn create_link(
         let revision: u64 = connection.query_row("SELECT revision FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'", [&provider], |row| row.get(0)).optional()?.ok_or(AuthError::NotFound)?;
         let protected: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)", [&identity.actor], |row| row.get(0))?;
         let token = token()?;
-        let payload = Payload { actor: identity.actor.clone(), requester_session: None, username: None, credential_version: None, provider_revision: Some(revision), protected, handoff: None };
+        let payload = Payload { actor: identity.actor.clone(), reset_authority: None, username: None, credential_version: None, provider_revision: Some(revision), protected, handoff: None };
         insert(connection, &token, "identity_link", &identity.actor, Some(&provider), &payload, now)?;
         let response = AuthIdentityLinkCreateResponse { authorization_url: format!("{}/account/link?token={token}", storage.authority.settings.oauth_origin), expires_at: super::super::rpc_users::timestamp(now + 300)?, extra: Default::default() };
         storage.encode("account-response", &lookup, &response).map_err(|_| AuthError::Unavailable)
@@ -172,6 +178,49 @@ pub(crate) fn create_link(
     storage
         .decode("account-response", &lookup, &sealed)
         .map_err(|_| AuthError::Unavailable)
+}
+
+/// Issue an account reset under local filesystem/operator authority, never RPC
+/// authority. Initialization and explicit local recovery share this issuer.
+pub(crate) fn create_local_reset_in_transaction(
+    connection: &Connection,
+    principal: &str,
+    now: i64,
+) -> Result<AuthPasswordResetCreateResponse, AuthError> {
+    let (username, version): (String, u64) = connection.query_row(
+        "SELECT c.normalized_username,c.version FROM auth_local_credentials c JOIN auth_principals p USING(principal_id) WHERE c.principal_id=?1 AND p.state='active' AND p.kind='user'",
+        [principal], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?.ok_or(AuthError::NotFound)?;
+    let protected = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+        [principal],
+        |row| row.get(0),
+    )?;
+    let token = token()?;
+    let payload = Payload {
+        actor: principal.into(),
+        reset_authority: Some(PasswordResetAuthority::LocalOperator),
+        username: Some(username),
+        credential_version: Some(version),
+        provider_revision: None,
+        protected,
+        handoff: None,
+    };
+    connection.execute("UPDATE auth_account_flows SET state='revoked',version=version+1 WHERE target_principal_id=?1 AND kind='password_reset' AND state='pending'", [principal])?;
+    insert(
+        connection,
+        &token,
+        "password_reset",
+        principal,
+        None,
+        &payload,
+        now,
+    )?;
+    Ok(AuthPasswordResetCreateResponse {
+        token,
+        expires_at: super::super::rpc_users::timestamp(now + 300)?,
+        extra: Default::default(),
+    })
 }
 
 fn insert(
@@ -244,10 +293,17 @@ pub(crate) fn complete_reset(
         let action = action(connection, token, "password_reset", now)?;
         let session: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_portal_sessions WHERE cookie_hash=?1 AND csrf_hash=?2 AND expires_at>?3)", params![hash(cookie), hash(csrf), now], |row| row.get(0))?;
         if !session { return Err(AuthError::Denied); }
-        reset_requester(connection, &action.payload.actor, action.payload.requester_session.as_deref().ok_or(AuthError::Denied)?, now)?;
         let protected: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)", [&action.target], |row| row.get(0))?;
         let active: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind='user' AND state='active')", [&action.target], |row| row.get(0))?;
-        if protected || protected != action.payload.protected || !active { return Err(AuthError::Denied); }
+        if protected != action.payload.protected || !active { return Err(AuthError::Denied); }
+        match &action.payload.reset_authority {
+            Some(PasswordResetAuthority::AuthorizationSession(session)) => {
+                if protected { return Err(AuthError::Denied); }
+                reset_requester(connection, &action.payload.actor, session, now)?;
+            }
+            Some(PasswordResetAuthority::LocalOperator) if action.payload.actor == action.target => {}
+            _ => return Err(AuthError::Denied),
+        }
         let revision = action.payload.credential_version.unwrap_or(0);
         match action.payload.credential_version {
             Some(version) => {
@@ -588,6 +644,146 @@ mod tests {
         lifecycle::OidcProviderRegistration,
         phase_two_tests::{fixture, mutation},
     };
+
+    #[test]
+    fn passwordless_administrator_setup_survives_reopen_and_does_not_replace_completed_credentials()
+    {
+        use crate::platform::auth::phase_two_tests::{open, NOW};
+        use ed25519_dalek::SigningKey;
+        let directory = tempfile::tempdir().unwrap();
+        let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
+        authority.initialize_issuer(NOW).unwrap();
+        let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        let (admin, url) = storage
+            .initialize_local_administrator("https://console.example", "operator", None, NOW)
+            .unwrap();
+        let url = url.unwrap();
+        let token = url::Url::parse(&url)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .unwrap()
+            .1
+            .into_owned();
+        drop(storage);
+        drop(authority);
+        let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
+        let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        let guest = authority.create_portal_session(NOW + 1).unwrap();
+        let replacement = hash_password("administrator setup password").unwrap();
+        complete_reset(
+            &storage,
+            &token,
+            &guest.cookie,
+            &guest.csrf,
+            &replacement,
+            NOW + 1,
+        )
+        .unwrap();
+        assert_eq!(
+            storage
+                .initialize_local_administrator(
+                    "https://console.example",
+                    "operator",
+                    None,
+                    NOW + 2
+                )
+                .unwrap(),
+            (admin, Some(url))
+        );
+        assert!(matches!(
+            complete_reset(
+                &storage,
+                &token,
+                &guest.cookie,
+                &guest.csrf,
+                &replacement,
+                NOW + 2
+            ),
+            Err(AuthError::Denied)
+        ));
+        authority
+            .portal_local_login(
+                &guest.cookie,
+                &guest.csrf,
+                &self::token().unwrap(),
+                "operator",
+                "administrator setup password",
+                &id(),
+                NOW + 2,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn local_operator_admin_reset_replaces_the_password_and_rejects_old_links_and_replay() {
+        let f = fixture();
+        let authority = Arc::new(f.store);
+        let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        let now = now();
+        let first = authority
+            .transaction(|connection| create_local_reset_in_transaction(connection, &f.admin, now))
+            .unwrap();
+        let current = authority
+            .transaction(|connection| create_local_reset_in_transaction(connection, &f.admin, now))
+            .unwrap();
+        let guest = authority.create_portal_session(now).unwrap();
+        let replacement = hash_password("replacement administrator password").unwrap();
+        assert!(matches!(
+            complete_reset(
+                &storage,
+                &first.token,
+                &guest.cookie,
+                &guest.csrf,
+                &replacement,
+                now
+            ),
+            Err(AuthError::Denied)
+        ));
+        complete_reset(
+            &storage,
+            &current.token,
+            &guest.cookie,
+            &guest.csrf,
+            &replacement,
+            now,
+        )
+        .unwrap();
+        assert!(matches!(
+            complete_reset(
+                &storage,
+                &current.token,
+                &guest.cookie,
+                &guest.csrf,
+                &replacement,
+                now
+            ),
+            Err(AuthError::Denied)
+        ));
+        assert!(matches!(
+            authority.portal_local_login(
+                &guest.cookie,
+                &guest.csrf,
+                &token().unwrap(),
+                "admin",
+                "a strong bootstrap password",
+                &id(),
+                now
+            ),
+            Err(AuthError::Denied)
+        ));
+        authority
+            .portal_local_login(
+                &guest.cookie,
+                &guest.csrf,
+                &token().unwrap(),
+                "admin",
+                "replacement administrator password",
+                &id(),
+                now,
+            )
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn reviewed_link_handoff_rejects_other_sessions_stale_csrf_expiry_and_replay() {

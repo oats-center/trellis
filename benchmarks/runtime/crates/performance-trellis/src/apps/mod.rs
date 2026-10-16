@@ -1,1 +1,2 @@
+pub mod performance_trellis_browser_caller;
 pub mod performance_trellis_caller;

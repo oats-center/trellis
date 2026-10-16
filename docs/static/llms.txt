@@ -1,10 +1,29 @@
 # Trellis
 
+Console and the isolated OAuth listener require HTTPS outside explicit loopback
+development. The HTTP insecure-origin allowlist does not relax that requirement.
+
+Fresh startup creates the protected administrator before provider admission.
+Username defaults to `admin`; omitting an initial password returns `adminAccountUrl`,
+a one-time password-setup link on the isolated OAuth origin (five-minute expiry).
+Use startup flags `--admin-username`, `--admin-password`, or
+`--admin-password-stdin`, or `trellis init admin --config <path>` with
+`--username`, `--password`, or `--password-stdin`. Restart does not overwrite
+credentials or issue a new link. `--reset-admin` explicitly issues a replacement
+reset link; ordinary RPCs cannot reset the protected administrator.
+
 Service Jobs reconstruct retained lifecycle history through the deployment-scoped
 runtime `Jobs.History` route automatically. Use generated service job handles;
 ordinary service identities cannot read the shared JOBS stream directly.
 Detaching resources retains data. Explicit administrative deletion removes only
 the selected detached allocation; shared streams and other queues remain intact.
+Missing previously materialized durable resources fail closed; restart or
+provisioning retries do not create empty replacements. Restore coherent durable
+state rather than resetting Job consumers, keyed ownership, or Operation storage.
+Runtime Jobs/Events resource evidence is read from Auth through authenticated
+`ResourceBindings.Query`, with separate kind-scoped read capabilities. Split roles
+do not read another role's SQLite database; application services continue using
+generated resource handles rather than this runtime-internal evidence API.
 
 Operator CLI: `trellis clients list|get|put|disable|delete` manages public OAuth
 registrations, including exact loopback browser redirects.
@@ -29,6 +48,18 @@ successor trust before spending a refresh token. Unavailable or invalid chains
 leave it unspent. A successfully returned new token survives later issuer
 verification failure, but its admission remains unusable until authenticated.
 Never retry an ambiguously spent predecessor.
+Node-native and browser transport recovery reuse admission only while shared verification
+accepts its lifetime and current pinned trust. Transport loss alone does not
+spend refresh custody. Renewal checks the selected HTTP origin before spending
+the token; an ambiguous token POST still requires explicit recovery. Preparation
+retries never retransmit application requests or clear known revocations.
+
+Native providers finish accepted RPCs across ordinary authority promotion by
+reacquiring a coherent current signing snapshot within one configured deadline.
+Handlers are not redispatched; provider, issuer, expiry and revocation checks remain mandatory.
+Store object deletion and replacement clean up chunks only in the admitted
+identity's allocated Object Store streams, including Operation staging. This
+does not authorize KV purge, stream destruction, or cross-owner Store access.
 
 Account actions use generated Auth RPCs and the isolated OAuth portal.
 PasswordReset.Create returns a five-minute, one-use token for `/account/reset`;
@@ -70,6 +101,10 @@ bootstrap, proofs, authorization, and connection lifecycle.
 
 ## Scope
 
+Completed device activation rechecks authenticate the retained challenge instead
+of opening another review; local completion is not authorization. Generated Rust
+device State Watch support needs no built-in API package dependency.
+
 App State uses native-IDL projected registration with explicit CAS. Rust generated
 accessors are async and return `(handle, registration)`; TypeScript handles register
 before use and expose `register(expectedRevision, idempotencyKey)`. Start at "0";
@@ -87,6 +122,11 @@ Already admitted connections resolve public verification metadata through the
 read-only `trellis.auth.metadata.get` bootstrap, not administrative Authority.Status.
 SDKs verify issuer signatures, pinned rotation trust, retained nonce/routing and
 freshness; missing/unavailable responses never clear revocation or grant authority.
+
+Request verification checks caller grants against the caller's exact signed
+catalog reference, independently of the provider's pinned implementation and
+certificate. Compatible accepted revisions within one API generation need not
+match; neither catalog grants additional rights to the other party.
 
 This unreleased Revision 7 branch implements authoritative Auth capability
 evaluation, reviewed catalog acceptance, logical authorization sessions, signed
@@ -113,6 +153,13 @@ Discovery cannot replace a retained issuer pin; only an authenticated rotation
 chain can advance it. Lost refresh responses require recovery, not token replay.
 Live authority requires a verified initial revocation snapshot and ongoing
 coverage; old watchers cannot restore or clear replacement coverage.
+TypeScript requests wait for missing verified authority within their original
+deadline and cancellation, rather than treating it as optional-capability denial;
+current denials remain enforced and requests are never replayed.
+Rust and TypeScript preserve healthy predecessor coverage during mirror rollover.
+Replacement application IO stays fenced until authenticated replay and checked
+handover; actual coverage loss stays unavailable until private recovery, without
+clearing revocations or retransmitting application requests.
 
 Provisioned native connections use explicit broker endpoints and pinned runtime
 trust, never caller-selected deployments in CONNECT. The Rust SDK retains native
@@ -168,7 +215,9 @@ Retry the same request after broker failure; retained allocations are never dest
 
 Auth.Resources.List/Get include all allocation states, including detached, with
 digest resourceId, ownerKind (user/deployment), ownerId, and explicit state.
-Deployment version omission, Disable, and Remove detach and retain resource data;
+Declaration omission and deployment Remove detach and retain resource data;
+Disable preserves resource bindings but revokes sessions and denies admission.
+Enable reuses retained bindings without reapplying the contract or recreating storage;
 there is no automatic resource deletion. Compatible re-add reuses retained data.
 Explicit admin Resources.Remove permanently deletes only the selected detached
 owned KV at expectedRevision after checking its physical ownership marker. Retry
@@ -177,6 +226,13 @@ Removal execution is exclusively claimed and incarnation-fenced. Recreating a
 deleted logical resource uses a fresh allocation and physical bucket, so delayed
 deletion cannot touch replacement data; compatible reattachment keeps the original.
 KV history/TTL reductions that could lose retained data are rejected.
+
+Auth Connections.Opened/Closed/Kicked publish generated AuthSecurityEvent values
+through the admitted Auth provider. Event IDs and occurrence times survive durable
+outbox retries; consumers should identify attachments by attachmentId and logical
+authority by authorizationSessionId, not retired connection/session-key fields.
+An expired delivery claim alone does not stop Auth: stale workers cannot
+acknowledge or reschedule the intent, which remains recoverable by its next owner.
 
 This guidance covers Trellis interfaces, not application engineering policy.
 Services choose their configuration and validation libraries, databases, domain
@@ -247,7 +303,7 @@ retained publications, including cold replay. Compromised issuers remain unusabl
 Commit authored IDL, `trellis.toml`, and `trellis.lock`. Commit generated
 packages when clones should build without the Trellis CLI or source-package
 cache; regenerate rather than hand-edit them. Configure `[generate.rust].output`
-and/or `[generate.typescript].output`. Detection uses root Cargo, npm, or Deno
+and/or `[generate.typescript].output`. Detection uses root Cargo or npm
 manifests; no marker means no language package. Package version equals the
 source package version. TypeScript packages contain executable ESM JavaScript
 and declarations; Rust packages are ordinary path-dependency crates. Both use
@@ -264,11 +320,18 @@ routes existing controls and observations to that deployment, not an instance.
 Restore complete references, never ID-only handles. Invocation deduplication is
 deployment-scoped: never automatically retry an uncertain canonical start or
 claim cross-deployment idempotency. References are routing metadata, not authority.
+RPC cancellation stops the caller's wait, not work already accepted by the
+service. TypeScript `RequestOpts.signal` reports `trellis.request.cancelled`
+even after publication; deadline expiry reports `trellis.request.timeout`.
+Neither undoes accepted work. Use Operation cancellation for business work.
+
 Controls remain bound to the creator principal and participant across
 reconnects, and terminal states are immutable. An Operation observer is a
 separate live session from the durable executor: a watcher reconciles the
 current authoritative snapshot once its transport is ready, then delivers typed
-transient updates and terminal state. Transient updates are ordered and never
+transient updates and terminal state. Get and initial watcher snapshots expose
+persisted state, not speculative handler state; a committed write may be visible
+after its ACK is lost. Transient updates are ordered and never
 silently dropped, while not-yet-delivered nonterminal snapshots may be
 conflated. Opening or closing a watcher never starts, cancels, or completes the
 durable work, and a transport interruption surfaces as an observation error
@@ -366,6 +429,11 @@ Transfers use bounded, windowed raw-byte streaming over NATS, with storage
 protocols and credentials hidden behind runtime store handles. Use generated
 upload Operations and download helpers, not raw subjects. Network credit is not
 durability: upload success follows verified backend and durable Operation commit.
+TypeScript download callers use `decodeTransferGrant(response.transfer)` from
+`@oatscenter/trellis` and check its direction before `client.transfer(grant)`.
+This Rust/WASM decoder checks wire structure, not authorization; the transfer
+runtime verifies provider identity and session authority before bytes move.
+
 Durable transfer progress is monotonic and may be coalesced; interrupted uploads
 restart from byte zero.
 An upload transport error is not proof that durable commit failed. Resume its

@@ -487,6 +487,12 @@ export const AuthEnforcementStateCodec = codecs.recursive(() => codecs.named("tr
 	"running"
 ])));
 export const AuthErrorDetailsCodec = codecs.recursive(() => codecs.named("trellis.AuthErrorDetails", codecs.model({ code: codecs.ref(() => AuthMachineCodeCodec) })));
+export const AuthEventConsumerEvidenceCodec = codecs.recursive(() => codecs.named("trellis.AuthEventConsumerEvidence", codecs.model({
+	consumer: codecs.string,
+	filterSubjects: codecs.list(codecs.string),
+	replayConsumer: codecs.string,
+	stream: codecs.string
+})));
 export const AuthExistingPasswordCodec = codecs.recursive(() => codecs.named("trellis.AuthExistingPassword", codecs.string));
 export const AuthIdempotencyKeyCodec = codecs.recursive(() => codecs.named("trellis.AuthIdempotencyKey", codecs.string));
 export const AuthIdentityLinkCreateRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthIdentityLinkCreateRequest", codecs.model({
@@ -547,6 +553,13 @@ export const AuthIssuerRotateRequestCodec = codecs.recursive(() => codecs.named(
 export const AuthIssuerRotateResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthIssuerRotateResponse", codecs.model({
 	keyId: codecs.ref(() => AuthKeyIdCodec),
 	rotation: codecs.ref(() => AuthSignedBlobCodec)
+})));
+export const AuthJobResourceEvidenceCodec = codecs.recursive(() => codecs.named("trellis.AuthJobResourceEvidence", codecs.model({
+	consumer: codecs.string,
+	namespace: codecs.string,
+	publishPrefix: codecs.string,
+	workStream: codecs.string,
+	workSubject: codecs.string
 })));
 export const AuthKeyIdCodec = codecs.recursive(() => codecs.named("trellis.AuthKeyId", codecs.string));
 export const AuthLoginMethodCodec = codecs.recursive(() => codecs.named("trellis.AuthLoginMethod", codecs.openEnum(["local", "oidc"])));
@@ -801,6 +814,40 @@ export const AuthResourceBindingCodec = codecs.recursive(() => codecs.named("tre
 	revision: codecs.ref(() => AuthRevisionCodec),
 	state: codecs.ref(() => AuthResourceStateCodec)
 })));
+export const AuthResourceBindingsQueryRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceBindingsQueryRequest", codecs.model({
+	instanceId: codecs.optional(codecs.ulid),
+	kind: codecs.ref(() => AuthResourceEvidenceKindCodec),
+	localName: codecs.optional(codecs.string),
+	ownerId: codecs.optional(codecs.ulid),
+	page: codecs.optional(codecs.model({
+		cursor: codecs.optional(codecs.string),
+		limit: codecs.optional(codecs.u32)
+	})),
+	participantId: codecs.optional(codecs.string),
+	resourceId: codecs.optional(codecs.ref(() => AuthDigestCodec))
+})));
+export const AuthResourceBindingsQueryResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceBindingsQueryResponse", codecs.model({
+	items: codecs.list(codecs.ref(() => AuthResourceEvidenceCodec)),
+	page: codecs.model({ nextCursor: codecs.optional(codecs.string) })
+})));
+export const AuthResourceEvidenceCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceEvidence", codecs.model({
+	eventConsumer: codecs.optional(codecs.ref(() => AuthEventConsumerEvidenceCodec)),
+	installedRevision: codecs.ref(() => AuthRevisionCodec),
+	job: codecs.optional(codecs.ref(() => AuthJobResourceEvidenceCodec)),
+	kind: codecs.ref(() => AuthResourceEvidenceKindCodec),
+	localName: codecs.string,
+	ownerId: codecs.ulid,
+	participantId: codecs.string,
+	resourceBindingsDigest: codecs.optional(codecs.ref(() => AuthDigestCodec)),
+	resourceId: codecs.ref(() => AuthDigestCodec),
+	state: codecs.ref(() => AuthResourceEvidenceStateCodec)
+})));
+export const AuthResourceEvidenceKindCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceEvidenceKind", codecs.openEnum(["eventConsumer", "jobQueue"])));
+export const AuthResourceEvidenceStateCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceEvidenceState", codecs.openEnum([
+	"available",
+	"stale",
+	"unavailable"
+])));
 export const AuthResourceGetRequestCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceGetRequest", codecs.model({ resourceId: codecs.ref(() => AuthDigestCodec) })));
 export const AuthResourceGetResponseCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceGetResponse", codecs.model({ resource: codecs.ref(() => AuthResourceBindingCodec) })));
 export const AuthResourceKindCodec = codecs.recursive(() => codecs.named("trellis.AuthResourceKind", codecs.openEnum([

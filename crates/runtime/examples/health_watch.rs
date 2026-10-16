@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = discover_native_oauth(&url).await?;
     let custody = tempfile::tempdir()?;
     let oauth = NativeOAuthClient::open(
-        custody.path().to_path_buf(),
+        custody.path().join("oauth"),
         NativeCredentialScope {
             issuer: server.issuer,
             instance_id: server.trust.instance_id.clone(),

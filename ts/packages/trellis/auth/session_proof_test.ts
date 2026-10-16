@@ -1,4 +1,5 @@
-import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { ulid } from "ulid";
 import { trellisCrypto } from "./crypto.ts";
 import {
@@ -22,17 +23,15 @@ async function identity() {
   };
 }
 
-Deno.test("WebCrypto native signatures are verified by Rust and bind the complete bootstrap", async () => {
+test("WebCrypto native signatures are verified by Rust and bind the complete bootstrap", async () => {
   const owner = await identity();
   const session = await identity();
   const iat = Date.now();
-  for (
-    const purpose of [
-      "serviceBootstrap",
-      "deviceBootstrap",
-      "deviceEnrollment",
-    ] as const
-  ) {
+  for (const purpose of [
+    "serviceBootstrap",
+    "deviceBootstrap",
+    "deviceEnrollment",
+  ] as const) {
     const input: SessionProofInput = {
       purpose,
       origin: "https://trellis.example",
@@ -53,72 +52,71 @@ Deno.test("WebCrypto native signatures are verified by Rust and bind the complet
       owner.publicKey,
     );
     await verifySessionProof(input, proof, owner.publicKey, iat);
-    await assertRejects(() =>
-      signSessionProof(input, session.privateKey, owner.publicKey)
+    await assert.rejects(() =>
+      signSessionProof(input, session.privateKey, owner.publicKey),
     );
-    await assertRejects(() =>
-      verifySessionProof(input, proof, session.publicKey, iat)
+    await assert.rejects(() =>
+      verifySessionProof(input, proof, session.publicKey, iat),
     );
-    await assertRejects(() =>
+    await assert.rejects(() =>
       verifySessionProof(
         { ...input, origin: "https://other.example" },
         proof,
         owner.publicKey,
         iat,
-      )
+      ),
     );
-    await assertRejects(() =>
+    await assert.rejects(() =>
       verifySessionProof(
         {
           ...input,
-          purpose: purpose === "deviceBootstrap"
-            ? "serviceBootstrap"
-            : "deviceBootstrap",
+          purpose:
+            purpose === "deviceBootstrap"
+              ? "serviceBootstrap"
+              : "deviceBootstrap",
         },
         proof,
         owner.publicKey,
         iat,
-      )
+      ),
     );
-    for (
-      const [field, value] of Object.entries({
-        identityKeyId: session.keyId,
-        sessionKey: owner.publicKey,
-        connectionId: ulid(),
-        requestId: ulid(),
-        iat: iat + 1,
-        participantId: "example.other-device",
-        name: "changed name",
-        extension: { value: 2 },
-      })
-    ) {
+    for (const [field, value] of Object.entries({
+      identityKeyId: session.keyId,
+      sessionKey: owner.publicKey,
+      connectionId: ulid(),
+      requestId: ulid(),
+      iat: iat + 1,
+      participantId: "example.other-device",
+      name: "changed name",
+      extension: { value: 2 },
+    })) {
       const changed = structuredClone(input);
       changed.unsignedRequest[field] = value;
-      await assertRejects(() =>
-        verifySessionProof(changed, proof, owner.publicKey, iat)
+      await assert.rejects(() =>
+        verifySessionProof(changed, proof, owner.publicKey, iat),
       );
     }
     for (const now of [iat - 30_001, iat + 30_001]) {
-      await assertRejects(() =>
-        verifySessionProof(input, proof, owner.publicKey, now)
+      await assert.rejects(() =>
+        verifySessionProof(input, proof, owner.publicKey, now),
       );
     }
-    await assertRejects(() =>
+    await assert.rejects(() =>
       verifySessionProof(
         input,
         { ...proof, signature: base64urlEncode(new Uint8Array(64)) },
         owner.publicKey,
         iat,
-      )
+      ),
     );
-    await assertRejects(() =>
+    await assert.rejects(() =>
       signSessionProof(
         { ...input, unsignedRequest: { ...input.unsignedRequest, proof } },
         owner.privateKey,
         owner.publicKey,
-      )
+      ),
     );
-    await assertRejects(() =>
+    await assert.rejects(() =>
       signSessionProof(
         {
           ...input,
@@ -126,15 +124,16 @@ Deno.test("WebCrypto native signatures are verified by Rust and bind the complet
         },
         owner.privateKey,
         owner.publicKey,
-      )
+      ),
     );
-    assertThrows(() =>
-      parseSessionProof({ ...proof, signature: `${proof.signature}=` })
+    assert.throws(
+      () => parseSessionProof({ ...proof, signature: `${proof.signature}=` }),
+      Error,
     );
   }
 });
 
-Deno.test("browser request and final bind retain key, flow, redirect, and raw payload integrity", async () => {
+test("browser request and final bind retain key, flow, redirect, and raw payload integrity", async () => {
   const owner = await identity();
   const iat = Date.now();
   const requestId = ulid();
@@ -145,7 +144,7 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
     proof: { format: SESSION_PROOF_FORMAT_V1, signature: "" },
   };
   const requestDigest = await sessionProofRequestDigest(request);
-  assertEquals(
+  assert.deepEqual(
     await sessionProofRequestDigest({
       ...request,
       proof: { ...request.proof, signature: "ignored" },
@@ -161,15 +160,15 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
   };
   const bound = await signSessionProof(bind, owner.privateKey, owner.publicKey);
   await verifySessionProof(bind, bound, owner.publicKey, iat);
-  await assertRejects(() =>
+  await assert.rejects(() =>
     verifySessionProof(
       { ...bind, transactionId: ulid() },
       bound,
       owner.publicKey,
       iat,
-    )
+    ),
   );
-  await assertRejects(async () =>
+  await assert.rejects(async () =>
     verifySessionProof(
       {
         ...bind,
@@ -181,13 +180,13 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
       bound,
       owner.publicKey,
       iat,
-    )
+    ),
   );
-  await assertRejects(() =>
+  await assert.rejects(() =>
     sessionProofRequestDigest({
       ...request,
       extra: { counter: 9_007_199_254_740_992 },
-    })
+    }),
   );
   const auth: SessionProofInput = {
     purpose: "userAuthRequest",
@@ -202,7 +201,7 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
   };
   const proof = await signSessionProof(auth, owner.privateKey, owner.publicKey);
   await verifySessionProof(auth, proof, owner.publicKey, iat);
-  await assertRejects(() =>
+  await assert.rejects(() =>
     verifySessionProof(
       {
         ...auth,
@@ -214,9 +213,9 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
       proof,
       owner.publicKey,
       iat,
-    )
+    ),
   );
-  await assertRejects(() =>
+  await assert.rejects(() =>
     verifySessionProof(
       {
         ...auth,
@@ -228,9 +227,9 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
       proof,
       owner.publicKey,
       iat,
-    )
+    ),
   );
-  await assertRejects(() =>
+  await assert.rejects(() =>
     signSessionProof(
       {
         ...auth,
@@ -241,6 +240,6 @@ Deno.test("browser request and final bind retain key, flow, redirect, and raw pa
       },
       owner.privateKey,
       owner.publicKey,
-    )
+    ),
   );
 });

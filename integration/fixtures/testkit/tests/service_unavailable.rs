@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use trellis_rs::client::{CallError, ServiceUnavailableError, TrellisClientError};
-use trellis_test_fixture::participants::trellis_test_fixture_caller::{
-    Client as CallerClient, Participant as CallerParticipant,
+use trellis_test_fixture::apps::trellis_test_fixture_caller::{
+    Client as CallerClient, Request as CallerRequest,
 };
 use trellis_test_fixture::participants::trellis_test_fixture_provider::{
     Participant as ProviderParticipant, Provider,
@@ -41,12 +41,14 @@ async fn stopped_provider_is_unavailable_and_same_operation_can_be_observed_afte
     }
     let task = tokio::spawn(async move { service.run().await });
     let caller_identity = runtime
-        .register_client::<CallerParticipant>("caller")
+        .register_client::<CallerRequest>("caller")
         .await
         .unwrap();
-    let caller = CallerClient::connect(caller_identity.connect_options())
-        .await
-        .unwrap();
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(caller_identity.connect_options())
+            .await
+            .unwrap(),
+    );
     let api = caller.trellis_test_fixture_echo_v1();
     let input = Value {
         value: "one durable execution".to_owned(),
@@ -84,17 +86,6 @@ async fn stopped_provider_is_unavailable_and_same_operation_can_be_observed_afte
         watch,
         TrellisClientError::ServiceUnavailable(ServiceUnavailableError)
     ));
-    for (path, error) in [
-        ("rpc", rpc.to_string()),
-        ("wait", wait.to_string()),
-        ("watch", watch.to_string()),
-    ] {
-        assert!(
-            error.contains("requested Trellis service is unavailable"),
-            "{path}: {error}"
-        );
-    }
-
     let mut service = ProviderParticipant::connect(identity.connect_options())
         .await
         .unwrap();

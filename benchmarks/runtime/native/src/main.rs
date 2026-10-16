@@ -6,21 +6,24 @@ use axum::{
     Json, Router,
 };
 use performance_trellis::apis::performance_trellis_performance_v1::{operations, rpc};
-use performance_trellis::participants::{
-    performance_trellis_caller::Client,
-    performance_trellis_provider::{Participant, Provider},
+use performance_trellis::{
+    apps::performance_trellis_caller::{Client, Request},
+    participants::performance_trellis_provider::{Participant, Provider},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    io::Write as _,
     path::PathBuf,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::io::AsyncReadExt;
 use trellis_rs::{
-    client::{OperationState, UserConnectOptions, UserSessionCredentials},
+    auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient},
+    client::{OperationState, UserConnectOptions},
+    generated::AppRequestDescriptor,
     service::{generate_transfer_id, FileTransferInfo, ServerError, ServiceConnectOptions},
 };
 
@@ -32,8 +35,8 @@ struct Options {
     output: PathBuf,
     trellis_url: String,
     service_seed: Option<String>,
-    seed: Option<String>,
-    session_id: Option<String>,
+    client_id: Option<String>,
+    credential_handles: Vec<String>,
     http_url: Option<String>,
     samples: usize,
     calls: usize,
@@ -73,8 +76,10 @@ async fn main() -> Result<(), Error> {
     let options: Options = serde_json::from_str(&input)?;
     match options.role.as_str() {
         "provider" => {
+            let server = discover_native_oauth(&options.trellis_url).await?;
             let mut service = Participant::connect(ServiceConnectOptions::new(
-                &options.trellis_url,
+                server.nats_servers,
+                server.trust,
                 options
                     .service_seed
                     .as_deref()
@@ -241,19 +246,45 @@ async fn main() -> Result<(), Error> {
             let mut samples = Vec::new();
             let started = Instant::now();
             let unix = now();
-            let client = Client::connect(UserConnectOptions::new(
-                &options.trellis_url,
-                30_000,
-                UserSessionCredentials {
-                    login_session_id: options
-                        .session_id
-                        .as_deref()
-                        .ok_or("login session missing")?,
-                    session_key_seed_base64url: options.seed.as_deref().ok_or("seed missing")?,
-                },
-                "performance-trellis.Caller",
-            ))
+            let server = discover_native_oauth(&options.trellis_url).await?;
+            let scope = NativeCredentialScope {
+                issuer: server.issuer.clone(),
+                instance_id: server.trust.instance_id.clone(),
+                account: server.trust.account.clone(),
+                client_id: options.client_id.clone().ok_or("client ID missing")?,
+                credential_handle: options
+                    .credential_handles
+                    .first()
+                    .ok_or("credential handle missing")?
+                    .parse()?,
+            };
+            let oauth = NativeOAuthClient::open(
+                options.output.join("native-credentials"),
+                scope.clone(),
+                server.trust,
+            )
             .await?;
+            let device = oauth
+                .start_device(&json!([{
+                    "type": "trellis_capabilities",
+                    "required": Request::REQUIRED_CAPABILITIES,
+                    "optional": Request::OPTIONAL_CAPABILITIES,
+                }]))
+                .await?;
+            println!(
+                "NATIVE_LOGIN {}",
+                json!({ "clientId": scope.client_id, "userCode": device.user_code(), "verificationUri": device.verification_uri() })
+            );
+            std::io::stdout().flush()?;
+            let session = device.complete().await?;
+            let client = Client::from_generated(
+                trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
+                    server.nats_servers,
+                    30_000,
+                    session,
+                ))
+                .await?,
+            );
             let api = client.performance_trellis_performance_v1();
             let reply = api
                 .echo(&rpc::EchoInput {
@@ -265,7 +296,7 @@ async fn main() -> Result<(), Error> {
                 return Err("incorrect first response".into());
             }
             samples.push(Sample {
-                scenario: "rust/first-process-resume-first-rpc".into(),
+                scenario: "rust/first-process-login-first-rpc".into(),
                 transport: "trellis",
                 started_unix_ms: unix,
                 duration_ms: started.elapsed().as_secs_f64() * 1000.0,

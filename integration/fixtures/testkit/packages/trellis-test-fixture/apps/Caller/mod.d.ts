@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/echo/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export declare const request: AppRequestDescriptor & {
 	readonly id: "trellis-test-fixture.Caller";
-	readonly kind: "browser";
+	readonly kind: "native";
 	readonly requiredCapabilities: readonly ["trellis-test-fixture.echo@v1::invoke", "trellis-test-fixture.echo@v1::upload"];
 	readonly optionalCapabilities: readonly [];
 	readonly uses: readonly [{

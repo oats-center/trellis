@@ -2311,7 +2311,14 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     ) {
       return;
     }
-    const prepared = await this.#options.prepare();
+    let prepared: TransportGenerationPrepared | undefined;
+    try {
+      prepared = await this.#options.prepare();
+    } catch (error) {
+      this.#recordFailure(desiredDigest);
+      this.#log.warn({ error }, "transport generation preparation failed");
+      return;
+    }
     if (this.#closed) return;
     if (!prepared) {
       // Connect material was unavailable (for example expired routing material
@@ -2346,6 +2353,16 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       );
       return;
     }
+    // Until activation, this socket is not in the registered generation set.
+    // Logical close must still preempt admission replay and intake readiness.
+    if (this.#closed) {
+      await nc.close();
+      return;
+    }
+    const closeCandidate = () => {
+      void nc.close().catch(() => undefined);
+    };
+    this.#logicalClosers.add(closeCandidate);
     try {
       const admission = await this.#readAdmission(nc);
       if (!admission) throw transportClosedError();
@@ -2451,6 +2468,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         { error },
         "transport generation candidate was not admitted",
       );
+    } finally {
+      this.#logicalClosers.delete(closeCandidate);
     }
   }
 

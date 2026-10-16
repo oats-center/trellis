@@ -1,16 +1,20 @@
+import { renameSync, writeFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import { get as httpGet } from "node:http";
+import { text } from "node:stream/consumers";
+import { inspect } from "node:util";
+import { StoreError, decodeTransferGrant } from "@oatscenter/trellis";
 import {
-  StoreError,
-  TransferGrantSchema,
-  TrellisClient,
-} from "@oatscenter/trellis";
-import { Value } from "typebox/value";
+  connectNativeClient,
+  discoverNativeOAuth,
+  NativeOAuthClient,
+} from "@oatscenter/trellis/native";
 import { sha256 } from "@noble/hashes/sha256";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { ensureTelemetryRuntime } from "@oatscenter/trellis/telemetry";
 import { err, isErr, ok } from "@oatscenter/result";
-import { completeLocalAuthFlow } from "../../ts/packages/trellis-testkit/src/admin/auth_flow.ts";
-import { participants, types } from "./packages/performance-trellis/index.js";
-import { AuthError } from "./packages/performance-trellis/apis/auth/mod.js";
+import { loginNativeTestClient } from "../../ts/packages/trellis-testkit/src/admin/native_auth.ts";
+import { apps, participants } from "./packages/performance-trellis/index.js";
 import {
   deadline,
   digest,
@@ -21,9 +25,7 @@ import {
 } from "./model.ts";
 import { snapshotResources } from "./resources.ts";
 
-const options = WorkerOptions.parse(
-  JSON.parse(await new Response(Deno.stdin.readable).text()),
-);
+const options = WorkerOptions.parse(JSON.parse(await text(process.stdin)));
 const telemetry = await ensureTelemetryRuntime({
   serviceName: `trellis-benchmark-${options.role}`,
   role: options.role === "provider" ? "service" : "cli",
@@ -32,7 +34,7 @@ let activePhase = "";
 const phase = async (name: string) => {
   if (name !== activePhase) {
     activePhase = name;
-    await Deno.writeTextFile(`${options.output}/phase.txt`, name);
+    await writeFile(`${options.output}/phase.txt`, name);
   }
 };
 
@@ -49,7 +51,7 @@ if (options.role === "provider") {
   for (const size of options.sizes) {
     const body = payload(size);
     await store.put(String(size), body).orThrow();
-    await Deno.writeFile(`${options.output}/body-${size}.bin`, body);
+    await writeFile(`${options.output}/body-${size}.bin`, body);
   }
   if (options.workload === "transfer") {
     // Runtime-private diagnostic: only the ordinary storage-neutral store API.
@@ -70,12 +72,14 @@ if (options.role === "provider") {
           const started = performance.now();
           try {
             if (action === "write") {
-              await store.put(
-                `diagnostic-${size}`,
-                (async function* () {
-                  yield body;
-                })(),
-              ).orThrow();
+              await store
+                .put(
+                  `diagnostic-${size}`,
+                  (async function* () {
+                    yield body;
+                  })(),
+                )
+                .orThrow();
               row.durationMs = performance.now() - started;
               // Read-back is mandatory but outside the isolated write timing.
             }
@@ -87,9 +91,8 @@ if (options.role === "provider") {
               length += chunk.length;
               hash.update(chunk);
             }
-            const actual = Array.from(
-              hash.digest(),
-              (byte) => byte.toString(16).padStart(2, "0"),
+            const actual = Array.from(hash.digest(), (byte) =>
+              byte.toString(16).padStart(2, "0"),
             ).join("");
             if (length !== size || actual !== expected) {
               throw new Error("Corrupt backend diagnostic round trip");
@@ -97,14 +100,14 @@ if (options.role === "provider") {
             if (action === "read") row.durationMs = performance.now() - started;
           } catch (error) {
             row.durationMs = performance.now() - started;
-            row.error = Deno.inspect(error, { colors: false, depth: 6 });
+            row.error = inspect(error, { colors: false, depth: 6 });
           }
           rows.push(row);
         }
       }
       await store.delete(`diagnostic-${size}`).orThrow();
     }
-    await Deno.writeTextFile(
+    await writeFile(
       `${options.output}/store-samples.json`,
       JSON.stringify(rows, null, 2),
     );
@@ -125,17 +128,19 @@ if (options.role === "provider") {
     if (context.caller.type !== "verified") {
       throw new Error("Download requires a verified RPC caller");
     }
-    const transfer = await service.createTransfer({
-      direction: "receive",
-      store: "files",
-      key: input.value,
-      sessionKey: context.caller.sessionKey,
-      connectionId: context.caller.connectionId,
-      contextDigest: context.caller.contextDigest,
-      permission: context.permission,
-      requiredCapabilities: context.requiredCapabilities,
-      inboxPrefix: context.inboxPrefix,
-    }).orThrow();
+    const transfer = await service
+      .createTransfer({
+        direction: "receive",
+        store: "files",
+        key: input.value,
+        sessionKey: context.caller.sessionPublicKey,
+        connectionId: context.caller.runtimeId,
+        contextDigest: context.caller.authorityDigest,
+        permission: context.permission,
+        requiredCapabilities: context.requiredCapabilities,
+        inboxPrefix: context.inboxPrefix,
+      })
+      .orThrow();
     return ok({ ...input, transfer });
   });
   await service.handleUpload(async ({ input, op, transfer }) => {
@@ -146,9 +151,11 @@ if (options.role === "provider") {
     await store.put(`upload-${input.value}`, body).orThrow();
     const stored = await store.get(`upload-${input.value}`).orThrow();
     if (!stored) throw new Error("Persisted upload is missing");
-    return await op.complete({
-      value: await digest(await stored.bytes().orThrow()),
-    }).orThrow();
+    return await op
+      .complete({
+        value: await digest(await stored.bytes().orThrow()),
+      })
+      .orThrow();
   });
   await service.handleWork(async ({ input, op }) => {
     await op.progress(input).orThrow();
@@ -166,7 +173,7 @@ if (options.role === "provider") {
     await op.progress(input).orThrow();
     if (!signal.aborted) {
       await new Promise<void>((resolve) =>
-        signal.addEventListener("abort", () => resolve(), { once: true })
+        signal.addEventListener("abort", () => resolve(), { once: true }),
       );
     }
   });
@@ -201,45 +208,50 @@ if (options.role === "provider") {
       if (
         !(object.error instanceof StoreError) ||
         object.error.getContext().reason !== "not_found"
-      ) throw object.error;
+      )
+        throw object.error;
       await service.publishChanged(job.payload).orThrow();
       return err(new RetryJobError());
     }
     return ok({ value: await digest(await object.bytes().orThrow()) });
   });
-  await service.onChanged(async ({ event }) => {
-    await service.publishDelivered(event).orThrow();
-    return ok(undefined);
-  }).orThrow();
+  await service
+    .onChanged(async ({ event }) => {
+      await service.publishDelivered(event).orThrow();
+      return ok(undefined);
+    })
+    .orThrow();
   const serving = service.wait();
   let reconnects = 0;
-  const unsubscribe = options.workload === "lifecycle"
-    ? service.connection.subscribe((status) => {
-      if (
-        status.phase === "connected" && status.transport?.event === "reconnect"
-      ) reconnects++;
-      const path =
-        `${options.output}/provider-${options.providerIndex}-connection.json`;
-      Deno.writeTextFileSync(
-        `${path}.pending`,
-        JSON.stringify({
-          connected: status.phase === "connected",
-          reconnects,
-        }),
-      );
-      Deno.renameSync(`${path}.pending`, path);
-    })
-    : () => {};
-  await Deno.writeTextFile(
+  const unsubscribe =
+    options.workload === "lifecycle"
+      ? service.connection.subscribe((status) => {
+          if (
+            status.phase === "connected" &&
+            status.transport?.event === "reconnect"
+          )
+            reconnects++;
+          const path = `${options.output}/provider-${options.providerIndex}-connection.json`;
+          writeFileSync(
+            `${path}.pending`,
+            JSON.stringify({
+              connected: status.phase === "connected",
+              reconnects,
+            }),
+          );
+          renameSync(`${path}.pending`, path);
+        })
+      : () => {};
+  await writeFile(
     `${options.output}/provider-${options.providerIndex}.json`,
     JSON.stringify({
-      pid: Deno.pid,
+      pid: process.pid,
       connectMs,
       storage: "JetStream object store",
     }),
   );
   const stopped = Promise.withResolvers<void>();
-  Deno.addSignalListener("SIGTERM", () => stopped.resolve());
+  process.once("SIGTERM", () => stopped.resolve());
   try {
     await stopped.promise;
   } finally {
@@ -250,42 +262,64 @@ if (options.role === "provider") {
   }
 } else {
   const samples: Sample[] = [];
-  const windows: Array<
-    {
-      scenario: string;
-      transport: Sample["transport"];
-      calls: number;
-      durationMs: number;
-      bytes?: number;
-      sessions?: number;
-      before: Awaited<ReturnType<typeof snapshotResources>>;
-      after: Awaited<ReturnType<typeof snapshotResources>>;
-    }
-  > = [];
+  const windows: Array<{
+    scenario: string;
+    transport: Sample["transport"];
+    calls: number;
+    durationMs: number;
+    bytes?: number;
+    sessions?: number;
+    before: Awaited<ReturnType<typeof snapshotResources>>;
+    after: Awaited<ReturnType<typeof snapshotResources>>;
+  }> = [];
   const held: Awaited<ReturnType<typeof connect>>[] = [];
-  let seedIndex = 0;
+  let credentialIndex = 0;
+  const initializedCredentials = new Set<string>();
   async function connect(
-    seed = options.seeds[seedIndex++],
-    sessionId?: string,
+    credentialHandle = options.credentialHandles[credentialIndex++],
   ) {
-    if (!seed) throw new Error("Insufficient pre-provisioned keys");
-    return await TrellisClient.connect({
-      trellisUrl: options.trellisUrl,
-      name: "benchmark-client",
-      participant: participants.Caller.participant,
-      auth: {
-        mode: "session_key",
-        sessionKeySeed: seed,
-        sessionId,
-        redirectTo: `${options.trellisUrl}/_trellis/test/client-auth`,
-      },
-      onAuthRequired: (context) =>
-        completeLocalAuthFlow({
-          trellisUrl: options.trellisUrl,
-          loginUrl: context.loginUrl,
-          password: options.password,
-        }),
-    }).orThrow();
+    if (!credentialHandle) throw new Error("Insufficient credential handles");
+    const server = (await discoverNativeOAuth(options.trellisUrl)).orThrow();
+    const directory = `${options.output}/credentials`;
+    const native = (
+      await NativeOAuthClient.open({
+        directory,
+        scope: {
+          issuer: server.issuer,
+          instanceId: server.trust.instanceId,
+          account: server.trust.account,
+          clientId: apps.Caller.request.id,
+          credentialHandle,
+        },
+        trust: server.trust,
+      })
+    ).orThrow();
+    try {
+      const login = initializedCredentials.has(credentialHandle)
+        ? {
+            session: (await native.resume()).orThrow(),
+            servers: server.natsServers,
+          }
+        : await loginNativeTestClient({
+            issuer: options.trellisUrl,
+            directory,
+            client: native,
+            clientId: apps.Caller.request.id,
+            request: apps.Caller.request,
+            username: options.username,
+            password: options.password,
+          });
+      const client = await connectNativeClient({
+        ...login,
+        name: "benchmark-client",
+        request: apps.Caller.request,
+      }).orThrow();
+      initializedCredentials.add(credentialHandle);
+      return client;
+    } catch (error) {
+      await native.close();
+      throw error;
+    }
   }
   async function measure(
     scenario: string,
@@ -298,9 +332,10 @@ if (options.role === "provider") {
     if (scenario !== "echo") {
       await phase(`${transport}/${scenario}/${bytes ?? 0}`);
     }
-    const before = scenario === "echo" || warmup
-      ? undefined
-      : await snapshotResources(options.output, options.cpuTicks);
+    const before =
+      scenario === "echo" || warmup
+        ? undefined
+        : await snapshotResources(options.output, options.cpuTicks);
     const startedUnixMs = Date.now();
     const started = performance.now();
     let detail: Partial<Sample> | void = undefined;
@@ -311,10 +346,12 @@ if (options.role === "provider") {
         transport,
         startedUnixMs,
         durationMs: performance.now() - (offeredAt ?? started),
-        ...(offeredAt === undefined ? {} : {
-          offeredUnixMs: startedUnixMs - (started - offeredAt),
-          schedulerDelayMs: Math.max(0, started - offeredAt),
-        }),
+        ...(offeredAt === undefined
+          ? {}
+          : {
+              offeredUnixMs: startedUnixMs - (started - offeredAt),
+              schedulerDelayMs: Math.max(0, started - offeredAt),
+            }),
         bytes,
         ...detail,
         warmup,
@@ -325,20 +362,16 @@ if (options.role === "provider") {
         transport,
         startedUnixMs,
         durationMs: performance.now() - (offeredAt ?? started),
-        ...(offeredAt === undefined ? {} : {
-          offeredUnixMs: startedUnixMs - (started - offeredAt),
-          schedulerDelayMs: Math.max(0, started - offeredAt),
-        }),
+        ...(offeredAt === undefined
+          ? {}
+          : {
+              offeredUnixMs: startedUnixMs - (started - offeredAt),
+              schedulerDelayMs: Math.max(0, started - offeredAt),
+            }),
         bytes,
-        error: Deno.inspect(error, { colors: false, depth: 6 }),
+        error: inspect(error, { colors: false, depth: 6 }),
         warmup,
       });
-      if (error instanceof AuthError) {
-        console.error(
-          "BENCHMARK_AUTH_ERROR",
-          JSON.stringify(error.toSerializable()),
-        );
-      }
       // Independent workloads continue, but the complete run remains failed.
     }
     if (before) {
@@ -358,25 +391,27 @@ if (options.role === "provider") {
     if (options.workload === "all") {
       for (let index = 0; index < options.samples; index++) {
         await measure("fresh-connection-first-get", "http", async () => {
-          const http = Deno.createHttpClient({ http1: true, http2: false });
-          try {
-            const request = {
-              client: http,
-              headers: { "accept-encoding": "identity" },
-              signal: AbortSignal.timeout(30_000),
-            };
-            const reply = await fetch(
-              `${options.httpUrl}/echo?value=first-get`,
-              request,
-            );
-            if (!reply.ok || (await reply.json()).value !== "first-get") {
-              throw new Error("Fresh HTTP GET failed");
-            }
-          } finally {
-            http.close();
+          const reply = await new Promise<import("node:http").IncomingMessage>(
+            (resolve, reject) => {
+              httpGet(
+                `${options.httpUrl}/echo?value=first-get`,
+                {
+                  agent: false,
+                  headers: { "accept-encoding": "identity" },
+                  signal: AbortSignal.timeout(30_000),
+                },
+                resolve,
+              ).once("error", reject);
+            },
+          );
+          if (
+            reply.statusCode !== 200 ||
+            JSON.parse(await text(reply)).value !== "first-get"
+          ) {
+            throw new Error("Fresh HTTP GET failed");
           }
         });
-        const seed = options.seeds[seedIndex++];
+        const credentialHandle = options.credentialHandles[credentialIndex++];
         const cycle: { client?: Awaited<ReturnType<typeof connect>> } = {};
         await measure(
           index === 0
@@ -385,11 +420,12 @@ if (options.role === "provider") {
           "trellis",
           async () => {
             const started = performance.now();
-            const client = await connect(seed);
+            const client = await connect(credentialHandle);
             cycle.client = client;
             held.push(client);
             const connected = performance.now();
-            const response = await client.echo({ value: `first-${index}` })
+            const response = await client
+              .echo({ value: `first-${index}` })
               .orThrow();
             const finished = performance.now();
             if (response.value !== `first-${index}`) {
@@ -403,19 +439,11 @@ if (options.role === "provider") {
           },
         );
         if (cycle.client) {
-          const sessionId = (await cycle.client.sessionsMe({}).orThrow())
-            .session
-            ?.sessionId;
-          if (!sessionId) {
-            throw new Error(
-              "Fresh login did not create a public login session",
-            );
-          }
           await cycle.client.connection.close();
           held.pop();
           await measure("resume-first-rpc", "trellis", async () => {
             const resumeStarted = performance.now();
-            const resumed = await connect(seed, sessionId);
+            const resumed = await connect(credentialHandle);
             cycle.client = resumed;
             held.push(resumed);
             const resumedAt = performance.now();
@@ -431,7 +459,7 @@ if (options.role === "provider") {
             };
           });
           await measure("logout", "trellis", async () => {
-            await cycle.client!.logout();
+            await cycle.client!.sessionsLogout({}).orThrow();
           });
           await cycle.client.connection.close();
           held.pop();
@@ -443,17 +471,24 @@ if (options.role === "provider") {
     const ephemeral = new Map<string, () => void>();
     const durable = new Map<string, () => void>();
     if (options.workload === "all") {
-      await client.onChanged(
-        (event) => {
-          ephemeral.get(types.ValueCodec.decode(event).value)?.();
-          return ok(undefined);
-        },
-        { mode: "ephemeral" },
-      ).orThrow();
-      await client.onDelivered((event) => {
-        durable.get(types.ValueCodec.decode(event).value)?.();
-        return ok(undefined);
-      }, { mode: "ephemeral" }).orThrow();
+      await client
+        .onChanged(
+          (event) => {
+            ephemeral.get(event.value)?.();
+            return ok(undefined);
+          },
+          { mode: "ephemeral" },
+        )
+        .orThrow();
+      await client
+        .onDelivered(
+          (event) => {
+            durable.get(event.value)?.();
+            return ok(undefined);
+          },
+          { mode: "ephemeral" },
+        )
+        .orThrow();
       for (let index = 0; index < options.samples; index++) {
         const value = `action-${index}`;
         await measure("state-write-read", "trellis", async () => {
@@ -477,19 +512,23 @@ if (options.role === "provider") {
             terminal.state !== "completed" ||
             terminal.output?.value !== value ||
             terminal.progress?.value !== value
-          ) throw new Error("Operation outcome or progress was lost");
+          )
+            throw new Error("Operation outcome or progress was lost");
         });
         await measure("operation-private-job-complete", "trellis", async () => {
           const operation = await client.queueWork({ value }).start().orThrow();
           const terminal = await operation.wait().orThrow();
           if (
-            terminal.state !== "completed" || terminal.output?.value !== value
-          ) throw new Error("Job-backed operation lost its result");
+            terminal.state !== "completed" ||
+            terminal.output?.value !== value
+          )
+            throw new Error("Job-backed operation lost its result");
         });
         await measure("live-start-first-frame", "trellis", async () => {
           const abort = new AbortController();
           try {
-            const feed = await client.watch({ value }, { signal: abort.signal })
+            const feed = await client
+              .performanceWatch({ value }, { signal: abort.signal })
               .orThrow();
             const received = await deadline(
               feed[Symbol.asyncIterator]().next(),
@@ -554,9 +593,10 @@ if (options.role === "provider") {
     }
     for (let trial = -options.warmups; trial < options.samples; trial++) {
       // Alternate protocols to avoid consistently giving one the warmer host.
-      const pair = trial % 2
-        ? ["http", "trellis"] as const
-        : ["trellis", "http"] as const;
+      const pair =
+        trial % 2
+          ? (["http", "trellis"] as const)
+          : (["trellis", "http"] as const);
       for (const transport of pair) {
         await phase(`${transport}/echo-window`);
         const before = await snapshotResources(
@@ -569,11 +609,11 @@ if (options.role === "provider") {
         let attempted = 0;
         for (let index = 0; index < options.calls; index++) {
           const offeredAt = options.arrivalRate
-            ? windowStart + index * 1000 / options.arrivalRate
+            ? windowStart + (index * 1000) / options.arrivalRate
             : undefined;
           if (offeredAt !== undefined && offeredAt > performance.now()) {
             await new Promise((resolve) =>
-              setTimeout(resolve, offeredAt - performance.now())
+              setTimeout(resolve, offeredAt - performance.now()),
             );
           }
           if (running.size >= options.maxOutstanding) {
@@ -598,13 +638,16 @@ if (options.role === "provider") {
             transport,
             async () => {
               const value = `echo-${index}`;
-              const response = transport === "trellis"
-                ? await client.echo({ value }).orThrow()
-                : await (await fetch(`${options.httpUrl}/echo?value=${value}`, {
-                  cache: "no-store",
-                  headers: { "accept-encoding": "identity" },
-                  signal: AbortSignal.timeout(30_000),
-                })).json();
+              const response =
+                transport === "trellis"
+                  ? await client.echo({ value }).orThrow()
+                  : await (
+                      await fetch(`${options.httpUrl}/echo?value=${value}`, {
+                        cache: "no-store",
+                        headers: { "accept-encoding": "identity" },
+                        signal: AbortSignal.timeout(30_000),
+                      })
+                    ).json();
               if (response.value !== value) {
                 throw new Error("Incorrect echo response");
               }
@@ -644,21 +687,24 @@ if (options.role === "provider") {
           const value = `cancel-${index}`;
           const ready = Promise.withResolvers<void>();
           const started = performance.now();
-          const operation = await client.awaitCancellation({ value })
-            .onProgress(
-              (event) => {
-                if (event.progress.value !== value) {
-                  throw new Error("Wrong cancellation operation progress");
-                }
-                ready.resolve();
-              },
-            ).onEvent((event) => {
+          const operation = await client
+            .awaitCancellation({ value })
+            .onProgress((event) => {
+              if (event.progress.value !== value) {
+                throw new Error("Wrong cancellation operation progress");
+              }
+              ready.resolve();
+            })
+            .onEvent((event) => {
               if (
-                "snapshot" in event && event.snapshot.progress?.value === value
+                "snapshot" in event &&
+                event.snapshot.progress?.value === value
               ) {
                 ready.resolve();
               }
-            }).start().orThrow();
+            })
+            .start()
+            .orThrow();
           try {
             const finished = operation.wait().orThrow();
             await deadline(
@@ -666,9 +712,9 @@ if (options.role === "provider") {
                 ready.promise,
                 finished.then((result) => {
                   throw new Error(
-                    `Cancellation target ended before progress: ${
-                      JSON.stringify(result)
-                    }`,
+                    `Cancellation target ended before progress: ${JSON.stringify(
+                      result,
+                    )}`,
                   );
                 }),
               ]),
@@ -682,14 +728,16 @@ if (options.role === "provider") {
             });
             const setupMs = performance.now() - started;
             const cancelStarted = performance.now();
-            const result = await deadline(operation.cancel().orThrow(), 25_000)
-              .catch(async (error: unknown) => {
-                console.error(
-                  "BENCHMARK_CANCEL_STATE",
-                  JSON.stringify(await operation.get().orThrow()),
-                );
-                throw error;
-              });
+            const result = await deadline(
+              operation.cancel().orThrow(),
+              25_000,
+            ).catch(async (error: unknown) => {
+              console.error(
+                "BENCHMARK_CANCEL_STATE",
+                JSON.stringify(await operation.get().orThrow()),
+              );
+              throw error;
+            });
             if (result.state !== "cancelled") {
               throw new Error("Operation cancellation did not finish");
             }
@@ -708,7 +756,9 @@ if (options.role === "provider") {
                 key: "shared",
                 value: `batch-${index}-${member}`,
               };
-              const operation = await client.queueKeyed(input).start()
+              const operation = await client
+                .queueKeyed(input)
+                .start()
                 .orThrow();
               const result = await operation.wait().orThrow();
               if (
@@ -717,15 +767,15 @@ if (options.role === "provider") {
                 result.output.key !== input.key
               ) {
                 throw new Error(
-                  `Contended job returned the wrong result for ${
-                    JSON.stringify(input)
-                  }: ${JSON.stringify(result)}`,
+                  `Contended job returned the wrong result for ${JSON.stringify(
+                    input,
+                  )}: ${JSON.stringify(result)}`,
                 );
               }
             }),
           );
-          const failures = batch.filter((result) =>
-            result.status === "rejected"
+          const failures = batch.filter(
+            (result) => result.status === "rejected",
           );
           if (failures.length) {
             throw new AggregateError(
@@ -747,16 +797,19 @@ if (options.role === "provider") {
                 missing.promise,
                 finished.then((result) => {
                   throw new Error(
-                    `Object-dependent operation ended before its missing-object read: ${
-                      JSON.stringify(result)
-                    }`,
+                    `Object-dependent operation ended before its missing-object read: ${JSON.stringify(
+                      result,
+                    )}`,
                   );
                 }),
               ]),
             );
             const body = payload(1024);
-            const upload = await client.upload({ value: `retry-${index}` })
-              .transfer(body).start().orThrow();
+            const upload = await client
+              .upload({ value: `retry-${index}` })
+              .transfer(body)
+              .start()
+              .orThrow();
             const transferred = await upload.wait().orThrow();
             if (transferred.terminal.state !== "completed") {
               throw new Error("Retry dependency upload did not complete");
@@ -764,8 +817,9 @@ if (options.role === "provider") {
             const result = await finished;
             if (
               result.state !== "completed" ||
-              result.output?.value !== await digest(body)
-            ) throw new Error("Retried job did not read the uploaded object");
+              result.output?.value !== (await digest(body))
+            )
+              throw new Error("Retried job did not read the uploaded object");
           } finally {
             ephemeral.delete(input.value);
           }
@@ -776,11 +830,9 @@ if (options.role === "provider") {
       const body = payload(size);
       const expected = await digest(body);
       for (let index = -options.warmups; index < options.samples; index++) {
-        for (
-          const transport of index % 2
-            ? ["http", "trellis"] as const
-            : ["trellis", "http"] as const
-        ) {
+        for (const transport of index % 2
+          ? (["http", "trellis"] as const)
+          : (["trellis", "http"] as const)) {
           await measure(
             "download",
             transport,
@@ -788,17 +840,14 @@ if (options.role === "provider") {
               const start = performance.now();
               let stream: ReadableStream<Uint8Array>;
               if (transport === "trellis") {
-                const response = await client.download({ value: String(size) })
+                const response = await client
+                  .download({ value: String(size) })
                   .orThrow();
-                const grant = Value.Parse(
-                  TransferGrantSchema,
-                  response.transfer,
-                );
+                const grant = decodeTransferGrant(response.transfer).orThrow();
                 if (grant.direction !== "receive") {
                   throw new Error("Download returned a send grant");
                 }
-                stream = await client.transfer(grant).stream()
-                  .orThrow();
+                stream = await client.transfer(grant).stream().orThrow();
               } else {
                 const response = await fetch(
                   `${options.httpUrl}/download?size=${size}`,
@@ -834,7 +883,7 @@ if (options.role === "provider") {
                 received.set(chunk, offset);
                 offset += chunk.length;
               }
-              if (length !== size || await digest(received) !== expected) {
+              if (length !== size || (await digest(received)) !== expected) {
                 throw new Error("Corrupt download");
               }
               return { setupMs, firstByteMs };
@@ -848,13 +897,17 @@ if (options.role === "provider") {
             transport,
             async () => {
               if (transport === "trellis") {
-                const operation = await client.upload({ value: String(size) })
-                  .transfer(body).start().orThrow();
+                const operation = await client
+                  .upload({ value: String(size) })
+                  .transfer(body)
+                  .start()
+                  .orThrow();
                 const result = await operation.wait().orThrow();
                 if (
                   result.terminal.state !== "completed" ||
                   result.transferred.size !== size
-                ) throw new Error("Upload not completed");
+                )
+                  throw new Error("Upload not completed");
                 if (
                   result.terminal.state !== "completed" ||
                   result.terminal.output?.value !== expected
@@ -893,13 +946,14 @@ if (options.role === "provider") {
         await measure("idle-sessions", "trellis", async () => {
           await phase(`trellis/idle-sessions/${count}`);
           await new Promise((resolve) =>
-            setTimeout(resolve, options.idleSeconds * 1000)
+            setTimeout(resolve, options.idleSeconds * 1000),
           );
           return { sessions: count };
         });
         await phase("idle-validation");
         for (const connection of held) {
-          const result = await connection.echo({ value: "idle-alive" })
+          const result = await connection
+            .echo({ value: "idle-alive" })
             .orThrow();
           if (result.value !== "idle-alive") {
             throw new Error("Idle connection stopped working");
@@ -913,16 +967,16 @@ if (options.role === "provider") {
       transport: "trellis",
       startedUnixMs: Date.now(),
       durationMs: 0,
-      error: Deno.inspect(error, { colors: false, depth: 6 }),
+      error: inspect(error, { colors: false, depth: 6 }),
     });
     throw error;
   } finally {
     for (const client of held) await client.connection.close().catch(() => {});
     await phase("trellis/after-disconnect");
     await new Promise((resolve) =>
-      setTimeout(resolve, options.idleSeconds * 1000)
+      setTimeout(resolve, options.idleSeconds * 1000),
     );
-    await Deno.writeTextFile(
+    await writeFile(
       `${options.output}/samples.json`,
       JSON.stringify(
         { summary: summarize(samples), samples, windows },
@@ -931,6 +985,6 @@ if (options.role === "provider") {
       ),
     );
     await telemetry.shutdown();
-    if (samples.some((sample) => sample.error)) Deno.exitCode = 1;
+    if (samples.some((sample) => sample.error)) process.exitCode = 1;
   }
 }

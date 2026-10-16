@@ -12,6 +12,7 @@ export async function buildTypeScriptPackage(
     description: string;
     exports: Record<string, unknown>;
     dependencies: Record<string, string>;
+    engines?: Record<string, string>;
     peerDependencies?: Record<string, string>;
     peerDependenciesMeta?: Record<string, { optional: boolean }>;
   },

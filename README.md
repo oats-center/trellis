@@ -87,7 +87,7 @@ the Rust workspace. Live client-library integration coverage is language-owned.
 Run these peer suites when you need that coverage:
 
 ```sh
-deno task -c ts/deno.json test:integration
+npm run test:integration
 cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
 ```
 

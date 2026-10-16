@@ -1,4 +1,5 @@
 /** Test-only NATS WebSocket response gate. Forwards real bytes; may hold one RPC reply. */
+import { setTimeout } from "node:timers/promises";
 
 const MAX_LINE_BYTES = 64 * 1024;
 const MAX_RECORDS = 64;
@@ -80,7 +81,9 @@ function parseOpLine(line: string): {
     "+OK",
     "-ERR",
   ];
-  const op = (known as string[]).includes(rawOp) ? rawOp as NatsOp : "UNKNOWN";
+  const op = (known as string[]).includes(rawOp)
+    ? (rawOp as NatsOp)
+    : "UNKNOWN";
   return { op, tokens };
 }
 
@@ -121,8 +124,14 @@ export class NatsProtocolParser {
     const line = decoder.decode(lineBytes);
     const { op, tokens } = parseOpLine(line);
     if (
-      op === "PING" || op === "PONG" || op === "+OK" || op === "INFO" ||
-      op === "CONNECT" || op === "SUB" || op === "UNSUB" || op === "-ERR" ||
+      op === "PING" ||
+      op === "PONG" ||
+      op === "+OK" ||
+      op === "INFO" ||
+      op === "CONNECT" ||
+      op === "SUB" ||
+      op === "UNSUB" ||
+      op === "-ERR" ||
       op === "UNKNOWN"
     ) {
       const end = lineEnd + 2;
@@ -173,10 +182,7 @@ export class NatsProtocolParser {
     const bodyStart = lineEnd + 2;
     const needed = bodyStart + parsed.totalBytes + 2;
     if (this.#buffer.length < needed) return;
-    if (
-      this.#buffer[needed - 2] !== 13 ||
-      this.#buffer[needed - 1] !== 10
-    ) {
+    if (this.#buffer[needed - 2] !== 13 || this.#buffer[needed - 1] !== 10) {
       throw new Error(`${op} payload is missing trailing CRLF`);
     }
     const raw = copyBytes(this.#buffer, 0, needed);
@@ -346,9 +352,12 @@ export class NatsResponseGate {
   #disposed = false;
 
   armNextReply(route: string, predicate?: ArmPredicate): Promise<HeldRequest> {
-    return new Promise((resolve) => {
-      this.#armed.push({ route, predicate, resolve });
-    });
+    return this.#wait(
+      new Promise((resolve) => {
+        this.#armed.push({ route, predicate, resolve });
+      }),
+      `RPC reply on ${route}`,
+    );
   }
 
   /**
@@ -356,12 +365,31 @@ export class NatsResponseGate {
    * Used to observe that a real live frame reached the browser before acting.
    */
   armNextPush(): Promise<ParsedNatsRecord> {
-    return new Promise((resolve) => this.#armedPush.push(resolve));
+    return this.#wait(
+      new Promise((resolve) => this.#armedPush.push(resolve)),
+      "server push",
+    );
   }
 
   waitHeld(): Promise<void> {
     if (this.#held.size > 0) return Promise.resolve();
-    return new Promise((resolve) => this.#pendingWaiters.push(resolve));
+    return this.#wait(
+      new Promise((resolve) => this.#pendingWaiters.push(resolve)),
+      "held reply",
+    );
+  }
+
+  #wait<T>(pending: Promise<T>, boundary: string): Promise<T> {
+    const result = Promise.race([
+      pending,
+      setTimeout(10_000, undefined, { ref: false }).then(() => {
+        throw new Error(`Timed out waiting for real NATS ${boundary}`);
+      }),
+    ]);
+    // An arm can precede navigation; its caller still receives the rejection if
+    // navigation fails or takes longer than the bounded observation window.
+    void result.catch(() => {});
+    return result;
   }
 
   get heldRequest(): HeldRequest | undefined {
@@ -370,10 +398,13 @@ export class NatsResponseGate {
 
   requestsSince(mark: number, routeSet: Iterable<string>): number {
     const routes = new Set(routeSet);
-    return this.#requests.slice(mark).filter((item) =>
-      item.route !== undefined &&
-      [...routes].some((route) => routeMatches(item.route, route))
-    ).length;
+    return this.#requests
+      .slice(mark)
+      .filter(
+        (item) =>
+          item.route !== undefined &&
+          [...routes].some((route) => routeMatches(item.route, route)),
+      ).length;
   }
 
   requestMark(): number {
@@ -437,9 +468,11 @@ export class NatsResponseGate {
       return true;
     }
     const matchIndex = this.#armed.findIndex((arm) => {
-      const request = [...this.#requests].reverse().find((item) =>
-        item.reply === reply && routeMatches(item.route, arm.route)
-      );
+      const request = [...this.#requests]
+        .reverse()
+        .find(
+          (item) => item.reply === reply && routeMatches(item.route, arm.route),
+        );
       if (!request) return false;
       return arm.predicate ? arm.predicate(record) : true;
     });
@@ -452,9 +485,9 @@ export class NatsResponseGate {
       throw new Error("NATS response gate retained too many bytes");
     }
     const [arm] = this.#armed.splice(matchIndex, 1);
-    const request = [...this.#requests].reverse().find((item) =>
-      item.reply === reply
-    );
+    const request = [...this.#requests]
+      .reverse()
+      .find((item) => item.reply === reply);
     const held: HeldRequest = {
       route: request?.route ?? arm.route,
       reply,

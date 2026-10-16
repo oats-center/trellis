@@ -376,6 +376,13 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
         if step == 2 {
             break;
         }
+        // Lose the warm client's final physical attachment while Auth is down.
+        // Its next renewal must authenticate rotation and admit a fresh socket,
+        // not depend on any predecessor connection surviving the restart.
+        let lost = warm.runtime_nats();
+        // Runtime shutdown may already have retired this attachment.
+        let _ = lost.drain().await;
+        assert!(lost.flush().await.is_err());
         let store =
             SqliteAuthorizationStore::open(&storage, &config, &identity.audience_nats_account)
                 .unwrap();
@@ -423,7 +430,17 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
         drop(store);
         (stop, runtime) = start_runtime(&config, &origin).await;
         warm.refresh_authorization_context().await.unwrap();
-        let warm_renewed = warm_me().await.unwrap();
+        let warm_renewed = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut readiness = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                readiness.tick().await;
+                if let Ok(me) = warm_me().await {
+                    break me;
+                }
+            }
+        })
+        .await
+        .expect("issuer rotation recovery without a surviving attachment");
         assert_eq!(warm_renewed["principal"], warm_initial["principal"]);
         session = NativeOAuthClient::open(custody.clone(), scope.clone(), pinned.clone())
             .await

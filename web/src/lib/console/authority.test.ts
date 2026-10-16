@@ -1,5 +1,6 @@
 import { equal } from "node:assert/strict";
 import { codecs } from "@oatscenter/trellis/generated";
+import { test } from "node:test";
 
 import {
   type AuthorityFailureClassifier,
@@ -79,7 +80,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-Deno.test("U22 revalidation stops readiness immediately", async () => {
+test("U22 revalidation stops readiness immediately", async () => {
   const first = deferred<AuthorityLoadResult>();
   const second = deferred<AuthorityLoadResult>();
   let call = 0;
@@ -105,7 +106,7 @@ Deno.test("U22 revalidation stops readiness immediately", async () => {
   equal(core.snapshot.state, "ready");
 });
 
-Deno.test("U23 a stale completion cannot restore authority", async () => {
+test("U23 a stale completion cannot restore authority", async () => {
   const first = deferred<AuthorityLoadResult>();
   const second = deferred<AuthorityLoadResult>();
   let call = 0;
@@ -133,62 +134,53 @@ Deno.test("U23 a stale completion cannot restore authority", async () => {
   equal(core.snapshot.generation, operationsAfterStale);
 });
 
-Deno.test(
-  "U24 invalidation advances the generation and clears readiness",
-  async () => {
-    const core = new ConsoleAuthorityCore(
-      () => Promise.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV")),
-      classify,
-    );
-    await core.reload();
-    const before = core.snapshot.generation;
-    core.invalidate();
-    equal(core.snapshot.state, "checking");
-    equal(core.snapshot.authority, null);
-    equal(core.snapshot.generation, before + 1);
-    equal(
-      core.snapshot.profile?.username,
-      "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-      "last-known profile may remain for non-actionable display",
-    );
-  },
-);
+test("U24 invalidation advances the generation and clears readiness", async () => {
+  const core = new ConsoleAuthorityCore(
+    () => Promise.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    classify,
+  );
+  await core.reload();
+  const before = core.snapshot.generation;
+  core.invalidate();
+  equal(core.snapshot.state, "checking");
+  equal(core.snapshot.authority, null);
+  equal(core.snapshot.generation, before + 1);
+  equal(
+    core.snapshot.profile?.username,
+    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    "last-known profile may remain for non-actionable display",
+  );
+});
 
-Deno.test(
-  "U25 a transport failure is an error state with Retry, not forbidden",
-  async () => {
-    const core = new ConsoleAuthorityCore(
-      () =>
-        Promise.resolve(failed("internal_error", "01ARZ3NDEKTSV4RRFFQ69G5FAV")),
-      classify,
-    );
-    await core.reload();
-    equal(core.snapshot.state, "error");
-    equal(core.snapshot.failure?.message, "internal_error");
-  },
-);
+test("U25 a transport failure is an error state with Retry, not forbidden", async () => {
+  const core = new ConsoleAuthorityCore(
+    () =>
+      Promise.resolve(failed("internal_error", "01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    classify,
+  );
+  await core.reload();
+  equal(core.snapshot.state, "error");
+  equal(core.snapshot.failure?.message, "internal_error");
+});
 
-Deno.test(
-  "U26 an authorization denial is forbidden, and a missing session is auth-required",
-  async () => {
-    const forbidden = new ConsoleAuthorityCore(
-      () =>
-        Promise.resolve(failed("not_authorized", "01ARZ3NDEKTSV4RRFFQ69G5FAV")),
-      classify,
-    );
-    await forbidden.reload();
-    equal(forbidden.snapshot.state, "forbidden");
+test("U26 an authorization denial is forbidden, and a missing session is auth-required", async () => {
+  const forbidden = new ConsoleAuthorityCore(
+    () =>
+      Promise.resolve(failed("not_authorized", "01ARZ3NDEKTSV4RRFFQ69G5FAV")),
+    classify,
+  );
+  await forbidden.reload();
+  equal(forbidden.snapshot.state, "forbidden");
 
-    const missing = new ConsoleAuthorityCore(
-      () => Promise.resolve(failed("session_not_found")),
-      classify,
-    );
-    await missing.reload();
-    equal(missing.snapshot.state, "auth-required");
-  },
-);
+  const missing = new ConsoleAuthorityCore(
+    () => Promise.resolve(failed("session_not_found")),
+    classify,
+  );
+  await missing.reload();
+  equal(missing.snapshot.state, "auth-required");
+});
 
-Deno.test("U27 dispose commits nothing further", async () => {
+test("U27 dispose commits nothing further", async () => {
   const pending = deferred<AuthorityLoadResult>();
   const core = new ConsoleAuthorityCore(() => pending.promise, classify);
   const reload = core.reload();
@@ -200,7 +192,7 @@ Deno.test("U27 dispose commits nothing further", async () => {
   equal(core.disposed, true);
 });
 
-Deno.test("U28 a thrown loader is classified, not propagated", async () => {
+test("U28 a thrown loader is classified, not propagated", async () => {
   const core = new ConsoleAuthorityCore(
     () => Promise.reject(new Error("socket closed")),
     classify,
@@ -209,57 +201,54 @@ Deno.test("U28 a thrown loader is classified, not propagated", async () => {
   equal(core.snapshot.state, "error");
 });
 
-Deno.test(
-  "U29 identity change is principal and login-session scoped, not connection scoped",
-  () => {
-    const base = {
-      principalId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-      loginSessionId: "session-a",
+test("U29 identity change is principal and login-session scoped, not connection scoped", () => {
+  const base = {
+    principalId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    loginSessionId: "session-a",
+    connectionId: "connection-1",
+  };
+  equal(
+    ConsoleAuthorityCore.identityChanged(base, {
+      ...base,
+      connectionId: "connection-2",
+    }),
+    false,
+    "a reconnect preserves identity",
+  );
+  equal(
+    ConsoleAuthorityCore.identityChanged(base, {
+      ...base,
+      loginSessionId: "session-b",
+    }),
+    true,
+  );
+  equal(
+    ConsoleAuthorityCore.identityChanged(base, {
+      principalId: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+      loginSessionId: "session-b",
       connectionId: "connection-1",
-    };
-    equal(
-      ConsoleAuthorityCore.identityChanged(base, {
-        ...base,
-        connectionId: "connection-2",
-      }),
-      false,
-      "a reconnect preserves identity",
-    );
-    equal(
-      ConsoleAuthorityCore.identityChanged(base, {
-        ...base,
-        loginSessionId: "session-b",
-      }),
-      true,
-    );
-    equal(
-      ConsoleAuthorityCore.identityChanged(base, {
-        principalId: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
-        loginSessionId: "session-b",
-        connectionId: "connection-1",
-      }),
-      true,
-    );
-    equal(
-      ConsoleAuthorityCore.identityChanged(
-        {
-          principalId: null,
-          loginSessionId: null,
-          connectionId: null,
-        },
-        base,
-      ),
-      false,
-      "an operation dispatched before the first Me result adopts that result",
-    );
-    equal(
-      ConsoleAuthorityCore.identityChanged(base, {
+    }),
+    true,
+  );
+  equal(
+    ConsoleAuthorityCore.identityChanged(
+      {
         principalId: null,
         loginSessionId: null,
         connectionId: null,
-      }),
-      false,
-      "an unverifiable result is not confirmed replacement; auth-required clears through navigation",
-    );
-  },
-);
+      },
+      base,
+    ),
+    false,
+    "an operation dispatched before the first Me result adopts that result",
+  );
+  equal(
+    ConsoleAuthorityCore.identityChanged(base, {
+      principalId: null,
+      loginSessionId: null,
+      connectionId: null,
+    }),
+    false,
+    "an unverifiable result is not confirmed replacement; auth-required clears through navigation",
+  );
+});

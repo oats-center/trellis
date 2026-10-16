@@ -1,4 +1,4 @@
-import { auth, jobs } from trellis;
+import { auth, events as eventlog, health, jobs } from trellis;
 
 model Value { value: string; }
 model UpdateDetail { count: int64; payload: bytes; }
@@ -94,6 +94,16 @@ service Provider {
   consumer changes { title "Changes"; description "Runtime fixture durable changes."; events [runtime.Changed]; concurrency 1; replay new; }
 }
 service EchoProvider { implements runtime; }
+service TransferGrowthProvider {
+  implements runtime;
+  use transport_growth { capability extend; }
+  store files { title "Files"; description "Transfer acceptance bytes across authority growth."; ttl 0; desired_max_object 8MiB; desired_max_total 16MiB; }
+}
+service OrdinaryJobs {
+  job work { title "Work"; description "Ordinary queue cancellation"; payload Value; result Value; }
+}
+agent JobEvidenceReader { use auth { required capability jobResourceBindingsRead; } }
+agent EventEvidenceReader { use auth { required capability eventResourceBindingsRead; } }
 api optional_availability@v2 {
   title "Optional operation availability";
   description "Native clients use approved optional operations without legacy atom grants.";
@@ -115,8 +125,13 @@ service OperationProvider {
 }
 service OperationCaller { use runtime { required capability work; } }
 agent EchoCaller { use runtime { required capability echo; } }
+agent Observer {
+  use health { required capability observe; required capability inspect; }
+  use jobs { required capability observe; required capability summary; }
+  use eventlog { required capability observe; required capability query; }
+}
 agent TransferCaller { use runtime { required capability transport; required capability download; } }
-app Caller {
+agent Caller {
   use runtime { required capability transport; required capability download; }
   state saved { title "Saved"; description "Caller-owned saved value."; schema Saved; version 1; }
   state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
@@ -127,8 +142,8 @@ app StateCaller {
 agent NativeStateCaller {
   state savedResource { title "Saved resource"; description "Native State acceptance value."; schema ResourceValue; version 1; }
 }
-app Denied { use runtime; }
-app JobsAdmin { use jobs { required capability query; required capability inspect; required capability retry; required capability dlqReplay; } }
+agent Denied { use runtime; }
+agent JobsAdmin { use jobs { required capability query; required capability inspect; required capability keyLookup; required capability retry; required capability dlqReplay; required capability listServices; } }
 service AdminService {
   use auth {
     required capability deploymentsRead;
@@ -161,20 +176,25 @@ service EventClient {
   }
 }
 service ChildProvider { implements device_child; }
-app Alpha { use events { required capability publishAlpha; required capability inspect; required capability dropAlpha; } }
-app Beta { use events { required capability publishBeta; } }
+agent Alpha { use events { required capability publishAlpha; required capability inspect; required capability dropAlpha; } }
+agent Beta { use events { required capability publishBeta; } }
 device Device {
   state telemetry { title "Telemetry"; description "Device-owned State acceptance value."; schema ResourceValue; version 1; }
-  app Companion {
+  agent Companion {
     state shared { title "Shared"; description "Same-user companion State acceptance value."; schema ResourceValue; version 1; }
+    use auth { required capability deviceCompanionsManage; }
     use device_child {
       required capability required;
       capability optional;
     }
   }
 }
+device StateDevice {
+  state telemetry { title "Telemetry"; description "Device State without a companion"; schema ResourceValue; version 1; }
+}
 device AgentDevice {
   agent Companion {
+    use auth { required capability deviceCompanionsManage; }
     use device_child {
       required capability required;
       capability optional;
@@ -224,7 +244,7 @@ api liveprobe@v1 {
 
 service LiveProbeProvider { implements liveprobe; }
 
-app LiveProbeCaller {
+agent LiveProbeCaller {
   use liveprobe { required capability observe; }
 }
 
@@ -297,6 +317,12 @@ service TransportGrowthOperationProvider {
     deadline 30s;
     retry { attempts 2; backoff [250ms]; }
   }
+  job retained {
+    title "Retained work";
+    description "Work whose retained references span transport renewal without a business deadline.";
+    payload Value;
+    result Value;
+  }
   consumer ticks {
     title "Ticks";
     description "A durable delivery held across a transport cutover.";
@@ -306,7 +332,7 @@ service TransportGrowthOperationProvider {
   }
 }
 
-app TransportGrowthCaller {
+agent TransportGrowthCaller {
   use transport_growth {
     required capability advance;
     required capability control;
@@ -316,7 +342,7 @@ app TransportGrowthCaller {
   }
 }
 
-app DownloadGrowthCaller {
+agent DownloadGrowthCaller {
   use runtime { required capability download; }
   use transport_growth { capability extend; }
 }

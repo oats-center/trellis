@@ -3,7 +3,7 @@
 /** Developer selections and local State codecs; never principal installation evidence. */
 export const request = {
 	id: "trellis-test-fixture.RestrictedCaller",
-	kind: "browser",
+	kind: "native",
 	requiredCapabilities: [],
 	optionalCapabilities: [],
 	uses: [],

@@ -15,7 +15,7 @@
 //! and that the still-open process performs no recovery work afterwards.
 
 use futures_util::{stream, StreamExt as _};
-use runtime_trellis::apis::runtime_trellis_transport_growth_v1::Client as SubjectGrowthClient;
+use runtime_trellis::participants::runtime_trellis_transport_growth_subject::runtime_trellis_transport_growth_v1::Client as SubjectGrowthClient;
 use runtime_trellis::participants::runtime_trellis_transport_growth_subject::{
     Participant as SubjectParticipant, Provider as SubjectProvider,
 };
@@ -26,7 +26,6 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use trellis_rs::service::ServiceConnectOptions;
 use trellis_rs::telemetry::{self, TelemetryGuard, TelemetryIdentity, TelemetryRole};
 
 /// Emits one flushable protocol line the harness can act on immediately.
@@ -38,6 +37,13 @@ fn emit(line: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
     let telemetry = telemetry::init_from_env(TelemetryIdentity::new(
         "transport-growth-subject",
         TelemetryRole::Service,
@@ -76,7 +82,9 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
     // call completes well within it; this is the ordinary public client option,
     // not a runtime or test-only timer.
     let mut runtime = SubjectParticipant::connect(
-        ServiceConnectOptions::new(&url, &seed).with_timeout_ms(60_000),
+        trellis_runtime_acceptance::service_options(&url, &seed)
+            .await?
+            .with_timeout_ms(60_000),
     )
     .await?;
     // The generated API and outer client handles each own a real reference to the
@@ -227,6 +235,16 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                     .await?;
                 emit("TRANSPORT_GROWTH_ADVANCE_OK")?;
             }
+            "AUTH_STATUS" => {
+                emit(&format!(
+                    "AUTH_USABLE {}",
+                    client
+                        .as_ref()
+                        .expect("connected client")
+                        .availability()
+                        .runtime_trellis_transport_growth_v1_extend
+                ))?;
+            }
             "START_ADVANCE" => {
                 // Issue one real generated `Advance` on an owned task so stdin
                 // keeps processing commands while the call is held in flight by
@@ -271,6 +289,24 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                 emit("TRANSPORT_GROWTH_EXTEND_AVAILABLE")?;
             }
             "EXTEND" => {
+                growth(&api)
+                    .extend(&Empty {
+                        extra: Default::default(),
+                    })
+                    .await?;
+                emit("TRANSPORT_GROWTH_EXTEND_OK")?;
+            }
+            "WAIT_EXTEND" => {
+                let client = client.as_ref().expect("client is still connected");
+                let mut availability = client.watch_availability();
+                while !client
+                    .availability()
+                    .action_runtime_trellis_transport_growth_v1_rpc_extend
+                {
+                    if availability.next().await.is_none() {
+                        return Err("connection closed before Extend became available".into());
+                    }
+                }
                 growth(&api)
                     .extend(&Empty {
                         extra: Default::default(),
@@ -344,13 +380,13 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
 /// service facade hiding its client. Keep both real references after scope end.
 async fn run_native_owner_scope(url: &str, seed: &str) -> Result<(), Box<dyn std::error::Error>> {
     use trellis_rs::generated::ParticipantDescriptor as _;
+    let server = trellis_rs::auth::discover_native_oauth(url).await?;
     let client = std::sync::Arc::new(
         trellis_rs::client::TrellisClient::connect_service_with_contract(
             trellis_rs::client::ServiceConnectWithContractOptions {
-                trellis_url: url,
+                nats_servers: server.nats_servers,
+                trust: server.trust,
                 participant_id: SubjectParticipant::ID,
-                participant_path: SubjectParticipant::PATH,
-                package_evidence: SubjectParticipant::package_evidence(),
                 name: Some("native-owner-scope"),
                 provisioned_identity_seed_base64url: seed,
                 timeout_ms: 60_000,
@@ -374,7 +410,9 @@ async fn run_native_owner_scope(url: &str, seed: &str) -> Result<(), Box<dyn std
             "PING" => {
                 // The client is still a usable Rust value after transport scope
                 // end; no last-reference drop or process exit proves retirement.
-                let _ = client.authorization_context()?;
+                if client.authorization_context().is_ok() {
+                    return Err("a stopped native owner exposed authorization".into());
+                }
                 emit("TRANSPORT_GROWTH_PONG")?;
             }
             "EXIT" => {

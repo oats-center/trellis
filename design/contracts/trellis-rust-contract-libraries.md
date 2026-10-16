@@ -28,6 +28,12 @@ Commit generated output when consumers must build without the CLI/cache.
 Regenerate rather than editing it, and use current Rustdoc/generated source for
 exact participant-specific methods.
 
+Generation rejects collisions across the complete normalized Client method
+namespace, including API accessors, resource accessors, and runtime methods,
+before replacing last-good output. Device State accessors use an SDK-owned Watch
+descriptor generated from native State IDL; a State-only device does not need an
+application dependency on the built-in API package.
+
 ## Installed Availability
 
 Generated optional-action adapters consult one advisory projection of the

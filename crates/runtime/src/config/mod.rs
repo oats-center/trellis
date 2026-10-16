@@ -137,10 +137,7 @@ impl RuntimeConfig {
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
             self.resolve_oauth_listener()?;
         }
-        if matches!(
-            mode,
-            RuntimeMode::All | RuntimeMode::Platform | RuntimeMode::Jobs | RuntimeMode::Events
-        ) {
+        if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
             self.resolve_authorization()?;
         }
 
@@ -729,6 +726,76 @@ pub struct RuntimePathDefaults {
     pub runtime: PathBuf,
     /// Root for log files.
     pub logs: PathBuf,
+}
+
+impl RuntimePathDefaults {
+    /// Resolve Linux system/FHS mutable roots for server and offline administration.
+    ///
+    /// # Errors
+    /// Fails on platforms where the system host profile is unsupported.
+    pub fn system_profile() -> Result<Self, std::io::Error> {
+        #[cfg(not(target_os = "linux"))]
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "--system is supported only on Linux",
+        ));
+        #[cfg(target_os = "linux")]
+        Ok(Self {
+            data: "/var/lib/trellis".into(),
+            state: "/var/lib/trellis".into(),
+            cache: "/var/cache/trellis".into(),
+            runtime: "/run/trellis".into(),
+            logs: "/var/log/trellis".into(),
+        })
+    }
+
+    /// Resolve the ordinary user host's mutable roots for both server startup
+    /// and offline administration, using the same XDG environment policy.
+    ///
+    /// # Errors
+    /// Fails when neither HOME nor USERPROFILE identifies the user profile.
+    pub fn user_profile(
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Result<Self, std::io::Error> {
+        let home = get("HOME")
+            .or_else(|| get("USERPROFILE"))
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "cannot resolve user profile: HOME is not set",
+                )
+            })?;
+        let root = |variable: &str, fallback: &str| {
+            get(variable)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(fallback))
+                .join("trellis")
+        };
+        let state = root("XDG_STATE_HOME", ".local/state");
+        let runtime = get("XDG_RUNTIME_DIR")
+            .map(|value| PathBuf::from(value).join("trellis"))
+            .unwrap_or_else(|| {
+                #[cfg(unix)]
+                // SAFETY: geteuid has no memory preconditions and reads only this process's identity.
+                let user = unsafe { libc::geteuid() }.to_string();
+                #[cfg(not(unix))]
+                let user = get("USERNAME")
+                    .unwrap_or_else(|| "user".into())
+                    .to_string_lossy()
+                    .into_owned();
+                std::env::temp_dir()
+                    .join(format!("trellis-runtime-{user}"))
+                    .join("trellis")
+            });
+        Ok(Self {
+            data: root("XDG_DATA_HOME", ".local/share"),
+            state: state.clone(),
+            cache: root("XDG_CACHE_HOME", ".cache"),
+            runtime,
+            logs: state.join("log"),
+        })
+    }
 }
 
 /// HTTP listener configuration for the runtime.

@@ -21,7 +21,7 @@ fn read_only_snapshots_track_issued_authority_effects_and_completion() {
     let snapshot = reader.telemetry_snapshot(NOW + 10).unwrap();
     assert!(snapshot.post_commit_pending > 0);
     assert_eq!(snapshot.post_commit_oldest_age_seconds, 10.0);
-    let effects = f.store.claim_effects(256, NOW + 10, 30).unwrap();
+    let effects = f.store.claim_effects(256, NOW + 10, 30, false).unwrap();
     let effect = effects
         .iter()
         .find(|effect| effect.kind == "authority_publish")
@@ -51,7 +51,7 @@ fn read_only_snapshots_track_issued_authority_effects_and_completion() {
         f.store.complete_effect(effect, NOW + 10).unwrap();
     }
     loop {
-        let effects = f.store.claim_effects(256, NOW + 10, 30).unwrap();
+        let effects = f.store.claim_effects(256, NOW + 10, 30, false).unwrap();
         if effects.is_empty() {
             break;
         }

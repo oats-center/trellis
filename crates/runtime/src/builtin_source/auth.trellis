@@ -122,6 +122,8 @@ import {
   AuthResourceGetRequest,
   AuthResourceGetResponse,
   AuthResourceRemoveRequest,
+  AuthResourceBindingsQueryRequest,
+  AuthResourceBindingsQueryResponse,
   AuthSecurityEvent,
 } from auth_types;
 
@@ -247,6 +249,7 @@ api auth@v1 {
   rpc Resources.List { input AuthResourcesListRequest; output AuthResourcesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Resources.Get { input AuthResourceGetRequest; output AuthResourceGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Resources.Remove { input AuthResourceRemoveRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ResourceBindings.Query { input AuthResourceBindingsQueryRequest; output AuthResourceBindingsQueryResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
 
   event Connections.Opened { payload AuthSecurityEvent; }
   event Connections.Closed { payload AuthSecurityEvent; }
@@ -256,6 +259,20 @@ api auth@v1 {
   event Issuers.Revoked { payload AuthSecurityEvent; }
 
   capabilities {
+    capability jobResourceBindingsRead {
+      consent_revision 1;
+      title "Read Job resource evidence";
+      description "Read authoritative deployment Job queue bindings for runtime coordination and history authorization.";
+      consequence "Reveals Job resource ownership and broker routing, but cannot mutate resources or read Event consumer bindings.";
+      allows { rpc ResourceBindings.Query; }
+    }
+    capability eventResourceBindingsRead {
+      consent_revision 1;
+      title "Read Event consumer evidence";
+      description "Read authoritative Event consumer bindings for delivery, management authorization, and runtime telemetry.";
+      consequence "Reveals Event consumer ownership and broker routing, but cannot mutate resources or read Job bindings.";
+      allows { rpc ResourceBindings.Query; }
+    }
     capability rolesRead {
       consent_revision 1;
       title "Read role definitions";

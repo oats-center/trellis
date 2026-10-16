@@ -1,4 +1,5 @@
 import { deepEqual, equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   captureIntent,
@@ -13,7 +14,7 @@ declare const Deno: {
   test(name: string, fn: () => void | Promise<void>): void;
 };
 
-Deno.test("U06 a captured intent is unaffected by later mutable state", () => {
+test("U06 a captured intent is unaffected by later mutable state", () => {
   const selected = { id: "dep_a", version: 3n };
   const editable = ["one", "two"];
   const intent = captureIntent({
@@ -42,7 +43,7 @@ Deno.test("U06 a captured intent is unaffected by later mutable state", () => {
   equal(Object.isFrozen(intent.input.capabilities), true);
 });
 
-Deno.test("U06 a captured intent copies typed bytes instead of sharing them", () => {
+test("U06 a captured intent copies typed bytes instead of sharing them", () => {
   const bytes = new Uint8Array([1, 2, 3]);
   const intent = captureIntent({
     operation: "portalsPut",
@@ -57,7 +58,7 @@ Deno.test("U06 a captured intent copies typed bytes instead of sharing them", ()
   equal(intent.input.payload instanceof Uint8Array, true);
 });
 
-Deno.test("U06 an intent is invalidated by a route change", () => {
+test("U06 an intent is invalidated by a route change", () => {
   const intent = captureIntent({
     operation: "portalsRemove",
     input: { id: "a" },
@@ -66,17 +67,11 @@ Deno.test("U06 an intent is invalidated by a route change", () => {
     scope: { routeKey: "/admin/portals" },
     idempotencyKey: "key-2",
   });
-  equal(
-    isIntentCurrent(intent, { routeKey: "/admin/portals" }),
-    true,
-  );
-  equal(
-    isIntentCurrent(intent, { routeKey: "/admin/services" }),
-    false,
-  );
+  equal(isIntentCurrent(intent, { routeKey: "/admin/portals" }), true);
+  equal(isIntentCurrent(intent, { routeKey: "/admin/services" }), false);
 });
 
-Deno.test("U06 a workflow generation change invalidates the intent", () => {
+test("U06 a workflow generation change invalidates the intent", () => {
   const intent = captureIntent({
     operation: "usersCreate",
     input: { username: "a" },
@@ -104,11 +99,8 @@ Deno.test("U06 a workflow generation change invalidates the intent", () => {
   );
 });
 
-Deno.test("N05 a confirmation invalidated by a target change dispatches nothing", async () => {
-  const controller = new MutationController<
-    { id: string },
-    { ok: true }
-  >();
+test("N05 a confirmation invalidated by a target change dispatches nothing", async () => {
+  const controller = new MutationController<{ id: string }, { ok: true }>();
   const intent = captureIntent({
     operation: "sessionsRevoke",
     input: { id: "session-a" },
@@ -136,7 +128,7 @@ Deno.test("N05 a confirmation invalidated by a target change dispatches nothing"
   equal(controller.state.intent, null);
 });
 
-Deno.test("N05 a second operation cannot start while one is active", async () => {
+test("N05 a second operation cannot start while one is active", async () => {
   const controller = new MutationController<{ id: string }, void>();
   const intent = captureIntent({
     operation: "sessionsRevoke",
@@ -162,18 +154,20 @@ Deno.test("N05 a second operation cannot start while one is active", async () =>
   equal(controller.begin(intent), true);
 });
 
-Deno.test("U30 resetting a settled one-time intent drops its receipt", async () => {
+test("U30 resetting a settled one-time intent drops its receipt", async () => {
   const controller = new MutationController<
     { userId: string },
     { completionUrl: string }
   >();
-  controller.begin(captureIntent({
-    operation: "usersPasswordResetCreate",
-    input: { userId: "user-a" },
-    label: "user-a",
-    targetId: "user-a",
-    scope: { routeKey: "user-new" },
-  }));
+  controller.begin(
+    captureIntent({
+      operation: "usersPasswordResetCreate",
+      input: { userId: "user-a" },
+      label: "user-a",
+      targetId: "user-a",
+      scope: { routeKey: "user-new" },
+    }),
+  );
   await controller.send({
     isStillValid: () => true,
     dispatch: () => Promise.resolve({ completionUrl: "one-time-url" }),
@@ -184,7 +178,7 @@ Deno.test("U30 resetting a settled one-time intent drops its receipt", async () 
   equal(controller.state.intent, null);
 });
 
-Deno.test("N05 send dispatches exactly the captured input and key", async () => {
+test("N05 send dispatches exactly the captured input and key", async () => {
   const controller = new MutationController<
     { id: string; expectedVersion: bigint },
     string
@@ -218,7 +212,7 @@ Deno.test("N05 send dispatches exactly the captured input and key", async () => 
   equal(controller.state.status, "succeeded");
 });
 
-Deno.test("N08 an uncertain failure is never reported as definite failure", async () => {
+test("N08 an uncertain failure is never reported as definite failure", async () => {
   const controller = new MutationController<{ id: string }, void>();
   const intent = captureIntent({
     operation: "usersCreate",
@@ -245,7 +239,7 @@ Deno.test("N08 an uncertain failure is never reported as definite failure", asyn
   );
 });
 
-Deno.test("N08 a lost response keeps the key and does not auto-retry", async () => {
+test("N08 a lost response keeps the key and does not auto-retry", async () => {
   let dispatches = 0;
   const controller = new MutationController<{ id: string }, void>();
   const intent = captureIntent({
@@ -273,7 +267,7 @@ Deno.test("N08 a lost response keeps the key and does not auto-retry", async () 
   equal(controller.state.intent?.idempotencyKey, "key-8");
 });
 
-Deno.test("U06 conflict and uncertainty are classified from codes, not text", () => {
+test("U06 conflict and uncertainty are classified from codes, not text", () => {
   equal(isConflictError({ data: { code: "revision_conflict" } }), true);
   equal(isConflictError({ reason: "storage_conflict" }), true);
   equal(isConflictError({ remoteError: { code: "conflict" } }), true);
@@ -289,7 +283,7 @@ Deno.test("U06 conflict and uncertainty are classified from codes, not text", ()
   });
 });
 
-Deno.test("N09 a metadata edit after capture cannot change the request", () => {
+test("N09 a metadata edit after capture cannot change the request", () => {
   const draft = {
     displayName: "Original",
     entryUrl: "https://original.example",
@@ -323,7 +317,7 @@ Deno.test("N09 a metadata edit after capture cannot change the request", () => {
   });
 });
 
-Deno.test("V16 repeated references reuse their clone instead of the source", () => {
+test("V16 repeated references reuse their clone instead of the source", () => {
   const shared = { values: ["initial"] };
   const intent = captureIntent({
     operation: "portalsPut",
@@ -350,7 +344,7 @@ Deno.test("V16 repeated references reuse their clone instead of the source", () 
   equal(Object.isFrozen(intent.input.first.values), true);
 });
 
-Deno.test("V16 repeated nested arrays are copied, not retained", () => {
+test("V16 repeated nested arrays are copied, not retained", () => {
   const inner = ["a", "b"];
   const intent = captureIntent({
     operation: "portalsPut",
@@ -365,7 +359,7 @@ Deno.test("V16 repeated nested arrays are copied, not retained", () => {
   deepEqual(intent.input.right, ["a", "b"]);
 });
 
-Deno.test("V16 a cyclic request is rejected before any send", () => {
+test("V16 a cyclic request is rejected before any send", () => {
   const cyclic: Record<string, unknown> = { name: "loop" };
   cyclic.self = cyclic;
   let thrown: unknown = null;
@@ -382,13 +376,10 @@ Deno.test("V16 a cyclic request is rejected before any send", () => {
     thrown = error;
   }
   equal(thrown instanceof TypeError, true);
-  equal(
-    (thrown as TypeError | null)?.message.includes("cyclic"),
-    true,
-  );
+  equal((thrown as TypeError | null)?.message.includes("cyclic"), true);
 });
 
-Deno.test("V16 bigint and byte values survive capture unchanged", () => {
+test("V16 bigint and byte values survive capture unchanged", () => {
   const bytes = new Uint8Array([7, 8, 9]);
   const intent = captureIntent({
     operation: "portalsPut",
@@ -403,7 +394,7 @@ Deno.test("V16 bigint and byte values survive capture unchanged", () => {
   deepEqual([...intent.input.payload], [7, 8, 9]);
 });
 
-Deno.test("V16 a non-plain request object is rejected before confirmation", () => {
+test("V16 a non-plain request object is rejected before confirmation", () => {
   let thrown: unknown = null;
   try {
     captureIntent({
@@ -418,8 +409,5 @@ Deno.test("V16 a non-plain request object is rejected before confirmation", () =
     thrown = error;
   }
   equal(thrown instanceof TypeError, true);
-  equal(
-    (thrown as TypeError | null)?.message.includes("non-plain"),
-    true,
-  );
+  equal((thrown as TypeError | null)?.message.includes("non-plain"), true);
 });

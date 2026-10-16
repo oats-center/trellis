@@ -22,8 +22,7 @@ Current public APIs are linked from `/api` on the Trellis docs site.
   source package version and its published runtime dependency matches the CLI.
 - Commit IDL, `trellis.toml`, and `trellis.lock`. Commit generated output when
   ordinary clones must build without the CLI or source-package cache; regenerate
-  rather than hand-editing it. No consumer transpiler or generated Deno config
-  is needed.
+  rather than hand-editing it. No consumer transpiler is needed.
 - Services connect with `TrellisService` from `/service` and their generated
   participant. Generated flat `handle...`, `publish...`, `on...`, and caller
   methods depend on the declared actions.

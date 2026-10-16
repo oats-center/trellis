@@ -83,28 +83,38 @@ impl SqliteAuthorizationStore {
         password: &str,
         now: i64,
     ) -> Result<String, AuthError> {
-        self.initialize_administrator(username, password, None, now)
+        self.initialize_administrator(username, Some(password), None, None, now)
+            .map(|result| result.principal_id)
     }
 
     pub(super) fn bootstrap_administrator_in_transaction(
         connection: &rusqlite::Connection,
         principal: &str,
         username: &str,
-        password: &str,
+        password: Option<&str>,
         now: i64,
     ) -> Result<(), AuthError> {
-        if username.trim() != username || username.is_empty() || password.len() < 12 {
+        if username.trim() != username
+            || username.is_empty()
+            || password.is_some_and(|password| password.len() < 12)
+        {
             return Err(AuthError::Invalid(
                 "invalid administrator credentials".into(),
             ));
         }
-        let mut salt = [0_u8; 16];
-        getrandom::fill(&mut salt).map_err(|_| AuthError::Unavailable)?;
-        let salt = SaltString::encode_b64(&salt).map_err(|_| AuthError::Unavailable)?;
-        let hash = Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .map_err(|_| AuthError::Unavailable)?
-            .to_string();
+        let hash = if let Some(password) = password {
+            let mut salt = [0_u8; 16];
+            getrandom::fill(&mut salt).map_err(|_| AuthError::Unavailable)?;
+            let salt = SaltString::encode_b64(&salt).map_err(|_| AuthError::Unavailable)?;
+            Some(
+                Argon2::default()
+                    .hash_password(password.as_bytes(), &salt)
+                    .map_err(|_| AuthError::Unavailable)?
+                    .to_string(),
+            )
+        } else {
+            None
+        };
         let exists: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator)",
             [],

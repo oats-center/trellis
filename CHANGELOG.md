@@ -110,7 +110,7 @@ and this project adheres to
   codecs, so additively extended payloads survive a decode/encode in both
   languages.
 - The TypeScript live integration suite runs through one self-contained task
-  (`deno task test:integration`). It stages the Rust executables it needs and
+  (`npm run test:integration`). It stages the Rust executables it needs and
   relies on the pinned NATS auto-download, so local development and CI run the
   same command without presetting environment variables and the tests never
   compile Rust while they run.

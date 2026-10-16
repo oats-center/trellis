@@ -112,8 +112,11 @@ export class LiveAuthorityGuard {
     owner: SessionAuthorityOwner,
     digest: string,
     requirement: LiveGuardRequirement,
+    retainAuthority?: () => VerifiedAuthority,
   ): Promise<LiveAuthorityGuard> {
-    const lease = await owner.peer(digest);
+    const lease = retainAuthority
+      ? retainAuthority()
+      : await owner.peer(digest);
     try {
       if (requirement.kind === "observer")
         await lease.authorize(requirement.apiId, requirement.action);
@@ -150,7 +153,7 @@ export class LiveAuthorityGuard {
         owner,
         lease,
         requirement,
-        owner.ownDigest === digest,
+        requirement.kind === "local-provider" || owner.ownDigest === digest,
       );
     } catch (error) {
       lease.release();
@@ -198,6 +201,7 @@ export class LiveAuthorityGuard {
   /** Local current-time and sticky retirement check; frames perform no registry reads. */
   checkNow(): LiveAuthorityLost | undefined {
     if (!this.#lease) return "unavailable";
+    if (!this.#lease.published) return "unavailable";
     if (this.#owner.isRevoked(this.#lease.authority.authorizationSessionId))
       return "revoked";
     if (this.#lease.authority.expiresAt <= this.#owner.policy().nowUnixSeconds)

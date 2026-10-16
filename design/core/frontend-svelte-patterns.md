@@ -181,7 +181,7 @@ Browser apps should make session-key persistence an explicit UX choice:
 
 ## Local Workspace Alias Pattern
 
-SvelteKit apps that consume local workspace packages must keep Deno, Vite, and
+SvelteKit apps that consume local workspace packages must keep npm, Vite, and
 the Svelte/TypeScript editor on the same package graph.
 
 Rules:

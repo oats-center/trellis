@@ -1,5 +1,20 @@
 # Trellis Consumer Guide
 
+Console and the isolated OAuth listener require HTTPS outside explicit loopback
+development. The HTTP insecure-origin allowlist does not relax that requirement.
+
+Fresh startup creates the protected administrator and accepted built-in authority
+before provider admission. Username defaults to `admin`. Without an initial
+password, it emits `adminAccountUrl`, a one-time password-setup link on the isolated
+OAuth origin; no default password exists. The link expires after five minutes.
+Startup flags `--admin-username`, `--admin-password`, and `--admin-password-stdin`
+configure fresh credentials. Explicit initialization uses `trellis init admin
+--config <path>` with `--username` (default `admin`), optional `--password`, or
+`--password-stdin`. Restarts preserve credentials and emit no replacement link.
+Explicit `--reset-admin` supersedes pending links without restoring or recreating
+authority. Reset completion revokes existing logins. Ordinary RPCs cannot reset
+the protected administrator.
+
 Service Jobs reconstruct retained lifecycle history through the deployment-scoped
 runtime `Jobs.History` route automatically. Use generated service job handles;
 ordinary service identities cannot read the shared JOBS stream directly. History
@@ -65,6 +80,18 @@ successor trust before spending a refresh token. Unavailable or invalid chains
 leave it unspent. A successfully returned new token survives later issuer
 verification failure, but its admission remains unusable until authenticated.
 Never retry an ambiguously spent predecessor.
+Node-native and browser transport recovery reuse admission only while shared verification
+accepts its lifetime and current pinned trust. Transport loss alone does not
+spend refresh custody. Renewal checks the selected HTTP origin before spending
+the token; an ambiguous token POST still requires explicit recovery. Preparation
+retries never retransmit application requests or clear known revocations.
+
+Native providers finish accepted RPCs across ordinary authority promotion by
+reacquiring a coherent current signing snapshot within one configured deadline.
+Handlers are not redispatched; provider, issuer, expiry and revocation checks remain mandatory.
+Store object deletion and replacement clean up chunks only in the admitted
+identity's allocated Object Store streams, including Operation staging. This
+does not authorize KV purge, stream destruction, or cross-owner Store access.
 
 Provisioned services/devices automatically publish the native Health.Heartbeat
 event using ordinary SessionEvent signatures. Auth assigns only the runtime-owned
@@ -146,8 +173,18 @@ spent-token markers. A successful connection owns custody until it closes;
 closing an earlier session reference cannot release that ownership. Discovery
 cannot repin existing credentials; trust advances only through authenticated
 issuer rotation. Browser applications retain IndexedDB and Web Locks.
+TypeScript signed reply verification waits for already-received ordered revocation
+updates before its live checks, without retransmitting requests or bypassing lost
+coverage.
 Live authority requires an applied initial revocation snapshot and continuing
 coverage. Epoch fencing prevents old watchers from changing successor coverage.
+TypeScript optional-action checks distinguish missing live authority from denial.
+Requests wait for verified authority before publication within their original
+deadline and cancellation signal, without replaying requests or bypassing denial.
+Rust and TypeScript stage a rollover mirror without withdrawing healthy predecessor
+coverage. On mirror failure, one cancellable private supervisor retries snapshot
+replay on the surviving attachment while application IO remains fenced; it neither
+clears known revocations nor retransmits application requests.
 
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
@@ -209,7 +246,9 @@ Retry the same request after broker failure; retained allocations are never dest
 
 Auth.Resources.List/Get include all allocation states, including detached, with
 digest resourceId, ownerKind (user/deployment), ownerId, and explicit state.
-Deployment version omission, Disable, and Remove detach and retain resource data;
+Declaration omission and deployment Remove detach and retain resource data;
+Disable preserves resource bindings but revokes sessions and denies admission.
+Enable reuses retained bindings without reapplying the contract or recreating storage;
 there is no automatic resource deletion. Compatible re-add reuses retained data.
 Explicit admin Resources.Remove permanently deletes only the selected detached
 owned KV at expectedRevision after checking its physical ownership marker. Retry
@@ -218,6 +257,13 @@ Removal execution is exclusively claimed and incarnation-fenced. Recreating a
 deleted logical resource uses a fresh allocation and physical bucket, so delayed
 deletion cannot touch replacement data; compatible reattachment keeps the original.
 KV history/TTL reductions that could lose retained data are rejected.
+
+Auth Connections.Opened/Closed/Kicked publish generated AuthSecurityEvent values
+through the admitted Auth provider. Event IDs and occurrence times survive durable
+outbox retries; consumers should identify attachments by attachmentId and logical
+authority by authorizationSessionId, not retired connection/session-key fields.
+An expired delivery claim alone does not stop Auth: stale workers cannot
+acknowledge or reschedule the intent, which remains recoverable by its next owner.
 
 Trellis owns native contract compilation, generated APIs, authenticated
 communication, connection lifecycle, and declared runtime resources. It does not
@@ -330,6 +376,10 @@ with the same in-memory migrations as reads. Rust `observation.next().await` yie
 explicitly for bounded cleanup; Rust drop and TypeScript iterator return also close.
 `closed()` (Rust) / `closed` (TypeScript) reports the Live terminal outcome. No silent
 reopen follows transport or authorization loss. The shared owner remains authoritative.
+Generated Rust device State handles include SDK-owned native-IDL Watch support;
+State-only devices need no built-in API package dependency. Completed device
+activation rechecks reuse the retained challenge through authenticated enrollment,
+not a new review; local completion never authorizes a disabled or removed device.
 Operations are durable restartable at-least-once workflows. Consumers have local
 per-process concurrency and Events-owned scoped DLQ/replay. Jobs remain private
 durable queues. Cursor pagination ends only when `nextCursor` is absent and does
@@ -517,6 +567,11 @@ generation/revision, actual subject, message identity, and exact payload bytes.
 The signed authority supplies the originating session public key; message
 headers do not establish another identity or carry permission lists.
 
+Request verification checks caller grants against the caller's exact signed
+catalog reference, independently of the provider's pinned implementation and
+certificate. Compatible accepted revisions within one API generation need not
+match; neither catalog grants additional rights to the other party.
+
 Provider-owned event publication is authorized by the exact issuer-verified
 event-publish action in the certificate bound to the signed native authority,
 deployment, instance, implementation, API generation, and action introduction
@@ -567,10 +622,17 @@ uses the same handler with a fresh delivery budget, does not rewind the original
 Consumer, and confirms `resolved` before acknowledging success. Delivery and
 application side effects remain at least once.
 
+RPC cancellation stops the caller's wait, not work already accepted by the
+service. TypeScript `RequestOpts.signal` reports `trellis.request.cancelled`
+even after publication; deadline expiry reports `trellis.request.timeout`.
+Neither undoes accepted work. Use Operation cancellation for business work.
+
 Operations and jobs may expose typed live updates through an owned observation
 session that is separate from the durable executor. A watcher reconciles the
 current authoritative snapshot once its transport is ready, then delivers typed
-transient updates and terminal state; transient updates are ordered and never
+transient updates and terminal state. Get and initial watcher snapshots expose
+persisted state, not speculative handler state; a committed write may be visible
+after its ACK is lost. Transient updates are ordered and never
 silently dropped, while not-yet-delivered nonterminal snapshots may be
 conflated. Updates are at-most-once, not persisted or replayed, and late
 subscribers may miss them. Durable progress and terminal output are separate
@@ -586,6 +648,11 @@ remains nonterminal during handler cleanup and owner lease renewal. `Cancelled`
 is persisted only after the handler joins its owned side-effecting children; a
 stalled cleanup has no forced terminal timeout. After owner loss, epoch fencing
 does not prevent arbitrary external side effects from overlapping.
+Before cancellation is observed, loss of the execution's receiving carrier or an
+authoritative Operation state-read or watcher failure retires the local execution fence before handler code receives
+the error and stops renewing that lease, allowing takeover after lease expiry
+rather than persisting an invented business failure. Genuine cancellation cleanup
+still renews its lease.
 Cancellation-first admission requires both Invoke and Cancel authority before
 durable reservation. Retry with the same caller-chosen invocation ID and input:
 intent is atomic with fresh admission, merges into an exact existing invocation,
@@ -649,6 +716,14 @@ and qualified participant identity across reconnects.
 Bindings are runtime internals. Use generated resource handles instead of
 constructing Trellis storage subjects or opening internal buckets. This does not
 constrain the application's own database or external storage clients.
+First-time provisioning can resume an interrupted allocation. Missing previously
+materialized consumers, KV/object stores, Job keyed coordination, or Operation
+storage fail closed; retries must not replace lost durable state with empty data.
+Restore coherent durable state before resuming affected execution.
+Runtime Jobs/Events resource evidence uses authenticated `Auth.ResourceBindings.Query`
+with separate kind-scoped read capabilities and current binding digests. Split
+roles never read another role's SQLite database. This is a runtime-internal
+boundary; application services continue using generated resource handles.
 
 Store and transfer APIs support streaming. Shared Store adapters pull finite,
 byte-capped batches on demand and verify chunk order/count, size, and SHA-256
@@ -663,7 +738,11 @@ frame/byte windows and cumulative consumed credit, not a request/reply per chunk
 Grants bind logical connection/session identities and exact session subjects,
 never physical storage names, backend protocols, credentials, or presigned URLs.
 Use generated upload Operations and high-level download helpers rather than
-constructing grants. In-flight transfers pin their admitting transport generation;
+constructing grants. TypeScript consumers decode an RPC's untrusted `transfer`
+field with `decodeTransferGrant(value).orThrow()`, check its direction, and use
+`client.transfer(grant)`. The shared Rust/WASM decoder validates wire structure;
+the transfer runtime separately verifies identity and authority.
+In-flight transfers pin their admitting transport generation;
 authority growth does not migrate them and physical disconnect interrupts them.
 
 Transfers authenticate cancellation and completion and independently verify size
@@ -724,7 +803,7 @@ Declare these dependencies only when the application uses them:
 ## Test And Troubleshoot
 
 Choose application testing tools independently. For a test that needs real
-Trellis transport, authority, or restart behavior, the Deno package
+Trellis transport, authority, or restart behavior, the npm package
 `@oatscenter/trellis-testkit` provides `TrellisTestRuntime`. The published Rust
 crate `trellis-testkit` provides the equivalent `TrellisTestRuntime` for Rust
 test crates: it links the real production runtime in-process with no CLI/server

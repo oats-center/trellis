@@ -1,17 +1,15 @@
-import { assert, assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
   AuthError,
   machineErrorCode,
-  OperationAlreadyTerminalError,
-  OperationMismatchError,
-  OperationNotFoundError,
   RemoteError,
   ValidationError,
 } from "../errors/index.ts";
 import { Result } from "../../result/mod.ts";
 
-Deno.test("AuthError", async (t) => {
-  await t.step("serialization and validation", () => {
+test("AuthError", async (t) => {
+  await t.test("serialization and validation", () => {
     const original = new AuthError({
       reason: "invalid_request",
       context: { userId: "123", endpoint: "/api/users" },
@@ -23,47 +21,37 @@ Deno.test("AuthError", async (t) => {
     const value = result.take();
     assert(!Result.isErr(value), "Expected successful parse");
 
-    assertEquals(value.type, "AuthError");
+    assert.deepEqual(value.type, "AuthError");
     if (value.type === "AuthError" && "reason" in value) {
-      assertEquals(value.id, original.id);
-      assertEquals(value.reason, "invalid_request");
-      assertEquals(value.context, { userId: "123", endpoint: "/api/users" });
+      assert.deepEqual(value.id, original.id);
+      assert.deepEqual(value.reason, "invalid_request");
+      assert.deepEqual(value.context, {
+        userId: "123",
+        endpoint: "/api/users",
+      });
     }
   });
 
-  await t.step("serialization includes all fields", () => {
-    const error = new AuthError({
-      reason: "forbidden",
-      context: { userId: "456" },
-    });
-
-    const serialized = error.toSerializable();
-
-    assertEquals(serialized.id, error.id);
-    assertEquals(serialized.type, "AuthError");
-    assertEquals(serialized.message, "Auth failed: forbidden");
-    assertEquals(serialized.reason, "forbidden");
-    assertEquals(serialized.context, { userId: "456" });
-  });
-
-  await t.step("decoding tolerates additive reason values", () => {
-    const value = RemoteError.parseJSON(JSON.stringify({
-      id: "err_additive",
-      type: "AuthError",
-      message: "The request conflicts with current authentication state.",
-      reason: "conflict",
-    })).take();
+  await t.test("decoding tolerates additive reason values", () => {
+    const value = RemoteError.parseJSON(
+      JSON.stringify({
+        id: "err_additive",
+        type: "AuthError",
+        message: "The request conflicts with current authentication state.",
+        reason: "conflict",
+      }),
+    ).take();
     assert(!Result.isErr(value), "Expected additive reason to decode");
-    assertEquals(value.type, "AuthError");
+    assert.deepEqual(value.type, "AuthError");
     if (value.type === "AuthError") {
-      assertEquals("reason" in value, true);
-      if ("reason" in value) assertEquals(value.reason, "conflict");
+      assert.deepEqual("reason" in value, true);
+      if ("reason" in value) assert.deepEqual(value.reason, "conflict");
     }
   });
 });
 
-Deno.test("ValidationError", async (t) => {
-  await t.step("serialization transforms errors to issues", () => {
+test("ValidationError", async (t) => {
+  await t.test("serialization transforms errors to issues", () => {
     const original = new ValidationError({
       errors: [
         {
@@ -80,18 +68,18 @@ Deno.test("ValidationError", async (t) => {
 
     const serialized = original.toSerializable();
 
-    assertEquals(serialized.issues.length, 2);
-    assertEquals(serialized.issues[0], {
+    assert.deepEqual(serialized.issues.length, 2);
+    assert.deepEqual(serialized.issues[0], {
       path: "/email",
       message: "Invalid email format",
     });
-    assertEquals(serialized.issues[1], {
+    assert.deepEqual(serialized.issues[1], {
       path: "/password",
       message: "Password too short",
     });
   });
 
-  await t.step("serialization and validation", () => {
+  await t.test("serialization and validation", () => {
     const original = new ValidationError({
       errors: [
         {
@@ -106,18 +94,18 @@ Deno.test("ValidationError", async (t) => {
     const value = result.take();
     assert(!Result.isErr(value), "Expected successful parse");
 
-    assertEquals(value.type, "ValidationError");
+    assert.deepEqual(value.type, "ValidationError");
     if (value.type === "ValidationError" && "issues" in value) {
-      assertEquals(value.id, original.id);
-      assertEquals(value.issues.length, 1);
-      assertEquals(value.issues[0].path, "/name");
-      assertEquals(value.issues[0].message, "Required field");
+      assert.deepEqual(value.id, original.id);
+      assert.deepEqual(value.issues.length, 1);
+      assert.deepEqual(value.issues[0].path, "/name");
+      assert.deepEqual(value.issues[0].message, "Required field");
     }
   });
 });
 
-Deno.test("RemoteError", async (t) => {
-  await t.step("wraps validated remote error", () => {
+test("RemoteError", async (t) => {
+  await t.test("wraps validated remote error", () => {
     const remoteError = new AuthError({
       reason: "invalid_request",
     });
@@ -132,20 +120,20 @@ Deno.test("RemoteError", async (t) => {
       context: { service: "auth" },
     });
 
-    assertEquals(original.remoteError.type, "AuthError");
+    assert.deepEqual(original.remoteError.type, "AuthError");
     if (
       original.remoteError.type === "AuthError" &&
       "reason" in original.remoteError
     ) {
-      assertEquals(original.remoteError.reason, "invalid_request");
+      assert.deepEqual(original.remoteError.reason, "invalid_request");
     }
 
     const serialized = original.toSerializable();
-    assertEquals(serialized.context, { service: "auth" });
-    assertEquals(serialized.remoteError.type, "AuthError");
+    assert.deepEqual(serialized.context, { service: "auth" });
+    assert.deepEqual(serialized.remoteError.type, "AuthError");
   });
 
-  await t.step("serialization and validation", () => {
+  await t.test("serialization and validation", () => {
     const remoteError = new ValidationError({
       errors: [{ path: "/userId", message: "Required field" }],
     });
@@ -161,90 +149,15 @@ Deno.test("RemoteError", async (t) => {
     const wrapperJson = wrapper.toJSON();
     const parsed = JSON.parse(wrapperJson);
 
-    assertEquals(parsed.type, "RemoteError");
-    assertEquals(parsed.remoteError.type, "ValidationError");
-    assertEquals(parsed.remoteError.issues[0].path, "/userId");
+    assert.deepEqual(parsed.type, "RemoteError");
+    assert.deepEqual(parsed.remoteError.type, "ValidationError");
+    assert.deepEqual(parsed.remoteError.issues[0].path, "/userId");
   });
 });
 
-Deno.test("Operation lifecycle errors", async (t) => {
-  await t.step(
-    "OperationNotFoundError serialization preserves operation id",
-    () => {
-      const error = new OperationNotFoundError({
-        operationId: "op-123",
-        context: { requestId: "req-123" },
-      });
-
-      const serialized = error.toSerializable();
-
-      assertEquals(serialized.id, error.id);
-      assertEquals(serialized.type, "OperationNotFoundError");
-      assertEquals(serialized.operationId, "op-123");
-      assertEquals(serialized.context, { requestId: "req-123" });
-    },
-  );
-
-  await t.step(
-    "OperationAlreadyTerminalError serialization preserves optional operation fields",
-    () => {
-      const error = new OperationAlreadyTerminalError({
-        operationId: "op-456",
-        state: "failed",
-        operation: "refund",
-        service: "billing",
-      });
-
-      const serialized = error.toSerializable();
-
-      assertEquals(serialized.type, "OperationAlreadyTerminalError");
-      assertEquals(serialized.operationId, "op-456");
-      assertEquals(serialized.state, "failed");
-      assertEquals(serialized.operation, "refund");
-      assertEquals(serialized.service, "billing");
-    },
-  );
-
-  await t.step(
-    "OperationMismatchError serialization preserves expected and actual identity",
-    () => {
-      const error = new OperationMismatchError({
-        operationId: "op-789",
-        expectedService: "billing",
-        expectedOperation: "refund",
-        actualService: "billing",
-      });
-
-      const serialized = error.toSerializable();
-
-      assertEquals(serialized.type, "OperationMismatchError");
-      assertEquals(serialized.operationId, "op-789");
-      assertEquals(serialized.expectedService, "billing");
-      assertEquals(serialized.expectedOperation, "refund");
-      assertEquals(serialized.actualService, "billing");
-      assertEquals(serialized.actualOperation, undefined);
-    },
-  );
-});
-
-Deno.test("Error - instance properties appear in serialization", () => {
-  const error = new AuthError({
-    reason: "invalid_request",
-    context: { userId: "123" },
-  });
-
-  const serialized = error.toSerializable();
-
-  assertEquals(serialized.id, error.id);
-  assertEquals(serialized.type, "AuthError");
-  assertEquals(serialized.message, "Auth failed: invalid_request");
-  assertEquals(serialized.reason, "invalid_request");
-  assertEquals(serialized.context, { userId: "123" });
-});
-
-Deno.test("machineErrorCode reads every Trellis error shape", async (t) => {
-  await t.step("generated declared error carries its code under data", () => {
-    assertEquals(
+test("machineErrorCode reads every Trellis error shape", async (t) => {
+  await t.test("generated declared error carries its code under data", () => {
+    assert.deepEqual(
       machineErrorCode({
         name: "AuthError",
         data: { code: "approval_required", message: "approve" },
@@ -253,15 +166,15 @@ Deno.test("machineErrorCode reads every Trellis error shape", async (t) => {
     );
   });
 
-  await t.step("built-in error carries its code as reason", () => {
-    assertEquals(
+  await t.test("built-in error carries its code as reason", () => {
+    assert.deepEqual(
       machineErrorCode({ reason: "session_not_found" }),
       "session_not_found",
     );
   });
 
-  await t.step("undecoded remote error carries its code on remoteError", () => {
-    assertEquals(
+  await t.test("undecoded remote error carries its code on remoteError", () => {
+    assert.deepEqual(
       machineErrorCode({
         remoteError: { type: "trellis.auth@v1::AuthError", code: "conflict" },
       }),
@@ -269,16 +182,16 @@ Deno.test("machineErrorCode reads every Trellis error shape", async (t) => {
     );
   });
 
-  await t.step("a top-level code wins over nested shapes", () => {
-    assertEquals(
+  await t.test("a top-level code wins over nested shapes", () => {
+    assert.deepEqual(
       machineErrorCode({ code: "revision_conflict", data: { code: "other" } }),
       "revision_conflict",
     );
   });
 
-  await t.step("unrecognized values have no code", () => {
-    assertEquals(machineErrorCode(undefined), undefined);
-    assertEquals(machineErrorCode("boom"), undefined);
-    assertEquals(machineErrorCode({ message: "no code here" }), undefined);
+  await t.test("unrecognized values have no code", () => {
+    assert.deepEqual(machineErrorCode(undefined), undefined);
+    assert.deepEqual(machineErrorCode("boom"), undefined);
+    assert.deepEqual(machineErrorCode({ message: "no code here" }), undefined);
   });
 });

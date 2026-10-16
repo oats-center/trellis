@@ -3,14 +3,16 @@ use runtime_trellis::types::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use trellis_rs::jobs::{JobCancellationReason, JobProcessError, JobState};
-use trellis_rs::service::ServiceConnectOptions;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut service = Participant::connect(ServiceConnectOptions::new(
-        &std::env::var("TRELLIS_URL")?,
-        &std::env::var("TRELLIS_IDENTITY_SEED")?,
-    ))
+    let mut service = Participant::connect(
+        trellis_runtime_acceptance::service_options(
+            &std::env::var("TRELLIS_URL")?,
+            &std::env::var("TRELLIS_IDENTITY_SEED")?,
+        )
+        .await?,
+    )
     .await?;
 
     if std::env::var_os("TRELLIS_REPLAY_WORK").is_some() {

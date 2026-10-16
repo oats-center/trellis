@@ -308,15 +308,24 @@ impl SqliteAuthorizationStore {
             } => (deployment_id, instance_id, participant_id),
             _ => return Ok(None),
         };
-        let (digest,resources,evidence):(String,String,String)=connection.query_row(
-            "SELECT p.participant_digest,b.resource_commitments_json,p.projection_json FROM auth_instances i JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id AND b.installed_revision=i.installed_revision JOIN auth_installed_participants p ON p.participant_id=?3 AND p.revision=i.installed_revision WHERE i.deployment_id=?1 AND i.instance_id=?2 AND i.principal_id=?4 AND i.state='active'",
-            params![deployment,instance,participant,authority.principal_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
-        let resources: Value = serde_json::from_str(&resources)?;
+        let projection =
+            super::native_projection::project_instance(connection, instance, authority.issued_at)?;
+        if projection.deployment_id != *deployment
+            || projection.participant_id != *participant
+            || projection.principal_id != authority.principal_id
+        {
+            return Err(AuthError::Denied);
+        }
+        let digest = projection.participant_digest;
+        let resources = projection.resources;
         if Some(super::sqlite::digest(&resources)?) != authority.resource_bindings_digest {
             return Err(AuthError::Denied);
         }
-        let graph = trellis_idl::compile_evidence(serde_json::from_str(&evidence)?)
-            .map_err(|error| AuthError::Invalid(error.to_string()))?;
+        let graph = match projection.graph {
+            Some(graph) => graph,
+            None => trellis_idl::compile_evidence(serde_json::from_str(&projection.evidence)?)
+                .map_err(|error| AuthError::Invalid(error.to_string()))?,
+        };
         let installed = graph
             .packages()
             .values()

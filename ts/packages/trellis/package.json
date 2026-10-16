@@ -16,6 +16,8 @@
     "./errors": "./errors/index.ts"
   },
   "scripts": {
+    "check": "tsc --project tsconfig.json",
+    "test": "node ../../tools/run_unit_tests.ts .",
     "build": "node scripts/build_npm.ts"
   },
   "dependencies": {

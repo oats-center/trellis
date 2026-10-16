@@ -33,7 +33,7 @@ source for the exact participant-specific methods.
   supported connection lifecycle.
 - Direct publication is not atomic with application SQL state; use the outbox
   transaction integration when that atomicity is needed.
-- `TrellisTestRuntime` is a Deno test helper that can launch Rust processes, not
+- `TrellisTestRuntime` is a Node test helper that can launch Rust processes, not
   an exported Rust runtime harness.
 
 ## Project Details

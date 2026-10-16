@@ -247,20 +247,20 @@ export type CallerHandlerActionSurface<TContract extends GeneratedCaller> =
 
 /**
  * Returns the transport error for a selected action whose optional capability
- * alternatives are all currently unavailable, or `undefined` when the action
- * is available.
+ * alternatives are denied by current authority. Missing live authority leaves
+ * classification to the ordinary bounded transport acquisition.
  */
 export function selectedActionAvailabilityError(
   connection: TrellisConnection,
   action: RuntimeSelectedAction,
 ): TransportError | undefined {
   return action.optionalCapabilities.length > 0 &&
-    !connection.allowsAction(
+    connection.allowsAction(
       action.api.identity,
       action.descriptor.kind,
       action.descriptor.descriptorName.slice(action.descriptor.kind.length + 1),
       action.direction,
-    )
+    ) === false
     ? createActionUnavailableError(action.name, action.optionalCapabilities)
     : undefined;
 }

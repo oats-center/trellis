@@ -1,6 +1,6 @@
 # Set up the project
 
-This walkthrough uses Deno and TypeScript to expose one RPC, call it through
+This walkthrough uses Node and TypeScript to expose one RPC, call it through
 Trellis, and shut down cleanly. It returns an order receipt without persisting
 orders. No database, ORM, or configuration library is involved. These are
 example choices, not requirements for a Trellis service.
@@ -13,7 +13,7 @@ workflow are shared by both languages.
 
 - Install [the Trellis CLI](/guides/install-trellis-cli) matching your
   libraries.
-- Install Deno 2 for this example.
+- Install Node 24 and npm 11 for this example.
 - For manual deployment, have a [running Trellis](/guides/starting-trellis) and
   an administrator login. The [automated test](/guides/testing-trellis-services)
   instead starts an isolated runtime using `trellis-server`.
@@ -26,12 +26,14 @@ documentation from that release rather than combining authoring generations.
 ```sh
 mkdir orders-service
 cd orders-service
-deno init
-deno add npm:@oatscenter/trellis jsr:@oatscenter/trellis-testkit jsr:@std/assert
+npm init -y
+npm install @oatscenter/trellis ulid
+npm install --save-dev @oatscenter/trellis-testkit @types/node typescript
+npm pkg set type=module 'scripts.check=tsc --noEmit' 'scripts.test=node --test service_test.ts' 'scripts.start=node main.ts'
 ```
 
 Select matching released versions when installing packages. Keep the import
-mappings that `deno add` writes; generated code uses those package specifiers.
+package dependencies that npm writes; generated code uses those package specifiers.
 The test package is only needed to run the live test.
 
 Create `trellis.toml`:
@@ -52,9 +54,25 @@ The tutorial defines its provider and caller API in the same project, so no
 external API dependency is needed. `trellis.toml` is a Trellis compiler
 manifest, not the service's runtime configuration file.
 
-Add `"orders-trellis": "./trellis/index.js"` to `deno.json`'s `imports`. This
-maps the local package name to its generated ESM entrypoint. The generator never
-edits your Deno or npm configuration.
+Import the generated ESM entrypoint directly from `./trellis/index.js`.
+The generator never edits your npm configuration.
+
+Create `tsconfig.json` for the ordinary TypeScript check:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "module": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["*.ts"]
+}
+```
 
 The resulting authored project will contain:
 
@@ -63,7 +81,9 @@ orders-service/
   trellis.toml
   trellis.lock
   contract.trellis
-  deno.json
+  package.json
+  package-lock.json
+  tsconfig.json
   service.ts
   main.ts
   service_test.ts
@@ -80,8 +100,9 @@ cache for its normal check and test:
 
 ```sh
 cd docs/examples/orders
-deno task check
-deno task test
+npm install
+npm run check
+npm test
 ```
 
 The live test still needs the matching `trellis-server` runtime executable and

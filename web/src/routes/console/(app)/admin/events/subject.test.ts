@@ -1,11 +1,12 @@
 import { equal } from "node:assert/strict";
+import { test } from "node:test";
 import { subjectMatches } from "./subject.ts";
 
 declare const Deno: {
   test(name: string, fn: () => void): void;
 };
 
-Deno.test("subjectMatches implements NATS token wildcards", () => {
+test("subjectMatches implements NATS token wildcards", () => {
   equal(subjectMatches("events.*.Opened", "events.Connections.Opened"), true);
   equal(
     subjectMatches("events.*.Opened", "events.Connections.Admin.Opened"),

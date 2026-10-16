@@ -136,6 +136,12 @@ TypeScript callers use `deriveDeviceIdentity`, `checkDeviceActivation` or
 activated client. Generated participant types supply participant/API evidence;
 callers supply only Trellis origin and held key material.
 
+A completed local activation retains its original challenge. Rechecking uses
+proof-bound enrollment against that challenge instead of creating another
+review or resubmitting the consumed provisioning secret. The local completion
+is never authorization: disabled or removed devices still fail enrollment and
+connection at Auth.
+
 Authorization contexts, route JWTs, transports, grants, and issuer keys remain
 process-memory-only. Reconnect uses proof-bound refresh once per disconnected
 episode.

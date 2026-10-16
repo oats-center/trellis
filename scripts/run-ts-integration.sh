@@ -4,7 +4,7 @@
 #
 # This is the single entrypoint for the suite locally and in CI:
 #
-#   deno task -c ts/deno.json test:integration [-- <deno test args>]
+#   npm run test:integration [-- <node test flags and test paths>]
 #
 # No environment variable has to be preset and the tests never compile Rust while
 # they run. Locally the runner builds every Rust executable the tests launch under
@@ -21,6 +21,17 @@ testkit_live="${TRELLIS_TESTKIT_LIVE_BIN:-$root/target/debug/trellis-testkit-liv
 server_bin="${TRELLIS_TEST_SERVER_BIN:-$root/target/debug/trellis-server}"
 cli_bin="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"
 health_watch_bin="${TRELLIS_TEST_HEALTH_WATCH_BIN:-$root/target/debug/examples/health_watch}"
+nats_version="$(node --input-type=module -e 'import pin from "./crates/local-nats/nats-binaries.json" with {type:"json"}; console.log(pin["nats-server"].version)')"
+nats_bin="${TRELLIS_TEST_NATS_BIN:-${TRELLIS_NATS_SERVER_BIN:-$root/target/test-nats/$nats_version/nats-server}}"
+if [[ ! -x "$nats_bin" ]]; then
+  if [[ -n "${TRELLIS_TEST_NATS_BIN:-}${TRELLIS_NATS_SERVER_BIN:-}" ]]; then
+    echo "missing supplied NATS executable $nats_bin" >&2
+    exit 1
+  fi
+  bash scripts/acquire-test-nats.sh --dest "$(dirname "$nats_bin")"
+fi
+export TRELLIS_TEST_NATS_BIN="$nats_bin"
+export TRELLIS_NATS_SERVER_BIN="$nats_bin"
 
 for generated in \
   ts/packages/trellis/generated.ts \
@@ -107,7 +118,7 @@ build_testkit_live() {
     --config "patch.crates-io.trellis-jobs-runtime.path=\"$root/crates/jobs-runtime\"" \
     --config "patch.crates-io.trellis-idl.path=\"$root/crates/idl\"" \
     --test live \
-    --message-format=json > "$json"
+    --message-format=json-render-diagnostics > "$json"
   local executable
   executable="$(python3 - "$json" <<'PY'
 import json, sys
@@ -148,6 +159,9 @@ export TRELLIS_TESTKIT_LIVE_BIN="$testkit_live"
 export TRELLIS_TEST_SERVER_BIN="$server_bin"
 export TRELLIS_TEST_CLI_BIN="$cli_bin"
 export TRELLIS_TEST_HEALTH_WATCH_BIN="$health_watch_bin"
-export DENO_JOBS="${DENO_JOBS:-4}"
-
-exec deno test --parallel -A -c ts/integration/deno.json ts/integration "$@"
+if [[ $# -eq 0 ]]; then
+  set -- ts/integration/*_test.ts ts/integration/*.test.ts ts/packages/trellis/native/*.live_test.ts
+fi
+exec node --experimental-transform-types --test \
+  --test-timeout=600000 \
+  --test-concurrency="${TRELLIS_TEST_CONCURRENCY:-4}" "$@"

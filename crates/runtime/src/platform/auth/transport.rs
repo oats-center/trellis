@@ -10,7 +10,6 @@ use trellis_protocol::{
 };
 
 use super::{
-    authorization_sessions::ProviderImplementation,
     catalog::resolve_api,
     sqlite::{decode, AuthError, SqliteAuthorizationStore},
 };
@@ -21,6 +20,17 @@ impl SqliteAuthorizationStore {
         connection: &Connection,
         authority: &UnsignedSessionAuthority,
     ) -> Result<TransportAuthorizationV1, AuthError> {
+        let native = match &authority.binding {
+            SessionBinding::Service { instance_id, .. }
+            | SessionBinding::Device { instance_id, .. } => {
+                Some(super::native_projection::project_instance(
+                    connection,
+                    instance_id,
+                    authority.issued_at,
+                )?)
+            }
+            _ => None,
+        };
         let mut publish = BTreeSet::from([trellis_protocol::admission_get_subject(
             &authority.session_public_key,
         )?]);
@@ -84,19 +94,20 @@ impl SqliteAuthorizationStore {
                 .iter()
                 .filter(|binding| binding.api_id == reference.api_id)
             {
-                let implementations:String=connection.query_row(
-                    "SELECT b.provided_apis_json FROM auth_deployment_bindings b JOIN auth_instances i ON i.deployment_id=b.deployment_id AND i.installed_revision=b.installed_revision WHERE i.instance_id=?1 AND b.deployment_id=?2 AND i.state='active'",
-                    params![match &authority.binding {SessionBinding::Service{instance_id,..}|SessionBinding::Device{instance_id,..}=>instance_id,_=>return Err(AuthError::Denied)},binding.deployment_id], |row|row.get(0))?;
-                let implementations: Vec<ProviderImplementation> = decode(&implementations)?;
+                let projection = native.as_ref().ok_or(AuthError::Denied)?;
+                if projection.deployment_id != binding.deployment_id {
+                    return Err(AuthError::Denied);
+                }
+                let implementations = &projection.provided;
                 let implementation = implementations
-                    .into_iter()
+                    .iter()
                     .find(|implementation| {
                         implementation.api_id == binding.api_id
                             && implementation.generation == binding.generation.get()
                             && implementation.implementation_digest == binding.implementation_digest
                     })
                     .ok_or(AuthError::Denied)?;
-                providers.extend(implementation.implemented_actions);
+                providers.extend(implementation.implemented_actions.iter().cloned());
             }
             for action in &catalog.actions {
                 let identity = &action.identity;
@@ -141,7 +152,7 @@ impl SqliteAuthorizationStore {
                         }
                         // Established work retains its deployment owner. The set
                         // contains all eligible owners, never a sticky selection.
-                        let mut deployments=connection.prepare("SELECT DISTINCT b.deployment_id FROM auth_deployment_bindings b JOIN auth_instances i USING(deployment_id) JOIN auth_deployments d USING(deployment_id) WHERE i.installed_revision=b.installed_revision AND i.state='active' AND d.state='active' AND EXISTS(SELECT 1 FROM json_each(b.provided_apis_json) WHERE json_extract(value,'$.api_id')=?1 AND json_extract(value,'$.generation')=?2)")?;
+                        let mut deployments=connection.prepare("SELECT DISTINCT b.deployment_id FROM auth_deployment_bindings b JOIN auth_instances i USING(deployment_id) JOIN auth_deployments d USING(deployment_id) WHERE i.state='active' AND d.state='active' AND EXISTS(SELECT 1 FROM json_each(b.provided_apis_json) WHERE json_extract(value,'$.api_id')=?1 AND json_extract(value,'$.generation')=?2)")?;
                         for deployment in deployments
                             .query_map(params![reference.api_id, generation], |row| {
                                 row.get::<_, String>(0)
@@ -313,7 +324,9 @@ impl SqliteAuthorizationStore {
                 if owner != deployment {
                     return Err(AuthError::Denied);
                 }
-                let evidence: Option<String> = connection.query_row("SELECT e.actual_json FROM auth_resource_binding_evidence e JOIN auth_instances i ON i.deployment_id=e.owner_id AND i.installed_revision=e.installed_revision WHERE e.owner_kind='deployment' AND e.owner_id=?1 AND e.participant_id=?2 AND e.resource_kind='framework_operation' AND e.local_name='operations' AND e.state='available' AND i.instance_id=?3 AND i.state='active'",params![deployment,participant,instance], |row|row.get(0)).optional()?;
+                // Framework storage is deployment-owned, not software-revision-owned.
+                // The pinned provider actions above already establish eligibility.
+                let evidence: Option<String> = connection.query_row("SELECT e.actual_json FROM auth_resource_binding_evidence e JOIN auth_instances i ON i.deployment_id=e.owner_id WHERE e.owner_kind='deployment' AND e.owner_id=?1 AND e.participant_id=?2 AND e.resource_kind='framework_operation' AND e.local_name='operations' AND e.state='available' AND i.instance_id=?3 AND i.state='active'",params![deployment,participant,instance], |row|row.get(0)).optional()?;
                 let storage: super::framework_storage::OperationStorage =
                     decode(&evidence.ok_or(AuthError::Unavailable)?)?;
                 for (bucket, stream_prefix, subject_prefix) in [
@@ -321,6 +334,10 @@ impl SqliteAuthorizationStore {
                     (&storage.staging, "OBJ", "$O"),
                 ] {
                     stream_access(&mut publish, &format!("{stream_prefix}_{bucket}"), true)?;
+                    if stream_prefix == "OBJ" {
+                        // Object deletion/replacement cleans up chunks, not the allocation.
+                        publish.insert(format!("$JS.API.STREAM.PURGE.OBJ_{bucket}"));
+                    }
                     publish.insert(format!("{subject_prefix}.{bucket}.>"));
                     subscribe.insert(format!("{subject_prefix}.{bucket}.>"));
                 }
@@ -332,6 +349,7 @@ impl SqliteAuthorizationStore {
             }
             for resource in resources.store.values() {
                 stream_access(&mut publish, &format!("OBJ_{}", resource.name), true)?;
+                publish.insert(format!("$JS.API.STREAM.PURGE.OBJ_{}", resource.name));
                 publish.insert(format!("$O.{}.>", resource.name));
                 subscribe.insert(format!("$O.{}.>", resource.name));
             }
@@ -353,7 +371,11 @@ impl SqliteAuthorizationStore {
                     publish.insert(format!("$KV.{bucket}.>"));
                     subscribe.insert(format!("$KV.{bucket}.>"));
                 }
-                for queue in jobs.queues.values() {
+                for (job_type, queue) in &jobs.queues {
+                    publish.insert(format!(
+                        "trellis.jobs.workers.{}.{job_type}.*.heartbeat",
+                        jobs.namespace
+                    ));
                     for family in ["CONSUMER.INFO", "CONSUMER.MSG.NEXT"] {
                         publish.insert(format!(
                             "$JS.API.{family}.{work_stream}.{}",

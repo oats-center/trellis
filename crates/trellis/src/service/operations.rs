@@ -1540,35 +1540,37 @@ where
                 let heartbeat_fence = fence.clone();
                 let heartbeat_operation_id = operation_id.clone();
                 let heartbeat_gate = Arc::clone(&mutation_gate);
-                let heartbeat = tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
-                    interval.tick().await;
-                    loop {
+                let mut cancellation_updates =
+                    repository_for_completion.watch(&operation_id).await?;
+                let heartbeat =
+                    tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(10));
                         interval.tick().await;
-                        let _guard = heartbeat_gate.lock().await;
-                        let now = now_ms();
-                        if heartbeat_repository
-                            .renew(
-                                &heartbeat_operation_id,
-                                &heartbeat_fence.executor_id,
-                                heartbeat_fence.owner_epoch,
-                                now,
-                                now + 30_000,
-                            )
-                            .await
-                            .is_err()
-                        {
-                            return;
+                        loop {
+                            interval.tick().await;
+                            let _guard = heartbeat_gate.lock().await;
+                            let now = now_ms();
+                            if heartbeat_repository
+                                .renew(
+                                    &heartbeat_operation_id,
+                                    &heartbeat_fence.executor_id,
+                                    heartbeat_fence.owner_epoch,
+                                    now,
+                                    now + 30_000,
+                                )
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
                         }
-                    }
-                });
+                    }));
                 let acknowledgement_repository = repository_for_completion.clone();
                 let acknowledgement_fence = fence_for_completion.clone();
                 let acknowledgement_gate = Arc::clone(&gate_for_completion);
                 let acknowledgement_operation_id = operation_id.clone();
                 let staging_key_for_completion = upload.staging_key.clone();
-                let mut cancellation_updates =
-                    repository_for_completion.watch(&operation_id).await?;
                 let mut completion = completion;
                 let cancellation = completion
                     .cancellation
@@ -2939,6 +2941,14 @@ where
         headers.insert("proof", proof.as_str());
         headers.insert("request-id", request.request_id.as_str());
         headers.insert("iat", request.issued_at.to_string().as_str());
+        headers.insert(
+            "Trellis-Api-Generation",
+            request.api_generation.get().to_string().as_str(),
+        );
+        headers.insert(
+            "Trellis-Accepted-Revision",
+            request.accepted_revision.get().to_string().as_str(),
+        );
         self.nats
             .publish_with_reply_and_headers(
                 self.update_subject.clone(),

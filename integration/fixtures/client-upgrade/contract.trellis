@@ -10,6 +10,6 @@ api upgrade@v1 {
   }
 }
 service Provider { implements upgrade; }
-app Caller {
+agent Caller {
   use upgrade { required capability read_documents; }
 }

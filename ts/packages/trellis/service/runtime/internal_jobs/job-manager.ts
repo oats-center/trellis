@@ -30,6 +30,7 @@ import type {
   ActiveSlotLease,
   JobAdmissionOutcome,
   JobKeyCoordinator,
+  JobKeyState,
   NormalizedJobKeyPolicy,
   ReplacedQueuedJob,
 } from "./key-coordinator.ts";
@@ -114,25 +115,25 @@ export type JobProcessOutcome<TResult> =
 export type JobManagerSubmitOutcome<TPayload, TResult> =
   | { kind: "accepted"; job: Job<TPayload, TResult>; key?: string }
   | {
-    kind: "rejected";
-    key: string;
-    reason: "active-limit" | "queue-depth" | "stale-blocked";
-    active: number;
-    queued: number;
-    limit: number;
-  }
+      kind: "rejected";
+      key: string;
+      reason: "active-limit" | "queue-depth" | "stale-blocked";
+      active: number;
+      queued: number;
+      limit: number;
+    }
   | {
-    kind: "coalesced";
-    key: string;
-    existing: { service: string; jobType: string; id: string };
-    reason: string;
-  }
+      kind: "coalesced";
+      key: string;
+      existing: { service: string; jobType: string; id: string };
+      reason: string;
+    }
   | {
-    kind: "replaced";
-    key: string;
-    replaced: { service: string; jobType: string; id: string };
-    job: Job<TPayload, TResult>;
-  };
+      kind: "replaced";
+      key: string;
+      replaced: { service: string; jobType: string; id: string };
+      job: Job<TPayload, TResult>;
+    };
 
 export class JobManager<TPayload = unknown, TResult = unknown> {
   readonly #context: JobManagerContext;
@@ -169,13 +170,32 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     jobId: string,
     event: JobEvent<TPayload, TResult>,
     stableMessageId?: string,
+    keyState?: JobKeyState,
   ): Promise<void> {
     const binding = this.#getQueueBinding(type);
     const headers = headersFromJobContext(event.context, stableMessageId);
+    const slot = keyState?.active.find((entry) => entry.jobId === jobId);
     try {
       await this.#context.nc.publish(
         `${binding.publishPrefix}.${jobId}.${event.eventType}`,
-        new TextEncoder().encode(JSON.stringify(event)),
+        new TextEncoder().encode(
+          JSON.stringify({
+            ...event,
+            ...(keyState
+              ? {
+                  concurrency: {
+                    key: keyState.key,
+                    keyHash: keyState.keyHash,
+                    staleTakeoverCount: keyState.staleTakeoverCount,
+                    instanceId: slot?.instanceId,
+                    slotToken: slot?.slotToken,
+                    heartbeatAt: slot?.heartbeatAt,
+                    leaseExpiresAt: slot?.leaseExpiresAt,
+                  },
+                }
+              : {}),
+          }),
+        ),
         { headers },
       );
     } catch (error) {
@@ -250,8 +270,8 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         outcome.kind === "coalesced"
           ? "coalesced"
           : outcome.kind === "replaced"
-          ? "queue-depth"
-          : outcome.reason
+            ? "queue-depth"
+            : outcome.reason
       }`,
     );
     if (outcome.kind === "coalesced") {
@@ -438,7 +458,13 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
           const createdMsgId = stableSubmissionId
             ? `trellis-job-created:${stableSubmissionId}`
             : undefined;
-          await this.#publishJobEvent(type, id, event, createdMsgId);
+          await this.#publishJobEvent(
+            type,
+            id,
+            event,
+            createdMsgId,
+            admission.state,
+          );
         } catch (error) {
           await this.#removeQueuedKeyedReservation(
             job,
@@ -581,18 +607,23 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     stableMessageId?: string,
     error = "replaced by newer keyed job",
   ): Promise<void> {
-    await this.#publishJobEvent(type, replaced.id, {
-      jobId: replaced.id,
-      service: this.#context.jobs!.serviceName,
-      jobType: type,
-      eventType: "skipped",
-      state: "skipped",
-      previousState: "pending",
-      context: replaced.context,
-      tries: 0,
-      error,
-      timestamp,
-    }, stableMessageId);
+    await this.#publishJobEvent(
+      type,
+      replaced.id,
+      {
+        jobId: replaced.id,
+        service: this.#context.jobs!.serviceName,
+        jobType: type,
+        eventType: "skipped",
+        state: "skipped",
+        previousState: "pending",
+        context: replaced.context,
+        tries: 0,
+        error,
+        timestamp,
+      },
+      stableMessageId,
+    );
   }
 
   async processWithHeartbeat(
@@ -626,38 +657,42 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     );
     let outcome = "error";
     try {
-      const pending = context.with(
-        attemptContext,
-        () =>
-          this.#processWithHeartbeat(
-            job,
-            cancellation,
-            heartbeat,
-            handler,
-            metadata,
-            validation,
-          ),
+      const pending = context.with(attemptContext, () =>
+        this.#processWithHeartbeat(
+          job,
+          cancellation,
+          heartbeat,
+          handler,
+          metadata,
+          validation,
+        ),
       );
       span.end();
       const result = await pending;
-      outcome = result.outcome === "stale_completion_ignored"
-        ? "lease_lost"
-        : result.outcome === "interrupted" && cancellation.isLeaseLost()
-        ? "lease_lost"
-        : result.outcome;
+      outcome =
+        result.outcome === "stale_completion_ignored"
+          ? "lease_lost"
+          : result.outcome === "interrupted" && cancellation.isLeaseLost()
+            ? "lease_lost"
+            : result.outcome;
       return result;
     } finally {
       span.end();
       context.with(attemptContext, () => {
-        getTrellisTracer().startSpan(
-          "trellis.job.attempt.finish",
-          {
-            kind: SpanKind.CONSUMER,
-            attributes: { "trellis.route": route, "trellis.outcome": outcome },
-            links: producer ? [{ context: producer }] : [],
-          },
-          attemptContext,
-        ).end();
+        getTrellisTracer()
+          .startSpan(
+            "trellis.job.attempt.finish",
+            {
+              kind: SpanKind.CONSUMER,
+              attributes: {
+                "trellis.route": route,
+                "trellis.outcome": outcome,
+              },
+              links: producer ? [{ context: producer }] : [],
+            },
+            attemptContext,
+          )
+          .end();
       });
       recordCatalogDuration(
         "trellis.job.attempt.duration",
@@ -678,13 +713,15 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     const tries = job.tries + 1;
     const queue = this.#getQueueBinding(job.type);
     const keyedPolicy = getKeyPolicy(queue);
-    const initialDeadline = job.deadline === undefined
-      ? undefined
-      : Date.parse(job.deadline) - Date.parse(this.#meta().nowIso());
+    const initialDeadline =
+      job.deadline === undefined
+        ? undefined
+        : Date.parse(job.deadline) - Date.parse(this.#meta().nowIso());
     if (initialDeadline !== undefined && !Number.isFinite(initialDeadline)) {
       throw new Error(`Invalid deadline for job '${job.id}'`);
     }
     let lease: ActiveSlotLease | undefined;
+    let keyState: JobKeyState | undefined;
     if (keyedPolicy) {
       const coordinator = this.#context.keyCoordinator;
       if (!coordinator) {
@@ -716,6 +753,7 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
         slotToken: acquired.slotToken,
         policy: keyedPolicy,
       };
+      keyState = acquired.state;
       if (acquired.state.cleanupPending.includes(job.id)) {
         cancellation.cancelForStaleAttempt();
       }
@@ -726,7 +764,8 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     // failed Started or terminal publication cannot strand admitted work.
     if (
       job.tries === 0 &&
-      ((initialDeadline !== undefined && initialDeadline <= 0 &&
+      ((initialDeadline !== undefined &&
+        initialDeadline <= 0 &&
         !cancellation.isCancelled()) ||
         cancellation.reason() === "stale-attempt")
     ) {
@@ -750,22 +789,29 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
       if (stale) await this.cleanupQueuedKeyedJob(job);
       return { outcome: stale ? "stale" : "expired", tries: 0 };
     }
-    await this.#publishJobEvent(job.type, job.id, {
-      jobId: job.id,
-      service: job.service,
-      jobType: job.type,
-      eventType: "started",
-      state: "active",
-      previousState: job.state,
-      context: job.context,
-      tries,
-      timestamp: this.#meta().nowIso(),
-    });
+    await this.#publishJobEvent(
+      job.type,
+      job.id,
+      {
+        jobId: job.id,
+        service: job.service,
+        jobType: job.type,
+        eventType: "started",
+        state: "active",
+        previousState: job.state,
+        context: job.context,
+        tries,
+        timestamp: this.#meta().nowIso(),
+      },
+      undefined,
+      keyState,
+    );
 
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
-    const deadlineDelay = job.deadline === undefined
-      ? undefined
-      : Date.parse(job.deadline) - Date.parse(this.#meta().nowIso());
+    const deadlineDelay =
+      job.deadline === undefined
+        ? undefined
+        : Date.parse(job.deadline) - Date.parse(this.#meta().nowIso());
     if (deadlineDelay !== undefined) {
       const deadlineAt = performance.now() + Math.max(0, deadlineDelay);
       const enforceDeadline = () => {
@@ -833,8 +879,8 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
           error: stale
             ? "key lease displaced; execution owner reconciled"
             : expired
-            ? "job deadline exceeded; execution owner reconciled"
-            : "ordinary job attempts exhausted; execution owner reconciled",
+              ? "job deadline exceeded; execution owner reconciled"
+              : "ordinary job attempts exhausted; execution owner reconciled",
           timestamp: this.#meta().nowIso(),
         });
         await this.#releaseKeyedSlot(job, lease);
@@ -842,11 +888,13 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
           await this.cleanupQueuedKeyedJob(job);
           return { outcome: "stale", tries };
         }
-        return expired ? { outcome: "expired", tries } : {
-          outcome: "dead",
-          tries,
-          error: "ordinary job attempts exhausted",
-        };
+        return expired
+          ? { outcome: "expired", tries }
+          : {
+              outcome: "dead",
+              tries,
+              error: "ordinary job attempts exhausted",
+            };
       }
       if (cancellation.isCancelled()) {
         await this.#releaseKeyedSlot(job, lease);
@@ -1134,42 +1182,50 @@ export class JobManager<TPayload = unknown, TResult = unknown> {
     const stopProgressAcks = metadata.progressAckManaged
       ? () => {}
       : startAutoHeartbeat(
-        heartbeat,
-        metadata.progressAckIntervalMs ?? 1_000,
-        () => cancellation.cancelForLeaseLoss(),
-      );
+          heartbeat,
+          metadata.progressAckIntervalMs ?? 1_000,
+          () => cancellation.cancelForLeaseLoss(),
+        );
     const stopKeyHeartbeat = lease
       ? startAutoHeartbeat(
-        this.#keyedHeartbeat(job, lease),
-        lease.policy.heartbeatIntervalMs,
-        () => cancellation.cancelForLeaseLoss(),
-      )
+          this.#keyedHeartbeat(job, lease),
+          lease.policy.heartbeatIntervalMs,
+          () => cancellation.cancelForLeaseLoss(),
+        )
       : () => {};
-    const activeJob = new ActiveJob(job, cancellation, {
-      updateProgress: (progress) => this.emitProgress(job, progress),
-      log: (entry) => this.emitLog(job, entry),
-      waitFor: (target, fn) => this.waitFor(job, target, fn),
-      heartbeat: async () => {
-        try {
-          await heartbeat();
-        } catch (error) {
-          if (error instanceof ActiveJobRuntimeError) {
-            throw error;
+    const activeJob = new ActiveJob(
+      job,
+      cancellation,
+      {
+        updateProgress: (progress) => this.emitProgress(job, progress),
+        log: (entry) => this.emitLog(job, entry),
+        waitFor: (target, fn) => this.waitFor(job, target, fn),
+        heartbeat: async () => {
+          try {
+            await heartbeat();
+          } catch (error) {
+            if (error instanceof ActiveJobRuntimeError) {
+              throw error;
+            }
+            throw new ActiveJobRuntimeError(
+              error instanceof Error ? error.message : String(error),
+            );
           }
-          throw new ActiveJobRuntimeError(
-            error instanceof Error ? error.message : String(error),
-          );
-        }
+        },
       },
-    }, {
-      redeliveryCount: metadata.redeliveryCount ?? 0,
-    });
+      {
+        redeliveryCount: metadata.redeliveryCount ?? 0,
+      },
+    );
 
     try {
-      return await runWithActiveJobContext({
-        job,
-        waitFor: (target, fn) => this.waitFor(job, target, fn),
-      }, () => f(activeJob));
+      return await runWithActiveJobContext(
+        {
+          job,
+          waitFor: (target, fn) => this.waitFor(job, target, fn),
+        },
+        () => f(activeJob),
+      );
     } finally {
       stopProgressAcks();
       stopKeyHeartbeat();
@@ -1208,9 +1264,7 @@ export function prepareJobSubmission<TPayload>(args: {
   };
 }
 
-function parentJobTrigger(
-  parent: JobSnapshot<unknown, unknown>,
-): JobTrigger {
+function parentJobTrigger(parent: JobSnapshot<unknown, unknown>): JobTrigger {
   return {
     kind: "parentJob",
     parentJobId: parent.id,
@@ -1222,9 +1276,7 @@ function parentJobTrigger(
   };
 }
 
-function childJobLineage(
-  parent: JobSnapshot<unknown, unknown>,
-): JobLineage {
+function childJobLineage(parent: JobSnapshot<unknown, unknown>): JobLineage {
   return {
     parentJobId: parent.id,
     rootJobId: parent.lineage?.rootJobId ?? parent.id,
@@ -1321,8 +1373,9 @@ function isValidTraceparent(value: string | undefined): value is string {
   ) {
     return false;
   }
-  return !isAllZeroHex(value.slice(3, 35)) &&
-    !isAllZeroHex(value.slice(36, 52));
+  return (
+    !isAllZeroHex(value.slice(3, 35)) && !isAllZeroHex(value.slice(36, 52))
+  );
 }
 
 function synthesizeTraceparent(): string {
@@ -1334,8 +1387,9 @@ function randomNonZeroHex(byteLength: number): string {
   do {
     const bytes = new Uint8Array(byteLength);
     crypto.getRandomValues(bytes);
-    value = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
+    value = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
   } while (isAllZeroHex(value));
   return value;
 }

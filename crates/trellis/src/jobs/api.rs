@@ -213,18 +213,23 @@ where
         if is_terminal(current.state) {
             return JobSnapshot::try_from(current);
         }
-        let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
-            lease.nats().clone(),
-            &self.binding.namespace,
-        )
-        .await
-        .map_err(jobs_message)?;
-        let manager = JobManager::new_with_key_coordinator(
-            TrellisJobEventPublisher::new(lease.nats().clone()),
-            self.binding.clone(),
-            TrellisJobMetaSource,
-            Arc::new(coordinator),
-        );
+        let publisher = TrellisJobEventPublisher::new(lease.nats().clone());
+        let manager = if self.queue.key_concurrency.is_some() {
+            let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
+                lease.nats().clone(),
+                &self.binding.namespace,
+            )
+            .await
+            .map_err(jobs_message)?;
+            JobManager::new_with_key_coordinator(
+                publisher,
+                self.binding.clone(),
+                TrellisJobMetaSource,
+                Arc::new(coordinator),
+            )
+        } else {
+            JobManager::new(publisher, self.binding.clone(), TrellisJobMetaSource)
+        };
         manager.cancel(&current).await.map_err(jobs_message)?;
         waiter.wait_for_terminal(current).await?;
         JobSnapshot::try_from(waiter.get(self.seed.clone()).await?)

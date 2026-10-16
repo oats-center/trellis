@@ -520,6 +520,7 @@ async fn start_once(
         username: username.to_owned(),
         password: password.to_owned(),
         names: Vec::new(),
+        prepared_client_capabilities: std::collections::BTreeSet::new(),
         timeouts,
         stopped: false,
     })
@@ -602,6 +603,7 @@ pub struct TrellisTestRuntime {
     username: String,
     password: String,
     names: Vec<String>,
+    prepared_client_capabilities: std::collections::BTreeSet<String>,
     timeouts: TestTimeouts,
     stopped: bool,
 }
@@ -904,6 +906,19 @@ impl TrellisTestRuntime {
         &mut self,
         name: &str,
     ) -> Result<TestClientIdentity, TrellisTestError> {
+        let capabilities: Vec<_> = P::REQUIRED_CAPABILITIES
+            .iter()
+            .chain(P::OPTIONAL_CAPABILITIES)
+            .filter(|capability| !self.prepared_client_capabilities.contains(**capability))
+            .copied()
+            .collect();
+        if !capabilities.is_empty() {
+            self.admin()?
+                .prepare_client_capabilities(&capabilities)
+                .await?;
+            self.prepared_client_capabilities
+                .extend(capabilities.into_iter().map(str::to_owned));
+        }
         let client_id = self.admin()?.register_native_client(name).await?;
         let (session, nats_servers) = crate::admin::login_client(
             &self.oauth_origin,

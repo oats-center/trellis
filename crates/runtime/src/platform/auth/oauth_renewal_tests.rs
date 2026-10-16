@@ -315,10 +315,10 @@ fn exact_family_expiry_or_revocation_retires_without_using_another_live_family()
                 now
             )
             .is_err());
-        for effect in f.store.claim_effects(256, now, 30).unwrap() {
+        for effect in f.store.claim_effects(256, now, 30, false).unwrap() {
             f.store.complete_effect(&effect, now).unwrap();
         }
-        let effects = f.store.claim_effects(256, now, 30).unwrap();
+        let effects = f.store.claim_effects(256, now, 30, false).unwrap();
         assert!(effects.iter().any(|effect| effect.kind == "kick"
             && effect.payload["attachmentId"] == attachment.attachment_id));
     }

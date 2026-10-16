@@ -11,8 +11,10 @@
 
 import type { NatsConnection } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
+import { join } from "node:path";
 
 import { completeBrokerInventory } from "./_support/broker_inventory.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
@@ -26,14 +28,13 @@ async function connectWithCreds(
 ): Promise<NatsConnection> {
   return await connect({
     servers: url,
-    authenticator: credsAuthenticator(await Deno.readFile(credsPath)),
+    authenticator: credsAuthenticator(await readFile(credsPath)),
   });
 }
 
-Deno.test(
-  "complete broker inventory is validated evidence, never a silent empty listing",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
+test("complete broker inventory is validated evidence, never a silent empty listing", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
       const systemCreds = join(
         runtime.workdir,
         "config",
@@ -67,15 +68,12 @@ Deno.test(
           "the system connection must report its server identity",
         );
         for (const connection of inventory) {
-          assertEquals(
+          assert.deepEqual(
             connection.server,
             infoServerId,
             "every record must belong to the connection's own broker",
           );
-          assert(
-            connection.cid > 0,
-            "every record must carry a positive cid",
-          );
+          assert(connection.cid > 0, "every record must carry a positive cid");
         }
         serverId = infoServerId;
       } finally {
@@ -90,10 +88,9 @@ Deno.test(
         trellisCreds,
       );
       try {
-        await assertRejects(
+        await assert.rejects(
           () => completeBrokerInventory(unauthorized),
           Error,
-          undefined,
           "a non-system account must not observe an empty broker inventory",
         );
       } finally {
@@ -123,8 +120,8 @@ Deno.test(
           },
         );
         const held = await barrier.held;
-        assertEquals(held.requestSubject, subject);
-        assertEquals(
+        assert.deepEqual(held.requestSubject, subject);
+        assert.deepEqual(
           settled,
           undefined,
           "a withheld CONNZ reply must not settle the inventory",
@@ -144,6 +141,7 @@ Deno.test(
       } finally {
         await gated.close();
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});

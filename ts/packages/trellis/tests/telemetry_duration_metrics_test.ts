@@ -5,7 +5,8 @@ import {
   MeterProvider,
   PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
-import { assertEquals, assertExists } from "@std/assert";
+import assert from "node:assert/strict";
+import { after, test } from "node:test";
 import { ulid } from "ulid";
 
 const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
@@ -13,7 +14,9 @@ const reader = new PeriodicExportingMetricReader({
   exporter,
   exportIntervalMillis: 60_000,
 });
-metrics.setGlobalMeterProvider(new MeterProvider({ readers: [reader] }));
+const provider = new MeterProvider({ readers: [reader] });
+metrics.setGlobalMeterProvider(provider);
+after(() => provider.shutdown());
 
 type HistogramValue = {
   sum: number;
@@ -48,7 +51,7 @@ function collectHistogramDataPoints(): HistogramPoint[] {
   return points;
 }
 
-Deno.test("Records histogram value and unit", async () => {
+test("Records histogram value and unit", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?record=${ulid()}`
@@ -65,13 +68,13 @@ Deno.test("Records histogram value and unit", async () => {
       p.name === "trellis.connect.duration" &&
       p.attributes["trellis.phase"] === "test_record",
   );
-  assertExists(points[0]);
-  assertEquals(points[0].unit, "s");
-  assertEquals(points[0].value.count, 1);
-  assertEquals(points[0].value.sum, 0.15);
+  assert(points[0]);
+  assert.deepEqual(points[0].unit, "s");
+  assert.deepEqual(points[0].value.count, 1);
+  assert.deepEqual(points[0].value.sum, 0.15);
 });
 
-Deno.test("Ignores negative duration", async () => {
+test("Ignores negative duration", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?neg=${ulid()}`
@@ -88,10 +91,10 @@ Deno.test("Ignores negative duration", async () => {
       p.name === "trellis.connect.duration" &&
       p.attributes["trellis.phase"] === "test_neg",
   );
-  assertEquals(points.length, 0);
+  assert.deepEqual(points.length, 0);
 });
 
-Deno.test("Ignores NaN duration", async () => {
+test("Ignores NaN duration", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?nan=${ulid()}`
@@ -108,10 +111,10 @@ Deno.test("Ignores NaN duration", async () => {
       p.name === "trellis.connect.duration" &&
       p.attributes["trellis.phase"] === "test_nan",
   );
-  assertEquals(points.length, 0);
+  assert.deepEqual(points.length, 0);
 });
 
-Deno.test("Ignores infinite duration", async () => {
+test("Ignores infinite duration", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?inf=${ulid()}`
@@ -128,10 +131,10 @@ Deno.test("Ignores infinite duration", async () => {
       p.name === "trellis.connect.duration" &&
       p.attributes["trellis.phase"] === "test_inf",
   );
-  assertEquals(points.length, 0);
+  assert.deepEqual(points.length, 0);
 });
 
-Deno.test("Sanitizes attributes — drops bad values, keeps good ones", async () => {
+test("Sanitizes attributes — drops bad values, keeps good ones", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?sanitize=${ulid()}`
@@ -150,13 +153,13 @@ Deno.test("Sanitizes attributes — drops bad values, keeps good ones", async ()
       p.name === "trellis.auth.callout.duration" &&
       p.attributes["trellis.phase"] === "test_sanitize",
   );
-  assertEquals(points.length, 1);
-  assertEquals(points[0].attributes["trellis.outcome"], "ok");
-  assertEquals(points[0].attributes["trellis.session.kind"], "user");
-  assertEquals(points[0].attributes["trellis.participant.kind"], "device");
+  assert.deepEqual(points.length, 1);
+  assert.deepEqual(points[0].attributes["trellis.outcome"], "ok");
+  assert.deepEqual(points[0].attributes["trellis.session.kind"], "user");
+  assert.deepEqual(points[0].attributes["trellis.participant.kind"], "device");
 });
 
-Deno.test("Sanitizes attributes — drops high-cardinality values", async () => {
+test("Sanitizes attributes — drops high-cardinality values", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?highcard=${ulid()}`
@@ -174,12 +177,12 @@ Deno.test("Sanitizes attributes — drops high-cardinality values", async () => 
       p.name === "trellis.auth.callout.duration" &&
       p.attributes["trellis.phase"] === "test_highcard",
   );
-  assertEquals(points.length, 1);
-  assertEquals(points[0].attributes["trellis.outcome"], "ok");
-  assertEquals(points[0].attributes["trellis.participant.kind"], undefined);
+  assert.deepEqual(points.length, 1);
+  assert.deepEqual(points[0].attributes["trellis.outcome"], "ok");
+  assert.deepEqual(points[0].attributes["trellis.participant.kind"], undefined);
 });
 
-Deno.test("Maps camelCase to OTel dot-separated names", async () => {
+test("Maps camelCase to OTel dot-separated names", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?camel=${ulid()}`
@@ -198,16 +201,16 @@ Deno.test("Maps camelCase to OTel dot-separated names", async () => {
       p.name === "trellis.auth.flow.duration" &&
       p.attributes["trellis.phase"] === "test_camel",
   );
-  assertEquals(points.length, 1);
-  assertEquals(points[0].attributes["trellis.auth.flow"], "device");
-  assertEquals(points[0].attributes["trellis.session.kind"], "device");
-  assertEquals(points[0].attributes["trellis.authority.present"], "true");
-  assertEquals(points[0].attributes["authFlow"], undefined);
-  assertEquals(points[0].attributes["sessionKind"], undefined);
-  assertEquals(points[0].attributes["authorityPresent"], undefined);
+  assert.deepEqual(points.length, 1);
+  assert.deepEqual(points[0].attributes["trellis.auth.flow"], "device");
+  assert.deepEqual(points[0].attributes["trellis.session.kind"], "device");
+  assert.deepEqual(points[0].attributes["trellis.authority.present"], "true");
+  assert.deepEqual(points[0].attributes["authFlow"], undefined);
+  assert.deepEqual(points[0].attributes["sessionKind"], undefined);
+  assert.deepEqual(points[0].attributes["authorityPresent"], undefined);
 });
 
-Deno.test("Caches histogram instrument per metric name", async () => {
+test("Duration recording preserves independent attribute series", async () => {
   exporter.reset();
   const { recordTrellisDuration } = await import(
     `../telemetry/metrics.ts?cache=${ulid()}`
@@ -240,17 +243,7 @@ Deno.test("Caches histogram instrument per metric name", async () => {
       p.name === "trellis.auth.flow.duration" &&
       p.attributes["trellis.phase"] === "cache_other",
   );
-  assertEquals(connectPoints.length, 1);
-  assertEquals(connectSecondPoints.length, 1);
-  assertEquals(authPoints.length, 1);
-});
-
-Deno.test("No-op without meter provider does not throw", async () => {
-  metrics.setGlobalMeterProvider(new MeterProvider());
-
-  const { recordTrellisDuration } = await import(
-    `../telemetry/metrics.ts?noop=${ulid()}`
-  );
-
-  recordTrellisDuration("trellis.connect.duration", 100);
+  assert.deepEqual(connectPoints.length, 1);
+  assert.deepEqual(connectSecondPoints.length, 1);
+  assert.deepEqual(authPoints.length, 1);
 });

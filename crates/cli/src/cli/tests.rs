@@ -205,29 +205,6 @@ fn parses_init_config_keys_upgrade_version_and_completion() {
         other => panic!("unexpected top-level command: {other:?}"),
     }
 
-    let cli = Cli::parse_from([
-        "trellis",
-        "init",
-        "admin",
-        "--identity",
-        "github:ada",
-        "--db-path",
-        "/tmp/trellis.sqlite",
-    ]);
-    match cli.command {
-        TopLevelCommand::Init(command) => match command.command {
-            InitSubcommand::Admin(args) => {
-                assert_eq!(args.identity, "github:ada");
-                assert_eq!(
-                    args.db_path,
-                    std::path::PathBuf::from("/tmp/trellis.sqlite")
-                );
-            }
-            other => panic!("unexpected init command: {other:?}"),
-        },
-        other => panic!("unexpected top-level command: {other:?}"),
-    }
-
     let cli = Cli::parse_from(["trellis", "keys", "new", "--seed", "abc"]);
     match cli.command {
         TopLevelCommand::Keys(command) => match command.command {

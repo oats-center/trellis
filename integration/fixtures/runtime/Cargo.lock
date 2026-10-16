@@ -2497,12 +2497,24 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "runtime-trellis",
+ "serde_json",
  "time",
  "tokio",
  "tracing-opentelemetry",
  "tracing-subscriber",
  "trellis-rs",
+ "trellis-runtime-apis",
  "ulid",
+]
+
+[[package]]
+name = "trellis-runtime-apis"
+version = "0.100.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "trellis-rs",
 ]
 
 [[package]]

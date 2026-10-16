@@ -1,6 +1,6 @@
 //! Generated API `trellis.auth@v1`.
 pub const API_ID: &str = "trellis.auth@v1";
-pub const API_DIGEST: &str = "F0oBs3zpjt3NHA4o8DSFfpSUeCtHPPB5gIDsg3QKVcA";
+pub const API_DIGEST: &str = "7UyD3Qyp_KLIJhXRTc8PziADrZUywEdSGM08LQfuheY";
 pub struct Api;
 impl trellis_rs::generated::ApiDescriptor for Api {
     const ID: &'static str = API_ID;
@@ -4292,6 +4292,76 @@ pub mod rpc {
             PrincipalsEffectiveAccessError::decode(value)
         }
     }
+    pub type ResourceBindingsQueryInput = crate::__types::trellis::AuthResourceBindingsQueryRequest;
+    pub type ResourceBindingsQueryOutput = crate::__types::trellis::AuthResourceBindingsQueryResponse;
+    pub struct ResourceBindingsQuery;
+    impl ResourceBindingsQuery {
+        pub const API_ID: &'static str = super::API_ID;
+        pub const DESCRIPTOR_NAME: &'static str = "rpc.ResourceBindings.Query";
+        pub const KEY: &'static str = "auth.ResourceBindings.Query";
+        pub const SUBJECT: &'static str = "rpc.v1.auth.ResourceBindings.Query";
+        pub const CALLER_CAPABILITIES: &'static [&'static str] = &[
+            "trellis.auth@v1::eventResourceBindingsRead",
+            "trellis.auth@v1::jobResourceBindingsRead",
+        ];
+        pub const ERRORS: &'static [&'static str] = &[
+            "trellis.auth@v1::AuthError",
+            "trellis.auth@v1::UnexpectedError",
+            "trellis.auth@v1::ValidationError",
+        ];
+        pub const DOWNLOAD: bool = false;
+        pub const CURSOR_PAGINATION: bool = true;
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum ResourceBindingsQueryError {
+        AuthError(super::errors::AuthError),
+        UnexpectedError(super::errors::UnexpectedError),
+        ValidationError(super::errors::ValidationError),
+    }
+    impl ResourceBindingsQueryError {
+        pub fn decode(
+            value: serde_json::Value,
+        ) -> Result<Option<Self>, serde_json::Error> {
+            let error_type = value.get("type").and_then(serde_json::Value::as_str);
+            match error_type {
+                Some("trellis.auth@v1::AuthError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::AuthError,
+                    >(value)
+                        .map(|value| value.map(Self::AuthError))
+                }
+                Some("trellis.auth@v1::UnexpectedError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::UnexpectedError,
+                    >(value)
+                        .map(|value| value.map(Self::UnexpectedError))
+                }
+                Some("trellis.auth@v1::ValidationError") => {
+                    trellis_rs::generated::decode_typed_error::<
+                        super::errors::ValidationError,
+                    >(value)
+                        .map(|value| value.map(Self::ValidationError))
+                }
+                _ => Ok(None),
+            }
+        }
+    }
+    impl trellis_rs::generated::RpcDescriptor for ResourceBindingsQuery {
+        type Input = ResourceBindingsQueryInput;
+        type Output = ResourceBindingsQueryOutput;
+        type Error = ResourceBindingsQueryError;
+        const API_ID: &'static str = super::API_ID;
+        const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME;
+        const SUBJECT: &'static str = Self::SUBJECT;
+        const KEY: &'static str = Self::KEY;
+        const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES;
+        const DOWNLOAD: bool = Self::DOWNLOAD;
+        fn decode_error(
+            value: serde_json::Value,
+        ) -> Result<Option<Self::Error>, serde_json::Error> {
+            ResourceBindingsQueryError::decode(value)
+        }
+    }
     pub type ResourcesGetInput = crate::__types::trellis::AuthResourceGetRequest;
     pub type ResourcesGetOutput = crate::__types::trellis::AuthResourceGetResponse;
     pub struct ResourcesGet;
@@ -6511,6 +6581,7 @@ pub fn register_rpc_metadata(router: &mut trellis_rs::service::Router) {
     router.register_rpc_metadata::<rpc::PlatformPrivilegesList>();
     router.register_rpc_metadata::<rpc::PlatformPrivilegesRevoke>();
     router.register_rpc_metadata::<rpc::PrincipalsEffectiveAccess>();
+    router.register_rpc_metadata::<rpc::ResourceBindingsQuery>();
     router.register_rpc_metadata::<rpc::ResourcesGet>();
     router.register_rpc_metadata::<rpc::ResourcesList>();
     router.register_rpc_metadata::<rpc::ResourcesRemove>();
@@ -8442,6 +8513,113 @@ impl Client {
     > {
         self.inner.call::<rpc::PrincipalsEffectiveAccess>(input).await
     }
+    pub async fn resource_bindings_query(
+        &self,
+        input: &rpc::ResourceBindingsQueryInput,
+    ) -> Result<
+        rpc::ResourceBindingsQueryOutput,
+        trellis_rs::client::CallError<rpc::ResourceBindingsQueryError>,
+    > {
+        self.inner.call::<rpc::ResourceBindingsQuery>(input).await
+    }
+    pub fn resource_bindings_query_pages(
+        &self,
+        input: rpc::ResourceBindingsQueryInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            rpc::ResourceBindingsQueryOutput,
+            crate::PaginationError<rpc::ResourceBindingsQueryError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (client, input, seen, false),
+                |(client, mut input, mut seen, done)| async move {
+                    if done {
+                        return Ok(None);
+                    }
+                    let page = client
+                        .resource_bindings_query(&input)
+                        .await
+                        .map_err(crate::PaginationError::Call)?;
+                    let next = page.page.next_cursor.clone();
+                    let done = next.is_none();
+                    if let Some(cursor) = next {
+                        if !seen.insert(cursor.clone()) {
+                            return Err(crate::PaginationError::RepeatedCursor(cursor));
+                        }
+                        let limit = input.page.as_ref().and_then(|page| page.limit);
+                        input.page = Some(crate::__types::CursorQuery {
+                            cursor: Some(cursor),
+                            limit,
+                        });
+                    }
+                    Ok(Some((page, (client, input, seen, done))))
+                },
+            ),
+        )
+    }
+    pub fn resource_bindings_query_items(
+        &self,
+        input: rpc::ResourceBindingsQueryInput,
+    ) -> futures_util::stream::BoxStream<
+        'static,
+        Result<
+            crate::__types::trellis::AuthResourceEvidence,
+            crate::PaginationError<rpc::ResourceBindingsQueryError>,
+        >,
+    > {
+        let client = self.clone();
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(cursor) = input.page.as_ref().and_then(|page| page.cursor.clone()) {
+            seen.insert(cursor);
+        }
+        Box::pin(
+            futures_util::stream::try_unfold(
+                (
+                    client,
+                    input,
+                    seen,
+                    false,
+                    Vec::<crate::__types::trellis::AuthResourceEvidence>::new()
+                        .into_iter(),
+                ),
+                |(client, mut input, mut seen, mut done, mut items)| async move {
+                    loop {
+                        if let Some(item) = items.next() {
+                            return Ok(Some((item, (client, input, seen, done, items))));
+                        }
+                        if done {
+                            return Ok(None);
+                        }
+                        let page = client
+                            .resource_bindings_query(&input)
+                            .await
+                            .map_err(crate::PaginationError::Call)?;
+                        let next = page.page.next_cursor.clone();
+                        done = next.is_none();
+                        if let Some(cursor) = next {
+                            if !seen.insert(cursor.clone()) {
+                                return Err(crate::PaginationError::RepeatedCursor(cursor));
+                            }
+                            let limit = input.page.as_ref().and_then(|page| page.limit);
+                            input.page = Some(crate::__types::CursorQuery {
+                                cursor: Some(cursor),
+                                limit,
+                            });
+                        }
+                        items = page.items.into_iter();
+                    }
+                },
+            ),
+        )
+    }
     pub async fn resources_get(
         &self,
         input: &rpc::ResourcesGetInput,
@@ -10244,6 +10422,20 @@ impl<'a, P: trellis_rs::generated::ParticipantDescriptor> Provider<'a, P> {
             > + Send + 'static,
     {
         self.runtime.register_rpc::<rpc::PrincipalsEffectiveAccess, _, _>(handler);
+    }
+    pub fn register_resource_bindings_query<F, Fut>(&mut self, handler: F)
+    where
+        F: Fn(
+                trellis_rs::service::ServiceHandlerContext,
+                rpc::ResourceBindingsQueryInput,
+            ) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = trellis_rs::service::HandlerResult<
+                    rpc::ResourceBindingsQueryOutput,
+                >,
+            > + Send + 'static,
+    {
+        self.runtime.register_rpc::<rpc::ResourceBindingsQuery, _, _>(handler);
     }
     pub fn register_resources_get<F, Fut>(&mut self, handler: F)
     where

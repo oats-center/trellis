@@ -575,17 +575,15 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     assert!(
         matches!(super::super::rpc_deployments::apply_deployment(&store,&mutation(&f.admin,&shrink),&shrink,NOW+3),Err(AuthError::Invalid(code)) if code=="potential_data_loss")
     );
-    let detach = AuthDeploymentMutationRequest {
-        deployment_id: provider.deployment_id.parse().unwrap(),
+    let detach = AuthDeploymentApplyRequest {
         expected_revision: current.revision,
         idempotency_key: super::super::sqlite::id().into(),
-        extra: Default::default(),
+        ..apply.clone()
     };
-    super::super::rpc_deployments::change_deployment(
+    super::super::rpc_deployments::apply_deployment(
         &store,
         &mutation(&f.admin, &detach),
         &detach,
-        "disabled",
         NOW + 3,
     )
     .unwrap();
@@ -704,17 +702,15 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
             super::super::rpc_deployments::read_deployment(connection, &provider.deployment_id)
         })
         .unwrap();
-    let enable = AuthDeploymentMutationRequest {
-        deployment_id: current.deployment_id,
+    let restore = AuthDeploymentApplyRequest {
         expected_revision: current.revision,
         idempotency_key: super::super::sqlite::id().into(),
-        extra: Default::default(),
+        ..readd
     };
-    super::super::rpc_deployments::change_deployment(
+    super::super::rpc_deployments::apply_deployment(
         &store,
-        &mutation(&f.admin, &enable),
-        &enable,
-        "active",
+        &mutation(&f.admin, &restore),
+        &restore,
         NOW + 36,
     )
     .unwrap();
@@ -765,5 +761,103 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         b"replacement-data"
     );
     forwarding.abort();
+    // A kind change detaches the old identity while preserving its data.
+    let changed_kind = evidence(format!("{}store connections {{ title \"Connections\"; description \"Connection blobs\"; ttl 0; }}{}", &source[..start], &source[end..]));
+    let current = store
+        .transaction(|connection| {
+            super::super::rpc_deployments::read_deployment(connection, &provider.deployment_id)
+        })
+        .unwrap();
+    let change_kind = AuthDeploymentApplyRequest {
+        deployment_id: current.deployment_id,
+        expected_revision: current.revision,
+        package_evidence: serde_json::from_value(serde_json::to_value(changed_kind).unwrap())
+            .unwrap(),
+        idempotency_key: super::super::sqlite::id().into(),
+        extra: Default::default(),
+    };
+    super::super::rpc_deployments::apply_deployment(
+        &store,
+        &mutation(&f.admin, &change_kind),
+        &change_kind,
+        NOW + 38,
+    )
+    .unwrap();
+    let retained = store
+        .transaction(|connection| Ok(list_resources(connection, &detached_query)?.items.remove(0)))
+        .unwrap();
+    assert_eq!(
+        retained.resource_id.to_string(),
+        active.resource_id.to_string()
+    );
+    assert_eq!(
+        replacement_bucket
+            .get("retained")
+            .await
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        b"replacement-data"
+    );
+    let provision = AuthInstanceProvisionRequest {
+        deployment_id: provider.deployment_id.parse().unwrap(),
+        identity_public_key: Some(
+            URL_SAFE_NO_PAD
+                .encode(SigningKey::from_bytes(&[73; 32]).verifying_key().as_bytes())
+                .into(),
+        ),
+        title: "Store version".to_string().into(),
+        idempotency_key: super::super::sqlite::id().into(),
+        extra: Default::default(),
+    };
+    super::super::rpc_deployments::provision_instance(
+        &store,
+        &mutation(&f.admin, &provision),
+        &provision,
+        "service",
+        NOW + 38,
+    )
+    .unwrap();
+    let changed = super::super::resources::materialize_native_kv(
+        &store,
+        &nats,
+        &provider.deployment_id,
+        NOW + 38,
+    )
+    .await
+    .unwrap();
+    let objects = jetstream
+        .get_object_store(&changed.store["connections"].name)
+        .await
+        .unwrap();
+    objects
+        .put("survivor", &mut b"store-data".as_slice())
+        .await
+        .unwrap();
+    let remove_kv = AuthResourceRemoveRequest {
+        resource_id: retained.resource_id,
+        expected_revision: retained.revision,
+        idempotency_key: super::super::sqlite::id().into(),
+        extra: Default::default(),
+    };
+    remove_resource(
+        &store,
+        &nats,
+        &mutation(&f.admin, &remove_kv),
+        &remove_kv,
+        NOW + 39,
+    )
+    .await
+    .unwrap();
+    assert!(jetstream
+        .get_key_value(&replacement.kv["connections"].bucket)
+        .await
+        .is_err());
+    let mut object = objects.get("survivor").await.unwrap();
+    let mut bytes = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut object, &mut bytes)
+        .await
+        .unwrap();
+    assert_eq!(bytes, b"store-data");
     server.kill().await.unwrap();
 }

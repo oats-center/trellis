@@ -1,14 +1,23 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
+import assert from "node:assert/strict";
+import { Readable, Writable } from "node:stream";
+import { buffer } from "node:stream/consumers";
+import { TextDecoderStream } from "node:stream/web";
+import { spawnTracked } from "./_support/process.ts";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
 import { AckPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { credsAuthenticator, deadline } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
-import { join } from "@std/path";
+import { join } from "node:path";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { Result } from "@oatscenter/trellis";
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { inspect } from "node:util";
 import {
-  JobCancellationToken,
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
   JobManager,
   JobProcessError,
 } from "../packages/trellis/service/runtime/internal_jobs/job-manager.ts";
@@ -28,21 +37,20 @@ import type { StartNatsWorkerHostOptions } from "../packages/trellis/service/run
 import { TcpProxy } from "../packages/trellis-testkit/src/runtime.ts";
 import { NativeTransportGate } from "../packages/trellis-testkit/src/native_gate.ts";
 
-Deno.test("concurrent keyed admissions retain every accepted job across coordinators", async () => {
+test("concurrent keyed admissions retain every accepted job across coordinators", async () => {
   await withTrellisRuntime(async (runtime) => {
     const nc = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(
+        await readFile(
           join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
     try {
       const kv = await new Kvm(nc).create("JOBS_KEYS_contention");
-      const coordinators = Array.from(
-        { length: 4 },
-        () => createNatsJobKeyCoordinator(nc),
+      const coordinators = Array.from({ length: 4 }, () =>
+        createNatsJobKeyCoordinator(nc),
       );
       const policy = normalizeJobKeyPolicy({
         keyConcurrency: { key: ["/key"] },
@@ -66,12 +74,12 @@ Deno.test("concurrent keyed admissions retain every accepted job across coordina
             createdAt: new Date().toISOString(),
             policy,
             strictCreate: true,
-          })
+          }),
         ),
       );
       for (const outcome of outcomes) {
-        assert(outcome.status === "fulfilled", Deno.inspect(outcome));
-        assertEquals(outcome.value.kind, "accepted");
+        assert(outcome.status === "fulfilled", inspect(outcome));
+        assert.deepEqual(outcome.value.kind, "accepted");
       }
       const derived = await deriveJobKey({
         service: "contention",
@@ -80,42 +88,40 @@ Deno.test("concurrent keyed admissions retain every accepted job across coordina
         template: policy.key,
       });
       const queued = (await kv.get(derived.kvKey))!.json<JobKeyState>().queued;
-      assertEquals(queued.map((job) => job.jobId).sort(), ids.sort());
+      assert.deepEqual(queued.map((job) => job.jobId).sort(), ids.sort());
     } finally {
       await nc.close();
     }
   });
 });
 
-Deno.test("native Rust worker starts on a provisioned queue and retries cleanup beyond the ordinary budget", async () => {
+test("native Rust worker starts on a provisioned queue and retries cleanup beyond the ordinary budget", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "native-job-reconciliation",
       contract: participants.Provider.participant,
     });
     const [command, ...args] = rustFixtureArgv("jobs");
-    const child = new Deno.Command(command, {
-      args,
+    const child = spawnTracked(command, args, {
       env: {
-        TRELLIS_URL: runtime.trellisUrl,
+        ...process.env,
+        TRELLIS_URL: runtime.oauthIssuer,
         TRELLIS_IDENTITY_SEED: identity.seed,
       },
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
+    });
     let exited = false;
-    const output = child.output().then((value) => {
+    const output = Promise.all([
+      child.exited,
+      buffer(child.stdout),
+      buffer(child.stderr),
+    ]).then(([value, stdout, stderr]) => {
       exited = true;
-      return value;
+      return { ...value, stdout, stderr };
     });
     try {
       await runtime.waitFor(() => exited, { timeoutMs: 60_000 });
       const result = await output;
-      assertEquals(
-        result.code,
-        0,
-        new TextDecoder().decode(result.stderr),
-      );
+      assert.deepEqual(result.code, 0, new TextDecoder().decode(result.stderr));
     } finally {
       if (!exited) child.kill("SIGKILL");
       await output;
@@ -124,285 +130,320 @@ Deno.test("native Rust worker starts on a provisioned queue and retries cleanup 
 });
 
 for (const terminal of ["failed", "dead"] as const) {
-  Deno.test(`one-slot keyed ${terminal} replay retires the old unacknowledged delivery before running the new run`, async () => {
-    await withTrellisRuntime(async (runtime) => {
-      const identity = await runtime.registerService({
-        name: `keyed-${terminal}-replay`,
-        contract: participants.Provider.participant,
-      });
-      const admin = await runtime.connectClient({
-        name: `keyed-${terminal}-admin`,
-        contract: participants.JobsAdmin.participant,
-      });
-      const gate = runtime.nativeTransportGate();
-      const originalFrame = gate.onClientFrame.bind(gate);
-      const heldAck = Promise.withResolvers<string>();
-      let drop = true;
-      const forwarded: string[] = [];
-      gate.onClientFrame = (connection, op, raw) => {
-        const held = originalFrame(connection, op, raw);
-        if (
-          op.kind === "pub" &&
-          op.subject.startsWith("$JS.ACK.JOBS_WORK.") &&
-          new TextDecoder().decode(raw).endsWith("+ACK\r\n")
-        ) {
-          if (drop) {
-            heldAck.resolve(op.subject);
-            return true;
+  test(`one-slot keyed ${terminal} replay retires the old unacknowledged delivery before running the new run`, async () => {
+    await withTrellisRuntime(
+      async (runtime) => {
+        const identity = await runtime.registerService({
+          name: `keyed-${terminal}-replay`,
+          contract: participants.Provider.participant,
+        });
+        const admin = await runtime.connectClient({
+          name: `keyed-${terminal}-admin`,
+          contract: apps.JobsAdmin.request,
+        });
+        const gate = runtime.nativeTransportGate();
+        const originalFrame = gate.onClientFrame.bind(gate);
+        const heldAck = Promise.withResolvers<string>();
+        let drop = true;
+        const forwarded: string[] = [];
+        gate.onClientFrame = (connection, op, raw) => {
+          const held = originalFrame(connection, op, raw);
+          if (
+            op.kind === "pub" &&
+            op.subject.startsWith("$JS.ACK.JOBS_WORK.") &&
+            new TextDecoder().decode(raw).endsWith("+ACK\r\n")
+          ) {
+            if (drop) {
+              heldAck.resolve(op.subject);
+              return true;
+            }
+            forwarded.push(op.subject);
           }
-          forwarded.push(op.subject);
-        }
-        return held;
-      };
-      let service = await TrellisService.connect({
-        trellisUrl: runtime.trellisUrl,
-        participant: participants.Provider.participant,
-        seed: identity.seed,
-      }).orThrow();
-      let executions = 0;
-      service.jobs.replayWork.handle(({ job }) => {
-        if (job.cancellationReason === "retry-exhausted") {
-          return Promise.resolve(Result.ok(job.payload));
-        }
-        executions++;
-        if (terminal === "failed") throw new Error("original run failed");
-        return Promise.resolve(Result.err(new RetryJobError()));
-      }, { concurrency: 1 });
-      let exited = service.wait();
-      try {
-        const job = await service.jobs.replayWork.create({ value: terminal })
-          .orThrow();
-        const oldAck = await deadline(heldAck.promise, 10_000);
-        await runtime.waitFor(async () =>
-          (await admin.inspect({ id: job.id }).orThrow()).job.state === terminal
-        );
-        await service.stop();
-        await exited;
-        const before = executions;
-        if (terminal === "failed") await admin.retry({ id: job.id }).orThrow();
-        else await admin.replayDlq({ id: job.id }).orThrow();
-        // Leave the existing delivery overdue before receiving again, so the
-        // broker schedules its redelivery ahead of the newly sourced replay.
-        const due = performance.now() + 300;
-        await runtime.waitFor(() => performance.now() >= due);
-        drop = false;
-        service = await TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
+          return held;
+        };
+        let service = await TrellisService.connect({
+          trellisUrl: runtime.oauthIssuer,
           participant: participants.Provider.participant,
           seed: identity.seed,
         }).orThrow();
-        service.jobs.replayWork.handle(({ job }) => {
-          executions++;
-          return Promise.resolve(Result.ok(job.payload));
-        }, { concurrency: 1 });
-        exited = service.wait();
-        await runtime.waitFor(async () =>
-          (await admin.inspect({ id: job.id }).orThrow()).job.state ===
-            "completed"
-        ).catch(async (cause) => {
-          const state =
-            (await admin.inspect({ id: job.id }).orThrow()).job.state;
-          throw new Error(
-            `Replay did not complete: state=${state}, executions=${executions}, before=${before}, acknowledgements=${
-              JSON.stringify(forwarded)
-            }`,
-            { cause },
-          );
-        });
-        await runtime.waitFor(() => forwarded.length >= 2).catch((cause) => {
-          throw new Error(
-            `Missing delivery acknowledgements: original=${oldAck}, forwarded=${
-              JSON.stringify(forwarded)
-            }, executions=${executions}, before=${before}`,
-            { cause },
-          );
-        });
-        assertEquals(
-          Number(forwarded[0].split(".").at(-4)),
-          Number(oldAck.split(".").at(-4)),
-          "the old delivery must be retired first",
+        let executions = 0;
+        service.jobs.replayWork.handle(
+          ({ job }) => {
+            if (job.cancellationReason === "retry-exhausted") {
+              return Promise.resolve(Result.ok(job.payload));
+            }
+            executions++;
+            if (terminal === "failed") throw new Error("original run failed");
+            return Promise.resolve(Result.err(new RetryJobError()));
+          },
+          { concurrency: 1 },
         );
-        assertEquals(executions, before + 1);
-      } finally {
-        drop = false;
-        await service.stop();
-        await exited;
-        gate.onClientFrame = originalFrame;
-      }
-    }, { interruptibleNativeProxy: true });
+        let exited = service.wait();
+        try {
+          const job = await service.jobs.replayWork
+            .create({ value: terminal })
+            .orThrow();
+          const oldAck = await deadline(heldAck.promise, 10_000);
+          await runtime.waitFor(
+            async () =>
+              (await admin.inspect({ id: job.id }).orThrow()).job.state ===
+              terminal,
+          );
+          await service.stop();
+          await exited;
+          const before = executions;
+          if (terminal === "failed")
+            await admin.retry({ id: job.id }).orThrow();
+          else await admin.replayDlq({ id: job.id }).orThrow();
+          // Leave the existing delivery overdue before receiving again, so the
+          // broker schedules its redelivery ahead of the newly sourced replay.
+          const due = performance.now() + 300;
+          await runtime.waitFor(() => performance.now() >= due);
+          drop = false;
+          service = await TrellisService.connect({
+            trellisUrl: runtime.oauthIssuer,
+            participant: participants.Provider.participant,
+            seed: identity.seed,
+          }).orThrow();
+          service.jobs.replayWork.handle(
+            ({ job }) => {
+              executions++;
+              return Promise.resolve(Result.ok(job.payload));
+            },
+            { concurrency: 1 },
+          );
+          exited = service.wait();
+          await runtime
+            .waitFor(
+              async () =>
+                (await admin.inspect({ id: job.id }).orThrow()).job.state ===
+                "completed",
+            )
+            .catch(async (cause) => {
+              const state = (await admin.inspect({ id: job.id }).orThrow()).job
+                .state;
+              throw new Error(
+                `Replay did not complete: state=${state}, executions=${executions}, before=${before}, acknowledgements=${JSON.stringify(
+                  forwarded,
+                )}`,
+                { cause },
+              );
+            });
+          await runtime
+            .waitFor(() => forwarded.length >= 2)
+            .catch((cause) => {
+              throw new Error(
+                `Missing delivery acknowledgements: original=${oldAck}, forwarded=${JSON.stringify(
+                  forwarded,
+                )}, executions=${executions}, before=${before}`,
+                { cause },
+              );
+            });
+          assert.deepEqual(
+            Number(forwarded[0].split(".").at(-4)),
+            Number(oldAck.split(".").at(-4)),
+            "the old delivery must be retired first",
+          );
+          assert.deepEqual(executions, before + 1);
+        } finally {
+          drop = false;
+          await service.stop();
+          await exited;
+          gate.onClientFrame = originalFrame;
+        }
+      },
+      { interruptibleNativeProxy: true },
+    );
   });
 }
 
-Deno.test("native worker killed after key persistence but before Started recovers expiration and unblocks the next job", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const identity = await runtime.registerService({
-      name: "native-pre-started",
-      contract: participants.Provider.participant,
-    });
-    const submitterIdentity = await runtime.services.createInstance({
-      name: "native-pre-started-submitter",
-      contract: participants.Provider.participant,
-    });
-    const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: participants.Provider.participant,
-      seed: submitterIdentity.seed,
-    }).orThrow();
-    const serviceExit = service.wait();
-    const nc = await connect({
-      servers: runtime.natsUrl,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
-        ),
-      ),
-    });
-    const [command, ...args] = rustFixtureArgv("jobs");
-    const start = () => {
-      const child = new Deno.Command(command, {
-        args,
-        env: {
-          TRELLIS_URL: runtime.trellisUrl,
-          TRELLIS_IDENTITY_SEED: identity.seed,
-          TRELLIS_PRE_STARTED_WORK: "1",
-        },
-        stdin: "piped",
-        stdout: "piped",
-        stderr: "inherit",
-      }).spawn();
-      const lines: string[] = [];
-      const output = (async () => {
-        let pending = "";
-        for await (
-          const text of child.stdout.pipeThrough(new TextDecoderStream())
-        ) {
-          pending += text;
-          const complete = pending.split("\n");
-          pending = complete.pop()!;
-          lines.push(...complete);
-        }
-      })();
-      let exited = false;
-      const status = child.status.then((value) => {
-        exited = true;
-        return value;
+test("native worker killed after key persistence but before Started recovers expiration and unblocks the next job", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const identity = await runtime.registerService({
+        name: "native-pre-started",
+        contract: participants.Provider.participant,
       });
-      return { child, lines, output, status, exited: () => exited };
-    };
-    let worker = start();
-    const gate = runtime.nativeTransportGate();
-    let hold: ReturnType<typeof gate.armResponseHold> | undefined;
-    try {
-      await runtime.waitFor(() => {
-        if (worker.exited()) {
-          throw new Error("native worker exited before readiness");
-        }
-        return worker.lines.includes("ready");
-      }, { timeoutMs: 60_000 });
-      const connection = gate.connections().find((candidate) =>
-        !candidate.closed &&
-        candidate.subs.some((sub) =>
-          sub.subject.includes(".preStartedWork.") &&
-          sub.subject.endsWith(".cancelled")
-        )
-      );
-      assert(connection);
-      hold = gate.armResponseHold("$KV.JOBS_KEYS_", connection.id);
-      const abandoned = await service.jobs.preStartedWork.create({
-        key: "shared",
-        value: "abandoned",
+      const submitterIdentity = await runtime.services.createInstance({
+        name: "native-pre-started-submitter",
+        contract: participants.Provider.participant,
+      });
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.oauthIssuer,
+        participant: participants.Provider.participant,
+        seed: submitterIdentity.seed,
       }).orThrow();
-      let held: Awaited<typeof hold.held> | undefined;
-      const response = hold.held.then((value) => {
-        held = value;
-      });
-      await runtime.waitFor(() => held !== undefined);
-      await response;
-      assert(held);
-      const [bucket, ...keyParts] = held.requestSubject.slice("$KV.".length)
-        .split(".");
-      const key = keyParts.join(".");
-      const kv = await new Kvm(nc).open(bucket);
-      const entry = await kv.get(key);
-      assert(entry);
-      const persisted = JSON.parse(entry.string()) as JobKeyState;
-      assert(persisted.active.some((slot) => slot.jobId === abandoned.id));
-      assertEquals((await abandoned.get().orThrow()).tries, 0);
-      // The real broker persisted acquisition, but its ACK never reached the
-      // worker, so this SIGKILL deterministically precedes Started.
-      worker.child.kill("SIGKILL");
-      await Promise.all([worker.status, worker.output]);
-      await worker.child.stdin.close();
-      await hold.release();
-      hold = undefined;
-      const deadline = (await abandoned.get().orThrow()).deadline;
-      assert(deadline);
-      await runtime.waitFor(() => Date.now() >= Date.parse(deadline), {
-        timeoutMs: 10_000,
-      });
-      // Expired is durable before the recovering worker receives its publish
-      // ACK. Kill it in that second window, then let terminal redelivery clean
-      // the still-owned slot rather than ACKing it away.
-      hold = gate.armResponseHold("trellis.jobs.");
-      let expirationHeld = false;
-      void hold.held.then(() => expirationHeld = true);
-      worker = start();
-      await runtime.waitFor(() => expirationHeld, { timeoutMs: 150_000 });
-      assert(
-        (await kv.get(key))!.json<JobKeyState>().active.some((slot) =>
-          slot.jobId === abandoned.id
-        ),
-      );
-      worker.child.kill("SIGKILL");
-      await Promise.all([worker.status, worker.output]);
-      await worker.child.stdin.close();
-      await hold.release();
-      hold = undefined;
-      worker = start();
-      await runtime.waitFor(
-        async () => (await abandoned.get().orThrow()).state === "expired",
-        {
-          timeoutMs: 150_000,
-        },
-      );
-      await runtime.waitFor(
-        async () =>
-          !(await kv.get(key))!.json<JobKeyState>().active.some((slot) =>
-            slot.jobId === abandoned.id
+      const serviceExit = service.wait();
+      const nc = await connect({
+        servers: runtime.natsUrl,
+        authenticator: credsAuthenticator(
+          await readFile(
+            join(
+              runtime.workdir,
+              "config/trellis/nats/creds/trellis-auth.creds",
+            ),
           ),
-        { timeoutMs: 150_000 },
-      );
-      const settledEntry = await kv.get(key);
-      assert(settledEntry);
-      const settled = JSON.parse(settledEntry.string()) as JobKeyState;
-      assert(!settled.active.some((slot) => slot.jobId === abandoned.id));
-      assert(!worker.lines.includes("handler abandoned"));
-      const next = await service.jobs.preStartedWork.create({
-        key: "shared",
-        value: "next",
-      }).orThrow();
-      assertEquals((await next.wait().orThrow()).state, "completed");
-      const writer = worker.child.stdin.getWriter();
-      await writer.write(new TextEncoder().encode("stop\n"));
-      await writer.close();
-      await runtime.waitFor(worker.exited, { timeoutMs: 10_000 });
-      assert((await worker.status).success);
-    } finally {
-      if (!worker.exited()) worker.child.kill("SIGKILL");
-      await Promise.allSettled([
-        hold?.release(),
-        worker.status,
-        worker.output,
-        worker.child.stdin.close(),
-      ]);
-      await nc.close();
-      await service.stop();
-      await serviceExit;
-    }
-  }, { interruptibleNativeProxy: true });
+        ),
+      });
+      const [command, ...args] = rustFixtureArgv("jobs");
+      const start = () => {
+        const child = spawnTracked(command, args, {
+          env: {
+            ...process.env,
+            TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_IDENTITY_SEED: identity.seed,
+            TRELLIS_PRE_STARTED_WORK: "1",
+          },
+        });
+        child.stderr.pipe(process.stderr);
+        const lines: string[] = [];
+        const output = (async () => {
+          let pending = "";
+          for await (const text of Readable.toWeb(child.stdout).pipeThrough(
+            new TextDecoderStream(),
+          )) {
+            pending += text;
+            const complete = pending.split("\n");
+            pending = complete.pop()!;
+            lines.push(...complete);
+          }
+        })();
+        let exited = false;
+        const status = child.exited.then((value) => {
+          exited = true;
+          return value;
+        });
+        return { child, lines, output, status, exited: () => exited };
+      };
+      let worker = start();
+      const gate = runtime.nativeTransportGate();
+      let hold: ReturnType<typeof gate.armResponseHold> | undefined;
+      try {
+        await runtime.waitFor(
+          () => {
+            if (worker.exited()) {
+              throw new Error("native worker exited before readiness");
+            }
+            return worker.lines.includes("ready");
+          },
+          { timeoutMs: 60_000 },
+        );
+        const connection = await runtime.waitFor(() =>
+          gate
+            .connections()
+            .find(
+              (candidate) =>
+                !candidate.closed &&
+                candidate.subs.some(
+                  (sub) =>
+                    sub.subject.startsWith("trellis.jobs.") &&
+                    sub.subject.endsWith(".cancelled"),
+                ),
+            ),
+        );
+        hold = gate.armResponseHold("$KV.JOBS_KEYS_", connection.id);
+        const abandoned = await service.jobs.preStartedWork
+          .create({
+            key: "shared",
+            value: "abandoned",
+          })
+          .orThrow();
+        let held: Awaited<typeof hold.held> | undefined;
+        const response = hold.held.then((value) => {
+          held = value;
+        });
+        await runtime.waitFor(() => held !== undefined);
+        await response;
+        assert(held);
+        const [bucket, ...keyParts] = held.requestSubject
+          .slice("$KV.".length)
+          .split(".");
+        const key = keyParts.join(".");
+        const kv = await new Kvm(nc).open(bucket);
+        const entry = await kv.get(key);
+        assert(entry);
+        const persisted = JSON.parse(entry.string()) as JobKeyState;
+        assert(persisted.active.some((slot) => slot.jobId === abandoned.id));
+        assert.deepEqual((await abandoned.get().orThrow()).tries, 0);
+        // The real broker persisted acquisition, but its ACK never reached the
+        // worker, so this SIGKILL deterministically precedes Started.
+        worker.child.kill("SIGKILL");
+        await Promise.all([worker.status, worker.output]);
+        worker.child.stdin.end();
+        await hold.release();
+        hold = undefined;
+        const deadline = (await abandoned.get().orThrow()).deadline;
+        assert(deadline);
+        await runtime.waitFor(() => Date.now() >= Date.parse(deadline), {
+          timeoutMs: 10_000,
+        });
+        // Expired is durable before the recovering worker receives its publish
+        // ACK. Kill it in that second window, then let terminal redelivery clean
+        // the still-owned slot rather than ACKing it away.
+        hold = gate.armResponseHold("trellis.jobs.");
+        let expirationHeld = false;
+        void hold.held.then(() => (expirationHeld = true));
+        worker = start();
+        await runtime.waitFor(() => expirationHeld, { timeoutMs: 150_000 });
+        assert(
+          (await kv.get(key))!
+            .json<JobKeyState>()
+            .active.some((slot) => slot.jobId === abandoned.id),
+        );
+        worker.child.kill("SIGKILL");
+        await Promise.all([worker.status, worker.output]);
+        worker.child.stdin.end();
+        await hold.release();
+        hold = undefined;
+        worker = start();
+        await runtime.waitFor(
+          async () => (await abandoned.get().orThrow()).state === "expired",
+          {
+            timeoutMs: 150_000,
+          },
+        );
+        await runtime.waitFor(
+          async () =>
+            !(await kv.get(key))!
+              .json<JobKeyState>()
+              .active.some((slot) => slot.jobId === abandoned.id),
+          { timeoutMs: 150_000 },
+        );
+        const settledEntry = await kv.get(key);
+        assert(settledEntry);
+        const settled = JSON.parse(settledEntry.string()) as JobKeyState;
+        assert(!settled.active.some((slot) => slot.jobId === abandoned.id));
+        assert(!worker.lines.includes("handler abandoned"));
+        const next = await service.jobs.preStartedWork
+          .create({
+            key: "shared",
+            value: "next",
+          })
+          .orThrow();
+        assert.deepEqual((await next.wait().orThrow()).state, "completed");
+        const writer = Writable.toWeb(worker.child.stdin).getWriter();
+        await writer.write(new TextEncoder().encode("stop\n"));
+        await writer.close();
+        await runtime.waitFor(worker.exited, { timeoutMs: 10_000 });
+        assert.equal((await worker.status).code, 0);
+      } finally {
+        if (!worker.exited()) worker.child.kill("SIGKILL");
+        await Promise.allSettled([
+          hold?.release(),
+          worker.status,
+          worker.output,
+          worker.child.stdin.end(),
+        ]);
+        await nc.close();
+        await service.stop();
+        await serviceExit;
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
 });
 
-Deno.test("native failed retry and dead-letter replay execute again while historical terminal events remain", async () => {
+test("native failed retry and dead-letter replay execute again while historical terminal events remain", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "native-job-replay",
@@ -410,33 +451,32 @@ Deno.test("native failed retry and dead-letter replay execute again while histor
     });
     const admin = await runtime.connectClient({
       name: "native-replay-admin",
-      contract: participants.JobsAdmin.participant,
+      contract: apps.JobsAdmin.request,
     });
     const nc = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(
+        await readFile(
           join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
     });
     const [command, ...args] = rustFixtureArgv("jobs");
-    const child = new Deno.Command(command, {
-      args,
+    const child = spawnTracked(command, args, {
       env: {
-        TRELLIS_URL: runtime.trellisUrl,
+        ...process.env,
+        TRELLIS_URL: runtime.oauthIssuer,
         TRELLIS_IDENTITY_SEED: identity.seed,
         TRELLIS_REPLAY_WORK: "1",
       },
-      stdout: "piped",
-      stderr: "inherit",
-    }).spawn();
+    });
+    child.stderr.pipe(process.stderr);
     const lines: string[] = [];
     const output = (async () => {
       let pending = "";
-      for await (
-        const text of child.stdout.pipeThrough(new TextDecoderStream())
-      ) {
+      for await (const text of Readable.toWeb(child.stdout).pipeThrough(
+        new TextDecoderStream(),
+      )) {
         pending += text;
         const complete = pending.split("\n");
         pending = complete.pop()!;
@@ -444,59 +484,62 @@ Deno.test("native failed retry and dead-letter replay execute again while histor
       }
     })();
     try {
-      await runtime.waitFor(() =>
-        lines.filter((line) => line.startsWith("submitted ")).length === 2
+      await runtime.waitFor(
+        () =>
+          lines.filter((line) => line.startsWith("submitted ")).length === 2,
       );
       const jsm = await jetstreamManager(nc);
-      for (
-        const [name, terminal] of [["retry", "failed"], [
-          "replay",
-          "dead",
-        ]] as const
-      ) {
-        const id = lines.find((line) =>
-          line.startsWith(`submitted ${name} `)
-        )!.split(" ")[2];
-        await runtime.waitFor(async () =>
-          (await admin.query({}).orThrow()).items.find((job) =>
-            job.id === id
-          )?.state === terminal
+      for (const [name, terminal] of [
+        ["retry", "failed"],
+        ["replay", "dead"],
+      ] as const) {
+        const id = lines
+          .find((line) => line.startsWith(`submitted ${name} `))!
+          .split(" ")[2];
+        await runtime.waitFor(
+          async () =>
+            (await admin.query({}).orThrow()).items.find((job) => job.id === id)
+              ?.state === terminal,
         );
         const subject = `trellis.jobs.*.*.${id}.${terminal}`;
         const historical = await jsm.streams.getMessage("JOBS", {
           last_by_subj: subject,
         });
         assert(historical);
-        const workSubject = historical.subject.replace(
-          "trellis.jobs.",
-          "trellis.work.",
-        )
-          .split(".").slice(0, -2).join(".");
+        const workSubject = historical.subject
+          .replace("trellis.jobs.", "trellis.work.")
+          .split(".")
+          .slice(0, -2)
+          .join(".");
         const consumers = await jsm.consumers.list("JOBS_WORK").next();
-        const receiver = consumers.find((consumer) =>
-          consumer.config.filter_subject === workSubject
+        const receiver = consumers.find(
+          (consumer) => consumer.config.filter_subject === workSubject,
         );
         assert(receiver);
-        const received =
-          (await jsm.consumers.info("JOBS_WORK", receiver.name)).delivered
-            .consumer_seq;
+        const received = (await jsm.consumers.info("JOBS_WORK", receiver.name))
+          .delivered.consumer_seq;
         if (name === "retry") {
           await admin.retry({ id }).orThrow();
         } else await admin.replayDlq({ id }).orThrow();
-        await runtime.waitFor(async () =>
-          (await jsm.consumers.info("JOBS_WORK", receiver.name)).delivered
-            .consumer_seq > received
+        await runtime.waitFor(
+          async () =>
+            (await jsm.consumers.info("JOBS_WORK", receiver.name)).delivered
+              .consumer_seq > received,
         );
-        await runtime.waitFor(async () =>
-          (await admin.query({}).orThrow()).items.find((job) => job.id === id)
-            ?.state === "completed"
+        await runtime.waitFor(
+          async () =>
+            (await admin.query({}).orThrow()).items.find((job) => job.id === id)
+              ?.state === "completed",
         );
         const completed = (await admin.inspect({ id }).orThrow()).job;
         assert(completed.result);
-        assertEquals(JSON.parse(new TextDecoder().decode(completed.result)), {
-          value: name,
-        });
-        assertEquals(
+        assert.deepEqual(
+          JSON.parse(new TextDecoder().decode(completed.result)),
+          {
+            value: name,
+          },
+        );
+        assert.deepEqual(
           lines.filter((line) => line.startsWith(`execute ${name} `)).length,
           name === "retry" ? 2 : 3,
         );
@@ -504,28 +547,30 @@ Deno.test("native failed retry and dead-letter replay execute again while histor
           last_by_subj: subject,
         });
         assert(retained);
-        assertEquals(retained.seq, historical.seq);
+        assert.deepEqual(retained.seq, historical.seq);
       }
     } finally {
       child.kill("SIGKILL");
-      await child.status;
+      await child.exited;
       await output;
       await nc.close();
     }
   });
 });
 
-for (
-  const ordering of ["before-settlement", "after-settlement", "never-started"]
-) {
+for (const ordering of [
+  "before-settlement",
+  "after-settlement",
+  "never-started",
+]) {
   const wasStarted = ordering !== "never-started";
   const lateCompletion = ordering === "after-settlement";
-  Deno.test(
+  test(
     lateCompletion
       ? "late stale completion cannot restart settled work after coordination cleanup and before source acknowledgement"
       : wasStarted
-      ? "TypeScript takeover preserves cleanup across failure and cannot release the new owner's fence"
-      : "pre-Started takeover settles through the worker and Jobs admin projection without execution",
+        ? "TypeScript takeover preserves cleanup across failure and cannot release the new owner's fence"
+        : "pre-Started takeover settles through the worker and Jobs admin projection without execution",
     async () => {
       await withTrellisRuntime(async (runtime) => {
         const admin = await runtime.connectClient({
@@ -535,7 +580,7 @@ for (
         const nc = await connect({
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
-            await Deno.readFile(
+            await readFile(
               join(
                 runtime.workdir,
                 "config/trellis/nats/creds/trellis-auth.creds",
@@ -547,24 +592,23 @@ for (
         const finishB = Promise.withResolvers<{ key: string }>();
         const gate = new NativeTransportGate();
         const proxy = lateCompletion
-          ? TcpProxy.start(runtime.natsUrl, { gate, scheme: "nats" })
+          ? await TcpProxy.start(runtime.natsUrl, { gate, scheme: "nats" })
           : undefined;
         const recoveryNc = proxy
           ? await connect({
-            servers: proxy.url,
-            authenticator: credsAuthenticator(
-              await Deno.readFile(
-                join(
-                  runtime.workdir,
-                  "config/trellis/nats/creds/trellis-auth.creds",
+              servers: proxy.url,
+              authenticator: credsAuthenticator(
+                await readFile(
+                  join(
+                    runtime.workdir,
+                    "config/trellis/nats/creds/trellis-auth.creds",
+                  ),
                 ),
               ),
-            ),
-          })
+            })
           : nc;
         let held:
-          | ReturnType<NativeTransportGate["armResponseHold"]>
-          | undefined;
+          ReturnType<NativeTransportGate["armResponseHold"]> | undefined;
         let worker:
           | Awaited<ReturnType<typeof startNatsWorkerHostFromBinding>>
           | undefined;
@@ -622,20 +666,21 @@ for (
           let cleanupAttempts = 0;
           let aExecutions = 0;
           if (!wasStarted) {
-            const acquired = await createNatsJobKeyCoordinator(nc)
-              .acquireActiveSlot({
-                service: "takeover",
-                jobType: "work",
-                jobId: a.id,
-                payload: a.payload,
-                context: a.context,
-                lifecycleState: a.state,
-                tries: 1,
-                instanceId: "crashed-before-started",
-                now,
-                policy: normalizeJobKeyPolicy({ keyConcurrency, queue }),
-              });
-            assertEquals(acquired.kind, "acquired");
+            const acquired = await createNatsJobKeyCoordinator(
+              nc,
+            ).acquireActiveSlot({
+              service: "takeover",
+              jobType: "work",
+              jobId: a.id,
+              payload: a.payload,
+              context: a.context,
+              lifecycleState: a.state,
+              tries: 1,
+              instanceId: "crashed-before-started",
+              now,
+              policy: normalizeJobKeyPolicy({ keyConcurrency, queue }),
+            });
+            assert.deepEqual(acquired.kind, "acquired");
             now = "2026-10-01T00:00:31.000Z";
           }
           let b = !wasStarted
@@ -678,12 +723,15 @@ for (
               return await finishB.promise;
             },
           } satisfies StartNatsWorkerHostOptions<{ key: string }>;
-          worker = await startNatsWorkerHostFromBinding({
-            workStream: "JOBS",
-            jobs,
-          }, options);
+          worker = await startNatsWorkerHostFromBinding(
+            {
+              workStream: "JOBS",
+              jobs,
+            },
+            options,
+          );
           let enteredA = false;
-          void aStarted.promise.then(() => enteredA = true);
+          void aStarted.promise.then(() => (enteredA = true));
           if (wasStarted) {
             await runtime.waitFor(() => enteredA);
             now = "2026-10-01T00:00:31.000Z";
@@ -691,15 +739,15 @@ for (
           }
           assert(b);
           let enteredB = false;
-          void bStarted.promise.then(() => enteredB = true);
+          void bStarted.promise.then(() => (enteredB = true));
           await runtime.waitFor(() => enteredB);
-          const afterTakeover = await (await jetstreamManager(nc)).streams
-            .getMessage(
-              "JOBS",
-              { last_by_subj: `trellis.jobs.takeover.work.${a.id}.>` },
-            );
+          const afterTakeover = await (
+            await jetstreamManager(nc)
+          ).streams.getMessage("JOBS", {
+            last_by_subj: `trellis.jobs.takeover.work.${a.id}.>`,
+          });
           assert(afterTakeover);
-          assertEquals(
+          assert.deepEqual(
             afterTakeover.json<{ state: string }>().state,
             wasStarted ? "active" : "pending",
           );
@@ -708,22 +756,26 @@ for (
           assert(key);
           const taken = (await keys.get(key))!.json<JobKeyState>();
           assert(taken.cleanupPending.includes(a.id));
-          const bToken = taken.active.find((slot) => slot.jobId === b.id)
-            ?.slotToken;
+          const bToken = taken.active.find(
+            (slot) => slot.jobId === b.id,
+          )?.slotToken;
           assert(bToken);
           if (!lateCompletion) finishA.resolve({ key: "shared" });
           if (wasStarted && !lateCompletion) {
-            await runtime.waitFor(async () =>
-              !!await jsm.direct.getMessage("JOBS", {
-                last_by_subj:
-                  `trellis.jobs.takeover.work.${a.id}.staleCompletionIgnored`,
-              }).catch(() => undefined)
+            await runtime.waitFor(
+              async () =>
+                !!(await jsm.direct
+                  .getMessage("JOBS", {
+                    last_by_subj: `trellis.jobs.takeover.work.${a.id}.staleCompletionIgnored`,
+                  })
+                  .catch(() => undefined)),
             );
-            await runtime.waitFor(async () =>
-              (await jsm.consumers.info("JOBS", "takeover-work")).delivered
-                .consumer_seq >= 3
+            await runtime.waitFor(
+              async () =>
+                (await jsm.consumers.info("JOBS", "takeover-work")).delivered
+                  .consumer_seq >= 3,
             );
-            assertEquals(
+            assert.deepEqual(
               (await jsm.consumers.info("JOBS", "takeover-work"))
                 .num_ack_pending,
               2,
@@ -731,13 +783,16 @@ for (
           } else {
             if (lateCompletion) {
               finishB.resolve({ key: "shared" });
-              await runtime.waitFor(async () =>
-                (await getLatestLifecycleEvent(
-                  jsm.direct,
-                  "JOBS",
-                  "trellis.jobs.takeover.work",
-                  b!,
-                ))?.state === "completed"
+              await runtime.waitFor(
+                async () =>
+                  (
+                    await getLatestLifecycleEvent(
+                      jsm.direct,
+                      "JOBS",
+                      "trellis.jobs.takeover.work",
+                      b!,
+                    )
+                  )?.state === "completed",
               );
               held = gate.armResponseHold("$KV.JOBS_KEYS_takeover.");
             }
@@ -748,80 +803,8 @@ for (
               ack_wait: 1_000_000_000,
               filter_subject: `trellis.jobs.takeover.work.${a.id}.created`,
             });
-            recoveryWorker = await startNatsWorkerHostFromBinding({
-              workStream: "JOBS",
-              jobs: {
-                ...jobs,
-                queues: {
-                  work: {
-                    ...jobs.queues.work,
-                    consumerName: "takeover-recovery",
-                    workSubject: `trellis.jobs.takeover.work.${a.id}.created`,
-                  },
-                },
-              },
-            }, {
-              ...options,
-              nats: recoveryNc,
-              instanceId: "recovered-before-started",
-              manager: new JobManager<unknown, { key: string }>({
-                nc: jetstream(recoveryNc),
-                jobs,
-                keyCoordinator: createNatsJobKeyCoordinator(recoveryNc),
-                meta: {
-                  nextJobId: () => crypto.randomUUID(),
-                  nowIso: () => now,
-                },
-              }),
-            });
-            await runtime.waitFor(async () =>
-              (await jsm.consumers.info("JOBS", "takeover-recovery")).delivered
-                .consumer_seq >= 1
-            );
-            if (lateCompletion) {
-              // Hold real KV replies until terminal settlement has also cleared
-              // the cleanup obligation. Its source ACK cannot yet be sent.
-              while (true) {
-                let observed = false;
-                void held!.held.then(() => observed = true);
-                await runtime.waitFor(() => observed);
-                const state = (await keys.get(key))!.json<JobKeyState>();
-                if (
-                  !state.cleanupPending.includes(a.id) &&
-                  !state.active.some((slot) => slot.jobId === a.id)
-                ) break;
-                const released = held!.release();
-                held = gate.armResponseHold("$KV.JOBS_KEYS_takeover.");
-                await released;
-              }
-              assertEquals(
-                (await getLatestLifecycleEvent(
-                  jsm.direct,
-                  "JOBS",
-                  "trellis.jobs.takeover.work",
-                  a,
-                ))?.state,
-                "stale",
-              );
-              assertEquals(
-                (await jsm.consumers.info("JOBS", "takeover-recovery"))
-                  .num_ack_pending,
-                1,
-              );
-              const stoppingRecovery = recoveryWorker.stop();
-              await recoveryNc.close();
-              await held!.release();
-              await stoppingRecovery;
-              recoveryWorker = undefined;
-              finishA.resolve({ key: "shared" });
-              await runtime.waitFor(async () =>
-                !!await jsm.direct.getMessage("JOBS", {
-                  last_by_subj:
-                    `trellis.jobs.takeover.work.${a.id}.staleCompletionIgnored`,
-                }).catch(() => undefined)
-              );
-              // Restart the interrupted durable receiver without changing state.
-              recoveryWorker = await startNatsWorkerHostFromBinding({
+            recoveryWorker = await startNatsWorkerHostFromBinding(
+              {
                 workStream: "JOBS",
                 jobs: {
                   ...jobs,
@@ -833,60 +816,150 @@ for (
                     },
                   },
                 },
-              }, options);
+              },
+              {
+                ...options,
+                nats: recoveryNc,
+                instanceId: "recovered-before-started",
+                manager: new JobManager<unknown, { key: string }>({
+                  nc: jetstream(recoveryNc),
+                  jobs,
+                  keyCoordinator: createNatsJobKeyCoordinator(recoveryNc),
+                  meta: {
+                    nextJobId: () => crypto.randomUUID(),
+                    nowIso: () => now,
+                  },
+                }),
+              },
+            );
+            await runtime.waitFor(
+              async () =>
+                (await jsm.consumers.info("JOBS", "takeover-recovery"))
+                  .delivered.consumer_seq >= 1,
+            );
+            if (lateCompletion) {
+              // Hold real KV replies until terminal settlement has also cleared
+              // the cleanup obligation. Its source ACK cannot yet be sent.
+              while (true) {
+                let observed = false;
+                void held!.held.then(() => (observed = true));
+                await runtime.waitFor(() => observed);
+                const state = (await keys.get(key))!.json<JobKeyState>();
+                if (
+                  !state.cleanupPending.includes(a.id) &&
+                  !state.active.some((slot) => slot.jobId === a.id)
+                )
+                  break;
+                const released = held!.release();
+                held = gate.armResponseHold("$KV.JOBS_KEYS_takeover.");
+                await released;
+              }
+              assert.deepEqual(
+                (
+                  await getLatestLifecycleEvent(
+                    jsm.direct,
+                    "JOBS",
+                    "trellis.jobs.takeover.work",
+                    a,
+                  )
+                )?.state,
+                "stale",
+              );
+              assert.deepEqual(
+                (await jsm.consumers.info("JOBS", "takeover-recovery"))
+                  .num_ack_pending,
+                1,
+              );
+              const stoppingRecovery = recoveryWorker.stop();
+              await recoveryNc.close();
+              await held!.release();
+              await stoppingRecovery;
+              recoveryWorker = undefined;
+              finishA.resolve({ key: "shared" });
+              await runtime.waitFor(
+                async () =>
+                  !!(await jsm.direct
+                    .getMessage("JOBS", {
+                      last_by_subj: `trellis.jobs.takeover.work.${a.id}.staleCompletionIgnored`,
+                    })
+                    .catch(() => undefined)),
+              );
+              // Restart the interrupted durable receiver without changing state.
+              recoveryWorker = await startNatsWorkerHostFromBinding(
+                {
+                  workStream: "JOBS",
+                  jobs: {
+                    ...jobs,
+                    queues: {
+                      work: {
+                        ...jobs.queues.work,
+                        consumerName: "takeover-recovery",
+                        workSubject: `trellis.jobs.takeover.work.${a.id}.created`,
+                      },
+                    },
+                  },
+                },
+                options,
+              );
             }
           }
           if (!lateCompletion) {
-            assertEquals(
-              (await keys.get(key))!.json<JobKeyState>().active.find((slot) =>
-                slot.jobId === b.id
-              )?.slotToken,
+            assert.deepEqual(
+              (await keys.get(key))!
+                .json<JobKeyState>()
+                .active.find((slot) => slot.jobId === b.id)?.slotToken,
               bToken,
             );
           }
           if (!lateCompletion) {
-            assertEquals(cleanupAttempts, 0, "B still owns the key");
+            assert.deepEqual(cleanupAttempts, 0, "B still owns the key");
           }
           if (wasStarted && !lateCompletion) assert(await effects.get("A"));
           finishB.resolve({ key: "shared" });
           if (!lateCompletion) {
-            await runtime.waitFor(async () =>
-              (await getLatestLifecycleEvent(
-                jsm.direct,
-                "JOBS",
-                "trellis.jobs.takeover.work",
-                a,
-              ))?.eventType === "stale"
+            await runtime.waitFor(
+              async () =>
+                (
+                  await getLatestLifecycleEvent(
+                    jsm.direct,
+                    "JOBS",
+                    "trellis.jobs.takeover.work",
+                    a,
+                  )
+                )?.eventType === "stale",
             );
           }
-          await runtime.waitFor(async () =>
-            (await jsm.consumers.info("JOBS", "takeover-work"))
-              .num_ack_pending === 0
+          await runtime.waitFor(
+            async () =>
+              (await jsm.consumers.info("JOBS", "takeover-work"))
+                .num_ack_pending === 0,
           );
           if (recoveryWorker) {
-            await runtime.waitFor(async () =>
-              (await jsm.consumers.info("JOBS", "takeover-recovery"))
-                .num_ack_pending === 0
+            await runtime.waitFor(
+              async () =>
+                (await jsm.consumers.info("JOBS", "takeover-recovery"))
+                  .num_ack_pending === 0,
             );
           }
-          assertEquals(cleanupAttempts, wasStarted ? 2 : 0);
-          assertEquals(aExecutions, wasStarted ? 1 : 0);
-          await runtime.waitFor(async () =>
-            (await admin.jobsQuery({}).orThrow()).items.find((item) =>
-              item.id === a.id
-            )?.state === "stale"
+          assert.deepEqual(cleanupAttempts, wasStarted ? 2 : 0);
+          assert.deepEqual(aExecutions, wasStarted ? 1 : 0);
+          await runtime.waitFor(
+            async () =>
+              (await admin.jobsQuery({}).orThrow()).items.find(
+                (item) => item.id === a.id,
+              )?.state === "stale",
           );
-          const terminal = await (await jetstreamManager(nc)).streams
-            .getMessage(
-              "JOBS",
-              { last_by_subj: `trellis.jobs.takeover.work.${a.id}.stale` },
-            );
+          const terminal = await (
+            await jetstreamManager(nc)
+          ).streams.getMessage("JOBS", {
+            last_by_subj: `trellis.jobs.takeover.work.${a.id}.stale`,
+          });
           assert(terminal);
-          assertEquals(terminal.json<{ state: string }>().state, "stale");
+          assert.deepEqual(terminal.json<{ state: string }>().state, "stale");
           if (wasStarted) {
-            assertEquals((await effects.get("A"))?.operation, "DEL");
+            assert.deepEqual((await effects.get("A"))?.operation, "DEL");
           }
-          assertEquals((await effects.get("B"))?.string(), "working");
+          assert.deepEqual((await effects.get("B"))?.string(), "working");
           const final = (await keys.get(key))!.json<JobKeyState>();
           assert(!final.cleanupPending.includes(a.id));
           assert(!final.active.some((slot) => slot.jobId === a.id));
@@ -907,12 +980,12 @@ for (
   );
 }
 
-Deno.test("expired work with a persisted pre-Started slot releases a block-policy key without running its handler", async () => {
+test("expired work with a persisted pre-Started slot releases a block-policy key without running its handler", async () => {
   await withTrellisRuntime(async (runtime) => {
     const nc = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(
+        await readFile(
           join(runtime.workdir, "config/trellis/nats/creds/trellis-auth.creds"),
         ),
       ),
@@ -922,7 +995,9 @@ Deno.test("expired work with a persisted pre-Started slot releases a block-polic
       // real KV boundary. Acquire persists the crash window before Started;
       // the successor opens a new coordinator rather than retaining the lease.
       await new Kvm(nc).create("JOBS_KEYS_recovery");
-      await (await jetstreamManager(nc)).streams.add({
+      await (
+        await jetstreamManager(nc)
+      ).streams.add({
         name: "RECOVERY_EVENTS",
         subjects: ["recovery.>"],
         allow_direct: true,
@@ -986,7 +1061,7 @@ Deno.test("expired work with a persisted pre-Started slot releases a block-polic
         now,
         policy,
       });
-      assertEquals(acquired.kind, "acquired");
+      assert.deepEqual(acquired.kind, "acquired");
       const keys = await new Kvm(nc).open("JOBS_KEYS_recovery");
       const names = await Array.fromAsync(await keys.keys());
       const retained = (await keys.get(names[0]))!;
@@ -1000,12 +1075,13 @@ Deno.test("expired work with a persisted pre-Started slot releases a block-polic
         keyCoordinator: createNatsJobKeyCoordinator(nc),
         meta: { nextJobId: () => crypto.randomUUID(), nowIso: () => now },
       });
-      await assertRejects(
+      await assert.rejects(
         () => fresh.create("work", { key: "shared" }),
-        Error,
-        "Invalid keyed job state",
+        (error: unknown) =>
+          error instanceof Error &&
+          error.message.includes("Invalid keyed job state"),
       );
-      assertEquals(
+      assert.deepEqual(
         (await keys.get(names[0]))!.string(),
         invalidBytes,
         "rejected admission must not overwrite retained ownership",
@@ -1025,37 +1101,41 @@ Deno.test("expired work with a persisted pre-Started slot releases a block-polic
           keyCoordinator: createNatsJobKeyCoordinator(nc),
           meta: { nextJobId: () => crypto.randomUUID(), nowIso: () => now },
         });
-        return startNatsWorkerHostFromBinding({
-          workStream: "RECOVERY_EVENTS",
-          jobs,
-        }, {
-          nats: nc,
-          instanceId: "recovery-worker",
-          manager: successor,
-          getLatestLifecycleEvent: (job) =>
-            getLatestLifecycleEvent(
-              jsm.direct,
-              "RECOVERY_EVENTS",
-              "recovery.work",
-              job,
-            ),
-          handler: (active) => {
-            if (active.job().id === abandoned.id) abandonedExecutions++;
-            return Promise.resolve({ key: "shared" });
+        return startNatsWorkerHostFromBinding(
+          {
+            workStream: "RECOVERY_EVENTS",
+            jobs,
           },
-        });
+          {
+            nats: nc,
+            instanceId: "recovery-worker",
+            manager: successor,
+            getLatestLifecycleEvent: (job) =>
+              getLatestLifecycleEvent(
+                jsm.direct,
+                "RECOVERY_EVENTS",
+                "recovery.work",
+                job,
+              ),
+            handler: (active) => {
+              if (active.job().id === abandoned.id) abandonedExecutions++;
+              return Promise.resolve({ key: "shared" });
+            },
+          },
+        );
       };
       let worker = await start();
       try {
-        await runtime.waitFor(async () =>
-          (await jsm.consumers.info("RECOVERY_EVENTS", "recovery-work"))
-            .delivered.consumer_seq >= 2
+        await runtime.waitFor(
+          async () =>
+            (await jsm.consumers.info("RECOVERY_EVENTS", "recovery-work"))
+              .delivered.consumer_seq >= 2,
         );
         await worker.stop();
         assert(
-          (await keys.get(names[0]))!.json<JobKeyState>().active.some((slot) =>
-            slot.jobId === abandoned.id
-          ),
+          (await keys.get(names[0]))!
+            .json<JobKeyState>()
+            .active.some((slot) => slot.jobId === abandoned.id),
           "failed expiration must retain a usable fenced reservation",
         );
         now = "2026-10-01T00:00:04.000Z";
@@ -1063,46 +1143,55 @@ Deno.test("expired work with a persisted pre-Started slot releases a block-polic
           subjects: ["recovery.>"],
         });
         worker = await start();
-        await runtime.waitFor(async () =>
-          (await getLatestLifecycleEvent(
-            jsm.direct,
-            "RECOVERY_EVENTS",
-            "recovery.work",
-            abandoned,
-          ))?.state === "expired"
+        await runtime.waitFor(
+          async () =>
+            (
+              await getLatestLifecycleEvent(
+                jsm.direct,
+                "RECOVERY_EVENTS",
+                "recovery.work",
+                abandoned,
+              )
+            )?.state === "expired",
         );
-        await runtime.waitFor(async () =>
-          (await jsm.consumers.info("RECOVERY_EVENTS", "recovery-work"))
-            .num_ack_pending === 0
+        await runtime.waitFor(
+          async () =>
+            (await jsm.consumers.info("RECOVERY_EVENTS", "recovery-work"))
+              .num_ack_pending === 0,
         );
-        assertEquals(abandonedExecutions, 0);
+        assert.deepEqual(abandonedExecutions, 0);
         const next = await fresh.create("work", { key: "shared" });
-        await runtime.waitFor(async () =>
-          (await getLatestLifecycleEvent(
-            jsm.direct,
-            "RECOVERY_EVENTS",
-            "recovery.work",
-            next,
-          ))?.state === "completed"
+        await runtime.waitFor(
+          async () =>
+            (
+              await getLatestLifecycleEvent(
+                jsm.direct,
+                "RECOVERY_EVENTS",
+                "recovery.work",
+                next,
+              )
+            )?.state === "completed",
         );
       } finally {
         await worker.stop();
       }
       // The old fence cannot mutate the successor's now-settled coordination.
       assert(acquired.kind === "acquired");
-      assertEquals(
-        (await original.releaseActiveSlot({
-          service: "recovery",
-          jobType: "work",
-          jobId: abandoned.id,
-          lease: {
-            key: acquired.key,
-            keyHash: acquired.keyHash,
-            slotToken: acquired.slotToken,
-            policy,
-          },
-          now,
-        })).kind,
+      assert.deepEqual(
+        (
+          await original.releaseActiveSlot({
+            service: "recovery",
+            jobType: "work",
+            jobId: abandoned.id,
+            lease: {
+              key: acquired.key,
+              keyHash: acquired.keyHash,
+              slotToken: acquired.slotToken,
+              policy,
+            },
+            now,
+          })
+        ).kind,
         "staleCompletion",
       );
     } finally {

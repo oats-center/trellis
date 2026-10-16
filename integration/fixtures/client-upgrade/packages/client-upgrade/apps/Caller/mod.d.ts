@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/upgrade/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export declare const request: AppRequestDescriptor & {
 	readonly id: "client-upgrade-fixture.Caller";
-	readonly kind: "browser";
+	readonly kind: "native";
 	readonly requiredCapabilities: readonly ["client-upgrade-fixture.upgrade@v1::read_documents"];
 	readonly optionalCapabilities: readonly [];
 	readonly uses: readonly [{

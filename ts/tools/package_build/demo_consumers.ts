@@ -1,373 +1,232 @@
-import { copy, ensureDir } from "@std/fs";
-import { dirname, fromFileUrl, join } from "@std/path";
-import { z } from "zod";
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
+import assert from "node:assert/strict";
+import { execFile, spawn } from "node:child_process";
+import { once } from "node:events";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { ulid } from "ulid";
+import { codecs } from "../../packages/trellis/generated.ts";
+import { TrellisTestRuntime } from "../../packages/trellis-testkit/index.ts";
 import { participants as serviceParticipants } from "../../../demos/ts/service/trellis/index.js";
 import { participants as deviceParticipants } from "../../../demos/ts/device/trellis/index.js";
-import { participants as appParticipants } from "../../../demos/app/trellis/index.js";
-import { participants as testParticipants } from "../../packages/trellis-testkit/trellis/index.js";
 
-const repository = fromFileUrl(new URL("../../../", import.meta.url));
-const isolated = await Deno.makeTempDir({ prefix: "trellis-demos-" });
-const failures: unknown[] = [];
-
-async function run(args: string[], cwd: string) {
-  const status = await new Deno.Command(Deno.execPath(), {
-    args,
-    cwd,
-    env: {
-      PATH: `${join(isolated, "bin")}:/usr/bin:/bin`,
-      NODE_PATH: "",
-      TRELLIS_CACHE: join(isolated, "empty-api-cache"),
-    },
-    stdout: "inherit",
-    stderr: "inherit",
-  }).spawn().status;
-  if (!status.success) {
-    throw new Error(`deno ${args.join(" ")} failed (${status.code})`);
-  }
-}
-
+const repository = fileURLToPath(new URL("../../../", import.meta.url));
+const isolated = await mkdtemp(join(tmpdir(), "trellis-demos-"));
+const npm =
+  process.env.npm_execpath ??
+  (await realpath(join(dirname(process.execPath), "npm")));
+const run = promisify(execFile);
 try {
-  await ensureDir(join(isolated, "bin"));
-  await Deno.symlink(Deno.execPath(), join(isolated, "bin", "deno"));
-  const node = await new Deno.Command("node", {
-    args: ["-p", "process.execPath"],
-  }).output();
-  if (!node.success) throw new Error("Could not locate installed Node");
-  await Deno.symlink(
-    new TextDecoder().decode(node.stdout).trim(),
-    join(isolated, "bin", "node"),
-  );
-  for (const project of ["demos/ts", "demos/app"]) {
+  const bin = join(isolated, "bin");
+  await mkdir(bin);
+  await symlink(process.execPath, join(bin, "node"));
+  const env = {
+    ...process.env,
+    PATH: `${bin}:/usr/bin:/bin`,
+    NODE_PATH: "",
+    TRELLIS_CACHE: join(isolated, "empty-api-cache"),
+    XDG_STATE_HOME: join(isolated, "state"),
+    OTEL_SDK_DISABLED: "true",
+  };
+  for (const project of ["demos/app", "demos/ts"]) {
     const destination = join(isolated, project);
-    const files = await new Deno.Command("git", {
-      args: [
-        "ls-files",
-        "--cached",
-        "--others",
-        "--exclude-standard",
-        "-z",
-        "--",
-        project,
-      ],
-      cwd: repository,
-    }).output();
-    if (!files.success) throw new Error("Could not list demo sources");
-    for (
-      const file of new TextDecoder().decode(files.stdout).split("\0").filter(
-        Boolean,
-      )
-    ) {
-      if (
-        file.split("/").some((part) =>
-          part === ".trellis" || part === "trellis"
-        )
-      ) continue;
-      const target = join(isolated, file);
-      await ensureDir(dirname(target));
-      await Deno.copyFile(join(repository, file), target);
-    }
-    // Generated packages are deliberately ignored, but required before an ordinary build.
-    for (
-      const output of project === "demos/ts"
-        ? ["service/trellis", "device/trellis"]
-        : ["trellis"]
-    ) {
-      await copy(join(repository, project, output), join(destination, output));
-    }
-    const configPath = join(destination, "deno.json");
-    const config = z.object({
-      imports: z.record(z.string(), z.string()),
-      links: z.array(z.string()).optional(),
-    })
-      .passthrough().parse(JSON.parse(await Deno.readTextFile(configPath)));
-    config.links = [];
-    for (
-      const name of project === "demos/ts"
-        ? ["result", "trellis"]
-        : ["result", "trellis", "trellis-svelte"]
-    ) {
-      await copy(
+    await cp(join(repository, project), destination, {
+      recursive: true,
+      filter: (path) =>
+        ![
+          "node_modules",
+          ".svelte-kit",
+          ".trellis",
+          "build",
+          "deno.lock",
+        ].includes(basename(path)),
+    });
+    const manifest = JSON.parse(
+      await readFile(join(destination, "package.json"), "utf8"),
+    );
+    for (const name of ["result", "trellis", "trellis-svelte"]) {
+      if (!manifest.dependencies[`@oatscenter/${name}`]) continue;
+      await cp(
         join(repository, "ts/packages", name, "npm"),
         join(destination, ".sdk", name),
+        { recursive: true },
       );
-      config.links.push(`./.sdk/${name}`);
-      const manifest = z.object({ name: z.string(), version: z.string() })
-        .parse(
-          JSON.parse(
-            await Deno.readTextFile(
-              join(destination, ".sdk", name, "package.json"),
-            ),
-          ),
-        );
-      config.imports[manifest.name] =
-        `npm:${manifest.name}@${manifest.version}`;
+      manifest.dependencies[`@oatscenter/${name}`] = `file:./.sdk/${name}`;
     }
-    await Deno.writeTextFile(configPath, JSON.stringify(config, null, 2));
-    await run(["install"], destination);
-    await run(["task", "check"], destination);
-    if (project === "demos/ts") {
-      await run(["task", "-c", "service/deno.json", "build"], destination);
-      await run(["task", "-c", "device/deno.json", "build"], destination);
-      const runtime = await TrellisTestRuntime.start({
-        trellis: {
-          source: {
-            kind: "path",
-            cli: Deno.env.get("TRELLIS_TEST_CLI_BIN") ??
-              join(repository, "target/debug/trellis"),
-            server: Deno.env.get("TRELLIS_TEST_SERVER_BIN") ??
-              join(repository, "target/debug/trellis-server"),
-          },
-        },
+    await writeFile(
+      join(destination, "package.json"),
+      JSON.stringify(manifest),
+    );
+    for (const args of [
+      [
+        "install",
+        "--ignore-scripts",
+        "--install-links",
+        "--no-audit",
+        "--no-fund",
+      ],
+      ["run", "check"],
+      ["run", "build"],
+    ]) {
+      const output = await run(process.execPath, [npm, ...args], {
+        cwd: destination,
+        env,
+        maxBuffer: 4 * 1024 * 1024,
       });
-      try {
-        const identity = await runtime.registerService({
-          name: "native-demo",
-          contract: serviceParticipants.Service.participant,
-        });
-        const caller = await runtime.connectClient({
-          name: "demo-app",
-          contract: appParticipants.App.participant,
-        });
-        const admin = await runtime.connectClient({
-          name: "device-reviewer",
-          contract: testParticipants.cli.participant,
-        });
-        await runtime.deployments.create({
-          id: "device",
-          kind: "device",
-          reviewMode: "required",
-        });
-        const approval = await runtime.contracts.apply({
-          deployment: "device",
-          contract: deviceParticipants.Device.participant,
-        });
-        for (const engine of ["node", "deno"]) {
-          const secret = crypto.getRandomValues(new Uint8Array(32));
-          const rootSecret = btoa(String.fromCharCode(...secret))
-            .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-          const provisioned = await runtime.devices.provision({
-            deploymentId: "device",
-            idempotencyKey: ulid(),
-            identityPublicKey: null,
-            instanceId: null,
-            participantId: deviceParticipants.Device.participant.id,
-          });
-          const { instanceId, principalId } = provisioned.device;
-          const provisioningSecret = provisioned.provisioningSecret;
-          if (!instanceId || !principalId || !provisioningSecret) {
-            throw new Error(
-              "Device provisioning returned incomplete credentials",
-            );
-          }
-          const command = join(isolated, "bin", engine);
-          const prefix = engine === "deno" ? ["run", "-A"] : [];
-          const env = {
-            PATH: `${join(isolated, "bin")}:/usr/bin:/bin`,
-            NODE_PATH: "",
-            TRELLIS_CACHE: join(isolated, "empty-api-cache"),
-            XDG_STATE_HOME: join(isolated, "state", engine),
-            OTEL_SDK_DISABLED: "true",
-          };
-          const service = new Deno.Command(command, {
-            args: [
-              ...prefix,
-              "service/build/main.mjs",
-              runtime.trellisUrl,
-              identity.seed,
-            ],
-            cwd: destination,
-            env,
-            stdout: "inherit",
-            stderr: "inherit",
-          }).spawn();
-          let exited = false;
-          const serviceStatus = service.status.then((status) => {
-            exited = true;
-            return status;
-          });
-          try {
-            const result = await runtime.waitFor(async () => {
-              if (exited) {
-                throw new Error(
-                  `${engine} demo service exited (${
-                    (await serviceStatus).code
-                  })`,
-                );
-              }
-              const response = await caller.assignmentsList(
-                { page: { limit: 50 } },
-                { timeout: 1000 },
-              );
-              return response.isOk() ? response.orThrow() : false;
-            }, { timeoutMs: 30_000 });
-            assertEquals(result.items.length > 0, true);
-            // Direct use of the final owned Feed handle through the packaged
-            // SDK: the synchronous close receipt, the once-resolving `closed`
-            // promise, and async-disposal ownership.
-            {
-              // Assignments is mounted before AuditFeed in the ordinary demo
-              // entrypoint. Its first successful RPC is not Feed readiness.
-              const feed = await runtime.waitFor(async () => {
-                if (exited) {
-                  throw new Error(
-                    `${engine} demo service exited (${
-                      (await serviceStatus).code
-                    })`,
-                  );
-                }
-                const response = await caller.auditFeed({});
-                if (response.isOk()) return response.orThrow();
-                if (
-                  "code" in response.error &&
-                  response.error.code === "trellis.request.unavailable"
-                ) {
-                  return false;
-                }
-                throw response.error;
-              }, { timeoutMs: 30_000 });
-              const receipt = await feed.close().orThrow();
-              assertEquals(
-                typeof receipt.cleanup,
-                "string",
-                `${engine} feed close receipt`,
-              );
-              await feed.closed;
-              await using owned = await caller.auditFeed({}).orThrow();
-              assertEquals(
-                typeof owned[Symbol.asyncDispose],
-                "function",
-                `${engine} owned handle async disposal`,
-              );
-            }
-            // Direct use of the final owned Operation handle: starting durable
-            // work and closing its observation never cancels the operation.
-            {
-              const assignment = result.items[0];
-              const operation = await caller.reportsGenerate({
-                inspectionId: assignment.inspectionId,
-                reportComment: "packaged-consumer acceptance",
-              }).start().orThrow();
-              await using observation = await operation.live({}).orThrow();
-              const receipt = await observation.close().orThrow();
-              assertEquals(
-                typeof receipt.cleanup,
-                "string",
-                `${engine} operation observation close receipt`,
-              );
-              assertEquals(
-                (await caller.reportsList({ page: { limit: 50 } })).isOk(),
-                true,
-                `${engine} durable operation survives observer close`,
-              );
-            }
-            const sites = await caller.sitesList({ page: { limit: 50 } });
-            if (sites.isErr()) {
-              failures.push(
-                new Error(
-                  `${engine} demo Sites.List: ${JSON.stringify(sites)}`,
-                ),
-              );
-            }
-            const device = new Deno.Command(command, {
-              args: [
-                ...prefix,
-                "device/build/main.mjs",
-                runtime.trellisUrl,
-                rootSecret,
-                provisioningSecret,
-              ],
-              cwd: destination,
-              env,
-              stdin: "piped",
-              stdout: "piped",
-              stderr: "inherit",
-            }).spawn();
-            let deviceExited = false;
-            const deviceStatus = device.status.then((status) => {
-              deviceExited = true;
-              return status;
-            });
-            const writer = device.stdin.getWriter();
-            let output = "";
-            let selections = 0;
-            let approved = false;
-            const timeout = setTimeout(() => device.kill("SIGTERM"), 30_000);
-            try {
-              for await (
-                const text of device.stdout.pipeThrough(new TextDecoderStream())
-              ) {
-                output += text;
-                if (
-                  !approved && output.includes("Please activate device at:")
-                ) {
-                  const review = await runtime.waitFor(async () => {
-                    const reviews = await admin
-                      .deviceUserAuthoritiesReviewsList({
-                        deploymentId: approval.deploymentId,
-                        state: "pending",
-                      }).orThrow();
-                    return reviews.items[0] ?? false;
-                  });
-                  const decision = await admin
-                    .deviceUserAuthoritiesReviewsDecide({
-                      decision: "approve",
-                      expectedVersion: review.version,
-                      idempotencyKey: ulid(),
-                      reason: null,
-                      reviewId: review.reviewId,
-                    });
-                  assertEquals(decision.isOk(), true);
-                  approved = true;
-                }
-                if (
-                  (output.match(/Select option: /g)?.length ?? 0) > selections
-                ) {
-                  await writer.write(
-                    new TextEncoder().encode(
-                      selections++ === 0 ? "1\n" : "0\n",
-                    ),
-                  );
-                }
-              }
-              assertEquals((await deviceStatus).code, 0, output);
-              assertStringIncludes(output, "Connected Field Device");
-              assertStringIncludes(output, "Assigned Inspections");
-              assertStringIncludes(output, "[HIGH]");
-            } finally {
-              clearTimeout(timeout);
-              writer.releaseLock();
-              if (!deviceExited) device.kill("SIGTERM");
-              await deviceStatus;
-            }
-            console.log(
-              `${engine}: actual demo service RPC and device assignment workflow passed`,
-            );
-          } catch (error) {
-            console.error(`${engine}: native demo failure`, error);
-            failures.push(error);
-          } finally {
-            if (!exited) service.kill("SIGTERM");
-            assertEquals((await serviceStatus).code, 0);
-          }
-        }
-      } catch (error) {
-        console.error(
-          "runtime control plane output:\n" + runtime.controlPlaneOutput(),
-        );
-        throw error;
-      } finally {
-        await runtime.stop();
-      }
+      process.stdout.write(output.stdout);
+      process.stderr.write(output.stderr);
     }
-    if (project === "demos/app") await run(["task", "build"], destination);
-  }
-  if (failures.length) {
-    throw new AggregateError(failures, "Native demo workflow failures");
+    if (project !== "demos/ts") continue;
+    await using runtime = await TrellisTestRuntime.start({
+      trellis: {
+        source: {
+          kind: "path",
+          cli:
+            process.env.TRELLIS_TEST_CLI_BIN ??
+            join(repository, "target/debug/trellis"),
+          server:
+            process.env.TRELLIS_TEST_SERVER_BIN ??
+            join(repository, "target/debug/trellis-server"),
+        },
+      },
+    });
+    const identity = await runtime.registerService({
+      name: "native-demo",
+      contract: serviceParticipants.Service.participant,
+    });
+    const deployment = await runtime.contracts.apply({
+      deployment: "device",
+      contract: deviceParticipants.Device.participant,
+    });
+    const provisioned = await runtime.devices.provision({
+      deploymentId: codecs.ulid.decode(deployment.deploymentId),
+      title: "Native demo device",
+      idempotencyKey: ulid(),
+    });
+    assert(provisioned.provisioningSecret);
+    const rootSecret = Buffer.from(
+      crypto.getRandomValues(new Uint8Array(32)),
+    ).toString("base64url");
+    const service = spawn(
+      process.execPath,
+      ["service/build/service/src/main.js", runtime.oauthIssuer, identity.seed],
+      { cwd: destination, env, stdio: ["ignore", "inherit", "inherit"] },
+    );
+    const serviceExit = once(service, "exit");
+    try {
+      const device = spawn(
+        process.execPath,
+        [
+          "device/build/device/src/main.js",
+          runtime.oauthIssuer,
+          rootSecret,
+          provisioned.provisioningSecret,
+        ],
+        { cwd: destination, env, stdio: ["pipe", "pipe", "inherit"] },
+      );
+      const deviceExit = once(device, "exit");
+      const timeout = setTimeout(() => device.kill("SIGTERM"), 45_000);
+      let output = "";
+      let approved = false;
+      let selections = 0;
+      try {
+        device.stdout.setEncoding("utf8");
+        for await (const chunk of device.stdout) {
+          output += chunk;
+          const activationUrl = output.match(
+            /Please activate device at: (\S+)/,
+          )?.[1];
+          const confirmationCode = output.match(
+            /Confirmation code: (\S+)/,
+          )?.[1];
+          if (!approved && activationUrl && confirmationCode) {
+            const reviewId = codecs.ulid.decode(
+              new URL(activationUrl).searchParams.get("reviewId"),
+            );
+            assert(reviewId);
+            const { review } = await runtime.callAdminRpc(
+              "authDevicesReviewsGet",
+              { reviewId, confirmationCode },
+            );
+            await runtime.callAdminRpc("authDevicesReviewsDecide", {
+              reviewId,
+              confirmationCode,
+              expectedRevision: review.revision,
+              decision: "approved",
+              idempotencyKey: ulid(),
+            });
+            approved = true;
+          }
+          if ((output.match(/Select option: /g)?.length ?? 0) > selections)
+            device.stdin.write(selections++ === 0 ? "1\n" : "0\n");
+        }
+        assert.equal((await deviceExit)[0], 0, output);
+        assert(output.includes("Connected Field Device"), output);
+        assert(output.includes("Assigned Inspections"), output);
+        assert(output.includes("[HIGH]"), output);
+      } finally {
+        clearTimeout(timeout);
+        if (device.exitCode === null && device.signalCode === null)
+          device.kill("SIGTERM");
+        await deviceExit;
+      }
+      // Exercise the packaged generated Device facade, not a checkout client.
+      await writeFile(
+        join(destination, "peer.mjs"),
+        `
+import assert from "node:assert/strict";
+import { TrellisDevice } from "@oatscenter/trellis/device";
+import { decodeTransferGrant } from "@oatscenter/trellis";
+import { deriveDeviceIdentity, base64urlDecode } from "@oatscenter/trellis/auth";
+import { discoverNativeOAuth } from "@oatscenter/trellis/native";
+import { participants } from "./device/trellis/index.js";
+const server = (await discoverNativeOAuth(process.argv[2])).orThrow();
+const identity = await deriveDeviceIdentity(base64urlDecode(process.argv[3]));
+const device = await TrellisDevice.connect({ participant: participants.Device.participant, seed: identity.identitySeedBase64url, servers: [...server.natsServers], trellisInstanceId: server.trust.instanceId, audienceNatsAccount: server.trust.account, issuers: [server.trust.issuer] }).orThrow();
+try {
+  const assignments = await device.assignmentsList({ page: { limit: 50 } }).orThrow();
+  assert(assignments.items.length > 0);
+  const bytes = new Uint8Array([0, 127, 255]);
+  const upload = await device.evidenceUpload({ key: "evidence/node-roundtrip", evidenceType: "field-photo" }).transfer(bytes).start().orThrow();
+  const uploaded = await upload.wait().orThrow();
+  assert.equal(uploaded.terminal.state, "completed", JSON.stringify(uploaded.terminal, (_, value) => typeof value === "bigint" ? value.toString() : value));
+  assert(uploaded.terminal.output);
+  const download = await device.evidenceDownload({ key: uploaded.terminal.output.key }).orThrow();
+  const grant = decodeTransferGrant(download.transfer).orThrow();
+  assert.equal(grant.direction, "receive");
+  assert.deepEqual(await device.transfer(grant).bytes().orThrow(), bytes);
+  const operation = await device.reportsGenerate({ inspectionId: assignments.items[0].inspectionId, reportComment: "packaged Node acceptance" }).start().orThrow();
+  const observation = await operation.live({}).orThrow();
+  await observation.close().orThrow();
+  await observation.closed;
+  assert((await device.assignmentsList({ page: { limit: 50 } })).isOk());
+} finally { await device.connection.close(); }
+`,
+      );
+      const peer = await run(
+        process.execPath,
+        ["peer.mjs", runtime.oauthIssuer, rootSecret],
+        { cwd: destination, env, timeout: 45_000, maxBuffer: 4 * 1024 * 1024 },
+      );
+      process.stdout.write(peer.stdout);
+      process.stderr.write(peer.stderr);
+    } finally {
+      if (service.exitCode === null && service.signalCode === null)
+        service.kill("SIGTERM");
+      assert.equal((await serviceExit)[0], 0);
+    }
   }
 } finally {
-  await Deno.remove(isolated, { recursive: true });
+  await rm(isolated, { recursive: true, force: true });
 }

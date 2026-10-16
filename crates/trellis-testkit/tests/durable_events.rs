@@ -9,6 +9,14 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
+    // Own the runtime, not a version-manager launcher that forks it and cannot
+    // forward SIGKILL when the consumer is stopped or this test unwinds.
+    let node = std::process::Command::new("node")
+        .args(["--print", "process.execPath"])
+        .output()
+        .unwrap();
+    assert!(node.status.success(), "Node runtime discovery failed");
+    let node = std::path::PathBuf::from(String::from_utf8(node.stdout).unwrap().trim());
     for sdk in ["rust", "typescript"] {
         let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
         let identity = runtime.register_service::<runtime_trellis::participants::runtime_trellis_event_service::Participant>("durable events").await.unwrap();
@@ -113,12 +121,9 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             "unbound service unexpectedly reached Events: {denied}"
         );
         let mut command = if sdk == "typescript" {
-            let mut command = std::process::Command::new("deno");
+            let mut command = std::process::Command::new(&node);
             command.args([
-                "run",
-                "-A",
-                "--config",
-                "integration/fixtures/runtime/deno.json",
+                "--experimental-transform-types",
                 "integration/fixtures/runtime/events.ts",
                 runtime.oauth_origin(),
                 identity.seed(),
@@ -231,12 +236,9 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             }).await.expect("malformed signed payload must reach DLQ through Rust decoder exhaustion");
             child.kill().await.unwrap();
             child.wait().await.unwrap();
-            child = tokio::process::Command::new("deno")
+            child = tokio::process::Command::new(&node)
                 .args([
-                    "run",
-                    "-A",
-                    "--config",
-                    "integration/fixtures/runtime/deno.json",
+                    "--experimental-transform-types",
                     "integration/fixtures/runtime/events.ts",
                     runtime.oauth_origin(),
                     identity.seed(),

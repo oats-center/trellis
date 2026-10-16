@@ -3,7 +3,7 @@ import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export declare const request: AppRequestDescriptor & {
 	readonly id: "trellis-test-fixture.RestrictedCaller";
-	readonly kind: "browser";
+	readonly kind: "native";
 	readonly requiredCapabilities: readonly [];
 	readonly optionalCapabilities: readonly [];
 	readonly uses: readonly [];

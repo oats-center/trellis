@@ -3,9 +3,10 @@
 pub struct Request;
 impl trellis_rs::generated::AppRequestDescriptor for Request {
     const ID: &'static str = "performance-trellis.Caller";
-    const KIND: trellis_rs::generated::AppKind = trellis_rs::generated::AppKind::Browser;
+    const KIND: trellis_rs::generated::AppKind = trellis_rs::generated::AppKind::Native;
     const REQUIRED_CAPABILITIES: &'static [&'static str] = &[
         "performance-trellis.performance@v1::workloads",
+        "trellis.auth@v1::accountRead",
         "trellis.state@v1::delete",
         "trellis.state@v1::read",
         "trellis.state@v1::write",
@@ -33,6 +34,9 @@ impl Client {
         &self,
     ) -> performance_trellis_performance_v1::Client {
         performance_trellis_performance_v1::Client::from_generated(self.inner.clone())
+    }
+    pub fn trellis_auth_v1(&self) -> trellis_auth_v1::Client {
+        trellis_auth_v1::Client::from_generated(self.inner.clone())
     }
     pub fn trellis_state_v1(&self) -> trellis_state_v1::Client {
         trellis_state_v1::Client::from_generated(self.inner.clone())
@@ -200,6 +204,45 @@ pub mod performance_trellis_performance_v1 {
             trellis_rs::client::TrellisClientError,
         > {
             self.inner.live::<lives::Watch>(input).await
+        }
+    }
+}
+pub mod trellis_auth_v1 {
+    use crate::apis::trellis_auth_v1::rpc;
+    #[derive(Clone)]
+    pub struct Client {
+        inner: trellis_rs::generated::Client,
+    }
+    impl Client {
+        pub fn from_generated(inner: trellis_rs::generated::Client) -> Self {
+            Self { inner }
+        }
+        pub async fn sessions_logout(
+            &self,
+            input: &rpc::SessionsLogoutInput,
+        ) -> Result<
+            rpc::SessionsLogoutOutput,
+            trellis_rs::client::CallError<rpc::SessionsLogoutError>,
+        > {
+            self.inner.call::<rpc::SessionsLogout>(input).await
+        }
+        pub async fn sessions_me(
+            &self,
+            input: &rpc::SessionsMeInput,
+        ) -> Result<
+            rpc::SessionsMeOutput,
+            trellis_rs::client::CallError<rpc::SessionsMeError>,
+        > {
+            self.inner.call::<rpc::SessionsMe>(input).await
+        }
+        pub async fn users_resolve(
+            &self,
+            input: &rpc::UsersResolveInput,
+        ) -> Result<
+            rpc::UsersResolveOutput,
+            trellis_rs::client::CallError<rpc::UsersResolveError>,
+        > {
+            self.inner.call::<rpc::UsersResolve>(input).await
         }
     }
 }

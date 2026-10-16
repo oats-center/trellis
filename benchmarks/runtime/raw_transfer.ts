@@ -1,4 +1,5 @@
 import { headers, type NatsConnection } from "@nats-io/nats-core";
+import { inspect } from "node:util";
 import { deadline, digest, payload, type Sample } from "./model.ts";
 
 /** Unsigned same-broker Core NATS lower bound; not an application transfer API. */
@@ -53,12 +54,14 @@ export async function rawTransfer(options: {
                 if (
                   message.headers?.get("sequence") !== String(sequence) ||
                   message.data.length !== Math.min(frameBytes, size - offset)
-                ) throw new Error("Raw stream sequence/length mismatch");
+                )
+                  throw new Error("Raw stream sequence/length mismatch");
                 received.set(message.data, offset);
                 offset += message.data.length;
                 if (
                   sequence - creditedSequence >= 8 ||
-                  offset - creditedBytes >= 1024 * 1024 || offset === size
+                  offset - creditedBytes >= 1024 * 1024 ||
+                  offset === size
                 ) {
                   receiver.publish(
                     `${subject}.credit`,
@@ -69,7 +72,7 @@ export async function rawTransfer(options: {
                 }
                 if (offset === size) break;
               }
-              if (offset !== size || await digest(received) !== expected) {
+              if (offset !== size || (await digest(received)) !== expected) {
                 throw new Error("Corrupt raw Core NATS stream");
               }
               row.dataFrames = sequence;
@@ -79,7 +82,7 @@ export async function rawTransfer(options: {
               let consumed = 0;
               const windowFrames = Math.min(
                 16,
-                Math.floor(4 * 1024 * 1024 / frameBytes),
+                Math.floor((4 * 1024 * 1024) / frameBytes),
               );
               while (sent < frameCount || consumed < sent) {
                 if (sent < frameCount && sent - consumed < windowFrames) {
@@ -96,8 +99,10 @@ export async function rawTransfer(options: {
                   const value = new TextDecoder().decode(next.value.data);
                   const cursor = Number(value);
                   if (
-                    !Number.isSafeInteger(cursor) || String(cursor) !== value ||
-                    cursor <= consumed || cursor > sent
+                    !Number.isSafeInteger(cursor) ||
+                    String(cursor) !== value ||
+                    cursor <= consumed ||
+                    cursor > sent
                   ) {
                     throw new Error("Invalid raw cumulative credit");
                   }
@@ -108,7 +113,7 @@ export async function rawTransfer(options: {
             try {
               await deadline(Promise.all([read, write]));
             } catch (error) {
-              row.error = Deno.inspect(error, { colors: false, depth: 6 });
+              row.error = inspect(error, { colors: false, depth: 6 });
             } finally {
               row.durationMs = performance.now() - started;
               rows.push(row);

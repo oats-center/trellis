@@ -5,10 +5,10 @@ real NATS/JetStream, generated clients, and the existing testkit for isolated
 provisioning. Execution does **not** build executables.
 
 ```sh
-cargo build --release -p trellis-server
+cargo build --release -p trellis-server -p trellis-cli
 cargo xtask install
-deno task -c ts/deno.json bench:runtime --output=/tmp/opencode/trellis-perf-baseline
-deno task -c ts/deno.json bench:runtime:report /tmp/opencode/trellis-perf-baseline
+npm run bench:runtime -- --output=/tmp/opencode/trellis-perf-baseline
+npm run bench:runtime:report -- /tmp/opencode/trellis-perf-baseline
 ```
 
 ## Complete repeated suite
@@ -21,12 +21,13 @@ and type-checks the requested native IDL contract variants during preparation.
 cargo xtask install
 cargo build --release -p trellis-server -p trellis-cli
 cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target
-deno task -c ts/deno.json bench:runtime:browser:build
-deno task -c ts/deno.json bench:runtime:suite --server=target/release/trellis-server --cli=target/release/trellis --rust-bin=target/release/trellis-performance --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/trellis-perf-suite
+npm ci
+npm run bench:runtime:browser:build
+npm run bench:runtime:suite -- --server=target/release/trellis-server --cli=target/release/trellis --rust-bin=target/release/trellis-performance --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/trellis-perf-suite
 ```
 
-Requires Linux, Python 3, `nats-server`, and installed `agent-browser` with
-Chromium. No browser download or executable compilation occurs during measured
+Requires Node 24, npm 11, Linux, Python 3, `nats-server`, and Playwright Chromium
+installed beforehand (`npm exec -- playwright install chromium`). No browser download or executable compilation occurs during measured
 workloads. Every suite run gets an isolated runtime; measured cases run
 **sequentially**, with deterministic order rotation across independent repeats.
 
@@ -44,21 +45,21 @@ same host and configuration, add `--compare=/path/to/previous-suite`. To
 regenerate or compare existing reports without rerunning workloads:
 
 ```sh
-deno task -c ts/deno.json bench:runtime:suite --output=/tmp/opencode/trellis-perf-suite --report-only --compare=/path/to/previous-suite
+npm run bench:runtime:suite -- --output=/tmp/opencode/trellis-perf-suite --report-only --compare=/path/to/previous-suite
 ```
 
 ### Focused lanes
 
 ```sh
-deno task -c ts/deno.json bench:runtime --lane=rust --rust-bin=target/release/trellis-performance --output=/tmp/opencode/native-perf
-deno task -c ts/deno.json bench:runtime --lane=browser --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/browser-perf
-deno task -c ts/deno.json bench:runtime --lane=lifecycle --output=/tmp/opencode/lifecycle-perf
-deno task -c ts/deno.json bench:runtime --providers=4 --output=/tmp/opencode/provider-perf
+npm run bench:runtime -- --lane=rust --rust-bin=target/release/trellis-performance --output=/tmp/opencode/native-perf
+npm run bench:runtime -- --lane=browser --browser-bundle=benchmarks/runtime/browser.bundle.js --output=/tmp/opencode/browser-perf
+npm run bench:runtime -- --lane=lifecycle --output=/tmp/opencode/lifecycle-perf
+npm run bench:runtime -- --providers=4 --output=/tmp/opencode/provider-perf
 ```
 
 - Rust hosts generated Echo and transfer handlers and compares them with
-  Axum/reqwest. First-process readiness measures native session **resume**;
-  password login is prepared outside that timing. Both Rust upload paths read
+  Axum/reqwest. First-process readiness includes real Device Code authorization
+  and the first generated RPC. Both Rust upload paths read
   back persisted bytes and return their hash before completion.
 - Chromium loads the actual generated SDK, logs in through the real portal
   protocol, reconnects a saved session over WebSocket, and proves the first Echo
@@ -67,7 +68,8 @@ deno task -c ts/deno.json bench:runtime --providers=4 --output=/tmp/opencode/pro
   rendering**. Document, bundle, and WASM delivery deliberately use `no-store`.
 - Lifecycle uses a supported 120-second context window; metadata records the
   lifetime, lead, jitter, minimum-lifetime, and clock-skew settings. Real 10 Hz
-  RPC traffic crosses two **persisted context issuances for the exact session**.
+  RPC traffic crosses two **verified authority promotions**, observed through
+  the caller's public authority subscription rather than another role's database.
   Observation time is not issuance latency. TCP endpoint outages exercise real
   disconnection/reconnect followed by a verified RPC, without stopping the
   broker or bypassing authorization/readiness. The outage affects providers as
@@ -96,7 +98,7 @@ noise-sensitive percentage threshold replaces functional failure checks.
 For a smoke run:
 
 ```sh
-deno task -c ts/deno.json bench:runtime --samples=2 --calls=20 --sizes=65536,1048576 --sessions=1,3 --idle-seconds=1 --output=/tmp/opencode/trellis-perf-smoke
+npm run bench:runtime -- --samples=2 --calls=20 --sizes=65536,1048576 --sessions=1,3 --idle-seconds=1 --output=/tmp/opencode/trellis-perf-smoke
 ```
 
 For fixed-arrival-rate RPC load, add
@@ -133,8 +135,8 @@ skips.
 
 `samples.json` retains individual timings and errors, plus exact workload
 resource windows. `resources.jsonl` retains the process timeline.
-`metadata.json` records revision, server binary hash, effective Argon2
-parameters, host/CPU/cgroup limits, load settings, topology, and telemetry
+`metadata.json` records revision, server binary hash, Node/V8 versions,
+host/CPU/cgroup limits, load settings, topology, and telemetry
 configuration. `source.diff` captures tracked edits; untracked benchmark source
 must be retained with the run until committed. `report.md` and `bencher.json`
 are generated by `bench:runtime:report`.
@@ -142,10 +144,10 @@ are generated by `bench:runtime:report`.
 Compare matched runs after changing the checkout and rebuilding the server:
 
 ```sh
-deno task -c ts/deno.json bench:runtime:report /tmp/opencode/trellis-perf-candidate /tmp/opencode/trellis-perf-baseline
+npm run bench:runtime:report -- /tmp/opencode/trellis-perf-candidate /tmp/opencode/trellis-perf-baseline
 ```
 
-Comparison rejects differing host, runtime, hashing parameters, resource limits,
+Comparison rejects differing host, JavaScript runtime, resource limits,
 or workload configuration. No automatic regression threshold is enabled. Run
 several independent repetitions on an otherwise idle host before treating a
 difference as a regression.
@@ -154,7 +156,7 @@ difference as a regression.
 
 HTTP is a **plaintext baseline: no TLS, no authentication, and no
 authorization**. It is a lower bound, not a security-equivalent stack. Each
-comparison uses the same language on both ends (Deno or Rust), loopback,
+comparison uses the same language on both ends (Node or Rust), loopback,
 identity encoding, and no caching. HTTP file storage and Trellis JetStream
 storage have different durability semantics. Transfer timings include complete
 integrity verification; first payload byte and setup are reported separately for

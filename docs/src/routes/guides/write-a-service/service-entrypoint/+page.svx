@@ -12,19 +12,20 @@ Create `service.ts`:
 ```ts
 import { Result } from "@oatscenter/trellis";
 import type { RpcHandler } from "@oatscenter/trellis/service";
-import { participants } from "orders-trellis";
+import { participants } from "./trellis/index.js";
+import { ulid } from "ulid";
 
 /** Returns an example order receipt; this walkthrough does not persist orders. */
 export const createOrder: RpcHandler<
-  typeof participants.acmeOrdersService.participant,
-  "Orders.Create"
+  typeof participants.OrdersService.participant,
+  "Create"
 > = (
   { input },
-) => Result.ok({ orderId: crypto.randomUUID(), customerId: input.customerId });
+) => Result.ok({ orderId: ulid(), customerId: input.customerId });
 ```
 
 `RpcHandler` derives both request and response types from the generated
-participant and exact action name. The UUID and the absence of storage are
+participant and exact action name. The ULID and the absence of storage are
 demonstration choices. A real order service can invoke its own domain code and
 database here. Trellis does not choose either.
 
@@ -34,17 +35,17 @@ Replace `main.ts` with:
 
 ```ts
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "orders-trellis";
+import { participants } from "./trellis/index.js";
 import { createOrder } from "./service.ts";
 
 function requiredEnv(name: string): string {
-  const value = Deno.env.get(name);
+  const value = process.env[name];
   if (!value) throw new Error(`Missing ${name}`);
   return value;
 }
 
 const service = await TrellisService.connect({
-  participant: participants.acmeOrdersService.participant,
+  participant: participants.OrdersService.participant,
   name: "orders-service",
   trellisUrl: requiredEnv("TRELLIS_URL"),
   seed: requiredEnv("TRELLIS_IDENTITY_SEED"),
@@ -53,15 +54,15 @@ const service = await TrellisService.connect({
 const stop = () => {
   void service.stop();
 };
-Deno.addSignalListener("SIGINT", stop);
-Deno.addSignalListener("SIGTERM", stop);
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
 try {
-  await service.handleOrdersCreate(createOrder);
+  await service.handleCreate(createOrder);
   console.log("Orders service connected; press Ctrl-C to stop.");
   await service.wait();
 } finally {
-  Deno.removeSignalListener("SIGINT", stop);
-  Deno.removeSignalListener("SIGTERM", stop);
+  process.off("SIGINT", stop);
+  process.off("SIGTERM", stop);
   await service.stop();
 }
 ```
@@ -72,7 +73,7 @@ secret manager, CLI parser, or application configuration system if preferred.
 
 `connect()` proves the provisioned identity, verifies the server-owned installed
 participant and GrantBinding, and resolves Trellis resources.
-`handleOrdersCreate()` registers the provider. `wait()` supervises the running
+`handleCreate()` registers the provider. `wait()` supervises the running
 service; `stop()` closes its resources. Authorization contexts and route
 credentials remain in process memory and are refreshed proactively as SDK-owned
 maintenance. Renewal of unchanged transport authority does not replace a healthy
@@ -84,8 +85,7 @@ not an individual socket. Reduced or revoked authority can interrupt affected
 work. While own coverage is unavailable, fresh application traffic either waits
 within its acquisition budget or reports unavailability.
 
-The shared `/service` entrypoint supports Node-compatible native runtimes,
-including Deno. For Rust, use the generated facade described in
+The shared `/service` entrypoint runs on Node 24. For Rust, use the generated facade described in
 [the Rust guide](/guides/libraries/rust), not this TypeScript options object.
 
 ## Provision and run
@@ -132,13 +132,12 @@ Then run from the directory containing `main.ts`, with the environment
 populated:
 
 ```sh
-deno check main.ts
-deno run -A main.ts
+npm run check
+npm start
 ```
 
-`-A` keeps the demonstration command readable, not least-privilege. Deployment
-permissions are an application/runtime-host choice; restrict Deno permissions to
-the network, files, signals, and telemetry that instance actually uses.
+Deployment permissions are an application/runtime-host choice. Restrict the
+service process to the network, files, signals, and telemetry it actually uses.
 
 Expect the connected message. Ctrl-C stops the instance. If startup waits, check
 pending authority; if identity verification fails, check the provisioned

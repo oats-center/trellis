@@ -1,6 +1,6 @@
 import type { NatsConnection } from "@nats-io/nats-core";
 import { z } from "zod";
-import { SessionAuthorityOwner } from "./authority.ts";
+import { SessionAuthorityOwner, type VerifiedAuthority } from "./authority.ts";
 import { requestOwnAdmission } from "./admission.ts";
 import { AuthError } from "../errors/AuthError.ts";
 import { TransportError } from "../errors/TransportError.ts";
@@ -70,7 +70,10 @@ export async function connectProvisioned(
   options: ProvisionedConnectionOptions,
   kind: "service" | "device",
   hooks: {
-    onPreActivate?(generation: TransportGeneration): Promise<void>;
+    onPreActivate?(
+      generation: TransportGeneration,
+      retainAuthority: () => VerifiedAuthority,
+    ): Promise<void>;
     onDrain?(generation: TransportGeneration): void;
   } = {},
   transport?: RuntimeTransport,
@@ -128,7 +131,10 @@ export async function connectAdmitted(options: {
   admission(): Promise<string>;
   transport?: RuntimeTransport;
   hooks?: {
-    onPreActivate?(generation: TransportGeneration): Promise<void>;
+    onPreActivate?(
+      generation: TransportGeneration,
+      retainAuthority: () => VerifiedAuthority,
+    ): Promise<void>;
     onDrain?(generation: TransportGeneration): void;
   };
 }) {
@@ -147,6 +153,7 @@ export async function connectAdmitted(options: {
   let renewalTimer: ReturnType<typeof setTimeout> | undefined;
   let renewalAbort: AbortController | undefined;
   let renewalTask: Promise<void> | undefined;
+  let mirrorRecovery: AbortController | undefined;
   const credentials = new WeakMap<NatsConnection, string>();
   const preparedCredentials = new WeakMap<TransportGenerationConnect, string>();
   const pendingAdmissions = new WeakMap<
@@ -403,6 +410,7 @@ export async function connectAdmitted(options: {
       return nc;
     },
     onPreActivate: async (generation) => {
+      mirrorRecovery?.abort();
       const value = candidates.get(generation.nc);
       if (!value) throw new Error("AdmissionUnavailable");
       await owner.attach(
@@ -420,7 +428,11 @@ export async function connectAdmitted(options: {
           },
         );
       }
-      await options.hooks?.onPreActivate?.(generation);
+      await options.hooks?.onPreActivate?.(generation, () => {
+        if (value.committed) return owner.own();
+        if (!value.candidate) throw new Error("AdmissionUnavailable");
+        return value.candidate.retain();
+      });
     },
     onDrain: options.hooks?.onDrain,
     onActivate: (generation) => {
@@ -444,20 +456,22 @@ export async function connectAdmitted(options: {
     const own = owner.own();
     let delay: number;
     try {
-      delay =
-        (own.authority.expiresAt -
-          options.auth.currentIat() -
-          60 -
-          (crypto.getRandomValues(new Uint32Array(1))[0] % 16)) *
-        1000;
+      const remaining = own.authority.expiresAt - options.auth.currentIat();
+      // A supported short-lived authority can have less than the usual lead
+      // left after verification. Renew within its lifetime instead of treating
+      // that still-valid authority as expired or spinning on immediate renewals.
+      const lead = Math.min(
+        60 + (crypto.getRandomValues(new Uint32Array(1))[0] % 16),
+        remaining / 2,
+      );
+      delay = (remaining - lead) * 1000;
     } finally {
       own.release();
     }
     if (delay <= 0) {
       const error = new AuthError({
         reason: "OAuthRecoveryRequired",
-        message:
-          "The root authority deadline leaves no bounded renewal window.",
+        message: "The root authority expired before renewal.",
       });
       void manager.terminate(error);
       throw error;
@@ -599,6 +613,7 @@ export async function connectAdmitted(options: {
       for await (const status of manager.status()) {
         const type = (status as { type?: string }).type;
         if (type === "disconnect") {
+          mirrorRecovery?.abort();
           if (renewalTimer !== undefined) clearTimeout(renewalTimer);
           renewalTimer = undefined;
           renewalAbort?.abort();
@@ -611,6 +626,7 @@ export async function connectAdmitted(options: {
       }
     })();
     void manager.closed().finally(() => {
+      mirrorRecovery?.abort();
       owner.stop();
       if (renewalTimer !== undefined) clearTimeout(renewalTimer);
       renewalAbort?.abort();
@@ -623,13 +639,59 @@ export async function connectAdmitted(options: {
         if (renewalTimer !== undefined) clearTimeout(renewalTimer);
         renewalTimer = undefined;
         renewalAbort?.abort();
-        void manager.terminate(
-          new TransportError({
-            code: "trellis.transport.unavailable",
-            message: "Authority revocation coverage is unavailable.",
-            hint: "Reconnect when the runtime is available.",
-          }),
-        );
+        if (mirrorRecovery) return;
+        const controller = new AbortController();
+        mirrorRecovery = controller;
+        const signal = options.signal
+          ? AbortSignal.any([options.signal, controller.signal])
+          : controller.signal;
+        // Private maintenance may retain the physically published attachment
+        // while application authority stays fenced by the missing snapshot.
+        void (async () => {
+          let delay = 100;
+          while (!signal.aborted && !manager.isClosed() && owner.coverageLost) {
+            try {
+              const lease = await manager.acquirePublishedAttachment();
+              if (!lease) return; // ordinary transport recovery owns replacement
+              try {
+                const value = candidates.get(lease.nc);
+                if (!value) return;
+                await owner.attach(
+                  lease.nc,
+                  registrySchema.parse(value.context.registry),
+                  {
+                    signal,
+                    timeoutMs: options.timeout,
+                    inboxPrefix,
+                  },
+                );
+              } finally {
+                lease.release();
+              }
+              if (!signal.aborted) {
+                manager.authorizationPromoted();
+                scheduleRenewal();
+              }
+            } catch {
+              // Failed preparation never restores coverage or clears cutoffs.
+            }
+            if (!signal.aborted && owner.coverageLost) {
+              await new Promise<void>((resolve) => {
+                const done = () => {
+                  clearTimeout(timer);
+                  signal.removeEventListener("abort", done);
+                  resolve();
+                };
+                const timer = setTimeout(done, delay);
+                signal.addEventListener("abort", done, { once: true });
+                if (signal.aborted) done();
+              });
+              delay = Math.min(delay * 2, 5_000);
+            }
+          }
+        })().finally(() => {
+          if (mirrorRecovery === controller) mirrorRecovery = undefined;
+        });
       } else if (owner.ownRevoked) {
         if (renewalTimer !== undefined) clearTimeout(renewalTimer);
         renewalTimer = undefined;

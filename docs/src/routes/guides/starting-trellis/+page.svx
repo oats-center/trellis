@@ -11,7 +11,7 @@ By the end, you will have:
 ## What you need
 
 - Git
-- [Deno](https://deno.com) v2+
+- [Node](https://nodejs.org) 24 and npm 11+
 - the `trellis` CLI installed (see [Install the Trellis CLI](/guides/install-trellis-cli))
 - network access when using `--nats-download`: the server downloads a pinned,
   checksum-verified nats-server binary under the XDG cache root (default
@@ -31,12 +31,12 @@ trellis init config --out ~/trellis
 
 This creates a movable init bundle under `~/trellis`:
 
-| Path | Purpose |
-| --- | --- |
-| `nats/` | NATS config, resolver data, service credentials, and signing seeds |
-| `config.toml` | Trellis runtime config using relative file paths |
-| `auth/` | Online issuer seed and Auth runtime state |
-| `session.seed` | Private 32-byte event-session seed referenced from `config.toml` |
+| Path           | Purpose                                                            |
+| -------------- | ------------------------------------------------------------------ |
+| `nats/`        | NATS config, resolver data, service credentials, and signing seeds |
+| `config.toml`  | Trellis runtime config using relative file paths                   |
+| `auth/`        | Online issuer seed and Auth runtime state                          |
+| `session.seed` | Private 32-byte event-session seed referenced from `config.toml`   |
 
 The generated Trellis config omits `nats.jetstream.replicas`. On startup,
 Trellis probes NATS JetStream topology and uses `1` for this standalone local
@@ -46,16 +46,16 @@ peers are visible.
 
 Useful local flags:
 
-| Flag | Default | Use when |
-| --- | --- | --- |
-| `--name Trellis` | `Trellis` | You want a different Trellis display name; the NATS server name is derived from this unless overridden |
-| `--server-name trellis` | derived from `--name` | You need a specific NATS server name |
-| `--nats-port 4222` | `4222` | Managed NATS should listen for native clients on a different port; e.g. when `4222` is already taken |
-| `--nats-monitor-port 8222` | `8222` | Managed NATS monitoring and health should listen on a different port |
-| `--nats-ws-port 8080` | `8080` | Managed NATS websocket should listen on a different port |
-| `--public-origin http://localhost:3000` | `http://localhost:<trellis-port>` | Trellis is exposed on a different local origin |
-| `--nats-server-url nats://127.0.0.1:4222` | `nats://127.0.0.1:<nats-port>` | Server-side clients reach NATS somewhere else |
-| `--nats-websocket-url ws://localhost:8080` | `ws://localhost:<nats-ws-port>` | Browser clients reach NATS somewhere else |
+| Flag                                       | Default                           | Use when                                                                                               |
+| ------------------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `--name Trellis`                           | `Trellis`                         | You want a different Trellis display name; the NATS server name is derived from this unless overridden |
+| `--server-name trellis`                    | derived from `--name`             | You need a specific NATS server name                                                                   |
+| `--nats-port 4222`                         | `4222`                            | Managed NATS should listen for native clients on a different port; e.g. when `4222` is already taken   |
+| `--nats-monitor-port 8222`                 | `8222`                            | Managed NATS monitoring and health should listen on a different port                                   |
+| `--nats-ws-port 8080`                      | `8080`                            | Managed NATS websocket should listen on a different port                                               |
+| `--public-origin http://localhost:3000`    | `http://localhost:<trellis-port>` | Trellis is exposed on a different local origin                                                         |
+| `--nats-server-url nats://127.0.0.1:4222`  | `nats://127.0.0.1:<nats-port>`    | Server-side clients reach NATS somewhere else                                                          |
+| `--nats-websocket-url ws://localhost:8080` | `ws://localhost:<nats-ws-port>`   | Browser clients reach NATS somewhere else                                                              |
 
 Generated local configs use a 30-second runtime-owner lease renewed every 5
 seconds. When running another managed-NATS instance on the same machine, pass
@@ -94,10 +94,10 @@ to the XDG state log directory, and stops NATS when `trellis-server` exits. NATS
 listens on the ports written to `nats/nats.conf`, which the `--nats-port`,
 `--nats-monitor-port`, and `--nats-ws-port` flags choose (defaults below):
 
-| Port | Purpose |
-| --- | --- |
-| `4222` | Native NATS clients |
-| `8080` | Browser websocket clients |
+| Port   | Purpose                    |
+| ------ | -------------------------- |
+| `4222` | Native NATS clients        |
+| `8080` | Browser websocket clients  |
 | `8222` | NATS monitoring and health |
 
 `trellis init config` rejects port `0`, duplicate listener ports, and a NATS
@@ -143,13 +143,34 @@ an explicit relative database path remains config-relative. `--config` changes
 the config file and config-relative resource base, not the selected user/system
 profile.
 
-The initial administrator remains the permanent bootstrap recovery principal,
-but its `trellis-app.cli@v1` authority follows the ordinary authority lifecycle
-and may be changed or revoked. Start Trellis with `--reset-admin` to recover the
-account. Trellis prints a replacement one-time URL, preserves the principal,
-restores full approved authority for the exact current CLI participant revision, and
-revokes its existing sessions when reset completes. The command targets this
-bootstrap account even when additional administrators exist.
+On a fresh installation, startup initializes the protected administrator before
+admitting built-in providers. Its username defaults to `admin`; without a supplied
+password, Trellis prints `adminAccountUrl`, a one-time password-setup link on the
+isolated OAuth origin. Open that link to set the password, then sign in to Console.
+No temporary or default password exists. The link expires after five minutes.
+
+Use `--admin-username operator` to choose the starting username. Supply
+`--admin-password` or, preferably, `--admin-password-stdin` to set an initial
+password instead of issuing a link. These options initialize a fresh installation;
+they cannot overwrite an existing administrator's credentials. You can also
+initialize explicitly before starting the server:
+
+```sh
+trellis init admin --config /path/to/config.toml --username operator
+# Or read the initial password from stdin:
+trellis init admin --config /path/to/config.toml --password-stdin
+```
+
+For a server using `--system`, pass `--system` to `trellis init admin` too.
+Offline initialization and server startup share host-profile path resolution;
+explicit `[paths]` overrides remain authoritative.
+
+Ordinary restart preserves credentials and does not issue another setup link.
+For an expired or lost link, explicitly start with `--reset-admin`. This prints a
+replacement one-time reset URL and revokes earlier pending links. Completing the
+reset preserves the protected principal and its existing authority while revoking
+its login sessions. Ordinary administrative RPCs cannot reset this protected
+account. Local recovery targets it even when other administrators exist.
 
 ### External NATS (production pattern)
 
@@ -167,11 +188,11 @@ unchanged.
 ### Pre-installed nats-server binary
 
 `--local-nats=<path>` manages an existing nats-server binary without
- downloading or using the cache. It is an explicit
- trusted-operator escape hatch — the binary is NOT re-verified against the
- Trellis pin or version. The path is canonicalized and must be a regular
- executable owned by root or the current user, with no group/world-writable bits
- on the file or any parent directory.
+downloading or using the cache. It is an explicit
+trusted-operator escape hatch — the binary is NOT re-verified against the
+Trellis pin or version. The path is canonicalized and must be a regular
+executable owned by root or the current user, with no group/world-writable bits
+on the file or any parent directory.
 
 ### Single-container deployment (runtime OCI image)
 
@@ -258,7 +279,7 @@ In another terminal from the source checkout:
 
 ```sh
 cd web
-deno task dev
+npm run dev
 ```
 
 Configure Trellis to proxy the shared built-in source:
@@ -288,12 +309,10 @@ At this point you have:
 - Rust runtime health and readiness checks returning version and mode metadata
 - Console running from source for UI development
 
-## 8. Serve plaintext HTTP on a non-loopback origin
+## 8. Configure HTTP and HTTPS origins
 
-HTTPS is the normal deployment transport. When an operator deliberately runs
-Trellis on plaintext HTTP from a non-loopback host, the public origin must be
-authorized explicitly; otherwise `trellis-server` refuses to start before it
-serves browser assets. Loopback HTTP such as `http://localhost:3000` needs no
+Console and the isolated OAuth listener require HTTPS outside explicit loopback
+development. Loopback HTTP such as `http://localhost:3000` needs no insecure-origin
 entry.
 
 Production:
@@ -304,16 +323,16 @@ public_origin = "https://trellis.example.com"
 allow_insecure_origins = []
 ```
 
-Development or LAN demo:
+Loopback development:
 
 ```toml
 [http]
-public_origin = "http://trellis-demo.lan:3000"
-allow_insecure_origins = ["http://trellis-demo.lan:3000"]
+public_origin = "http://localhost:3000"
+allow_insecure_origins = []
 ```
 
 `[http] origins` and `[http] allow_insecure_origins` are different: `origins`
 lists browser origins that may participate, while `allow_insecure_origins`
-authorizes plaintext transport for a specific origin. Applications do not
-change between these deployments; the browser client uses the same connection
-call and the same proof formats either way.
+authorizes a plaintext public origin at the HTTP configuration boundary. This
+does not relax OAuth or Console origin validation; adding a non-loopback Console
+origin to that list will not make it valid. Use HTTPS for a remotely hosted Console.

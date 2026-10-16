@@ -7,6 +7,49 @@ use crate::platform::auth::initialization::{
 use trellis_protocol::PlatformPrivilege;
 
 #[test]
+fn administrator_without_a_password_cannot_log_in_or_be_seeded_with_a_password_later() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = open(&directory, SigningKey::from_bytes(&[42; 32]));
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", None, None, None, NOW)
+        .unwrap()
+        .principal_id;
+    let guest = store.create_portal_session(NOW).unwrap();
+    for password in ["", "admin", "a strong bootstrap password"] {
+        assert!(matches!(
+            store.portal_local_login(
+                &guest.cookie,
+                &guest.csrf,
+                &guest.cookie,
+                "admin",
+                password,
+                &id(),
+                NOW
+            ),
+            Err(AuthError::Denied)
+        ));
+    }
+    assert!(matches!(
+        store.initialize_administrator(
+            "admin",
+            Some("a strong bootstrap password"),
+            None,
+            None,
+            NOW
+        ),
+        Err(AuthError::Conflict)
+    ));
+    assert_eq!(
+        store
+            .initialize_administrator("admin", None, None, None, NOW)
+            .unwrap()
+            .principal_id,
+        admin
+    );
+}
+
+#[test]
 fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_subset() {
     let directory = tempfile::tempdir().unwrap();
     let store = open(&directory, SigningKey::from_bytes(&[42; 32]));
@@ -16,11 +59,12 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
     assert!(store
         .initialize_administrator(
             "admin",
-            "a strong bootstrap password",
+            Some("a strong bootstrap password"),
             Some(&[
                 console_registration("https://console.example").unwrap(),
                 invalid
             ]),
+            None,
             NOW
         )
         .is_err());

@@ -14,9 +14,9 @@ use trellis_rs::generated::{AppRequestDescriptor, ParticipantDescriptor};
 use trellis_runtime_apis::apis::trellis_auth_v1::rpc::ApisGetError;
 use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
 use trellis_runtime_apis::types::{
-    AuthApiAcceptRequest, AuthApiGetRequest, AuthApiReviewRequest, AuthDeploymentCreateRequest,
-    AuthDeploymentKind, AuthEmpty, AuthInstanceProvisionRequest, AuthOAuthClientPutRequest,
-    AuthPublicClientKind,
+    AuthApiAcceptRequest, AuthApiGetRequest, AuthApiReviewRequest, AuthCapabilityGrantRequest,
+    AuthCapabilityGrantsListRequest, AuthDeploymentCreateRequest, AuthDeploymentKind, AuthEmpty,
+    AuthInstanceProvisionRequest, AuthOAuthClientPutRequest, AuthPublicClientKind,
 };
 
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
@@ -310,6 +310,53 @@ impl AdminSession {
                 TrellisTestStage::AdministratorLogin,
                 "administrator account is disabled",
             ));
+        }
+        Ok(())
+    }
+
+    /// Grants a declared test-user capability through ordinary administration.
+    pub(crate) async fn prepare_client_capabilities(
+        &self,
+        capability_ids: &[&str],
+    ) -> Result<(), TrellisTestError> {
+        let principal = self
+            .auth
+            .sessions_me(&AuthEmpty {
+                extra: Default::default(),
+            })
+            .await
+            .map_err(|error| failure(TrellisTestStage::ClientLogin, error))?
+            .principal;
+        use futures_util::TryStreamExt;
+        let grants: Vec<_> = self
+            .auth
+            .capability_grants_list_items(AuthCapabilityGrantsListRequest {
+                capability_id: None,
+                principal_id: Some(principal.principal_id.clone()),
+                page: None,
+                extra: Default::default(),
+            })
+            .try_collect()
+            .await
+            .map_err(|error| failure(TrellisTestStage::ClientLogin, error))?;
+        for capability_id in capability_ids {
+            if grants
+                .iter()
+                .any(|grant| grant.capability.capability_id.as_ref() == *capability_id)
+            {
+                continue;
+            }
+            self.auth
+                .capability_grants_grant(&AuthCapabilityGrantRequest {
+                    principal_id: principal.principal_id,
+                    capability_id: (*capability_id).to_owned().into(),
+                    expected_revision: 0.into(),
+                    expires_at: None,
+                    idempotency_key: ulid::Ulid::new().to_string().into(),
+                    extra: Default::default(),
+                })
+                .await
+                .map_err(|error| failure(TrellisTestStage::ClientLogin, error))?;
         }
         Ok(())
     }

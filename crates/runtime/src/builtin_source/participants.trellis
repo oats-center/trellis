@@ -19,8 +19,14 @@ service platform {
   }
 }
 service healthRuntime { implements health; }
-service jobsRuntime { implements jobs; }
-service eventsRuntime { implements events; }
+service jobsRuntime {
+  implements jobs;
+  use auth { required capability jobResourceBindingsRead; }
+}
+service eventsRuntime {
+  implements events;
+  use auth { required capability eventResourceBindingsRead; }
+}
 
 // Administrative capabilities still require separately delegated platform privileges.
 // These declarations are developer requests, never installed principals.

@@ -46,9 +46,7 @@ pub(crate) fn output_paths(
 ) -> Result<Vec<(&'static str, PathBuf)>> {
     let root = root.canonicalize().into_diagnostic()?;
     let has_rust = root.join("Cargo.toml").is_file();
-    let has_ts = ["package.json", "deno.json", "deno.jsonc"]
-        .iter()
-        .any(|file| root.join(file).is_file());
+    let has_ts = root.join("package.json").is_file();
     let config = &manifest.generate;
     // A language generates when it is configured or its toolchain marker is
     // present. Configuration alone is enough: a TypeScript app participant can

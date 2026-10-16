@@ -42,11 +42,12 @@ pub(crate) fn cli_registration() -> ClientRegistration {
 }
 
 #[derive(Serialize, Deserialize)]
-struct InitializationResult {
-    principal_id: String,
+pub(super) struct InitializationResult {
+    pub(super) principal_id: String,
     // Retain the initial Argon2 verifier with the idempotent result, never a
     // fast password digest. Replay must not reset a subsequently changed secret.
-    password_hash: String,
+    password_hash: Option<String>,
+    pub(super) setup_response: Option<Vec<u8>>,
 }
 
 pub(crate) fn console_registration(origin: &str) -> Result<ClientRegistration, AuthError> {
@@ -163,11 +164,12 @@ mod tests {
             .push("not.installed::read".into());
         let failed = store.initialize_administrator(
             "administrator",
-            "initial-password",
+            Some("initial-password"),
             Some(&[
                 console_registration("http://localhost:3000").unwrap(),
                 invalid,
             ]),
+            None,
             1000,
         );
         assert!(failed.is_err());
@@ -436,6 +438,16 @@ mod tests {
 }
 
 impl SqliteAuthorizationStore {
+    /// Whether the installation has already committed its protected administrator.
+    pub(crate) fn has_administrator(&self) -> Result<bool, AuthError> {
+        self.transaction(|connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator)",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+    }
     /// Explicit initialization only. Ordinary startup never registers or repairs
     /// clients; normal registration enforces both management privileges.
     pub(crate) fn seed_administrator_and_console(
@@ -456,20 +468,26 @@ impl SqliteAuthorizationStore {
         }
         self.initialize_administrator(
             username,
-            password,
+            Some(password),
             Some(&[registration, cli_registration()]),
+            None,
             now,
         )
+        .map(|result| result.principal_id)
     }
 
     pub(super) fn initialize_administrator(
         &self,
         username: &str,
-        password: &str,
+        password: Option<&str>,
         registrations: Option<&[ClientRegistration]>,
+        setup_storage: Option<&super::OAuthStorage>,
         now: i64,
-    ) -> Result<String, AuthError> {
-        if username.trim() != username || username.is_empty() || password.len() < 12 {
+    ) -> Result<InitializationResult, AuthError> {
+        if username.trim() != username
+            || username.is_empty()
+            || password.is_some_and(|password| password.len() < 12)
+        {
             return Err(AuthError::Invalid(
                 "invalid administrator credentials".into(),
             ));
@@ -541,18 +559,107 @@ impl SqliteAuthorizationStore {
                         [&principal],
                         |row| row.get(0),
                     )?;
+                    let setup_response = if password.is_none() {
+                        match setup_storage {
+                            Some(storage) => {
+                                let response = super::oauth::account::create_local_reset_in_transaction(connection, &principal, now)?;
+                                Some(storage.encode("administrator-setup", &principal, &response).map_err(|_| AuthError::Unavailable)?)
+                            }
+                            None => None,
+                        }
+                    } else { None };
                     Ok(InitializationResult {
                         principal_id: principal.clone(),
                         password_hash,
+                        setup_response,
                     })
                 },
             )?;
-            let verifier =
-                PasswordHash::new(&result.password_hash).map_err(|_| AuthError::Unavailable)?;
-            Argon2::default()
-                .verify_password(password.as_bytes(), &verifier)
-                .map_err(|_| AuthError::Conflict)?;
-            Ok(result.principal_id)
+            match (password, result.password_hash.as_deref()) {
+                (Some(password), Some(hash)) => {
+                    let verifier = PasswordHash::new(hash).map_err(|_| AuthError::Unavailable)?;
+                    Argon2::default()
+                        .verify_password(password.as_bytes(), &verifier)
+                        .map_err(|_| AuthError::Conflict)?;
+                }
+                (None, None) => {}
+                _ => return Err(AuthError::Conflict),
+            }
+            Ok(result)
         })
+    }
+}
+
+impl super::OAuthStorage {
+    /// Initialize the protected administrator and registered bundled clients
+    /// atomically, retaining any one-time setup response under custody encryption.
+    pub(crate) fn initialize_local_administrator(
+        &self,
+        origin: &str,
+        username: &str,
+        password: Option<&str>,
+        now: i64,
+    ) -> Result<(String, Option<String>), AuthError> {
+        let registration = console_registration(origin)?;
+        if url::Url::parse(origin)
+            .map_err(|_| AuthError::Denied)?
+            .origin()
+            .ascii_serialization()
+            == self.authority.settings.oauth_origin
+        {
+            return Err(AuthError::Invalid("reserved_oauth_origin".into()));
+        }
+        let initialized = self.authority.initialize_administrator(
+            username,
+            password,
+            Some(&[registration, cli_registration()]),
+            Some(self),
+            now,
+        )?;
+        let url = initialized.setup_response.as_deref().map(|sealed| {
+            let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse = self.decode("administrator-setup", &initialized.principal_id, sealed).map_err(|_| AuthError::Unavailable)?;
+            Ok::<_, AuthError>(format!("{}/account/reset?token={}", self.authority.settings.oauth_origin, response.token))
+        }).transpose()?;
+        Ok((initialized.principal_id, url))
+    }
+
+    /// Explicit local recovery supersedes outstanding links without altering the
+    /// administrator's authority or credentials until the reset is completed.
+    pub(crate) fn reset_local_administrator(&self, now: i64) -> Result<String, AuthError> {
+        let principal: String = self.authority.transaction(|connection| {
+            connection
+                .query_row(
+                    "SELECT principal_id FROM auth_bootstrap_administrator WHERE singleton=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)
+        })?;
+        let identity = super::Mutation {
+            actor: principal.clone(),
+            request_id: super::sqlite::id(),
+            request_digest: super::sqlite::digest(&principal)?,
+        };
+        let sealed = self.authority.mutate(
+            &identity,
+            "administrator.reset",
+            &principal,
+            now,
+            |connection| {
+                let response = super::oauth::account::create_local_reset_in_transaction(
+                    connection, &principal, now,
+                )?;
+                self.encode("administrator-reset", &identity.request_id, &response)
+                    .map_err(|_| AuthError::Unavailable)
+            },
+        )?;
+        let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse =
+            self.decode("administrator-reset", &identity.request_id, &sealed)
+                .map_err(|_| AuthError::Unavailable)?;
+        Ok(format!(
+            "{}/account/reset?token={}",
+            self.authority.settings.oauth_origin, response.token
+        ))
     }
 }

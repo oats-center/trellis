@@ -1,4 +1,5 @@
 import { deepEqual, equal, throws } from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   CIRCULAR_MARKER,
@@ -9,7 +10,7 @@ import {
   projectConsoleError,
 } from "./display_value.ts";
 
-Deno.test("U08 displayJson renders nested bigint exactly", () => {
+test("U08 displayJson renders nested bigint exactly", () => {
   const value = { revision: 9007199254740993n, nested: { count: 42n } };
   deepEqual(JSON.parse(displayJson(value)), {
     revision: "9007199254740993",
@@ -17,10 +18,10 @@ Deno.test("U08 displayJson renders nested bigint exactly", () => {
   });
 });
 
-Deno.test("U08 displayJson renders typed bytes and handles cycles", () => {
+test("U08 displayJson renders typed bytes and handles cycles", () => {
   const bytes = new Uint8Array([1, 2, 3]);
   deepEqual(JSON.parse(displayJson({ payload: bytes })), {
-    payload: { "$bytes": "AQID", length: 3 },
+    payload: { $bytes: "AQID", length: 3 },
   });
 
   const cyclic: Record<string, unknown> = { name: "root" };
@@ -29,14 +30,14 @@ Deno.test("U08 displayJson renders typed bytes and handles cycles", () => {
   equal(rendered.self, CIRCULAR_MARKER);
 });
 
-Deno.test("U08 displayJson tolerates repeated noncyclic references", () => {
+test("U08 displayJson tolerates repeated noncyclic references", () => {
   const shared = { value: 1 };
   const rendered = JSON.parse(displayJson({ left: shared, right: shared }));
   deepEqual(rendered.left, { value: 1 });
   deepEqual(rendered.right, { value: 1 });
 });
 
-Deno.test("U08 displayJson renders null, undefined, and non-finite numbers", () => {
+test("U08 displayJson renders null, undefined, and non-finite numbers", () => {
   deepEqual(JSON.parse(displayJson({ a: null, b: undefined, c: Infinity })), {
     a: null,
     b: null,
@@ -45,7 +46,7 @@ Deno.test("U08 displayJson renders null, undefined, and non-finite numbers", () 
   throws(() => JSON.stringify({ value: 1n }));
 });
 
-Deno.test("U09 timestamp normalization handles zero, decimals, ISO, and limits", () => {
+test("U09 timestamp normalization handles zero, decimals, ISO, and limits", () => {
   deepEqual(normalizeTimestamp(0), {
     kind: "valid",
     date: new Date(0),
@@ -77,7 +78,7 @@ Deno.test("U09 timestamp normalization handles zero, decimals, ISO, and limits",
   equal(formatTimestamp("garbage").startsWith("Invalid timestamp"), true);
 });
 
-Deno.test("U10 known JSON-byte decoder distinguishes malformed inputs", () => {
+test("U10 known JSON-byte decoder distinguishes malformed inputs", () => {
   const valid = new TextEncoder().encode(JSON.stringify({ kind: "kv" }));
   deepEqual(decodeKnownJsonBytes(valid), { ok: true, value: { kind: "kv" } });
 
@@ -100,17 +101,15 @@ Deno.test("U10 known JSON-byte decoder distinguishes malformed inputs", () => {
   equal(decodeKnownJsonBytes("not-bytes").ok, false);
 });
 
-Deno.test("JSON byte payloads retain nested values and JSON primitives for display and copy", () => {
-  for (
-    const value of [
-      { nested: ["日本語", false, null, 42] },
-      [1, 2],
-      null,
-      false,
-      0,
-      "",
-    ]
-  ) {
+test("JSON byte payloads retain nested values and JSON primitives for display and copy", () => {
+  for (const value of [
+    { nested: ["日本語", false, null, 42] },
+    [1, 2],
+    null,
+    false,
+    0,
+    "",
+  ]) {
     const decoded = decodeKnownJsonBytes(
       new TextEncoder().encode(JSON.stringify(value)),
     );
@@ -122,7 +121,7 @@ Deno.test("JSON byte payloads retain nested values and JSON primitives for displ
   }
 });
 
-Deno.test("U12 error projection keeps code and id without private details", () => {
+test("U12 error projection keeps code and id without private details", () => {
   const generated = projectConsoleError({
     id: "err_123",
     message: "The request is invalid.",
@@ -154,7 +153,7 @@ Deno.test("U12 error projection keeps code and id without private details", () =
   deepEqual(projectConsoleError({}), { message: "Unexpected error" });
 });
 
-Deno.test("U12 error projection unwraps Result-shaped errors", () => {
+test("U12 error projection unwraps Result-shaped errors", () => {
   const projected = projectConsoleError({
     error: {
       name: "AuthError",
@@ -172,7 +171,7 @@ Deno.test("U12 error projection unwraps Result-shaped errors", () => {
   });
 });
 
-Deno.test("U12 error projection reads serialized and context shapes", () => {
+test("U12 error projection reads serialized and context shapes", () => {
   const serialized = projectConsoleError({
     toSerializable: () => ({
       id: "err_789",

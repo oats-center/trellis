@@ -4,12 +4,12 @@ The walkthrough's `main.ts` already registers the handler before starting
 `service.wait()`, and stops the service when its shutdown signal arrives:
 
 ```ts
-Deno.addSignalListener("SIGINT", () => void service.stop());
-Deno.addSignalListener("SIGTERM", () => void service.stop());
+process.once("SIGINT", () => void service.stop());
+process.once("SIGTERM", () => void service.stop());
 await service.wait();
 ```
 
-These signal APIs are a Deno example. A Node process, supervisor, or embedded
+These signal APIs are a Node example. A supervisor or embedded
 host can trigger the same `service.stop()` lifecycle through its own shutdown
 mechanism. If your application starts additional timers, database pools, or
 background tasks, close those as well. Trellis does not own those resources.

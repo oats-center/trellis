@@ -45,6 +45,7 @@ import { trellisCrypto } from "./auth/crypto.ts";
 import type {
   SessionAuthorityOwner,
   PendingSessionRequest,
+  VerifiedAuthority,
 } from "./auth/authority.ts";
 import {
   fixedTransportProvider,
@@ -703,6 +704,7 @@ export type GenerationIntakeTarget = {
   id: number;
   nc: NatsConnection;
   contextDigest: string;
+  retainAuthority?: () => VerifiedAuthority;
   lease?: () => TransportLease;
 };
 
@@ -744,6 +746,7 @@ type ProviderIngress = {
   nc: NatsConnection;
   /** Exact admitted context this generation's providers were built from. */
   contextDigest: string;
+  retainAuthority?: () => VerifiedAuthority;
   lease?: () => TransportLease;
   /**
    * Held from install until every intake *loop* has finished (not merely until
@@ -1722,8 +1725,11 @@ export type TrellisOpts<TA extends RuntimeApi> = {
   contractDigest?: string;
 };
 
+/** Bounds the caller's request wait, not work already accepted by a service. */
 export type RequestOpts = {
+  /** Request deadline in milliseconds; expiry returns trellis.request.timeout. */
   timeout?: number;
+  /** Cancels the wait with trellis.request.cancelled, including after publication. */
   signal?: AbortSignal;
 };
 
@@ -2874,6 +2880,7 @@ export class Trellis<
         id: number;
         nc: NatsConnection;
         contextDigest: string;
+        retainAuthority?: () => VerifiedAuthority;
         lease?: () => TransportLease;
       }) => Promise<{
         drain: () => Promise<void>;
@@ -2901,19 +2908,7 @@ export class Trellis<
    * intake per admitted generation through the shared provider-ingress
    * mechanism instead of subscribing on a fixed connection.
    */
-  #generationIntakes = new Map<
-    string,
-    (target: {
-      id: number;
-      nc: NatsConnection;
-      contextDigest: string;
-      lease?: () => TransportLease;
-    }) => Promise<{
-      drain: () => Promise<void>;
-      done: Promise<void>;
-      dispose: () => Promise<void>;
-    }>
-  >();
+  #generationIntakes = new Map<string, GenerationIntakeInstall>();
   /**
    * One installed provider ingress per admitted generation, keyed by the
    * generation id the owning runtime reports.
@@ -3916,6 +3911,7 @@ export class Trellis<
       id: number;
       nc: NatsConnection;
       contextDigest: string;
+      retainAuthority?: () => VerifiedAuthority;
       lease?: () => TransportLease;
     }) =>
       this.#startLiveProvider({
@@ -3944,6 +3940,7 @@ export class Trellis<
         id: ingress.id,
         nc: ingress.nc,
         contextDigest: ingress.contextDigest,
+        retainAuthority: ingress.retainAuthority,
         lease: ingress.lease,
       });
       ingress.retireFns.push({
@@ -3969,6 +3966,7 @@ export class Trellis<
     id: number;
     nc: NatsConnection;
     contextDigest: string;
+    retainAuthority?: () => VerifiedAuthority;
     lease?: () => TransportLease;
     live: string;
     subject: string;
@@ -3995,11 +3993,16 @@ export class Trellis<
         context: { live, subject },
       });
     }
-    const ownGuard = await LiveAuthorityGuard.retain(cache, contextDigest, {
-      kind: "local-provider",
-      apiId: `${descriptor.permission.apiId}@${descriptor.permission.apiVersion}`,
-      action: toCatalogAction(descriptor.permission),
-    });
+    const ownGuard = await LiveAuthorityGuard.retain(
+      cache,
+      contextDigest,
+      {
+        kind: "local-provider",
+        apiId: `${descriptor.permission.apiId}@${descriptor.permission.apiVersion}`,
+        action: toCatalogAction(descriptor.permission),
+      },
+      args.retainAuthority,
+    );
     const own = ownGuard.identity;
     if (own.binding.kind !== "service" && own.binding.kind !== "device") {
       ownGuard.release();
@@ -4453,6 +4456,7 @@ export class Trellis<
         id: ingress.id,
         nc: ingress.nc,
         contextDigest: ingress.contextDigest,
+        retainAuthority: ingress.retainAuthority,
         lease: ingress.lease,
       });
       ingress.retireFns.push({
@@ -4538,6 +4542,7 @@ export class Trellis<
     nc: NatsConnection;
     /** Exact admitted context this generation's providers are built from. */
     contextDigest: string;
+    retainAuthority?: () => VerifiedAuthority;
     /**
      * Lease the exact admitted generation the candidate ingress routes on. It is
      * called once for the ingress-lifetime pin and again per accepted callback;
@@ -4606,6 +4611,7 @@ export class Trellis<
     }
     ingress.nc = target.nc;
     ingress.contextDigest = target.contextDigest;
+    ingress.retainAuthority = target.retainAuthority;
     ingress.lease = target.lease;
     ingress.retired = false;
     ingress.intakeStopped = undefined;
@@ -4649,6 +4655,7 @@ export class Trellis<
             id: ingress.id,
             nc: ingress.nc,
             contextDigest: ingress.contextDigest,
+            retainAuthority: ingress.retainAuthority,
             lease: ingress.lease,
           });
           if (!stillOwned()) {
@@ -4675,6 +4682,7 @@ export class Trellis<
           id: ingress.id,
           nc: ingress.nc,
           contextDigest: ingress.contextDigest,
+          retainAuthority: ingress.retainAuthority,
           lease: ingress.lease,
         });
         if (!stillOwned()) {
@@ -6867,6 +6875,53 @@ export class Trellis<
     signal?: AbortSignal;
     callerCapabilities?: readonly string[];
   }): Promise<Result<{ nc: NatsConnection; release(): void }, TransportError>> {
+    try {
+      const authority = this.ownAuthority;
+      if (authority && !authority.current) {
+        const signal = AbortSignal.any([
+          ...(args.signal ? [args.signal] : []),
+          AbortSignal.timeout(Math.max(0, args.deadlineMs - Date.now())),
+        ]);
+        await new Promise<void>((resolve, reject) => {
+          let unsubscribe = () => {};
+          const changed = () => {
+            if (!authority.current && !this.#transport.isClosed()) return;
+            unsubscribe();
+            signal.removeEventListener("abort", aborted);
+            resolve();
+          };
+          const aborted = () => {
+            unsubscribe();
+            signal.removeEventListener("abort", aborted);
+            reject(
+              requestFailedTransportError({
+                code: args.signal?.aborted
+                  ? "trellis.request.cancelled"
+                  : "trellis.request.timeout",
+                message: args.signal?.aborted
+                  ? "The request was cancelled."
+                  : "The request timed out waiting for verified authority.",
+                hint: "Wait for verified authority before making another request.",
+                method: args.method,
+                subject: args.subject,
+                cause: signal.reason,
+              }),
+            );
+          };
+          signal.addEventListener("abort", aborted, { once: true });
+          unsubscribe = authority.subscribe(changed);
+          // subscribe invokes synchronously; recheck after retaining cleanup.
+          if (signal.aborted) aborted();
+          else changed();
+        });
+      }
+    } catch (cause) {
+      return err(
+        cause instanceof TransportError
+          ? cause
+          : mapTransportAcquireFailure({ ...args, cause }),
+      );
+    }
     if (!this.#adaptiveTransport) {
       if (this.#nats.isClosed()) {
         return err(
@@ -6986,6 +7041,12 @@ export class Trellis<
         );
         injectTraceContext(createNatsHeaderCarrier(headers), args.span);
 
+        let waitFailure:
+          | {
+              cause: unknown;
+              kind: "cancelled" | "timeout";
+            }
+          | undefined;
         const result = await AsyncResult.try(async () => {
           const response = Promise.withResolvers<Msg>();
           const owner = this.#auth.authorityOwner;
@@ -6999,17 +7060,24 @@ export class Trellis<
           let verified = false;
           let verifying = 0;
           const timer = setTimeout(
-            () =>
-              response.reject(
-                new DOMException("Request timed out", "TimeoutError"),
-              ),
+            () => {
+              waitFailure = {
+                cause: new DOMException("Request timed out", "TimeoutError"),
+                kind: "timeout",
+              };
+              response.reject(waitFailure.cause);
+            },
             Math.max(1, deadlineMs - Date.now()),
           );
-          const abort = () =>
-            response.reject(
-              args.signal?.reason ??
+          const abort = () => {
+            waitFailure = {
+              cause:
+                args.signal?.reason ??
                 new DOMException("Request aborted", "AbortError"),
-            );
+              kind: "cancelled",
+            };
+            response.reject(waitFailure.cause);
+          };
           args.signal?.addEventListener("abort", abort, { once: true });
           const subscription = nc.subscribe(reply, {
             callback: (error, message) => {
@@ -7114,6 +7182,22 @@ export class Trellis<
         }
 
         const cause = result.error.cause;
+        if (waitFailure && cause === waitFailure.cause) {
+          recordAttempt(waitFailure.kind);
+          return err(
+            requestFailedTransportError({
+              code: `trellis.request.${waitFailure.kind}`,
+              message:
+                waitFailure.kind === "cancelled"
+                  ? "The request wait was cancelled."
+                  : "The request deadline elapsed.",
+              hint: "Stopping the wait does not undo work already accepted by the service.",
+              cause,
+              method: args.method,
+              subject: args.subject,
+            }),
+          );
+        }
         const message = cause instanceof Error ? cause.message : String(cause);
 
         this.#log.warn(

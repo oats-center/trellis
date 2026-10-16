@@ -9,4 +9,12 @@ export const SampleCodec = codecs.recursive(() => codecs.named("runtime-trellis.
 	value: codecs.string
 })));
 export const SavedCodec = codecs.recursive(() => codecs.named("runtime-trellis.Saved", codecs.model({ value: codecs.string })));
+export const UpdateCodec = codecs.recursive(() => codecs.named("runtime-trellis.Update", codecs.model({
+	nested: codecs.ref(() => UpdateDetailCodec),
+	value: codecs.string
+})));
+export const UpdateDetailCodec = codecs.recursive(() => codecs.named("runtime-trellis.UpdateDetail", codecs.model({
+	count: codecs.i64,
+	payload: codecs.bytes
+})));
 export const ValueCodec = codecs.recursive(() => codecs.named("runtime-trellis.Value", codecs.model({ value: codecs.string })));

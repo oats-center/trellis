@@ -8,6 +8,7 @@ import {
   type Socket,
 } from "node:net";
 import { test } from "node:test";
+import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { ulid } from "ulid";
 
 import {
@@ -149,222 +150,228 @@ test(
   "native caller rejects body, request-correlation and alternate-key certified reply attacks",
   { timeout: 45_000 },
   async (context) => {
-    const issuer = process.env.TRELLIS_NATIVE_TEST_ISSUER;
-    const trellisUrl = process.env.TRELLIS_NATIVE_TEST_URL;
-    const username = process.env.TRELLIS_NATIVE_TEST_USERNAME;
-    const password = process.env.TRELLIS_NATIVE_TEST_PASSWORD;
-    assert.ok(
-      issuer && trellisUrl && username && password,
-      "provide the fresh runtime URL, issuer, and seeded admin credentials",
-    );
-    const directory = await mkdtemp("/tmp/opencode/native-forged-reply-");
-    const close: Array<() => Promise<unknown>> = [];
-    try {
-      const adminLogin = await loginNativeTestClient({
-        issuer,
-        username,
-        password,
-        directory,
-        clientId: "trellis.cli",
-        request: adminApps.cli.request,
-        platformPrivileges: {
-          required: [
-            "principals.manage",
-            "apis.accept",
-            "clients.manage",
-            "roles.manage",
-          ],
-        },
-        signal: context.signal,
-      });
-      const admin = await connectNativeClient({
-        ...adminLogin,
-        request: adminApps.cli.request,
-        signal: context.signal,
-      }).orThrow();
-      close.push(() => admin.connection.close());
+    await withTrellisRuntime(async (runtime) => {
+      const issuer = runtime.oauthIssuer;
+      const trellisUrl = runtime.oauthIssuer;
+      const username = runtime.adminUsername;
+      const password = runtime.adminPassword;
 
-      const provider = participants.EchoProvider.participant;
-      const evidence = adminTypes.AuthPackageEvidenceCodec.decode(
-        provider.packageEvidence,
-      );
-      const api = provider.implements[0];
-      assert.ok(api, "EchoProvider must implement the runtime API");
-      const { review } = await admin
-        .apisReview({
-          apiId: api.identity,
-          packageEvidence: evidence,
-        })
-        .orThrow();
-      assert.equal(review.compatible, true);
-      await admin
-        .apisAccept({
-          reviewId: review.reviewId,
-          canonicalDigest: review.canonicalDigest,
-          expectedGeneration: review.currentGeneration ?? 0n,
-          expectedAcceptedRevision: review.currentAcceptedRevision ?? 0n,
-          mappingEdits: [],
-          roleEdits: [],
-          idempotencyKey: ulid(),
-        })
-        .orThrow();
-      const { deployment } = await admin
-        .deploymentsCreate({
-          title: `forged-reply-${ulid()}`,
-          kind: provider.kind,
-          participantId: provider.identity,
-          packageEvidence: evidence,
-          idempotencyKey: ulid(),
-        })
-        .orThrow();
-      const seed = generateSessionSeed();
-      const providerAuth = await createAuth({ sessionKeySeed: seed });
-      await admin
-        .serviceInstancesProvision({
-          deploymentId: deployment.deploymentId,
-          identityPublicKey: providerAuth.sessionKey,
-          title: "forged reply provider",
-          idempotencyKey: ulid(),
-        })
-        .orThrow();
-      const service = await TrellisService.connect({
-        trellisUrl,
-        participant: provider,
-        name: `forged-reply-provider-${ulid()}`,
-        seed,
-      }).orThrow();
-      close.push(() => service.stop());
-      await service.handleEcho(({ input }) => ok(input));
-
-      const clientId = `forged-reply-${ulid()}`;
-      const subjectPassword = `native-password-${ulid()}`;
-      const { user } = await admin
-        .usersCreate({
-          username: `forged-reply-${ulid()}`,
-          password: subjectPassword,
-          displayName: "Forged reply subject",
-          idempotencyKey: ulid(),
-        })
-        .orThrow();
-      await admin
-        .capabilityGrantsGrant({
-          principalId: user.principal.principalId,
-          capabilityId: echoCapability,
-          expectedRevision: 0n,
-          idempotencyKey: ulid(),
-        })
-        .orThrow();
-
-      const request = apps.EchoCaller.request;
-      let login: Awaited<ReturnType<typeof loginNativeTestClient>> | undefined;
-      await context.test(
-        "a registered callback-free native client completes Device Code authorization",
-        async () => {
-          await admin
-            .oAuthClientsPut({
-              clientId,
-              title: "Forged reply acceptance",
-              description: "Native signed response verification acceptance.",
-              kind: "native",
-              redirectUris: [],
-              impliedConsent: [],
-              development: true,
-              expectedRevision: 0n,
-              idempotencyKey: ulid(),
-            })
-            .orThrow();
-          login = await loginNativeTestClient({
-            issuer,
-            username: user.username,
-            password: subjectPassword,
-            directory,
-            clientId,
-            request,
-            approvedCapabilities: [echoCapability],
-            signal: context.signal,
-          });
-        },
-      );
-      assert.ok(login, "native Device Code authorization must complete");
-      const target = login.servers.find((server) =>
-        server.startsWith("nats://"),
-      );
-      assert.ok(target, "runtime must advertise a native NATS endpoint");
-      const proxy = await CertifiedReplyProxy.start(target);
-      close.push(() => proxy.close());
-      const caller = await connectNativeClient({
-        ...login,
-        servers: [proxy.url],
-        request,
-        timeout: 2_000,
-        signal: context.signal,
-      }).orThrow();
-      close.push(() => caller.connection.close());
-
-      assert.deepEqual(await caller.echo({ value: "baseline" }).orThrow(), {
-        value: "baseline",
-      });
-      const alternateAuth = await createAuth({
-        sessionKeySeed: generateSessionSeed(),
-      });
-      const attacks: Array<{ name: string; mutate: ReplyMutation }> = [
-        {
-          name: "body tampering",
-          mutate: async () => ({
-            needle: Buffer.from(JSON.stringify("forged")),
-            replacement: Buffer.from(JSON.stringify("hacked")),
-          }),
-        },
-        {
-          name: "wrong request correlation",
-          mutate: async (frame) => {
-            assert.ok(frame.headers);
-            const response: SessionResponse = JSON.parse(
-              frame.headers["trellis-session-response"],
-            );
-            return {
-              needle: Buffer.from(
-                `"requestId":${JSON.stringify(response.requestId)}`,
-              ),
-              replacement: Buffer.from(`"requestId":${JSON.stringify(ulid())}`),
-            };
+      const directory = await mkdtemp("/tmp/opencode/native-forged-reply-");
+      const close: Array<() => Promise<unknown>> = [];
+      try {
+        const adminLogin = await loginNativeTestClient({
+          issuer,
+          username,
+          password,
+          directory,
+          clientId: "trellis.cli",
+          request: adminApps.cli.request,
+          platformPrivileges: {
+            required: [
+              "principals.manage",
+              "apis.accept",
+              "clients.manage",
+              "roles.manage",
+            ],
           },
-        },
-        {
-          name: "proof signed by an alternate runtime key",
-          mutate: async (frame) => {
-            assert.ok(frame.headers);
-            const response: SessionResponse = JSON.parse(
-              frame.headers["trellis-session-response"],
-            );
-            const proof = await createResponseProof(
-              { publicKey: alternateAuth.sessionKey, sign: alternateAuth.sign },
-              response,
-              frame.body,
-            );
-            return {
-              needle: Buffer.from(frame.headers.proof),
-              replacement: Buffer.from(proof),
-            };
-          },
-        },
-      ];
-      for (const attack of attacks) {
-        await context.test(attack.name, async () => {
-          const mutated = proxy.arm("forged", attack.mutate);
-          const rejected = caller.echo({ value: "forged" });
-          await mutated;
-          const result = await rejected;
-          assert.equal(result.isErr(), true);
-          if (result.isErr()) assert.ok(result.error instanceof TransportError);
-          assert.deepEqual(await caller.echo({ value: "after" }).orThrow(), {
-            value: "after",
-          });
+          signal: context.signal,
         });
+        const admin = await connectNativeClient({
+          ...adminLogin,
+          request: adminApps.cli.request,
+          signal: context.signal,
+        }).orThrow();
+        close.push(() => admin.connection.close());
+
+        const provider = participants.EchoProvider.participant;
+        const evidence = adminTypes.AuthPackageEvidenceCodec.decode(
+          provider.packageEvidence,
+        );
+        const api = provider.implements[0];
+        assert.ok(api, "EchoProvider must implement the runtime API");
+        const { review } = await admin
+          .apisReview({
+            apiId: api.identity,
+            packageEvidence: evidence,
+          })
+          .orThrow();
+        assert.equal(review.compatible, true);
+        await admin
+          .apisAccept({
+            reviewId: review.reviewId,
+            canonicalDigest: review.canonicalDigest,
+            expectedGeneration: review.currentGeneration ?? 0n,
+            expectedAcceptedRevision: review.currentAcceptedRevision ?? 0n,
+            mappingEdits: [],
+            roleEdits: [],
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+        const { deployment } = await admin
+          .deploymentsCreate({
+            title: `forged-reply-${ulid()}`,
+            kind: provider.kind,
+            participantId: provider.identity,
+            packageEvidence: evidence,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+        const seed = generateSessionSeed();
+        const providerAuth = await createAuth({ sessionKeySeed: seed });
+        await admin
+          .serviceInstancesProvision({
+            deploymentId: deployment.deploymentId,
+            identityPublicKey: providerAuth.sessionKey,
+            title: "forged reply provider",
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+        const service = await TrellisService.connect({
+          trellisUrl,
+          participant: provider,
+          name: `forged-reply-provider-${ulid()}`,
+          seed,
+        }).orThrow();
+        close.push(() => service.stop());
+        await service.handleEcho(({ input }) => ok(input));
+
+        const clientId = `forged-reply-${ulid()}`;
+        const subjectPassword = `native-password-${ulid()}`;
+        const { user } = await admin
+          .usersCreate({
+            username: `forged-reply-${ulid()}`,
+            password: subjectPassword,
+            displayName: "Forged reply subject",
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+        await admin
+          .capabilityGrantsGrant({
+            principalId: user.principal.principalId,
+            capabilityId: echoCapability,
+            expectedRevision: 0n,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+
+        const request = apps.EchoCaller.request;
+        let login:
+          Awaited<ReturnType<typeof loginNativeTestClient>> | undefined;
+        await context.test(
+          "a registered callback-free native client completes Device Code authorization",
+          async () => {
+            await admin
+              .oAuthClientsPut({
+                clientId,
+                title: "Forged reply acceptance",
+                description: "Native signed response verification acceptance.",
+                kind: "native",
+                redirectUris: [],
+                impliedConsent: [],
+                development: true,
+                expectedRevision: 0n,
+                idempotencyKey: ulid(),
+              })
+              .orThrow();
+            login = await loginNativeTestClient({
+              issuer,
+              username: user.username,
+              password: subjectPassword,
+              directory,
+              clientId,
+              request,
+              approvedCapabilities: [echoCapability],
+              signal: context.signal,
+            });
+          },
+        );
+        assert.ok(login, "native Device Code authorization must complete");
+        const target = login.servers.find((server) =>
+          server.startsWith("nats://"),
+        );
+        assert.ok(target, "runtime must advertise a native NATS endpoint");
+        const proxy = await CertifiedReplyProxy.start(target);
+        close.push(() => proxy.close());
+        const caller = await connectNativeClient({
+          ...login,
+          servers: [proxy.url],
+          request,
+          timeout: 2_000,
+          signal: context.signal,
+        }).orThrow();
+        close.push(() => caller.connection.close());
+
+        assert.deepEqual(await caller.echo({ value: "baseline" }).orThrow(), {
+          value: "baseline",
+        });
+        const alternateAuth = await createAuth({
+          sessionKeySeed: generateSessionSeed(),
+        });
+        const attacks: Array<{ name: string; mutate: ReplyMutation }> = [
+          {
+            name: "body tampering",
+            mutate: async () => ({
+              needle: Buffer.from(JSON.stringify("forged")),
+              replacement: Buffer.from(JSON.stringify("hacked")),
+            }),
+          },
+          {
+            name: "wrong request correlation",
+            mutate: async (frame) => {
+              assert.ok(frame.headers);
+              const response: SessionResponse = JSON.parse(
+                frame.headers["trellis-session-response"],
+              );
+              return {
+                needle: Buffer.from(
+                  `"requestId":${JSON.stringify(response.requestId)}`,
+                ),
+                replacement: Buffer.from(
+                  `"requestId":${JSON.stringify(ulid())}`,
+                ),
+              };
+            },
+          },
+          {
+            name: "proof signed by an alternate runtime key",
+            mutate: async (frame) => {
+              assert.ok(frame.headers);
+              const response: SessionResponse = JSON.parse(
+                frame.headers["trellis-session-response"],
+              );
+              const proof = await createResponseProof(
+                {
+                  publicKey: alternateAuth.sessionKey,
+                  sign: alternateAuth.sign,
+                },
+                response,
+                frame.body,
+              );
+              return {
+                needle: Buffer.from(frame.headers.proof),
+                replacement: Buffer.from(proof),
+              };
+            },
+          },
+        ];
+        for (const attack of attacks) {
+          await context.test(attack.name, async () => {
+            const mutated = proxy.arm("forged", attack.mutate);
+            const rejected = caller.echo({ value: "forged" });
+            await mutated;
+            const result = await rejected;
+            assert.equal(result.isErr(), true);
+            if (result.isErr())
+              assert.ok(result.error instanceof TransportError);
+            assert.deepEqual(await caller.echo({ value: "after" }).orThrow(), {
+              value: "after",
+            });
+          });
+        }
+      } finally {
+        for (const dispose of close.reverse()) await dispose();
+        await rm(directory, { recursive: true, force: true });
       }
-    } finally {
-      for (const dispose of close.reverse()) await dispose();
-      await rm(directory, { recursive: true, force: true });
-    }
+    });
   },
 );

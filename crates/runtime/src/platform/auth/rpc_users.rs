@@ -573,7 +573,7 @@ pub(super) fn change_password(
         return Ok(previous);
     }
     let (hash, version): (String, u64) = store.transaction(|connection| {
-        connection.query_row("SELECT c.password_hash,c.version FROM auth_local_credentials c JOIN auth_principals p USING(principal_id) JOIN auth_login_sessions l USING(principal_id) WHERE c.principal_id=?1 AND p.state='active' AND l.login_session_id=?2 AND l.revoked_at IS NULL AND l.expires_at>?3", params![identity.actor, login, now], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(AuthError::Denied)
+        connection.query_row("SELECT c.password_hash,c.version FROM auth_local_credentials c JOIN auth_principals p USING(principal_id) JOIN auth_login_sessions l USING(principal_id) WHERE c.principal_id=?1 AND c.password_hash IS NOT NULL AND p.state='active' AND l.login_session_id=?2 AND l.revoked_at IS NULL AND l.expires_at>?3", params![identity.actor, login, now], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(AuthError::Denied)
     })?;
     if input.current_password.len() > 4096 {
         return Err(AuthError::Denied);

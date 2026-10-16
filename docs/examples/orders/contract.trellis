@@ -17,4 +17,4 @@ api orders@v1 {
 }
 
 service OrdersService { implements orders; }
-app OrdersCaller { use orders { required capability create; } }
+agent OrdersCaller { use orders { required capability create; } }

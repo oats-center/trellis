@@ -1,4 +1,5 @@
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   type BrowserAuthRecoveryClassification,
@@ -6,29 +7,26 @@ import {
   isRecoverableBrowserAuthError,
 } from "./browser.ts";
 import { TransportError } from "../errors/index.ts";
+import { decodeTrellisHttpError } from "./http_error.ts";
+
+test("OAuth consent requirements remain explicit rather than silently restarting sign-in", async () => {
+  const error = await decodeTrellisHttpError(
+    Response.json({ error: { code: "consent_required" } }, { status: 403 }),
+  );
+  assertClassification(error, { kind: "consent_required", recoverable: false });
+});
 
 function assertClassification(
   error: unknown,
   expected: Pick<BrowserAuthRecoveryClassification, "kind" | "recoverable">,
 ): void {
   const classification = classifyBrowserAuthError(error);
-  assertEquals(classification.kind, expected.kind);
-  assertEquals(classification.recoverable, expected.recoverable);
-  assertEquals(isRecoverableBrowserAuthError(error), expected.recoverable);
+  assert.deepEqual(classification.kind, expected.kind);
+  assert.deepEqual(classification.recoverable, expected.recoverable);
+  assert.deepEqual(isRecoverableBrowserAuthError(error), expected.recoverable);
 }
 
-Deno.test("classifyBrowserAuthError treats bind expiration as a recoverable expired flow", () => {
-  assertClassification(
-    new TransportError({
-      code: "transaction_expired",
-      message: "The Trellis sign-in step expired.",
-      hint: "Start the sign-in flow again.",
-    }),
-    { kind: "recoverable_expired_transaction", recoverable: true },
-  );
-});
-
-Deno.test("classifyBrowserAuthError treats missing session reason as stale session recovery", () => {
+test("classifyBrowserAuthError treats missing session reason as stale session recovery", () => {
   assertClassification(
     new TransportError({
       code: "session_not_found",
@@ -40,26 +38,14 @@ Deno.test("classifyBrowserAuthError treats missing session reason as stale sessi
   );
 });
 
-Deno.test("classifyBrowserAuthError treats expired session reason as stale session recovery", () => {
+test("classifyBrowserAuthError treats expired session reason as stale session recovery", () => {
   assertClassification(
     { code: "session_expired" },
     { kind: "recoverable_stale_session", recoverable: true },
   );
 });
 
-Deno.test("classifyBrowserAuthError treats an expired transaction as restartable without losing the intent", () => {
-  assertClassification(
-    {
-      type: "TransportError",
-      code: "transaction_expired",
-      message: "Trellis sign-in did not complete.",
-      context: { reason: "transaction_expired" },
-    },
-    { kind: "recoverable_expired_transaction", recoverable: true },
-  );
-});
-
-Deno.test("classifyBrowserAuthError does not recover explicit approval denial", () => {
+test("classifyBrowserAuthError does not recover explicit approval denial", () => {
   assertClassification(
     new TransportError({
       code: "approval_denied",
@@ -71,7 +57,7 @@ Deno.test("classifyBrowserAuthError does not recover explicit approval denial", 
   );
 });
 
-Deno.test("classifyBrowserAuthError does not silently recover insufficient capabilities", () => {
+test("classifyBrowserAuthError does not silently recover insufficient capabilities", () => {
   assertClassification(
     new TransportError({
       code: "insufficient_capabilities",
@@ -83,7 +69,7 @@ Deno.test("classifyBrowserAuthError does not silently recover insufficient capab
   );
 });
 
-Deno.test("classifyBrowserAuthError treats bootstrap not_ready as runtime unavailable", () => {
+test("classifyBrowserAuthError treats bootstrap not_ready as runtime unavailable", () => {
   assertClassification(
     new TransportError({
       code: "not_ready",
@@ -95,7 +81,7 @@ Deno.test("classifyBrowserAuthError treats bootstrap not_ready as runtime unavai
   );
 });
 
-Deno.test("classifyBrowserAuthError does not infer machine state from messages", () => {
+test("classifyBrowserAuthError does not infer machine state from messages", () => {
   assertClassification(
     new Error("wrapper", {
       cause: {

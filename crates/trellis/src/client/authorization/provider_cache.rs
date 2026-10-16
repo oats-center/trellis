@@ -583,6 +583,7 @@ mod tests {
         second.abort();
         assert!(second.await.unwrap_err().is_cancelled());
         assert!(owner.assert_current(&authority).is_err());
+        assert!(owner.assert_accepted_request_current(&authority).is_err());
         assert!(owner.own_authority().is_err());
         let (third, snapshot) = start_mirror();
         tokio::time::timeout(RESOLUTION_TIMEOUT, snapshot)
@@ -649,6 +650,7 @@ mod tests {
             .unwrap();
         assert!(owner.assert_current(&authority).is_err());
         owner.assert_current(&replacement).unwrap();
+        owner.assert_accepted_request_current(&authority).unwrap();
         let retirement = SignedSessionRevocation {
             format: trellis_protocol::SESSION_REVOCATION_FORMAT_V1.into(),
             issuer_key_id: issuer.key_id.clone(),
@@ -683,6 +685,7 @@ mod tests {
             .unwrap();
         owner.accept_revocation(retirement).unwrap();
         assert!(owner.assert_current(&replacement).is_err());
+        assert!(owner.assert_accepted_request_current(&authority).is_err());
         assert!(owner
             .promote_own(replacement.clone(), Some(replacement.digest()))
             .is_err());
@@ -697,6 +700,7 @@ mod tests {
             owner.assert_current(&replacement),
             Err(TrellisClientError::Protocol(_))
         ));
+        assert!(owner.assert_accepted_request_current(&authority).is_err());
         fourth.abort();
         assert!(fourth.await.unwrap_err().is_cancelled());
 
@@ -846,7 +850,9 @@ struct OwnerState {
     material: BTreeMap<(MaterialKind, String), CacheEntry>,
     revocations: BTreeMap<String, SignedSessionRevocation>,
     revocation_overflow_until: i64,
-    revocation_epoch: Option<Arc<()>>,
+    revocation_epoch: Option<Arc<async_nats::Client>>,
+    revocation_predecessor_epoch: Option<Arc<async_nats::Client>>,
+    revocation_pending_epoch: Option<Arc<async_nats::Client>>,
     revocation_covered: bool,
 }
 
@@ -875,7 +881,7 @@ impl OwnerState {
 
 struct RevocationCoverage {
     owner: AuthorizationOwner,
-    epoch: Arc<()>,
+    epoch: Arc<async_nats::Client>,
 }
 
 impl RevocationCoverage {
@@ -884,7 +890,7 @@ impl RevocationCoverage {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
         if !state
-            .revocation_epoch
+            .revocation_pending_epoch
             .as_ref()
             .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
             || state.revocation_overflow_until > self.owner.policy().now_unix_seconds
@@ -893,6 +899,13 @@ impl RevocationCoverage {
                 "revocation snapshot superseded or incomplete".into(),
             ));
         }
+        state.revocation_predecessor_epoch = if state.revocation_covered {
+            state.revocation_epoch.take()
+        } else {
+            None
+        };
+        state.revocation_epoch = Some(Arc::clone(&self.epoch));
+        state.revocation_pending_epoch = None;
         state.revocation_covered = true;
         drop(state);
         let _ = self.owner.changes.send(());
@@ -904,12 +917,34 @@ impl Drop for RevocationCoverage {
     fn drop(&mut self) {
         if let Ok(mut state) = self.owner.state.write() {
             if state
+                .revocation_pending_epoch
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
+            {
+                state.revocation_pending_epoch = None;
+            }
+            if state
+                .revocation_predecessor_epoch
+                .as_ref()
+                .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
+            {
+                state.revocation_predecessor_epoch = None;
+            }
+            if state
                 .revocation_epoch
                 .as_ref()
                 .is_some_and(|epoch| Arc::ptr_eq(epoch, &self.epoch))
             {
-                state.revocation_covered = false;
-                state.revocation_epoch = None;
+                // A completed candidate can still lose its final transport
+                // check. Its never-stopped predecessor remains valid coverage.
+                state.revocation_epoch =
+                    state
+                        .revocation_predecessor_epoch
+                        .take()
+                        .filter(|transport| {
+                            transport.connection_state() == async_nats::connection::State::Connected
+                        });
+                state.revocation_covered = state.revocation_epoch.is_some();
                 drop(state);
                 let _ = self.owner.changes.send(());
             }
@@ -979,6 +1014,8 @@ impl AuthorizationOwner {
             revocations: BTreeMap::new(),
             revocation_overflow_until: 0,
             revocation_epoch: None,
+            revocation_predecessor_epoch: None,
+            revocation_pending_epoch: None,
             revocation_covered: false,
         };
         Ok(Self {
@@ -1107,6 +1144,22 @@ impl AuthorizationOwner {
         &self,
         authority: &VerifiedSessionAuthority,
     ) -> Result<(), TrellisClientError> {
+        self.assert_authority_current(authority, true)
+    }
+
+    /// Recheck a published request without requiring its signing snapshot to remain installed.
+    pub(crate) fn assert_accepted_request_current(
+        &self,
+        authority: &VerifiedSessionAuthority,
+    ) -> Result<(), TrellisClientError> {
+        self.assert_authority_current(authority, false)
+    }
+
+    fn assert_authority_current(
+        &self,
+        authority: &VerifiedSessionAuthority,
+        require_installed_own: bool,
+    ) -> Result<(), TrellisClientError> {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
@@ -1114,7 +1167,8 @@ impl AuthorizationOwner {
         let policy = self.policy();
         if authority.authority().trellis_instance_id != self.trust.instance_id
             || authority.authority().audience_nats_account != self.trust.account
-            || (authority.authority().runtime_id == self.runtime_id
+            || (require_installed_own
+                && authority.authority().runtime_id == self.runtime_id
                 && authority.authority().session_public_key == self.session_public_key
                 && state.own.as_ref().map(|own| own.digest()) != Some(authority.digest()))
             || state.revocation_overflow_until > policy.now_unix_seconds
@@ -1474,114 +1528,144 @@ impl AuthorizationOwner {
         proof: &SessionRequestProof,
         action: &CatalogActionIdentity,
     ) -> Result<VerifiedAuthorizationRequest, TrellisClientError> {
-        let authority = self
-            .resolve_authority(transport, &request.authority_digest)
-            .await?;
-        let own = self.own_authority()?;
-        let certificate = self
-            .authorize_provider(transport, &own, &request.api_id, action)
-            .await?;
-        if certificate.generation != request.api_generation {
-            return Err(super::core::AuthorizationVerificationError::PermissionDenied.into());
-        }
-        let reference = own
-            .authority()
-            .apis
-            .iter()
-            .find(|api| api.api_id == request.api_id)
-            .ok_or(super::core::AuthorizationVerificationError::PermissionDenied)?;
-        let material = self
-            .material(
-                transport,
-                MaterialKind::Catalog,
-                &reference.catalog_snapshot_digest,
-            )
-            .await?;
-        let RegistryMaterial::Catalog(catalog) = material.as_ref() else {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "wrong catalog material".into(),
-            ));
-        };
-        let issuer = self.issuer(transport, &catalog.issuer_key_id).await?;
-        let policy = self.policy();
-        let state = self.state.read().map_err(|_| {
-            TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
-        })?;
-        state.require_live_coverage()?;
-        if state.revocation_overflow_until > policy.now_unix_seconds {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "revocation capacity reached".into(),
-            ));
-        }
-        let known_revoked = state
-            .revocations
-            .contains_key(&authority.authority().authorization_session_id);
-        own.assert_current(
-            &policy,
-            state
-                .revocations
-                .contains_key(&own.authority().authorization_session_id),
-        )?;
-        if !state
-            .issuer(&own.authority().issuer_key_id, policy.now_unix_seconds)
-            .is_some_and(|key| key.state == AuthorityIssuerState::Active)
-        {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "provider issuer retired".into(),
-            ));
-        }
-        if state.own.as_ref().map(|current| current.digest()) != Some(own.digest()) {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "provider authority superseded during verification".into(),
-            ));
-        }
-        if !state
-            .issuer(
-                &authority.authority().issuer_key_id,
-                policy.now_unix_seconds,
-            )
-            .is_some_and(|key| key.state == AuthorityIssuerState::Active)
-        {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "caller issuer retired".into(),
-            ));
-        }
-        let issuer = state
-            .issuer(&issuer.key_id, policy.now_unix_seconds)
-            .ok_or_else(|| {
-                TrellisClientError::AuthorizationUnavailable("catalog issuer unavailable".into())
-            })?;
-        let certificate_issuer = state
-            .issuer(&certificate.issuer_key_id, policy.now_unix_seconds)
-            .ok_or_else(|| {
-                TrellisClientError::AuthorizationUnavailable(
-                    "certificate issuer unavailable".into(),
-                )
-            })?;
-        if certificate_issuer.state != AuthorityIssuerState::Active {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "provider material issuer retired".into(),
-            ));
-        }
-        certificate.verify(
-            &certificate_issuer,
-            &self.trust.instance_id,
-            &self.trust.account,
-            policy.now_unix_seconds,
-        )?;
-        Ok(
-            AuthorizationVerificationCore::new().verify_request(RequestVerificationInput {
-                authority: authority.verified(),
-                request,
-                payload,
-                proof,
-                policy: &policy,
-                known_revoked,
-                catalog,
-                catalog_issuer: &issuer,
-                action,
-            })?,
-        )
+        tokio::time::timeout(RESOLUTION_TIMEOUT, async {
+            loop {
+                let own = self.own_authority()?;
+                let result = async {
+                    let authority = self
+                        .resolve_authority(transport, &request.authority_digest)
+                        .await?;
+                    let certificate = self
+                        .authorize_provider(transport, &own, &request.api_id, action)
+                        .await?;
+                    if certificate.generation != request.api_generation {
+                        return Err(
+                            super::core::AuthorizationVerificationError::PermissionDenied.into(),
+                        );
+                    }
+                    // Caller grants are bound to the caller's catalog, independently of the
+                    // provider's pinned implementation checked above.
+                    let reference = authority
+                        .authority()
+                        .apis
+                        .iter()
+                        .find(|api| api.api_id == request.api_id)
+                        .ok_or(super::core::AuthorizationVerificationError::PermissionDenied)?;
+                    let material = self
+                        .material(
+                            transport,
+                            MaterialKind::Catalog,
+                            &reference.catalog_snapshot_digest,
+                        )
+                        .await?;
+                    let RegistryMaterial::Catalog(catalog) = material.as_ref() else {
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "wrong catalog material".into(),
+                        ));
+                    };
+                    let issuer = self.issuer(transport, &catalog.issuer_key_id).await?;
+                    let policy = self.policy();
+                    let state = self.state.read().map_err(|_| {
+                        TrellisClientError::AuthorizationUnavailable(
+                            "authority owner unavailable".into(),
+                        )
+                    })?;
+                    state.require_live_coverage()?;
+                    if state.revocation_overflow_until > policy.now_unix_seconds {
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "revocation capacity reached".into(),
+                        ));
+                    }
+                    let known_revoked = state
+                        .revocations
+                        .contains_key(&authority.authority().authorization_session_id);
+                    own.assert_current(
+                        &policy,
+                        state
+                            .revocations
+                            .contains_key(&own.authority().authorization_session_id),
+                    )?;
+                    if !state
+                        .issuer(&own.authority().issuer_key_id, policy.now_unix_seconds)
+                        .is_some_and(|key| key.state == AuthorityIssuerState::Active)
+                    {
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "provider issuer retired".into(),
+                        ));
+                    }
+                    if state.own.as_ref().map(|current| current.digest()) != Some(own.digest()) {
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "provider authority superseded during verification".into(),
+                        ));
+                    }
+                    if !state
+                        .issuer(
+                            &authority.authority().issuer_key_id,
+                            policy.now_unix_seconds,
+                        )
+                        .is_some_and(|key| key.state == AuthorityIssuerState::Active)
+                    {
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "caller issuer retired".into(),
+                        ));
+                    }
+                    let issuer = state
+                        .issuer(&issuer.key_id, policy.now_unix_seconds)
+                        .ok_or_else(|| {
+                            TrellisClientError::AuthorizationUnavailable(
+                                "catalog issuer unavailable".into(),
+                            )
+                        })?;
+                    let certificate_issuer = state
+                        .issuer(&certificate.issuer_key_id, policy.now_unix_seconds)
+                        .ok_or_else(|| {
+                            TrellisClientError::AuthorizationUnavailable(
+                                "certificate issuer unavailable".into(),
+                            )
+                        })?;
+                    if certificate_issuer.state != AuthorityIssuerState::Active {
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "provider material issuer retired".into(),
+                        ));
+                    }
+                    certificate.verify(
+                        &certificate_issuer,
+                        &self.trust.instance_id,
+                        &self.trust.account,
+                        policy.now_unix_seconds,
+                    )?;
+                    Ok(AuthorizationVerificationCore::new().verify_request(
+                        RequestVerificationInput {
+                            authority: authority.verified(),
+                            request,
+                            payload,
+                            proof,
+                            policy: &policy,
+                            known_revoked,
+                            catalog,
+                            catalog_issuer: &issuer,
+                            action,
+                        },
+                    )?)
+                }
+                .await;
+                // Only restart verification if its own-provider snapshot was
+                // superseded during cold evidence resolution. No handler has
+                // run, and missing coverage or unchanged authority is not retried.
+                if result.is_err()
+                    && self
+                        .own_authority()
+                        .is_ok_and(|current| current.digest() != own.digest())
+                {
+                    continue;
+                }
+                return result;
+            }
+        })
+        .await
+        .map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("request verification timed out".into())
+        })?
     }
 
     /// Authenticate exact request possession without authorizing any catalog action.
@@ -2245,6 +2329,20 @@ impl AuthorizationOwner {
         Ok(())
     }
 
+    /// Apply HTTP-authenticated OAuth rotation links through the shared pinned owner.
+    pub(crate) async fn install_oauth_rotations(
+        &self,
+        rotations: Vec<trellis_protocol::SignedIssuerRotation>,
+    ) -> Result<(), TrellisClientError> {
+        let _rotation = self.rotations.lock().await;
+        for rotation in rotations {
+            if rotation.sequence.get() > self.current_trust()?.rotation_sequence {
+                self.accept_issuer_rotation(rotation)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve an unknown signer only through consecutive predecessor signatures.
     pub async fn issuer(
         &self,
@@ -2465,13 +2563,20 @@ impl AuthorizationOwner {
         Ok(())
     }
 
-    /// Fence attachment-bound coverage immediately without erasing signed retirements.
-    /// A displaced mirror's epoch cannot restore usability after a transport change.
+    /// Invalidate pending snapshots without erasing signed retirements.
+    /// A complete mirror on a still-connected carrier may cover retained work;
+    /// a displaced snapshot cannot restore coverage after a transport change.
     pub(crate) fn fence_revocation_coverage(&self) {
         if let Ok(mut state) = self.state.write() {
             let changed = state.revocation_covered || state.revocation_epoch.is_some();
-            state.revocation_covered = false;
-            state.revocation_epoch = None;
+            state.revocation_pending_epoch = None;
+            if !state.revocation_epoch.as_ref().is_some_and(|transport| {
+                transport.connection_state() == async_nats::connection::State::Connected
+            }) {
+                state.revocation_covered = false;
+                state.revocation_epoch = None;
+                state.revocation_predecessor_epoch = None;
+            }
             drop(state);
             if changed {
                 let _ = self.changes.send(());
@@ -2480,22 +2585,24 @@ impl AuthorizationOwner {
     }
 
     /// Run one logical-session mirror for this attachment, not one watch per peer.
-    /// The caller restarts it when the published transport changes. Its scoped
-    /// epoch fences live verification until the registered snapshot completes;
-    /// cancellation or failure fences it again without clearing signed retirements.
+    /// A replacement stages its snapshot while a healthy predecessor continues
+    /// covering retained work. Snapshot completion atomically hands over its
+    /// scoped epoch; failure never erases signed retirements or revives a stopped
+    /// predecessor.
     pub async fn run_revocations(
         &self,
         transport: &async_nats::Client,
         mut shutdown: watch::Receiver<bool>,
         ready: tokio::sync::oneshot::Sender<()>,
     ) -> Result<(), TrellisClientError> {
-        let epoch = Arc::new(());
+        let epoch = Arc::new(transport.clone());
         {
             let mut state = self.state.write().map_err(|_| {
                 TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
             })?;
-            state.revocation_epoch = Some(Arc::clone(&epoch));
-            state.revocation_covered = false;
+            // Preparing a successor is not loss of a healthy shared mirror.
+            // Only a complete authenticated snapshot may displace its epoch.
+            state.revocation_pending_epoch = Some(Arc::clone(&epoch));
         }
         let coverage = RevocationCoverage {
             owner: self.clone(),

@@ -113,24 +113,52 @@ paths. They create private files without replacing existing material. Normal
 startup only reads those seeds and fails on missing, unsafe, or corrupt custody;
 it does not generate replacement identities or persist private seeds in Auth SQL.
 
-Lease-owning startup provisions all four generated built-in provider descriptors
-through ordinary API acceptance and deployment approval, using independently
-keyed initialization mutations per installation and participant. Replay retains
-the actual ULID deployment and instance; disabled, expired, retired, or mismatched
-identities are rejected rather than re-enabled. Installed native KV declarations
-are materialized and committed before native admission. Providers without
-declarations get a projection derived from that empty declaration set. The
-current startup materializer rejects companions and non-KV resources; it does not
-invent consumer, job, or object-store bindings. Native connection uses configured
-NATS endpoints, pinned store trust, and the retained identity seed, then checks
-installed signed identity against the provisioned record—not reserved deployment
-names or caller-supplied admission assertions.
-Modes without Platform ownership only read an already provisioned identity from
-the configured shared SQLite database. Lookup uses the same native descriptor,
-active binding, revision, expiry, and identity checks in a read-only snapshot;
-it neither requires administrator authority to read nor provisions, repairs, or
-records a mutation. An unknown credential is `NotFound`, not an initialization
-fallback.
+The Auth-owning host provisions its selected generated built-in provider
+descriptors through ordinary API acceptance and deployment approval, using
+independently keyed initialization mutations per installation and participant.
+Replay retains the actual ULID deployment and instance; disabled, expired,
+retired, or mismatched identities are rejected rather than re-enabled.
+Declaration-derived resources are materialized before native admission; an empty
+projection is valid only for an installed participant with no declarations.
+
+Disabling a deployment retires its sessions and denies new admission without
+detaching allocations or clearing resource commitments. Enabling it reuses those
+retained bindings; it does not require contract reapplication or recreate storage.
+Deployment removal and declaration omission still detach allocations while
+preserving physical data for explicit administrator decisions.
+
+Split roles are independently deployable hosts. Each uses its own provisioned
+identity seed, configured NATS endpoints, and trust established from provisioning
+or the explicitly selected Auth HTTPS origin (loopback HTTP in development).
+Admission uses ordinary Callout and signed own-context; it does not initialize
+an unknown identity or read another role's database, issuer signing seed, or OAuth
+custody key. Auth alone owns provisioning and authorization records. Jobs history,
+resource resolution, and Events ownership checks must obtain authoritative
+resource evidence through an authenticated contract-owned Auth service boundary,
+not a shared filesystem. An Auth-owning process can check admission against its
+own provisioning result without making that database a dependency of split roles.
+
+`Auth.ResourceBindings.Query` is the native-IDL, paginated read boundary for
+runtime Job and Event consumer evidence. `jobResourceBindingsRead` and
+`eventResourceBindingsRead` authorize only their respective resource kinds even
+though they share the route. Jobs and Events declare their own required read
+capability; neither receives administrative mutation authority. Responses carry
+typed physical bindings and ownership, installed revision, retained evidence
+state, and the current resource-bindings digest only when the deployment and
+allocation are still current and ready. History and consumer-owned actions match
+that digest against verified caller authority before accessing retained data.
+Unavailable Auth evidence fails the operation; roles do not keep a local catalog
+replica or fall back to another host's database. Events telemetry uses the same
+authenticated read boundary within its existing poll deadline.
+
+First-time resource provisioning may finish an interrupted allocation using the
+same incarnation and retained infrastructure. Once materialization has committed,
+missing durable consumers, KV buckets, object stores, or Operation storage are
+storage loss, not an invitation to create empty replacements. Materialization
+fails closed and retains the prior durable evidence even after a failed retry.
+The same rule applies to previously committed shared Job keyed-coordination
+storage: losing it must not reset active ownership fences or cleanup obligations.
+Existing resources must still pass ownership and data-retention validation.
 
 Explicitly initialized or administrator-registered development clients may be
 eligible for platform privileges, including a localhost Console or a locally
@@ -258,6 +286,12 @@ Normal acceptance increments the local accepted revision. New actions and
 capability memberships record introduction revisions: an older signed context
 cannot gain them merely because a newer catalog is available.
 
+Request verification evaluates caller grants against the exact signed catalog
+referenced by the caller's authority. Provider eligibility is checked separately
+against its pinned implementation and provider certificate. Compatible callers
+and providers need not have equal accepted revisions within one API generation;
+neither party's catalog can lend authority to the other.
+
 Force replacement requires its finite privilege, reviewed-digest confirmation,
 explicit breakage acknowledgment, and declared meaning changes with increased
 consent revisions. It creates a new API generation at revision 1 and makes
@@ -321,6 +355,39 @@ Replacement streams use an epoch fence: completion of a retired watcher cannot
 restore or clear its successor's coverage. Observed revocations remain sticky;
 recovery never extends the signed authority's expiry.
 
+Optional-action availability is advisory: a missing live authority snapshot is
+unknown, not proof that the action is denied. Finite requests wait for verified
+authority before signing and publishing, within their original deadline and
+cancellation signal. A current snapshot that excludes the action remains denied;
+recovery never retransmits a potentially executed request.
+
+An accepted native RPC may finish while the provider's own authority is being
+promoted. Reply signing reacquires a coherent current provider snapshot when
+asynchronous certificate resolution overlaps that promotion, within one
+configured signing deadline. This repeats only local signing preparation, never
+the handler or its application request. Current provider eligibility, issuer
+trust, expiry and shared revocation coverage remain required.
+
+A healthy transport rollover stages its replacement mirror without stopping the
+current one. The replacement becomes the single authoritative mirror only after
+its authenticated snapshot and queued updates have been applied, including any
+already-received predecessor updates. Failed preparation leaves the predecessor
+authoritative; loss of the predecessor still fences application use until a
+complete replacement restores coverage. Superseded watcher completion cannot
+clear the promoted mirror's coverage.
+
+Rust retains the predecessor's carrier lease during this handover. A failed or
+superseded replacement can fall back only to that still-running, connected
+predecessor; stopping a predecessor prevents its restoration. Fresh work on the
+replacement stays fenced until its snapshot and exact publication are checked.
+Losing the actual covering carrier withdraws coverage without erasing cutoffs.
+
+While an already-received revocation update is being verified and applied,
+asynchronous reply verification waits for that owner's ordered update queue,
+then repeats its live authority checks. It does not discard a received reply
+merely because this bounded ingress fence is active, retransmit the request,
+or treat lost or superseded mirror coverage as usable.
+
 One cancellable supervisor retries unexpected stream loss or a temporarily
 missing published carrier with bounded backoff and jitter. Private maintenance
 can acquire an admitted carrier while application use remains fenced; only a
@@ -335,6 +402,10 @@ reused CID with another attachment marker is never kicked. Unavailable or
 malformed inventory is retryable, not proof of absence. `CONNZ`'s filtered
 `num_connections`, not its global `total`, establishes CID absence. Effects have
 bounded claims, retry backoff, stale-claim recovery, and predecessor ordering.
+An expired or superseded claim cannot acknowledge or reschedule work and is not
+an Auth-host failure. The durable intent remains available to its current or next
+owner. Claim settlement includes time spent awaiting broker effects rather than
+reusing the batch's original timestamp.
 
 ## Issuers And Bootstrap
 
@@ -436,9 +507,22 @@ never to a separate Device Code authorization. Rejected cross-principal
 reauthorization preserves the previous credential. Browser refresh reloads
 durable cross-tab trust under the custody lock and discovers the current signer
 before spending its token, even when the OAuth client object remains open.
+Node-native replacement attachments reuse admission only while the shared verifier
+accepts its lifetime, scope, session key, and current pinned issuer. Transport loss
+alone does not spend OAuth refresh custody. Renewal authenticates the selected
+HTTP origin before spending the one-use token; unavailable discovery leaves it
+unspent, while an ambiguous token POST retains the spent marker and requires
+explicit recovery. Failed transport preparation uses bounded recovery without
+retransmitting application requests or clearing known revocations.
 Native renewal leases the current maintenance attachment rather than retaining
 the initial socket; that finite lease carries signer resolution through the
 existing private preparation and checked authority-promotion boundary.
+Provider ingress preparation retains the verified private candidate authority,
+not the suspended predecessor. This applies to Live and Operation observation
+providers alike. Retention still verifies provider actions against the accepted
+catalog and current revocation coverage; the candidate cannot authorize frames
+until checked transport publication commits it. Failed preparation retires the
+candidate and releases its verifier only after retained installation leases drain.
 Cold provider-certificate material reads authenticate the immutable signature,
 installation/account binding, identity, and validity bounds without applying
 today's clock. Live use still requires a current issuer and unexpired authority

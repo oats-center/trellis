@@ -49,11 +49,11 @@ service KvProvider {
     ttl 0ms;
   }
 }
-app Caller { use echo { required capability invoke; required capability upload; } }
+agent Caller { use echo { required capability invoke; required capability upload; } }
 agent AgentCaller { use echo { required capability invoke; } }
-app RestrictedCaller {}
-app OptionalOperationCaller { use echo { capability optionalSilent; } }
-app OperationAuthorizationCaller { use echo { required capability optionalSilent; } }
+agent RestrictedCaller {}
+agent OptionalOperationCaller { use echo { capability optionalSilent; } }
+agent OperationAuthorizationCaller { use echo { required capability optionalSilent; } }
 device UnsupportedDevice {}
 device CompanionDevice {
   state saved { title "Device saved value"; description "Installed device State authority acceptance"; schema Value; version 1; }

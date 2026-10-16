@@ -1,10 +1,5 @@
-import type {
-  AppRequestDescriptor,
-  ClientAuthContinuation,
-  ClientAuthOptions,
-  ClientAuthRequiredContext,
-  ConnectedTrellisClient,
-} from "@oatscenter/trellis";
+import type { AppRequestDescriptor } from "@oatscenter/trellis";
+import type { ConnectedNativeClient } from "@oatscenter/trellis/native";
 
 /** Directory or HTTP(S) proxy used by a production web surface. */
 export type TrellisControlPlaneWebSource =
@@ -133,20 +128,6 @@ export type TrellisTestServiceKey = {
   participantId: string;
 };
 
-/** Session-key material returned for a registered app/client participant. */
-export type TrellisTestClientKey = {
-  seed: string;
-  participantId: string;
-};
-
-/** Authentication options for connecting a test app/client participant. */
-export type TrellisTestClientAuth = {
-  auth: ClientAuthOptions;
-  onAuthRequired(
-    ctx: ClientAuthRequiredContext,
-  ): Promise<ClientAuthContinuation>;
-};
-
 /** Result returned when a participant is installed for a test deployment. */
 export type TrellisTestParticipantApproval = {
   participantId: string;
@@ -158,8 +139,9 @@ export type TrellisTestParticipantApproval = {
 export type TrellisTestParticipant = TrellisTestParticipantLike;
 
 /** Contract value accepted by app/client helpers. */
-export type TrellisTestClientParticipant = AppRequestDescriptor;
+export type TrellisTestClientParticipant = AppRequestDescriptor &
+  Readonly<{ kind: "native" }>;
 
 /** Connected app/client type returned by `TrellisTestRuntime.connectClient`. */
 export type TrellisTestConnectedClient<TContract extends AppRequestDescriptor> =
-  ConnectedTrellisClient<TContract>;
+  ConnectedNativeClient<TContract>;

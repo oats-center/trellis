@@ -456,7 +456,7 @@ impl OAuthStorage {
         Ok(result)
     }
 
-    pub(super) fn decode<T: DeserializeOwned>(
+    pub(crate) fn decode<T: DeserializeOwned>(
         &self,
         kind: &str,
         key: &str,
@@ -530,7 +530,7 @@ impl OAuthStorage {
         Ok(())
     }
 
-    pub(super) fn encode<T: Serialize>(
+    pub(crate) fn encode<T: Serialize>(
         &self,
         kind: &str,
         key: &str,

@@ -367,7 +367,7 @@ staticPasswords:
     )
     .unwrap();
     let browser = tokio::process::Command::new("node")
-        .args(["--test", "ts/browser/oauth_account_link.browser_test.ts"])
+        .args(["--test", "ts/browser/oauth_account_link.browser_driver.ts"])
         .env(
             "TRELLIS_TEST_ACCOUNT_LINK_URI",
             &browser_link.authorization_url,
@@ -707,7 +707,7 @@ staticPasswords:
         ),
     ]);
     let browser = tokio::process::Command::new("node")
-        .args(["--test", "ts/browser/oauth_upstream.browser_test.ts"])
+        .args(["--test", "ts/browser/oauth_upstream.browser_driver.ts"])
         .env(
             "TRELLIS_TEST_OAUTH_AUTHORIZATION_URI",
             authorization.as_str(),

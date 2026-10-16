@@ -4,7 +4,7 @@ import * as Api0 from "../../apis/echo/mod.js";
 /** Developer selections and local State codecs; never principal installation evidence. */
 export declare const request: AppRequestDescriptor & {
 	readonly id: "trellis-test-fixture.OptionalOperationCaller";
-	readonly kind: "browser";
+	readonly kind: "native";
 	readonly requiredCapabilities: readonly [];
 	readonly optionalCapabilities: readonly ["trellis-test-fixture.echo@v1::optionalSilent"];
 	readonly uses: readonly [{

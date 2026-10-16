@@ -1,9 +1,9 @@
 import { AckPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { deadline } from "@nats-io/nats-core";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { join } from "@std/path";
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { ulid } from "ulid";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import { startTrellisRuntime } from "../../../../../integration/_support/runtime.ts";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
@@ -29,7 +29,94 @@ import {
 } from "./runtime-worker.ts";
 import type { Job, JobEvent } from "./types.ts";
 
-Deno.test("republishing a completed prepared submission after broker deduplication does not execute it again", async () => {
+test("child submission inherits its running parent's trace and lineage on the real broker", async () => {
+  await withBroker(async (f) => {
+    const rootJobId = ulid();
+    const operationId = ulid();
+    const parent = await f.manager.createPrepared({
+      ...prepareJobSubmission({
+        submissionId: ulid(),
+        mode: "create",
+        service: "svc",
+        queue: "refresh",
+        jobId: ulid(),
+        payload: { role: "parent" },
+        createdAt: new Date().toISOString(),
+      }),
+      lineage: { rootJobId, operationId },
+    });
+    let child: Job | undefined;
+    await f.host(async (active) => {
+      if (Reflect.get(active.job().payload as object, "role") === "parent")
+        child = await f.manager.create("refresh", { role: "child" });
+      return { executed: true };
+    });
+    await f.settled();
+    assert(child);
+    const created = await f.jsm.direct.getMessage("ADAPTER_JOBS", {
+      last_by_subj: `${f.binding.jobs.queues.refresh.publishPrefix}.${child.id}.created`,
+    });
+    assert(created);
+    const childResult = created.json<JobEvent>();
+    assert.deepEqual(childResult.lineage, {
+      parentJobId: parent.id,
+      rootJobId,
+      operationId,
+    });
+    assert.equal(childResult.trigger?.kind, "parentJob");
+    assert.equal(childResult.trigger?.parentJobId, parent.id);
+    assert.equal(childResult.context.requestId, parent.context.requestId);
+    assert.equal(childResult.context.traceId, parent.context.traceId);
+    assert.deepEqual((await f.completed(child)).result, { executed: true });
+  });
+});
+
+test("active waits persist wait edges and resume after both success and failure", async () => {
+  await withBroker(async (f) => {
+    const job = await f.manager.create("refresh", {});
+    await f.host(async (active) => {
+      assert.equal(
+        await active.waitFor(
+          { kind: "external", label: "successful dependency" },
+          () => 7,
+        ),
+        7,
+      );
+      await assert.rejects(
+        () =>
+          active.waitFor(
+            { kind: "external", label: "failed dependency" },
+            () => {
+              throw new Error("external failed");
+            },
+          ),
+        { message: "external failed" },
+      );
+      return { recovered: true };
+    });
+    await f.settled();
+    const consumer = await f.js.consumers.get("ADAPTER_JOBS", {
+      filter_subjects: [
+        `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.>`,
+      ],
+    });
+    const messages = await consumer.fetch({ max_messages: 100, expires: 1000 });
+    const events: JobEvent[] = [];
+    for await (const message of messages) events.push(message.json<JobEvent>());
+    assert.deepEqual(
+      events
+        .filter(
+          (event) =>
+            event.eventType === "waiting" || event.eventType === "resumed",
+        )
+        .map((event) => event.eventType),
+      ["waiting", "resumed", "waiting", "resumed"],
+    );
+    assert.deepEqual((await f.completed(job)).result, { recovered: true });
+  });
+});
+
+test("republishing a completed prepared submission after broker deduplication does not execute it again", async () => {
   await withBroker(async (fixture) => {
     const { manager, jsm, host, settled, completed, nc, encode } = fixture;
     await jsm.streams.update("ADAPTER_JOBS", { duplicate_window: 100_000_000 });
@@ -60,17 +147,16 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
       );
     }
     await nc.flush();
-    await waitFor(async () =>
-      (await jsm.streams.info("ADAPTER_JOBS")).state.messages >= 50_003
+    await waitFor(
+      async () =>
+        (await jsm.streams.info("ADAPTER_JOBS")).state.messages >= 50_003,
     );
     let recoveryReads = 0;
     const scanSubjects = new Set<string>();
     const reads = [
       "$JS.API.DIRECT.GET.ADAPTER_JOBS",
       "$JS.API.DIRECT.GET.ADAPTER_JOBS.>",
-    ].map((
-      subject,
-    ) =>
+    ].map((subject) =>
       nc.subscribe(subject, {
         callback: (_error, message) => {
           recoveryReads++;
@@ -79,7 +165,7 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
             if (query.next_by_subj) scanSubjects.add(query.next_by_subj);
           }
         },
-      })
+      }),
     );
     // This wait exercises the broker's actual finite deduplication contract.
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -87,25 +173,25 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
     await settled();
     await nc.flush();
     for (const subscription of reads) subscription.unsubscribe();
-    assertEquals(executions, 1);
+    assert.deepEqual(executions, 1);
     assert(
       scanSubjects.size > 0,
       "the probe must observe historical scan requests",
     );
     assert(
-      [...scanSubjects].every((subject) =>
-        !subject.includes("*") && !subject.includes(">")
+      [...scanSubjects].every(
+        (subject) => !subject.includes("*") && !subject.includes(">"),
       ),
-      `recovery must not scan observation wildcards: ${
-        JSON.stringify([...scanSubjects])
-      }`,
+      `recovery must not scan observation wildcards: ${JSON.stringify([
+        ...scanSubjects,
+      ])}`,
     );
     assert(
       recoveryReads > 0 && recoveryReads < 32,
       `terminal recovery must exclude 50,000 observations, got ${recoveryReads} direct reads`,
     );
-    assertEquals((await completed(job)).result, original.result);
-    assertEquals(
+    assert.deepEqual((await completed(job)).result, original.result);
+    assert.deepEqual(
       (await jsm.consumers.info("ADAPTER_JOBS", "worker")).ack_floor
         .consumer_seq,
       2,
@@ -113,7 +199,7 @@ Deno.test("republishing a completed prepared submission after broker deduplicati
   });
 });
 
-Deno.test("deadline recovery excludes retained observation traffic before invoking cleanup", async () => {
+test("deadline recovery excludes retained observation traffic before invoking cleanup", async () => {
   await withBroker(async (f) => {
     const manager = new JobManager({
       nc: f.js,
@@ -148,17 +234,16 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
       );
     }
     await f.nc.flush();
-    await waitFor(async () =>
-      (await f.jsm.streams.info("ADAPTER_JOBS")).state.messages >= 50_002
+    await waitFor(
+      async () =>
+        (await f.jsm.streams.info("ADAPTER_JOBS")).state.messages >= 50_002,
     );
     let recoveryReads = 0;
     const scanSubjects = new Set<string>();
     const reads = [
       "$JS.API.DIRECT.GET.ADAPTER_JOBS",
       "$JS.API.DIRECT.GET.ADAPTER_JOBS.>",
-    ].map((
-      subject,
-    ) =>
+    ].map((subject) =>
       f.nc.subscribe(subject, {
         callback: (_error, message) => {
           recoveryReads++;
@@ -167,35 +252,38 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
             if (query.next_by_subj) scanSubjects.add(query.next_by_subj);
           }
         },
-      })
+      }),
     );
     let cleanups = 0;
     await f.host(async (active) => {
-      assertEquals(active.cancellationToken().reason(), "deadline-exceeded");
+      assert.deepEqual(
+        active.cancellationToken().reason(),
+        "deadline-exceeded",
+      );
       cleanups++;
       return { reconciled: true };
     });
     await f.settled();
     await f.nc.flush();
     for (const subscription of reads) subscription.unsubscribe();
-    assertEquals(cleanups, 1);
+    assert.deepEqual(cleanups, 1);
     assert(
       scanSubjects.size > 0,
       "the probe must observe historical scan requests",
     );
     assert(
-      [...scanSubjects].every((subject) =>
-        !subject.includes("*") && !subject.includes(">")
+      [...scanSubjects].every(
+        (subject) => !subject.includes("*") && !subject.includes(">"),
       ),
-      `recovery must not scan observation wildcards: ${
-        JSON.stringify([...scanSubjects])
-      }`,
+      `recovery must not scan observation wildcards: ${JSON.stringify([
+        ...scanSubjects,
+      ])}`,
     );
     assert(
       recoveryReads > 0 && recoveryReads < 32,
       `deadline cleanup must exclude observations, got ${recoveryReads} direct reads`,
     );
-    assertEquals(
+    assert.deepEqual(
       (await getLatestLifecycleEvent(f.jsm.direct, "ADAPTER_JOBS", prefix, job))
         ?.state,
       "expired",
@@ -205,7 +293,7 @@ Deno.test("deadline recovery excludes retained observation traffic before invoki
 
 // Production worker kernel and adapters, with case-owned authenticated NATS.
 // Full resource provisioning and generation handoff belong to live integration.
-Deno.test("a duplicate prepared publication is retired without repeating an active handler", async () => {
+test("a duplicate prepared publication is retired without repeating an active handler", async () => {
   await withBroker(async ({ manager, jsm, host, settled }) => {
     await jsm.streams.update("ADAPTER_JOBS", { duplicate_window: 100_000_000 });
     const entered = Promise.withResolvers<void>();
@@ -235,10 +323,13 @@ Deno.test("a duplicate prepared publication is retired without repeating an acti
       await manager.createPrepared(submission);
       await waitFor(async () => {
         const info = await jsm.consumers.info("ADAPTER_JOBS", "worker");
-        return info.delivered.consumer_seq >= 2 && info.num_pending === 0 &&
-          info.num_ack_pending === 1;
+        return (
+          info.delivered.consumer_seq >= 2 &&
+          info.num_pending === 0 &&
+          info.num_ack_pending === 1
+        );
       });
-      assertEquals(executions, 1);
+      assert.deepEqual(executions, 1);
     } finally {
       release.resolve();
     }
@@ -250,28 +341,22 @@ async function withBroker(
   run: (fixture: Awaited<ReturnType<typeof brokerFixture>>) => Promise<void>,
   keyed = false,
 ) {
-  const workdir = await Deno.makeTempDir({ prefix: "jobs-worker-" });
   let nats: TrellisTestRuntime | undefined;
   let fixture: Awaited<ReturnType<typeof brokerFixture>> | undefined;
   try {
     nats = await startTrellisRuntime();
-    fixture = await brokerFixture(nats, keyed, workdir);
+    fixture = await brokerFixture(nats, keyed);
     await run(fixture);
   } finally {
     try {
       await Promise.all(fixture?.workers.map((worker) => worker.stop()) ?? []);
     } finally {
       await nats?.stop();
-      await Deno.remove(workdir, { recursive: true });
     }
   }
 }
 
-async function brokerFixture(
-  nats: TrellisTestRuntime,
-  keyed: boolean,
-  workdir: string,
-) {
+async function brokerFixture(nats: TrellisTestRuntime, keyed: boolean) {
   const nc = await nats.connectNats();
   const js = jetstream(nc);
   const jsm = await jetstreamManager(nc);
@@ -287,15 +372,15 @@ async function brokerFixture(
     ackWaitMs: 100,
     ...(keyed
       ? {
-        keyConcurrency: {
-          key: ["/tenant"],
-          maxActive: 1,
-          heartbeatIntervalMs: 30_000,
-          heartbeatTtlMs: 120_000,
-          stalePolicy: "fail-stale" as const,
-        },
-        queue: { maxQueuedPerKey: 2, whenFull: "reject" as const },
-      }
+          keyConcurrency: {
+            key: ["/tenant"],
+            maxActive: 1,
+            heartbeatIntervalMs: 30_000,
+            heartbeatTtlMs: 120_000,
+            stalePolicy: "fail-stale" as const,
+          },
+          queue: { maxQueuedPerKey: 2, whenFull: "reject" as const },
+        }
       : {}),
   };
   const binding = {
@@ -342,22 +427,20 @@ async function brokerFixture(
   ) => {
     await js.publish(
       `${prefix}.${job.id}.${eventType}`,
-      encode(
-        {
-          jobId: job.id,
-          service: job.service,
-          jobType: job.type,
-          context: job.context,
-          payload: job.payload,
-          maxTries: job.maxTries,
-          tries: 0,
-          timestamp: new Date().toISOString(),
-          eventType,
-          state,
-          ...(eventType === "retried" ? { previousState: "failed" } : {}),
-          ...(eventType === "skipped" ? { previousState: "pending" } : {}),
-        } satisfies JobEvent,
-      ),
+      encode({
+        jobId: job.id,
+        service: job.service,
+        jobType: job.type,
+        context: job.context,
+        payload: job.payload,
+        maxTries: job.maxTries,
+        tries: 0,
+        timestamp: new Date().toISOString(),
+        eventType,
+        state,
+        ...(eventType === "retried" ? { previousState: "failed" } : {}),
+        ...(eventType === "skipped" ? { previousState: "pending" } : {}),
+      } satisfies JobEvent),
     );
   };
   const keyState = async (payload: unknown) => {
@@ -427,7 +510,6 @@ async function brokerFixture(
   };
   return {
     nats,
-    workdir,
     nc,
     js,
     jsm,
@@ -455,7 +537,7 @@ async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
   throw new Error("worker broker state did not converge within 5 seconds");
 }
 
-Deno.test("terminal projected work is acknowledged without handler execution", () =>
+test("terminal projected work is acknowledged without handler execution", () =>
   withBroker(async (f) => {
     const job = await f.manager.create("refresh", {});
     await f.projection.put(job.id, f.encode({ ...job, state: "cancelled" }));
@@ -465,27 +547,26 @@ Deno.test("terminal projected work is acknowledged without handler execution", (
     );
     await f.settled();
     const info = await f.jsm.streams.info("ADAPTER_JOBS", {
-      subjects_filter:
-        `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.started`,
+      subjects_filter: `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.started`,
     });
-    assertEquals(
+    assert.deepEqual(
       info.state.messages,
       1,
       "only the original creation is retained",
     );
   }));
 
-Deno.test("latest durable lifecycle wins over a stale terminal projection", () =>
+test("latest durable lifecycle wins over a stale terminal projection", () =>
   withBroker(async (f) => {
     const job = await f.manager.create("refresh", {});
     await f.projection.put(job.id, f.encode({ ...job, state: "cancelled" }));
     await f.event(job, "started", "active");
     await f.host(() => Promise.resolve({ refreshed: true }));
     await f.settled();
-    assertEquals((await f.completed(job)).result, { refreshed: true });
+    assert.deepEqual((await f.completed(job)).result, { refreshed: true });
   }));
 
-Deno.test("progress acknowledgements prevent redelivery during a held handler", () =>
+test("progress acknowledgements prevent redelivery during a held handler", () =>
   withBroker(async (f) => {
     const job = await f.manager.create("refresh", {});
     const entered = Promise.withResolvers<void>();
@@ -501,32 +582,32 @@ Deno.test("progress acknowledgements prevent redelivery during a held handler", 
       const receive = competitor.next({ expires: 1_000 });
       const since = performance.now();
       await waitFor(() => Promise.resolve(performance.now() - since > 350));
-      assertEquals(
+      assert.deepEqual(
         (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
           .consumer_seq,
         1,
         "held job must not be redelivered across multiple ack waits",
       );
       release.resolve();
-      assertEquals(
+      assert.deepEqual(
         await receive,
         null,
         "competing pull must not receive the held job",
       );
       await f.settled();
-      assertEquals((await f.completed(job)).tries, 1);
+      assert.deepEqual((await f.completed(job)).tries, 1);
     } finally {
       release.resolve();
     }
   }));
 
-Deno.test("a real projection outage NAKs work and the slot processes later deliveries", () =>
+test("a real projection outage NAKs work and the slot processes later deliveries", () =>
   withBroker(async (f) => {
     const job = await f.manager.create("refresh", {});
     const readerConnection = await f.nats.connectNats();
     let projection = await new Kvm(readerConnection).open("WORKER_PROJECTION");
     await readerConnection.close();
-    await assertRejects(() => projection.get(job.id));
+    await assert.rejects(() => projection.get(job.id));
     await f.slot(
       () => Promise.resolve({ recovered: true }),
       false,
@@ -535,16 +616,19 @@ Deno.test("a real projection outage NAKs work and the slot processes later deliv
         return entry ? JSON.parse(entry.string()) : undefined;
       },
     );
-    await waitFor(async () =>
-      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
-        .consumer_seq >= 1
+    await waitFor(
+      async () =>
+        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+          .consumer_seq >= 1,
     );
-    await waitFor(async () =>
-      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).num_waiting === 1
+    await waitFor(
+      async () =>
+        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).num_waiting ===
+        1,
     );
     const failedAt = performance.now();
     await waitFor(() => Promise.resolve(performance.now() - failedAt > 350));
-    assertEquals(
+    assert.deepEqual(
       (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
         .consumer_seq,
       1,
@@ -553,13 +637,13 @@ Deno.test("a real projection outage NAKs work and the slot processes later deliv
     projection = f.projection;
     const later = await f.manager.create("refresh", {});
     await f.settled();
-    assertEquals(
+    assert.deepEqual(
       (await f.completed(job)).result,
       { recovered: true },
       "real projection failure must leave the source job available",
     );
-    assertEquals((await f.completed(later)).result, { recovered: true });
-    assertEquals(
+    assert.deepEqual((await f.completed(later)).result, { recovered: true });
+    assert.deepEqual(
       (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
         .consumer_seq,
       3,
@@ -567,7 +651,7 @@ Deno.test("a real projection outage NAKs work and the slot processes later deliv
     );
   }));
 
-Deno.test("final ordinary retry redelivers for execution-owned reconciliation", () =>
+test("final ordinary retry redelivers for execution-owned reconciliation", () =>
   withBroker(async (f) => {
     await f.jsm.consumers.update("ADAPTER_JOBS", "worker", { max_deliver: -1 });
     let handled = 0;
@@ -575,7 +659,10 @@ Deno.test("final ordinary retry redelivers for execution-owned reconciliation", 
     const job = await f.manager.create("refresh", {});
     await f.host((activeJob) => {
       if (activeJob.isCancelled()) {
-        assertEquals(activeJob.cancellationToken().reason(), "retry-exhausted");
+        assert.deepEqual(
+          activeJob.cancellationToken().reason(),
+          "retry-exhausted",
+        );
         reconciled++;
         return Promise.resolve({});
       }
@@ -584,36 +671,37 @@ Deno.test("final ordinary retry redelivers for execution-owned reconciliation", 
     });
     await f.settled();
     const retry = await f.jsm.direct.getMessage("ADAPTER_JOBS", {
-      last_by_subj:
-        `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.retry`,
+      last_by_subj: `${f.binding.jobs.queues.refresh.publishPrefix}.${job.id}.retry`,
     });
     assert(retry);
-    assertEquals(JSON.parse(retry.string()).tries, 2);
-    assertEquals(handled, 2);
-    assertEquals(reconciled, 1);
-    assertEquals(
-      (await getLatestLifecycleEvent(
-        f.jsm.direct,
-        "ADAPTER_JOBS",
-        f.binding.jobs.queues.refresh.publishPrefix,
-        job,
-      ))?.eventType,
+    assert.deepEqual(JSON.parse(retry.string()).tries, 2);
+    assert.deepEqual(handled, 2);
+    assert.deepEqual(reconciled, 1);
+    assert.deepEqual(
+      (
+        await getLatestLifecycleEvent(
+          f.jsm.direct,
+          "ADAPTER_JOBS",
+          f.binding.jobs.queues.refresh.publishPrefix,
+          job,
+        )
+      )?.eventType,
       "dead",
     );
     const info = await f.jsm.consumers.info("ADAPTER_JOBS", "worker");
-    assertEquals(info.delivered.consumer_seq, 3);
-    assertEquals(
+    assert.deepEqual(info.delivered.consumer_seq, 3);
+    assert.deepEqual(
       info.ack_floor.stream_seq,
       1,
       "the final redelivery must reconcile execution exhaustion and ACK the source",
     );
   }));
 
-Deno.test("terminal lifecycle is ACKed and removes its queued KV reservation", () =>
+test("terminal lifecycle is ACKed and removes its queued KV reservation", () =>
   withBroker(async (f) => {
     const payload = { tenant: "a" };
     const job = await f.manager.create("refresh", payload);
-    assertEquals(
+    assert.deepEqual(
       (await f.keyState(payload)).queued.map((entry) => entry.jobId),
       [job.id],
     );
@@ -626,14 +714,18 @@ Deno.test("terminal lifecycle is ACKed and removes its queued KV reservation", (
       f.binding.jobs.queues.refresh.publishPrefix,
       job,
     );
-    assertEquals(terminal?.state, "skipped", "terminal work must not execute");
-    assertEquals((await f.keyState(payload)).queued, []);
+    assert.deepEqual(
+      terminal?.state,
+      "skipped",
+      "terminal work must not execute",
+    );
+    assert.deepEqual((await f.keyState(payload)).queued, []);
     const next = await f.manager.create("refresh", payload);
     await f.settled();
-    assertEquals((await f.completed(next)).state, "completed");
+    assert.deepEqual((await f.completed(next)).state, "completed");
   }, true));
 
-Deno.test("terminal work redelivers until its real key bucket recovers and cleanup completes", () =>
+test("terminal work redelivers until its real key bucket recovers and cleanup completes", () =>
   withBroker(async (f) => {
     const payload = { tenant: "a" };
     const job = await f.manager.create("refresh", payload);
@@ -648,14 +740,15 @@ Deno.test("terminal work redelivers until its real key bucket recovers and clean
     await f.event(job, "skipped", "skipped");
     await f.jsm.streams.delete("KV_JOBS_KEYS_svc");
     const worker = await f.host(() =>
-      Promise.reject(new Error("terminal work executed"))
+      Promise.reject(new Error("terminal work executed")),
     );
-    await waitFor(async () =>
-      (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
-        .consumer_seq >= 2
+    await waitFor(
+      async () =>
+        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
+          .consumer_seq >= 2,
     );
     const info = await f.jsm.consumers.info("ADAPTER_JOBS", "worker");
-    assertEquals(
+    assert.deepEqual(
       info.ack_floor.stream_seq,
       0,
       "cleanup outage must leave the source unacknowledged",
@@ -665,26 +758,28 @@ Deno.test("terminal work redelivers until its real key bucket recovers and clean
     await restored.put(key.kvKey, f.encode(persisted));
     await f.host(() => Promise.reject(new Error("terminal work executed")));
     await f.settled();
-    assertEquals((await f.keyState(payload)).queued, []);
-    assertEquals(
+    assert.deepEqual((await f.keyState(payload)).queued, []);
+    assert.deepEqual(
       (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).ack_floor
         .stream_seq,
       1,
       "successful cleanup must acknowledge the source",
     );
-    assertEquals(
-      (await getLatestLifecycleEvent(
-        f.jsm.direct,
-        "ADAPTER_JOBS",
-        f.binding.jobs.queues.refresh.publishPrefix,
-        job,
-      ))?.state,
+    assert.deepEqual(
+      (
+        await getLatestLifecycleEvent(
+          f.jsm.direct,
+          "ADAPTER_JOBS",
+          f.binding.jobs.queues.refresh.publishPrefix,
+          job,
+        )
+      )?.state,
       "skipped",
       "recovery must not execute terminal business work",
     );
   }, true));
 
-Deno.test("keyed capacity deferral retains the delivery until a real KV slot releases", () =>
+test("keyed capacity deferral retains the delivery until a real KV slot releases", () =>
   withBroker(async (f) => {
     const payload = { tenant: "a" };
     const first = await f.manager.create("refresh", payload);
@@ -702,38 +797,45 @@ Deno.test("keyed capacity deferral retains the delivery until a real KV slot rel
       // Key concurrency does not promise FIFO acquisition. Establish the held
       // active slot before submitting the job whose deferral is being tested.
       const second = await f.manager.create("refresh", payload);
-      await waitFor(async () =>
-        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker"))
-          .num_ack_pending === 2
+      await waitFor(
+        async () =>
+          (await f.jsm.consumers.info("ADAPTER_JOBS", "worker"))
+            .num_ack_pending === 2,
       );
       const competitor = await f.js.consumers.get("ADAPTER_JOBS", "worker");
       const receive = competitor.next({ expires: 1_000 });
       const since = performance.now();
       await waitFor(() => Promise.resolve(performance.now() - since > 350));
       const state = await f.keyState(payload);
-      assertEquals(state.active.map((entry) => entry.jobId), [first.id]);
-      assertEquals(state.queued.map((entry) => entry.jobId), [second.id]);
-      assertEquals(
+      assert.deepEqual(
+        state.active.map((entry) => entry.jobId),
+        [first.id],
+      );
+      assert.deepEqual(
+        state.queued.map((entry) => entry.jobId),
+        [second.id],
+      );
+      assert.deepEqual(
         (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
           .consumer_seq,
         2,
       );
       release.resolve();
-      assertEquals(await receive, null);
+      assert.deepEqual(await receive, null);
       await f.settled();
-      assertEquals((await f.completed(second)).tries, 1);
-      assertEquals((await f.keyState(payload)).active, []);
+      assert.deepEqual((await f.completed(second)).tries, 1);
+      assert.deepEqual((await f.keyState(payload)).active, []);
     } finally {
       release.resolve();
     }
   }, true));
 
-Deno.test("manual retry of failed keyed work reacquires a real KV slot without create admission", () =>
+test("manual retry of failed keyed work reacquires a real KV slot without create admission", () =>
   withBroker(async (f) => {
     const payload = { tenant: "a" };
     const job = await f.manager.create("refresh", payload);
     const failedHost = await f.host(() =>
-      Promise.reject(JobProcessError.failed("invalid input"))
+      Promise.reject(JobProcessError.failed("invalid input")),
     );
     await f.settled();
     await failedHost.stop();
@@ -743,53 +845,54 @@ Deno.test("manual retry of failed keyed work reacquires a real KV slot without c
       f.binding.jobs.queues.refresh.publishPrefix,
       job,
     );
-    assertEquals(latest?.state, "failed");
-    assertEquals((await f.keyState(payload)).active, []);
-    assertEquals((await f.keyState(payload)).queued, []);
+    assert.deepEqual(latest?.state, "failed");
+    assert.deepEqual((await f.keyState(payload)).active, []);
+    assert.deepEqual((await f.keyState(payload)).queued, []);
     // The ordinary admin retry envelope does not perform another create admission.
     await f.event(job, "retried", "pending");
     await f.host(() => Promise.resolve({ recovered: true }));
     await f.settled();
-    assertEquals((await f.completed(job)).result, { recovered: true });
-    assertEquals((await f.keyState(payload)).active, []);
+    assert.deepEqual((await f.completed(job)).result, { recovered: true });
+    assert.deepEqual((await f.keyState(payload)).active, []);
   }, true));
 
-Deno.test("missing approved consumer fails closed against actual JetStream", () =>
+test("missing approved consumer fails closed against actual JetStream", () =>
   withBroker(async (f) => {
     await f.jsm.consumers.delete("ADAPTER_JOBS", "worker");
-    await assertRejects(
+    await assert.rejects(
       () => f.host(() => Promise.resolve({})),
       JobsConsumerMissingError,
     );
     await f.manager.create("refresh", {});
     const info = await f.jsm.streams.info("ADAPTER_JOBS");
-    assertEquals(
+    assert.deepEqual(
       info.state.messages,
       1,
       "queued work remains retained without a worker",
     );
-    assertEquals(
+    assert.deepEqual(
       info.state.consumer_count,
       0,
       "host must not silently recreate missing approved consumer",
     );
   }));
 
-Deno.test("invalid implementation concurrency rejects against real broker", () =>
+test("invalid implementation concurrency rejects against real broker", () =>
   withBroker(async (f) => {
-    await assertRejects(
+    await assert.rejects(
       () => f.host(() => Promise.resolve({}), 0),
-      Error,
-      "expected a positive integer",
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes("expected a positive integer"),
     );
     const job = await f.manager.create("refresh", {});
     await f.host(() => Promise.resolve({ valid: true }));
     await f.settled();
-    assertEquals((await f.completed(job)).result, { valid: true });
+    assert.deepEqual((await f.completed(job)).result, { valid: true });
   }));
 
-Deno.test("ackActionForOutcome maps dispositions including final exhaustion", () => {
-  assertEquals(
+test("ackActionForOutcome maps dispositions including final exhaustion", () => {
+  assert.deepEqual(
     ackActionForOutcome({
       outcome: "deferred",
       tries: 1,
@@ -797,21 +900,21 @@ Deno.test("ackActionForOutcome maps dispositions including final exhaustion", ()
     }),
     "nak",
   );
-  assertEquals(
+  assert.deepEqual(
     ackActionForOutcome({ outcome: "retry", tries: 1, error: "retry" }),
     "nak",
   );
-  assertEquals(
+  assert.deepEqual(
     ackActionForOutcome({ outcome: "retry", tries: 2, error: "retry" }),
     "nak",
   );
-  assertEquals(
+  assert.deepEqual(
     ackActionForOutcome({ outcome: "completed", tries: 1, result: {} }),
     "ack",
   );
 });
 
-Deno.test("progress ACK cadence floors and clamps to whole milliseconds", () => {
+test("progress ACK cadence floors and clamps to whole milliseconds", () => {
   const queue = {
     queueType: "refresh",
     ackWaitMs: 1_000,
@@ -823,15 +926,18 @@ Deno.test("progress ACK cadence floors and clamps to whole milliseconds", () => 
     payload: { schema: "RefreshPayload" },
   };
   for (const wait of [1, 2, 5]) {
-    assertEquals(progressAckIntervalMs({ ...queue, backoffMs: [wait] }), 1);
+    assert.deepEqual(progressAckIntervalMs({ ...queue, backoffMs: [wait] }), 1);
   }
-  assertEquals(progressAckIntervalMs({ ...queue, backoffMs: [3_000] }), 1_000);
-  assertEquals(progressAckIntervalMs(queue), 333);
+  assert.deepEqual(
+    progressAckIntervalMs({ ...queue, backoffMs: [3_000] }),
+    1_000,
+  );
+  assert.deepEqual(progressAckIntervalMs(queue), 333);
 });
 
-Deno.test("progress ACK cadence rejects sub-millisecond policies", () => {
+test("progress ACK cadence rejects sub-millisecond policies", () => {
   for (const wait of [0, 0.5]) {
-    assertThrows(
+    assert.throws(
       () =>
         progressAckIntervalMs({
           queueType: "refresh",
@@ -843,8 +949,9 @@ Deno.test("progress ACK cadence rejects sub-millisecond policies", () => {
           maxDeliver: 2,
           payload: { schema: "RefreshPayload" },
         }),
-      Error,
-      "positive whole millisecond",
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes("positive whole millisecond"),
     );
   }
 });

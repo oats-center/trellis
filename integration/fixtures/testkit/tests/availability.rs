@@ -19,10 +19,10 @@ mod operation_interop;
 #[path = "support/operation_lifecycle.rs"]
 mod operation_lifecycle;
 
-#[path = "support/transfer_interop.rs"]
-mod transfer_interop;
 #[path = "support/state_lifecycle.rs"]
 mod state_lifecycle;
+#[path = "support/transfer_interop.rs"]
+mod transfer_interop;
 
 fn wire<T: DeserializeOwned>(value: Json) -> T {
     serde_json::from_value(value).unwrap()
@@ -478,9 +478,12 @@ async fn generated_kv_is_usable_after_readiness_and_reconnection_preserves_data(
                     assert_eq!(value.value, "before reconnect");
                     break;
                 }
-                Err(trellis_rs::service::KvResourceReadError::Unavailable) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(25)).await
-                }
+                // The binding gate reports Unavailable; per-call transport
+                // acquisition reports Backend while the mirror is suspended.
+                Err(
+                    trellis_rs::service::KvResourceReadError::Unavailable
+                    | trellis_rs::service::KvResourceReadError::Backend(_),
+                ) => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
                 outcome => panic!("retained binding must recover its original value: {outcome:?}"),
             }
         }
