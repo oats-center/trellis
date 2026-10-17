@@ -140,6 +140,9 @@ Healthy transport rollover keeps the predecessor mirror until authenticated
 replacement replay completes. Mirror failure fences application IO while one
 cancellable private supervisor restores coverage on the surviving attachment;
 failed snapshots never clear known revocations or retransmit application requests.
+If signed authority expires during coverage loss, private admission obtains and
+verifies fresh authority on the retained attachment before application use resumes.
+Snapshot recovery alone never extends expired authority or authorizes work.
 Signed reply verification waits for already-received ordered revocation updates
 before its live checks; it does not retransmit the request or bypass lost coverage.
 

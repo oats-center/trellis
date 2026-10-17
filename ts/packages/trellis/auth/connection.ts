@@ -17,6 +17,7 @@ import {
   type AdmissionContext,
   type TransportAuthorizationV1,
   type OAuthAdmission,
+  type SessionAuthority,
 } from "./protocol_wasm.ts";
 import {
   loadDefaultRuntimeTransport,
@@ -149,6 +150,8 @@ export async function connectAdmitted(options: {
   const inboxPrefix = `_INBOX.trellis.${base64urlEncode(await sha256(base64urlDecode(options.auth.sessionKey)))}`;
   let desired: TransportAuthorizationV1 | undefined;
   let installed: AdmissionContext | undefined;
+  // Retain verified identity/lifetime for private renewal, not application use.
+  let installedAuthority: Readonly<SessionAuthority> | undefined;
   let preparationEpoch = 0;
   let renewalTimer: ReturnType<typeof setTimeout> | undefined;
   let renewalAbort: AbortController | undefined;
@@ -441,6 +444,7 @@ export async function connectAdmitted(options: {
       if (value.committed) return;
       if (!value.candidate) throw new Error("AdmissionUnavailable");
       value.candidate.commit();
+      installedAuthority = value.candidate.authority;
       value.committed = true;
       const policyChanged = desired !== value.policy;
       desired = value.policy;
@@ -452,30 +456,17 @@ export async function connectAdmitted(options: {
   const scheduleRenewal = () => {
     if (renewalTimer !== undefined) clearTimeout(renewalTimer);
     renewalTimer = undefined;
-    if (manager.isClosed() || options.signal?.aborted) return;
-    const own = owner.own();
-    let delay: number;
-    try {
-      const remaining = own.authority.expiresAt - options.auth.currentIat();
-      // A supported short-lived authority can have less than the usual lead
-      // left after verification. Renew within its lifetime instead of treating
-      // that still-valid authority as expired or spinning on immediate renewals.
-      const lead = Math.min(
-        60 + (crypto.getRandomValues(new Uint32Array(1))[0] % 16),
-        remaining / 2,
-      );
-      delay = (remaining - lead) * 1000;
-    } finally {
-      own.release();
-    }
-    if (delay <= 0) {
-      const error = new AuthError({
-        reason: "OAuthRecoveryRequired",
-        message: "The root authority expired before renewal.",
-      });
-      void manager.terminate(error);
-      throw error;
-    }
+    if (manager.isClosed() || options.signal?.aborted || !installedAuthority)
+      return;
+    const remaining = installedAuthority.expiresAt - options.auth.currentIat();
+    // A supported short-lived authority can have less than the usual lead
+    // left after verification. Renew within its lifetime instead of treating
+    // that still-valid authority as expired or spinning on immediate renewals.
+    const lead = Math.min(
+      60 + (crypto.getRandomValues(new Uint32Array(1))[0] % 16),
+      remaining / 2,
+    );
+    const delay = Math.max(0, (remaining - lead) * 1000);
     renewalTimer = setTimeout(() => {
       renewalTimer = undefined;
       void refreshAuthority().catch(() => {
@@ -507,9 +498,8 @@ export async function connectAdmitted(options: {
           hint: "Reconnect when the runtime is available.",
         });
       try {
-        const previous = owner.own();
-        const logicalSession = previous.authority.authorizationSessionId;
-        previous.release();
+        const logicalSession = installedAuthority?.authorizationSessionId;
+        if (!logicalSession) throw new Error("AdmissionUnavailable");
         await readAdmission(lease.nc, true, signal);
         const value = candidates.get(lease.nc);
         if (!value) throw new Error("AdmissionUnavailable");
@@ -543,6 +533,7 @@ export async function connectAdmitted(options: {
             value.admission.assertCurrent?.();
             candidate.assertPreparedCurrent();
             candidate.commit();
+            installedAuthority = candidate.authority;
             value.committed = true;
             desired = value.policy;
             installed = value.context;
@@ -669,8 +660,17 @@ export async function connectAdmitted(options: {
                 lease.release();
               }
               if (!signal.aborted) {
-                manager.authorizationPromoted();
-                scheduleRenewal();
+                if (
+                  installedAuthority &&
+                  installedAuthority.expiresAt <= options.auth.currentIat()
+                ) {
+                  // Snapshot recovery is not authority renewal. Admission is
+                  // proved by the retained runtime key, not the expired context.
+                  await refreshAuthority();
+                } else {
+                  manager.authorizationPromoted();
+                  scheduleRenewal();
+                }
               }
             } catch {
               // Failed preparation never restores coverage or clears cutoffs.

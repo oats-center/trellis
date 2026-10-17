@@ -44,7 +44,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
@@ -224,7 +224,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(`${runtime.trellisUrl}/console/admin/users/new`, {
         waitUntil: "domcontentloaded",
@@ -521,7 +521,7 @@ test("N03 query-only client navigation clears session and connection targets", a
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(`${runtime.trellisUrl}/console/admin/sessions/revoke`, {
         waitUntil: "domcontentloaded",
@@ -644,7 +644,7 @@ test("N03 switching targets during A confirmation revokes only B", async () => {
     try {
       const pageA = await contextA.newPage();
       const pageB = await contextB.newPage();
-      const errors = captureBrowserErrors(pageA);
+      const errors = await captureBrowserErrors(pageA);
       await openConsoleAsRuntimeAdmin(pageA, runtime);
       const initialSessions = await runtime.callAdminRpc(
         "authAuthorizationSessionsList",

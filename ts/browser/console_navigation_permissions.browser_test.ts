@@ -23,7 +23,7 @@ test("a denied administrative read preserves ordinary account access and navigat
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsole(page, runtime, credentials);
       await page.goto(`${runtime.trellisUrl}/console/profile`);
       await page.getByText("How you sign in", { exact: true }).waitFor();

@@ -135,12 +135,13 @@ export async function seedDeviceDeployment(
 
 /**
  * Captures browser errors except verified standard OAuth DPoP nonce challenges.
- * Drain with assertNoBrowserErrors before full navigation discards response bodies.
+ * Token responses pass through unchanged after inspecting the real server body,
+ * before automatic navigation can discard Chromium's response-body cache.
  */
-export function captureBrowserErrors(page: Page): {
+export async function captureBrowserErrors(page: Page): Promise<{
   errors: string[];
   pending: Promise<void>[];
-} {
+}> {
   const errors: string[] = [];
   const pending: Promise<void>[] = [];
   page.on("pageerror", (error) => errors.push(String(error)));
@@ -157,42 +158,57 @@ export function captureBrowserErrors(page: Page): {
       errors.push(`${message.text()}${url ? ` (${url.pathname})` : ""}`);
     }
   });
-  page.on("response", (response) => {
-    if (response.status() < 400) return;
-    pending.push(
-      (async () => {
-        const path = new URL(response.url()).pathname;
-        if (
-          response.status() === 400 &&
-          path === "/token" &&
-          response.headers()["dpop-nonce"]
-        ) {
-          let readFailure: unknown;
-          const body: unknown = await response
-            .json()
-            .catch((cause: unknown) => {
-              readFailure = cause;
-              return undefined;
-            });
+  await page.route(
+    (url) => url.pathname === "/token",
+    (route) => {
+      const work = (async () => {
+        const response = await route.fetch({ maxRedirects: 0 });
+        try {
+          if (response.status() < 400) return;
+          const path = new URL(response.url()).pathname;
           if (
-            body !== null &&
-            typeof body === "object" &&
-            "error" in body &&
-            body.error === "use_dpop_nonce"
-          )
+            response.status() === 400 &&
+            path === "/token" &&
+            response.headers()["dpop-nonce"]
+          ) {
+            let readFailure: unknown;
+            const body: unknown = await response
+              .json()
+              .catch((cause: unknown) => {
+                readFailure = cause;
+                return undefined;
+              });
+            if (
+              body !== null &&
+              typeof body === "object" &&
+              "error" in body &&
+              body.error === "use_dpop_nonce"
+            )
+              return;
+            const code =
+              body !== null && typeof body === "object" && "error" in body
+                ? body.error
+                : undefined;
+            errors.push(
+              `HTTP 400 (${path}); nonce response error=${typeof code === "string" ? code : "unavailable"}; body read=${String(readFailure)}`,
+            );
             return;
-          const code =
-            body !== null && typeof body === "object" && "error" in body
-              ? body.error
-              : undefined;
-          errors.push(
-            `HTTP 400 (${path}); nonce response error=${typeof code === "string" ? code : "unavailable"}; body read=${String(readFailure)}`,
-          );
-          return;
+          }
+          errors.push(`HTTP ${response.status()} (${path})`);
+        } finally {
+          await route.fulfill({ response });
         }
-        errors.push(`HTTP ${response.status()} (${path})`);
-      })(),
-    );
+      })();
+      pending.push(work);
+      return work;
+    },
+  );
+  page.on("response", (response) => {
+    const path = new URL(response.url()).pathname;
+    // The real token response was classified before being forwarded above.
+    if (path !== "/token" && response.status() >= 400) {
+      errors.push(`HTTP ${response.status()} (${path})`);
+    }
   });
   return { errors, pending };
 }
@@ -209,7 +225,7 @@ export async function waitForConsoleShell(
 
 /** Fails when a nominal journey produced a browser error. */
 export async function assertNoBrowserErrors(
-  captured: ReturnType<typeof captureBrowserErrors>,
+  captured: Awaited<ReturnType<typeof captureBrowserErrors>>,
 ): Promise<void> {
   await Promise.all(captured.pending);
   const { errors } = captured;

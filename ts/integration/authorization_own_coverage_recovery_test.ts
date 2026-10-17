@@ -17,239 +17,356 @@ import {
 } from "./_support/broker_inventory.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-test("own coverage restores on the original socket while fresh KV waits", async () => {
-  await withTrellisRuntime(
-    async (runtime) => {
-      const contract = participants.Provider.participant;
-      const identity = await runtime.registerService({
-        name: "own-watch-provider",
-        contract,
-      });
-      const service = await TrellisService.connect({
-        trellisUrl: runtime.oauthIssuer,
-        participant: contract,
-        seed: identity.seed,
-      }).orThrow();
-      const serviceExit = service.wait().catch((error: unknown) => error);
-      const broker = await runtime.connectNats();
-      const manager = await jetstreamManager(broker);
-      const system = await connect({
-        servers: runtime.natsUrl,
-        authenticator: credsAuthenticator(
-          await readFile(
-            join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
-          ),
-        ),
-      });
-      const gate = runtime.nativeTransportGate();
-      let hold: ReturnType<typeof gate.armResponseHold> | undefined;
-      let write: Promise<unknown> | undefined;
-      try {
-        const records = service.kv.records;
-        assert(records);
-        await records.put("own-recovery", { value: "baseline" }).orThrow();
-        const proxy = gate
-          .connections()
-          .find((connection) =>
-            connection.outboundContexts.some(
-              (publication) =>
-                publication.subject.startsWith("$KV.") &&
-                publication.subject.endsWith(".own-recovery"),
+for (const spansExpiry of [false, true]) {
+  test(`own coverage restores on the original socket while fresh KV waits${spansExpiry ? " across authority expiry" : ""}`, async () => {
+    await withTrellisRuntime(
+      async (runtime) => {
+        const contract = participants.Provider.participant;
+        const identity = await runtime.registerService({
+          name: "own-watch-provider",
+          contract,
+        });
+        const service = await TrellisService.connect({
+          trellisUrl: runtime.oauthIssuer,
+          participant: contract,
+          seed: identity.seed,
+        }).orThrow();
+        let echoes = 0;
+        await service.handleEcho(({ input }) => {
+          echoes++;
+          return Result.ok(input);
+        });
+        const serviceExit = service.wait().catch((error: unknown) => error);
+        const broker = await runtime.connectNats();
+        const manager = await jetstreamManager(broker);
+        const system = await connect({
+          servers: runtime.natsUrl,
+          authenticator: credsAuthenticator(
+            await readFile(
+              join(runtime.workdir, "config/trellis/nats/creds/system.creds"),
             ),
+          ),
+        });
+        const gate = runtime.nativeTransportGate();
+        let hold: ReturnType<typeof gate.armResponseHold> | undefined;
+        let write: Promise<unknown> | undefined;
+        try {
+          const records = service.kv.records;
+          assert(records);
+          await records.put("own-recovery", { value: "baseline" }).orThrow();
+          const proxy = gate
+            .connections()
+            .find((connection) =>
+              connection.outboundContexts.some(
+                (publication) =>
+                  publication.subject.startsWith("$KV.") &&
+                  publication.subject.endsWith(".own-recovery"),
+              ),
+            );
+          assert(proxy);
+          const publication = proxy.outboundContexts.find(
+            (item) =>
+              item.subject.startsWith("$KV.") &&
+              item.subject.endsWith(".own-recovery"),
           );
-        assert(proxy);
-        const publication = proxy.outboundContexts.find(
-          (item) =>
-            item.subject.startsWith("$KV.") &&
-            item.subject.endsWith(".own-recovery"),
-        );
-        assert(publication);
-        const kvSubject = publication.subject;
-        const stream = await manager.streams.find(kvSubject);
-        const baseline = await manager.streams.getMessage(stream, {
-          last_by_subj: kvSubject,
-        });
-        assert(baseline);
-        const sessions = await runtime.callAdminRpc(
-          "authAuthorizationSessionsList",
-          { state: "active" },
-        );
-        const session = sessions.items.find(
-          (item) => item.binding.instanceId === identity.instanceId,
-        );
-        assert(session);
-        const attachments = await runtime.callAdminRpc("authConnectionsList", {
-          authorizationSessionId: session.authorizationSessionId,
-          state: "admitted",
-        });
-        assert.equal(attachments.items.length, 1);
-        const attachmentIds = new Set(
-          attachments.items.map((item) => item.attachmentId),
-        );
-        const [original] = admittedConnections(
-          await completeBrokerInventory(system),
-          attachmentIds,
-        );
-        assert(original);
-        const originalKey = brokerConnectionKey(original);
-        const mirrorStream = "KV_TRELLIS_AUTH_REVOCATIONS";
-        const watches: ConsumerInfo[] = [];
-        for await (const info of manager.consumers.list(mirrorStream)) {
-          if (
-            info.push_bound &&
-            proxy.subs.some(
-              (subscription) =>
-                subscription.subject === info.config.deliver_subject,
-            )
-          )
-            watches.push(info);
-        }
-        assert.equal(watches.length, 1);
-        const old = watches[0];
-        let replacement: ConsumerInfo | undefined;
-        const infoPrefix = `$JS.API.CONSUMER.INFO.${mirrorStream}.`;
-        hold = gate.armResponseHold(infoPrefix, proxy.id, (body) => {
-          const info: ConsumerInfo = JSON.parse(new TextDecoder().decode(body));
-          if (
-            info.name !== old.name &&
-            service.connection.availability().resources.extras === false
-          ) {
-            replacement = info;
-            return true;
-          }
-          return false;
-        });
-        // This consumer is the ephemeral session mirror, not committed service
-        // storage. Withhold its real replacement INFO response until IO is fenced.
-        assert(await manager.consumers.delete(mirrorStream, old.name));
-        await deadline(hold.held, 30_000);
-        assert(replacement);
-        // A failed recovery snapshot must stay fenced and be retried without
-        // fresh application acquisition or another physical connection.
-        assert(await manager.consumers.delete(mirrorStream, replacement.name));
-        await hold.release();
-        hold = gate.armResponseHold(
-          infoPrefix,
-          proxy.id,
-          () => service.connection.availability().resources.extras === false,
-        );
-        await deadline(hold.held, 30_000);
-        assert.equal(service.connection.availability().resources.extras, false);
-        const countBefore = gate
-          .connection(proxy.id)
-          ?.outboundContexts.filter(
-            (item) => item.subject === kvSubject,
-          ).length;
-        let outcome: "success" | "error" | undefined;
-        write = records
-          .put("own-recovery", { value: "recovered" })
-          .orThrow()
-          .then(
-            (result) => {
-              outcome = "success";
-              return result;
-            },
-            (error: unknown) => {
-              outcome = "error";
-              throw error;
+          assert(publication);
+          const kvSubject = publication.subject;
+          const stream = await manager.streams.find(kvSubject);
+          const baseline = await manager.streams.getMessage(stream, {
+            last_by_subj: kvSubject,
+          });
+          assert(baseline);
+          const sessions = await runtime.callAdminRpc(
+            "authAuthorizationSessionsList",
+            { state: "active" },
+          );
+          const session = sessions.items.find(
+            (item) => item.binding.instanceId === identity.instanceId,
+          );
+          assert(session);
+          assert(session.maximumContextExpiresAt);
+          const originalExpiresAt = Date.parse(session.maximumContextExpiresAt);
+          const attachments = await runtime.callAdminRpc(
+            "authConnectionsList",
+            {
+              authorizationSessionId: session.authorizationSessionId,
+              state: "admitted",
             },
           );
-        void write.catch(() => undefined);
-        const fenced = await manager.streams.getMessage(stream, {
-          last_by_subj: kvSubject,
-        });
-        assert(fenced);
-        assert.equal(outcome, undefined);
-        assert.equal(fenced.seq, baseline.seq);
-        assert.deepEqual(fenced.data, baseline.data);
-        assert.equal(
-          gate
-            .connection(proxy.id)
-            ?.outboundContexts.filter((item) => item.subject === kvSubject)
-            .length,
-          countBefore,
-        );
-        await hold.release();
-        hold = undefined;
-        await deadline(write, 5_000);
-        assert.equal(outcome, "success");
-        assert.deepEqual(await records.get("own-recovery").orThrow(), {
-          value: "recovered",
-        });
-        const persisted = await manager.streams.getMessage(stream, {
-          last_by_subj: kvSubject,
-        });
-        assert(persisted);
-        assert.equal(persisted.seq, baseline.seq + 1);
-        assert.equal(
-          gate
-            .connection(proxy.id)
-            ?.outboundContexts.filter((item) => item.subject === kvSubject)
-            .length,
-          (countBefore ?? 0) + 1,
-        );
-        const restored = admittedConnections(
-          await completeBrokerInventory(system, {
-            requiredServerIds: [original.server],
-          }),
-          attachmentIds,
-        );
-        assert.deepEqual(restored.map(brokerConnectionKey), [originalKey]);
-        assert.equal(gate.connection(proxy.id)?.closed, false);
-        assert.equal(service.connection.availability().resources.extras, true);
-        // Close the logical connection while private recovery awaits a real
-        // broker response. Graceful service drain intentionally precedes close.
-        const activeWatches: ConsumerInfo[] = [];
-        for await (const info of manager.consumers.list(mirrorStream)) {
-          if (
-            info.push_bound &&
-            gate
-              .connection(proxy.id)
-              ?.subs.some(
+          assert.equal(attachments.items.length, 1);
+          const attachmentIds = new Set(
+            attachments.items.map((item) => item.attachmentId),
+          );
+          const [original] = admittedConnections(
+            await completeBrokerInventory(system),
+            attachmentIds,
+          );
+          assert(original);
+          const originalKey = brokerConnectionKey(original);
+          const mirrorStream = "KV_TRELLIS_AUTH_REVOCATIONS";
+          const watches: ConsumerInfo[] = [];
+          for await (const info of manager.consumers.list(mirrorStream)) {
+            if (
+              info.push_bound &&
+              proxy.subs.some(
                 (subscription) =>
                   subscription.subject === info.config.deliver_subject,
               )
-          )
-            activeWatches.push(info);
+            )
+              watches.push(info);
+          }
+          assert.equal(watches.length, 1);
+          const old = watches[0];
+          const failedConsumers = new Set([old.name]);
+          let replacement: ConsumerInfo | undefined;
+          const infoPrefix = `$JS.API.CONSUMER.INFO.${mirrorStream}.`;
+          hold = gate.armResponseHold(infoPrefix, proxy.id, (body) => {
+            const info: ConsumerInfo = JSON.parse(
+              new TextDecoder().decode(body),
+            );
+            if (
+              typeof info.name === "string" &&
+              !failedConsumers.has(info.name) &&
+              service.connection.availability().resources.extras === false
+            ) {
+              replacement = info;
+              return true;
+            }
+            return false;
+          });
+          // This consumer is the ephemeral session mirror, not committed service
+          // storage. Withhold its real replacement INFO response until IO is fenced.
+          assert(await manager.consumers.delete(mirrorStream, old.name));
+          await deadline(hold.held, 30_000);
+          assert(replacement);
+          // A failed recovery snapshot must stay fenced and be retried without
+          // fresh application acquisition or another physical connection.
+          assert(
+            await manager.consumers.delete(mirrorStream, replacement.name),
+          );
+          failedConsumers.add(replacement.name);
+          await hold.release();
+          hold = gate.armResponseHold(
+            infoPrefix,
+            proxy.id,
+            (body) => {
+              const info: ConsumerInfo = JSON.parse(
+                new TextDecoder().decode(body),
+              );
+              if (
+                typeof info.name !== "string" ||
+                failedConsumers.has(info.name)
+              )
+                return false;
+              replacement = info;
+              return (
+                service.connection.availability().resources.extras === false
+              );
+            },
+            { continuous: spansExpiry },
+          );
+          await deadline(hold.held, 30_000);
+          assert.equal(
+            service.connection.availability().resources.extras,
+            false,
+          );
+          if (spansExpiry) {
+            // Cross the real signed lifetime and verifier skew, without losing
+            // the admitted physical connection or changing request deadlines.
+            // Withhold every retry response, not just the first request. The
+            // real supervisor keeps retrying with its unchanged timeouts.
+            await new Promise((resolve) =>
+              setTimeout(
+                resolve,
+                Math.max(0, originalExpiresAt + 6_000 - Date.now()),
+              ),
+            );
+            assert.equal(
+              service.connection.availability().resources.extras,
+              false,
+            );
+            assert.equal(gate.connection(proxy.id)?.closed, false);
+            const beforeCalls = gate
+              .connection(proxy.id)
+              ?.outboundContexts.filter((item) =>
+                item.subject.endsWith(".Echo"),
+              ).length;
+            const expiredCall = await service.echo(
+              { value: "expired authority" },
+              { timeout: 250 },
+            );
+            assert(expiredCall.isErr());
+            assert.equal(echoes, 0);
+            assert.equal(
+              gate
+                .connection(proxy.id)
+                ?.outboundContexts.filter((item) =>
+                  item.subject.endsWith(".Echo"),
+                ).length,
+              beforeCalls,
+              "expired authority cannot publish an application RPC",
+            );
+          }
+          const countBefore = gate
+            .connection(proxy.id)
+            ?.outboundContexts.filter(
+              (item) => item.subject === kvSubject,
+            ).length;
+          let outcome: "success" | "error" | undefined;
+          write = records
+            .put("own-recovery", { value: "recovered" })
+            .orThrow()
+            .then(
+              (result) => {
+                outcome = "success";
+                return result;
+              },
+              (error: unknown) => {
+                outcome = "error";
+                throw error;
+              },
+            );
+          void write.catch(() => undefined);
+          const fenced = await manager.streams.getMessage(stream, {
+            last_by_subj: kvSubject,
+          });
+          assert(fenced);
+          assert.equal(outcome, undefined);
+          assert.equal(fenced.seq, baseline.seq);
+          assert.deepEqual(fenced.data, baseline.data);
+          assert.equal(
+            gate
+              .connection(proxy.id)
+              ?.outboundContexts.filter((item) => item.subject === kvSubject)
+              .length,
+            countBefore,
+          );
+          await hold.release();
+          hold = undefined;
+          await deadline(write, spansExpiry ? 30_000 : 5_000);
+          assert.equal(outcome, "success");
+          assert.deepEqual(await records.get("own-recovery").orThrow(), {
+            value: "recovered",
+          });
+          const persisted = await manager.streams.getMessage(stream, {
+            last_by_subj: kvSubject,
+          });
+          assert(persisted);
+          assert.equal(persisted.seq, baseline.seq + 1);
+          assert.equal(
+            gate
+              .connection(proxy.id)
+              ?.outboundContexts.filter((item) => item.subject === kvSubject)
+              .length,
+            (countBefore ?? 0) + 1,
+          );
+          const restored = admittedConnections(
+            await completeBrokerInventory(system, {
+              requiredServerIds: [original.server],
+            }),
+            attachmentIds,
+          );
+          assert.deepEqual(restored.map(brokerConnectionKey), [originalKey]);
+          assert.equal(gate.connection(proxy.id)?.closed, false);
+          if (spansExpiry) {
+            // Coverage restoration wakes maintenance first; application
+            // usability follows verification and promotion of fresh authority.
+            await runtime.waitFor(
+              () => service.connection.availability().resources.extras === true,
+            );
+          }
+          assert.equal(
+            service.connection.availability().resources.extras,
+            true,
+          );
+          if (spansExpiry) {
+            const renewed = await runtime.callAdminRpc(
+              "authAuthorizationSessionsList",
+              {
+                state: "active",
+              },
+            );
+            const current = renewed.items.find(
+              (item) =>
+                item.authorizationSessionId === session.authorizationSessionId,
+            );
+            assert(current?.maximumContextExpiresAt);
+            assert(
+              Date.parse(current.maximumContextExpiresAt) > originalExpiresAt,
+            );
+            assert(Date.parse(current.maximumContextExpiresAt) > Date.now());
+            assert.deepEqual(
+              await service.echo({ value: "fresh authority" }).orThrow(),
+              { value: "fresh authority" },
+            );
+            assert.equal(echoes, 1);
+          }
+          // Close the logical connection while private recovery awaits a real
+          // broker response. Graceful service drain intentionally precedes close.
+          const activeWatches: ConsumerInfo[] = [];
+          for await (const info of manager.consumers.list(mirrorStream)) {
+            if (
+              info.push_bound &&
+              gate
+                .connection(proxy.id)
+                ?.subs.some(
+                  (subscription) =>
+                    subscription.subject === info.config.deliver_subject,
+                )
+            )
+              activeWatches.push(info);
+          }
+          assert.equal(activeWatches.length, 1);
+          hold = gate.armResponseHold(
+            infoPrefix,
+            proxy.id,
+            () => service.connection.availability().resources.extras === false,
+          );
+          assert(
+            await manager.consumers.delete(mirrorStream, activeWatches[0].name),
+          );
+          await deadline(hold.held, 30_000);
+          const stoppedWrite = records
+            .put("own-recovery", { value: "must-not-write" })
+            .orThrow();
+          const rejectedWrite = assert.rejects(stoppedWrite);
+          await deadline(service.connection.close(), 5_000);
+          await deadline(serviceExit, 5_000);
+          await deadline(rejectedWrite, 5_000);
+          await deadline(gate.waitForClose(proxy.id), 5_000);
+          await hold.release();
+          hold = undefined;
+          const stopped = await manager.streams.getMessage(stream, {
+            last_by_subj: kvSubject,
+          });
+          assert(stopped);
+          assert.equal(stopped.seq, persisted.seq);
+          assert.deepEqual(stopped.data, persisted.data);
+        } finally {
+          await hold?.release();
+          await write?.catch(() => undefined);
+          await service.stop();
+          await serviceExit;
+          await broker.close();
+          await system.close();
         }
-        assert.equal(activeWatches.length, 1);
-        hold = gate.armResponseHold(
-          infoPrefix,
-          proxy.id,
-          () => service.connection.availability().resources.extras === false,
-        );
-        assert(
-          await manager.consumers.delete(mirrorStream, activeWatches[0].name),
-        );
-        await deadline(hold.held, 30_000);
-        const stoppedWrite = records
-          .put("own-recovery", { value: "must-not-write" })
-          .orThrow();
-        const rejectedWrite = assert.rejects(stoppedWrite);
-        await deadline(service.connection.close(), 5_000);
-        await deadline(serviceExit, 5_000);
-        await deadline(rejectedWrite, 5_000);
-        await deadline(gate.waitForClose(proxy.id), 5_000);
-        await hold.release();
-        hold = undefined;
-        const stopped = await manager.streams.getMessage(stream, {
-          last_by_subj: kvSubject,
-        });
-        assert(stopped);
-        assert.equal(stopped.seq, persisted.seq);
-        assert.deepEqual(stopped.data, persisted.data);
-      } finally {
-        await hold?.release();
-        await write?.catch(() => undefined);
-        await service.stop();
-        await serviceExit;
-        await broker.close();
-        await system.close();
-      }
-    },
-    { interruptibleNativeProxy: true },
-  );
-});
+      },
+      {
+        interruptibleNativeProxy: true,
+        ...(spansExpiry
+          ? {
+              authorization: {
+                contextLifetimeSeconds: 61,
+                refreshLeadSeconds: 5,
+                refreshJitterSeconds: 0,
+                minimumContextLifetimeSeconds: 31,
+              },
+            }
+          : {}),
+      },
+    );
+  });
+}
 
 test("a granted optional RPC waits for coverage rather than being classified as denied", async () => {
   await withTrellisRuntime(

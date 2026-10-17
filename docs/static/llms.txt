@@ -28,6 +28,9 @@ Runtime Jobs/Events resource evidence is read from Auth through authenticated
 `ResourceBindings.Query`, with separate kind-scoped read capabilities. Split roles
 do not read another role's SQLite database; application services continue using
 generated resource handles rather than this runtime-internal evidence API.
+Identical deployment Apply retains current ready resource evidence. Changed or
+unmaterialized resources remain unavailable until reconciled; Apply does not
+promote stale materialization evidence.
 
 Operator CLI: `trellis clients list|get|put|disable|delete` manages public OAuth
 registrations, including exact loopback browser redirects.

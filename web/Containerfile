@@ -2,7 +2,7 @@ FROM --platform=$BUILDPLATFORM docker.io/library/node:24-bookworm-slim AS build
 
 WORKDIR /app
 
-COPY package.json package-lock.json tsconfig.base.json /app/
+COPY package.json package-lock.json /app/
 COPY ts /app/ts
 COPY web /app/web
 COPY portal /app/portal

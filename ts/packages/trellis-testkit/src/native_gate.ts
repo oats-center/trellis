@@ -86,6 +86,7 @@ type ResponseCandidate = {
 };
 
 type ResponseHold = {
+  continuous: boolean;
   subjectPrefix: string;
   connectionId: number | undefined;
   matcher: ReplyBodyMatcher | undefined;
@@ -189,14 +190,22 @@ export class NativeTransportGate {
    * disarms, its candidate requests are cleared, `held` rejects with the
    * original cause, and that reply is forwarded unchanged so the physical
    * connection and unrelated traffic keep flowing.
+   *
+   * With `continuous`, an explicit connection is required and every matching
+   * retry reply is withheld until release. `held` observes the first reply;
+   * release forwards all held bytes on that same physical connection.
    */
   armResponseHold(
     subjectPrefix: string,
     connectionId?: number,
     matcher?: ReplyBodyMatcher,
+    options: { continuous?: boolean } = {},
   ): ResponseHoldBarrier {
     if (subjectPrefix.length === 0) {
       throw new Error("a response hold requires a non-empty subject prefix");
+    }
+    if (options.continuous && connectionId === undefined) {
+      throw new Error("a continuous response hold requires one connection");
     }
     if (this.#responseHold !== undefined) {
       throw new Error(
@@ -211,6 +220,7 @@ export class NativeTransportGate {
     // surfacing as an unrelated unhandled background rejection.
     promise.catch(() => {});
     const hold: ResponseHold = {
+      continuous: options.continuous ?? false,
       subjectPrefix,
       connectionId,
       matcher,
@@ -299,12 +309,12 @@ export class NativeTransportGate {
         if (
           hold !== undefined &&
           !hold.released &&
-          hold.inbox === undefined &&
+          (hold.inbox === undefined || hold.continuous) &&
           op.reply !== undefined &&
           (hold.connectionId === undefined || hold.connectionId === id) &&
           op.subject.startsWith(hold.subjectPrefix)
         ) {
-          if (hold.matcher === undefined) {
+          if (hold.matcher === undefined && !hold.continuous) {
             hold.requestSubject = op.subject;
             hold.inbox = op.reply;
             hold.matchedConnectionId = id;
@@ -353,7 +363,10 @@ export class NativeTransportGate {
         }
         const hold = this.#responseHold;
         if (hold === undefined || hold.released) return false;
-        if (hold.matcher !== undefined && hold.inbox === undefined) {
+        if (
+          (hold.matcher !== undefined || hold.continuous) &&
+          (hold.inbox === undefined || hold.continuous)
+        ) {
           const candidate = hold.candidates.find(
             (entry) => entry.connectionId === id && entry.inbox === op.subject,
           );
@@ -364,7 +377,7 @@ export class NativeTransportGate {
             const connection = this.connection(id);
             if (!connection)
               throw new Error("Reply connection is no longer observed");
-            accepted = hold.matcher(op.body, connection);
+            accepted = hold.matcher?.(op.body, connection) ?? true;
           } catch (cause) {
             // The predicate is synchronous owner code; a throw is a
             // deliberately reported failure, not a non-match. Disarm only this
@@ -384,7 +397,9 @@ export class NativeTransportGate {
           hold.inbox = candidate.inbox;
           hold.matchedConnectionId = candidate.connectionId;
           hold.writer = candidate.writer;
-          hold.candidates = [];
+          hold.candidates = hold.continuous
+            ? hold.candidates.filter((entry) => entry !== candidate)
+            : [];
         }
         if (
           hold.inbox !== undefined &&

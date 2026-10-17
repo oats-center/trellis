@@ -9,7 +9,7 @@ js_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-cat > /usr/share/nginx/html/runtime-config.js <<EOF
+cat > /usr/share/nginx/html/assets/web/runtime-config.js <<EOF
 window.__TRELLIS_RUNTIME_CONFIG__ = {
   authUrl: "$(js_escape "$auth_url")",
   natsServers: "$(js_escape "$nats_servers")"

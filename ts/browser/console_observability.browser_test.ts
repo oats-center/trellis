@@ -145,7 +145,7 @@ test("B37 Jobs renders a real primary result and type summary", async () => {
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
         await assertNoBrowserErrors(errors);
 
@@ -242,7 +242,7 @@ test("B41 Events renders its primary query table", async () => {
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
         await assertNoBrowserErrors(errors);
         await page.goto(`${runtime.trellisUrl}/console/admin/events`, {
@@ -361,7 +361,7 @@ test("B44 Health renders its real participant query", async () => {
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
         await assertNoBrowserErrors(errors);
         await page.goto(`${runtime.trellisUrl}/console/admin/health-events`, {
@@ -518,7 +518,7 @@ test("B47 overview refresh loads an instance provisioned after the initial snaps
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
       await assertNoBrowserErrors(errors);
       await page.goto(`${runtime.trellisUrl}/console/admin`, {
@@ -681,7 +681,7 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsole(page, runtime, credentials);
         await waitForConsoleShell(page);
         await page.locator('summary[aria-label="Open user menu"]').click();
@@ -777,7 +777,7 @@ test("Z07 deferred page refresh stays single-flight under live invalidation", as
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         const wired = await wireNatsGate(page);
         try {
           await openConsoleAsRuntimeAdmin(page, runtime);
@@ -901,7 +901,7 @@ test("Z08 page discards superseded results and drains the latest query", async (
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         const wired = await wireNatsGate(page);
         try {
           await openConsoleAsRuntimeAdmin(page, runtime);
@@ -1106,7 +1106,7 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         const wired = await wireNatsGate(page);
         try {
           await openConsoleAsRuntimeAdmin(page, runtime);

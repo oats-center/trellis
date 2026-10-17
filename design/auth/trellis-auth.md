@@ -144,6 +144,10 @@ that digest against verified caller authority before accessing retained data.
 Unavailable Auth evidence fails the operation; roles do not keep a local catalog
 replica or fall back to another host's database. Events telemetry uses the same
 authenticated read boundary within its existing poll deadline.
+Applying identical participant declarations carries forward only ready allocation
+evidence verified at the immediately preceding binding revision. Changed or
+unmaterialized declarations, detached allocations, and already-stale evidence
+remain unavailable until ordinary resource reconciliation succeeds.
 
 First-time resource provisioning may finish an interrupted allocation using the
 same incarnation and retained infrastructure. Once materialization has committed,
@@ -390,6 +394,10 @@ A retired session remains denied, but fresh ordinary admission may replace it
 under a still-valid credential. Explicit close or terminal credential failure
 stops recovery. Explicit native authority refresh and scheduled renewal share
 one custody worker and await authenticated publication and mirror coverage.
+If the own signed authority expires during mirror loss, restoring the snapshot
+alone does not restore application usability. The retained runtime key proves a
+fresh admission exchange on the surviving attachment; its verified authority is
+promoted before normal renewal resumes. Expired authority never authorizes work.
 
 Kicks use the operational system-account client and exact broker inventory. A
 reused CID with another attachment marker is never kicked. Unavailable or

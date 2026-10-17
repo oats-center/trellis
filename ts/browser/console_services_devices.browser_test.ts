@@ -29,7 +29,7 @@ test("B01 creating a native service deployment opens its persisted implementatio
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(`${runtime.trellisUrl}/console/admin/services/new`, {
@@ -94,7 +94,7 @@ test("B02 installed service resources render from real evidence", async () => {
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
 
         await page.goto(`${runtime.trellisUrl}/console/admin/resources`, {
@@ -136,7 +136,7 @@ test("B03 same-document service navigation replaces A with B", async () => {
       const context = await launchProfile(runtime);
       try {
         const page = await context.newPage();
-        const errors = captureBrowserErrors(page);
+        const errors = await captureBrowserErrors(page);
         await openConsoleAsRuntimeAdmin(page, runtime);
 
         await page.goto(
@@ -221,7 +221,7 @@ test("B05 service table pages and resets on filter change", async () => {
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(`${runtime.trellisUrl}/console/admin/services`, {
@@ -292,7 +292,7 @@ test("B06 device creation persists the authored participant and returns its allo
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(
@@ -478,7 +478,7 @@ test("B08 provisioning receipt shows the returned identity", async () => {
     const context = await launchProfile(runtime);
     try {
       const page = await context.newPage();
-      const errors = captureBrowserErrors(page);
+      const errors = await captureBrowserErrors(page);
       await openConsoleAsRuntimeAdmin(page, runtime);
 
       await page.goto(

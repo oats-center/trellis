@@ -499,15 +499,13 @@ jobs:
       - name: Expose repository CLI
         run: echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+      - name: Install workspace dependencies
+        run: npm ci
 
       - name: Check TypeScript demos with packaged dependencies
         run: |
           npm run build:packages
-          node ts/tools/package_build/demo_consumers.ts
+          node --experimental-transform-types ts/tools/package_build/demo_consumers.ts
 
       - name: Verify TypeScript publication
         run: bash scripts/release-ts-dry-run.sh

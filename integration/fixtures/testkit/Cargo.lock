@@ -2425,7 +2425,7 @@ version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "51e219e79014df21a225b1860a479e2dcd7cbd9130f4defd4bd0e191ea31d67d"
 dependencies = [
- "base64 0.21.7",
+ "base64 0.22.1",
  "chrono",
  "getrandom 0.2.17",
  "http",
@@ -2729,6 +2729,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
+]
+
+[[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3188,6 +3198,9 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "trellis-builtin-contracts",
+ "trellis-codegen-rust",
+ "trellis-idl",
  "trellis-rs",
 ]
 
@@ -3898,7 +3911,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -4376,6 +4389,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-builtin-contracts"
+version = "0.100.0"
+dependencies = [
+ "miette",
+ "trellis-idl",
+]
+
+[[package]]
+name = "trellis-codegen-rust"
+version = "0.100.0"
+dependencies = [
+ "prettyplease",
+ "serde_json",
+ "syn 2.0.119",
+ "thiserror 2.0.21",
+ "trellis-idl",
+]
+
+[[package]]
 name = "trellis-events-runtime"
 version = "0.100.0"
 dependencies = [
@@ -4509,6 +4541,9 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
+ "trellis-builtin-contracts",
+ "trellis-codegen-rust",
+ "trellis-idl",
  "trellis-protocol",
  "ulid",
  "url",
@@ -4578,6 +4613,8 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "trellis-builtin-contracts",
+ "trellis-codegen-rust",
  "trellis-rs",
 ]
 

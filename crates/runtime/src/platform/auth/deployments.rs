@@ -519,6 +519,15 @@ impl SqliteAuthorizationStore {
                 )?;
             }
             connection.execute("INSERT INTO auth_deployment_bindings(deployment_id,installed_revision,implementation_digest,provided_apis_json,required_capabilities_json,optional_capabilities_json,resource_commitments_json,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,1) ON CONFLICT(deployment_id) DO UPDATE SET installed_revision=excluded.installed_revision,implementation_digest=excluded.implementation_digest,provided_apis_json=excluded.provided_apis_json,required_capabilities_json=excluded.required_capabilities_json,optional_capabilities_json=excluded.optional_capabilities_json,resource_commitments_json=excluded.resource_commitments_json,revision=auth_deployment_bindings.revision+1",params![deployment_id,revision,participant_digest,json(&provided)?,json(&required)?,json(&optional)?,json(&resource_commitments)?])?;
+            if unchanged.is_some() {
+                // Identical declarations retain the same allocations. Carry only
+                // ready evidence verified at the immediately preceding binding;
+                // changed, pending, detached, or already stale evidence stays fenced.
+                connection.execute(
+                    "UPDATE auth_resources SET binding_revision=binding_revision+1 WHERE owner_kind='deployment' AND owner_id=?1 AND state='ready' AND binding_revision=(SELECT revision-1 FROM auth_deployment_bindings WHERE deployment_id=?1)",
+                    [&deployment_id],
+                )?;
+            }
             if kind == "service"
                 && participant.resources().values().any(|resource| {
                     matches!(resource, trellis_idl::ResourceDefinition::Consumer { .. })

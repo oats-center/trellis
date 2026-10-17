@@ -192,6 +192,9 @@ Rust and TypeScript stage a rollover mirror without withdrawing healthy predeces
 coverage. On mirror failure, one cancellable private supervisor retries snapshot
 replay on the surviving attachment while application IO remains fenced; it neither
 clears known revocations nor retransmits application requests.
+If TypeScript authority expires during coverage loss, private admission obtains
+and verifies fresh authority on the surviving attachment before application use
+resumes. Snapshot recovery alone never extends expired authority.
 
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
@@ -730,6 +733,9 @@ First-time provisioning can resume an interrupted allocation. Missing previously
 materialized consumers, KV/object stores, Job keyed coordination, or Operation
 storage fail closed; retries must not replace lost durable state with empty data.
 Restore coherent durable state before resuming affected execution.
+Identical deployment Apply retains only current ready resource evidence. Changed
+or unmaterialized resources remain unavailable until reconciled; repeated Apply
+does not promote stale evidence.
 Runtime Jobs/Events resource evidence uses authenticated `Auth.ResourceBindings.Query`
 with separate kind-scoped read capabilities and current binding digests. Split
 roles never read another role's SQLite database. This is a runtime-internal
