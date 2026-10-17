@@ -16,6 +16,7 @@ Volume=%h/trellis/config/nats/tls:/etc/nats/tls:ro,Z
 Volume=trellis-nats-data.volume:/data
 Volume=trellis-nats-jwt.volume:/jwt
 Network=trellis.network
+NetworkAlias=nats.example.com
 UserNS=keep-id
 NoNewPrivileges=true
 DropCapability=all

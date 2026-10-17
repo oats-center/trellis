@@ -412,23 +412,6 @@ mod tests {
     }
 
     #[test]
-    fn port_lease_holds_and_releases_its_loopback_listeners() {
-        let lease = PortLease::reserve().expect("reserve loopback ports");
-        let set = lease.ports().expect("read reserved ports");
-        let ports = [set.http, set.oauth, set.nats, set.monitor, set.websocket];
-        for port in ports {
-            assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
-        }
-        lease.release_for_spawn();
-        let _listeners: Vec<_> = ports
-            .into_iter()
-            .map(|port| {
-                TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("released distinct listener")
-            })
-            .collect();
-    }
-
-    #[test]
     fn released_ports_survive_automatic_outbound_allocation() {
         const CHILD: &str = "TRELLIS_PORT_REUSE_NAMESPACE_CHILD";
         if std::env::var_os(CHILD).is_none() {
@@ -437,7 +420,7 @@ mod tests {
                     "ip link set lo up && sysctl -q -w net.ipv4.ip_local_port_range='32768 32775' && exec \"$@\"",
                     "port-availability"])
                 .arg(std::env::current_exe().expect("current test executable"))
-                .args(["--exact", "sandbox::tests::released_ports_survive_automatic_outbound_allocation"])
+                .args(["--exact", "sandbox::tests::released_ports_survive_automatic_outbound_allocation", "--nocapture"])
                 .env(CHILD, "1")
                 .output()
                 .expect("run the real TCP allocation test in a private network namespace");
@@ -447,11 +430,16 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
+            assert!(String::from_utf8_lossy(&output.stdout)
+                .contains("released listeners bound after outbound allocation"));
             return;
         }
         let _peer = TcpListener::bind((Ipv4Addr::LOCALHOST, 12000)).expect("outbound destination");
         let lease = PortLease::reserve().expect("reserve listeners");
         let set = lease.ports().expect("reserved ports");
+        for port in [set.http, set.oauth, set.nats, set.monitor, set.websocket] {
+            assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+        }
         lease.release_for_spawn();
         let _connections: Vec<_> = (0..8)
             .map(|_| {
@@ -469,6 +457,7 @@ mod tests {
                     .expect("released listener survives outbound allocation")
             })
             .collect();
+        println!("released listeners bound after outbound allocation");
     }
 
     #[test]

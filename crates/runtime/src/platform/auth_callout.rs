@@ -20,7 +20,7 @@ use nats_jwt_rs::{
     Claims,
 };
 use nkeys::{KeyPair, KeyPairType, XKey};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use trellis_protocol::TransportAuthorizationV1;
 
 use super::auth::{AuthError, SqliteAuthorizationStore};
@@ -30,6 +30,23 @@ const AUTH_CALLOUT_SUBJECT: &str = "$SYS.REQ.USER.AUTH";
 const DISCONNECT_SUBJECT: &str = "$SYS.ACCOUNT.*.DISCONNECT";
 const MAX_CONCURRENT_REQUESTS: usize = 32;
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(30);
+
+// TLS client certificates are optional NATS telemetry, not Trellis admission
+// evidence. The upstream ClientTLS model incorrectly requires them. Consume
+// only that field here while Claims::decode still verifies the original JWT.
+#[derive(Clone, Deserialize, Serialize)]
+struct CalloutRequest {
+    #[serde(default, rename = "client_tls", skip_serializing)]
+    _client_tls: Option<serde::de::IgnoredAny>,
+    #[serde(flatten)]
+    request: AuthRequest,
+}
+
+impl nats_jwt_rs::Claim for CalloutRequest {
+    fn validate() {
+        <AuthRequest as nats_jwt_rs::Claim>::validate();
+    }
+}
 
 #[derive(Deserialize)]
 struct DisconnectEvent {
@@ -269,11 +286,11 @@ async fn process(
         .xkey
         .open(&message.payload, &xkey)
         .map_err(|_| AuthError::Denied)?;
-    let claims = Claims::<AuthRequest>::decode(
+    let claims = Claims::<CalloutRequest>::decode(
         std::str::from_utf8(&decrypted).map_err(|_| AuthError::Denied)?,
     )
     .map_err(|_| AuthError::Denied)?;
-    let request = claims.payload();
+    let request = &claims.payload().request;
     let now = now_seconds()?;
     if claims.iss != request.server.id
         || claims.sub != keys.auth_account
@@ -317,10 +334,10 @@ async fn process(
         Ok(Err(_)) | Err(_) => Err(AuthError::Unavailable),
     };
     let response = match result {
-        Ok(jwt) => keys.response(claims.payload(), Ok(jwt))?,
+        Ok(jwt) => keys.response(&claims.payload().request, Ok(jwt))?,
         Err(error) => {
             tracing::debug!(%error,"NATS admission denied");
-            keys.response(claims.payload(), Err(denial_code(&error)))?
+            keys.response(&claims.payload().request, Err(denial_code(&error)))?
         }
     };
     let encrypted = keys
@@ -408,6 +425,33 @@ fn now_seconds() -> Result<i64, AuthError> {
 mod tests {
     use super::*;
     use trellis_protocol::TRANSPORT_AUTHORIZATION_FORMAT_V1;
+
+    #[test]
+    fn decodes_go_tls_callouts_without_client_certificates(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Official github.com/nats-io/jwt/v2 v2.8.2 signed this request with
+        // ClientTLS{Version: "1.3", Cipher: "TLS_AES_128_GCM_SHA256"} and no
+        // mutual-TLS certificates. No private key or usable credential is retained.
+        let token = include_str!("fixtures/nats_tls_callout.jwt").trim();
+        let claims = Claims::<CalloutRequest>::decode(token)?;
+        assert_eq!(
+            claims.payload().request.connect_opts.auth_token.as_deref(),
+            Some("fixture-not-a-credential")
+        );
+
+        let parts: Vec<_> = token.split('.').collect();
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1])?)?;
+        payload["nats"]["client_tls"]["cipher"] = "modified TLS telemetry".into();
+        let tampered = format!(
+            "{}.{}.{}",
+            parts[0],
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload)?),
+            parts[2]
+        );
+        assert!(Claims::<CalloutRequest>::decode(&tampered).is_err());
+        Ok(())
+    }
 
     #[test]
     fn nonce_and_account_signing_boundaries() -> Result<(), Box<dyn std::error::Error>> {

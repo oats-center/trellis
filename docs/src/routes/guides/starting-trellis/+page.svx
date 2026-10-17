@@ -202,11 +202,35 @@ OAuth certificate chain and private key at `tls/oauth.fullchain.pem` and
 installation's identity or private files. The single-node sample uses one
 JetStream replica; it does not imply a three-node cluster.
 
-Create `config/nats/tls/` as an owner-only directory. When terminating TLS in
-NATS itself, place its certificate chain and private key there and reference
-`/etc/nats/tls/` in `nats.conf`; the NATS unit mounts only this dedicated TLS
-directory, not Auth's private key material. If TLS terminates at your external
-proxy instead, retain the empty directory for the unit's read-only mount.
+Create `config/nats/tls/` as an owner-only directory. Install the broker's
+certificate chain as `nats.fullchain.pem` and private key as `nats.key.pem` there.
+The certificate must cover your broker hostname and be trusted by both the
+runtime image and clients. Replace `nats.example.com` in the TOML and the NATS
+unit's `NetworkAlias` with that hostname, so internal and external connections
+verify the same broker identity. The NATS unit mounts only this dedicated TLS
+directory, not Auth's private key material.
+
+Enable native TLS in the generated `nats/nats.conf` and replace its plaintext
+`websocket` block with WSS:
+
+```text
+tls {
+  cert_file: /etc/nats/tls/nats.fullchain.pem
+  key_file: /etc/nats/tls/nats.key.pem
+}
+
+websocket {
+  listen: 0.0.0.0:8080
+  tls {
+    cert_file: /etc/nats/tls/nats.fullchain.pem
+    key_file: /etc/nats/tls/nats.key.pem
+  }
+}
+```
+
+Retain the generated authorization, JetStream, and `include ./jwt.conf` settings.
+Do not retain `no_tls: true` in the WebSocket block or use plaintext for runtime
+NATS connections in this TLS deployment.
 
 The units mount configuration read-only and persist Auth and its successor signing
 keys under `/var/lib/trellis`. Build the reviewed source as
@@ -222,9 +246,10 @@ The runtime publishes loopback host ports 3000 (Console/application HTTP) and
 3001 (the dedicated OAuth TLS listener). Configure the external Console proxy
 to forward `https://console.example.com` to `http://127.0.0.1:3000`; forward the
 OAuth hostname with TLS passthrough to `127.0.0.1:3001`. Do not terminate OAuth
-TLS into a plaintext non-loopback runtime listener. Native NATS needs its own TLS
-termination at `nats.example.com:4222`, and browser NATS needs a WebSocket-aware
-TLS proxy to host port 8080. NATS monitoring on 8222 remains loopback-only. The
+TLS into a plaintext non-loopback runtime listener. Forward the public native
+NATS endpoint to host port 4222 with TLS passthrough, and the public WSS endpoint
+to host port 8080 with TLS passthrough; NATS terminates both TLS connections.
+NATS monitoring on 8222 remains loopback-only. The
 generated NATS configuration includes `jwt.conf` beside it; the supplied NATS
 unit mounts both files from the generated `config/nats/` bundle.
 
