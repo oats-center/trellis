@@ -4,7 +4,6 @@ export { waitFor } from "./src/wait.ts";
 export type {
   TrellisControlPlaneAuthorization,
   TrellisControlPlaneOAuthProvider,
-  TrellisControlPlaneTtlMs,
   TrellisControlPlaneWebSource,
 } from "./src/types.ts";
 export type {

@@ -5,13 +5,14 @@ Wants=network-online.target
 
 [Container]
 ContainerName=trellis-nats
-Image=docker.io/library/nats:latest
+Image=docker.io/library/nats:2.14.4-alpine
 Exec=-c /etc/nats/nats.conf
 PublishPort=127.0.0.1:4222:4222
 PublishPort=127.0.0.1:8080:8080
 PublishPort=127.0.0.1:8222:8222
-Volume=%h/trellis/config/nats.conf:/etc/nats/nats.conf:ro,Z
-Volume=%h/trellis/config/jwt.conf:/etc/nats/jwt.conf:ro,Z
+Volume=%h/trellis/config/nats/nats.conf:/etc/nats/nats.conf:ro,Z
+Volume=%h/trellis/config/nats/jwt.conf:/etc/nats/jwt.conf:ro,Z
+Volume=%h/trellis/config/nats/tls:/etc/nats/tls:ro,Z
 Volume=trellis-nats-data.volume:/data
 Volume=trellis-nats-jwt.volume:/jwt
 Network=trellis.network

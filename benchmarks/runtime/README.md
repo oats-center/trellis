@@ -61,6 +61,10 @@ npm run bench:runtime -- --providers=4 --output=/tmp/opencode/provider-perf
   Axum/reqwest. First-process readiness includes real Device Code authorization
   and the first generated RPC. Both Rust upload paths read
   back persisted bytes and return their hash before completion.
+  A second fresh process then resumes the saved Rust OAuth credential and measures
+  `rust/first-process-resume-first-rpc` separately. This is the startup boundary
+  comparable to the pre-OAuth saved-session baseline; first-time Device Code login
+  is not relabeled as a resume. Authenticated provider responses remain enabled.
 - Chromium loads the actual generated SDK, logs in through the real portal
   protocol, reconnects a saved session over WebSocket, and proves the first Echo
   result. Document TTFB, navigation-to-first-authorized-response, and

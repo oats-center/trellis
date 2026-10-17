@@ -184,13 +184,6 @@ fn generated_runtime_config_loads_custom_values_and_resolves_paths() {
             .and_then(|client| client.ws_nats_servers.as_ref()),
         Some(&vec!["wss://nats.example.test/ws".to_string()])
     );
-    assert_eq!(
-        parsed
-            .oauth
-            .as_ref()
-            .and_then(|oauth| oauth.redirect_base.as_deref()),
-        Some("https://trellis.example.test/auth/callback")
-    );
     assert!(matches!(
         parsed.platform_storage_backend().expect("platform storage"),
         StorageBackend::Sqlite(storage)

@@ -680,10 +680,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
         }
       }
       for (const [flag, value] of [
-        ["platform-sessions-ttl-ms", options.ttlMs?.sessions],
-        ["platform-oauth-ttl-ms", options.ttlMs?.oauth],
-        ["platform-device-flow-ttl-ms", options.ttlMs?.deviceFlow],
-        ["platform-pending-auth-ttl-ms", options.ttlMs?.pendingAuth],
         [
           "auth-context-lifetime-seconds",
           options.authorization?.contextLifetimeSeconds,

@@ -242,7 +242,7 @@ async fn main() -> Result<(), Error> {
             .await?;
             axum::serve(listener, router).await?;
         }
-        "client" => {
+        "client" | "resume" => {
             let mut samples = Vec::new();
             let started = Instant::now();
             let unix = now();
@@ -264,19 +264,23 @@ async fn main() -> Result<(), Error> {
                 server.trust,
             )
             .await?;
-            let device = oauth
-                .start_device(&json!([{
-                    "type": "trellis_capabilities",
-                    "required": Request::REQUIRED_CAPABILITIES,
-                    "optional": Request::OPTIONAL_CAPABILITIES,
-                }]))
-                .await?;
-            println!(
-                "NATIVE_LOGIN {}",
-                json!({ "clientId": scope.client_id, "userCode": device.user_code(), "verificationUri": device.verification_uri() })
-            );
-            std::io::stdout().flush()?;
-            let session = device.complete().await?;
+            let session = if options.role == "resume" {
+                oauth.resume().await?
+            } else {
+                let device = oauth
+                    .start_device(&json!([{
+                        "type": "trellis_capabilities",
+                        "required": Request::REQUIRED_CAPABILITIES,
+                        "optional": Request::OPTIONAL_CAPABILITIES,
+                    }]))
+                    .await?;
+                println!(
+                    "NATIVE_LOGIN {}",
+                    json!({ "clientId": scope.client_id, "userCode": device.user_code(), "verificationUri": device.verification_uri() })
+                );
+                std::io::stdout().flush()?;
+                device.complete().await?
+            };
             let client = Client::from_generated(
                 trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
                     server.nats_servers,
@@ -296,13 +300,26 @@ async fn main() -> Result<(), Error> {
                 return Err("incorrect first response".into());
             }
             samples.push(Sample {
-                scenario: "rust/first-process-login-first-rpc".into(),
+                scenario: if options.role == "resume" {
+                    "rust/first-process-resume-first-rpc"
+                } else {
+                    "rust/first-process-login-first-rpc"
+                }
+                .into(),
                 transport: "trellis",
                 started_unix_ms: unix,
                 duration_ms: started.elapsed().as_secs_f64() * 1000.0,
                 bytes: None,
                 error: None,
             });
+            if options.role == "resume" {
+                tokio::fs::write(
+                    options.output.join("native-resume-samples.json"),
+                    serde_json::to_vec_pretty(&samples)?,
+                )
+                .await?;
+                return Ok(());
+            }
             let http = reqwest::Client::builder()
                 .http1_only()
                 .timeout(std::time::Duration::from_secs(30))

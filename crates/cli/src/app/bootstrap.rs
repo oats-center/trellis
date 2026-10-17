@@ -102,12 +102,6 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
                     .map(|url| trellis_runtime::WebSourceConfig::Proxy(url.clone()))
             });
     }
-    options.runtime.ttl_ms = trellis_runtime::PlatformTtlConfig {
-        sessions: args.platform_sessions_ttl_ms,
-        oauth: args.platform_oauth_ttl_ms,
-        device_flow: args.platform_device_flow_ttl_ms,
-        pending_auth: args.platform_pending_auth_ttl_ms,
-    };
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
         context_lifetime_seconds: args.auth_context_lifetime_seconds,
         refresh_lead_seconds: args.auth_refresh_lead_seconds,
@@ -199,14 +193,6 @@ mod tests {
                 "37",
                 "--rate-limit-window-ms",
                 "2300",
-                "--platform-sessions-ttl-ms",
-                "45678",
-                "--platform-oauth-ttl-ms",
-                "23456",
-                "--platform-device-flow-ttl-ms",
-                "34567",
-                "--platform-pending-auth-ttl-ms",
-                "12345",
                 "--auth-context-lifetime-seconds",
                 "90",
                 "--auth-refresh-lead-seconds",
@@ -239,11 +225,6 @@ mod tests {
                 .as_ref()
                 .unwrap(),
             &["ws://localhost:8183"]
-        );
-        let ttl = config.platform.as_ref().unwrap().ttl_ms.as_ref().unwrap();
-        assert_eq!(
-            (ttl.sessions, ttl.oauth, ttl.device_flow, ttl.pending_auth),
-            (Some(45678), Some(23456), Some(34567), Some(12345))
         );
         let auth = config.resolve_authorization().unwrap();
         assert_eq!(

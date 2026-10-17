@@ -15,7 +15,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
-use trellis_protocol::{NativeBootstrapSessionProofInput, SessionProofInput};
+use trellis_protocol::{DeviceEnrollmentSessionProofInput, SessionProofInput};
 
 use crate::telemetry::instruments::{CounterFamily, DurationFamily};
 use crate::telemetry::lifecycle::Observation;
@@ -465,12 +465,12 @@ pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDesc
     }
     let mut session_request = request.clone();
     session_request["identityKeyId"] = session_auth.key_id().into();
-    let session_input = SessionProofInput::device_enrollment(NativeBootstrapSessionProofInput {
+    let session_input = SessionProofInput::device_enrollment(DeviceEnrollmentSessionProofInput {
         origin: origin.clone(),
         unsigned_request: session_request,
     })
     .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?;
-    let input = SessionProofInput::device_enrollment(NativeBootstrapSessionProofInput {
+    let input = SessionProofInput::device_enrollment(DeviceEnrollmentSessionProofInput {
         origin: origin.clone(),
         unsigned_request: request.clone(),
     })

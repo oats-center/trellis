@@ -22,11 +22,11 @@ struct Args {
     #[arg(long)]
     contract: bool,
 
-    /// Trellis HTTP base URL for authenticated service bootstrap.
+    /// Selected Trellis OAuth origin for authenticated installation discovery.
     #[arg(long, env = "TRELLIS_URL")]
     trellis_url: Option<String>,
 
-    /// Base64url service instance seed for authenticated bootstrap.
+    /// Base64url provisioned service identity seed.
     #[arg(long, env = "TRELLIS_SEED")]
     seed: Option<String>,
 }
@@ -59,8 +59,9 @@ async fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!("--trellis-url and --seed must be provided together"),
     };
 
+    let server = trellis_rs::auth::discover_native_oauth(&trellis_url).await?;
     let mut runtime = Participant::connect(
-        ServiceConnectOptions::new(&trellis_url, &seed)
+        ServiceConnectOptions::new(server.nats_servers, server.trust, &seed)
             .with_name("rust-field-ops-demo")
             .with_timeout_ms(REQUEST_TIMEOUT_MS),
     )
@@ -73,7 +74,9 @@ async fn main() -> anyhow::Result<()> {
 
     let assignments = Arc::new(sample_assignments());
     let reports = Arc::new(Mutex::new(Vec::<ReportRecord>::new()));
-    let api_client = client.demo_service_fieldops_v1();
+    let api_client = service_trellis::apis::demo_service_fieldops_v1::Client::from_generated(
+        runtime.generated_client(),
+    );
 
     {
         let mut provider = Provider::new(&mut runtime);

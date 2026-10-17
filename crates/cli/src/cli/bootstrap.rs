@@ -102,18 +102,6 @@ pub struct InitConfigArgs {
     /// Console HTTP(S) reverse-proxy upstream.
     #[arg(long)]
     pub console_proxy: Option<String>,
-    /// Session TTL in milliseconds.
-    #[arg(long)]
-    pub platform_sessions_ttl_ms: Option<u64>,
-    /// OAuth flow TTL in milliseconds.
-    #[arg(long)]
-    pub platform_oauth_ttl_ms: Option<u64>,
-    /// Device-flow TTL in milliseconds.
-    #[arg(long)]
-    pub platform_device_flow_ttl_ms: Option<u64>,
-    /// Pending authentication TTL in milliseconds.
-    #[arg(long)]
-    pub platform_pending_auth_ttl_ms: Option<u64>,
     /// Authorization context lifetime in seconds.
     #[arg(long)]
     pub auth_context_lifetime_seconds: Option<u64>,

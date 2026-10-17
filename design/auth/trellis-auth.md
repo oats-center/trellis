@@ -1,10 +1,11 @@
 # Design: Trellis Authentication And Authorization
 
-Status: Revision 7. Phase B functional implementation and acceptance are complete,
-including production startup, Callout/ACL lifecycle wiring, OAuth browser/native
+Status: Revision 7, unreleased. Phase B functional implementation includes
+production startup, Callout/ACL lifecycle wiring, OAuth browser/native
 custody, native CLI flows, shared SDK authority ownership, provider/resource
-integration, and the Console cutover. Phase C is completing strict Check,
-build-owned generation, documentation reconciliation, and legacy-path removal.
+integration, and the Console cutover. Phase C closeout remains open for full-scope
+review repairs, main integration, exact-head acceptance, and matched performance
+evidence. Build-owned generation and strict Check are part of that acceptance.
 This is not a release. This is an unreleased clean break,
 not a compatibility path for GrantBinding or the former browser bind protocol.
 
@@ -59,8 +60,11 @@ generates a replacement key.
 ### Authorization HTTP Boundary
 
 The OAuth adapter bounds form bodies and per-peer/origin request admission,
-rejects untrusted Host/HTTP2 authority and cross-origin portal mutations, and
-limits CORS to origins from validated client callbacks. Forwarding headers do
+rejects untrusted Host/HTTP2 authority and cross-origin portal mutations. Public
+discovery and issuer-chain GETs allow credential-free cross-origin reads, including
+first contact from an unregistered application. Token, device, and revocation
+endpoint CORS remains limited to validated client callbacks; cookie-authenticated
+Portal mutations do not acquire permissive CORS. Forwarding headers do
 not select the peer identity. Expiry cleanup removes transient portal, proof,
 device, and token state without deleting immutable authority or audit evidence.
 
@@ -544,8 +548,10 @@ Issuer rotation/revocation requires `privileges.manage`, not an additional
 `Issuers.Rotate` requires `privileges.manage`, the expected current issuer key,
 and an idempotency key. Auth generates successor signing custody locally; private
 keys never enter the RPC. Before committing a rotation, Auth creates a private
-`0700` sibling directory by replacing the configured issuer seed file's extension
-with `.keys`, writes a new content-addressed `<keyId>.key` file with `0600`
+`0700` directory beside its effective persistent SQLite database, replacing the
+database extension with `.issuer-keys` (`platform.issuer-keys/` by default).
+The initial provisioned seed may remain on a read-only configuration mount.
+Auth writes a new content-addressed `<keyId>.key` file with `0600`
 permissions, and durably flushes the file and directory. Existing files are never
 overwritten and unsafe existing directories are rejected rather than chmodded.
 The old issuer signs the successor link. Retirement, successor activation, the

@@ -9,7 +9,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::{canonicalize_json, ProtocolError, SessionProofErrorCode};
 
-/// Strict wire format for auth, bootstrap, and authorization-context refresh proofs.
+/// Strict device-enrollment signature envelope.
 pub const SESSION_PROOF_FORMAT_V1: &str = "trellis.session-proof.v1";
 
 const MAXIMUM_SAFE_JSON_INTEGER: i64 = 9_007_199_254_740_991;
@@ -20,32 +20,14 @@ const MAXIMUM_PROOF_WINDOW_MS: i64 = 5 * 60 * 1_000;
 /// One fixed signature domain within [`SESSION_PROOF_FORMAT_V1`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionProofPurpose {
-    /// Start a user app or agent browser-auth request.
-    UserAuthRequest,
-    /// Discover intent progress using its initiating key, without claiming a login.
-    UserAuthProgress,
-    /// Claim an approved browser-auth flow with its enrolled session key.
-    UserAuthBind,
-    /// Bootstrap a provisioned service instance.
-    ServiceBootstrap,
-    /// Bootstrap a provisioned or activated device.
-    DeviceBootstrap,
     /// Request device enrollment without runtime authority or a claimed assignment.
     DeviceEnrollment,
-    /// Refresh an authorization context using the durable session key.
-    AuthorizationContextRefresh,
 }
 
 impl SessionProofPurpose {
     fn as_str(self) -> &'static str {
         match self {
-            Self::UserAuthRequest => "userAuthRequest",
-            Self::UserAuthProgress => "userAuthProgress",
-            Self::UserAuthBind => "userAuthBind",
-            Self::ServiceBootstrap => "serviceBootstrap",
-            Self::DeviceBootstrap => "deviceBootstrap",
             Self::DeviceEnrollment => "deviceEnrollment",
-            Self::AuthorizationContextRefresh => "authorizationContextRefresh",
         }
     }
 }
@@ -66,277 +48,25 @@ pub struct SessionProofInput {
     transcript_fields: Vec<Vec<u8>>,
 }
 
-/// Owned fields for user browser-auth initiation and intent-progress proofs.
+/// Owned fields for an identity-signed device-enrollment request.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UserAuthRequestSessionProofInput {
+pub struct DeviceEnrollmentSessionProofInput {
     /// Exact configured Trellis origin, independently supplied by both peers.
     pub origin: String,
     /// Complete canonical request input, with the entire `proof` field omitted.
-    pub unsigned_request: Value,
-}
-
-/// Owned fields for claiming an approved browser authentication transaction.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UserAuthBindSessionProofInput {
-    /// Exact configured Trellis origin, independently supplied by both peers.
-    pub origin: String,
-    /// Immutable browser authentication transaction identifier.
-    pub transaction_id: String,
-    /// Enrolled unpadded base64url Ed25519 session public key.
-    pub session_public_key: String,
-    /// Complete canonical request input, with the entire `proof` field omitted.
-    pub unsigned_request: Value,
-}
-
-/// Proof inputs shared by native service and device bootstrap.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NativeBootstrapSessionProofInput {
-    /// Exact configured Trellis origin, independently supplied by both peers.
-    pub origin: String,
-    /// Complete canonical request input, with the entire `proof` field omitted.
-    pub unsigned_request: Value,
-}
-
-/// Owned fields for an authorization-context refresh proof.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorizationContextRefreshSessionProofInput {
-    /// Exact configured Trellis origin, never taken from a forwarded Host header.
-    pub origin: String,
-    /// Installation public key loaded from the authenticated login.
-    pub session_public_key: String,
-    /// Complete request object with the proof field omitted.
     pub unsigned_request: Value,
 }
 
 impl SessionProofInput {
-    /// Build a user browser-auth initiation proof input.
-    ///
-    /// `request_digest` is the output of [`session_proof_request_digest`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::SessionProof`] when a field is noncanonical,
-    /// unsafe, empty, malformed, or the NKey does not encode `session_public_key`.
-    pub fn user_auth_request(
-        input: UserAuthRequestSessionProofInput,
-    ) -> Result<Self, ProtocolError> {
-        Self::user_auth_request_at(
-            input,
-            SessionProofPurpose::UserAuthRequest,
-            "/auth/requests",
-        )
-    }
-
-    /// Bind intent-progress discovery to the initiating key, origin, intent, and freshness.
+    /// Build a device-enrollment proof bound to the selected origin, enrollment
+    /// route, identity key, runtime key, and complete unsigned request.
     ///
     /// # Errors
-    /// Returns [`ProtocolError::SessionProof`] for malformed, unsafe, or noncanonical input.
-    pub fn user_auth_progress(
-        input: UserAuthRequestSessionProofInput,
-    ) -> Result<Self, ProtocolError> {
-        Self::user_auth_request_at(
-            input,
-            SessionProofPurpose::UserAuthProgress,
-            "/auth/intents/progress",
-        )
-    }
-
-    fn user_auth_request_at(
-        input: UserAuthRequestSessionProofInput,
-        purpose: SessionProofPurpose,
-        route: &str,
-    ) -> Result<Self, ProtocolError> {
-        let UserAuthRequestSessionProofInput {
-            origin,
-            unsigned_request,
-        } = input;
-        validate_safe_json_integers(&unsigned_request, &mut Vec::new())?;
-        let request = unsigned_request.as_object().ok_or_else(|| {
-            proof_error(
-                SessionProofErrorCode::InvalidFormat,
-                ["request"],
-                "unsigned request must be an object",
-            )
-        })?;
-        if request.contains_key("proof") {
-            return Err(proof_error(
-                SessionProofErrorCode::InvalidFormat,
-                ["proof"],
-                "unsigned request must omit proof",
-            ));
-        }
-        let required_text = |field: &str| -> Result<String, ProtocolError> {
-            request
-                .get(field)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    proof_error(
-                        SessionProofErrorCode::InvalidFormat,
-                        [field],
-                        "required string is missing",
-                    )
-                })
-        };
-        let request_id = required_text("requestId")?;
-        let issued_at = request
-            .get("issuedAt")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| {
-                proof_error(
-                    SessionProofErrorCode::InvalidFormat,
-                    ["issuedAt"],
-                    "issuedAt must be an integer",
-                )
-            })?;
-        let session_public_key = required_text("sessionPublicKey")?;
-        let key = decode_public_key(&session_public_key, &["sessionPublicKey"])?;
-        let signer_key_id = derived_key_id(&key);
-        Self::new(
-            purpose,
-            request_id,
-            issued_at,
-            signer_key_id,
-            vec![
-                text(&origin, &["origin"])?,
-                text(route, &["route"])?,
-                key.as_bytes().to_vec(),
-                Sha256::digest(canonicalize_json(&unsigned_request)?.as_bytes()).to_vec(),
-            ],
-        )
-    }
-
-    /// Build a proof input for claiming an approved browser-auth flow.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::SessionProof`] when a field is noncanonical,
-    /// unsafe, empty, or malformed.
-    pub fn user_auth_bind(input: UserAuthBindSessionProofInput) -> Result<Self, ProtocolError> {
-        let UserAuthBindSessionProofInput {
-            origin,
-            transaction_id,
-            session_public_key,
-            unsigned_request,
-        } = input;
-        validate_safe_json_integers(&unsigned_request, &mut Vec::new())?;
-        let request = unsigned_request.as_object().ok_or_else(|| {
-            proof_error(
-                SessionProofErrorCode::InvalidFormat,
-                ["request"],
-                "unsigned request must be an object",
-            )
-        })?;
-        if request.contains_key("proof") {
-            return Err(proof_error(
-                SessionProofErrorCode::InvalidFormat,
-                ["proof"],
-                "unsigned request must omit proof",
-            ));
-        }
-        let request_id = request
-            .get("requestId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                proof_error(
-                    SessionProofErrorCode::InvalidFormat,
-                    ["requestId"],
-                    "requestId must be a string",
-                )
-            })?
-            .to_owned();
-        let issued_at = request
-            .get("issuedAt")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| {
-                proof_error(
-                    SessionProofErrorCode::InvalidFormat,
-                    ["issuedAt"],
-                    "issuedAt must be an integer",
-                )
-            })?;
-        if ulid::Ulid::from_string(&request_id)
-            .map(|parsed| parsed.to_string() != request_id)
-            .unwrap_or(true)
-        {
-            return Err(proof_error(
-                SessionProofErrorCode::InvalidFormat,
-                ["requestId"],
-                "browser bind request ID must be a canonical ULID",
-            ));
-        }
-        let key = decode_public_key(&session_public_key, &["sessionPublicKey"])?;
-        let signer_key_id = derived_key_id(&key);
-        Self::new(
-            SessionProofPurpose::UserAuthBind,
-            request_id,
-            issued_at,
-            signer_key_id,
-            vec![
-                text(&origin, &["origin"])?,
-                text(
-                    &format!("/auth/transactions/{transaction_id}/bind"),
-                    &["route"],
-                )?,
-                key.as_bytes().to_vec(),
-                Sha256::digest(canonicalize_json(&unsigned_request)?.as_bytes()).to_vec(),
-            ],
-        )
-    }
-
-    /// Build a provisioned service-instance bootstrap proof input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::SessionProof`] when a field is noncanonical,
-    /// unsafe, empty, or malformed.
-    pub fn service_bootstrap(
-        input: NativeBootstrapSessionProofInput,
-    ) -> Result<Self, ProtocolError> {
-        Self::native_bootstrap(
-            input,
-            SessionProofPurpose::ServiceBootstrap,
-            "/bootstrap/service",
-        )
-    }
-
-    /// Build a provisioned or activated device bootstrap proof input.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::SessionProof`] when a field is noncanonical,
-    /// unsafe, empty, or malformed.
-    pub fn device_bootstrap(
-        input: NativeBootstrapSessionProofInput,
-    ) -> Result<Self, ProtocolError> {
-        Self::native_bootstrap(
-            input,
-            SessionProofPurpose::DeviceBootstrap,
-            "/bootstrap/device",
-        )
-    }
-
-    /// Build a device enrollment proof bound to the enrollment route.
-    ///
-    /// # Errors
-    ///
     /// Returns [`ProtocolError::SessionProof`] for malformed or noncanonical input.
     pub fn device_enrollment(
-        input: NativeBootstrapSessionProofInput,
+        input: DeviceEnrollmentSessionProofInput,
     ) -> Result<Self, ProtocolError> {
-        Self::native_bootstrap(
-            input,
-            SessionProofPurpose::DeviceEnrollment,
-            "/auth/device/enroll",
-        )
-    }
-
-    fn native_bootstrap(
-        input: NativeBootstrapSessionProofInput,
-        purpose: SessionProofPurpose,
-        route: &str,
-    ) -> Result<Self, ProtocolError> {
-        let NativeBootstrapSessionProofInput {
+        let DeviceEnrollmentSessionProofInput {
             origin,
             unsigned_request,
         } = input;
@@ -372,9 +102,7 @@ impl SessionProofInput {
         let identity_key_id = required_text("identityKeyId")?;
         let session_key = required_text("sessionKey")?;
         let connection_id = required_text("connectionId")?;
-        if purpose == SessionProofPurpose::DeviceEnrollment {
-            text(&required_text("participantId")?, &["participantId"])?;
-        }
+        text(&required_text("participantId")?, &["participantId"])?;
         let issued_at = request.get("iat").and_then(Value::as_i64).ok_or_else(|| {
             proof_error(
                 SessionProofErrorCode::InvalidFormat,
@@ -394,134 +122,21 @@ impl SessionProofInput {
         validate_key_id(&identity_key_id, &["identityKeyId"])?;
         let session_key = decode_public_key(&session_key, &["sessionKey"])?;
         let request_digest = Sha256::digest(canonicalize_json(&unsigned_request)?.as_bytes());
-
-        Self::new(
-            purpose,
+        validate_request_id(&request_id)?;
+        validate_safe_integer(issued_at, &["issuedAt"])?;
+        Ok(Self {
+            purpose: SessionProofPurpose::DeviceEnrollment,
             request_id,
             issued_at,
-            identity_key_id.clone(),
-            vec![
+            signer_key_id: identity_key_id.clone(),
+            transcript_fields: vec![
                 text(&origin, &["origin"])?,
-                text(route, &["route"])?,
+                b"/auth/device/enroll".to_vec(),
                 digest(&identity_key_id, &["identityKeyId"])?,
                 session_key.as_bytes().to_vec(),
                 text(&connection_id, &["connectionId"])?,
                 request_digest.to_vec(),
             ],
-        )
-    }
-
-    /// Build a proof input for refreshing the current authorization context.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ProtocolError::SessionProof`] when a field is noncanonical,
-    /// unsafe, empty, or malformed.
-    pub fn authorization_context_refresh(
-        input: AuthorizationContextRefreshSessionProofInput,
-    ) -> Result<Self, ProtocolError> {
-        let AuthorizationContextRefreshSessionProofInput {
-            origin,
-            session_public_key,
-            unsigned_request,
-        } = input;
-        validate_safe_json_integers(&unsigned_request, &mut Vec::new())?;
-        let request = unsigned_request.as_object().ok_or_else(|| {
-            proof_error(
-                SessionProofErrorCode::InvalidFormat,
-                ["request"],
-                "unsigned request must be an object",
-            )
-        })?;
-        if request.contains_key("proof") {
-            return Err(proof_error(
-                SessionProofErrorCode::InvalidFormat,
-                ["proof"],
-                "unsigned request must omit proof",
-            ));
-        }
-        let required_text = |field: &str| {
-            request
-                .get(field)
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    proof_error(
-                        SessionProofErrorCode::InvalidFormat,
-                        [field],
-                        "required string is missing",
-                    )
-                })
-        };
-        let request_id = required_text("requestId")?;
-        let login_session_id = required_text("loginSessionId")?;
-        let connection_id = required_text("connectionId")?;
-        let issued_at = request
-            .get("issuedAt")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| {
-                proof_error(
-                    SessionProofErrorCode::InvalidFormat,
-                    ["issuedAt"],
-                    "issuedAt must be an integer",
-                )
-            })?;
-        match request.get("currentContextDigest") {
-            Some(Value::Null) => {}
-            Some(Value::String(value)) => {
-                digest(value, &["currentContextDigest"])?;
-            }
-            _ => {
-                return Err(proof_error(
-                    SessionProofErrorCode::InvalidFormat,
-                    ["currentContextDigest"],
-                    "currentContextDigest must be present and nullable",
-                ))
-            }
-        }
-        if let Some(name) = request.get("name") {
-            if name.as_str().is_none_or(|name| name.chars().count() > 128) {
-                return Err(proof_error(
-                    SessionProofErrorCode::InvalidFormat,
-                    ["name"],
-                    "name must be a string of at most 128 characters",
-                ));
-            }
-        }
-        let key = decode_public_key(&session_public_key, &["sessionPublicKey"])?;
-        let request_digest = Sha256::digest(canonicalize_json(&unsigned_request)?.as_bytes());
-
-        Self::new(
-            SessionProofPurpose::AuthorizationContextRefresh,
-            request_id,
-            issued_at,
-            derived_key_id(&key),
-            vec![
-                text(&origin, &["origin"])?,
-                b"/auth/context/refresh".to_vec(),
-                key.as_bytes().to_vec(),
-                text(&login_session_id, &["loginSessionId"])?,
-                text(&connection_id, &["connectionId"])?,
-                request_digest.to_vec(),
-            ],
-        )
-    }
-
-    fn new(
-        purpose: SessionProofPurpose,
-        request_id: String,
-        issued_at: i64,
-        signer_key_id: String,
-        transcript_fields: Vec<Vec<u8>>,
-    ) -> Result<Self, ProtocolError> {
-        validate_request_id(&request_id)?;
-        validate_safe_integer(issued_at, &["issuedAt"])?;
-        Ok(Self {
-            purpose,
-            request_id,
-            issued_at,
-            signer_key_id,
-            transcript_fields,
         })
     }
 
@@ -1046,168 +661,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const DIGEST: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-
-    #[test]
-    fn user_auth_request_needs_no_nats_key() -> Result<(), ProtocolError> {
-        let signing_key = SigningKey::from_bytes(&[6; 32]);
-        let public_key = encode_base64url(signing_key.verifying_key().as_bytes());
-        let input = SessionProofInput::user_auth_request(UserAuthRequestSessionProofInput {
-            origin: "https://trellis.example".to_owned(),
-            unsigned_request: json!({
-                "requestId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                "issuedAt": 1_000,
-                "sessionPublicKey": public_key,
-                "participantId": "app.example@v1",
-            }),
-        })?;
-        let proof = sign_session_proof(&input, &signing_key)?;
-        verify_session_proof(
-            &input,
-            &proof,
-            &encode_base64url(signing_key.verifying_key().as_bytes()),
-            1_000,
-            SessionProofPolicy::default(),
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn user_auth_bind_proof_is_bound_to_the_flow() -> Result<(), ProtocolError> {
-        let signing_key = SigningKey::from_bytes(&[7; 32]);
-        let public_key = encode_base64url(signing_key.verifying_key().as_bytes());
-        let bind = |flow_id: &str| {
-            SessionProofInput::user_auth_bind(UserAuthBindSessionProofInput {
-                origin: "https://trellis.example".to_owned(),
-                transaction_id: flow_id.to_owned(),
-                session_public_key: public_key.clone(),
-                unsigned_request: json!({
-                    "requestId": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                    "issuedAt": 1_000,
-                }),
-            })
-        };
-        let proof = sign_session_proof(&bind("flow_1")?, &signing_key)?;
-        verify_session_proof(
-            &bind("flow_1")?,
-            &proof,
-            &public_key,
-            1_000,
-            SessionProofPolicy::default(),
-        )?;
-        assert!(verify_session_proof(
-            &bind("flow_2")?,
-            &proof,
-            &public_key,
-            1_000,
-            SessionProofPolicy::default(),
-        )
-        .is_err());
-        assert!(
-            SessionProofInput::user_auth_bind(UserAuthBindSessionProofInput {
-                origin: "https://trellis.example".to_owned(),
-                transaction_id: "flow_1".to_owned(),
-                session_public_key: public_key,
-                unsigned_request: json!({"requestId": "req_bind_1", "issuedAt": 1_000}),
-            })
-            .is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn user_refresh_binds_login_connection_origin_and_complete_unsigned_request(
-    ) -> Result<(), ProtocolError> {
-        let key = SigningKey::from_bytes(&[0x37; 32]);
-        let request = json!({
-            "requestId": "01JY0000000000000000000001", "issuedAt": 1_735_689_600_000_i64,
-            "loginSessionId": "01JY0000000000000000000002", "connectionId": "01JY0000000000000000000003",
-            "currentContextDigest": null, "name": "test runtime", "future": {"bound": true}
-        });
-        let input = AuthorizationContextRefreshSessionProofInput {
-            origin: "https://trellis.example".into(),
-            session_public_key: encode_base64url(key.verifying_key().as_bytes()),
-            unsigned_request: request,
-        };
-        let proof_input = SessionProofInput::authorization_context_refresh(input.clone())?;
-        let proof = sign_session_proof(&proof_input, &key)?;
-        let policy = SessionProofPolicy::new(30_000, 5_000)?;
-        verify_session_proof(
-            &proof_input,
-            &proof,
-            &input.session_public_key,
-            1_735_689_600_000,
-            policy,
-        )?;
-        for (field, value) in [
-            ("requestId", json!("01JY0000000000000000000004")),
-            ("issuedAt", json!(1_735_689_600_001_i64)),
-            ("loginSessionId", json!("01JY0000000000000000000005")),
-            ("connectionId", json!("01JY0000000000000000000006")),
-            ("currentContextDigest", json!(DIGEST)),
-            ("name", json!("changed name")),
-            ("future", json!({"bound": false})),
-        ] {
-            let mut changed = input.clone();
-            changed.unsigned_request[field] = value;
-            let changed = SessionProofInput::authorization_context_refresh(changed)?;
-            assert!(verify_session_proof(
-                &changed,
-                &proof,
-                &input.session_public_key,
-                1_735_689_600_000,
-                policy
-            )
-            .is_err());
-        }
-        let mut changed = input.clone();
-        changed.origin = "https://another.example".into();
-        assert!(verify_session_proof(
-            &SessionProofInput::authorization_context_refresh(changed)?,
-            &proof,
-            &input.session_public_key,
-            1_735_689_600_000,
-            policy
-        )
-        .is_err());
-        let mut missing = input;
-        missing
-            .unsigned_request
-            .as_object_mut()
-            .unwrap()
-            .remove("currentContextDigest");
-        assert!(SessionProofInput::authorization_context_refresh(missing).is_err());
-        Ok(())
-    }
-
     #[test]
     fn canonical_request_digest_removes_only_signature() -> Result<(), ProtocolError> {
-        let first = json!({
-            "requestId": "req_1",
-            "proof": {"format": SESSION_PROOF_FORMAT_V1, "signature": "first"},
-            "nullable": null
-        });
-        let second = json!({
-            "nullable": null,
-            "proof": {"signature": "second", "format": SESSION_PROOF_FORMAT_V1},
-            "requestId": "req_1"
-        });
+        let first = json!({"requestId":"req_1","proof":{"format":SESSION_PROOF_FORMAT_V1,"signature":"first"},"nullable":null});
+        let second = json!({"nullable":null,"proof":{"signature":"second","format":SESSION_PROOF_FORMAT_V1},"requestId":"req_1"});
         assert_eq!(
             session_proof_request_digest(&first)?,
             session_proof_request_digest(&second)?
+        );
+        let mut changed = second;
+        changed["nullable"] = json!("changed");
+        assert_ne!(
+            session_proof_request_digest(&first)?,
+            session_proof_request_digest(&changed)?
         );
         Ok(())
     }
 
     #[test]
     fn rejects_unsafe_request_integers_and_weak_keys() {
-        let unsafe_request = json!({
-            "proof": {
-                "format": SESSION_PROOF_FORMAT_V1,
-                "signature": encode_base64url(&[0; 64])
-            },
-            "nested": {"counter": 9_007_199_254_740_992_u64}
-        });
+        let unsafe_request = json!({"proof":{"format":SESSION_PROOF_FORMAT_V1,"signature":encode_base64url(&[0;64])},"nested":{"counter":9_007_199_254_740_992_u64}});
         assert!(matches!(
             session_proof_request_digest(&unsafe_request),
             Err(ProtocolError::SessionProof {
@@ -1224,64 +697,50 @@ mod tests {
         ));
     }
 
-    fn native_input() -> (SigningKey, NativeBootstrapSessionProofInput) {
+    fn enrollment_input() -> (SigningKey, DeviceEnrollmentSessionProofInput) {
         let identity = SigningKey::from_bytes(&[41; 32]);
         let session = SigningKey::from_bytes(&[42; 32]);
-        let input = NativeBootstrapSessionProofInput {
-            origin: "https://trellis.example".to_owned(),
+        let input = DeviceEnrollmentSessionProofInput {
+            origin: "https://trellis.example".into(),
             unsigned_request: json!({
-                "identityKeyId": derived_key_id(&identity.verifying_key()),
-                "sessionKey": encode_base64url(session.verifying_key().as_bytes()),
-                "connectionId": "01JY0000000000000000000001",
-                "requestId": "01JY0000000000000000000002",
-                "iat": 1_750_000_000_000_i64,
-                "name": "replica one",
-                "extension": {"value": 1}
+                "identityKeyId":derived_key_id(&identity.verifying_key()),
+                "sessionKey":encode_base64url(session.verifying_key().as_bytes()),
+                "connectionId":"01JY0000000000000000000001",
+                "requestId":"01JY0000000000000000000002",
+                "participantId":"example.device",
+                "iat":1_750_000_000_000_i64,
+                "name":"device one", "extension":{"value":1}
             }),
         };
         (identity, input)
     }
 
     #[test]
-    fn native_bootstrap_binds_the_origin_route_identity_and_complete_unsigned_request(
+    fn device_enrollment_binds_origin_identity_and_complete_unsigned_request(
     ) -> Result<(), ProtocolError> {
-        let (identity, input) = native_input();
-        let service = SessionProofInput::service_bootstrap(input.clone())?;
-        let proof = sign_session_proof(&service, &identity)?;
+        let (identity, input) = enrollment_input();
+        let enrollment = SessionProofInput::device_enrollment(input.clone())?;
+        let proof = sign_session_proof(&enrollment, &identity)?;
         let key = encode_base64url(identity.verifying_key().as_bytes());
-        verify_session_proof(
-            &service,
-            &proof,
-            &key,
-            service.issued_at(),
-            SessionProofPolicy::default(),
-        )?;
-        let device = SessionProofInput::device_bootstrap(input.clone())?;
-        assert!(verify_session_proof(
-            &device,
-            &proof,
-            &key,
-            service.issued_at(),
-            SessionProofPolicy::default()
-        )
-        .is_err());
+        let policy = SessionProofPolicy::default();
+        verify_session_proof(&enrollment, &proof, &key, enrollment.issued_at(), policy)?;
         let mut other_origin = input.clone();
-        other_origin.origin = "https://another.example".to_owned();
-        let other_origin = SessionProofInput::service_bootstrap(other_origin)?;
+        other_origin.origin = "https://another.example".into();
         assert!(verify_session_proof(
-            &other_origin,
+            &SessionProofInput::device_enrollment(other_origin)?,
             &proof,
             &key,
-            service.issued_at(),
-            SessionProofPolicy::default()
+            enrollment.issued_at(),
+            policy
         )
         .is_err());
         for (field, value) in [
             ("connectionId", json!("01JY0000000000000000000003")),
             ("requestId", json!("01JY0000000000000000000004")),
-            ("iat", json!(service.issued_at() + 1)),
-            ("name", json!("another replica")),
-            ("extension", json!({"value": 2})),
+            ("iat", json!(enrollment.issued_at() + 1)),
+            ("participantId", json!("example.another-device")),
+            ("name", json!("changed name")),
+            ("extension", json!({"value":2})),
             (
                 "sessionKey",
                 json!(encode_base64url(
@@ -1297,55 +756,30 @@ mod tests {
         ] {
             let mut modified = input.clone();
             modified.unsigned_request[field] = value;
-            let modified = SessionProofInput::service_bootstrap(modified)?;
+            let modified = SessionProofInput::device_enrollment(modified)?;
             assert!(
-                verify_session_proof(
-                    &modified,
-                    &proof,
-                    &key,
-                    service.issued_at(),
-                    SessionProofPolicy::default()
-                )
-                .is_err(),
+                verify_session_proof(&modified, &proof, &key, enrollment.issued_at(), policy)
+                    .is_err(),
                 "{field} must be signature-bound"
             );
         }
-        let session = SigningKey::from_bytes(&[42; 32]);
-        assert!(sign_session_proof(&service, &session).is_err());
-        assert!(SessionProofInput::device_enrollment(input.clone()).is_err());
-        let mut enrollment_request = input;
-        enrollment_request.unsigned_request["participantId"] = json!("example.device");
-        let enrollment = SessionProofInput::device_enrollment(enrollment_request.clone())?;
-        let enrollment_proof = sign_session_proof(&enrollment, &identity)?;
-        verify_session_proof(
-            &enrollment,
-            &enrollment_proof,
-            &key,
-            service.issued_at(),
-            SessionProofPolicy::default(),
-        )?;
-        let ready_device = SessionProofInput::device_bootstrap(enrollment_request)?;
-        assert!(verify_session_proof(
-            &ready_device,
-            &enrollment_proof,
-            &key,
-            service.issued_at(),
-            SessionProofPolicy::default()
-        )
-        .is_err());
+        assert!(sign_session_proof(&enrollment, &SigningKey::from_bytes(&[42; 32])).is_err());
         Ok(())
     }
 
     #[test]
-    fn native_bootstrap_rejects_invalid_unsigned_inputs_and_stale_proofs(
+    fn device_enrollment_rejects_invalid_unsigned_inputs_and_stale_proofs(
     ) -> Result<(), ProtocolError> {
-        let (identity, input) = native_input();
-        let service = SessionProofInput::service_bootstrap(input.clone())?;
-        let proof = sign_session_proof(&service, &identity)?;
+        let (identity, input) = enrollment_input();
+        let enrollment = SessionProofInput::device_enrollment(input.clone())?;
+        let proof = sign_session_proof(&enrollment, &identity)?;
         let key = encode_base64url(identity.verifying_key().as_bytes());
-        for now in [service.issued_at() - 30_001, service.issued_at() + 30_001] {
+        for now in [
+            enrollment.issued_at() - 30_001,
+            enrollment.issued_at() + 30_001,
+        ] {
             assert!(verify_session_proof(
-                &service,
+                &enrollment,
                 &proof,
                 &key,
                 now,
@@ -1354,21 +788,22 @@ mod tests {
             .is_err());
         }
         for (field, value) in [
-            ("proof", json!({"format": SESSION_PROOF_FORMAT_V1})),
+            ("proof", json!({"format":SESSION_PROOF_FORMAT_V1})),
             ("name", json!("x".repeat(129))),
             ("name", Value::Null),
             ("iat", json!(9_007_199_254_740_992_u64)),
             ("iat", json!(0.5)),
             ("requestId", json!("")),
             ("connectionId", json!("")),
+            ("participantId", json!("")),
             ("identityKeyId", json!("invalid")),
             ("sessionKey", json!(encode_base64url(&[0; 32]))),
-            ("extension", json!({"value": 9_007_199_254_740_992_u64})),
+            ("extension", json!({"value":9_007_199_254_740_992_u64})),
         ] {
             let mut modified = input.clone();
             modified.unsigned_request[field] = value;
             assert!(
-                SessionProofInput::service_bootstrap(modified).is_err(),
+                SessionProofInput::device_enrollment(modified).is_err(),
                 "{field} must fail validation"
             );
         }
@@ -1377,15 +812,16 @@ mod tests {
             "sessionKey",
             "connectionId",
             "requestId",
+            "participantId",
             "iat",
         ] {
             let mut modified = input.clone();
             modified
                 .unsigned_request
                 .as_object_mut()
-                .expect("request object")
+                .unwrap()
                 .remove(field);
-            assert!(SessionProofInput::service_bootstrap(modified).is_err());
+            assert!(SessionProofInput::device_enrollment(modified).is_err());
         }
         Ok(())
     }

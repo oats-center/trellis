@@ -394,7 +394,7 @@ fn enroll(store: &SqliteAuthorizationStore, mut body: Value, now: i64) -> Result
         serde_json::from_value(request.remove("sessionProof").ok_or(AuthError::Denied)?)?;
     let make = |request| {
         trellis_protocol::SessionProofInput::device_enrollment(
-            trellis_protocol::NativeBootstrapSessionProofInput {
+            trellis_protocol::DeviceEnrollmentSessionProofInput {
                 origin: store.settings.oauth_origin.clone(),
                 unsigned_request: request,
             },

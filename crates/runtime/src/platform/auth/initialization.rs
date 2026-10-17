@@ -631,8 +631,8 @@ mod tests {
         assert_eq!(trust.rotation_sequence, rotation.sequence.get());
         // Loss of committed signing custody must stop startup, not select the
         // still-present bootstrap seed or invent another issuer.
-        let successor = issuer
-            .with_extension("keys")
+        let successor = store
+            .custody_directory
             .join(format!("{}.key", rotation.next_key_id));
         let retained = successor.with_extension("retained");
         std::fs::rename(&successor, &retained).unwrap();

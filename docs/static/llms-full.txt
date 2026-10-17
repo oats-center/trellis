@@ -113,7 +113,7 @@ locally generates and durably flushes a private successor key before atomically
 committing its old-key-signed chain link, activation, publication intent, and
 replay result. Replays do not rotate again. Restart loads the database-current
 key and fails closed on missing custody, without replacing the bootstrap seed.
-Back up the issuer seed and its sibling `.keys` directory with Auth's database
+Back up the issuer seed and the database's sibling `.issuer-keys` directory with Auth's database
 and the independent OAuth storage key. Private keys never cross the RPC.
 OAuth sessions retain
 their original verified refresh family; CONNECT, Authority.Renew, OwnContextGet,
@@ -442,29 +442,11 @@ Removal permits the associated user or an administrator with current delegated
 principals.manage. Removing the declaration rejects new and pending consent,
 while existing independently consented grants retain ordinary refresh.
 
-Browser sign-in begins with a proof-bound request that returns `intentId`, an
-opaque signed `intent`, and `loginUrl`. The intent binds the participant,
-initiating public key, origin, exact return target, portal, and online issuer;
-it is not a bearer login credential. Portal rendering verifies it and reads
-current public choices without starting an authentication attempt. Local
-authentication or provider selection starts an independently portal-bound
-transaction, selecting the current participant revision and starting its
-deadline. Identity, provider state, consent, and completion belong to
-`transactionId`. Account continuations use `browserTransactionId`; account and
-device review lifetimes remain separate. Expiry leaves the intent available for
-a fresh attempt, without returning to the initiating app.
-
-Only one outstanding transaction can claim an intent. Persist the pending portal
-binding before starting it and reuse that binding after response loss or reload.
-A same-binding retry returns the existing active transaction without resetting
-state or expiry; a different binding receives `intent_transaction_active`,
-including while approval awaits bind. Denial, expiry, and consumed completion
-permit another transaction. Public `/auth/intents/view` is for portal rendering,
-not transaction discovery. Detached clients use `/auth/intents/progress` with a
-fresh initiating-key proof; only `ready` returns a transaction ID. Portal
-progress requires the raw transaction binding. Browser OIDC starts with a JSON
-POST and returns to the selected portal with `transactionId` on both first and
-replayed callbacks.
+Browser sign-in uses OAuth authorization code with PKCE and DPoP. Public
+credential-free discovery and issuer-chain metadata are readable before an
+unknown application's HTTPS CIMD document is prepared. Client-bound token CORS
+and cookie-authenticated Portal routes remain separate. Auth validates client
+metadata retrieval, exact redirects, consent, and proof bindings.
 
 Existing grants are reused only when shared issuance/policy semantics prove
 compatibility without expanding approved authority; neither activity nor a
@@ -474,29 +456,18 @@ consent after authentication without a second password prompt. Stale consent
 decisions are rejected and refreshed; policy denial is an authorization error,
 while unavailable runtime/resource evidence remains bounded pending.
 
-Completion requires the initiating private key's proof, returns its `intentId`
-and minimal login metadata, and returns the same semantic login result on exact
-supported replay instead of creating another session. Independent transactions
-do not inherit identity or consent. The client validates intent, participant,
-and public-key bindings before committing login state and refreshing context.
-Only terminal failure with an invalid login clears it and requires
-authentication. Terminal authorization denial with a valid login preserves the
-login and propagates its stable machine code without an automatic login loop.
+The SDK validates OAuth state, callback, PKCE and DPoP bindings before retaining
+credentials. Browser custody is IndexedDB; native custody is Node SQLite or the
+Rust native store. A valid login can authenticate new consent without another
+password. Authorization denial is not a reason to create a login loop, and
+consent cannot grant missing account entitlement.
 
-An administrator installs immutable participant revisions containing exact API
-artifacts and writes one `GrantBinding` per identity and participant. Deployment
-apply records exact resource evidence. Adding an action to IDL or installing a
-package grants nothing by itself. Optional actions remain unavailable unless the
-binding and current optional evidence both permit them. Capability names are
-API-scoped; subjects and physical resource names are not grants.
-
-Console access editors save exact participant-scoped snapshots; capability
-groups are one-time permission presets, not ongoing memberships. Replacing a
-policy-approved grant with an exact grant changes its approval mode. Service and
-device grants are deployment-owned, separate from device user delegation. Exact
-snapshots can initiate resource provisioning without bypassing runtime
-readiness. Resource actions remain within the approved snapshot and delegation
-ceiling; read-only approval does not grant write access.
+Auth owns API-scoped capability grants, roles, OAuth consent, deployment
+implementation rights, and resource allocations. Installing IDL grants nothing
+by itself. Deployment Apply preserves verified unchanged resource evidence, not
+pending or stale allocations. Service/device authority is deployment-owned and
+separate from independently consented user companion authority. Read-only
+capabilities do not grant write access.
 
 `Auth.Capabilities.List` accepts optional `participantId`, `revision`, and
 `sourceApi` filters. A participant plus revision selects an exact retained

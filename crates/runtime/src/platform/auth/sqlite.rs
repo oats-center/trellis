@@ -218,15 +218,15 @@ impl SqliteAuthorizationStore {
             login_lifetime_seconds: 86_400,
             enforcement_page_size: 128,
         };
-        let store = Self::from_connection(
-            connection,
-            signer,
-            settings,
-            authorization
-                .issuer_signing_seed_file
-                .with_extension("keys"),
-        )
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        // Successor custody follows the writable, persistent Auth database, not
+        // the provisioned seed that may live on a read-only configuration mount.
+        let custody_directory = connection
+            .path()
+            .map(PathBuf::from)
+            .ok_or_else(|| RuntimeError::Platform("Auth database path is unavailable".into()))?
+            .with_extension("issuer-keys");
+        let store = Self::from_connection(connection, signer, settings, custody_directory)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let initialized: bool = store
             .connection
             .lock()

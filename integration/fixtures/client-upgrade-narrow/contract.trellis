@@ -13,3 +13,6 @@ service Provider { implements upgrade; }
 agent Caller {
   use upgrade { required capability echo; }
 }
+app BrowserCaller {
+  use upgrade { required capability echo; }
+}

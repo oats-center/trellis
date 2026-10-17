@@ -1318,15 +1318,9 @@ pub struct LocalIdentityConfig {
     pub password_min_length: Option<u16>,
 }
 
-/// OAuth configuration.
+/// Upstream identity-provider configuration, separate from the Trellis OAuth listener.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OAuthConfig {
-    /// Base URL for OAuth redirect callbacks.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub redirect_base: Option<String>,
-    /// Forces display of the provider chooser when true.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub always_show_provider_chooser: Option<bool>,
     /// OAuth providers keyed by provider identifier.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub providers: std::collections::BTreeMap<String, OAuthProviderConfig>,
@@ -1379,27 +1373,6 @@ pub struct SubsystemConfig {
     /// Events retention in days.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retention_days: Option<u32>,
-    /// Platform TTL settings in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttl_ms: Option<PlatformTtlConfig>,
-}
-
-/// Platform TTL settings in milliseconds.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct PlatformTtlConfig {
-    /// Session TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sessions: Option<u64>,
-    /// OAuth flow TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth: Option<u64>,
-    /// Device flow TTL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub device_flow: Option<u64>,
-    /// Pending auth TTL in milliseconds (default 900000, maximum 86400000,
-    /// matching browser-flow record retention).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_auth: Option<u64>,
 }
 
 /// Storage configuration for a built-in runtime subsystem.

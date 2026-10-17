@@ -130,7 +130,9 @@ async function startWorker(
     ? `provider-${options.providerIndex ?? 0}`
     : file === "http.ts" || file === "rust-http"
       ? "http"
-      : "client";
+      : options.role === "resume"
+        ? "client-resume"
+        : "client";
   for (const [kind, stream] of [
     ["stdout", child.stdout],
     ["stderr", child.stderr],
@@ -774,20 +776,19 @@ try {
     });
     await authorizeRustNativeLogin(runtime, loginOutput, apps.Caller.request);
     const result = await child.exited;
-    const rows = z
-      .array(
-        z.object({
-          scenario: z.string(),
-          transport: z.enum(["trellis", "http"]),
-          startedUnixMs: z.number(),
-          durationMs: z.number(),
-          bytes: z.number().optional(),
-          error: z.string().optional(),
-        }),
-      )
-      .parse(
-        JSON.parse(await readFile(`${output}/native-samples.json`, "utf8")),
-      );
+    const nativeSamples = z.array(
+      z.object({
+        scenario: z.string(),
+        transport: z.enum(["trellis", "http"]),
+        startedUnixMs: z.number(),
+        durationMs: z.number(),
+        bytes: z.number().optional(),
+        error: z.string().optional(),
+      }),
+    );
+    const rows = nativeSamples.parse(
+      JSON.parse(await readFile(`${output}/native-samples.json`, "utf8")),
+    );
     const windows = [
       {
         scenario: "rust/all-workloads",
@@ -798,6 +799,37 @@ try {
         after: await snapshotResources(output, cpuTicks, "coordinator"),
       },
     ];
+    const resumeBefore = await snapshotResources(
+      output,
+      cpuTicks,
+      "coordinator",
+    );
+    const resumeStarted = performance.now();
+    const resume = await startWorker("rust", {
+      ...options,
+      role: "resume",
+      clientId: apps.Caller.request.id,
+    });
+    const resumeResult = await resume.exited;
+    if (resumeResult.code !== 0) {
+      throw new Error(
+        `Native cold resume exited ${resumeResult.code}; see client-resume.stderr.log`,
+      );
+    }
+    const resumeRows = nativeSamples.parse(
+      JSON.parse(
+        await readFile(`${output}/native-resume-samples.json`, "utf8"),
+      ),
+    );
+    rows.push(...resumeRows);
+    windows.push({
+      scenario: "rust/cold-resume",
+      transport: "trellis",
+      calls: 1,
+      durationMs: performance.now() - resumeStarted,
+      before: resumeBefore,
+      after: await snapshotResources(output, cpuTicks, "coordinator"),
+    });
     await writeFile(
       `${output}/samples.json`,
       JSON.stringify(

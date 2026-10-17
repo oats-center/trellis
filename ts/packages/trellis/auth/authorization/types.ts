@@ -1,6 +1,5 @@
 import { type Static, Type } from "typebox";
 
-import { ContractResourceBindingsSchema } from "../../participant.ts";
 import type {
   AuthorizationContextVerificationPolicy,
   PermissionAtom,
@@ -105,58 +104,4 @@ export type AuthorizationProviderEvent = {
   eventTime: string;
   proof: string;
   requiredCapabilities: string[];
-};
-
-/** Proactive refresh response returned by the Rust auth service. */
-export const AuthorizationContextRefreshResponseSchema = Type.Object({
-  serverNow: Type.Integer({ minimum: 0 }),
-  authorizationContext: AuthorizationContextBundleSchema,
-  routing: Type.Object({
-    bootstrapJwt: Type.String({ minLength: 1 }),
-    bootstrapJwtExpiresAt: Type.Integer({ minimum: 1 }),
-  }),
-  runtime: Type.Object({
-    connectionId: Type.String({ minLength: 1 }),
-    loginSessionId: Type.Union([Type.String({ minLength: 1 }), Type.Null()]),
-    participantId: Type.String({ minLength: 1 }),
-    inboxPrefix: Type.String({ minLength: 1 }),
-  }),
-  apiBindings: Type.Record(
-    Type.String({ minLength: 1 }),
-    Type.Object({
-      providerDeploymentId: Type.String({ minLength: 1 }),
-    }),
-  ),
-  transports: Type.Object({
-    native: Type.Optional(Type.Object({
-      natsServers: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-    })),
-    websocket: Type.Optional(Type.Object({
-      natsServers: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
-    })),
-  }),
-  authorization: Type.Object({
-    participantId: Type.String({ minLength: 1 }),
-    participantDigest: Type.String({ minLength: 1 }),
-    approvalMode: Type.Union([
-      Type.Literal("exact"),
-      Type.Literal("capabilities"),
-    ]),
-    approvedCapabilities: Type.Array(Type.Object({
-      id: Type.String({ minLength: 1 }),
-      consentDigest: Type.String({ minLength: 1 }),
-    })),
-    resourceRuntime: ContractResourceBindingsSchema,
-  }),
-});
-
-/** Proactive refresh response with its verified installed context. */
-export type AuthorizationContextRefreshResponse = Static<
-  typeof AuthorizationContextRefreshResponseSchema
->;
-
-/** Result returned by the metadata-preserving refresh helper. */
-export type AuthorizationContextRefreshResult = {
-  context: VerifiedAuthorizationContext;
-  response: AuthorizationContextRefreshResponse;
 };

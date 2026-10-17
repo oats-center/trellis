@@ -40,9 +40,9 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
     let maintenance = Arc::new(Mutex::new(Instant::now()));
     let maintenance_engine = engine.clone();
     let metadata_engine = engine.clone();
-    // Public OAuth endpoints use proof-bearing credentials, not portal cookies.
-    // Cookie-authenticated portal routes deliberately do not enable CORS.
-    let public = Router::new()
+    // Discovery must work before a previously unknown client is prepared.
+    // These read-only documents contain no cookie-authenticated private state.
+    let metadata = Router::new()
         .route(
             "/.well-known/oauth-authorization-server",
             get(move || {
@@ -74,6 +74,14 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             }),
         )
         .route("/.well-known/trellis/issuer-chain", get(issuer_chain))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(tower_http::cors::Any)
+                .allow_methods([axum::http::Method::GET]),
+        );
+    // Proof-bearing endpoints remain client-origin-bound. Cookie-authenticated
+    // portal routes deliberately do not enable CORS.
+    let public = Router::new()
         .route("/token", post(token))
         .route("/device_authorization", post(super::device::start))
         .route("/auth/device/enroll", post(super::enrollment::http_enroll))
@@ -99,6 +107,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                 .expose_headers([HeaderName::from_static("dpop-nonce")]),
         );
     Router::new()
+        .merge(metadata)
         .merge(public)
         .route("/authorize", get(authorize))
         .route("/device", get(super::device::page))

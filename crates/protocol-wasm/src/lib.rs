@@ -14,11 +14,10 @@ use trellis_protocol::{
     verify_session_authority as verify_session_authority_protocol,
     verify_session_proof as verify_session_proof_protocol,
     verify_session_request as verify_session_request_protocol, AuthorityIssuerKey,
-    AuthorizationContextRefreshSessionProofInput, NativeBootstrapSessionProofInput, ProtocolError,
-    SessionAuthorityPurpose, SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy,
-    SessionProof, SessionProofInput, SessionProofPolicy, SessionRequest, SessionRequestProof,
-    SessionRequestVerificationInput, TransportAuthorizationV1, UserAuthBindSessionProofInput,
-    UserAuthRequestSessionProofInput, VerifiedSessionAuthority,
+    DeviceEnrollmentSessionProofInput, ProtocolError, SessionAuthorityPurpose,
+    SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy, SessionProof,
+    SessionProofInput, SessionProofPolicy, SessionRequest, SessionRequestProof,
+    SessionRequestVerificationInput, TransportAuthorizationV1, VerifiedSessionAuthority,
 };
 use trellis_protocol::{
     verify_session_event as verify_session_event_protocol, OriginalEventPublication, SessionEvent,
@@ -470,102 +469,23 @@ pub fn event_subject(api_id: &str, action: &str) -> Result<String, JsError> {
     rename_all_fields = "camelCase"
 )]
 enum WireSessionProofInput {
-    UserAuthProgress {
-        origin: String,
-        unsigned_request: Value,
-    },
-    UserAuthBind {
-        origin: String,
-        transaction_id: String,
-        session_public_key: String,
-        unsigned_request: Value,
-    },
-    UserAuthRequest {
-        origin: String,
-        unsigned_request: Value,
-    },
-    ServiceBootstrap {
-        origin: String,
-        unsigned_request: Value,
-    },
-    DeviceBootstrap {
-        origin: String,
-        unsigned_request: Value,
-    },
     DeviceEnrollment {
         origin: String,
-        unsigned_request: Value,
-    },
-    AuthorizationContextRefresh {
-        origin: String,
-        session_public_key: String,
         unsigned_request: Value,
     },
 }
 
 impl TryFrom<WireSessionProofInput> for SessionProofInput {
     type Error = ProtocolError;
-
     fn try_from(value: WireSessionProofInput) -> Result<Self, Self::Error> {
-        match value {
-            WireSessionProofInput::UserAuthProgress {
-                origin,
-                unsigned_request,
-            } => Self::user_auth_progress(UserAuthRequestSessionProofInput {
-                origin,
-                unsigned_request,
-            }),
-            WireSessionProofInput::UserAuthBind {
-                origin,
-                transaction_id,
-                session_public_key,
-                unsigned_request,
-            } => Self::user_auth_bind(UserAuthBindSessionProofInput {
-                origin,
-                transaction_id,
-                session_public_key,
-                unsigned_request,
-            }),
-            WireSessionProofInput::UserAuthRequest {
-                origin,
-                unsigned_request,
-            } => Self::user_auth_request(UserAuthRequestSessionProofInput {
-                origin,
-                unsigned_request,
-            }),
-            WireSessionProofInput::ServiceBootstrap {
-                origin,
-                unsigned_request,
-            } => Self::service_bootstrap(NativeBootstrapSessionProofInput {
-                origin,
-                unsigned_request,
-            }),
-            WireSessionProofInput::DeviceBootstrap {
-                origin,
-                unsigned_request,
-            } => Self::device_bootstrap(NativeBootstrapSessionProofInput {
-                origin,
-                unsigned_request,
-            }),
-            WireSessionProofInput::DeviceEnrollment {
-                origin,
-                unsigned_request,
-            } => Self::device_enrollment(NativeBootstrapSessionProofInput {
-                origin,
-                unsigned_request,
-            }),
-            WireSessionProofInput::AuthorizationContextRefresh {
-                origin,
-                session_public_key,
-                unsigned_request,
-            } => {
-                Self::authorization_context_refresh(AuthorizationContextRefreshSessionProofInput {
-                    origin,
-                    session_public_key,
-                    unsigned_request,
-                })
-            }
-        }
+        let WireSessionProofInput::DeviceEnrollment {
+            origin,
+            unsigned_request,
+        } = value;
+        Self::device_enrollment(DeviceEnrollmentSessionProofInput {
+            origin,
+            unsigned_request,
+        })
     }
 }
 

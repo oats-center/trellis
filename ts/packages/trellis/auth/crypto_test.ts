@@ -8,7 +8,7 @@ import {
   signSessionProof,
   verifySessionProof,
 } from "./session_proof.ts";
-import { base64urlDecode, base64urlEncode } from "./utils.ts";
+import { base64urlDecode, base64urlEncode, sha256 } from "./utils.ts";
 import vectors from "../../../../integration/fixtures/protocol/authorization-context/vectors.json" with { type: "json" };
 
 type Chain = {
@@ -61,14 +61,17 @@ test("portable Ed25519 interoperates with the Rust protocol boundary", async () 
   assert.deepEqual(signer.publicKey, chain.sessionPublicKey);
   const iat = Date.now();
   const input: SessionProofInput = {
-    purpose: "userAuthRequest",
+    purpose: "deviceEnrollment",
     origin: "https://trellis.example",
     unsignedRequest: {
       requestId: ulid(),
-      issuedAt: iat,
-      sessionPublicKey: signer.publicKey,
+      iat,
+      identityKeyId: base64urlEncode(
+        await sha256(base64urlDecode(signer.publicKey)),
+      ),
+      sessionKey: signer.publicKey,
+      connectionId: ulid(),
       participantId: "test.portable",
-      redirectTarget: "https://app.example/return",
     },
   };
   const proof = await signSessionProof(input, signer, signer.publicKey);

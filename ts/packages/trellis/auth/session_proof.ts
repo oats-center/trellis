@@ -6,44 +6,18 @@ import * as protocol from "./protocol_wasm/trellis_protocol_wasm.js";
 import type { Ed25519Signer } from "./crypto.ts";
 import { base64urlDecode, base64urlEncode } from "./utils.ts";
 
-/** Strict signature envelope shared by auth, bootstrap, and context refresh. */
+/** Strict device-enrollment signature envelope. */
 export const SESSION_PROOF_FORMAT_V1 = "trellis.session-proof.v1" as const;
 
 /** One protocol-owned signature purpose. */
-export type SessionProofPurpose =
-  | "userAuthRequest"
-  | "userAuthProgress"
-  | "userAuthBind"
-  | "serviceBootstrap"
-  | "deviceBootstrap"
-  | "deviceEnrollment"
-  | "authorizationContextRefresh";
+export type SessionProofPurpose = "deviceEnrollment";
 
 /** Inputs validated and encoded by the Rust session-proof protocol. */
-export type SessionProofInput =
-  | {
-    purpose: "userAuthBind";
-    origin: string;
-    transactionId: string;
-    sessionPublicKey: string;
-    unsignedRequest: Record<string, unknown> & { issuedAt: number };
-  }
-  | {
-    purpose: "userAuthRequest" | "userAuthProgress";
-    origin: string;
-    unsignedRequest: Record<string, unknown> & { issuedAt: number };
-  }
-  | {
-    purpose: "serviceBootstrap" | "deviceBootstrap" | "deviceEnrollment";
-    origin: string;
-    unsignedRequest: Record<string, unknown> & { iat: number };
-  }
-  | {
-    purpose: "authorizationContextRefresh";
-    origin: string;
-    sessionPublicKey: string;
-    unsignedRequest: Record<string, unknown> & { issuedAt: number };
-  };
+export type SessionProofInput = {
+  purpose: SessionProofPurpose;
+  origin: string;
+  unsignedRequest: Record<string, unknown> & { iat: number };
+};
 
 /** One strict session-proof signature envelope. */
 export type SessionProof = {
@@ -65,7 +39,7 @@ export function parseSessionProof(value: unknown): SessionProof {
   ) as SessionProof;
 }
 
-/** Hash a browser proof-bearing request using its protocol-owned payload rules. */
+/** Hash a proof-bearing request using its protocol-owned payload rules. */
 export async function sessionProofRequestDigest(
   request: Record<string, unknown>,
 ): Promise<string> {
@@ -97,13 +71,7 @@ export async function signSessionProof(
     input,
     proof,
     signerPublicKey,
-    Number(
-      input.purpose === "serviceBootstrap" ||
-        input.purpose === "deviceBootstrap" ||
-        input.purpose === "deviceEnrollment"
-        ? input.unsignedRequest.iat
-        : input.unsignedRequest.issuedAt,
-    ),
+    input.unsignedRequest.iat,
     { maximumAgeMs: 0, maximumFutureSkewMs: 0 },
   );
   return proof;

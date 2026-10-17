@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use trellis_runtime::{
     AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig,
     LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthConfig, PlatformTtlConfig, RuntimeConfig, StorageConfig,
-    SubsystemConfig,
+    NatsRuntimeConfig, OAuthConfig, RuntimeConfig, StorageConfig, SubsystemConfig,
 };
 
 use crate::types::TrellisBootstrapOptions;
@@ -124,12 +123,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 registry_replicas: 1,
             }),
         }),
-        oauth: Some(OAuthConfig {
-            redirect_base: Some(format!(
-                "{}/auth/callback",
-                options.runtime.public_origin.trim_end_matches('/')
-            )),
-            always_show_provider_chooser: Some(false),
+        oauth: (!options.runtime.oauth_providers.is_empty()).then(|| OAuthConfig {
             providers: options.runtime.oauth_providers.clone(),
         }),
         platform: Some(SubsystemConfig {
@@ -138,12 +132,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: None,
             transport_max_bytes: None,
             retention_days: None,
-            ttl_ms: Some(PlatformTtlConfig {
-                sessions: Some(options.runtime.ttl_ms.sessions.unwrap_or(86_400_000)),
-                oauth: Some(options.runtime.ttl_ms.oauth.unwrap_or(300_000)),
-                device_flow: Some(options.runtime.ttl_ms.device_flow.unwrap_or(1_800_000)),
-                pending_auth: Some(options.runtime.ttl_ms.pending_auth.unwrap_or(300_000)),
-            }),
         }),
         jobs: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -151,7 +139,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: None,
             transport_max_bytes: None,
             retention_days: None,
-            ttl_ms: None,
         }),
         health: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -159,7 +146,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: Some(24),
             transport_max_bytes: Some(1_073_741_824),
             retention_days: None,
-            ttl_ms: None,
         }),
         events: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -167,7 +153,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: None,
             transport_max_bytes: None,
             retention_days: Some(7),
-            ttl_ms: None,
         }),
     }
 }

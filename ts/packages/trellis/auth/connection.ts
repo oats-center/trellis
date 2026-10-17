@@ -476,8 +476,23 @@ export async function connectAdmitted(options: {
   };
   /** Revalidate current authority through the admitted runtime key without rotating OAuth custody or replacing an equal-policy attachment. */
   const refreshAuthority = (): Promise<void> => {
-    if (renewalTask) return renewalTask;
-    renewalAbort = new AbortController();
+    if (renewalTask) {
+      // Coverage loss cancels the attempt, but broker-info requests can only be
+      // bounded by their transport timeout. Join settlement, not its cancelled
+      // result, before the single renewal owner starts another exchange.
+      if (renewalAbort?.signal.aborted) {
+        return renewalTask
+          .catch(() => {})
+          .then(() => {
+            if (manager.isClosed() || options.signal?.aborted)
+              throw new Error("AdmissionUnavailable");
+            return refreshAuthority();
+          });
+      }
+      return renewalTask;
+    }
+    const controller = new AbortController();
+    renewalAbort = controller;
     const signal = options.signal
       ? AbortSignal.any([options.signal, renewalAbort.signal])
       : renewalAbort.signal;
@@ -564,8 +579,10 @@ export async function connectAdmitted(options: {
         throw error;
       })
       .finally(() => {
-        renewalTask = undefined;
-        renewalAbort = undefined;
+        if (renewalAbort === controller) {
+          renewalTask = undefined;
+          renewalAbort = undefined;
+        }
       });
     return renewalTask;
   };

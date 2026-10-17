@@ -104,6 +104,10 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:Apis.Accept"],
     (client, input) => client.apisAccept(input).orThrow(),
   ),
+  authApisForceReplace: adminMethod(
+    apis.auth.API.actions["rpc:Apis.ForceReplace"],
+    (client, input) => client.apisForceReplace(input).orThrow(),
+  ),
   authOAuthClientsPut: adminMethod(
     apis.auth.API.actions["rpc:OAuthClients.Put"],
     (client, input) => client.oAuthClientsPut(input).orThrow(),

@@ -631,45 +631,27 @@ match the spawned native host, not another runtime at the selected port.
 `firstAdmin: "browser-flow"` opts into browser setup.
 The Rust testkit links the same production runtime in-process instead.
 
-Browser apps use
-`TrellisClient.connect({ participant, trellisUrl, auth:
-"browser" })` or the
-[Svelte integration](llms-svelte.txt). Let the Trellis client own its auth
-installation, proactive refresh, transport maintenance, and normal `logout()`.
-Use the connected client's `logout()` for sign-out, not the generated
-`sessionsLogout()` alone: session revocation can close the connection before its
-RPC reply arrives. The helper confirms `session_revoked` through signed HTTP
-recovery if needed; other authorization failures remain failures.
+Browser apps use `TrellisClient.connect({ request, trellisUrl, auth: {
+clientId, redirectTo } })` with a generated browser request descriptor, or the
+[Svelte integration](llms-svelte.txt). Discovery is credential-free and readable
+from a previously unknown app origin before client preparation. A new app may
+identify itself by an HTTPS CIMD document; it does not require administrator
+registration. This public metadata policy does not apply to private Portal or
+client-bound token endpoints.
 
-Browser sign-in transports a reusable signed intent (`intentId`, opaque
-`intent`, and `loginUrl`), not an already-running authentication attempt. The
-portal verifies the intent on render; authentication starts a bounded,
-independently bound transaction. Callbacks carry `transactionId`.
-`ClientAuthContinuation` supports `{ status: "bound", transactionId }` for
-caller-owned completion or `{ status: "handled" }` for caller-owned routing. Do
-not fabricate login metadata or authorization from a callback.
+The SDK owns PKCE, DPoP, IndexedDB custody, exact callback validation, authority
+renewal, and transport maintenance. `onAuthRequired` receives `loginUrl` and
+`mode: "browser"`; caller-owned navigation may return `{ status: "handled" }`.
+Use the connected client's `logout()` to revoke its OAuth family and close its
+connection while retaining the Portal login. Expanded/revised capability consent
+may reuse a valid login without another password, but cannot create missing user
+entitlement. Never fabricate OAuth or authority metadata in application callbacks.
 
-Custom portals use the public browser-auth helpers `portalIntentFromUrl`,
-`portalTransactionIdFromUrl`, `fetchPortalIntentState`, and
-`startPortalTransaction`. Retain the intent across attempt expiry and start a
-new transaction when the user continues; do not send the user back to the app
-just to restart. The portal receives no initiating app private key. Its fresh
-transaction binding is separate from the app's key-bound completion proof.
-Portal progress requires that raw binding. Persist a pending binding indexed by
-intent before `startPortalTransaction`; reuse it on retry or reload, then
-associate it with the returned transaction ID. A same-binding retry recovers the
-active transaction without resetting state or expiry; another binding receives
-`intent_transaction_active` and must not displace it.
-Public intent rendering never returns transaction discovery. Detached discovery
-uses the initiating key's fresh `userAuthProgress` session proof at
-`/auth/intents/progress` and receives a transaction ID only when ready to bind.
-Browser OIDC uses `portalProviderLoginUrl()` to POST JSON transaction inputs and
-navigate to the returned provider URL; first and replayed callbacks return to
-the portal with `transactionId`. Reuse compatible approved grants without
-prompting again; expanded authority eligible for approval requests current
-consent after authentication. Preserve stable authorization errors with a valid
-login rather than automatically starting another login. The SDK owns those
-recovery decisions.
+Coverage loss suspends application use without invalidating retained identity.
+If authority expires during suspension, private maintenance obtains and verifies
+fresh authority before application use resumes. A cancelled renewal settles before
+its replacement starts; logical close cancels maintenance and renewal. No
+application request is automatically retransmitted.
 
 Provisioning without identityPublicKey returns a one-use secret for proof-bound
 device enrollment. Devices.Reviews.Get/Decide require the device confirmation

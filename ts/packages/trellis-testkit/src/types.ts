@@ -8,14 +8,6 @@ export type TrellisControlPlaneWebSource =
       proxy: string;
     };
 
-/** Platform flow TTL overrides in milliseconds. */
-export type TrellisControlPlaneTtlMs = {
-  sessions: number;
-  oauth: number;
-  deviceFlow: number;
-  pendingAuth: number;
-};
-
 /** Authorization timing owned by production bootstrap. */
 export type TrellisControlPlaneAuthorization = {
   contextLifetimeSeconds: number;
@@ -109,8 +101,6 @@ export type TrellisTestRuntimeStartOptions = {
    * host, so the document is an ordinary insecure browser context.
    */
   browserHost?: string;
-  /** Platform TTL overrides (milliseconds) for the isolated test control plane. */
-  ttlMs?: Partial<TrellisControlPlaneTtlMs>;
   /** Authorization-context lifetime overrides for the isolated test control plane. */
   authorization?: Partial<TrellisControlPlaneAuthorization>;
   timeouts?: {

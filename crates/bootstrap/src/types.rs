@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use trellis_runtime::{
-    OAuthListenerConfig, OAuthProviderConfig, OAuthTransport, PlatformTtlConfig, WebSourceConfig,
-};
+use trellis_runtime::{OAuthListenerConfig, OAuthProviderConfig, OAuthTransport, WebSourceConfig};
 
 use crate::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
@@ -131,8 +129,6 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub portal_source: Option<WebSourceConfig>,
     /// Console source overriding the shared web source.
     pub console_source: Option<WebSourceConfig>,
-    /// Platform flow TTL overrides; omitted values retain bootstrap defaults.
-    pub ttl_ms: PlatformTtlConfig,
     /// Authorization timing without access to generated signing material.
     pub authorization: BootstrapAuthorizationPolicy,
     /// OAuth providers consumed by the production runtime.
@@ -161,12 +157,6 @@ impl Default for TrellisRuntimeBootstrapConfig {
             web_source: None,
             portal_source: None,
             console_source: None,
-            ttl_ms: PlatformTtlConfig {
-                sessions: None,
-                oauth: None,
-                device_flow: None,
-                pending_auth: None,
-            },
             authorization: BootstrapAuthorizationPolicy::default(),
             oauth_providers: BTreeMap::new(),
         }

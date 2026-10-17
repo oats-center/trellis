@@ -1,7 +1,10 @@
 # Trellis For Rust Consumers
 
 Admin `Issuers.Rotate` generates private successor custody on Auth's host and
-returns the old-key-signed trust transition. Supply the expected current key ID
+stores it in the private `.issuer-keys` directory beside Auth's persistent
+SQLite database, not beside the potentially read-only provisioned seed. Back up
+that directory with the database, original issuer seed and OAuth storage key.
+The RPC returns the old-key-signed trust transition. Supply the expected current key ID
 and an idempotency key; repeating the request does not rotate again. SDKs verify
 the successor chain from pinned trust. OAuth storage custody is unchanged.
 

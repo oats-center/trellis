@@ -16,16 +16,8 @@ export {
   type AuthorizationProviderCacheOptions,
   type AuthorizationProviderIoCounters,
 } from "./authorization/provider_cache.ts";
-export {
-  AuthorizationContextRefreshError,
-  refreshAuthorizationContext,
-  refreshAuthorizationContextWithMetadata,
-  startAuthorizationContextRefresh,
-} from "./authorization/refresh.ts";
 export type {
   AuthorizationContextBundle,
-  AuthorizationContextRefreshResponse,
-  AuthorizationContextRefreshResult,
   AuthorizationContextVerificationMaterial,
   AuthorizationProviderEvent,
   AuthorizationProviderRequest,
@@ -34,7 +26,4 @@ export type {
   AuthorizationRuntimeTransports,
   VerifiedAuthorizationContext,
 } from "./authorization/types.ts";
-export {
-  AuthorizationContextBundleSchema,
-  AuthorizationContextRefreshResponseSchema,
-} from "./authorization/types.ts";
+export { AuthorizationContextBundleSchema } from "./authorization/types.ts";

@@ -69,6 +69,7 @@ jobs:
             integration/fixtures/client-upgrade/packages/client-upgrade
             integration/fixtures/client-upgrade-narrow/packages/client-upgrade
             integration/fixtures/client-upgrade-consent/packages/client-upgrade
+            integration/fixtures/client-upgrade-breaking/packages/client-upgrade
             integration/fixtures/testkit/crates/trellis-test-fixture
             integration/fixtures/testkit/packages/trellis-test-fixture
             benchmarks/runtime/crates/performance-trellis
@@ -525,27 +526,27 @@ jobs:
         working-directory: demos/rust/service
         run: |
           trellis generate
-          cargo check --locked --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
+          cargo check --locked --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
           consumer="$(mktemp -d)"
           trap 'rm -rf "$consumer"' EXIT
           cp -R Cargo.toml src trellis "$consumer/"
           export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
           export TRELLIS_CACHE="$consumer/empty-api-cache"
           cd "$consumer"
-          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
+          cargo check --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
 
       - name: Check Rust device demo
         working-directory: demos/rust/device
         run: |
           trellis generate
-          cargo check --locked --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
+          cargo check --locked --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
           consumer="$(mktemp -d)"
           trap 'rm -rf "$consumer"' EXIT
           cp -R Cargo.toml src trellis "$consumer/"
           export PATH="$(dirname "$(rustup which cargo)"):/usr/bin:/bin"
           export TRELLIS_CACHE="$consumer/empty-api-cache"
           cd "$consumer"
-          cargo check --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
+          cargo check --config "$GITHUB_WORKSPACE/.cargo/publication.toml"
 
   live-rust:
     name: Rust live integration

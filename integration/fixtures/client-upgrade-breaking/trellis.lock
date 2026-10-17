@@ -1,0 +1,28 @@
+format = 2
+root = "client-upgrade-fixture"
+
+[[packages]]
+name = "client-upgrade-fixture"
+version = "0.100.0"
+digest = "KSTZMc1FQ6OxsC-M9G2Ng_arNs9skxXpG8UNVpP0g6w"
+distribution-digest = "sha256:e3fc28f1130f81902e4919330b4b37cbe10c73dd8da3029d161f2c7a0d3e2f86"
+
+[[packages.dependencies]]
+name = "trellis"
+version = "0.100.0"
+digest = "6rdlF7HYCHBZLa6txVUyC5fp0jadAUb4h1A4S1Jr-AQ"
+
+[packages.source]
+kind = "path"
+path = "."
+
+[[packages]]
+name = "trellis"
+version = "0.100.0"
+digest = "6rdlF7HYCHBZLa6txVUyC5fp0jadAUb4h1A4S1Jr-AQ"
+distribution-digest = "sha256:2ae7bb04ae9a426eea67d68bfde0677057e14f839edf6b125052e3bd5b436bde"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "../../../crates/builtin-contracts"

@@ -181,9 +181,64 @@ downloads NATS:
 trellis-server --config "$HOME/trellis/config.toml"
 ```
 
-Permanent deployments use the quadlet units under `deploy/quadlet`,
-which run their own external NATS container plus `trellis-server`; that path is
-unchanged.
+Permanent deployments can use `deploy/quadlet`. Generate a private installation
+bundle before installing the units; the example TOML is a deployment overlay,
+not a shared installation identity or a substitute for initialization:
+
+```sh
+install -d -m 0700 "$HOME/trellis" "$HOME/trellis/data"
+trellis init config --out "$HOME/trellis/config" \
+  --public-origin https://console.example.com \
+  --nats-server-url tls://nats.example.com:4222 \
+  --nats-websocket-url wss://nats.example.com
+```
+
+Retain the generated `auth.instance_id`, `session.seed`, `live-providers/`,
+`auth/`, and `nats/` private material. Apply the paths, origins, and listener
+settings from `deploy/quadlet/config.example.toml` to the generated `config.toml`;
+replace its installation-ID marker with your generated value. Install your real
+OAuth certificate chain and private key at `tls/oauth.fullchain.pem` and
+`tls/oauth.key.pem`, readable only by the runtime user. Do not copy another
+installation's identity or private files. The single-node sample uses one
+JetStream replica; it does not imply a three-node cluster.
+
+Create `config/nats/tls/` as an owner-only directory. When terminating TLS in
+NATS itself, place its certificate chain and private key there and reference
+`/etc/nats/tls/` in `nats.conf`; the NATS unit mounts only this dedicated TLS
+directory, not Auth's private key material. If TLS terminates at your external
+proxy instead, retain the empty directory for the unit's read-only mount.
+
+The units mount configuration read-only and persist Auth and its successor signing
+keys under `/var/lib/trellis`. Build the reviewed source as
+`localhost/trellis:revision7` (or select your verified immutable published image),
+then install the units into `~/.config/containers/systemd/` and reload the user
+manager. They expect rootless Podman with `keep-id` mapping the host user to
+runtime UID 10001. Keep host private directories owner-only; do not chmod existing
+unsafe directories to bypass startup validation.
+The runtime unit uses systemd's private `RuntimeDirectory=trellis` for
+`/run/trellis`; it does not depend on Podman accepting tmpfs UID/GID options.
+
+The runtime publishes loopback host ports 3000 (Console/application HTTP) and
+3001 (the dedicated OAuth TLS listener). Configure the external Console proxy
+to forward `https://console.example.com` to `http://127.0.0.1:3000`; forward the
+OAuth hostname with TLS passthrough to `127.0.0.1:3001`. Do not terminate OAuth
+TLS into a plaintext non-loopback runtime listener. Native NATS needs its own TLS
+termination at `nats.example.com:4222`, and browser NATS needs a WebSocket-aware
+TLS proxy to host port 8080. NATS monitoring on 8222 remains loopback-only. The
+generated NATS configuration includes `jwt.conf` beside it; the supplied NATS
+unit mounts both files from the generated `config/nats/` bundle.
+
+Start `trellis-nats.service` and `trellis.service`. Fresh startup prints the
+protected administrator's one-time setup link; complete it on the OAuth origin,
+then sign into Console on the separate Console origin. Reuse the same private
+bundle and state directory on restart. Provision services through the ordinary
+administrative flow; never give applications the runtime's private provider keys.
+
+Back up Auth SQLite consistently with its original issuer seed,
+`platform.issuer-keys/` beside `platform.sqlite`, OAuth storage key, and generated
+installation/provider identities. `Issuers.Rotate` writes successor custody to
+that persistent private directory before committing the active issuer. A missing
+committed key must be restored from backup; startup does not regenerate it.
 
 ### Pre-installed nats-server binary
 
@@ -201,7 +256,7 @@ The runtime OCI image ships the `trellis` CLI and the pinned nats-server
 checksum-verified at image build time against `crates/local-nats/nats-binaries.json`,
 never at container runtime; `nsc` is not in the image because the Rust bootstrap
 material is generated natively. The image's `ENTRYPOINT` remains
-`trellis-server` for the external-NATS/quadlet deployment path (unchanged). For
+`trellis-server` for the external-NATS/Quadlet deployment path. For
 a single container with a managed nats-server, override the entrypoint, mount
 the bundle read-only, and keep the mutable state on a writable volume:
 
@@ -230,7 +285,7 @@ docker run --rm --user root --entrypoint chown \
 docker run --rm --name trellis --read-only --tmpfs /tmp \
   --tmpfs /run/trellis:uid=10001,gid=10001,mode=0700 \
   --tmpfs /var/log/trellis:uid=10001,gid=10001,mode=0700 \
-  --user 10001:10001 --publish 3000:3000 \
+  --user 10001:10001 --publish 127.0.0.1:3000:3000 --publish 127.0.0.1:3001:3001 \
   --volume trellis-bundle:/etc/trellis:ro,Z \
   --volume trellis-state:/var/lib/trellis:rw,Z \
   --entrypoint trellis-server ghcr.io/oats-center/trellis:latest \
@@ -241,9 +296,12 @@ The bundle (`/etc/trellis`) is mounted read-only from its own named volume: the
 runtime reads its config, credentials, and trust material from it. All mutable
 NATS files (`nats.conf`, `jwt.conf`, pid file, resolver JWTs,
 JetStream data) are written under `/var/lib/trellis/nats`, and the runtime's
-SQLite databases use the system data root `/var/lib/trellis`. Quadlet and
-other external-NATS deployments are unchanged: they keep running
-`trellis-server` against their own NATS container.
+SQLite databases and `platform.issuer-keys/` use the system data root
+`/var/lib/trellis`. Before production use, configure the dedicated OAuth TLS
+listener, distinct Console/OAuth origins, certificates and public NATS endpoints
+as described above; the generated loopback-development OAuth listener is not
+usable through container port publishing. Quadlet runs `trellis-server` against
+its separate NATS container instead of passing `--local-nats`.
 
 ## 4. Check the converged runtime
 

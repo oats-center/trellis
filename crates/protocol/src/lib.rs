@@ -96,10 +96,8 @@ pub use response::{
 };
 pub use session_proof::{
     parse_session_proof, session_proof_request_digest, session_proof_signing_digest,
-    sign_session_proof, verify_session_proof, AuthorizationContextRefreshSessionProofInput,
-    NativeBootstrapSessionProofInput, SessionProof, SessionProofInput, SessionProofPolicy,
-    SessionProofPurpose, UserAuthBindSessionProofInput, UserAuthRequestSessionProofInput,
-    SESSION_PROOF_FORMAT_V1,
+    sign_session_proof, verify_session_proof, DeviceEnrollmentSessionProofInput, SessionProof,
+    SessionProofInput, SessionProofPolicy, SessionProofPurpose, SESSION_PROOF_FORMAT_V1,
 };
 pub use subjects::{
     decode_event_descriptor_identity, derive_bound_live_subject, derive_bound_operation_subject,
