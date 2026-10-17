@@ -173,10 +173,11 @@ export CARGO_HOME="$work/cargo-home"
 export CARGO_TARGET_DIR="$work/target"
 mkdir -p "$CARGO_HOME"
 cd "$work"
+consumer_manifest="$work/consumer/package-consumer/Cargo.toml"
 
 # Resolve the staged lockfile once, then require it to stay locked.
-cargo generate-lockfile --manifest-path "$work/consumer/Cargo.toml" --config "$config"
-cargo metadata --manifest-path "$work/consumer/Cargo.toml" --format-version 1 \
+cargo generate-lockfile --manifest-path "$consumer_manifest" --config "$config"
+cargo metadata --manifest-path "$consumer_manifest" --format-version 1 \
   --locked --config "$config" > "$work/metadata.json"
 
 # 5. Audit the full declared dependency graph: every manifest is a registry
@@ -226,7 +227,7 @@ PY
 # 6. Run the consumer's live target under the frozen lockfile.
 #
 # Serialize independent cases; the isolation case still starts eight concurrent runtimes.
-cargo test --manifest-path "$work/consumer/Cargo.toml" --locked --config "$config" \
+cargo test --manifest-path "$consumer_manifest" --locked --config "$config" \
   --test live --no-run --message-format=json-render-diagnostics > "$work/build.json"
 mkdir -p "$work/runtime-path"
 python3 - "$work/build.json" "$work/runtime-path" <<'PY'

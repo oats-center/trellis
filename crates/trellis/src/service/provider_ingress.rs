@@ -17,8 +17,8 @@ use super::runtime::subscribe_subject;
 use super::runtime_facade::ServiceRuntimeError;
 use super::ServerError;
 use crate::client::{
-    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, LogicalTerminalCause,
-    TransportGeneration, TransportGenerationManager, TransportLease, TrellisClientError,
+    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, TransportGeneration,
+    TransportGenerationManager, TransportLease, TrellisClientError,
 };
 use futures_util::future::BoxFuture;
 
@@ -332,7 +332,8 @@ where
 {
     if subjects.is_empty() {
         // No intake to own: only observe the authoritative outcome.
-        return terminal_result(manager.wait_terminal().await);
+        manager.wait_terminal().await;
+        return Ok(());
     }
     let (stop, _) = tokio::sync::watch::channel(false);
     let owner = Arc::new(ProviderIntake {
@@ -352,14 +353,14 @@ where
     // logical connection reaches an authoritative terminal state. A generation
     // that changed under the install is transient, not a service failure.
     loop {
-        if let Some(cause) = manager.terminal() {
-            return terminal_result(cause);
+        if manager.terminal().is_some() {
+            return Ok(());
         }
         match manager.attach_intake(Arc::clone(&owner)).await {
             Ok(()) => break,
             Err(error) => {
-                if let Some(cause) = manager.terminal() {
-                    return terminal_result(cause);
+                if manager.terminal().is_some() {
+                    return Ok(());
                 }
                 tracing::warn!(%error, "provider intake attach will retry");
                 tokio::time::sleep(Duration::from_millis(PROVIDER_INTAKE_ATTACH_RETRY_MS)).await;
@@ -369,14 +370,6 @@ where
     // Serve until the logical connection is terminally finished. The installed
     // ingress serves intake on every adopted generation; this task only observes
     // the authoritative outcome, so it never retries a dead authority forever.
-    terminal_result(manager.wait_terminal().await)
-}
-
-/// The service runtime outcome of one latched logical terminal cause: an explicit
-/// close is a clean stop, an authoritative refusal is a reported terminal error.
-fn terminal_result(cause: LogicalTerminalCause) -> Result<(), ServiceRuntimeError> {
-    match cause {
-        LogicalTerminalCause::Closed => Ok(()),
-        cause => Err(ServiceRuntimeError::from(cause.client_error())),
-    }
+    manager.wait_terminal().await;
+    Ok(())
 }

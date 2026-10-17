@@ -206,7 +206,7 @@ impl SqliteAuthorizationStore {
             self.current_signer(connection)?;
             let mut response = IssuerMetadata {
                 format: trellis_protocol::ISSUER_METADATA_DOMAIN_V1.into(),
-                issuer_key_id: self.issuer().key_id,
+                issuer_key_id: self.current_issuer(connection)?.key_id,
                 request,
                 request_subject: subject.into(),
                 reply_subject: reply.into(),
@@ -256,13 +256,13 @@ impl SqliteAuthorizationStore {
                 Err(AuthError::NotFound) => IssuerMetadataResult::Missing,
                 Err(_) => IssuerMetadataResult::Unavailable,
             };
-            match sign_issuer_metadata(response.clone(), &self.signer) {
+            match sign_issuer_metadata(response.clone(), &self.current_signer(connection)?) {
                 Ok(signed) => Ok(serde_json::to_vec(&signed)?),
                 Err(_) => {
                     response.result = IssuerMetadataResult::Unavailable;
                     Ok(serde_json::to_vec(&sign_issuer_metadata(
                         response,
-                        &self.signer,
+                        &self.current_signer(connection)?,
                     )?)?)
                 }
             }
@@ -384,7 +384,7 @@ impl SqliteAuthorizationStore {
         Ok(json!({
             "materialBucket": super::broker::MATERIAL_BUCKET,
             "revocationBucket": super::broker::REVOCATION_BUCKET,
-            "issuer": self.issuer(),
+            "issuer": self.current_issuer(connection)?,
             "rotationSequence": sequence.to_string(),
         }))
     }
@@ -444,14 +444,14 @@ impl SqliteAuthorizationStore {
             admitted.validate()?;
             let registry=self.attachment_registry(connection,&issued.authority.unsigned,&desired,&admitted,&attachment)?;
             let response=sign_admission_context(AdmissionContext {
-                format:ADMISSION_GET_DOMAIN_V1.into(),issuer_key_id:self.issuer().key_id,
+                format:ADMISSION_GET_DOMAIN_V1.into(),issuer_key_id:self.current_issuer(connection)?.key_id,
                 trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),
                 runtime_id:request.request.runtime_id,request_nonce:request.request.request_nonce,
                 request_subject:subject.into(),reply_subject:reply.into(),
                 session_authority:super::sqlite::json(&issued.authority)?,
                 registry,
                 issued_at:now,expires_at:issued.authority.unsigned.expires_at.min(now.saturating_add(30)),
-            },&self.signer)?;
+            },&self.current_signer(connection)?)?;
             Ok(Ok((response,issued.digest)))
         })?
     }

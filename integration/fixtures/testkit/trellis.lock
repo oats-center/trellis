@@ -10,13 +10,13 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "../../../crates/runtime"
+path = "../../../crates/builtin-contracts"
 
 [[packages]]
 name = "trellis-test-fixture"
 version = "0.100.0"
 digest = "HmXAXCXu87ERqEHPx9CGNuxKynUBacZ4quGuMhIgbdI"
-distribution-digest = "sha256:4531c1e9ba790458dc4b78cf571f2d18052cf9d84af16b4b8a97c317e925ff64"
+distribution-digest = "sha256:23250f72e72753aefbc5bcddc59b3f31e6d4c17deb6fb65fa0ff6de0cb87e55f"
 
 [[packages.dependencies]]
 name = "trellis"

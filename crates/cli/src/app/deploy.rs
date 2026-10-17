@@ -514,7 +514,7 @@ async fn provision_service(
         !current.iter().any(|item| item
             .identity_public_key
             .as_ref()
-            .is_some_and(|public| public.as_ref() == &key)),
+            .is_some_and(|public| public.as_ref() == key)),
         "identity already belongs to an existing instance"
     );
     let response = client
@@ -858,9 +858,6 @@ fn find_deployment_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trellis_rs::client::CallError;
-    use trellis_rs::generated::SerializableErrorData;
-    use trellis_runtime_apis::apis::trellis_auth_v1::errors::AuthError;
 
     #[test]
     fn deployment_lookup_reaches_items_after_the_first_page() {

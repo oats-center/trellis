@@ -3842,7 +3842,7 @@ export class Trellis<
             throw new LiveStreamError("cancelled", "live open was aborted");
           }
           this.#liveClosers.add(closeOnNats);
-          // The endpoint's own telemetry owner records the legacy Live
+          // The endpoint's own telemetry owner records the Live metrics
           // projection from the same local state; no second accounting here.
           void subscription.closed.then(() => {
             transport?.release();

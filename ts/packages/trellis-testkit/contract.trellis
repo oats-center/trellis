@@ -37,6 +37,7 @@ agent cli {
     capability usersPasswordReset;
     capability sessionsRead;
     capability sessionsRevoke;
+    capability issuersRotate;
     required capability identitiesRead;
     required capability accountRead;
   }

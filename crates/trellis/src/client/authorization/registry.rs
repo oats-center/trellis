@@ -5,8 +5,8 @@ use async_nats::jetstream;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use trellis_protocol::{
     parse_session_authority, SignedCatalogSnapshot, SignedIssuerRotation,
-    SignedProviderCertificate, SignedSessionAuthority, SignedSessionRevocation,
-    MAX_ADMISSION_RESPONSE_BYTES, MAX_SESSION_AUTHORITY_BYTES,
+    SignedProviderCertificate, SignedSessionAuthority, MAX_ADMISSION_RESPONSE_BYTES,
+    MAX_SESSION_AUTHORITY_BYTES,
 };
 
 use super::super::TrellisClientError;
@@ -101,26 +101,6 @@ impl AuthorizationRegistryReader {
             client,
             MATERIAL_BUCKET,
             &format!("rotation.{sequence}"),
-            MAX_SESSION_AUTHORITY_BYTES,
-        )
-        .await?
-        .map(|bytes| serde_json::from_slice(&bytes).map_err(TrellisClientError::from))
-        .transpose()
-    }
-
-    pub(crate) async fn revocation(
-        client: &async_nats::Client,
-        session_id: &str,
-    ) -> Result<Option<SignedSessionRevocation>, TrellisClientError> {
-        if ulid::Ulid::from_string(session_id).is_err() {
-            return Err(TrellisClientError::AuthorizationUnavailable(
-                "invalid logical session".into(),
-            ));
-        }
-        Self::read(
-            client,
-            REVOCATION_BUCKET,
-            session_id,
             MAX_SESSION_AUTHORITY_BYTES,
         )
         .await?

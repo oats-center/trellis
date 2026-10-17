@@ -332,7 +332,7 @@ impl AdminSession {
             .auth
             .capability_grants_list_items(AuthCapabilityGrantsListRequest {
                 capability_id: None,
-                principal_id: Some(principal.principal_id.clone()),
+                principal_id: Some(principal.principal_id),
                 page: None,
                 extra: Default::default(),
             })

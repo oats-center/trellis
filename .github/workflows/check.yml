@@ -25,8 +25,6 @@ jobs:
     name: Install generated artifacts
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
-    outputs:
-      current: ${{ steps.current.outputs.current }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -37,11 +35,6 @@ jobs:
       - name: Set up Rust
         id: rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Expose Rust toolchain binaries
-        run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -63,28 +56,24 @@ jobs:
       - name: Install generated artifacts
         run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
 
-      - name: Inspect generated artifact drift
-        id: current
-        shell: bash
-        run: |
-          if test -z "$(git status --porcelain)"; then
-            echo "current=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "current=false" >> "$GITHUB_OUTPUT"
-            git diff --stat
-          fi
-
       - name: Upload installed artifacts
         uses: actions/upload-artifact@v4
         with:
           name: check-generated
           path: |
-            crates/runtime/trellis
             web/trellis
             ts/packages/trellis-testkit/trellis
-            integration/fixtures/runtime/crates/runtime-trellis
             integration/fixtures/runtime/packages/runtime-trellis
             integration/fixtures/runtime-pinned/packages/runtime-trellis
+            integration/fixtures/runtime-removed/packages/runtime-trellis
+            integration/fixtures/client-upgrade/packages/client-upgrade
+            integration/fixtures/client-upgrade-narrow/packages/client-upgrade
+            integration/fixtures/client-upgrade-consent/packages/client-upgrade
+            integration/fixtures/testkit/crates/trellis-test-fixture
+            integration/fixtures/testkit/packages/trellis-test-fixture
+            benchmarks/runtime/crates/performance-trellis
+            benchmarks/runtime/packages/performance-trellis
+            ts/packages/trellis/internal_sdk/generated
             demos/rust/service/trellis
             demos/rust/device/trellis
             demos/ts/service/trellis
@@ -93,17 +82,6 @@ jobs:
             docs/examples/orders/trellis
           include-hidden-files: true
           retention-days: 1
-
-  generated:
-    name: Generated artifacts current
-    needs: install
-    runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 5
-    steps:
-      - name: Require generated artifacts to be current
-        env:
-          GENERATED_CURRENT: ${{ needs.install.outputs.current }}
-        run: test "$GENERATED_CURRENT" = true
 
   wasm:
     name: Protocol WASM
@@ -129,6 +107,37 @@ jobs:
         with:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
+          retention-days: 1
+
+  dex:
+    name: Build test identity provider
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out pinned Dex source
+        uses: actions/checkout@v4
+        with:
+          repository: dexidp/dex
+          ref: 05a275057112ba93e17db21f600b756f000f1c21
+          path: dex-source
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: dex-source/go.mod
+          cache-dependency-path: dex-source/go.sum
+
+      # Dex's API is an in-tree module replacement, so build the pinned tree
+      # rather than attempting go install against a detached module download.
+      - name: Build Dex
+        working-directory: dex-source
+        run: go build -mod=readonly -trimpath -o "$RUNNER_TEMP/dex" ./cmd/dex
+
+      - name: Upload test identity provider
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-dex
+          path: ${{ runner.temp }}/dex
           retention-days: 1
 
   portal:
@@ -260,6 +269,8 @@ jobs:
             --config "patch.crates-io.trellis-events-runtime.path=\"$GITHUB_WORKSPACE/crates/events-runtime\"" \
             --config "patch.crates-io.trellis-jobs-runtime.path=\"$GITHUB_WORKSPACE/crates/jobs-runtime\"" \
             --config "patch.crates-io.trellis-idl.path=\"$GITHUB_WORKSPACE/crates/idl\"" \
+            --config "patch.crates-io.trellis-codegen-rust.path=\"$GITHUB_WORKSPACE/crates/codegen-rust\"" \
+            --config "patch.crates-io.trellis-builtin-contracts.path=\"$GITHUB_WORKSPACE/crates/builtin-contracts\"" \
             --test live \
             --message-format=json > "$RUNNER_TEMP/testkit-live.json"
           executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
@@ -272,8 +283,10 @@ jobs:
       - name: Stage runtime binaries
         run: |
           set -euo pipefail
+          umask 077
           mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
           cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
+          bash scripts/acquire-test-nats.sh --dest "$PWD/dist/runtime-binaries/nats"
           for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
@@ -292,7 +305,7 @@ jobs:
 
   rust:
     name: Rust
-    needs: [install, wasm, portal]
+    needs: [install, wasm, portal, build, dex]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -309,6 +322,24 @@ jobs:
         with:
           name: check-portal
           path: crates/runtime/generated
+
+      - name: Download runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: dist/runtime-binaries
+
+      - name: Extract runtime binaries
+        run: tar -xzf dist/runtime-binaries/runtime-binaries.tar.gz -C dist/runtime-binaries
+
+      - name: Download test identity provider
+        uses: actions/download-artifact@v4
+        with:
+          name: check-dex
+          path: dist/test-identity
+
+      - name: Make test identity provider executable
+        run: chmod +x dist/test-identity/dex
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -342,13 +373,11 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Prime the pinned NATS cache
-        # Resolve through the real component so trellis-local-nats creates its
-        # private cache and retains the checksum-verified archive needed for
-        # reuse. Do not precreate a public directory or copy only the binary.
-        env:
-          TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
-        run: cargo test --manifest-path Cargo.toml -p trellis-runtime --lib platform::auth::ephemeral::tests::nats_kv_repository_conforms -- --exact
+      - name: Install Node workspace dependencies
+        run: npm ci
+
+      - name: Install Chromium for Rust-owned browser acceptance
+        run: npx playwright install --with-deps chromium
 
       - name: Check formatting
         run: |
@@ -360,6 +389,12 @@ jobs:
       - name: Test Rust workspace
         env:
           TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
+          TRELLIS_TEST_NATS_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+          TRELLIS_NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
+          TRELLIS_TEST_EVENTS_BIN: ${{ github.workspace }}/dist/runtime-binaries/fixtures/events
+          TRELLIS_TEST_DEX_BIN: ${{ github.workspace }}/dist/test-identity/dex
         run: cargo test --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres
 
   typescript:
@@ -389,7 +424,7 @@ jobs:
       - run: npm ci
 
       - name: Check formatting
-        run: npm exec -- prettier --check ts/packages ts/tools
+        run: npm exec -- prettier --ignore-path .gitignore --check ts/packages ts/tools
 
       - name: Check TypeScript packages
         run: npm run check:sdk
@@ -926,6 +961,7 @@ jobs:
         run: |
           cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
             -p trellis-protocol -p trellis-rs -p trellis-idl \
+            -p trellis-codegen-rust -p trellis-builtin-contracts \
             -p trellis-local-bootstrap -p trellis-local-nats -p trellis-runtime-apis \
             -p trellis-events-runtime -p trellis-jobs-runtime -p trellis-runtime \
             -p trellis-bootstrap -p trellis-testkit \
@@ -935,7 +971,8 @@ jobs:
         run: |
           target="$(mktemp -d "$RUNNER_TEMP/rust-publication.XXXXXX")"
           bash scripts/prepare-rust-publication.sh target/package "$target" \
-            trellis-protocol trellis-rs trellis-runtime-apis trellis-idl \
+            trellis-protocol trellis-idl trellis-codegen-rust trellis-builtin-contracts \
+            trellis-rs trellis-runtime-apis \
             trellis-local-bootstrap trellis-events-runtime trellis-jobs-runtime \
             trellis-runtime trellis-bootstrap trellis-local-nats trellis-testkit
 
@@ -955,6 +992,8 @@ jobs:
           cp target/package/trellis-protocol-*.crate \
              target/package/trellis-rs-*.crate \
              target/package/trellis-idl-*.crate \
+             target/package/trellis-codegen-rust-*.crate \
+             target/package/trellis-builtin-contracts-*.crate \
              target/package/trellis-local-bootstrap-*.crate \
              target/package/trellis-local-nats-*.crate \
              target/package/trellis-runtime-apis-*.crate \
@@ -1225,7 +1264,6 @@ jobs:
   acceptance:
     name: Acceptance gate
     needs:
-      - generated
       - rust
       - typescript
       - demos

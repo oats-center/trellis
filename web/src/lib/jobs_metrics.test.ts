@@ -5,10 +5,6 @@ import { type apis } from "trellis-web-generated";
 
 import { loadJobsMetrics } from "./jobs_metrics.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
-
 const input: apis.jobs.MetricsInput = {
   groupBy: "type",
   step: "1m",

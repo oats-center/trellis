@@ -7,7 +7,6 @@ import { test } from "node:test";
 import { deadline } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
-import { Root } from "protobufjs";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { ulid } from "ulid";
@@ -18,33 +17,7 @@ import {
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { spawnTracked } from "./_support/process.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
-import otlpMetricsSchema from "./_support/otlp_metrics_schema.json" with { type: "json" };
-
-type Attributes = {
-  key: string;
-  value?: { stringValue?: string | null } | null;
-}[];
-type MetricExport = {
-  resourceMetrics: {
-    resource?: { attributes?: Attributes } | null;
-    scopeMetrics: {
-      scope?: { name?: string | null } | null;
-      metrics: {
-        name: string;
-        sum?: {
-          dataPoints: {
-            attributes: Attributes;
-            asInt?: { toString(): string } | number | null;
-            asDouble?: number | null;
-          }[];
-        } | null;
-      }[];
-    }[];
-  }[];
-};
-const metricDecoder = Root.fromJSON(otlpMetricsSchema).lookupType(
-  "opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest",
-);
+import { type Attributes, decodeMetrics } from "./_support/otlp.ts";
 
 test("Rust terminates accepted work on shared coverage loss before replacement replay finishes", async () => {
   await withTrellisRuntime(
@@ -57,10 +30,7 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
         try {
           const chunks: Buffer[] = [];
           for await (const chunk of request) chunks.push(Buffer.from(chunk));
-          const decoded = metricDecoder.toObject(
-            metricDecoder.decode(Buffer.concat(chunks)),
-            { arrays: true },
-          ) as MetricExport;
+          const decoded = decodeMetrics(Buffer.concat(chunks));
           const next = decoded.resourceMetrics
             .filter((resource) =>
               resource.resource?.attributes?.some(

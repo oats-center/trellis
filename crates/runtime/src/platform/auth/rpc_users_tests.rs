@@ -25,7 +25,14 @@ fn reset_session(
         expected_revision: 0,
     };
     store
-        .register_client(&mutation(admin, &client), &client, NOW)
+        .transaction(|connection| {
+            store.register_client_in_transaction(
+                connection,
+                &mutation(admin, &client),
+                &client,
+                NOW,
+            )
+        })
         .unwrap();
     let cookie = store.create_portal_session(NOW).unwrap();
     let login = store
@@ -33,8 +40,7 @@ fn reset_session(
             &cookie.cookie,
             &cookie.csrf,
             &"r".repeat(43),
-            username,
-            password,
+            (username, password),
             &id(),
             NOW,
         )
@@ -62,8 +68,7 @@ fn reset_session(
             .encode(SigningKey::from_bytes(&[51; 32]).verifying_key().as_bytes()),
         inbox_prefix: "_INBOX.resetRequester".into(),
     };
-    store
-        .issue_authority(&admission, None, NOW)
+    crate::platform::auth::phase_two_tests::issue_authority(store, &admission, None, NOW)
         .unwrap()
         .authority
         .unsigned
@@ -76,7 +81,8 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
     let store = open(&directory, SigningKey::from_bytes(&[41; 32]));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let input = AuthUserCreateRequest {
         username: "Alice".to_string().into(),
@@ -97,8 +103,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
             &cookie.cookie,
             &cookie.csrf,
             &"a".repeat(43),
-            "ALICE",
-            "initial alice password",
+            ("ALICE", "initial alice password"),
             &id(),
             NOW,
         )
@@ -108,7 +113,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         created.user.principal.principal_id.to_string()
     );
     let update = AuthUserUpdateRequest {
-        user_id: created.user.principal.principal_id.clone(),
+        user_id: created.user.principal.principal_id,
         expected_revision: AuthRevision(1.into()),
         display_name: "Alice Updated".to_string().into(),
         enabled: true,
@@ -160,7 +165,8 @@ fn password_change_keeps_current_login_revokes_siblings_and_replays_without_old_
     let store = open(&directory, SigningKey::from_bytes(&[42; 32]));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let cookie = store.create_portal_session(NOW).unwrap();
     let current = store
@@ -168,8 +174,7 @@ fn password_change_keeps_current_login_revokes_siblings_and_replays_without_old_
             &cookie.cookie,
             &cookie.csrf,
             &"a".repeat(43),
-            "admin",
-            "administrator password",
+            ("admin", "administrator password"),
             &id(),
             NOW,
         )
@@ -181,8 +186,7 @@ fn password_change_keeps_current_login_revokes_siblings_and_replays_without_old_
             &cookie.cookie,
             &cookie.csrf,
             &"b".repeat(43),
-            "admin",
-            "administrator password",
+            ("admin", "administrator password"),
             &id(),
             NOW,
         )
@@ -228,8 +232,7 @@ fn password_change_keeps_current_login_revokes_siblings_and_replays_without_old_
             &cookie.cookie,
             &cookie.csrf,
             &"c".repeat(43),
-            "admin",
-            "administrator password",
+            ("admin", "administrator password"),
             &id(),
             NOW + 2
         ),
@@ -240,8 +243,7 @@ fn password_change_keeps_current_login_revokes_siblings_and_replays_without_old_
             &cookie.cookie,
             &cookie.csrf,
             &"c".repeat(43),
-            "admin",
-            "replacement password",
+            ("admin", "replacement password"),
             &id(),
             NOW + 2
         )
@@ -268,7 +270,8 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
     let store = open(&directory, SigningKey::from_bytes(&[43; 32]));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let provider = id();
     let registration = crate::platform::auth::lifecycle::OidcProviderRegistration {
@@ -282,16 +285,21 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
         expected_revision: 0,
     };
     store
-        .register_oidc_provider(&mutation(&admin, &registration), &registration, NOW)
+        .transaction(|connection| {
+            store.register_oidc_provider_in_transaction(
+                connection,
+                &mutation(&admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
         .unwrap();
     store
-        .link_oidc_identity(
-            &mutation(&admin, &(admin.as_str(), provider.as_str(), "subject")),
-            &admin,
-            &provider,
-            "subject",
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::link_oidc_identity_in(
+                connection, &admin, &provider, "subject", NOW,
+            )
+        })
         .unwrap();
     let login = crate::platform::auth::VerifiedLogin {
         principal_id: admin.clone(),
@@ -301,7 +309,13 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
         verified_claims: Some(serde_json::json!({"roles": []})),
         expires_at: NOW + 300,
     };
-    assert!(store.record_verified_login(&login, NOW).is_ok());
+    assert!(store
+        .transaction(
+            |connection| SqliteAuthorizationStore::record_verified_login_in(
+                connection, &login, NOW
+            )
+        )
+        .is_ok());
     let input = AuthOIDCProviderMutationRequest {
         provider_id: provider.parse().unwrap(),
         expected_revision: AuthRevision(1.into()),
@@ -310,7 +324,13 @@ fn provider_disable_blocks_verified_login_and_stale_delete_cannot_remove_it() {
     };
     disable_provider(&store, &mutation(&admin, &input), &input, NOW + 1).unwrap();
     assert!(matches!(
-        store.record_verified_login(&login, NOW + 2),
+        store.transaction(
+            |connection| SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &login,
+                NOW + 2
+            )
+        ),
         Err(AuthError::Denied)
     ));
     let stale = AuthOIDCProviderMutationRequest {
@@ -343,7 +363,8 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
     let store = open(&directory, SigningKey::from_bytes(&[44; 32]));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let input = AuthUserCreateRequest {
         username: "Reserved".to_string().into(),
@@ -371,8 +392,7 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
             &cookie.cookie,
             &cookie.csrf,
             &"d".repeat(43),
-            "reserved",
-            "a usable password",
+            ("reserved", "a usable password"),
             &id(),
             NOW
         ),
@@ -386,7 +406,8 @@ fn racing_password_changes_cannot_both_replace_the_same_credential() {
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[45; 32])));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let cookie = store.create_portal_session(NOW).unwrap();
     let login = store
@@ -394,8 +415,7 @@ fn racing_password_changes_cannot_both_replace_the_same_credential() {
             &cookie.cookie,
             &cookie.csrf,
             &"e".repeat(43),
-            "admin",
-            "administrator password",
+            ("admin", "administrator password"),
             &id(),
             NOW,
         )
@@ -443,8 +463,7 @@ fn racing_password_changes_cannot_both_replace_the_same_credential() {
             &cookie.cookie,
             &cookie.csrf,
             &"f".repeat(43),
-            "admin",
-            winner,
+            ("admin", winner),
             &id(),
             NOW + 2
         )
@@ -457,7 +476,8 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[46; 32])));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[19; 32]).unwrap();
     let input = AuthOIDCProviderPutRequest {
@@ -481,7 +501,7 @@ fn provider_put_replays_generated_identity_and_cas_keeps_secret_on_metadata_upda
     );
     assert!(created.provider.has_client_secret);
     let update = AuthOIDCProviderPutRequest {
-        provider_id: Some(created.provider.provider_id.clone()),
+        provider_id: Some(created.provider.provider_id),
         title: "Updated company".to_string().into(),
         expected_revision: 1.into(),
         client_secret: None,
@@ -527,7 +547,8 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[47; 32])));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[20; 32]).unwrap();
     let provider = AuthOIDCProviderPutRequest {
@@ -563,13 +584,11 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         .to_string();
     for (principal, subject) in [(&alice, "alice-at-idp"), (&admin, "admin-at-idp")] {
         store
-            .link_oidc_identity(
-                &mutation(&admin, &(principal.as_str(), provider.as_str(), subject)),
-                principal,
-                &provider,
-                subject,
-                NOW,
-            )
+            .transaction(|connection| {
+                SqliteAuthorizationStore::link_oidc_identity_in(
+                    connection, principal, &provider, subject, NOW,
+                )
+            })
             .unwrap();
     }
     let page = AuthPageRequest {
@@ -582,7 +601,7 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         .unwrap();
     assert_eq!(listed.items.len(), 1);
     let unlink = AuthUserIdentityUnlinkRequest {
-        identity_id: listed.items[0].identity_id.clone(),
+        identity_id: listed.items[0].identity_id,
         idempotency_key: id().into(),
         extra: Default::default(),
     };
@@ -613,13 +632,15 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         .provider_id
         .to_string();
     store
-        .link_oidc_identity(
-            &mutation(&admin, &(alice.as_str(), second.as_str(), "alice-other")),
-            &alice,
-            &second,
-            "alice-other",
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::link_oidc_identity_in(
+                connection,
+                &alice,
+                &second,
+                "alice-other",
+                NOW,
+            )
+        })
         .unwrap();
     unlink_identity(&store, &mutation(&alice, &unlink), &unlink, NOW + 1).unwrap();
     let remaining = store
@@ -650,7 +671,8 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[48; 32])));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[21; 32]).unwrap();
     let session = reset_session(&store, &admin, &admin, "admin", "administrator password");
@@ -672,8 +694,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
             &cookie.cookie,
             &cookie.csrf,
             &"g".repeat(43),
-            "alice",
-            "initial alice password",
+            ("alice", "initial alice password"),
             &id(),
             NOW,
         )
@@ -731,8 +752,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
             &guest.cookie,
             &guest.csrf,
             &"h".repeat(43),
-            "alice",
-            "replacement alice password",
+            ("alice", "replacement alice password"),
             &id(),
             NOW + 2
         )
@@ -785,7 +805,8 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[49; 32])));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[22; 32]).unwrap();
     let mut principals = vec![];
@@ -813,9 +834,13 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
         privileges: vec![PlatformPrivilege::PrincipalsManage],
         expected_revision: 0,
     };
-    store
-        .apply_policy(&mutation(&admin, &grant), &grant, NOW)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::apply_policy(
+        &store,
+        &mutation(&admin, &grant),
+        &grant,
+        NOW,
+    )
+    .unwrap();
     let session = reset_session(
         &store,
         &admin,
@@ -849,9 +874,13 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
         assignment_id: assignment,
         expected_revision: 1,
     };
-    store
-        .apply_policy(&mutation(&admin, &revoke), &revoke, NOW + 1)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::apply_policy(
+        &store,
+        &mutation(&admin, &revoke),
+        &revoke,
+        NOW + 1,
+    )
+    .unwrap();
     let guest = store.create_portal_session(NOW + 1).unwrap();
     let replacement = hash_password("replacement account password").unwrap();
     assert!(matches!(
@@ -871,15 +900,18 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
             &login_cookie.cookie,
             &login_cookie.csrf,
             &"i".repeat(43),
-            "alice",
-            "initial account password",
+            ("alice", "initial account password"),
             &id(),
             NOW + 1
         )
         .is_ok());
-    store
-        .apply_policy(&mutation(&admin, &grant), &grant, NOW + 2)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::apply_policy(
+        &store,
+        &mutation(&admin, &grant),
+        &grant,
+        NOW + 2,
+    )
+    .unwrap();
     complete_reset(
         &storage,
         &reset.token,
@@ -948,9 +980,13 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     .unwrap();
     let grant: String = store.transaction(|connection| Ok(connection.query_row("SELECT oauth_grant_id FROM auth_authorization_sessions WHERE authorization_session_id=?1", [&session], |row| row.get(0))?)).unwrap();
     let root = EnforcementScope::Grant(grant);
-    store
-        .revoke_root(&mutation(&admin, &root), &root, NOW + 5)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::revoke_root(
+        &store,
+        &mutation(&admin, &root),
+        &root,
+        NOW + 5,
+    )
+    .unwrap();
     assert!(matches!(
         complete_reset(
             &storage,
@@ -971,7 +1007,8 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
     let store = Arc::new(open(&directory, SigningKey::from_bytes(&[50; 32])));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "administrator password", NOW)
+        .initialize_administrator("admin", Some("administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let storage =
         Arc::new(crate::platform::auth::OAuthStorage::new(store.clone(), &[23; 32]).unwrap());
@@ -1030,8 +1067,7 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
             &cookie.cookie,
             &cookie.csrf,
             &"j".repeat(43),
-            "alice",
-            winner,
+            ("alice", winner),
             &id(),
             NOW + 2
         )

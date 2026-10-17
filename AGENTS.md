@@ -136,9 +136,10 @@ inventories, or evidence ledgers to enforce this section.
   `npm exec -- prettier --write <changed files>`. For Rust files, run
   `cargo fmt --manifest-path Cargo.toml --package <crate>` when the crate is
   known, or `rustfmt --edition 2021 <changed .rs files>` for narrow file-scoped
-  edits. If generated artifacts are affected, run `cargo xtask install` first
-  and then verify generated Rust formatting with
-  `cargo fmt --manifest-path Cargo.toml --all --check`. Do not bulk-format
+  edits. Generated implementations are disposable build artifacts: do not commit
+  or enforce formatting on them. Trellis-owned Rust libraries generate bindings
+  into Cargo `OUT_DIR`; project SDKs are generated before consumption. Verify
+  authored Rust with `cargo fmt --manifest-path Cargo.toml --all --check`. Do not bulk-format
   unrelated drift unless the user asks for that cleanup; report it separately.
 - When changes affect contracts, generated SDKs, or runtime surfaces that depend
   on generated artifacts, run `cargo xtask install` as part of verification.

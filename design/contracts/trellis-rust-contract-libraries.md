@@ -19,14 +19,22 @@ metadata. Generated crates contain no canonical API/participant JSON artifact
 tree. Runtime descriptors are an internal support ABI and are not accepted as
 handwritten authority evidence.
 
-Generated participant facades embed package semantic evidence and exact lexical
-participant path. Service/device connection paths submit identity/proof inputs;
+Generated participant facades reference one shared package semantic-evidence
+projection and retain their exact lexical participant path. Cursor traversal and
+pagination errors live in the common SDK runtime; generated methods remain typed
+adapters. Service/device connection paths submit identity/proof inputs;
 the server resolves assignments, approvals, exact grants, routes, and resources.
 Generated device options do not accept a reusable session seed.
 
-Commit generated output when consumers must build without the CLI/cache.
-Regenerate rather than editing it, and use current Rustdoc/generated source for
-exact participant-specific methods.
+Generated implementations are disposable build artifacts, not committed source.
+Trellis-owned Rust libraries keep authored Cargo manifests, entrypoints, and build
+scripts; Cargo generates their implementations into `OUT_DIR` from the shared
+`trellis-builtin-contracts` native IDL package. Published crates carry their build
+dependencies, so downstream consumers do not need the Trellis CLI or repository.
+Project-local SDKs are generated before compilation through `trellis install`.
+Package generated code when distributing a consumer, rather than tracking it in
+Git. Formatting checks apply to authored code, not generated implementations.
+Use current Rustdoc/generated source for exact participant-specific methods.
 
 Generation rejects collisions across the complete normalized Client method
 namespace, including API accessors, resource accessors, and runtime methods,

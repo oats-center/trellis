@@ -22,8 +22,7 @@ fn administrator_without_a_password_cannot_log_in_or_be_seeded_with_a_password_l
                 &guest.cookie,
                 &guest.csrf,
                 &guest.cookie,
-                "admin",
-                password,
+                ("admin", password),
                 &id(),
                 NOW
             ),
@@ -98,17 +97,20 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
         )
         .unwrap();
     let login = store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: admin.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW + 2,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: admin.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW + 2,
+            )
+        })
         .unwrap();
     let read = "trellis.auth@v1::usersRead";
     let write = "trellis.auth@v1::usersCreate";
@@ -128,7 +130,9 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
             .encode(SigningKey::from_bytes(&[3; 32]).verifying_key().as_bytes()),
         inbox_prefix: "_INBOX.bootstrap".into(),
     };
-    let issued = store.issue_authority(&admission, None, NOW + 3).unwrap();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&store, &admission, None, NOW + 3)
+            .unwrap();
     assert!(issued
         .authority
         .unsigned
@@ -158,7 +162,14 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
         expected_revision: 0,
     };
     store
-        .register_client(&mutation(&admin, &client), &client, NOW + 4)
+        .transaction(|connection| {
+            store.register_client_in_transaction(
+                connection,
+                &mutation(&admin, &client),
+                &client,
+                NOW + 4,
+            )
+        })
         .unwrap();
     approval.client_id = client.client_id;
     assert!(matches!(
@@ -172,17 +183,20 @@ fn bootstrap_does_not_entitle_admin_to_an_accepted_domain_api() {
     let f = fixture();
     let login = f
         .store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: f.admin.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: f.admin.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW,
+            )
+        })
         .unwrap();
     let approval = grant_request(&f.admin, &login, &f.read, &f.write, NOW);
     assert!(matches!(
@@ -199,7 +213,14 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
     let store = open(&directory, SigningKey::from_bytes(&[42; 32]));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "a strong bootstrap password", NOW)
+        .initialize_administrator(
+            "admin",
+            Some("a strong bootstrap password"),
+            None,
+            None,
+            NOW,
+        )
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let current: PackageEvidence = serde_json::from_value(
         serde_json::to_value(
@@ -256,22 +277,32 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         .unwrap();
     assert_eq!(
         store
-            .bootstrap_administrator("admin", "a strong bootstrap password", NOW + 2)
+            .initialize_administrator(
+                "admin",
+                Some("a strong bootstrap password"),
+                None,
+                None,
+                NOW + 2
+            )
+            .map(|initialized| initialized.principal_id)
             .unwrap(),
         admin
     );
     let login = store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: admin.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW + 2,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: admin.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW + 2,
+            )
+        })
         .unwrap();
     let mut approval = grant_request(
         &admin,
@@ -282,7 +313,9 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
     );
     let cli = cli_registration();
     store
-        .register_client(&mutation(&admin, &cli), &cli, NOW + 2)
+        .transaction(|connection| {
+            store.register_client_in_transaction(connection, &mutation(&admin, &cli), &cli, NOW + 2)
+        })
         .unwrap();
     approval.client_id = CLI_CLIENT_ID.into();
     let grant = store
@@ -296,7 +329,9 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
             .encode(SigningKey::from_bytes(&[3; 32]).verifying_key().as_bytes()),
         inbox_prefix: "_INBOX.replay".into(),
     };
-    let issued = store.issue_authority(&admission, None, NOW + 3).unwrap();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&store, &admission, None, NOW + 3)
+            .unwrap();
     assert!(issued
         .authority
         .unsigned

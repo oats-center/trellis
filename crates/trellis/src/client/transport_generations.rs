@@ -29,8 +29,8 @@ use tokio::sync::watch;
 use trellis_protocol::{TransportAuthorizationV1, TransportPolicyClass};
 
 use crate::client::authorization::{
-    policy_covers, read_own_admission, AuthorizationContextCache, AuthorizationRuntimeBinding,
-    OwnTransitionGuard, OwnTransportSnapshot, PreparedOwnCandidate,
+    policy_covers, read_own_admission, AuthorizationContextCache, OwnTransitionGuard,
+    OwnTransportSnapshot, PreparedOwnCandidate,
 };
 use crate::client::{SessionAuth, TrellisClientError};
 use crate::live::manager::LiveSessionManager;
@@ -61,15 +61,9 @@ impl GenerationState {
     }
 }
 
-/// One authoritative, latched reason the logical connection can no longer serve
-/// application work. A generation revocation is not one of these: it is
-/// recoverable by adopting the newest authorization. Only the authorization
-/// controller's terminal refresh result or an explicit owner close latches one.
+/// Latched logical-owner closure, distinct from recoverable generation loss.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LogicalTerminalCause {
-    /// The authorization controller authoritatively ended this connection; a
-    /// refresh for the installed session was rejected with a terminal code.
-    Authorization(String),
     /// The owner explicitly closed the logical connection.
     Closed,
 }
@@ -79,9 +73,6 @@ impl LogicalTerminalCause {
     /// terminally finished.
     pub(crate) fn client_error(&self) -> TrellisClientError {
         match self {
-            Self::Authorization(code) => TrellisClientError::AuthorizationUnavailable(format!(
-                "authorization context is no longer valid: {code}"
-            )),
             Self::Closed => TrellisClientError::TransportUnavailable(
                 "logical transport connection is closed".into(),
             ),
@@ -98,8 +89,6 @@ pub(crate) enum GenerationIntakeRetireReason {
     AuthorityReduced,
     /// The physical attachment was lost.
     PhysicalFailure,
-    /// The logical connection reached an authoritative terminal state.
-    LogicalTerminal,
     /// The logical connection is shutting down.
     Shutdown,
 }
@@ -107,12 +96,12 @@ pub(crate) enum GenerationIntakeRetireReason {
 impl GenerationIntakeRetireReason {
     /// Whether this retirement must terminate the generation's support without
     /// waiting for accepted work: a physical loss, a policy no longer covered by
-    /// authority, an authoritative terminal, or a logical shutdown. Normal
+    /// authority, or a logical shutdown. Normal
     /// supersession is graceful and waits for accepted work to drain.
     fn is_forced(self) -> bool {
         matches!(
             self,
-            Self::AuthorityReduced | Self::PhysicalFailure | Self::LogicalTerminal | Self::Shutdown
+            Self::AuthorityReduced | Self::PhysicalFailure | Self::Shutdown
         )
     }
 }
@@ -713,17 +702,6 @@ pub(crate) struct OwnCoveragePreparation {
     pub(crate) lease: TransportLease,
     /// The exact owned candidate digest this preparation covers.
     pub(crate) context_digest: String,
-    /// Exact prepared instance identity the warm must validate at promotion, so a
-    /// signed-identical replacement is never substituted.
-    pub(crate) instance: Arc<()>,
-    /// The candidate's runtime binding, read from the exact guarded snapshot this
-    /// preparation validated, so a promotion applies that candidate's runtime
-    /// rather than an unguarded candidate-first cache read.
-    pub(crate) runtime: AuthorizationRuntimeBinding,
-    /// Immutable server-clock offset from the exact prepared instance, threaded
-    /// through the warm so signature/window verification uses the candidate's own
-    /// corrected clock rather than the promoted predecessor's.
-    pub(crate) clock_offset_ms: i64,
     /// The scoped private stage, present only when a fresh provisional generation
     /// was opened because no already-admitted safe carrier was available.
     pub(crate) stage: Option<OwnCoverageStage>,
@@ -1609,7 +1587,7 @@ impl TransportGenerationManager {
         // Capture the immutable CONNECT material from the private verified
         // candidate, revalidated against the exact instance this operation
         // prepared. The own-transition lock is released before the connect await.
-        let (candidate_snapshot, instance, clock_offset_ms, runtime) = {
+        let (candidate_snapshot, instance) = {
             let transition = self.inner.contexts.lock_own_transition()?;
             let snapshot = self
                 .inner
@@ -1619,21 +1597,13 @@ impl TransportGenerationManager {
                     &candidate.context_digest,
                     &candidate.instance,
                 )?;
-            // A captured CONNECT route credential that is already expired can never
-            // authenticate a *new* socket, so fail closed before opening one. This
-            // gates only the new-socket path: reuse of an already-admitted carrier
-            // above never revalidates the CONNECT credential.
-            let runtime = snapshot.runtime.clone();
             (
                 OwnTransportSnapshot {
                     context_digest: snapshot.context_digest.clone(),
                     authorization_session_id: snapshot.authorization_session_id.clone(),
                     policy: snapshot.policy.clone(),
-                    runtime: runtime.clone(),
                 },
                 snapshot.instance.clone(),
-                snapshot.server_clock_offset_ms,
-                runtime,
             )
         };
         let id = self.inner.alloc_id();
@@ -1666,9 +1636,6 @@ impl TransportGenerationManager {
         Ok(OwnCoveragePreparation {
             lease,
             context_digest: candidate.context_digest.clone(),
-            clock_offset_ms,
-            instance: instance.clone(),
-            runtime,
             stage: Some(OwnCoverageStage {
                 inner: Arc::clone(&self.inner),
                 generation,
@@ -1716,9 +1683,6 @@ impl TransportGenerationManager {
         Ok(lease.map(|lease| OwnCoveragePreparation {
             lease,
             context_digest: snapshot.context_digest.clone(),
-            instance: snapshot.instance.clone(),
-            clock_offset_ms: snapshot.server_clock_offset_ms,
-            runtime: snapshot.runtime.clone(),
             stage: None,
         }))
     }
@@ -2004,30 +1968,6 @@ impl TransportGenerationManager {
             }
         }
         Ok(None)
-    }
-
-    fn try_acquire_current(
-        &self,
-        state: &ManagerState,
-        now: i64,
-        desired: &TransportAuthorizationV1,
-        deadline: Instant,
-    ) -> Result<Option<TransportLease>, TrellisClientError> {
-        match &state.current {
-            Some(current) if current.state() != GenerationState::Closed => {
-                if !generation_is_safe(current, desired, now)? {
-                    return Ok(None);
-                }
-                if let Some(error) = self.inner.terminated_error() {
-                    return Err(error);
-                }
-                if Instant::now() >= deadline {
-                    return Err(TrellisClientError::Timeout);
-                }
-                Ok(current.lease())
-            }
-            _ => Ok(None),
-        }
     }
 }
 
@@ -2598,17 +2538,9 @@ async fn shutdown(inner: &Arc<ManagerInner>) {
         inner.set_current(&mut state, None);
         all
     };
-    // A logical shutdown retires every physical generation's framework intake
-    // before closing the attachment, the same discipline as reduction/reap. An
-    // authoritative terminal cause is distinguished from an explicit close.
-    let reason = match inner.terminal.borrow().as_ref() {
-        Some(LogicalTerminalCause::Authorization(_)) => {
-            GenerationIntakeRetireReason::LogicalTerminal
-        }
-        _ => GenerationIntakeRetireReason::Shutdown,
-    };
+    // Retire every physical generation's intake before closing its attachment.
     for generation in known {
-        generation.retire_intake_closed(reason);
+        generation.retire_intake_closed(GenerationIntakeRetireReason::Shutdown);
         let _ = generation.nats.drain().await;
     }
 }

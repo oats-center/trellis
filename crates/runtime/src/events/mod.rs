@@ -205,9 +205,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 let status = authority_owner
                     .historical_status(&transport, &event.authority_digest)
                     .await
-                    .map_err(|error| {
-                        EventVerificationFailure::Retryable((error.to_string()).into())
-                    })?;
+                    .map_err(|error| EventVerificationFailure::Retryable(error.to_string()))?;
                 let action = trellis_protocol::CatalogActionIdentity {
                     kind: ApiSurfaceKind::Event,
                     name: event.action.clone(),
@@ -228,9 +226,9 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     .await
                     .map_err(|error| match error {
                         trellis_rs::client::TrellisClientError::AuthorizationUnavailable(_) => {
-                            EventVerificationFailure::Retryable((error.to_string()).into())
+                            EventVerificationFailure::Retryable(error.to_string())
                         }
-                        _ => EventVerificationFailure::Rejected((error.to_string()).into()),
+                        _ => EventVerificationFailure::Rejected(error.to_string()),
                     })?;
                 let authority = verified.authority().authority();
                 if header("session-key")? != authority.session_public_key {

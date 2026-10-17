@@ -4,10 +4,6 @@ import { test } from "node:test";
 import { canPerform, CONSOLE_OPERATIONS } from "./operations.ts";
 import type { Authority } from "../control-panel.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
-
 function authorityWith(
   permissions: Array<{
     api: string;

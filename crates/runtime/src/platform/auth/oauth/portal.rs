@@ -220,11 +220,11 @@ impl SqliteAuthorizationStore {
         cookie: &str,
         csrf: &str,
         replacement_cookie: &str,
-        username: &str,
-        password: &str,
+        credentials: (&str, &str),
         request_id: &str,
         now: i64,
     ) -> Result<PortalLogin, AuthError> {
+        let (username, password) = credentials;
         if username.len() > 256 || password.len() > 4096 || replacement_cookie.len() != 43 {
             return Err(AuthError::Denied);
         }

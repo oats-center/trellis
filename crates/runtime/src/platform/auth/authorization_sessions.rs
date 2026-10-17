@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use ed25519_dalek::VerifyingKey;
+use ed25519_dalek::SigningKey;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -40,7 +40,6 @@ pub(crate) struct AdmissionIdentity {
 pub(crate) struct IssuedAuthority {
     pub(crate) authority: SignedSessionAuthority,
     pub(crate) digest: String,
-    pub(crate) optional_unavailable: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,8 +82,8 @@ pub(super) fn credential_snapshot(
 ) -> Result<CredentialSnapshot, AuthError> {
     match credential {
         Credential::OAuthGrant(grant) => {
-            let record:Option<(String,String,String,String,String,String,String,String,String,i64,i64)>=connection.query_row(
-                "SELECT g.principal_id,g.login_session_id,g.client_id,g.binding_kind,g.binding_value,g.durable_dpop_jkt,g.required_capabilities_json,g.optional_capabilities_json,g.approved_capabilities_json,min(g.expires_at,l.expires_at),g.revision FROM auth_oauth_grants g JOIN auth_login_sessions l ON l.login_session_id=g.login_session_id AND l.principal_id=g.principal_id JOIN auth_principals p ON p.principal_id=g.principal_id WHERE g.oauth_grant_id=?1 AND g.revoked_at IS NULL AND l.revoked_at IS NULL AND g.expires_at>?2 AND l.expires_at>?2 AND p.state='active'",params![grant,now],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?,row.get(10)?))).optional()?;
+            let record=connection.query_row(
+                "SELECT g.principal_id,g.login_session_id,g.client_id,g.binding_kind,g.binding_value,g.durable_dpop_jkt,g.required_capabilities_json,g.optional_capabilities_json,g.approved_capabilities_json,min(g.expires_at,l.expires_at),g.revision FROM auth_oauth_grants g JOIN auth_login_sessions l ON l.login_session_id=g.login_session_id AND l.principal_id=g.principal_id JOIN auth_principals p ON p.principal_id=g.principal_id WHERE g.oauth_grant_id=?1 AND g.revoked_at IS NULL AND l.revoked_at IS NULL AND g.expires_at>?2 AND l.expires_at>?2 AND p.state='active'",params![grant,now],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,String>(5)?,row.get::<_,String>(6)?,row.get::<_,String>(7)?,row.get::<_,String>(8)?,row.get::<_,i64>(9)?,row.get::<_,i64>(10)?))).optional()?;
             let (
                 principal,
                 login,
@@ -220,20 +219,10 @@ pub(super) fn credential_snapshot(
             })
         }
         Credential::ProvisionedIdentity(identity) => {
-            let row:Option<(String,String,String,String,String,String,String,String,String,Option<i64>)>=connection.query_row(
-                 "SELECT i.principal_id,i.deployment_id,i.instance_id,i.participant_id,i.kind,b.required_capabilities_json,b.optional_capabilities_json,b.provided_apis_json,b.resource_commitments_json,d.expires_at FROM auth_provisioned_identities i JOIN auth_principals p ON p.principal_id=i.principal_id JOIN auth_deployments d ON d.deployment_id=i.deployment_id AND d.participant_id=i.participant_id JOIN auth_instances r ON r.instance_id=i.instance_id AND r.deployment_id=i.deployment_id AND r.principal_id=i.principal_id JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id WHERE i.identity_key_id=?1 AND i.state='active' AND p.state='active' AND p.kind=i.kind AND d.state='active' AND r.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)",params![identity,now],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?))).optional()?;
-            let (
-                principal,
-                deployment,
-                instance,
-                participant,
-                kind,
-                _required,
-                _optional,
-                _provided,
-                _resources,
-                deadline,
-            ) = row.ok_or(AuthError::Denied)?;
+            let row:Option<(String,String,String,String,String,Option<i64>)>=connection.query_row(
+                  "SELECT i.principal_id,i.deployment_id,i.instance_id,i.participant_id,i.kind,d.expires_at FROM auth_provisioned_identities i JOIN auth_principals p ON p.principal_id=i.principal_id JOIN auth_deployments d ON d.deployment_id=i.deployment_id AND d.participant_id=i.participant_id JOIN auth_instances r ON r.instance_id=i.instance_id AND r.deployment_id=i.deployment_id AND r.principal_id=i.principal_id JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id WHERE i.identity_key_id=?1 AND i.state='active' AND p.state='active' AND p.kind=i.kind AND d.state='active' AND r.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)",params![identity,now],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?;
+            let (principal, deployment, instance, participant, kind, deadline) =
+                row.ok_or(AuthError::Denied)?;
             let projection =
                 super::native_projection::project_instance(connection, &instance, now)?;
             let (principal_kind, binding) = match kind.as_str() {
@@ -413,18 +402,6 @@ pub(super) fn loses_authority(
 }
 
 impl SqliteAuthorizationStore {
-    pub(crate) fn issue_authority(
-        &self,
-        admission: &AdmissionIdentity,
-        renew_session: Option<&str>,
-        now: i64,
-    ) -> Result<IssuedAuthority, AuthError> {
-        // Retirement must commit even when renewal returns a typed denial.
-        self.transaction(|connection| {
-            self.issue_authority_in_transaction(connection, admission, renew_session, now)
-        })?
-    }
-
     pub(super) fn issue_authority_in_transaction(
         &self,
         connection: &Connection,
@@ -612,7 +589,7 @@ impl SqliteAuthorizationStore {
                 }
                 let certificate = SignedProviderCertificate {
                     format: PROVIDER_CERTIFICATE_FORMAT_V1.into(),
-                    issuer_key_id: self.issuer().key_id,
+                    issuer_key_id: self.current_issuer(connection)?.key_id,
                     trellis_instance_id: self.settings.instance_id.clone(),
                     audience_nats_account: self.settings.account.clone(),
                     principal_id: current.principal_id.clone(),
@@ -630,9 +607,9 @@ impl SqliteAuthorizationStore {
                     critical: vec![],
                     signature: String::new(),
                 }
-                .sign(&self.signer)?;
+                .sign(&self.current_signer(connection)?)?;
                 provider.provider_certificate_digest = certificate.digest()?;
-                connection.execute("INSERT OR IGNORE INTO auth_provider_certificates VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![certificate.digest()?,deployment_id,instance_id,current.principal_id,provider.api_id,provider.generation.get(),provider.implementation_digest,self.issuer().key_id,json(&certificate.implemented_actions)?,json(&certificate)?.as_bytes(),now,expires_at])?;
+                connection.execute("INSERT OR IGNORE INTO auth_provider_certificates VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",params![certificate.digest()?,deployment_id,instance_id,current.principal_id,provider.api_id,provider.generation.get(),provider.implementation_digest,self.current_issuer(connection)?.key_id,json(&certificate.implemented_actions)?,json(&certificate)?.as_bytes(),now,expires_at])?;
                 enqueue_effect(
                     connection,
                     "authority_publish",
@@ -660,7 +637,7 @@ impl SqliteAuthorizationStore {
         let authority = sign_session_authority(
             UnsignedSessionAuthority {
                 format: SESSION_AUTHORITY_FORMAT_V1.into(),
-                issuer_key_id: self.issuer().key_id,
+                issuer_key_id: self.current_issuer(connection)?.key_id,
                 trellis_instance_id: self.settings.instance_id.clone(),
                 audience_nats_account: self.settings.account.clone(),
                 principal_id: current.principal_id.clone(),
@@ -683,7 +660,7 @@ impl SqliteAuthorizationStore {
                 extensions,
                 critical: vec![],
             },
-            &self.signer,
+            &self.current_signer(connection)?,
         )?;
         let digest = authority.digest()?;
         // Validate the actual signed first-response envelope before committing
@@ -693,7 +670,7 @@ impl SqliteAuthorizationStore {
         trellis_protocol::sign_admission_context(
             trellis_protocol::AdmissionContext {
                 format: trellis_protocol::ADMISSION_GET_DOMAIN_V1.into(),
-                issuer_key_id: self.issuer().key_id,
+                issuer_key_id: self.current_issuer(connection)?.key_id,
                 trellis_instance_id: self.settings.instance_id.clone(),
                 audience_nats_account: self.settings.account.clone(),
                 runtime_id: admission.runtime_id.clone(),
@@ -712,14 +689,14 @@ impl SqliteAuthorizationStore {
                 issued_at: now,
                 expires_at: expires_at.min(now.saturating_add(30)),
             },
-            &self.signer,
+            &self.current_signer(connection)?,
         )?;
         connection.execute(
             "INSERT OR IGNORE INTO auth_session_authorities VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",
             params![
                 digest,
                 session,
-                self.issuer().key_id,
+                self.current_issuer(connection)?.key_id,
                 json(&authority)?.as_bytes(),
                 json(&authority.unsigned.apis)?,
                 now,
@@ -727,7 +704,7 @@ impl SqliteAuthorizationStore {
                 maximum_acceptance
             ],
         )?;
-        connection.execute("UPDATE auth_authorization_issuers SET maximum_acceptance_deadline=max(maximum_acceptance_deadline,?1) WHERE key_id=?2",params![maximum_acceptance,self.issuer().key_id])?;
+        connection.execute("UPDATE auth_authorization_issuers SET maximum_acceptance_deadline=max(maximum_acceptance_deadline,?1) WHERE key_id=?2",params![maximum_acceptance,self.current_issuer(connection)?.key_id])?;
         enqueue_effect(
             connection,
             "authority_publish",
@@ -735,11 +712,7 @@ impl SqliteAuthorizationStore {
             None,
             now,
         )?;
-        Ok(Ok(IssuedAuthority {
-            authority,
-            digest,
-            optional_unavailable: current.optional_unavailable,
-        }))
+        Ok(Ok(IssuedAuthority { authority, digest }))
     }
 
     pub(super) fn catalog_in_transaction(
@@ -749,26 +722,6 @@ impl SqliteAuthorizationStore {
     ) -> Result<trellis_protocol::SignedCatalogSnapshot, AuthError> {
         let bytes:Vec<u8>=connection.query_row("SELECT s.signed_bytes FROM auth_accepted_apis a JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id AND s.generation=a.generation AND s.accepted_revision=a.accepted_revision WHERE a.api_id=?1",[api],|row|row.get(0))?;
         Ok(serde_json::from_slice(&bytes)?)
-    }
-
-    pub(crate) fn resolve_authority(
-        &self,
-        digest: &str,
-    ) -> Result<SignedSessionAuthority, AuthError> {
-        self.transaction(|connection| {
-            let bytes: Vec<u8> = connection
-                .query_row(
-                    "SELECT signed_bytes FROM auth_session_authorities WHERE context_digest=?1",
-                    [digest],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or(AuthError::NotFound)?;
-            Ok(trellis_protocol::parse_session_authority(
-                &bytes,
-                trellis_protocol::MAX_SESSION_AUTHORITY_BYTES,
-            )?)
-        })
     }
 
     /// Read the persisted logical lifecycle and its immutable retirement evidence
@@ -849,35 +802,67 @@ impl SqliteAuthorizationStore {
         })
     }
 
-    /// Rotation is authenticated by the current pin; the new private key remains
-    /// caller-owned and must be installed in the runtime before new issuance.
+    /// Persist successor custody before atomically advancing issuer trust.
     pub(crate) fn rotate_issuer(
         &self,
         identity: &Mutation,
-        next_public_key: &str,
+        input: &trellis_runtime_apis::types::AuthIssuerRotateRequest,
         now: i64,
     ) -> Result<SignedIssuerRotation, AuthError> {
-        self.mutate(identity,"issuer.rotate",&next_public_key,now,|connection| {
-            Self::require_privilege(connection,&identity.actor,"privileges.manage")?;
-            self.current_signer(connection)?;
-            let bytes=URL_SAFE_NO_PAD.decode(next_public_key).map_err(|_|AuthError::Denied)?;
-            let raw:[u8;32]=bytes.try_into().map_err(|_|AuthError::Denied)?;
-            let key=VerifyingKey::from_bytes(&raw).map_err(|_|AuthError::Denied)?;
-            if key.is_weak() || URL_SAFE_NO_PAD.encode(raw)!=next_public_key {return Err(AuthError::Denied);}
-            let next_key_id=URL_SAFE_NO_PAD.encode(Sha256::digest(raw));
-            if next_key_id==self.issuer().key_id {return Err(AuthError::Conflict);}
-            let sequence:u64=connection.query_row("SELECT coalesce(max(sequence),0)+1 FROM auth_issuer_rotations",[],|row|row.get(0))?;
-            let rotation=SignedIssuerRotation{format:ISSUER_ROTATION_FORMAT_V1.into(),trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),sequence:U64s::new(sequence),previous_key_id:self.issuer().key_id,next_key_id:next_key_id.clone(),next_public_key:next_public_key.into(),activated_at:now,previous_retired_at:now,extensions:Default::default(),critical:vec![],signature:String::new()}.sign(&self.signer)?;
-            connection.execute("UPDATE auth_authorization_issuers SET is_current=0,state='retired',retired_at=?1 WHERE is_current=1",[now])?;
-            connection.execute("INSERT INTO auth_authorization_issuers(key_id,public_key,is_current,state,activated_at,maximum_acceptance_deadline,created_at) VALUES(?1,?2,1,'active',?3,?3,?3)",params![next_key_id,next_public_key,now])?;
-            connection.execute("INSERT INTO auth_issuer_rotations VALUES(?1,?2,?3,?4,?5,?6,?7)",params![sequence,rotation.previous_key_id,rotation.next_key_id,self.settings.instance_id,self.settings.account,json(&rotation)?.as_bytes(),now])?;
-            enqueue_effect(connection,"authority_publish",&serde_json::json!({"kind":"rotation","sequence":sequence}),None,now)?;
-            Ok(rotation)
+        // Authorization applies to replays too; an old request is not a privilege.
+        self.transaction(|connection| {
+            Self::require_privilege(connection, &identity.actor, "privileges.manage")?;
+            self.mutate_in_transaction(
+                connection,
+                identity,
+                "issuer.rotate",
+                input,
+                now,
+                |connection| {
+                    let signer = self.current_signer(connection)?;
+                    let previous_key_id = self.current_issuer(connection)?.key_id;
+                    if previous_key_id != input.expected_current_key_id.as_ref() {
+                        return Err(AuthError::Conflict);
+                    }
+                    let mut seed = [0u8; 32];
+                    getrandom::fill(&mut seed).map_err(|_| AuthError::Unavailable)?;
+                    let next = SigningKey::from_bytes(&seed);
+                    let next_public_key = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
+                    let next_key_id = URL_SAFE_NO_PAD.encode(Sha256::digest(next.verifying_key().as_bytes()));
+                    self.persist_successor(&next_key_id, &seed)?;
+                    let sequence: u64 = connection.query_row(
+                        "SELECT coalesce(max(sequence),0)+1 FROM auth_issuer_rotations",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    let rotation = SignedIssuerRotation {
+                        format: ISSUER_ROTATION_FORMAT_V1.into(),
+                        trellis_instance_id: self.settings.instance_id.clone(),
+                        audience_nats_account: self.settings.account.clone(),
+                        sequence: U64s::new(sequence),
+                        previous_key_id,
+                        next_key_id: next_key_id.clone(),
+                        next_public_key: next_public_key.clone(),
+                        activated_at: now,
+                        previous_retired_at: now,
+                        extensions: Default::default(),
+                        critical: vec![],
+                        signature: String::new(),
+                    }.sign(&signer)?;
+                    connection.execute("UPDATE auth_authorization_issuers SET is_current=0,state='retired',retired_at=?1 WHERE is_current=1", [now])?;
+                    connection.execute("INSERT INTO auth_authorization_issuers(key_id,public_key,is_current,state,activated_at,maximum_acceptance_deadline,created_at) VALUES(?1,?2,1,'active',?3,?3,?3)", params![next_key_id, next_public_key, now])?;
+                    connection.execute("INSERT INTO auth_issuer_rotations VALUES(?1,?2,?3,?4,?5,?6,?7)", params![sequence, rotation.previous_key_id, rotation.next_key_id, self.settings.instance_id, self.settings.account, json(&rotation)?.as_bytes(), now])?;
+                    enqueue_effect(
+                        connection,
+                        "authority_publish",
+                        &serde_json::json!({"kind": "rotation", "sequence": sequence}),
+                        None,
+                        now,
+                    )?;
+                    Ok(rotation)
+                },
+            )
         })
-    }
-
-    pub(crate) fn resolve_issuer(&self, key_id: &str) -> Result<AuthorityIssuerKey, AuthError> {
-        self.transaction(|connection| Self::resolve_issuer_in(connection, key_id))
     }
 
     pub(super) fn resolve_issuer_in(

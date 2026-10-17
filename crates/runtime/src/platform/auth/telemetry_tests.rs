@@ -7,7 +7,8 @@ use super::{fixture, SqliteAuthorizationStore, NOW};
 #[test]
 fn read_only_snapshots_track_issued_authority_effects_and_completion() {
     let f = fixture();
-    f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    crate::platform::auth::phase_two_tests::issue_authority(&f.store, &f.admission, None, NOW)
+        .unwrap();
     let reader = SqliteAuthorizationStore::from_connection(
         Connection::open_with_flags(
             f.directory.path().join("platform.db"),
@@ -16,6 +17,7 @@ fn read_only_snapshots_track_issued_authority_effects_and_completion() {
         .unwrap(),
         f.store.signer.clone(),
         f.store.settings.clone(),
+        f.store.custody_directory.clone(),
     )
     .unwrap();
     let snapshot = reader.telemetry_snapshot(NOW + 10).unwrap();

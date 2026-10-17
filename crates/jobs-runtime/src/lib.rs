@@ -15,9 +15,6 @@ pub mod telemetry;
 mod watch;
 pub mod worker_presence;
 
-#[cfg(test)]
-mod test_nats;
-
 pub use bindings::{JobKeySnapshot, JobResourceBinding, JobResourceResolver};
 pub use projector::{projector_consumer_name, start_jobs_projector, JobsProjectorHandle};
 pub use query::{jobs_admin_resources, JobsAdminResources, JobsQuery, JobsQueryError};

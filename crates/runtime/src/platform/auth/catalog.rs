@@ -290,7 +290,7 @@ impl SqliteAuthorizationStore {
             }
             let mut snapshot = SignedCatalogSnapshot {
                 format: CATALOG_SNAPSHOT_FORMAT_V1.into(),
-                issuer_key_id: self.issuer().key_id,
+                issuer_key_id: self.current_issuer(connection)?.key_id,
                 trellis_instance_id: self.settings.instance_id.clone(),
                 audience_nats_account: self.settings.account.clone(),
                 api_id: review.api_id.clone(),
@@ -423,7 +423,7 @@ impl SqliteAuthorizationStore {
                 let (scope, _) = apply_policy(connection, edit, now)?;
                 Self::policy_changed(connection, &scope, now)?;
             }
-            let snapshot = snapshot.sign(&self.signer)?;
+            let snapshot = snapshot.sign(&self.current_signer(connection)?)?;
             connection.execute(
                 "INSERT INTO auth_api_verification_snapshots VALUES(?1,?2,?3,?4,?5,?6,?7)",
                 params![
@@ -431,7 +431,7 @@ impl SqliteAuthorizationStore {
                     review.api_id,
                     generation,
                     revision,
-                    self.issuer().key_id,
+                    self.current_issuer(connection)?.key_id,
                     json(&snapshot)?.as_bytes(),
                     now
                 ],

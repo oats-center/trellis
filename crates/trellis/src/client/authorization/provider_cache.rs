@@ -339,11 +339,7 @@ mod tests {
             )
             .is_err());
         let verified = owner
-            .verify_authority(
-                &authority,
-                &issuer,
-                SessionAuthorityPurpose::HistoricalEvent,
-            )
+            .verify_authority(authority, &issuer, SessionAuthorityPurpose::HistoricalEvent)
             .unwrap();
         let raw = stream.get_raw_message(first.sequence).await.unwrap();
         let retained: SessionEvent =
@@ -367,7 +363,7 @@ mod tests {
                 payload,
                 policy: &policy,
                 known_revoked: false,
-                catalog: &catalog,
+                catalog,
                 catalog_issuer: &issuer,
                 action: &action,
                 original_publication: Some(publication),
@@ -447,11 +443,7 @@ mod tests {
             )
             .unwrap();
         let revoked = owner
-            .verify_authority(
-                &authority,
-                &issuer,
-                SessionAuthorityPurpose::HistoricalEvent,
-            )
+            .verify_authority(authority, &issuer, SessionAuthorityPurpose::HistoricalEvent)
             .unwrap();
         assert!(check(revoked, &retained, &retained_proof, &original, &raw.payload).is_err());
         nats.stop().unwrap();
@@ -778,6 +770,27 @@ pub struct HistoricalEventVerificationInput<'a> {
     pub original_publication: &'a OriginalEventPublication,
     /// Fresh issuer-authenticated status for this exact logical session.
     pub status: &'a VerifiedIssuerMetadata,
+}
+
+/// Reply evidence bound to the exact request still awaiting an authenticated result.
+#[derive(Debug)]
+pub struct ResponseVerificationInput<'a> {
+    /// Original signed request awaiting this response.
+    pub pending_request: &'a SessionRequest,
+    /// Digest retained when that request was signed.
+    pub pending_request_digest: &'a [u8; 32],
+    /// Generated action selected by the original request.
+    pub action: &'a CatalogActionIdentity,
+    /// Required provider deployment, when ownership pins the response.
+    pub expected_deployment_id: Option<&'a str>,
+    /// Actual broker subject on which the response arrived.
+    pub received_subject: &'a str,
+    /// Response metadata decoded from the received headers.
+    pub response: &'a SessionResponse,
+    /// Exact received response bytes, including errors.
+    pub payload: &'a [u8],
+    /// Provider signature over the response and payload.
+    pub proof: &'a SessionResponseProof,
 }
 
 /// A retained peer authority and its pinned immutable cache entry.
@@ -2074,15 +2087,18 @@ impl AuthorizationOwner {
     pub async fn verify_response<'a>(
         &self,
         transport: &async_nats::Client,
-        pending_request: &SessionRequest,
-        pending_request_digest: &[u8; 32],
-        action: &CatalogActionIdentity,
-        expected_deployment_id: Option<&str>,
-        received_subject: &str,
-        response: &'a SessionResponse,
-        payload: &'a [u8],
-        proof: &SessionResponseProof,
+        input: ResponseVerificationInput<'a>,
     ) -> Result<VerifiedAuthorizationResponse<'a>, TrellisClientError> {
+        let ResponseVerificationInput {
+            pending_request,
+            pending_request_digest,
+            action,
+            expected_deployment_id,
+            received_subject,
+            response,
+            payload,
+            proof,
+        } = input;
         let provider = self
             .resolve_authority(transport, &response.provider_authority_digest)
             .await?;

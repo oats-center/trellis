@@ -1,5 +1,9 @@
 # Trellis
 
+Generated SDKs are disposable build artifacts, not maintained source. Commit native
+IDL, manifests, and dependency locks; run `trellis install` before compiling
+project-local consumers. Trellis-owned Rust bindings build in Cargo `OUT_DIR`.
+
 Console and the isolated OAuth listener require HTTPS outside explicit loopback
 development. The HTTP insecure-origin allowlist does not relax that requirement.
 
@@ -131,19 +135,21 @@ match; neither catalog grants additional rights to the other party.
 This unreleased Revision 7 branch implements authoritative Auth capability
 evaluation, reviewed catalog acceptance, logical authorization sessions, signed
 verification material, and durable retirement effects. OAuth/Callout admission
-and SDK/provider migration are still in progress; do not adapt applications to
-the former browser-bind or GrantBinding protocols. Use a released matching
-version until the complete cutover is available.
+and SDK/provider transports use this model; do not adapt applications to
+the former browser-bind or GrantBinding protocols. Use matching runtime,
+SDK, and generated package versions.
 
 Revision 7's OAuth components use a separate, required login/consent portal
 from Console. Their origins must differ; hostnames need not differ, but sharing
 a hostname emits a security warning because cookies are not port-scoped. TLS
 is required outside explicitly configured loopback development. Installation
 identity and the independently provisioned OAuth storage key survive restarts
-and issuer rotation. Browser credential custody uses nonextractable keys and
+and issuer rotation. Admin `Issuers.Rotate` durably creates successor custody
+and a signed trust-chain link; back up the issuer seed's sibling `.keys`
+directory with the Auth database. Missing committed keys stop startup.
+Browser credential custody uses nonextractable keys and
 cross-tab refresh ownership; native custody uses owner-only files and a
-cross-process family lock. These components do not mean the unfinished
-integrated SDK cutover has passed its production acceptance gate.
+cross-process family lock.
 
 Node native applications use `@oatscenter/trellis/native` for Device Code OAuth,
 durable POSIX SQLite custody, and generated native callers. This entrypoint is
@@ -300,11 +306,12 @@ retained publications, including cold replay. Compromised issuers remain unusabl
 5. Connect through that participant's supported runtime API. Use generated calls
    and resolved resource handles; do not reconstruct Trellis transport metadata.
 
-Commit authored IDL, `trellis.toml`, and `trellis.lock`. Commit generated
-packages when clones should build without the Trellis CLI or source-package
-cache; regenerate rather than hand-edit them. Configure `[generate.rust].output`
-and/or `[generate.typescript].output`. Detection uses root Cargo or npm
-manifests; no marker means no language package. Package version equals the
+Commit authored IDL, `trellis.toml`, and `trellis.lock`, not generated
+implementations. Run `trellis install` before local consumers build, and package
+generated code when distributing consumers. Configure `[generate.rust].output`
+and/or `[generate.typescript].output`. Explicit targets are authoritative;
+without them, detection uses root Cargo or npm manifests. With neither explicit
+targets nor markers, no language package is emitted. Package version equals the
 source package version. TypeScript packages contain executable ESM JavaScript
 and declarations; Rust packages are ordinary path-dependency crates. Both use
 published runtime dependencies matching the CLI. No project-local installation

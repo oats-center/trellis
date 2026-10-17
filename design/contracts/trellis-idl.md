@@ -33,7 +33,8 @@ Generation targets are selected explicitly: a configured `[generate.rust]` or
 `[generate.typescript]` emits that package even when the project root has no
 matching toolchain file, so an app authored in one language can emit a
 projection in the other (for example a TypeScript app participant that needs a
-Rust crate for a Rust test harness). With no target configured, a single
+Rust crate for a Rust test harness). Explicit configuration selects only the named
+outputs, even if another toolchain file exists. With no target configured, a single
 detected language defaults to `trellis`; multiple targets require explicit
 `output` paths.
 
@@ -187,12 +188,17 @@ The package digest is base64url SHA-256 of semantic canonical UTF-8 source.
 Package evidence contains the complete dependency closure exactly once with
 presentation canonical source. The server independently resolves it and rejects
 missing/extra packages, cycles, edge/version mismatches, or digest mismatches.
+Successful compilations may be reused from a bounded process-local cache only
+for identical complete evidence, including presentation source and dependencies;
+a claimed semantic digest alone is not a cache key. This reuses immutable
+compiler output, never policy, resource eligibility, or authorization decisions.
 Generated Rust constructors and runtime descriptors are compiler output, not
 contract-as-code builders.
 
 Published OCI source bundles contain the manifest, listed source, and frozen
-resolution metadata—not canonical API JSON. Generated language packages may be
-committed when consumers must build without the CLI/cache; never hand-edit them.
+resolution metadata—not canonical API JSON. Generated implementations are
+disposable build/release artifacts, not committed source; run generation before
+building local consumers and package generated code when distributing them.
 
 ## Pagination
 

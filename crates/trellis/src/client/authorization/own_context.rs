@@ -458,7 +458,6 @@ impl AuthorizationContextCache {
                 .ok_or_else(unavailable)?
                 .transport_authorization
                 .clone(),
-            runtime: self.runtime.clone(),
         })
     }
 
@@ -479,25 +478,11 @@ impl AuthorizationContextCache {
             context_digest: digest.to_owned(),
             authorization_session_id: body.authorization_session_id.clone(),
             policy: candidate.transport.clone(),
-            runtime: self.runtime.clone(),
             not_before: body.not_before,
             expires_at: body.expires_at,
             corrected_now_seconds: self.corrected_now_seconds()?,
-            server_clock_offset_ms: 0,
             instance: candidate.instance.clone(),
         })
-    }
-
-    pub(crate) fn candidate_digest_locked(
-        &self,
-        _transition: &OwnTransitionGuard<'_>,
-    ) -> Result<String, TrellisClientError> {
-        self.candidate
-            .read()
-            .map_err(|_| unavailable())?
-            .as_ref()
-            .map(|candidate| candidate.authority.digest().to_owned())
-            .ok_or_else(unavailable)
     }
 
     /// Return the currently verified own signed authority.
@@ -582,11 +567,9 @@ pub(crate) struct OwnCandidateTransportSnapshot {
     pub(crate) context_digest: String,
     pub(crate) authorization_session_id: String,
     pub(crate) policy: trellis_protocol::TransportAuthorizationV1,
-    pub(crate) runtime: AuthorizationRuntimeBinding,
     pub(crate) not_before: i64,
     pub(crate) expires_at: i64,
     pub(crate) corrected_now_seconds: i64,
-    pub(crate) server_clock_offset_ms: i64,
     pub(crate) instance: Arc<()>,
 }
 

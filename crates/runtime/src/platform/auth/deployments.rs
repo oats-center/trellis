@@ -123,9 +123,9 @@ impl BuiltinProviderSource {
         connection: &rusqlite::Connection,
         now: i64,
     ) -> Result<ProvisionedDeployment, AuthError> {
-        let row:Option<(String,String,String,String,String,String,u64,u64,String)>=connection.query_row(
+        let row=connection.query_row(
             "SELECT p.principal_id,p.deployment_id,p.instance_id,p.participant_id,p.state,d.state,i.installed_revision,b.installed_revision,s.participant_digest FROM auth_provisioned_identities p JOIN auth_deployments d USING(deployment_id) JOIN auth_instances i ON i.instance_id=p.instance_id AND i.deployment_id=p.deployment_id AND i.principal_id=p.principal_id JOIN auth_deployment_bindings b ON b.deployment_id=p.deployment_id JOIN auth_installed_participants s ON s.participant_id=p.participant_id AND s.revision=i.installed_revision JOIN auth_principals a ON a.principal_id=p.principal_id WHERE p.identity_key_id=?1 AND p.identity_public_key=?2 AND a.state='active' AND i.state='active' AND d.participant_id=p.participant_id AND (d.expires_at IS NULL OR d.expires_at>?3)",
-            params![self.key_id,self.public_key,now],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))).optional()?;
+            params![self.key_id,self.public_key,now],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,String>(5)?,row.get::<_,u64>(6)?,row.get::<_,u64>(7)?,row.get::<_,String>(8)?))).optional()?;
         if let Some((
             principal_id,
             deployment_id,
@@ -170,22 +170,6 @@ impl BuiltinProviderSource {
 }
 
 impl SqliteAuthorizationStore {
-    /// Read an already provisioned generated provider in one read-only snapshot.
-    /// No administrator role, idempotency mutation, or state repair is performed.
-    pub(crate) fn lookup_builtin_provider<C: trellis_rs::generated::ParticipantDescriptor>(
-        &self,
-        seed: &str,
-        now: i64,
-    ) -> Result<ProvisionedDeployment, AuthError> {
-        let source = BuiltinProviderSource::from_seed::<C>(seed)?;
-        let mut connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        let transaction =
-            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
-        let result = source.lookup::<C>(&transaction, now)?;
-        transaction.commit()?;
-        Ok(result)
-    }
-
     /// Lease-owning host startup installs the bundled native provider through
     /// ordinary catalog acceptance and deployment approval. Existing identities
     /// are checked, never re-enabled or reassigned by startup.
@@ -215,14 +199,14 @@ impl SqliteAuthorizationStore {
             return Ok(existing);
         }
         let admin: String = self.transaction(|connection| {
-            Ok(connection
+            connection
                 .query_row(
                     "SELECT principal_id FROM auth_bootstrap_administrator WHERE singleton=1",
                     [],
                     |row| row.get(0),
                 )
                 .optional()?
-                .ok_or(AuthError::Denied)?)
+                .ok_or(AuthError::Denied)
         })?;
         let mut expected_api_generations = BTreeMap::new();
         for api in C::IMPLEMENTED_API_IDS {

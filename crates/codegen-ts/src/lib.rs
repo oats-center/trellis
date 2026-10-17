@@ -2298,7 +2298,7 @@ mod tests {
     use trellis_idl::SourceUnit;
 
     fn graph(source: &str) -> PackageGraph {
-        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
+        let runtime = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../builtin-contracts");
         let manifest = trellis_idl::project::read_manifest(&runtime.join("trellis.toml")).unwrap();
         let dependency = trellis_idl::compile_project(
             &manifest,

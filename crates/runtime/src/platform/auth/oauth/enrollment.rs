@@ -219,7 +219,7 @@ fn attach(
         let live: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_device_activation_reviews r JOIN auth_instances i USING(instance_id) JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id JOIN auth_deployments d ON d.deployment_id=i.deployment_id WHERE r.review_id=?1 AND r.expires_at>?2 AND i.state='active' AND d.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2) AND i.installed_revision=b.installed_revision AND i.installed_revision=json_extract(r.payload_json,'$.installedRevision'))",params![review_id,now],|row|row.get(0))?;
         if !live { return Err(AuthError::Denied); }
         let (required,optional,approved,expiry): (String,String,String,i64) = connection.query_row("SELECT g.required_capabilities_json,g.optional_capabilities_json,g.approved_capabilities_json,g.expires_at FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) JOIN auth_principals p ON p.principal_id=g.principal_id WHERE g.oauth_grant_id=?1 AND g.principal_id=?2 AND g.client_id=?3 AND g.binding_kind='native' AND g.revoked_at IS NULL AND g.expires_at>?4 AND l.revoked_at IS NULL AND l.expires_at>?4 AND p.state='active' AND EXISTS(SELECT 1 FROM auth_oauth_families f WHERE f.oauth_grant_id=g.oauth_grant_id AND f.revoked_at IS NULL AND f.expires_at>?4)",params![grant,identity.actor,client.as_ref(),now],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?.ok_or(AuthError::Denied)?;
-        validate_selection(connection,client.as_ref(),&serde_json::from_str(&required)?,&serde_json::from_str(&optional)?)?;
+        validate_selection(connection,client.as_ref(),&serde_json::from_str::<Vec<String>>(&required)?,&serde_json::from_str::<Vec<String>>(&optional)?)?;
         let current = super::super::policy::evaluate(connection, &super::super::Credential::OAuthGrant(grant.clone()), now)?;
         if !current.required_missing.is_empty() { return Err(AuthError::RequiredMissing); }
         let old: Option<(String,u64)> = connection.query_row("SELECT state,revision FROM auth_device_companions WHERE instance_id=?1",[&instance],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
@@ -234,8 +234,8 @@ fn attach(
 pub(in crate::platform::auth) fn validate_selection(
     connection: &Connection,
     client: &str,
-    required: &Vec<String>,
-    optional: &Vec<String>,
+    required: &[String],
+    optional: &[String],
 ) -> Result<(), AuthError> {
     let metadata: Option<String> = connection
         .query_row(

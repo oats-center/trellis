@@ -1,17 +1,11 @@
 # Design: Trellis Authentication And Authorization
 
-Status: Revision 7. The authoritative Auth core is implemented through Phase 2.
-Phase 3 includes OAuth storage, local/OIDC login, consent, device authorization,
-signed admission, isolated portal hosting, TLS, and browser/native custody
-components. Production startup, Callout/ACL lifecycle wiring, native CLI flows,
-and complete legacy-path removal remain unfinished; component verification does
-not establish production deployment readiness. Phase 4 has started with shared
-Rust/WASM provider-response and issuer-metadata verification, and SDK signing
-of catalog-stamped request/event transcripts with retained request digests.
-These primitives are not yet wired through all application transports. Shared
-SDK authority ownership, provider/resource integration, and the Console cutover
-remain unfinished. This is a review checkpoint, not phase acceptance or a
-release. This is an unreleased clean break,
+Status: Revision 7. Phase B functional implementation and acceptance are complete,
+including production startup, Callout/ACL lifecycle wiring, OAuth browser/native
+custody, native CLI flows, shared SDK authority ownership, provider/resource
+integration, and the Console cutover. Phase C is completing strict Check,
+build-owned generation, documentation reconciliation, and legacy-path removal.
+This is not a release. This is an unreleased clean break,
 not a compatibility path for GrantBinding or the former browser bind protocol.
 
 ## Authority Ownership
@@ -59,8 +53,8 @@ existing material. The OAuth adapter refuses missing, malformed, symlinked, or
 non-private key files and authenticates existing encrypted OAuth material before
 accepting new writes. Key files must be owned by the process user, have no other
 hard links, and fit the bounded encoded-key format. Opening refuses symlinks
-without following them. Startup never generates a replacement key. Production
-startup wiring remains part of the Phase 3 cutover.
+without following them. Production startup uses this custody loader and never
+generates a replacement key.
 
 ### Authorization HTTP Boundary
 
@@ -539,11 +533,25 @@ trusted chronology, and the replay stream's newer timestamp is never substituted
 Issuer rotation/revocation requires `privileges.manage`, not an additional
 `principals.manage` privilege. Other hard-root revocation retains its own
 `principals.manage` gate.
-The current `Issuers.Rotate` RPC request contains only the expected current key
-and replay key, not successor custody or an installation mechanism. Until an
-operator-owned custody source is supplied, a valid request returns the declared
-`issuer_custody_required` domain failure; it never creates replacement root
-custody.
+`Issuers.Rotate` requires `privileges.manage`, the expected current issuer key,
+and an idempotency key. Auth generates successor signing custody locally; private
+keys never enter the RPC. Before committing a rotation, Auth creates a private
+`0700` sibling directory by replacing the configured issuer seed file's extension
+with `.keys`, writes a new content-addressed `<keyId>.key` file with `0600`
+permissions, and durably flushes the file and directory. Existing files are never
+overwritten and unsafe existing directories are rejected rather than chmodded.
+The old issuer signs the successor link. Retirement, successor activation, the
+signed chain link, its publication intent, and the idempotent result commit in one
+SQLite transaction. Every signer is selected from that transaction's current
+issuer, so concurrent issuance cannot mix issuer state and signing custody.
+Replays return the same transition without generating another key; stale expected
+keys conflict. A precommit failure leaves the old issuer active, with at most an
+unused key file. After commit, startup selects the database-current key and fails
+closed if its custody is missing or invalid; it never falls back to the bootstrap
+key or creates replacement custody. Backups must include the database, configured
+bootstrap seed, successor-key directory, and the independent OAuth storage key.
+Rotation does not change that OAuth encryption key, revoke existing logical
+sessions, or invalidate historical evidence signed by a merely retired issuer.
 
 Already admitted Trellis connections may publish bounded public verification
 lookups and request their own context for one exact physical attachment. The
@@ -615,14 +623,16 @@ The host must start Callout, ContextGet, and registry publication before invokin
 that helper, and own its returned service runtime. Its generated
 `Authority.Status` handler projects the persisted logical lifecycle and retained
 signed cutoff. The SDK's separate historical issuer-metadata exchange is not
-this typed management RPC. Host integration and runtime-owned operation
-repository/staging resource provisioning remain unfinished.
+this typed management RPC. Operation repositories and staging stores participate
+in deployment resource materialization and are committed before provider
+admission. Missing previously committed storage fails closed rather than being
+recreated empty.
 
 ## Source Boundaries
 
 Core implementation: `crates/runtime/src/platform/auth/`. Pure signed-authority
 and verification-material cryptography: `crates/protocol/src/authorization.rs`
 and `crates/protocol/src/catalog.rs`. Native Auth contract authoring:
-`crates/runtime/trellis/src/apis/trellis_auth_v1/`. Generated clients and
+`crates/builtin-contracts/src/builtin_source/auth.trellis`. Generated clients and
 current source, not the retired HTTP/RPC documentation, define exact APIs during
 cutover.

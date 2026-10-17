@@ -350,13 +350,9 @@ pub(super) fn complete_link(
         if action.target != login.principal_id || action.payload.actor != login.principal_id || action.id != flow.authorization_transaction || action.provider.as_deref() != Some(&flow.provider.provider_id) || action.payload.provider_revision != Some(flow.provider.revision) || verified.expires_at <= now || !action.payload.handoff.as_ref().is_some_and(|handoff| handoff.used && handoff.session == flow.session_id) { return Err(AuthError::Denied); }
         let live: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_portal_sessions s JOIN auth_login_sessions l ON l.login_session_id=s.login_session_id JOIN auth_principals p ON p.principal_id=l.principal_id JOIN auth_oidc_providers o ON o.provider_id=?1 WHERE s.portal_session_id=?2 AND l.principal_id=?3 AND l.revoked_at IS NULL AND l.expires_at>?4 AND s.expires_at>?4 AND p.state='active' AND o.state='active' AND o.revision=?5 AND s.cookie_hash=?6 AND s.csrf_hash=?7)", params![flow.provider.provider_id, login.session_id, action.target, now, flow.provider.revision, hash(cookie), hash(csrf)], |row| row.get(0))?;
         if !live { return Err(AuthError::Denied); }
-        let existing: Option<String> = connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", params![flow.provider.provider_id, verified.subject], |row| row.get(0)).optional()?;
-        if existing.as_ref().is_some_and(|principal| principal != &action.target) { return Err(AuthError::Conflict); }
-        if existing.is_none() {
-            connection.execute("INSERT INTO auth_provider_identities(identity_id,provider,provider_subject,principal_id,linked_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?5)", params![id(), flow.provider.provider_id, verified.subject, action.target, now])?;
-        }
+        let already_linked = SqliteAuthorizationStore::link_oidc_identity_in(connection, &action.target, &flow.provider.provider_id, &verified.subject, now)?;
         consume(connection, &action.id, now)?;
-        let audit = serde_json::json!({"flowId":action.id,"providerId":flow.provider.provider_id,"identityAlreadyLinked":existing.is_some()});
+        let audit = serde_json::json!({"flowId":action.id,"providerId":flow.provider.provider_id,"identityAlreadyLinked":already_linked});
         let identity = Mutation { actor: login.principal_id, request_id: flow.request_id.clone(), request_digest: digest(&audit)? };
         connection.execute("INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,target_id,data_json,created_at) VALUES(?1,?2,'account.identityLink.complete',?3,?4,?5)", params![id(),identity.actor,action.target,serde_json::to_string(&audit)?,now])?;
         Ok(())
@@ -590,8 +586,7 @@ pub(super) async fn submit(
                 &cookie,
                 &csrf,
                 &new_cookie,
-                &username,
-                &password,
+                (&username, &password),
                 &id(),
                 now(),
             )?;
@@ -707,8 +702,7 @@ mod tests {
                 &guest.cookie,
                 &guest.csrf,
                 &self::token().unwrap(),
-                "operator",
-                "administrator setup password",
+                ("operator", "administrator setup password"),
                 &id(),
                 NOW + 2,
             )
@@ -765,8 +759,7 @@ mod tests {
                 &guest.cookie,
                 &guest.csrf,
                 &token().unwrap(),
-                "admin",
-                "a strong bootstrap password",
+                ("admin", "a strong bootstrap password"),
                 &id(),
                 now
             ),
@@ -777,8 +770,7 @@ mod tests {
                 &guest.cookie,
                 &guest.csrf,
                 &token().unwrap(),
-                "admin",
-                "replacement administrator password",
+                ("admin", "replacement administrator password"),
                 &id(),
                 now,
             )
@@ -803,7 +795,14 @@ mod tests {
         };
         let now = now();
         authority
-            .register_oidc_provider(&mutation(&f.admin, &registration), &registration, now)
+            .transaction(|connection| {
+                authority.register_oidc_provider_in_transaction(
+                    connection,
+                    &mutation(&f.admin, &registration),
+                    &registration,
+                    now,
+                )
+            })
             .unwrap();
         let guest = authority.create_portal_session(now).unwrap();
         let cookie = token().unwrap();
@@ -812,8 +811,7 @@ mod tests {
                 &guest.cookie,
                 &guest.csrf,
                 &cookie,
-                "admin",
-                "a strong bootstrap password",
+                ("admin", "a strong bootstrap password"),
                 &id(),
                 now,
             )
@@ -825,8 +823,7 @@ mod tests {
                 &other_guest.cookie,
                 &other_guest.csrf,
                 &other_cookie,
-                "admin",
-                "a strong bootstrap password",
+                ("admin", "a strong bootstrap password"),
                 &id(),
                 now,
             )

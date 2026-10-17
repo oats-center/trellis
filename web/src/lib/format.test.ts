@@ -3,10 +3,6 @@ import { test } from "node:test";
 
 import { compactDuration, errorMessage } from "./format.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
-
 test("compactDuration preserves millisecond resolution", () => {
   equal(compactDuration(0), "0ms");
   equal(compactDuration(243.4), "243ms");

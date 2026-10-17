@@ -249,7 +249,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         .user;
     let setup_flow = auth
         .users_password_reset_create(&auth_types::AuthPasswordResetCreateRequest {
-            user_id: user.principal.principal_id.clone(),
+            user_id: user.principal.principal_id,
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })

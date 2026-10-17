@@ -316,11 +316,12 @@ mod tests {
             "[workspace.package]\nversion = \"0.100.0\"\n",
         )
         .expect("write workspace manifest");
-        for (project, name) in [
-            ("crates/runtime", "trellis"),
+        let projects = [
+            ("crates/builtin-contracts", "trellis"),
             ("ts/packages/trellis-testkit", "trellis-testkit-generated"),
             ("web", "trellis-web-generated"),
-        ] {
+        ];
+        for (project, name) in projects {
             let dir = root.join(project);
             fs::create_dir_all(&dir).expect("mkdir project");
             fs::write(
@@ -337,10 +338,15 @@ mod tests {
             },
         )
         .expect("prepare release");
-        for project in ["crates/runtime", "ts/packages/trellis-testkit", "web"] {
-            assert!(fs::read_to_string(root.join(project).join("trellis.toml"))
+        for (project, _) in projects {
+            let manifest = fs::read_to_string(root.join(project).join("trellis.toml"))
                 .expect("read IDL manifest")
-                .contains("version = \"0.100.0-rc.1\""));
+                .parse::<toml_edit::DocumentMut>()
+                .expect("parse released IDL manifest");
+            assert_eq!(
+                manifest["package"]["version"].as_str(),
+                Some("0.100.0-rc.1")
+            );
         }
         assert!(super::versioning::check_versions(&root).is_ok());
         fs::remove_dir_all(root).expect("remove temp repo");

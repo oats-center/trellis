@@ -602,7 +602,7 @@ pub(super) fn read_effective_access(
     let entitlements = super::policy::entitlements(connection, principal_id, None, now)?;
     let capabilities = entitlements
         .into_iter()
-        .map(|(id, (deadline, origins))| {
+        .map(|(id, super::policy::Entitlement { deadline, sources: origins })| {
             let definition = read_capability(connection, &id)?;
             let sources = origins
                 .into_iter()

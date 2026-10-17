@@ -1,5 +1,15 @@
 # Trellis For TypeScript Consumers
 
+Admin `Issuers.Rotate` generates private successor custody on Auth's host and
+returns the old-key-signed trust transition. Supply the expected current key ID
+and an idempotency key; repeating the request does not rotate again. SDKs verify
+the successor chain from pinned trust. OAuth storage custody is unchanged.
+
+Commit native IDL, `trellis.toml`, and `trellis.lock`, not generated implementations.
+Run `trellis install` before compiling local SDK consumers; package generated code
+when distributing a consumer. Explicit generation targets select only the named
+outputs, regardless of other toolchain files present in the project.
+
 Console and the isolated OAuth listener require HTTPS outside explicit loopback
 development. The HTTP insecure-origin allowlist does not relax that requirement.
 
@@ -98,13 +108,13 @@ and Node's standard test runner for native TypeScript tools and tests.
 
 ## Generate And Connect
 
-On this unreleased Revision 7 branch, the authoritative Auth core now issues
+On this unreleased Revision 7 branch, the authoritative Auth core issues
 immutable signed logical-session authority and signed retirement cutoffs.
-The SDK uses shared connection-owned authority and retirement verification;
-production/client integration and live verification remain unfinished. Do not build per-context or per-role
+The SDK uses shared connection-owned authority and retirement verification
+across application transports. Do not build per-context or per-role
 watchers, infer trust from missing mirror entries, or implement the retired
-GrantBinding/browser-bind protocol as a fallback. Released matching libraries
-remain the supported application integration until cutover completes.
+GrantBinding/browser-bind protocol as a fallback. Use matching Trellis runtime,
+SDK, and generated package versions.
 
 Browser OAuth custody keeps persistent DPoP and encryption keys nonextractable
 in IndexedDB. Refresh exchange and commit share a Web Lock across tabs. A lost
@@ -112,8 +122,7 @@ refresh response marks recovery required instead of replaying a spent token;
 credential handles cannot silently switch to another principal. The isolated
 OAuth portal requires a distinct origin from Console and consuming apps.
 Shared hostnames are permitted with a cookie-scope security warning, not treated
-as cookie isolation. These custody components do not replace the unfinished
-connection-owned SDK's full live acceptance gate.
+as cookie isolation.
 
 Node native applications import `@oatscenter/trellis/native`, not browser custody.
 Use `discoverNativeOAuth`, `NativeOAuthClient.open`, Device Code or `resume`, and

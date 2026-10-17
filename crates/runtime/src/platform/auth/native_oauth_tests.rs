@@ -198,7 +198,14 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         expected_revision: 0,
     };
     f.store
-        .register_client(&mutation(&f.admin, &registration), &registration, now)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                now,
+            )
+        })
         .unwrap();
     policy(
         &f.store,
@@ -215,7 +222,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         instance_id: f.store.settings.instance_id.clone(),
         account: f.store.settings.account.clone(),
         rotation_sequence: 0,
-        issuer: f.store.issuer(),
+        issuer: f.store.issuer().unwrap(),
     };
     let scope = NativeCredentialScope {
         issuer: origin.clone(),
@@ -379,20 +386,16 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         assert_eq!(session.auth.session_nkey().unwrap(), nkey);
         assert_eq!(session.admission.credential.oauth_grant_id, grant);
         assert_eq!(session.admission.credential.refresh_family_id, family);
-        let (_, public) = nkeys::from_public_key(&nkey).unwrap();
-        let inbox =
-            trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(public)).unwrap();
-        let admitted = authority
-            .admit_oauth(
-                &serde_json::to_vec(&session.admission).unwrap(),
-                &nkey,
-                &inbox,
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
-            )
-            .unwrap();
+        let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+            &authority,
+            &serde_json::to_vec(&session.admission).unwrap(),
+            &nkey,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )
+        .unwrap();
         assert_eq!(admitted.authority.unsigned.principal_id, f.admin);
     }
 
@@ -416,22 +419,20 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         };
         shutdown.cancel();
         server.await.unwrap().unwrap();
-        for seed in successors {
-            let key = SigningKey::from_bytes(&[seed; 32]);
-            let public = URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes());
+        for _ in successors {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64;
-            authority
-                .rotate_issuer(&mutation(&f.admin, &public), &public, now)
+            crate::platform::auth::phase_two_tests::rotate_issuer(&authority, &f.admin, now)
                 .unwrap();
             let settings = authority.settings.clone();
             authority = Arc::new(
                 SqliteAuthorizationStore::from_connection(
                     Connection::open(f.directory.path().join("platform.db")).unwrap(),
-                    key,
+                    authority.signer.clone(),
                     settings,
+                    authority.custody_directory.clone(),
                 )
                 .unwrap(),
             );
@@ -495,7 +496,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
                     .unwrap()
             }
         };
-        assert_eq!(session.trust.issuer, authority.issuer());
+        assert_eq!(session.trust.issuer, authority.issuer().unwrap());
         assert_eq!(session.runtime_id == previous_runtime, !cold);
         assert_eq!(session.auth.session_nkey().unwrap() == previous_nkey, !cold);
         assert_eq!(
@@ -505,20 +506,16 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         assert_eq!(session.admission.credential.oauth_grant_id, grant);
         assert_eq!(session.admission.credential.refresh_family_id, family);
         let nkey = session.auth.session_nkey().unwrap();
-        let (_, public) = nkeys::from_public_key(&nkey).unwrap();
-        let inbox =
-            trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(public)).unwrap();
-        let admitted = authority
-            .admit_oauth(
-                &serde_json::to_vec(&session.admission).unwrap(),
-                &nkey,
-                &inbox,
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
-            )
-            .unwrap();
+        let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+            &authority,
+            &serde_json::to_vec(&session.admission).unwrap(),
+            &nkey,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )
+        .unwrap();
         assert_eq!(admitted.authority.unsigned.principal_id, f.admin);
     }
     // The SDK has already sent this actual refresh when the intermediary holds
@@ -543,23 +540,21 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         .unwrap();
     shutdown.cancel();
     server.await.unwrap().unwrap();
-    let key = SigningKey::from_bytes(&[80; 32]);
-    let public = URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes());
-    authority
-        .rotate_issuer(
-            &mutation(&f.admin, &public),
-            &public,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        )
-        .unwrap();
+    crate::platform::auth::phase_two_tests::rotate_issuer(
+        &authority,
+        &f.admin,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
+    .unwrap();
     authority = Arc::new(
         SqliteAuthorizationStore::from_connection(
             Connection::open(f.directory.path().join("platform.db")).unwrap(),
-            key,
+            authority.signer.clone(),
             authority.settings.clone(),
+            authority.custody_directory.clone(),
         )
         .unwrap(),
     );
@@ -586,7 +581,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
     assert_eq!(unverified.runtime_id, previous_runtime);
     assert_eq!(unverified.auth.session_nkey().unwrap(), previous_nkey);
     assert_eq!(unverified.admission, previous_admission);
-    assert_ne!(unverified.trust.issuer, authority.issuer());
+    assert_ne!(unverified.trust.issuer, authority.issuer().unwrap());
     let (spent, successor) = proxy
         .control
         .lock()
@@ -627,7 +622,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         session.admission.credential.persistent_dpop_jkt,
         durable_jkt
     );
-    assert_eq!(session.trust.issuer, authority.issuer());
+    assert_eq!(session.trust.issuer, authority.issuer().unwrap());
     assert_ne!(session.runtime_id, previous_runtime);
     assert_ne!(session.auth.session_nkey().unwrap(), previous_nkey);
     // Consume a real token at the backend, then reset the response stream before
@@ -695,16 +690,16 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
             .is_err()
     );
     let revocation = EnforcementScope::Grant(grant);
-    authority
-        .revoke_root(
-            &mutation(&f.admin, &revocation),
-            &revocation,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        )
-        .unwrap();
+    crate::platform::auth::phase_two_tests::revoke_root(
+        &authority,
+        &mutation(&f.admin, &revocation),
+        &revocation,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
+    .unwrap();
     assert!(matches!(
         session.refresh(current_trust.clone()).await,
         Err(NativeOAuthError::RecoveryRequired)

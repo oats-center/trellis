@@ -75,7 +75,14 @@ async fn sdk_rotation(mode: &str) {
             expected_revision: 0,
         };
         f.store
-            .register_client(&mutation(&f.admin, &registration), &registration, now)
+            .transaction(|connection| {
+                f.store.register_client_in_transaction(
+                    connection,
+                    &mutation(&f.admin, &registration),
+                    &registration,
+                    now,
+                )
+            })
             .unwrap();
     }
     if mode == "native" {
@@ -146,7 +153,6 @@ async fn sdk_rotation(mode: &str) {
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap()).lines();
-    let mut seed = 80;
     let outcome = tokio::time::timeout(Duration::from_secs(150), async {
         while let Some(line) = output.next_line().await.unwrap() {
             let event: serde_json::Value =
@@ -156,21 +162,20 @@ async fn sdk_rotation(mode: &str) {
                     shutdown.cancel();
                     (&mut server).await.unwrap().unwrap();
                     for _ in 0..event["steps"].as_u64().unwrap() {
-                        let key = SigningKey::from_bytes(&[seed; 32]);
-                        seed += 1;
-                        let public = URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes());
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_secs() as i64;
-                        authority
-                            .rotate_issuer(&mutation(&f.admin, &public), &public, now)
-                            .unwrap();
+                        crate::platform::auth::phase_two_tests::rotate_issuer(
+                            &authority, &f.admin, now,
+                        )
+                        .unwrap();
                         authority = Arc::new(
                             SqliteAuthorizationStore::from_connection(
                                 Connection::open(f.directory.path().join("platform.db")).unwrap(),
-                                key,
+                                authority.signer.clone(),
                                 authority.settings.clone(),
+                                authority.custody_directory.clone(),
                             )
                             .unwrap(),
                         );
@@ -194,7 +199,7 @@ async fn sdk_rotation(mode: &str) {
                         super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
                         shutdown.clone(),
                     ));
-                    let reply = serde_json::json!({"keyId":authority.issuer().key_id});
+                    let reply = serde_json::json!({"keyId":authority.issuer().unwrap().key_id});
                     input
                         .write_all(format!("{reply}\n").as_bytes())
                         .await
@@ -245,11 +250,18 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         .as_secs() as i64;
     store.initialize_issuer(now).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "a strong bootstrap password", now)
+        .initialize_administrator(
+            "admin",
+            Some("a strong bootstrap password"),
+            None,
+            None,
+            now,
+        )
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let provisioned = store.initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&URL_SAFE_NO_PAD.encode([61; 32]), now).unwrap();
     store.initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>(&URL_SAFE_NO_PAD.encode([62; 32]), now).unwrap();
-    let original = store.issuer();
+    let original = store.issuer().unwrap();
     let catalog = store.current_catalog("trellis.auth@v1").unwrap();
     let health_catalog = store.current_catalog("trellis.health@v1").unwrap();
     catalog
@@ -259,11 +271,8 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
             &store.settings.account,
         )
         .unwrap();
-    let key = SigningKey::from_bytes(&[80; 32]);
-    let public = URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes());
-    let rotation = store
-        .rotate_issuer(&mutation(&admin, &public), &public, now)
-        .unwrap();
+    let rotation =
+        crate::platform::auth::phase_two_tests::rotate_issuer(&store, &admin, now).unwrap();
     // This is the real forward-verified successor that cold custody retains,
     // not a discovery-selected key or injected authorization context.
     let current = rotation
@@ -278,8 +287,9 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     let store = Arc::new(
         SqliteAuthorizationStore::from_connection(
             Connection::open(directory.path().join("platform.db")).unwrap(),
-            key,
+            store.signer.clone(),
             store.settings.clone(),
+            store.custody_directory.clone(),
         )
         .unwrap(),
     );
@@ -349,7 +359,6 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     let runtime_id = URL_SAFE_NO_PAD.encode([7; 16]);
     let (_, ephemeral_public) = nkeys::from_public_key(&ephemeral.public_key()).unwrap();
     let session_public_key = URL_SAFE_NO_PAD.encode(ephemeral_public);
-    let inbox = trellis_protocol::admission_inbox_prefix(&session_public_key).unwrap();
     let credential = trellis_protocol::sign_provisioned_admission(
         trellis_protocol::ProvisionedAdmission {
             format: trellis_protocol::PROVISIONED_ADMISSION_FORMAT_V1.into(),
@@ -364,14 +373,13 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         &SigningKey::from_bytes(&[61; 32]),
     )
     .unwrap();
-    let admitted = store
-        .admit_provisioned(
-            &serde_json::to_vec(&credential).unwrap(),
-            &ephemeral.public_key(),
-            &inbox,
-            now,
-        )
-        .unwrap();
+    let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+        &store,
+        &serde_json::to_vec(&credential).unwrap(),
+        &ephemeral.public_key(),
+        now,
+    )
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
         while store
             .process_effects(&material, &revocations, &transport, now)
@@ -554,7 +562,11 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     forward_rotation.next_key_id =
         URL_SAFE_NO_PAD.encode(Sha256::digest(successor.verifying_key().as_bytes()));
     let forward_rotation = forward_rotation
-        .sign(&SigningKey::from_bytes(&[80; 32]))
+        .sign(
+            &store
+                .transaction(|connection| store.current_signer(connection))
+                .unwrap(),
+        )
         .unwrap();
     let successor_issuer = forward_rotation
         .verify_successor(
@@ -616,16 +628,16 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     );
 
     let compromised = EnforcementScope::Issuer(original.key_id.clone());
-    store
-        .revoke_root(
-            &mutation(&admin, &compromised),
-            &compromised,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        )
-        .unwrap();
+    crate::platform::auth::phase_two_tests::revoke_root(
+        &store,
+        &mutation(&admin, &compromised),
+        &compromised,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
+    .unwrap();
     let revoked_owner = AuthorizationOwner::new(
         RuntimeAuthorizationTrust {
             instance_id: store.settings.instance_id.clone(),
@@ -702,18 +714,15 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
 
     // Loading a historical key cannot advance the pin or its rotation sequence.
     // A genuine next rotation must still be accepted at the original next slot.
-    let successor = SigningKey::from_bytes(&[81; 32]);
-    let public = URL_SAFE_NO_PAD.encode(successor.verifying_key().as_bytes());
-    let next = store
-        .rotate_issuer(
-            &mutation(&admin, &public),
-            &public,
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        )
-        .unwrap();
+    let next = crate::platform::auth::phase_two_tests::rotate_issuer(
+        &store,
+        &admin,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64,
+    )
+    .unwrap();
     owner.accept_issuer_rotation(next.clone()).unwrap();
     owner.assert_issuer_current(&next.next_key_id).unwrap();
     assert!(owner.assert_issuer_current(&current.key_id).is_err());

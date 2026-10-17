@@ -190,10 +190,50 @@ fn canonical_source_is_stable_and_evidence_recompiles() {
             source: canonical.clone(),
         }],
     };
+    let verified = compile_evidence(evidence.clone()).unwrap();
+    let reused = compile_evidence(evidence.clone()).unwrap();
+    assert_eq!(
+        canonical_package(&reused, reused.root(), CanonicalMode::Presentation).unwrap(),
+        canonical
+    );
+    // A warm semantic digest must not bypass canonical-source or integrity checks.
     let mut noncanonical = evidence.clone();
     noncanonical.packages[0].source.insert(0, '\n');
     assert!(compile_evidence(noncanonical).is_err());
-    let verified = compile_evidence(evidence).unwrap();
+    let mut tampered = evidence.clone();
+    tampered.packages[0].source = canonical.replace("200", "201");
+    assert_ne!(tampered.packages[0].source, canonical);
+    assert!(compile_evidence(tampered).is_err());
+
+    // Presentation-only changes share a semantic digest, not a compiled graph.
+    let updated = compile_project(
+        &package_manifest,
+        vec![
+            source("types", "types.trellis", TYPES),
+            source(
+                "api",
+                "api.trellis",
+                &API.replace("Order access.", "Updated order access."),
+            ),
+        ],
+        BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(updated.root_digest(), graph.root_digest());
+    let updated_canonical =
+        canonical_package(&updated, updated.root(), CanonicalMode::Presentation).unwrap();
+    let mut updated_evidence = evidence;
+    updated_evidence.packages[0].source = updated_canonical.clone();
+    let updated_verified = compile_evidence(updated_evidence).unwrap();
+    assert_eq!(
+        canonical_package(
+            &updated_verified,
+            updated_verified.root(),
+            CanonicalMode::Presentation
+        )
+        .unwrap(),
+        updated_canonical
+    );
 
     assert_eq!(verified.root_digest(), graph.root_digest());
     assert_eq!(
@@ -490,7 +530,7 @@ fn marks_only_direct_recursive_model_edges() {
 
 #[test]
 fn resource_and_companion_evidence_recompiles_without_changing_meaning() {
-    let trellis_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../runtime");
+    let trellis_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../builtin-contracts");
     let trellis_manifest = read_manifest(&trellis_root.join("trellis.toml")).unwrap();
     let trellis = compile_project(
         &trellis_manifest,

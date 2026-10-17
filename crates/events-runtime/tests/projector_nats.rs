@@ -83,15 +83,14 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
                     })
             };
             let event: trellis_protocol::SessionEvent =
-                serde_json::from_str(header("Trellis-Session-Event")?).map_err(|error| {
-                    EventVerificationFailure::Rejected((error.to_string()).into())
-                })?;
+                serde_json::from_str(header("Trellis-Session-Event")?)
+                    .map_err(|error| EventVerificationFailure::Rejected(error.to_string()))?;
             let descriptor = trellis_protocol::decode_event_descriptor_identity(header(
                 "Trellis-Event-Descriptor",
             )?)
-            .map_err(|error| EventVerificationFailure::Rejected((error.to_string()).into()))?;
+            .map_err(|error| EventVerificationFailure::Rejected(error.to_string()))?;
             trellis_protocol::validate_event_descriptor_subject(&descriptor, &input.subject)
-                .map_err(|error| EventVerificationFailure::Rejected((error.to_string()).into()))?;
+                .map_err(|error| EventVerificationFailure::Rejected(error.to_string()))?;
             if event.subject != input.subject
                 || descriptor.api_id() != event.api_id
                 || descriptor.event_name() != event.action
@@ -104,11 +103,11 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
                 ));
             }
             let proof = trellis_protocol::SessionEventProof::parse(header("proof")?)
-                .map_err(|error| EventVerificationFailure::Rejected((error.to_string()).into()))?;
+                .map_err(|error| EventVerificationFailure::Rejected(error.to_string()))?;
             let status = owner
                 .historical_status(&transport, &event.authority_digest)
                 .await
-                .map_err(|error| EventVerificationFailure::Retryable((error.to_string()).into()))?;
+                .map_err(|error| EventVerificationFailure::Retryable(error.to_string()))?;
             let action = trellis_protocol::CatalogActionIdentity {
                 kind: trellis_protocol::ApiSurfaceKind::Event,
                 name: event.action.clone(),
@@ -129,9 +128,9 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
                 .await
                 .map_err(|error| match error {
                     trellis_rs::client::TrellisClientError::AuthorizationUnavailable(_) => {
-                        EventVerificationFailure::Retryable((error.to_string()).into())
+                        EventVerificationFailure::Retryable(error.to_string())
                     }
-                    _ => EventVerificationFailure::Rejected((error.to_string()).into()),
+                    _ => EventVerificationFailure::Rejected(error.to_string()),
                 })?;
             let authority = verified.authority().authority();
             if header("session-key")? != authority.session_public_key {

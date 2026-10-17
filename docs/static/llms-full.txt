@@ -107,8 +107,15 @@ Trellis-owned Auth/Core/State/Health/Jobs/Events capabilities. These grants,
 finite platform privileges, and Console/CLI registration commit atomically.
 Replay neither grants future capabilities nor rewrites clients. Domain API
 access remains explicitly granted; app authority still requires selection,
-consent, and client privilege eligibility. `Issuers.Rotate` currently reports
-`issuer_custody_required` without successor signing custody. OAuth sessions retain
+consent, and client privilege eligibility. `Issuers.Rotate` requires
+`privileges.manage`, the expected current key ID, and an idempotency key. Auth
+locally generates and durably flushes a private successor key before atomically
+committing its old-key-signed chain link, activation, publication intent, and
+replay result. Replays do not rotate again. Restart loads the database-current
+key and fails closed on missing custody, without replacing the bootstrap seed.
+Back up the issuer seed and its sibling `.keys` directory with Auth's database
+and the independent OAuth storage key. Private keys never cross the RPC.
+OAuth sessions retain
 their original verified refresh family; CONNECT, Authority.Renew, OwnContextGet,
 and Admission.Renew consult that exact family's revocation and absolute deadline.
 A different live family of the same grant cannot replace it, and rotation never
@@ -142,8 +149,8 @@ selection and approved consent in one authoritative transaction. Signed logical
 session authority is immutable; reduction retires every live digest under that
 session ID. Compatible catalog expansion requires renewal, and cannot silently
 approve declined capabilities. Signed revocations remain effective through mirror
-reconnect or missing entries until context acceptance deadlines expire. The
-OAuth/Callout and client/provider cutover is unfinished on this unreleased branch;
+reconnect or missing entries until context acceptance deadlines expire.
+OAuth/Callout admission and client/provider transports use this authority model;
 the old GrantBinding/browser-bind model is not a compatibility option.
 
 OAuth login and consent belong to a separate required portal app and origin
@@ -162,7 +169,7 @@ credential possession without asserting a deployment or API. Rust native
 applications supply a verified OAuth session to the SDK, which retains custody
 and renews admission using the same runtime identity/key and authenticated issuer
 pin. Credential-recovery failure closes transport without erasing the durable
-record; full production acceptance remains in progress.
+record.
 
 Node native applications import `@oatscenter/trellis/native`, discover the selected
 issuer, and open `NativeOAuthClient` with explicit scope, trust and a private
@@ -385,9 +392,12 @@ per-process concurrency and Events-owned scoped DLQ/replay. Jobs remain private
 durable queues. Cursor pagination ends only when `nextCursor` is absent and does
 not generally promise a snapshot.
 
-Commit IDL, `trellis.toml`, and `trellis.lock`. Commit generated packages when
-clones should build without the CLI or source-package cache; regenerate rather
-than hand-edit. Compilation, renderer, and formatter failures preserve the last
+Commit IDL, `trellis.toml`, and `trellis.lock`, not generated implementations.
+Run `trellis install` before compiling local SDK consumers; package generated code
+when distributing a consumer. Trellis-owned Rust libraries build their built-in
+bindings in Cargo `OUT_DIR` using published build dependencies, without a downstream
+CLI requirement. Explicit generation targets select only the named outputs.
+Compilation, renderer, and formatter failures preserve the last
 successful generated outputs. Namespace collisions are errors, unrelated user
 files are protected, and publication uses only short-lived staging and backups.
 

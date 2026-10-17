@@ -15,6 +15,91 @@ pub const fn assert_abi(version: u32) {
     assert!(version == ABI_VERSION, "generated Trellis ABI mismatch");
 }
 
+/// Failure while traversing a cursor-paginated RPC.
+#[derive(Debug)]
+pub enum PaginationError<E: std::fmt::Debug> {
+    /// The RPC call failed.
+    Call(crate::client::CallError<E>),
+    /// The server returned a cursor already seen by this traversal.
+    RepeatedCursor(String),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for PaginationError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Call(error) => error.fmt(formatter),
+            Self::RepeatedCursor(cursor) => {
+                write!(formatter, "server repeated pagination cursor '{cursor}'")
+            }
+        }
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for PaginationError<E> {}
+
+impl<E: std::fmt::Debug> From<crate::client::CallError<E>> for PaginationError<E> {
+    fn from(error: crate::client::CallError<E>) -> Self {
+        Self::Call(error)
+    }
+}
+
+/// Traverse cursor pages once, rejecting cursor loops before exposing their page.
+///
+/// Generated adapters return the page, next request, and next cursor from `fetch`.
+pub fn cursor_pages<I, P, E, F, Fut>(
+    input: I,
+    initial_cursor: Option<String>,
+    fetch: F,
+) -> futures_util::stream::BoxStream<'static, Result<P, PaginationError<E>>>
+where
+    I: Send + 'static,
+    P: Send + 'static,
+    E: std::fmt::Debug + Send + 'static,
+    F: FnMut(I) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(P, I, Option<String>), crate::client::CallError<E>>>
+        + Send,
+{
+    use futures_util::StreamExt;
+    let seen = initial_cursor
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    futures_util::stream::try_unfold(
+        (input, fetch, seen, false),
+        |(input, mut fetch, mut seen, done)| async move {
+            if done {
+                return Ok(None);
+            }
+            let (page, input, next) = fetch(input).await.map_err(PaginationError::Call)?;
+            let done = next.is_none();
+            if let Some(cursor) = next {
+                if !seen.insert(cursor.clone()) {
+                    return Err(PaginationError::RepeatedCursor(cursor));
+                }
+            }
+            Ok(Some((page, (input, fetch, seen, done))))
+        },
+    )
+    .boxed()
+}
+
+/// Flatten successful pages without dropping page errors or stopping at empty pages.
+pub fn cursor_items<P, T, E, F>(
+    pages: futures_util::stream::BoxStream<'static, Result<P, PaginationError<E>>>,
+    mut items: F,
+) -> futures_util::stream::BoxStream<'static, Result<T, PaginationError<E>>>
+where
+    P: Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Debug + Send + 'static,
+    F: FnMut(P) -> Vec<T> + Send + 'static,
+{
+    use futures_util::{StreamExt, TryStreamExt};
+    pages
+        .map_ok(move |page| futures_util::stream::iter(items(page).into_iter().map(Ok)))
+        .try_flatten()
+        .boxed()
+}
+
 /// Immutable projection of optional surfaces installed with an authorization context.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AvailabilitySnapshot {
@@ -1740,6 +1825,57 @@ mod tests {
     use std::fmt;
 
     use serde::{Deserialize, Serialize};
+
+    #[tokio::test]
+    async fn cursor_traversal_continues_through_empty_pages_and_stops_at_terminal_page() {
+        use futures_util::TryStreamExt;
+        let pages = super::cursor_pages(0, None, |step| async move {
+            let (items, next) = match step {
+                0 => (vec![], Some("first".into())),
+                1 => (vec![1, 2], Some("second".into())),
+                2 => (vec![3], None),
+                _ => panic!("fetched beyond terminal page"),
+            };
+            Ok::<_, crate::client::CallError<std::convert::Infallible>>((items, step + 1, next))
+        });
+        assert_eq!(
+            super::cursor_items(pages, |items| items)
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap(),
+            [1, 2, 3]
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_traversal_rejects_repeated_initial_cursor_and_preserves_fetch_errors() {
+        use futures_util::StreamExt;
+        let mut pages = super::cursor_pages((), Some("initial".into()), |()| async {
+            Ok::<_, crate::client::CallError<std::convert::Infallible>>((
+                vec![99],
+                (),
+                Some("initial".into()),
+            ))
+        });
+        assert!(
+            matches!(pages.next().await, Some(Err(super::PaginationError::RepeatedCursor(cursor))) if cursor == "initial")
+        );
+        assert!(pages.next().await.is_none());
+
+        let pages = super::cursor_pages((), None, |()| async {
+            Err::<(Vec<u8>, (), Option<String>), crate::client::CallError<std::convert::Infallible>>(
+                crate::client::CallError::Timeout,
+            )
+        });
+        let mut items = super::cursor_items(pages, |items| items);
+        assert!(matches!(
+            items.next().await,
+            Some(Err(super::PaginationError::Call(
+                crate::client::CallError::Timeout
+            )))
+        ));
+        assert!(items.next().await.is_none());
+    }
 
     use super::{
         ApiDescriptor, Codec as _, DeclaredOperationFailure, OperationAdapter,

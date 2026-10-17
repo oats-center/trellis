@@ -570,11 +570,6 @@ impl RuntimeContext {
             })
     }
 
-    /// Resolve the public origin used for provider bootstrap and advertised URLs.
-    pub(crate) fn public_origin(&self) -> String {
-        self.config.public_origin()
-    }
-
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
         let mut registered = self
             .http_router

@@ -10,10 +10,6 @@ import {
   MutationController,
 } from "./mutation.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
-
 test("U06 a captured intent is unaffected by later mutable state", () => {
   const selected = { id: "dep_a", version: 3n };
   const editable = ["one", "two"];

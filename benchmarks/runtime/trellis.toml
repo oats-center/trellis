@@ -12,4 +12,4 @@ output = "packages/performance-trellis"
 output = "crates/performance-trellis"
 
 [dependencies]
-trellis = { package = "trellis", path = "../../crates/runtime" }
+trellis = { package = "trellis", path = "../../crates/builtin-contracts" }

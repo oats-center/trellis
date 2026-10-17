@@ -348,7 +348,7 @@ fn server_xkey(headers: Option<&HeaderMap>) -> Result<XKey, AuthError> {
     let value = headers
         .and_then(|headers| headers.get("Nats-Server-Xkey"))
         .ok_or(AuthError::Denied)?;
-    XKey::from_public_key(&value.to_string()).map_err(|_| AuthError::Denied)
+    XKey::from_public_key(value.as_ref()).map_err(|_| AuthError::Denied)
 }
 fn verify_nats_nonce_signature(nkey: &str, nonce: &str, signature: &str) -> Result<(), AuthError> {
     let key = KeyPair::from_public_key(nkey).map_err(|_| AuthError::Denied)?;

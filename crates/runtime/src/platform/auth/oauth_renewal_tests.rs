@@ -8,7 +8,7 @@ use trellis_runtime_apis::__types::trellis::{
 };
 
 fn caller(f: &Fixture, issued: &IssuedAuthority) -> AuthenticatedCaller {
-    let issuer = f.store.issuer();
+    let issuer = f.store.issuer().unwrap();
     let policy = SessionAuthorityVerificationPolicy {
         now_unix_seconds: NOW,
         allowed_clock_skew_seconds: 5,
@@ -102,14 +102,13 @@ fn signed_live_renewal_keeps_exact_family_key_and_session_and_callout_accepts_it
             NOW,
         )
         .unwrap();
-    let issued = f
-        .store
-        .issue_authority(
-            &f.admission,
-            Some(&attachment.authorization_session_id),
-            NOW,
-        )
-        .unwrap();
+    let issued = crate::platform::auth::phase_two_tests::issue_authority(
+        &f.store,
+        &f.admission,
+        Some(&attachment.authorization_session_id),
+        NOW,
+    )
+    .unwrap();
     let caller = caller(&f, &issued);
     let input = AuthAdmissionRenewRequest {
         context_digest: issued.digest.clone().into(),
@@ -162,7 +161,8 @@ fn signed_live_renewal_keeps_exact_family_key_and_session_and_callout_accepts_it
     // Even another live context using the same public key does not own this digest.
     let mut peer = f.admission.clone();
     peer.runtime_id = URL_SAFE_NO_PAD.encode([71; 16]);
-    let peer = f.store.issue_authority(&peer, None, NOW).unwrap();
+    let peer = crate::platform::auth::phase_two_tests::issue_authority(&f.store, &peer, None, NOW)
+        .unwrap();
     let peer_input = AuthAdmissionRenewRequest {
         context_digest: peer.digest.into(),
         extra: Default::default(),
@@ -239,14 +239,13 @@ fn exact_family_expiry_or_revocation_retires_without_using_another_live_family()
                 NOW,
             )
             .unwrap();
-        let issued = f
-            .store
-            .issue_authority(
-                &f.admission,
-                Some(&attachment.authorization_session_id),
-                NOW,
-            )
-            .unwrap();
+        let issued = crate::platform::auth::phase_two_tests::issue_authority(
+            &f.store,
+            &f.admission,
+            Some(&attachment.authorization_session_id),
+            NOW,
+        )
+        .unwrap();
         let caller = caller(&f, &issued);
         let other = oauth_family(&f.store, &f.grant, NOW, NOW + 3600);
         let now = if revoked {
@@ -296,14 +295,13 @@ fn exact_family_expiry_or_revocation_retires_without_using_another_live_family()
             .unwrap()
             .unwrap();
         assert_eq!(cutoff.effective_cutoff, now);
-        assert!(f
-            .store
-            .issue_authority(
-                &f.admission,
-                Some(&attachment.authorization_session_id),
-                now
-            )
-            .is_err());
+        assert!(crate::platform::auth::phase_two_tests::issue_authority(
+            &f.store,
+            &f.admission,
+            Some(&attachment.authorization_session_id),
+            now
+        )
+        .is_err());
         assert!(f
             .store
             .admit_connection(

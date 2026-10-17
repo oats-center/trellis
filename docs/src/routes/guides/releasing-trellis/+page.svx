@@ -43,6 +43,14 @@ npm run test:integration
 Cargo and Node discover executable tests directly. Hidden skips and separate
 test registries are forbidden.
 
+The Rust workspace also executes real Node and Chromium OAuth consumers and a
+real upstream Dex provider. Install the npm workspace and Playwright Chromium
+before that catalog, and set `TRELLIS_TEST_DEX_BIN` to the producer-built Dex
+executable. Check builds Dex once from its pinned source revision, supplies the
+prebuilt CLI, server, Events fixture, and pinned NATS executable, and installs
+the browser dependencies in the execution job; tests do not rebuild those
+executables.
+
 If the full integration suites cannot be run, record the reason and the last focused checks that did run.
 
 ### Targeted integration loops
@@ -77,13 +85,16 @@ cargo fmt --manifest-path Cargo.toml --package <crate>
 rustfmt --edition 2021 <changed .rs files>
 ```
 
-`xtask` is a standalone Rust workspace. When a change touches it, run its formatter check directly:
+`xtask` belongs to the Rust workspace. Check its authored source with:
 
 ```sh
-cargo fmt --manifest-path xtask/Cargo.toml --check
+cargo fmt --manifest-path Cargo.toml --package xtask --check
 ```
 
-When generated artifacts are affected, run `cargo xtask install` first, then verify generated Rust formatting with:
+Generated implementations are disposable build artifacts, not committed source or
+formatter inputs. Built-in Rust bindings are generated in Cargo `OUT_DIR` from the
+shared native IDL build-input crate. Run `cargo xtask install` for project-local
+SDKs before consumption. Check authored Rust with:
 
 ```sh
 cargo fmt --manifest-path Cargo.toml --all --check
@@ -112,7 +123,7 @@ The GitHub `Release` workflow runs the same Rust release tooling used locally:
 - `release check-metadata` checks release metadata before expensive verification
 - `release write-notes` extracts the matching `CHANGELOG.md` section for GitHub release notes
 
-The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so `Check` verifies exactly what ships. `Check` is the single build-and-verification pipeline. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds every supported CLI target and assembles and smokes both image architectures; packages the Rust and npm packages; runs the artifact-only package consumer in full mode; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generated freshness, and live integration are part of that same graph. `Release` is publication only: it selects the successful `Check` run for the exact candidate commit (never "the latest green Check"), downloads that run's verified artifacts, and publishes crates, npm, canonical APIs, and images without rebuilding the product. After publication gates pass, GitHub Actions creates an unsigned lightweight release tag on the candidate commit. If verification fails, no release tag is created and the same version can be retried.
+The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so `Check` verifies exactly what ships. `Check` is the single build-and-verification pipeline. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds every supported CLI target and assembles and smokes both image architectures; packages the Rust and npm packages; runs the artifact-only package consumer in full mode; and reports through one acceptance gate. Authored-source formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that same graph. `Release` is publication only: it selects the successful `Check` run for the exact candidate commit (never "the latest green Check"), downloads that run's verified artifacts, and publishes crates, npm, canonical APIs, and images without rebuilding the product. After publication gates pass, GitHub Actions creates an unsigned lightweight release tag on the candidate commit. If verification fails, no release tag is created and the same version can be retried.
 
 The `Deploy Site to GitHub Pages` workflow is separate from release publishing. It installs each worktree's locked APIs from source before building the released and current guide and Console sites.
 
@@ -139,9 +150,11 @@ local CLI/server paths.
 The published Rust crate set is:
 
 - `trellis-protocol`
+- `trellis-idl`
+- `trellis-codegen-rust`
+- `trellis-builtin-contracts`
 - `trellis-rs`
 - `trellis-runtime-apis`
-- `trellis-idl`
 - `trellis-local-bootstrap`
 - `trellis-events-runtime`
 - `trellis-jobs-runtime`
@@ -295,7 +308,7 @@ cargo xtask install --update
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-`release bump` updates release-managed `deno.json`, `deno.npm.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so `Check` builds and verifies the exact release versions.
+`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so `Check` builds and verifies the exact release versions.
 
 Do not run `release bump` just to add a prerelease suffix like `-rc.1`. Prerelease suffixes are handled from the tag by `release prepare` in the publish workflow.
 
@@ -326,7 +339,7 @@ less "$tmpdir/release-notes.md"
 `Check` is the single authoritative verification pipeline: it builds the
 release-profile runtime, every CLI target, and both image architectures;
 packages the Rust and npm packages; runs the artifact-only package consumer; and
-runs the formatting, lint/type, generated-freshness, and full live-integration
+runs authored-source formatting, lint/type, generation, and full live-integration
 suites behind one acceptance gate. It runs for the candidate commit. `Release`
 does not rebuild anything; it publishes the artifacts of the successful `Check`
 run for that exact commit.

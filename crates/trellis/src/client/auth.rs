@@ -45,11 +45,6 @@ impl SessionAuth {
         base64url_encode(&signature.to_bytes())
     }
 
-    pub(crate) fn sign_bytes(&self, bytes: &[u8]) -> String {
-        let signature: Signature = self.signing_key.sign(bytes);
-        base64url_encode(&signature.to_bytes())
-    }
-
     pub(crate) fn key_id(&self) -> String {
         base64url_encode(&sha256(self.signing_key.verifying_key().as_bytes()))
     }

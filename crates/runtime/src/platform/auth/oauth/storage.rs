@@ -1007,7 +1007,7 @@ mod tests {
     use oauth_as::{
         authorization::AuthorizationRequest,
         cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument},
-        jwt::{EcdsaP256Key, JwsSigner},
+        jwt::EcdsaP256Key,
     };
 
     #[tokio::test]
@@ -1036,6 +1036,7 @@ mod tests {
                     login_lifetime_seconds: 86400,
                     enforcement_page_size: 128,
                 },
+                directory.path().join("issuer.keys"),
             )
             .unwrap(),
         );

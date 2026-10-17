@@ -64,7 +64,7 @@ fn overlapping_callout_attachments_resolve_only_the_signed_exact_socket() {
             .unwrap();
         let verified = verify_admission_context(
             &serde_json::to_vec(&response).unwrap(),
-            &f.store.issuer(),
+            &f.store.issuer().unwrap(),
             &request,
             &subject,
             &reply,
@@ -86,7 +86,7 @@ fn overlapping_callout_attachments_resolve_only_the_signed_exact_socket() {
         };
         assert!(verify_admission_context(
             &serde_json::to_vec(&response).unwrap(),
-            &f.store.issuer(),
+            &f.store.issuer().unwrap(),
             &other,
             &subject,
             &reply,
@@ -177,39 +177,51 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
         }
         f.admission.inbox_prefix =
             trellis_protocol::admission_inbox_prefix(&f.admission.session_public_key).unwrap();
-        let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+        let issued = crate::platform::auth::phase_two_tests::issue_authority(
+            &f.store,
+            &f.admission,
+            None,
+            NOW,
+        )
+        .unwrap();
         let session = &issued.authority.unsigned.authorization_session_id;
-        let policy = f
-            .store
-            .transaction(|connection| {
-                f.store
-                    .compile_transport(connection, &issued.authority.unsigned)
-            })
-            .unwrap();
-        let attachment = id();
         let key = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
             .unwrap()
             .public_key();
-        f.store
-            .admit_attachment(
-                &Attachment {
-                    attachment_id: attachment.clone(),
-                    server_id: "broker".into(),
-                    broker_client_id: 8,
-                    authorization_session_id: session.clone(),
-                    context_digest: issued.digest.clone(),
-                    ephemeral_nkey: key.clone(),
-                    broker_user_nkey: key,
-                    transport_policy_digest: policy.digest().unwrap(),
-                },
+        let admission = f
+            .store
+            .transaction(|connection| {
+                f.store.sign_oauth_admission_in(
+                    connection,
+                    &f.admission,
+                    &key,
+                    &super::super::policy::evaluate(connection, &f.admission.credential, NOW)?,
+                    NOW,
+                )
+            })
+            .unwrap();
+        let (attachment, _) = f
+            .store
+            .admit_connection(
+                &serde_json::to_vec(&admission).unwrap(),
+                &key,
+                &key,
+                "broker",
+                8,
                 NOW,
             )
             .unwrap();
+        assert_eq!(&attachment.authorization_session_id, session);
+        let attachment = attachment.attachment_id;
         let now = if revoked {
             let scope = EnforcementScope::Grant(f.grant.clone());
-            f.store
-                .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
-                .unwrap();
+            crate::platform::auth::phase_two_tests::revoke_root(
+                &f.store,
+                &mutation(&f.admin, &scope),
+                &scope,
+                NOW + 1,
+            )
+            .unwrap();
             NOW + 1
         } else if family_expired {
             NOW + 20
@@ -241,7 +253,7 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
         let cutoff = f.store.resolve_revocation(session).unwrap().unwrap();
         cutoff
             .verify(
-                &f.store.issuer(),
+                &f.store.issuer().unwrap(),
                 &f.store.settings.instance_id,
                 &f.store.settings.account,
             )
@@ -257,7 +269,8 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
             );
         }
         assert_eq!(
-            f.store.resolve_authority(&issued.digest).unwrap(),
+            crate::platform::auth::phase_two_tests::resolve_authority(&f.store, &issued.digest)
+                .unwrap(),
             issued.authority
         );
 
@@ -268,7 +281,8 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
         assert!(store.own_context(&bytes, &subject, &reply, now).is_err());
         assert_eq!(store.resolve_revocation(session).unwrap().unwrap(), cutoff);
         assert_eq!(
-            store.resolve_authority(&issued.digest).unwrap(),
+            crate::platform::auth::phase_two_tests::resolve_authority(&store, &issued.digest)
+                .unwrap(),
             issued.authority
         );
         let effects = store.claim_effects(256, now, 10, false).unwrap();

@@ -36,17 +36,20 @@ mod telemetry;
 pub(crate) use telemetry::AuthorizationTelemetrySnapshot;
 mod transport;
 
-pub(crate) use authorization_sessions::{AdmissionIdentity, Credential, IssuedAuthority};
+pub(crate) use authorization_sessions::{AdmissionIdentity, Credential};
 pub(crate) use broker::{MATERIAL_BUCKET, REVOCATION_BUCKET};
-pub(crate) use catalog::{ApiAcceptance, ApiReview};
+#[cfg(test)]
+use catalog::ApiAcceptance;
 pub(crate) use deployments::{DeploymentProvisioning, ProvisionedDeployment};
 pub(crate) use lifecycle::{ClientRegistration, GrantApproval, VerifiedLogin};
 pub(crate) use oauth::router as oauth_router;
 pub(crate) use oauth::{OAuthEngine, OAuthListener, OAuthStorage};
-pub(crate) use policy::{CapabilitySelection, Evaluation, PolicyMutation};
-pub(crate) use revocation::{Attachment, EnforcementScope, PendingEffect};
+pub(crate) use policy::{CapabilitySelection, PolicyMutation};
+pub(crate) use revocation::EnforcementScope;
 pub(crate) use sqlite::read_custody_key;
-pub(crate) use sqlite::{AuthError, AuthSettings, Mutation, SqliteAuthorizationStore};
+#[cfg(test)]
+use sqlite::AuthSettings;
+pub(crate) use sqlite::{AuthError, Mutation, SqliteAuthorizationStore};
 
 use crate::config::warn_oauth_cookie_isolation;
 

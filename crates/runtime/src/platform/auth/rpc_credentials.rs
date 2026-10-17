@@ -288,7 +288,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
             store.transaction(|connection| {
         SqliteAuthorizationStore::require_privilege(connection, actor, "principals.manage")?;
         let (cursor,limit)=page_bounds(input.page.as_ref())?;
-        let state = input.state.as_ref().map(|state|serde_json::to_value(state)).transpose()?;
+        let state = input.state.as_ref().map(serde_json::to_value).transpose()?;
         let mut statement=connection.prepare("SELECT a.attachment_id FROM auth_attachments a JOIN auth_authorization_sessions s USING(authorization_session_id) WHERE a.attachment_id>?1 AND (?2 IS NULL OR s.principal_id=?2) AND (?3 IS NULL OR s.authorization_session_id=?3) AND (?4 IS NULL OR a.state=?4) ORDER BY a.attachment_id LIMIT ?5")?;
         let ids=statement.query_map(params![cursor,input.principal_id.as_ref().map(ToString::to_string),input.authorization_session_id.as_ref().map(ToString::to_string),state.as_ref().and_then(|state|state.as_str()),limit+1],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         page(ids,limit,|id|read_attachment(connection,id))
@@ -414,42 +414,22 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
             })
         })
     );
-    let rotation_store = store.clone();
-    provider.register_issuers_rotate(move |context, input| {
-        let store = rotation_store.clone();
-        async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::PrivilegesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
-                store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
-                        connection,
-                        &actor,
-                        "privileges.manage",
-                    )?;
-                    let current: String = connection.query_row(
-                        "SELECT key_id FROM auth_authorization_issuers WHERE is_current=1",
-                        [],
-                        |row| row.get(0),
-                    )?;
-                    if current != input.expected_current_key_id.as_ref() {
-                        return Err(AuthError::Conflict);
-                    }
-                    Ok(())
-                })
+    mutate!(
+        register_issuers_rotate,
+        Some(PlatformPrivilege::PrivilegesManage),
+        |store: &SqliteAuthorizationStore,
+         identity: &Mutation,
+         _: &AuthenticatedCaller,
+         input: &AuthIssuerRotateRequest,
+         now| {
+            let rotation = store.rotate_issuer(identity, input, now)?;
+            Ok(AuthIssuerRotateResponse {
+                key_id: rotation.next_key_id.clone().into(),
+                rotation: AuthSignedBlob(canonical_json(&rotation)?.into_bytes().into()),
+                extra: Default::default(),
             })
-            .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
-            .map_err(rpc_error)?;
-            // The domain rotation owner requires a provisioned next public key
-            // and installation of its private custody. This wire request has
-            // neither; generating a replacement root here would strand Auth.
-            Err(domain_failure(
-                "issuer_custody_required",
-                "Install next issuer signing custody before rotation",
-            ))
         }
-    });
+    );
     let admission_store = store.clone();
     provider.register_admission_renew(move |context, input| {
         let store = admission_store.clone();
@@ -673,7 +653,23 @@ fn read_authorization_session(
     connection: &Connection,
     id: &str,
 ) -> Result<AuthAuthorizationSession, AuthError> {
-    let (principal,kind,binding,runtime,key,credential,grant,identity,login,created,deadline):(String,String,String,String,String,String,Option<String>,Option<String>,Option<String>,i64,i64)=connection.query_row("SELECT s.principal_id,p.kind,s.binding_json,s.runtime_id,s.session_public_key,s.credential_kind,s.oauth_grant_id,s.identity_key_id,g.login_session_id,s.issued_at,s.hard_deadline FROM auth_authorization_sessions s JOIN auth_principals p USING(principal_id) LEFT JOIN auth_oauth_grants g ON g.oauth_grant_id=s.oauth_grant_id WHERE s.authorization_session_id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?,row.get(10)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (principal,kind,binding,runtime,key,credential,grant,identity,login,created,deadline) = connection.query_row(
+        "SELECT s.principal_id,p.kind,s.binding_json,s.runtime_id,s.session_public_key,s.credential_kind,s.oauth_grant_id,s.identity_key_id,g.login_session_id,s.issued_at,s.hard_deadline FROM auth_authorization_sessions s JOIN auth_principals p USING(principal_id) LEFT JOIN auth_oauth_grants g ON g.oauth_grant_id=s.oauth_grant_id WHERE s.authorization_session_id=?1",
+        [id],
+        |row| Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, i64>(9)?,
+            row.get::<_, i64>(10)?,
+        )),
+    ).optional()?.ok_or(AuthError::NotFound)?;
     let session = id.parse().map_err(|_| AuthError::Unavailable)?;
     let status = SqliteAuthorizationStore::authorization_session_status_in(connection, session)?;
     Ok(serde_json::from_value(json!({

@@ -151,35 +151,35 @@ fn built_in_read_only_requests_select_only_the_requested_operations() {
     let sources = [
         (
             "auth_types",
-            include_str!("../../runtime/src/builtin_source/auth_types.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/auth_types.trellis"),
         ),
         (
             "types",
-            include_str!("../../runtime/src/builtin_source/types.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/types.trellis"),
         ),
         (
             "auth",
-            include_str!("../../runtime/src/builtin_source/auth.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/auth.trellis"),
         ),
         (
             "state",
-            include_str!("../../runtime/src/builtin_source/state.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/state.trellis"),
         ),
         (
             "jobs",
-            include_str!("../../runtime/src/builtin_source/jobs.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/jobs.trellis"),
         ),
         (
             "health",
-            include_str!("../../runtime/src/builtin_source/health.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/health.trellis"),
         ),
         (
             "events",
-            include_str!("../../runtime/src/builtin_source/events.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/events.trellis"),
         ),
         (
             "core",
-            include_str!("../../runtime/src/builtin_source/core.trellis"),
+            include_str!("../../builtin-contracts/src/builtin_source/core.trellis"),
         ),
         (
             "reader",

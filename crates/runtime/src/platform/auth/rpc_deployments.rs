@@ -630,15 +630,19 @@ pub(super) fn accept_api(
     store.mutate(identity, "rpc.apis.accept", input, now, |connection| {
         let acceptance = reviewed_acceptance(
             connection,
-            &input.review_id.to_string(),
-            &input.canonical_digest,
+            ApiAcceptance {
+                review_id: input.review_id.to_string(),
+                reviewed_digest: input.canonical_digest.to_string(),
+                force: false,
+                acknowledge_breakage: false,
+                confirm_consent_meanings: false,
+                materially_changed: vec![],
+                policy_edits: vec![],
+            },
             input.expected_generation.0,
             input.expected_accepted_revision.0,
             &input.role_edits,
             &input.mapping_edits,
-            false,
-            false,
-            false,
             now,
         )?;
         let snapshot = store.accept_api_in_transaction(connection, identity, &acceptance, now)?;
@@ -664,15 +668,19 @@ pub(super) fn force_replace_api(
         |connection| {
             let acceptance = reviewed_acceptance(
                 connection,
-                &input.review_id.to_string(),
-                &input.canonical_digest,
+                ApiAcceptance {
+                    review_id: input.review_id.to_string(),
+                    reviewed_digest: input.canonical_digest.to_string(),
+                    force: true,
+                    acknowledge_breakage: input.acknowledge_breakage,
+                    confirm_consent_meanings: input.acknowledge_consent_impact,
+                    materially_changed: vec![],
+                    policy_edits: vec![],
+                },
                 input.expected_generation.0 .0,
                 input.expected_accepted_revision.0 .0,
                 &input.role_edits,
                 &input.mapping_edits,
-                true,
-                input.acknowledge_breakage,
-                input.acknowledge_consent_impact,
                 now,
             )?;
             let snapshot =
@@ -688,18 +696,14 @@ pub(super) fn force_replace_api(
 
 fn reviewed_acceptance(
     connection: &Connection,
-    review_id: &str,
-    digest: &str,
+    mut acceptance: ApiAcceptance,
     generation: u64,
     revision: u64,
     roles: &[AuthReviewedRoleEdit],
     mappings: &[AuthReviewedMappingEdit],
-    force: bool,
-    acknowledge_breakage: bool,
-    confirm_consent_meanings: bool,
     now: i64,
 ) -> Result<ApiAcceptance, AuthError> {
-    let review: String = connection.query_row("SELECT review_json FROM auth_api_reviews WHERE review_id=?1 AND expires_at>?2 AND consumed_at IS NULL", params![review_id, now], |row| row.get(0)).optional()?.ok_or(AuthError::Conflict)?;
+    let review: String = connection.query_row("SELECT review_json FROM auth_api_reviews WHERE review_id=?1 AND expires_at>?2 AND consumed_at IS NULL", params![acceptance.review_id, now], |row| row.get(0)).optional()?.ok_or(AuthError::Conflict)?;
     let review: ApiReview = super::sqlite::decode(&review)?;
     if (generation, revision) != (review.expected_generation, review.expected_revision) {
         return Err(AuthError::Conflict);
@@ -739,19 +743,11 @@ fn reviewed_acceptance(
             }
         }
     }
-    Ok(ApiAcceptance {
-        review_id: review_id.into(),
-        reviewed_digest: digest.into(),
-        force,
-        acknowledge_breakage,
-        confirm_consent_meanings,
-        materially_changed: if force {
-            review.consent_changes
-        } else {
-            vec![]
-        },
-        policy_edits: edits,
-    })
+    if acceptance.force {
+        acceptance.materially_changed = review.consent_changes;
+    }
+    acceptance.policy_edits = edits;
+    Ok(acceptance)
 }
 
 fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi, AuthError> {

@@ -17,7 +17,6 @@ pub(crate) const JOBS_ADVISORIES_STREAM: &str = "JOBS_ADVISORIES";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExpectedRuntimeResources {
-    subsystems: &'static [SubsystemName],
     streams: Vec<stream::Config>,
 }
 
@@ -50,14 +49,7 @@ impl ExpectedRuntimeResources {
         for stream in &mut streams {
             stream.storage = storage;
         }
-        Self {
-            subsystems,
-            streams,
-        }
-    }
-
-    pub(crate) fn requires(&self, subsystem: SubsystemName) -> bool {
-        self.subsystems.contains(&subsystem)
+        Self { streams }
     }
 
     pub(crate) fn streams(&self) -> &[stream::Config] {

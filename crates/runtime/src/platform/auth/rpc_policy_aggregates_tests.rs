@@ -76,7 +76,7 @@ fn privilege_replace_preserves_identity_cas_and_replay_cannot_revoke_recreated_a
         .unwrap();
     assert_eq!(listed.items, vec![updated.assignment.clone()]);
     let revoke = AuthPlatformRevokeRequest {
-        assignment_id: updated.assignment.assignment_id.clone(),
+        assignment_id: updated.assignment.assignment_id,
         expected_revision: updated.assignment.revision,
         idempotency_key: id().into(),
         extra: Default::default(),
@@ -142,7 +142,7 @@ fn bootstrap_assignment_cannot_be_demoted_or_removed() {
         Err(AuthError::Denied)
     ));
     let revoke = AuthPlatformRevokeRequest {
-        assignment_id: admin.assignment_id.clone(),
+        assignment_id: admin.assignment_id,
         expected_revision: admin.revision,
         idempotency_key: id().into(),
         extra: Default::default(),
@@ -175,7 +175,14 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
         expected_revision: 0,
     };
     f.store
-        .register_oidc_provider(&mutation(&f.admin, &provider), &provider, NOW)
+        .transaction(|connection| {
+            f.store.register_oidc_provider_in_transaction(
+                connection,
+                &mutation(&f.admin, &provider),
+                &provider,
+                NOW,
+            )
+        })
         .unwrap();
     let roles = [id(), id()];
     for (role_id, capability) in roles.iter().zip([&f.read, &f.write]) {
@@ -205,7 +212,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
     let created = put_mapping(&f.store, &identity, &input, NOW).unwrap();
     assert_eq!(created.mapping.role_ids.len(), 2);
     let update = AuthOIDCRoleMappingPutRequest {
-        mapping_id: Some(created.mapping.mapping_id.clone()),
+        mapping_id: Some(created.mapping.mapping_id),
         role_ids: vec![roles[1].parse().unwrap()],
         expected_revision: 1.into(),
         idempotency_key: id().into(),
@@ -237,7 +244,7 @@ fn multi_role_mapping_atomic_replace_delete_and_typed_replay() {
         updated.mapping
     );
     let delete = AuthOIDCRoleMappingDeleteRequest {
-        mapping_id: created.mapping.mapping_id.clone(),
+        mapping_id: created.mapping.mapping_id,
         expected_revision: updated.mapping.revision,
         idempotency_key: id().into(),
         extra: Default::default(),

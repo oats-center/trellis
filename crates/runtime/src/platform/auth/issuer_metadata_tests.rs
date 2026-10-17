@@ -7,13 +7,19 @@ use trellis_protocol::{
 #[test]
 fn public_metadata_retains_signed_cutoff_and_authenticates_rotated_issuer_without_new_trust() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
-    let original = f.store.issuer();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &f.admission, None, NOW)
+            .unwrap();
+    let original = f.store.issuer().unwrap();
     let scope =
         EnforcementScope::Session(issued.authority.unsigned.authorization_session_id.clone());
-    f.store
-        .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::revoke_root(
+        &f.store,
+        &mutation(&f.admin, &scope),
+        &scope,
+        NOW + 1,
+    )
+    .unwrap();
     let request = IssuerMetadataRequest {
         trellis_instance_id: f.store.settings.instance_id.clone(),
         audience_nats_account: f.store.settings.account.clone(),
@@ -82,15 +88,11 @@ fn public_metadata_retains_signed_cutoff_and_authenticates_rotated_issuer_withou
             NOW + 2
         )
         .is_err());
-    let next = SigningKey::from_bytes(&[76; 32]);
-    let next_public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
-    let rotation = f
-        .store
-        .rotate_issuer(&mutation(&f.admin, &next_public), &next_public, NOW + 3)
-        .unwrap();
-    // Install real successor custody through the ordinary production constructor.
-    let store = open(&f.directory, next);
-    let current = store.issuer();
+    let rotation =
+        crate::platform::auth::phase_two_tests::rotate_issuer(&f.store, &f.admin, NOW + 3).unwrap();
+    // Restart with the original bootstrap key; committed successor custody wins.
+    let store = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
+    let current = store.issuer().unwrap();
     let chain_request = IssuerMetadataRequest {
         query: IssuerMetadataQuery::IssuerChain {
             pinned_key_id: original.key_id.clone(),

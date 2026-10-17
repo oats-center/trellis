@@ -29,8 +29,8 @@ use trellis_protocol::{
 };
 
 use super::super::{
-    policy::evaluate, AdmissionIdentity, AuthError, Credential, GrantApproval, IssuedAuthority,
-    Mutation, SqliteAuthorizationStore,
+    policy::evaluate, AdmissionIdentity, AuthError, Credential, GrantApproval, Mutation,
+    SqliteAuthorizationStore,
 };
 use super::{OAuthStorage, RequestedAuthority, TokenBinding};
 
@@ -121,7 +121,7 @@ impl SqliteAuthorizationStore {
         Ok(sign_oauth_admission(
             OAuthAdmission {
                 format: OAUTH_ADMISSION_FORMAT_V1.into(),
-                issuer_key_id: self.issuer().key_id,
+                issuer_key_id: self.current_issuer(connection)?.key_id,
                 trellis_instance_id: self.settings.instance_id.clone(),
                 audience_nats_account: self.settings.account.clone(),
                 oauth_grant_id: grant.clone(),
@@ -137,48 +137,8 @@ impl SqliteAuthorizationStore {
                 not_before: now,
                 expires_at: expires,
             },
-            &self.signer,
+            &self.current_signer(connection)?,
         )?)
-    }
-
-    /// Signature, exact family status and authority issuance share one snapshot.
-    /// The NATS caller must separately prove nonce possession of this User NKey.
-    pub(crate) fn admit_oauth(
-        &self,
-        credential: &[u8],
-        ephemeral_nkey: &str,
-        inbox_prefix: &str,
-        now: i64,
-    ) -> Result<IssuedAuthority, AuthError> {
-        self.transaction(|connection| {
-            let identity = self.oauth_admission_identity_in(
-                connection,
-                credential,
-                ephemeral_nkey,
-                inbox_prefix,
-                now,
-            )?;
-            self.issue_authority_in_transaction(connection, &identity, None, now)
-        })?
-    }
-
-    pub(crate) fn admit_provisioned(
-        &self,
-        credential: &[u8],
-        ephemeral_nkey: &str,
-        inbox_prefix: &str,
-        now: i64,
-    ) -> Result<IssuedAuthority, AuthError> {
-        self.transaction(|connection| {
-            let identity = self.provisioned_admission_identity_in(
-                connection,
-                credential,
-                ephemeral_nkey,
-                inbox_prefix,
-                now,
-            )?;
-            self.issue_authority_in_transaction(connection, &identity, None, now)
-        })?
     }
 
     pub(in crate::platform::auth) fn provisioned_admission_identity_in(

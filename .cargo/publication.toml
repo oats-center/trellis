@@ -4,6 +4,8 @@
 trellis-protocol = { path = "crates/protocol" }
 trellis-rs = { path = "crates/trellis" }
 trellis-idl = { path = "crates/idl" }
+trellis-codegen-rust = { path = "crates/codegen-rust" }
+trellis-builtin-contracts = { path = "crates/builtin-contracts" }
 trellis-local-bootstrap = { path = "crates/local-bootstrap" }
 trellis-local-nats = { path = "crates/local-nats" }
 trellis-runtime-apis = { path = "crates/runtime-apis" }

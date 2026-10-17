@@ -7,10 +7,6 @@ import {
   jobTimelineEventsForAttempt,
 } from "./job_event_timeline.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
-
 const start = new Date("2026-07-10T20:00:40.000Z");
 
 function event(

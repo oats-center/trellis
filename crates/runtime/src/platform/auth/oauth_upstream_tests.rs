@@ -265,7 +265,14 @@ staticPasswords:
         expected_revision: 0,
     };
     authority
-        .register_oidc_provider(&mutation(&f.admin, &registration), &registration, NOW)
+        .transaction(|connection| {
+            authority.register_oidc_provider_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
         .unwrap();
     let account = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
         username: "alice".to_string().into(),
@@ -293,9 +300,13 @@ staticPasswords:
         capabilities: vec![f.write.clone()],
         expected_revision: 0,
     };
-    authority
-        .apply_policy(&mutation(&f.admin, &role), &role, NOW)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::apply_policy(
+        &authority,
+        &mutation(&f.admin, &role),
+        &role,
+        NOW,
+    )
+    .unwrap();
     let reader_role = id();
     let reader = PolicyMutation::RolePut {
         role_id: reader_role.clone(),
@@ -304,9 +315,13 @@ staticPasswords:
         capabilities: vec![f.read.clone()],
         expected_revision: 0,
     };
-    authority
-        .apply_policy(&mutation(&f.admin, &reader), &reader, NOW)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::apply_policy(
+        &authority,
+        &mutation(&f.admin, &reader),
+        &reader,
+        NOW,
+    )
+    .unwrap();
     let mapping_id = id();
     let mapping = PolicyMutation::OidcMappingPut {
         mapping_id: mapping_id.clone(),
@@ -316,9 +331,13 @@ staticPasswords:
         role_ids: vec![group_role, reader_role],
         expected_revision: 0,
     };
-    authority
-        .apply_policy(&mutation(&f.admin, &mapping), &mapping, NOW)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::apply_policy(
+        &authority,
+        &mutation(&f.admin, &mapping),
+        &mapping,
+        NOW,
+    )
+    .unwrap();
     let engine = Arc::new(OAuthEngine::new(storage).unwrap());
     let listener = OAuthListener::load(
         portal_socket,
@@ -526,7 +545,14 @@ staticPasswords:
                 expected_revision: 1,
             };
             authority
-                .register_client(&mutation(&f.admin, &client), &client, current)
+                .transaction(|connection| {
+                    authority.register_client_in_transaction(
+                        connection,
+                        &mutation(&f.admin, &client),
+                        &client,
+                        current,
+                    )
+                })
                 .unwrap();
             let cookies = jar.cookies(&portal).unwrap();
             let cookie = cookies
@@ -546,28 +572,28 @@ staticPasswords:
             let grant = authority
                 .approve_grant(&mutation(&f.admin, &approval), &approval, current)
                 .unwrap();
-            let admitted = authority
-                .issue_authority(
-                    &AdmissionIdentity {
-                        refresh_family_id: Some(super::oauth_family(
-                            &authority,
-                            &grant,
-                            current,
-                            current + 86400,
-                        )),
-                        credential: Credential::OAuthGrant(grant),
-                        runtime_id: URL_SAFE_NO_PAD.encode([22; 16]),
-                        session_public_key: URL_SAFE_NO_PAD.encode(
-                            ed25519_dalek::SigningKey::from_bytes(&[52; 32])
-                                .verifying_key()
-                                .as_bytes(),
-                        ),
-                        inbox_prefix: "_INBOX.resetHttp".into(),
-                    },
-                    None,
-                    current,
-                )
-                .unwrap();
+            let admitted = crate::platform::auth::phase_two_tests::issue_authority(
+                &authority,
+                &AdmissionIdentity {
+                    refresh_family_id: Some(super::oauth_family(
+                        &authority,
+                        &grant,
+                        current,
+                        current + 86400,
+                    )),
+                    credential: Credential::OAuthGrant(grant),
+                    runtime_id: URL_SAFE_NO_PAD.encode([22; 16]),
+                    session_public_key: URL_SAFE_NO_PAD.encode(
+                        ed25519_dalek::SigningKey::from_bytes(&[52; 32])
+                            .verifying_key()
+                            .as_bytes(),
+                    ),
+                    inbox_prefix: "_INBOX.resetHttp".into(),
+                },
+                None,
+                current,
+            )
+            .unwrap();
             let reset_request =
                 trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateRequest {
                     user_id: f.principal.parse().unwrap(),
@@ -588,8 +614,7 @@ staticPasswords:
                     &before.cookie,
                     &before.csrf,
                     &"r".repeat(43),
-                    "alice",
-                    "initial alice password",
+                    ("alice", "initial alice password"),
                     &id(),
                     current,
                 )
@@ -658,8 +683,7 @@ staticPasswords:
                     &after.cookie,
                     &after.csrf,
                     &"s".repeat(43),
-                    "alice",
-                    "updated alice password",
+                    ("alice", "updated alice password"),
                     &id(),
                     current
                 )
@@ -855,14 +879,13 @@ staticPasswords:
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let admitted = authority
-        .admit_oauth(
-            tokens.trellis_admission.as_bytes(),
-            &ephemeral.public_key(),
-            "_INBOX.upstream",
-            now,
-        )
-        .unwrap();
+    let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+        &authority,
+        tokens.trellis_admission.as_bytes(),
+        &ephemeral.public_key(),
+        now,
+    )
+    .unwrap();
     assert_eq!(admitted.authority.unsigned.principal_id, f.principal);
     assert_eq!(
         admitted
@@ -877,7 +900,9 @@ staticPasswords:
     // Both mapped roles contribute only through claims verified by the real IdP flow.
     let login: String = authority.transaction(|connection| Ok(connection.query_row("SELECT login_session_id FROM auth_login_sessions WHERE principal_id=?1 AND provider_id=?2 ORDER BY observation_order DESC LIMIT 1", rusqlite::params![f.principal,provider], |row| row.get(0))?)).unwrap();
     let access = authority
-        .effective_access(&f.principal, Some(&login), now)
+        .transaction(|connection| {
+            crate::platform::auth::policy::entitlements(connection, &f.principal, Some(&login), now)
+        })
         .unwrap();
     assert!(access.contains_key(&f.read));
     assert!(access.contains_key(&f.write));
@@ -896,7 +921,12 @@ staticPasswords:
     )
     .unwrap();
     assert!(authority
-        .effective_access(&f.principal, Some(&login), now)
+        .transaction(|connection| crate::platform::auth::policy::entitlements(
+            connection,
+            &f.principal,
+            Some(&login),
+            now
+        ))
         .unwrap()
         .is_empty());
     assert_eq!(

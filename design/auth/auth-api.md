@@ -6,7 +6,7 @@ Current native Auth contracts replace this inventory; see
 
 ## Source Of Truth
 
-`crates/runtime/trellis/src/apis/trellis_auth_v1/` is the native Auth source.
+`crates/builtin-contracts/src/builtin_source/auth.trellis` is the native Auth source.
 Generated Rust and TypeScript clients and schemas are the public API reference.
 HTTP-only browser/bootstrap DTOs remain Rust-owned at their transport boundary.
 
@@ -110,11 +110,16 @@ read-only snapshot into write access.
 
 ### Issuers
 
+- `Auth.Issuers.Rotate`
+- `Auth.Issuers.ResolveChain`
 - `Auth.Issuers.Revoke`
 
-Issuer installation and rotation occur online during runtime startup from the
-configured private issuer seed. No offline root or manifest RPC exists.
-Historical contexts remain stored after ordinary rotation.
+Fresh initialization provisions the initial private issuer seed. Authorized
+rotation generates and durably stores successor custody locally before committing
+the signed trust transition and idempotent result. Startup reads the committed
+current key; it never rotates or recreates missing keys. No private key crosses
+an RPC, and no offline root or manifest RPC exists. Historical contexts remain
+stored after ordinary rotation; explicit issuer revocation remains separate.
 
 ### Deployments And Provisioning
 

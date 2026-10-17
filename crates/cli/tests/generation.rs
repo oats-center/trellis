@@ -24,6 +24,12 @@ output = "generated"
     )
     .unwrap();
     fs::write(root.path().join("package.json"), "{\"type\":\"module\"}\n").unwrap();
+    // Rust is built independently; its marker must not override explicit TS output.
+    fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
     fs::write(root.path().join("package-lock.json"), "lock\n").unwrap();
     fs::write(
         root.path().join("main.trellis"),

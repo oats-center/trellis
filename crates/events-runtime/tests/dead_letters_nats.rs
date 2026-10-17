@@ -6,8 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-use async_nats::jetstream::{self, consumer, stream, AckKind};
-use futures_util::StreamExt;
+use async_nats::jetstream::{self, consumer, stream};
 use trellis_events_runtime::dead_letters::{
     dead_letter_id, DeadLetterState, OriginalEvent, ReplayEnvelope, DLQ_STREAM, DLQ_SUBJECTS,
     REPLAY_STREAM, REPLAY_SUBJECTS,

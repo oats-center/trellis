@@ -53,7 +53,6 @@ async fn durable_proof_authenticates_only_its_signed_runtime_and_user_nkey() {
         now,
     )
     .unwrap();
-    assert_eq!(binding.ephemeral_public_key, URL_SAFE_NO_PAD.encode(bytes));
     assert_eq!(binding.ephemeral_nkey, ephemeral.public_key());
     assert_eq!(binding.runtime_id, runtime);
     assert_eq!(binding.persistent_dpop_jkt, key.public_jwk().thumbprint());

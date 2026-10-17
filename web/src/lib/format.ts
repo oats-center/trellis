@@ -66,7 +66,8 @@ function formatContextMessage(
   }
 
   if (
-    typeof context.causeMessage === "string" && context.causeMessage.length > 0
+    typeof context.causeMessage === "string" &&
+    context.causeMessage.length > 0
   ) {
     return context.causeMessage;
   }
@@ -85,9 +86,8 @@ function formatIssues(
   return issues
     .map((issue) => {
       const path = typeof issue.path === "string" ? issue.path : "";
-      const message = typeof issue.message === "string"
-        ? issue.message
-        : "Invalid value";
+      const message =
+        typeof issue.message === "string" ? issue.message : "Invalid value";
       return path ? `${path}: ${message}` : message;
     })
     .join("; ");
@@ -122,9 +122,10 @@ export function compactDuration(ms: number): string {
 
   const milliseconds = rounded % 1_000;
   const totalSeconds = Math.floor(rounded / 1_000);
-  const seconds = `${totalSeconds % 60}.${
-    String(milliseconds).padStart(3, "0")
-  }s`;
+  const seconds = `${totalSeconds % 60}.${String(milliseconds).padStart(
+    3,
+    "0",
+  )}s`;
   if (totalSeconds < 60) {
     return `${totalSeconds}.${String(milliseconds).padStart(3, "0")}s`;
   }
@@ -191,17 +192,20 @@ export function errorMessage(error: unknown): string {
       return remoteContextMessage;
     }
 
-    const directContext = typeof candidate.getContext === "function"
-      ? candidate.getContext()
-      : undefined;
+    const directContext =
+      typeof candidate.getContext === "function"
+        ? candidate.getContext()
+        : undefined;
     const directContextMessage = formatContextMessage(directContext);
     if (directContextMessage) {
       return directContextMessage;
     }
 
     if (typeof candidate.error?.context?.reason === "string") {
-      return formatAuthReason(candidate.error.context.reason) ??
-        candidate.error.context.reason;
+      return (
+        formatAuthReason(candidate.error.context.reason) ??
+        candidate.error.context.reason
+      );
     }
 
     const nestedContextMessage = formatContextMessage(candidate.error?.context);
@@ -209,8 +213,8 @@ export function errorMessage(error: unknown): string {
       return nestedContextMessage;
     }
 
-    // Structured projection covers generated errors and the current `code`
-    // field; the legacy `reason` paths above stay for existing callers.
+    // Generated RPC errors carry `code`; local SDK AuthError values carry
+    // `reason`. Both are current public error surfaces.
     const projected = projectConsoleError(error);
     const projectedCopy = formatAuthReason(projected.code);
     if (projectedCopy) return projectedCopy;

@@ -24,8 +24,7 @@ impl SqliteAuthorizationStore {
             return Err(AuthError::Invalid("invalid snapshot time".into()));
         }
         let mut connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        // The sampler opens the normal read-only platform connection. The
-        // mutation transaction's BEGIN IMMEDIATE is inappropriate here.
+        // Read the owning Auth store without reserving a writer transaction.
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
         let (post_commit_pending, oldest): (u64, Option<i64>) = transaction.query_row(
             "SELECT count(*), min(created_at) FROM auth_post_commit_actions",

@@ -141,8 +141,9 @@ app Dashboard {
 Native generation does not execute TypeScript or require a Vite plugin. The
 application's bundler and type checker still need to resolve imports from the
 one generated package and the installed Trellis packages. Its executable `.js`
-and `.d.ts` require no consumer transpilation or Trellis CLI. Commit generated
-output for ordinary clone builds. Use the
+and `.d.ts` require no consumer transpilation or Trellis CLI once packaged. Keep
+generated implementations out of Git and run `trellis install` before local builds.
+Use the
 resolver configuration appropriate to that application; the checked-in app demo
 illustrates one npm/Vite setup, not a required frontend stack.
 

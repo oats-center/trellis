@@ -9,10 +9,6 @@ import {
 } from "./authority.ts";
 import type { Authority } from "../control-panel.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
-
 const READY_AUTHORITY: Authority = {
   authorityDigest: "current-ui-snapshot",
   platformPrivileges: ["principals.manage"],

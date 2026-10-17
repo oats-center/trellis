@@ -98,345 +98,6 @@ pub(crate) fn console_registration(origin: &str) -> Result<ClientRegistration, A
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::{OAuthEngine, OAuthStorage, PolicyMutation};
-    use super::*;
-    use crate::{storage::SqliteStore, RuntimeConfig, SqliteStorageConfig, SubsystemName};
-    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-    use oauth_as::{client::ClientId, store::Storage};
-    use std::sync::Arc;
-
-    #[tokio::test]
-    async fn seeded_clients_authenticate_and_preserve_operator_changes_on_reopen() {
-        let directory = tempfile::tempdir().unwrap();
-        trellis_local_bootstrap::generate_local_live_provider_seeds(
-            &directory.path().join("live-providers"),
-        )
-        .unwrap();
-        let issuer = directory.path().join("issuer.key");
-        let sealing = directory.path().join("oauth.key");
-        for (path, bytes) in [(&issuer, [13u8; 32]), (&sealing, [17u8; 32])] {
-            std::fs::write(path, URL_SAFE_NO_PAD.encode(bytes)).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            }
-        }
-        let config:RuntimeConfig=serde_json::from_value(serde_json::json!({
-            "event_session_seed_file": directory.path().join("session.seed"),
-            "auth":{
-                "instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV", "oauth_storage_key_file":sealing,
-                "oauth":{"origin":"http://localhost:3001","bind_address":"127.0.0.1","port":3001,
-                    "transport":{"mode":"loopback_development"}},
-                "authorization":{"issuer_signing_seed_file":issuer,"context_lifetime_seconds":300,
-                    "refresh_lead_seconds":60,"refresh_jitter_seconds":15,"minimum_context_lifetime_seconds":76,
-                    "maximum_bootstrap_jwt_lifetime_seconds":3600,"allowed_clock_skew_seconds":30,
-                    "maximum_context_bytes":16384,"maximum_permissions":4096,"context_bucket":"trellis_authorization_contexts","registry_replicas":1}
-            }
-        })).unwrap();
-        let database = SqliteStore::new(
-            SubsystemName::Platform,
-            SqliteStorageConfig {
-                path: directory.path().join("platform.sqlite"),
-                journal_mode: Some("wal".into()),
-                busy_timeout_ms: Some(5000),
-                single_writer: Some(true),
-            },
-        );
-        database.migrate().unwrap();
-        let store =
-            Arc::new(SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap());
-        store.initialize_issuer(1000).unwrap();
-        assert!(matches!(
-            store.seed_administrator_and_console(
-                "http://localhost:3001",
-                "administrator",
-                "initial-password",
-                1000
-            ),
-            Err(AuthError::Invalid(_))
-        ));
-        let mut invalid = cli_registration();
-        invalid
-            .implied_capabilities
-            .push("not.installed::read".into());
-        let failed = store.initialize_administrator(
-            "administrator",
-            Some("initial-password"),
-            Some(&[
-                console_registration("http://localhost:3000").unwrap(),
-                invalid,
-            ]),
-            None,
-            1000,
-        );
-        assert!(failed.is_err());
-        let principal = store
-            .seed_administrator_and_console(
-                "http://localhost:3000",
-                "administrator",
-                "initial-password",
-                1000,
-            )
-            .unwrap();
-        let provider_seed = crate::platform::live_provider::load_live_provider_seed(
-            &config,
-            crate::platform::live_provider::LiveProviderRole::Platform,
-        )
-        .unwrap();
-        let provider = store
-            .initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&provider_seed, 1000)
-            .unwrap();
-        let health_grant = super::super::PolicyMutation::CapabilityGrant {
-            principal_id: principal.clone(),
-            capability_id: super::super::deployments::SELF_HEALTH_CAPABILITY.into(),
-            expected_revision: 0,
-            expires_at: None,
-        };
-        let grant_identity = Mutation {
-            actor: principal.clone(),
-            request_id: id(),
-            request_digest: digest(&health_grant).unwrap(),
-        };
-        assert!(matches!(
-            store.apply_policy(&grant_identity, &health_grant, 1001),
-            Err(AuthError::Denied)
-        ));
-        let cookie = store.create_portal_session(1001).unwrap();
-        let login = store
-            .portal_local_login(
-                &cookie.cookie,
-                &cookie.csrf,
-                &URL_SAFE_NO_PAD.encode([23u8; 32]),
-                "administrator",
-                "initial-password",
-                &id(),
-                1001,
-            )
-            .unwrap();
-        assert_eq!(login.principal_id, principal);
-        let storage = OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap();
-        let client_id = ClientId::new(CONSOLE_CLIENT_ID);
-        let client = storage.get_client(&client_id).await.unwrap().unwrap();
-        assert_eq!(client.redirect_uris, vec!["http://localhost:3000/login"]);
-        let cli_id = ClientId::new(CLI_CLIENT_ID);
-        let engine =
-            OAuthEngine::new(OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap()).unwrap();
-        let device = engine
-            .server
-            .device_authorization(&cli_id, None, None)
-            .await
-            .unwrap();
-        assert!(storage
-            .get_device_grant(&device.device_code)
-            .await
-            .unwrap()
-            .is_some());
-        drop(engine);
-        let mut cli_change = cli_registration();
-        cli_change.display_name = "Operator-managed CLI".into();
-        cli_change.expected_revision = 1;
-        store
-            .register_client(
-                &Mutation {
-                    actor: principal.clone(),
-                    request_id: id(),
-                    request_digest: digest(&cli_change).unwrap(),
-                },
-                &cli_change,
-                1002,
-            )
-            .unwrap();
-        let mut changed = console_registration("https://console.example").unwrap();
-        changed.expected_revision = 1;
-        store
-            .register_client(
-                &Mutation {
-                    actor: principal.clone(),
-                    request_id: id(),
-                    request_digest: digest(&changed).unwrap(),
-                },
-                &changed,
-                1002,
-            )
-            .unwrap();
-        drop(storage);
-        drop(store);
-        let store =
-            Arc::new(SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap());
-        store.initialize_issuer(1003).unwrap();
-        assert_eq!(
-            store
-                .seed_administrator_and_console(
-                    "http://localhost:3000",
-                    "administrator",
-                    "initial-password",
-                    1003
-                )
-                .unwrap(),
-            principal
-        );
-        let reopened_seed = crate::platform::live_provider::load_live_provider_seed(
-            &config,
-            crate::platform::live_provider::LiveProviderRole::Platform,
-        )
-        .unwrap();
-        let reopened_provider = store
-            .initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&reopened_seed, 1003)
-            .unwrap();
-        assert_eq!(reopened_provider.identity_key_id, provider.identity_key_id);
-        assert_eq!(reopened_provider.deployment_id, provider.deployment_id);
-        assert_eq!(reopened_provider.instance_id, provider.instance_id);
-        let storage = OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap();
-        assert_eq!(
-            storage
-                .get_client(&cli_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .name
-                .as_deref(),
-            Some("Operator-managed CLI")
-        );
-        assert_eq!(
-            storage
-                .get_client(&client_id)
-                .await
-                .unwrap()
-                .unwrap()
-                .redirect_uris,
-            vec!["https://console.example/login"]
-        );
-        let disable = PolicyMutation::ClientState {
-            client_id: CONSOLE_CLIENT_ID.into(),
-            expected_revision: 2,
-            state: "disabled".into(),
-        };
-        store
-            .apply_policy(
-                &Mutation {
-                    actor: principal.clone(),
-                    request_id: id(),
-                    request_digest: digest(&disable).unwrap(),
-                },
-                &disable,
-                1004,
-            )
-            .unwrap();
-        let disable_cli = PolicyMutation::ClientState {
-            client_id: CLI_CLIENT_ID.into(),
-            expected_revision: 2,
-            state: "disabled".into(),
-        };
-        store
-            .apply_policy(
-                &Mutation {
-                    actor: principal.clone(),
-                    request_id: id(),
-                    request_digest: digest(&disable_cli).unwrap(),
-                },
-                &disable_cli,
-                1004,
-            )
-            .unwrap();
-        drop(storage);
-        drop(store);
-        let store =
-            Arc::new(SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap());
-        store.initialize_issuer(1005).unwrap();
-        assert_eq!(
-            store
-                .seed_administrator_and_console(
-                    "http://localhost:3000",
-                    "administrator",
-                    "initial-password",
-                    1005
-                )
-                .unwrap(),
-            principal
-        );
-        assert!(matches!(
-            store.seed_administrator_and_console(
-                "http://localhost:3000",
-                "administrator",
-                "different-password",
-                1005
-            ),
-            Err(AuthError::Conflict)
-        ));
-        assert!(OAuthStorage::new(store.clone(), &[17u8; 32])
-            .unwrap()
-            .get_client(&client_id)
-            .await
-            .unwrap()
-            .is_none());
-        let engine =
-            OAuthEngine::new(OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap()).unwrap();
-        assert!(engine
-            .server
-            .device_authorization(&cli_id, None, None)
-            .await
-            .is_err());
-        let next = ed25519_dalek::SigningKey::from_bytes(&[29u8; 32]);
-        let public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
-        let rotation = store
-            .rotate_issuer(
-                &Mutation {
-                    actor: principal.clone(),
-                    request_id: id(),
-                    request_digest: digest(&public).unwrap(),
-                },
-                &public,
-                1006,
-            )
-            .unwrap();
-        assert!(matches!(
-            store.runtime_authorization_trust(),
-            Err(AuthError::Denied)
-        ));
-        std::fs::write(&issuer, URL_SAFE_NO_PAD.encode(next.to_bytes())).unwrap();
-        drop(store);
-        let store =
-            SqliteAuthorizationStore::open_read_only(&database, &config, "test-account").unwrap();
-        let trust = store.runtime_authorization_trust().unwrap();
-        assert_eq!(trust.issuer.key_id, rotation.next_key_id);
-        assert_eq!(trust.rotation_sequence, rotation.sequence.get());
-        type Platform = trellis_runtime_apis::participants::trellis_platform::Participant;
-        let found = store
-            .lookup_builtin_provider::<Platform>(&reopened_seed, 1007)
-            .unwrap();
-        assert_eq!(found.deployment_id, reopened_provider.deployment_id);
-        assert_eq!(found.instance_id, reopened_provider.instance_id);
-        assert_eq!(found.identity_key_id, reopened_provider.identity_key_id);
-        assert!(matches!(store.lookup_builtin_provider::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>(&reopened_seed,1007),Err(AuthError::Denied)));
-        assert!(matches!(
-            store.lookup_builtin_provider::<Platform>(&URL_SAFE_NO_PAD.encode([78; 32]), 1007),
-            Err(AuthError::NotFound)
-        ));
-        // A separate ordinary writer retires the credential. The already open
-        // read-only adapter must see that transition rather than cache or repair it.
-        let writer = SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap();
-        let scope = super::super::EnforcementScope::Identity(found.identity_key_id);
-        writer
-            .revoke_root(
-                &Mutation {
-                    actor: principal,
-                    request_id: id(),
-                    request_digest: digest(&scope).unwrap(),
-                },
-                &scope,
-                1008,
-            )
-            .unwrap();
-        assert!(matches!(
-            store.lookup_builtin_provider::<Platform>(&reopened_seed, 1008),
-            Err(AuthError::Denied)
-        ));
-    }
-}
-
 impl SqliteAuthorizationStore {
     /// Whether the installation has already committed its protected administrator.
     pub(crate) fn has_administrator(&self) -> Result<bool, AuthError> {
@@ -661,5 +322,333 @@ impl super::OAuthStorage {
             "{}/account/reset?token={}",
             self.authority.settings.oauth_origin, response.token
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{OAuthEngine, OAuthStorage, PolicyMutation};
+    use super::*;
+    use crate::{storage::SqliteStore, RuntimeConfig, SqliteStorageConfig, SubsystemName};
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use oauth_as::{client::ClientId, store::Storage};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn seeded_clients_authenticate_and_preserve_operator_changes_on_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        trellis_local_bootstrap::generate_local_live_provider_seeds(
+            &directory.path().join("live-providers"),
+        )
+        .unwrap();
+        let issuer = directory.path().join("issuer.key");
+        let sealing = directory.path().join("oauth.key");
+        for (path, bytes) in [(&issuer, [13u8; 32]), (&sealing, [17u8; 32])] {
+            std::fs::write(path, URL_SAFE_NO_PAD.encode(bytes)).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+        let config:RuntimeConfig=serde_json::from_value(serde_json::json!({
+            "event_session_seed_file": directory.path().join("session.seed"),
+            "auth":{
+                "instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV", "oauth_storage_key_file":sealing,
+                "oauth":{"origin":"http://localhost:3001","bind_address":"127.0.0.1","port":3001,
+                    "transport":{"mode":"loopback_development"}},
+                "authorization":{"issuer_signing_seed_file":issuer,"context_lifetime_seconds":300,
+                    "refresh_lead_seconds":60,"refresh_jitter_seconds":15,"minimum_context_lifetime_seconds":76,
+                    "maximum_bootstrap_jwt_lifetime_seconds":3600,"allowed_clock_skew_seconds":30,
+                    "maximum_context_bytes":16384,"maximum_permissions":4096,"context_bucket":"trellis_authorization_contexts","registry_replicas":1}
+            }
+        })).unwrap();
+        let database = SqliteStore::new(
+            SubsystemName::Platform,
+            SqliteStorageConfig {
+                path: directory.path().join("platform.sqlite"),
+                journal_mode: Some("wal".into()),
+                busy_timeout_ms: Some(5000),
+                single_writer: Some(true),
+            },
+        );
+        database.migrate().unwrap();
+        let store =
+            Arc::new(SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap());
+        store.initialize_issuer(1000).unwrap();
+        assert!(matches!(
+            store.seed_administrator_and_console(
+                "http://localhost:3001",
+                "administrator",
+                "initial-password",
+                1000
+            ),
+            Err(AuthError::Invalid(_))
+        ));
+        let mut invalid = cli_registration();
+        invalid
+            .implied_capabilities
+            .push("not.installed::read".into());
+        let failed = store.initialize_administrator(
+            "administrator",
+            Some("initial-password"),
+            Some(&[
+                console_registration("http://localhost:3000").unwrap(),
+                invalid,
+            ]),
+            None,
+            1000,
+        );
+        assert!(failed.is_err());
+        let principal = store
+            .seed_administrator_and_console(
+                "http://localhost:3000",
+                "administrator",
+                "initial-password",
+                1000,
+            )
+            .unwrap();
+        let provider_seed = crate::platform::live_provider::load_live_provider_seed(
+            &config,
+            crate::platform::live_provider::LiveProviderRole::Platform,
+        )
+        .unwrap();
+        let provider = store
+            .initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&provider_seed, 1000)
+            .unwrap();
+        let health_grant = super::super::PolicyMutation::CapabilityGrant {
+            principal_id: principal.clone(),
+            capability_id: super::super::deployments::SELF_HEALTH_CAPABILITY.into(),
+            expected_revision: 0,
+            expires_at: None,
+        };
+        let grant_identity = Mutation {
+            actor: principal.clone(),
+            request_id: id(),
+            request_digest: digest(&health_grant).unwrap(),
+        };
+        assert!(matches!(
+            crate::platform::auth::phase_two_tests::apply_policy(
+                &store,
+                &grant_identity,
+                &health_grant,
+                1001
+            ),
+            Err(AuthError::Denied)
+        ));
+        let cookie = store.create_portal_session(1001).unwrap();
+        let login = store
+            .portal_local_login(
+                &cookie.cookie,
+                &cookie.csrf,
+                &URL_SAFE_NO_PAD.encode([23u8; 32]),
+                ("administrator", "initial-password"),
+                &id(),
+                1001,
+            )
+            .unwrap();
+        assert_eq!(login.principal_id, principal);
+        let storage = OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap();
+        let client_id = ClientId::new(CONSOLE_CLIENT_ID);
+        let client = storage.get_client(&client_id).await.unwrap().unwrap();
+        assert_eq!(client.redirect_uris, vec!["http://localhost:3000/login"]);
+        let cli_id = ClientId::new(CLI_CLIENT_ID);
+        let engine =
+            OAuthEngine::new(OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap()).unwrap();
+        let device = engine
+            .server
+            .device_authorization(&cli_id, None, None)
+            .await
+            .unwrap();
+        assert!(storage
+            .get_device_grant(&device.device_code)
+            .await
+            .unwrap()
+            .is_some());
+        drop(engine);
+        let mut cli_change = cli_registration();
+        cli_change.display_name = "Operator-managed CLI".into();
+        cli_change.expected_revision = 1;
+        store
+            .transaction(|connection| {
+                store.register_client_in_transaction(
+                    connection,
+                    &Mutation {
+                        actor: principal.clone(),
+                        request_id: id(),
+                        request_digest: digest(&cli_change).unwrap(),
+                    },
+                    &cli_change,
+                    1002,
+                )
+            })
+            .unwrap();
+        let mut changed = console_registration("https://console.example").unwrap();
+        changed.expected_revision = 1;
+        store
+            .transaction(|connection| {
+                store.register_client_in_transaction(
+                    connection,
+                    &Mutation {
+                        actor: principal.clone(),
+                        request_id: id(),
+                        request_digest: digest(&changed).unwrap(),
+                    },
+                    &changed,
+                    1002,
+                )
+            })
+            .unwrap();
+        drop(storage);
+        drop(store);
+        let store =
+            Arc::new(SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap());
+        store.initialize_issuer(1003).unwrap();
+        assert_eq!(
+            store
+                .seed_administrator_and_console(
+                    "http://localhost:3000",
+                    "administrator",
+                    "initial-password",
+                    1003
+                )
+                .unwrap(),
+            principal
+        );
+        let reopened_seed = crate::platform::live_provider::load_live_provider_seed(
+            &config,
+            crate::platform::live_provider::LiveProviderRole::Platform,
+        )
+        .unwrap();
+        let reopened_provider = store
+            .initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&reopened_seed, 1003)
+            .unwrap();
+        assert_eq!(reopened_provider.identity_key_id, provider.identity_key_id);
+        assert_eq!(reopened_provider.deployment_id, provider.deployment_id);
+        assert_eq!(reopened_provider.instance_id, provider.instance_id);
+        let storage = OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap();
+        assert_eq!(
+            storage
+                .get_client(&cli_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Operator-managed CLI")
+        );
+        assert_eq!(
+            storage
+                .get_client(&client_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .redirect_uris,
+            vec!["https://console.example/login"]
+        );
+        let disable = PolicyMutation::ClientState {
+            client_id: CONSOLE_CLIENT_ID.into(),
+            expected_revision: 2,
+            state: "disabled".into(),
+        };
+        crate::platform::auth::phase_two_tests::apply_policy(
+            &store,
+            &Mutation {
+                actor: principal.clone(),
+                request_id: id(),
+                request_digest: digest(&disable).unwrap(),
+            },
+            &disable,
+            1004,
+        )
+        .unwrap();
+        let disable_cli = PolicyMutation::ClientState {
+            client_id: CLI_CLIENT_ID.into(),
+            expected_revision: 2,
+            state: "disabled".into(),
+        };
+        crate::platform::auth::phase_two_tests::apply_policy(
+            &store,
+            &Mutation {
+                actor: principal.clone(),
+                request_id: id(),
+                request_digest: digest(&disable_cli).unwrap(),
+            },
+            &disable_cli,
+            1004,
+        )
+        .unwrap();
+        drop(storage);
+        drop(store);
+        let store =
+            Arc::new(SqliteAuthorizationStore::open(&database, &config, "test-account").unwrap());
+        store.initialize_issuer(1005).unwrap();
+        assert_eq!(
+            store
+                .seed_administrator_and_console(
+                    "http://localhost:3000",
+                    "administrator",
+                    "initial-password",
+                    1005
+                )
+                .unwrap(),
+            principal
+        );
+        assert!(matches!(
+            store.seed_administrator_and_console(
+                "http://localhost:3000",
+                "administrator",
+                "different-password",
+                1005
+            ),
+            Err(AuthError::Conflict)
+        ));
+        assert!(OAuthStorage::new(store.clone(), &[17u8; 32])
+            .unwrap()
+            .get_client(&client_id)
+            .await
+            .unwrap()
+            .is_none());
+        let engine =
+            OAuthEngine::new(OAuthStorage::new(store.clone(), &[17u8; 32]).unwrap()).unwrap();
+        assert!(engine
+            .server
+            .device_authorization(&cli_id, None, None)
+            .await
+            .is_err());
+        let rotation =
+            crate::platform::auth::phase_two_tests::rotate_issuer(&store, &principal, 1006)
+                .unwrap();
+        assert_eq!(
+            store.runtime_authorization_trust().unwrap().issuer.key_id,
+            rotation.next_key_id
+        );
+        drop(store);
+        let store =
+            SqliteAuthorizationStore::open_read_only(&database, &config, "test-account").unwrap();
+        let trust = store.runtime_authorization_trust().unwrap();
+        assert_eq!(trust.issuer.key_id, rotation.next_key_id);
+        assert_eq!(trust.rotation_sequence, rotation.sequence.get());
+        // Loss of committed signing custody must stop startup, not select the
+        // still-present bootstrap seed or invent another issuer.
+        let successor = issuer
+            .with_extension("keys")
+            .join(format!("{}.key", rotation.next_key_id));
+        let retained = successor.with_extension("retained");
+        std::fs::rename(&successor, &retained).unwrap();
+        assert!(SqliteAuthorizationStore::open(&database, &config, "test-account").is_err());
+        assert!(
+            SqliteAuthorizationStore::open_read_only(&database, &config, "test-account").is_err()
+        );
+        assert!(!successor.exists());
+        std::fs::rename(&retained, &successor).unwrap();
+        assert_eq!(
+            SqliteAuthorizationStore::open(&database, &config, "test-account")
+                .unwrap()
+                .runtime_authorization_trust()
+                .unwrap()
+                .issuer,
+            trust.issuer
+        );
     }
 }

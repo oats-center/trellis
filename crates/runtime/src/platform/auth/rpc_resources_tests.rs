@@ -466,7 +466,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         })
         .unwrap();
     let apply = AuthDeploymentApplyRequest {
-        deployment_id: current.deployment_id.clone(),
+        deployment_id: current.deployment_id,
         expected_revision: current.revision,
         package_evidence: serde_json::from_value(serde_json::to_value(&omitted).unwrap()).unwrap(),
         idempotency_key: super::super::sqlite::id().into(),
@@ -491,7 +491,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     let store = Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32])));
     assert_eq!(
         store
-            .transaction(|connection| read_resource(connection, &detached.resource_id.to_string()))
+            .transaction(|connection| read_resource(connection, detached.resource_id.as_ref()))
             .unwrap()
             .state,
         AuthResourceState::Detached
@@ -588,7 +588,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     )
     .unwrap();
     let resource = store
-        .transaction(|connection| read_resource(connection, &detached.resource_id.to_string()))
+        .transaction(|connection| read_resource(connection, detached.resource_id.as_ref()))
         .unwrap();
     let removal = AuthResourceRemoveRequest {
         resource_id: resource.resource_id.clone(),

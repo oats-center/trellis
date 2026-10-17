@@ -246,22 +246,22 @@ impl SqliteAuthorizationStore {
                     _ => return Err(AuthError::Denied),
                 }
                 // Transfer-capable actions retain endpoint-scoped permissions.
-                let definition =
-                    api.definition()
-                        .actions()
-                        .iter()
-                        .find(|(key, _)| {
-                            key.name == identity.name
-                                && match (key.kind, identity.kind) {
-                                    (trellis_idl::ActionKind::Rpc, ApiSurfaceKind::Rpc)
+                let definition = api
+                    .definition()
+                    .actions()
+                    .iter()
+                    .find(|(key, _)| {
+                        key.name == identity.name
+                            && matches!(
+                                (key.kind, identity.kind),
+                                (trellis_idl::ActionKind::Rpc, ApiSurfaceKind::Rpc)
                                     | (
                                         trellis_idl::ActionKind::Operation,
                                         ApiSurfaceKind::Operation,
-                                    ) => true,
-                                    _ => false,
-                                }
-                        })
-                        .map(|(_, value)| value);
+                                    )
+                            )
+                    })
+                    .map(|(_, value)| value);
                 if let Some(definition) = definition {
                     if matches!(
                         definition,

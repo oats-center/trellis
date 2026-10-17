@@ -4,6 +4,7 @@
 //! `TRELLIS_IDL_BENCH_PROJECT` to measure one local project instead of the
 //! checked-in platform, Console, and demo packages. File reads and preparation
 //! are excluded; owned-input cloning and compiled-graph destruction are included.
+//! Evidence samples reuse the warmed exact-evidence compilation cache.
 
 use std::{collections::BTreeMap, hint::black_box, path::Path, time::Instant};
 use trellis_idl::{
@@ -55,7 +56,7 @@ fn main() {
     let projects = std::env::var_os("TRELLIS_IDL_BENCH_PROJECT").map_or_else(
         || {
             [
-                "crates/runtime",
+                "crates/builtin-contracts",
                 "web",
                 "demos/ts/service",
                 "demos/rust/service",
@@ -87,13 +88,14 @@ fn main() {
             compile_evidence(evidence.clone()).unwrap().root_digest(),
             graph.root_digest()
         );
-        for phase in ["compile", "evidence"] {
+        for phase in ["compile", "evidence-warm", "clone"] {
             let mut samples = Vec::new();
             for iteration in 0..23 {
                 let started = Instant::now();
                 match phase {
                     "compile" => drop(black_box(input.compile())),
-                    "evidence" => drop(black_box(compile_evidence(evidence.clone()).unwrap())),
+                    "evidence-warm" => drop(black_box(compile_evidence(evidence.clone()).unwrap())),
+                    "clone" => drop(black_box(graph.clone())),
                     _ => unreachable!(),
                 }
                 if iteration >= 2 {

@@ -5,7 +5,7 @@ root = "demo-app"
 name = "demo-app"
 version = "1.0.0"
 digest = "pBi1dBxRa_CW2MHadknfpvCdSSPLXLcZUr1dNnzR_90"
-distribution-digest = "sha256:407010493d5ec944ee1ba6d5a0519835862af903ccdd1714e09da3f5ef9f1a67"
+distribution-digest = "sha256:aed2d41536e72611dda11d3bcf29154a54771e6afcb9453a7be02472d2e869dd"
 
 [[packages.dependencies]]
 name = "demo-service"
@@ -41,4 +41,4 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "../../crates/runtime"
+path = "../../crates/builtin-contracts"

@@ -14,10 +14,6 @@ import {
   retryJob,
 } from "./jobs_page.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
-
 const jobContext = {
   requestId: "req_test",
   traceId: "trace_test",

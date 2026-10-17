@@ -2,6 +2,7 @@
 members = [
   "crates/trellis",
   "crates/runtime-apis",
+  "crates/builtin-contracts",
   "crates/local-bootstrap",
   "crates/bootstrap",
   "crates/local-nats",

@@ -21,7 +21,8 @@ mod transport_generations;
 pub use auth::SessionAuth;
 pub use authorization::{
     canonical_trellis_origin, AuthorizationLease, AuthorizationOwner,
-    HistoricalEventVerificationInput, RuntimeAuthorizationTrust, VerifiedAuthorizationResponse,
+    HistoricalEventVerificationInput, ResponseVerificationInput, RuntimeAuthorizationTrust,
+    VerifiedAuthorizationResponse,
 };
 pub(crate) use authorization::{
     resource_action_marker, ResourceTransportAction, ResourceTransportKind,
@@ -86,6 +87,6 @@ pub use transfer::{
     UploadTransferGrant,
 };
 pub(crate) use transport_generations::{
-    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, LogicalTerminalCause,
-    TransportGeneration, TransportGenerationManager, TransportLease,
+    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, TransportGeneration,
+    TransportGenerationManager, TransportLease,
 };

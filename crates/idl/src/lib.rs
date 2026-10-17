@@ -114,8 +114,9 @@ use project::{Dependency, GenerateConfig, PackageManifest, PackageMetadata};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 /// Compile a source package and supplied exact dependency graphs without I/O.
@@ -157,12 +158,31 @@ pub struct PackageEvidence {
     pub packages: Vec<PackageSourceEvidence>,
 }
 
-/// Recompile and verify generated package evidence without filesystem or network access.
+// Only successful compilations of exactly equal complete evidence are reusable.
+// Keep compilation and graph cloning outside the lock; concurrent misses may
+// compile twice, but never serialize unrelated evidence behind the compiler.
+static COMPILED_EVIDENCE: Mutex<VecDeque<(PackageEvidence, Arc<PackageGraph>)>> =
+    Mutex::new(VecDeque::new());
+
+/// Compile and verify generated package evidence without filesystem or network access.
+///
+/// A bounded process-local cache reuses successful compilations only when the
+/// complete evidence matches, including every source byte and dependency. Claimed
+/// digests alone never authorize reuse. No policy or authorization state is cached.
 ///
 /// # Errors
 ///
 /// Returns an error when the closure is incomplete, cyclic, malformed, or digest-invalid.
 pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGraph> {
+    let cached = COMPILED_EVIDENCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(input, _)| input == &evidence)
+        .map(|(_, graph)| Arc::clone(graph));
+    if let Some(graph) = cached {
+        return Ok((*graph).clone());
+    }
     if !evidence
         .packages
         .windows(2)
@@ -197,6 +217,16 @@ pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGrap
         return Err(miette::miette!(
             "evidence root digest does not match recompiled semantics"
         ));
+    }
+    let retained = Arc::new(graph.clone());
+    let mut cache = COMPILED_EVIDENCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !cache.iter().any(|(input, _)| input == &evidence) {
+        if cache.len() == 16 {
+            cache.pop_front();
+        }
+        cache.push_back((evidence, retained));
     }
     Ok(graph)
 }

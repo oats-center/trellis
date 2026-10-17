@@ -82,6 +82,9 @@ Install locked API dependencies and regenerate project-local artifacts with:
 
 Each contract project owns `trellis.toml`, commits `trellis.lock`, and consumes
 its private generated SDK through the configured TypeScript or Rust output.
+Generated implementations are ignored build artifacts, not committed source.
+Trellis-owned Rust libraries generate their built-in bindings in Cargo `OUT_DIR`
+from published native-IDL build dependencies; downstream Cargo builds need no CLI.
 `cargo xtask build` installs the fixed repository project DAG before building
 the Rust workspace. Live client-library integration coverage is language-owned.
 Run these peer suites when you need that coverage:

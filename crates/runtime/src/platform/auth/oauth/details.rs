@@ -12,7 +12,6 @@ pub(crate) struct RequestedAuthority {
     pub(crate) capabilities: CapabilitySelection,
     pub(crate) required_privileges: Vec<PlatformPrivilege>,
     pub(crate) optional_privileges: Vec<PlatformPrivilege>,
-    pub(crate) unavailable_privileges: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,19 +95,14 @@ impl RequestedAuthority {
                 serde_json::from_value(serde_json::Value::String(name)).map_err(|_| invalid())
             })
             .collect::<Result<_, _>>()?;
-        let mut optional_privileges = Vec::new();
-        let mut unavailable_privileges = Vec::new();
-        for name in optional {
-            match serde_json::from_value(serde_json::Value::String(name.clone())) {
-                Ok(privilege) => optional_privileges.push(privilege),
-                Err(_) => unavailable_privileges.push(name),
-            }
-        }
+        let optional_privileges = optional
+            .into_iter()
+            .filter_map(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
+            .collect();
         Ok(Self {
             capabilities,
             required_privileges,
             optional_privileges,
-            unavailable_privileges,
         })
     }
 }
@@ -119,15 +113,17 @@ mod tests {
 
     #[test]
     fn capability_details_normalize_selection_and_fail_closed_on_ambiguous_requests() {
-        let request = RequestedAuthority::parse(r#"[{"type":"trellis_capabilities","required":["acme.documents@v1::read","acme.documents@v1::read"],"optional":["acme.documents@v1::read","acme.documents@v1::export","acme.documents@v1::export"]},{"type":"trellis_platform_privileges","required":["roles.manage"],"optional":["roles.manage","future.privilege"]}]"#).unwrap();
+        let request = RequestedAuthority::parse(r#"[{"type":"trellis_capabilities","required":["acme.documents@v1::read","acme.documents@v1::read"],"optional":["acme.documents@v1::read","acme.documents@v1::export","acme.documents@v1::export"]},{"type":"trellis_platform_privileges","required":["roles.manage"],"optional":["roles.manage","clients.manage","future.privilege"]}]"#).unwrap();
         assert_eq!(request.capabilities.required, ["acme.documents@v1::read"]);
         assert_eq!(request.capabilities.optional, ["acme.documents@v1::export"]);
         assert_eq!(
             request.required_privileges,
             [PlatformPrivilege::RolesManage]
         );
-        assert!(request.optional_privileges.is_empty());
-        assert_eq!(request.unavailable_privileges, ["future.privilege"]);
+        assert_eq!(
+            request.optional_privileges,
+            [PlatformPrivilege::ClientsManage]
+        );
         for raw in [
             r#"[]"#,
             r#"[{"type":"future_type","required":[]}]"#,

@@ -8,10 +8,6 @@ import {
   parseContractDependencyBlock,
 } from "./catalog_issues.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
-
 test("parseContractDependencyBlock reads nested missing RPC details", () => {
   const detail = parseContractDependencyBlock(
     "Active contract digest 'blocked-digest' for 'krishi.workspace@v1' has invalid active dependencies (Dependency 'sherpa' references missing rpc 'GetSampleForWorkspace' on 'sherpa@v1')",

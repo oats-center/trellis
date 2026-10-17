@@ -87,24 +87,25 @@ orders-service/
   service.ts
   main.ts
   service_test.ts
-  trellis/          # one generated package, committed for ordinary clone builds
+  trellis/          # one ignored, generated package
 ```
 
 ## Run the checked-in example instead
 
 The same source is checked in under
 [`docs/examples/orders`](https://github.com/oats-center/trellis/tree/main/docs/examples/orders).
-Its generated package is committed. Its tasks use ordinary installed libraries,
-not parent-repository paths, so a copied checkout needs no Trellis CLI or API
-cache for its normal check and test:
+Its generated package is disposable. Generate it from the committed native IDL
+before checking or testing. Its tasks use ordinary installed libraries, not
+parent-repository paths:
 
 ```sh
 cd docs/examples/orders
 npm install
+trellis install
 npm run check
 npm test
 ```
 
 The live test still needs the matching `trellis-server` runtime executable and
-pinned NATS binaries. Only authoring changes require regeneration. Continue with
+pinned NATS binaries. Continue with
 [the contract](/guides/write-a-service/first-contract).

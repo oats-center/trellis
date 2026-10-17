@@ -46,20 +46,6 @@ use crate::service::{BootstrapBinding, CoreBootstrapBinding, ServiceResourceBind
 const HEALTH_HEARTBEAT_INTERVAL_MS: u64 = 30_000;
 const DEFAULT_EVENT_STREAM: &str = "trellis";
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct AppliedNativeAuthorization {
-    pub(crate) runtime: AuthorizationRuntimeBinding,
-}
-
-impl AppliedNativeAuthorization {
-    pub(crate) fn from_cache(
-        contexts: &AuthorizationContextCache,
-    ) -> Result<Self, TrellisClientError> {
-        let runtime = contexts.runtime_binding()?;
-        Ok(Self { runtime })
-    }
-}
-
 /// Internal service connection inputs; assignment and resources come from the server.
 pub struct ServiceConnectWithContractOptions<'a> {
     /// Explicit provisioned broker endpoints; never discovered over HTTP.
@@ -937,26 +923,6 @@ async fn attach_authorization_provider(
     })
 }
 
-/// Validate that a refreshed native runtime keeps the stable session binding.
-///
-/// Managed transport generations capture the candidate's runtime when they open,
-/// so an in-place renewal never mutates the original baseline socket (which may
-/// already have been reaped). This is a pure check: no `set_server_pool` or
-/// reconnect is issued against the original generation.
-pub(crate) fn validate_native_runtime_refresh(
-    previous: &AuthorizationRuntimeBinding,
-    refreshed: &AuthorizationRuntimeBinding,
-) -> Result<(), TrellisClientError> {
-    if previous.runtime_id != refreshed.runtime_id
-        || previous.inbox_prefix != refreshed.inbox_prefix
-    {
-        return Err(TrellisClientError::Bootstrap(
-            "refreshed native runtime changed stable session binding".into(),
-        ));
-    }
-    Ok(())
-}
-
 /// Connection options for an OAuth-authorized native application.
 pub struct UserConnectOptions<'a> {
     nats_servers: Vec<String>,
@@ -999,7 +965,6 @@ pub struct TrellisClient {
     service_bootstrap_binding: Option<CoreBootstrapBinding>,
     health_heartbeat_task: Option<JoinHandle<()>>,
     authorization_contexts: Option<Arc<AuthorizationContextCache>>,
-    applied_native_authorization: Arc<tokio::sync::Mutex<AppliedNativeAuthorization>>,
     /// Automatic transport generations that own this logical connection's
     /// physical NATS attachments for finite request and publish work.
     generations: crate::client::TransportGenerationManager,
@@ -1060,17 +1025,6 @@ impl TrellisClient {
     /// Return the cloneable session signer for owned live controls.
     pub(crate) fn auth_handle(&self) -> std::sync::Arc<crate::client::SessionAuth> {
         self.auth.clone()
-    }
-
-    /// Return the cloneable authorization-context owner for live controls.
-    pub(crate) fn authorization_contexts_handle(
-        &self,
-    ) -> Result<std::sync::Arc<crate::client::AuthorizationContextCache>, TrellisClientError> {
-        self.authorization_contexts.clone().ok_or_else(|| {
-            TrellisClientError::AuthorizationUnavailable(
-                "authorization context cache unavailable".to_owned(),
-            )
-        })
     }
 
     /// Return the live-observation manager for this connection owner.
@@ -1494,8 +1448,6 @@ impl TrellisClient {
         kind: &'static str,
     ) -> Result<Self, TrellisClientError> {
         let inbox_prefix = authorization_contexts.runtime_binding()?.inbox_prefix;
-        let applied_native_authorization =
-            AppliedNativeAuthorization::from_cache(&authorization_contexts)?;
         let auth = Arc::new(auth);
         let live_slot = std::sync::Arc::new(std::sync::Mutex::new(
             None::<std::sync::Weak<crate::live::manager::LiveSessionManager>>,
@@ -1536,8 +1488,6 @@ impl TrellisClient {
         let provider =
             attach_authorization_provider(authorization_contexts.clone(), generations.clone())
                 .await?;
-        let applied_native_authorization =
-            Arc::new(tokio::sync::Mutex::new(applied_native_authorization));
         let authorization_context_refresh_task = Some(
             crate::client::authorization::spawn_authorization_context_refresh_task(
                 crate::client::authorization::AuthorizationRefreshRuntime {
@@ -1561,7 +1511,6 @@ impl TrellisClient {
             connection: std::sync::Arc::new(
                 crate::telemetry::lifecycle::ConnectionRegistration::start(kind),
             ),
-            applied_native_authorization,
             generations,
             authorization_context_refresh_task,
             oauth_admission_refresh_task: None,
@@ -1591,13 +1540,6 @@ impl TrellisClient {
             .as_ref()
             .map(|cache| cache.bundle())
             .transpose()
-    }
-
-    /// Return the in-process provider cache used by local verification.
-    pub(crate) fn authorization_context_cache(
-        &self,
-    ) -> Result<AuthorizationOwner, TrellisClientError> {
-        Ok(self.authorization_provider.clone())
     }
 
     /// Refresh and verify the current authorization context immediately.
@@ -1723,13 +1665,6 @@ impl TrellisClient {
             | TrellisClientError::LiveProtocol(_) => "invalid",
             _ => "error",
         }
-    }
-
-    pub(crate) fn authorization_context_digest(&self) -> Result<String, TrellisClientError> {
-        let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {
-            TrellisClientError::Bootstrap("authorization context unavailable".into())
-        })?;
-        contexts.context_digest()
     }
 
     pub(crate) fn own_deployment_id(&self) -> Result<String, TrellisClientError> {
@@ -2386,14 +2321,18 @@ impl TrellisClient {
             self.authorization_owner()
                 .verify_response(
                     lease.nats(),
-                    &request,
-                    &digest,
-                    &action,
-                    expected_deployment_id.as_deref().or(accepted_owner),
-                    message.subject.as_str(),
-                    &response,
-                    &message.payload,
-                    &proof,
+                    crate::client::ResponseVerificationInput {
+                        pending_request: &request,
+                        pending_request_digest: &digest,
+                        action: &action,
+                        expected_deployment_id: expected_deployment_id
+                            .as_deref()
+                            .or(accepted_owner),
+                        received_subject: message.subject.as_str(),
+                        response: &response,
+                        payload: &message.payload,
+                        proof: &proof,
+                    },
                 )
                 .await?;
             self.authorization_owner()
@@ -2480,37 +2419,6 @@ fn event_consumer_config(
     }
 }
 
-fn descriptor_action(action: &str) -> &str {
-    action.split_once('.').map_or(action, |(_, action)| action)
-}
-
 #[cfg(test)]
 #[path = "connection_mirror_tests.rs"]
 mod mirror_tests;
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn generated_action_keys_normalize_like_bound_routes() {
-        assert_eq!(
-            super::descriptor_action("auth.Authority.Status"),
-            "Authority.Status"
-        );
-        assert_eq!(
-            super::descriptor_action("core.Resources.Destroy"),
-            "Resources.Destroy"
-        );
-        assert_eq!(super::descriptor_action("Ping"), "Ping");
-        // Internal SDK descriptors carry the same generated-key form as the
-        // routes they call, including for actions that already contain a dot.
-        assert_eq!(
-            super::descriptor_action("events.Consumers.ReportDelivery"),
-            "Consumers.ReportDelivery"
-        );
-        assert_eq!(
-            super::descriptor_action("events.DeadLetters.Inspect"),
-            "DeadLetters.Inspect"
-        );
-    }
-}

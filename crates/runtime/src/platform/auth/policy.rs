@@ -25,7 +25,6 @@ pub(crate) struct Evaluation {
     pub(crate) selection: CapabilitySelection,
     pub(crate) capabilities: Vec<CapabilityAuthority>,
     pub(crate) required_missing: Vec<String>,
-    pub(crate) optional_unavailable: Vec<String>,
     pub(crate) apis: Vec<AuthorityApi>,
     pub(crate) providers: Vec<AuthorityProvider>,
     pub(crate) resource_bindings_digest: Option<String>,
@@ -129,6 +128,12 @@ pub(super) fn role(connection: &Connection, role_id: &str) -> Result<(u64, u64),
     connection.query_row("SELECT identity_generation,revision FROM auth_roles WHERE role_id=?1 AND state='active'", [role_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(AuthError::NotFound)
 }
 
+#[derive(Debug)]
+pub(super) struct Entitlement {
+    pub(super) deadline: Option<i64>,
+    pub(super) sources: Vec<String>,
+}
+
 /// The one entitlement union used by display, approval, issuance and enforcement.
 /// Deadlines are unioned per capability: losing one path cannot remove another.
 pub(super) fn entitlements(
@@ -136,8 +141,8 @@ pub(super) fn entitlements(
     principal: &str,
     login: Option<&str>,
     now: i64,
-) -> Result<BTreeMap<String, (Option<i64>, Vec<String>)>, AuthError> {
-    let mut values: BTreeMap<String, (Option<i64>, Vec<String>)> = BTreeMap::new();
+) -> Result<BTreeMap<String, Entitlement>, AuthError> {
+    let mut values: BTreeMap<String, Entitlement> = BTreeMap::new();
     let mut statement = connection.prepare(
         "SELECT c.capability_id,d.expires_at,'direct' FROM auth_direct_capabilities d JOIN auth_capability_identities c ON c.capability_id=d.capability_id AND c.identity_generation=d.capability_generation WHERE d.principal_id=?1 AND c.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)
          UNION ALL SELECT c.capability_id,a.expires_at,'role:'||r.role_id FROM auth_role_assignments a JOIN auth_roles r ON r.role_id=a.role_id AND r.identity_generation=a.role_generation JOIN auth_role_capabilities m ON m.role_id=r.role_id AND m.role_generation=r.identity_generation JOIN auth_capability_identities c ON c.capability_id=m.capability_id AND c.identity_generation=m.capability_generation WHERE a.principal_id=?1 AND r.state='active' AND c.state='active' AND (a.expires_at IS NULL OR a.expires_at>?2)")?;
@@ -184,14 +189,17 @@ pub(super) fn entitlements(
     for (capability, deadline, source) in sources {
         values
             .entry(capability)
-            .and_modify(|(current, sources)| {
-                *current = match (*current, deadline) {
+            .and_modify(|current| {
+                current.deadline = match (current.deadline, deadline) {
                     (Some(a), Some(b)) => Some(a.max(b)),
                     _ => None,
                 };
-                sources.push(source.clone());
+                current.sources.push(source.clone());
             })
-            .or_insert((deadline, vec![source]));
+            .or_insert(Entitlement {
+                deadline,
+                sources: vec![source],
+            });
     }
     Ok(values)
 }
@@ -216,7 +224,6 @@ pub(super) fn evaluate(
         selection: root.selection,
         capabilities: vec![],
         required_missing: vec![],
-        optional_unavailable: vec![],
         apis: vec![],
         providers: vec![],
         resource_bindings_digest: root.resource_bindings_digest,
@@ -249,7 +256,7 @@ pub(super) fn evaluate(
                     .as_ref()
                     .is_none_or(|approved| approved.contains(current))
             });
-        if let (Some(current), Some((deadline, sources)), true) =
+        if let (Some(current), Some(Entitlement { deadline, sources }), true) =
             (current, entitled.get(&selected), consent)
         {
             // Entitlement unions and consent bounds apply only to this right.
@@ -271,8 +278,6 @@ pub(super) fn evaluate(
             result.capabilities.push(current);
         } else if required.contains(&selected) {
             result.required_missing.push(selected);
-        } else {
-            result.optional_unavailable.push(selected);
         }
     }
     // Provider rights and resource ownership are independent of caller grants.
@@ -286,36 +291,6 @@ pub(super) fn evaluate(
         return Err(AuthError::Denied);
     }
     Ok(result)
-}
-
-impl SqliteAuthorizationStore {
-    pub(crate) fn effective_access(
-        &self,
-        principal: &str,
-        login: Option<&str>,
-        now: i64,
-    ) -> Result<BTreeMap<String, (Option<i64>, Vec<String>)>, AuthError> {
-        self.transaction(|connection| entitlements(connection, principal, login, now))
-    }
-
-    pub(crate) fn evaluate(
-        &self,
-        credential: &Credential,
-        now: i64,
-    ) -> Result<Evaluation, AuthError> {
-        self.transaction(|connection| evaluate(connection, credential, now))
-    }
-
-    pub(crate) fn apply_policy(
-        &self,
-        identity: &Mutation,
-        mutation: &PolicyMutation,
-        now: i64,
-    ) -> Result<u64, AuthError> {
-        self.mutate(identity, "policy", mutation, now, |connection| {
-            apply_policy_in_transaction(connection, identity, mutation, now)
-        })
-    }
 }
 
 /// Apply policy and its enforcement intents within the caller's aggregate transaction.

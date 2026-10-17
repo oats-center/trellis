@@ -16,10 +16,6 @@ function authFailure(code: string) {
   });
 }
 
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
-
 type Record_ = { id: string; state: string };
 
 test("U34 an exact Get resolves the requested record only", async () => {

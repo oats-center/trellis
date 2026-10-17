@@ -1,5 +1,10 @@
 # Trellis For Rust Consumers
 
+Admin `Issuers.Rotate` generates private successor custody on Auth's host and
+returns the old-key-signed trust transition. Supply the expected current key ID
+and an idempotency key; repeating the request does not rotate again. SDKs verify
+the successor chain from pinned trust. OAuth storage custody is unchanged.
+
 Console and the isolated OAuth listener require HTTPS outside explicit loopback
 development. The HTTP insecure-origin allowlist does not relax that requirement.
 
@@ -76,8 +81,8 @@ monotonic issuer rotations, logical-session authority, and session revocations.
 `trellis-protocol` authenticates these records against pinned instance/account
 trust. Catalog membership checks also require verified live authority and its
 retirement status; decoding a record is not trust. The Rust SDK consumes verified
-OAuth sessions and proof-bearing provisioned CONNECT credentials. Production
-host/CLI integration and live verification remain unfinished on this branch.
+OAuth sessions and proof-bearing provisioned CONNECT credentials through the
+production host, CLI, and application transports.
 Do not revive the retired GrantBinding/browser-bind protocol or install a watcher
 per context as a compatibility path.
 
@@ -87,8 +92,7 @@ persistent DPoP key and rotating refresh family; an operating-system lock spans
 read, exchange, and commit across processes. Mark recovery before exchange so
 a lost response cannot trigger replay of a spent refresh token. Platforms
 without this owner-only adapter must supply an explicit secure-store adapter.
-Native CLI and production Callout/startup paths use this custody implementation;
-their full integrated acceptance gate remains in progress.
+Native CLI and production Callout/startup paths use this custody implementation.
 
 Cold OAuth resume verifies signed issuer successors from the retained pin using
 GET /.well-known/trellis/issuer-chain at the selected OAuth origin and persists
@@ -255,9 +259,13 @@ generator build script, repository-relative runtime paths, or runtime-path
 config in `trellis.toml`. Use ordinary Cargo overrides when developing against a
 local runtime. Generation does not modify the consumer's Cargo manifest.
 
-Commit generated output when clones should build with Cargo alone, without the
-Trellis CLI/cache. Regenerate rather than editing it. Native source packages,
-not canonical API/participant JSON, are the publication and evidence boundary.
+Commit native IDL, manifests, and dependency locks, not disposable generated
+implementations. Run `trellis install` before building project-local SDK consumers;
+package generated code when distributing them. Trellis-owned Rust SDK and runtime
+API crates generate their built-in bindings into Cargo `OUT_DIR` from published
+build dependencies, without requiring the Trellis CLI in downstream builds.
+Native source packages, not canonical API/participant JSON, are the publication
+and evidence boundary. Explicit generation targets select only the named outputs.
 
 An API SDK contains types and descriptors. The participant facade supplies the
 connection boundary and only the declared caller/provider surfaces. Its
@@ -300,32 +308,15 @@ Register generated providers before `service.run().await`. The service lifecycle
 supervises its request host and workers. `with_timeout_ms(...)` bounds
 bootstrap, connect, and request operations.
 
-Apps/agents use user-login credentials (login session ID plus session seed) and
-perform context refresh before CONNECT. Devices retain their provisioned
-identity seed and use generated activation/connect options. Do not substitute a
-raw NATS URL/JWT or client-authored assignment for either lifecycle.
-
-Agent browser sign-in returns an `AgentLoginChallenge` retaining the signed
-intent and exposing `intent_id` and `login_url`. Creating this challenge or
-rendering its portal does not start an authentication-attempt deadline. The
-portal starts an independent bounded transaction when authentication begins.
-`poll_agent_transaction_until_ready` takes the initiating `SessionAuth` as well
-as the origin and challenge. It submits a fresh `browser-auth-progress` proof to
-`/auth/intents/progress` on each poll within the caller's wait budget and
-returns the ID only when ready. Public intent rendering exposes no discovery.
-Only one outstanding transaction can claim the intent; a concurrent start cannot
-replace an unexpired attempt, even after approval while bind is outstanding.
-The portal persists its pending binding before starting; retrying that intent
-with the same binding recovers the active transaction after response loss or
-reload. Another binding conflicts and cannot replace the rendezvous.
-Denied, expired, and consumed attempts permit a fresh transaction.
-Completion binds that transaction with the initiating private key and verifies
-the returned intent, participant, and key bindings before context refresh.
-Exact supported replay returns the same semantic login result, not another
-session. An idle valid intent is not an expired attempt or an invalid login;
-attempt expiry permits a fresh transaction from the retained intent. Treat
-authorization denial separately from invalid login rather than starting a
-login loop.
+Apps/agents acquire native OAuth admission through the selected authorization
+origin. Pass the verified NativeOAuthSession to UserConnectOptions and retain
+the SDK-owned credential custody for renewal and restart. Use authorization
+code with PKCE or Device Code according to the registered native client's flow;
+do not persist a bare session seed as a substitute for OAuth custody. Devices
+retain their provisioned identity seed and use generated activation/connect
+options. Neither lifecycle accepts a raw NATS URL/JWT or client-authored
+assignment as authority. Treat authorization denial separately from invalid
+login rather than starting a login loop.
 
 Provision without identityPublicKey for a one-use, server-assigned enrollment
 secret. DeviceActivationOptions proves durable and ephemeral key possession;

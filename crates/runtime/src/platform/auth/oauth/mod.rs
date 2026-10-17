@@ -21,12 +21,15 @@ mod upstream_http;
 #[path = "../oauth_engine_tests.rs"]
 pub(super) mod oauth_engine_tests;
 
+#[cfg(test)]
 pub(super) use crate::config::OAuthTransport;
 pub(super) use binding::TokenBinding;
 pub(super) use cimd::{ClientDocument, ClientDocuments};
 pub(super) use details::RequestedAuthority;
-pub(crate) use engine::{OAuthEngine, TokenError, TrellisTokenResponse};
+pub(crate) use engine::OAuthEngine;
+#[cfg(test)]
+pub(crate) use engine::{TokenError, TrellisTokenResponse};
 pub(crate) use http::router;
 pub(super) use portal::ConsentPresentation;
 pub(crate) use storage::OAuthStorage;
-pub(crate) use transport::{OAuthListener, OAuthTransportError};
+pub(crate) use transport::OAuthListener;

@@ -86,12 +86,124 @@ pub(super) struct Fixture {
     pub(super) admission: AdmissionIdentity,
 }
 
+/// Admit the signed credential through the ordinary Auth Callout owner, then
+/// decode its persisted verification material for component assertions.
+pub(super) fn admit_credential(
+    store: &SqliteAuthorizationStore,
+    credential: &[u8],
+    nkey: &str,
+    now: i64,
+) -> Result<super::authorization_sessions::IssuedAuthority, AuthError> {
+    let (attachment, _) = store.admit_connection(credential, nkey, nkey, "broker", 1, now)?;
+    Ok(super::authorization_sessions::IssuedAuthority {
+        authority: resolve_authority(store, &attachment.context_digest)?,
+        digest: attachment.context_digest,
+    })
+}
+
+pub(super) fn fixture_admission(f: &Fixture, nkey: &str, now: i64) -> Vec<u8> {
+    let admission = f
+        .store
+        .transaction(|connection| {
+            f.store.sign_oauth_admission_in(
+                connection,
+                &f.admission,
+                nkey,
+                &super::policy::evaluate(connection, &f.admission.credential, now)?,
+                now,
+            )
+        })
+        .unwrap();
+    serde_json::to_vec(&admission).unwrap()
+}
+
+pub(super) fn revoke_root(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    scope: &EnforcementScope,
+    now: i64,
+) -> Result<String, AuthError> {
+    store.transaction(|connection| {
+        store.revoke_root_in_transaction(connection, identity, scope, now)
+    })
+}
+
+/// Exercise provisioned-proof verification and signing at the SQLite boundary;
+/// these aggregate fixtures do not claim to materialize broker resources.
+pub(super) fn issue_provisioned_authority(
+    store: &SqliteAuthorizationStore,
+    credential: &[u8],
+    nkey: &str,
+    now: i64,
+) -> Result<super::authorization_sessions::IssuedAuthority, AuthError> {
+    let (_, public) = nkeys::from_public_key(nkey).map_err(|_| AuthError::Denied)?;
+    let inbox = trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(public))?;
+    store.transaction(|connection| {
+        let identity =
+            store.provisioned_admission_identity_in(connection, credential, nkey, &inbox, now)?;
+        store.issue_authority_in_transaction(connection, &identity, None, now)
+    })?
+}
+
+pub(super) fn resolve_authority(
+    store: &SqliteAuthorizationStore,
+    digest: &str,
+) -> Result<trellis_protocol::SignedSessionAuthority, AuthError> {
+    Ok(trellis_protocol::parse_session_authority(
+        &store.resolve_verification_material("authority", digest)?,
+        trellis_protocol::MAX_SESSION_AUTHORITY_BYTES,
+    )?)
+}
+
 pub(super) fn mutation(actor: &str, input: &impl Serialize) -> Mutation {
     Mutation {
         actor: actor.into(),
         request_id: id(),
         request_digest: digest(input).unwrap(),
     }
+}
+
+/// Exercise the issuance owner inside the same committing boundary as admission.
+pub(super) fn issue_authority(
+    store: &SqliteAuthorizationStore,
+    admission: &AdmissionIdentity,
+    renew_session: Option<&str>,
+    now: i64,
+) -> Result<super::authorization_sessions::IssuedAuthority, AuthError> {
+    // Retirement must commit even when issuance returns a typed denial.
+    store.transaction(|connection| {
+        store.issue_authority_in_transaction(connection, admission, renew_session, now)
+    })?
+}
+
+pub(super) fn rotate_issuer(
+    store: &SqliteAuthorizationStore,
+    actor: &str,
+    now: i64,
+) -> Result<trellis_protocol::SignedIssuerRotation, AuthError> {
+    let input = trellis_runtime_apis::types::AuthIssuerRotateRequest {
+        expected_current_key_id: store.issuer()?.key_id.into(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    store.rotate_issuer(&mutation(actor, &input), &input, now)
+}
+
+/// Create an ordinary passwordless user through the production account aggregate.
+pub(super) fn create_user(store: &SqliteAuthorizationStore, actor: &str, now: i64) -> String {
+    let input = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
+        idempotency_key: id().into(),
+        username: id().into(),
+        display_name: "Test user".to_owned().into(),
+        password: None,
+        extra: Default::default(),
+    };
+    super::rpc_users::create_user(store, &mutation(actor, &input), &input, now)
+        .unwrap()
+        .user
+        .principal
+        .principal_id
+        .to_string()
 }
 
 /// Establish the same real SQLite refresh-family record used by the OAuth engine.
@@ -108,6 +220,7 @@ pub(super) fn oauth_family(
         Connection::open(path).unwrap(),
         store.signer.clone(),
         store.settings.clone(),
+        store.custody_directory.clone(),
     )
     .unwrap();
     let (client, jkt): (String, String) = authority
@@ -207,6 +320,7 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
             login_lifetime_seconds: 86400,
             enforcement_page_size: 2,
         },
+        directory.path().join("issuer.keys"),
     )
     .unwrap()
 }
@@ -248,9 +362,19 @@ pub(super) fn policy(
     command: PolicyMutation,
     now: i64,
 ) -> u64 {
-    store
-        .apply_policy(&mutation(admin, &command), &command, now)
-        .unwrap()
+    apply_policy(store, &mutation(admin, &command), &command, now).unwrap()
+}
+
+/// Commit a policy operation through the same aggregate mutator as RPC adapters.
+pub(super) fn apply_policy(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    command: &PolicyMutation,
+    now: i64,
+) -> Result<u64, AuthError> {
+    store.mutate(identity, "policy", command, now, |connection| {
+        super::policy::apply_policy_in_transaction(connection, identity, command, now)
+    })
 }
 
 fn approve(
@@ -261,17 +385,20 @@ fn approve(
     now: i64,
 ) -> String {
     let login = store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: principal.into(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: now + 3600,
-            },
-            now,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: principal.into(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: now + 3600,
+                },
+                now,
+            )
+        })
         .unwrap();
     let approval = grant_request(principal, &login, read, write, now);
     store
@@ -320,7 +447,14 @@ pub(super) fn fixture() -> Fixture {
     let store = open(&directory, SigningKey::from_bytes(&[42; 32]));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
-        .bootstrap_administrator("admin", "a strong bootstrap password", NOW)
+        .initialize_administrator(
+            "admin",
+            Some("a strong bootstrap password"),
+            None,
+            None,
+            NOW,
+        )
+        .map(|initialized| initialized.principal_id)
         .unwrap();
     let client = ClientRegistration {
         client_id: "native-client".into(),
@@ -334,7 +468,14 @@ pub(super) fn fixture() -> Fixture {
         expected_revision: 0,
     };
     store
-        .register_client(&mutation(&admin, &client), &client, NOW)
+        .transaction(|connection| {
+            store.register_client_in_transaction(
+                connection,
+                &mutation(&admin, &client),
+                &client,
+                NOW,
+            )
+        })
         .unwrap();
     let catalog = accept(&store, &admin, SOURCE, false, NOW);
     let api = catalog.api_id;
@@ -352,9 +493,7 @@ pub(super) fn fixture() -> Fixture {
         .unwrap()
         .capability_id
         .clone();
-    let principal = store
-        .create_principal(&mutation(&admin, &"user"), "user", NOW)
-        .unwrap();
+    let principal = create_user(&store, &admin, NOW);
     for capability in [&read, &write] {
         policy(
             &store,
@@ -369,13 +508,15 @@ pub(super) fn fixture() -> Fixture {
         );
     }
     let grant = approve(&store, &principal, &read, &write, NOW);
+    let session_public_key =
+        URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[9; 32]).verifying_key().as_bytes());
+    let inbox_prefix = trellis_protocol::admission_inbox_prefix(&session_public_key).unwrap();
     let admission = AdmissionIdentity {
         refresh_family_id: Some(oauth_family(&store, &grant, NOW, NOW + 86400)),
         credential: Credential::OAuthGrant(grant.clone()),
         runtime_id: URL_SAFE_NO_PAD.encode([7; 16]),
-        session_public_key: URL_SAFE_NO_PAD
-            .encode(SigningKey::from_bytes(&[9; 32]).verifying_key().as_bytes()),
-        inbox_prefix: "_INBOX.phaseTwo".into(),
+        session_public_key,
+        inbox_prefix,
     };
     Fixture {
         directory,
@@ -393,7 +534,7 @@ pub(super) fn fixture() -> Fixture {
 #[test]
 fn oauth_registration_rejects_portal_and_remote_plaintext_callbacks_without_rebinding_clients() {
     let f = fixture();
-    let before = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let before = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let mut client = ClientRegistration {
         client_id: "native-client".into(),
         kind: "native".into(),
@@ -415,7 +556,12 @@ fn oauth_registration_rejects_portal_and_remote_plaintext_callbacks_without_rebi
         client.development = true;
         assert!(f
             .store
-            .register_client(&mutation(&f.admin, &client), &client, NOW + 1)
+            .transaction(|connection| f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &client),
+                &client,
+                NOW + 1
+            ))
             .is_err());
     }
     client.development = false;
@@ -423,17 +569,26 @@ fn oauth_registration_rejects_portal_and_remote_plaintext_callbacks_without_rebi
     client.kind = "browser".into();
     assert!(f
         .store
-        .register_client(&mutation(&f.admin, &client), &client, NOW + 1)
+        .transaction(|connection| f.store.register_client_in_transaction(
+            connection,
+            &mutation(&f.admin, &client),
+            &client,
+            NOW + 1
+        ))
         .is_err());
     client.kind = "native".into();
     f.store
-        .register_client(&mutation(&f.admin, &client), &client, NOW + 1)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &client),
+                &client,
+                NOW + 1,
+            )
+        })
         .unwrap();
     while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
-    let after = f
-        .store
-        .issue_authority(&f.admission, None, NOW + 1)
-        .unwrap();
+    let after = issue_authority(&f.store, &f.admission, None, NOW + 1).unwrap();
     assert_eq!(
         before.authority.unsigned.binding,
         after.authority.unsigned.binding
@@ -448,11 +603,23 @@ fn oauth_registration_rejects_portal_and_remote_plaintext_callbacks_without_rebi
     browser.expected_revision = 0;
     assert!(f
         .store
-        .register_client(&mutation(&f.admin, &browser), &browser, NOW + 1)
+        .transaction(|connection| f.store.register_client_in_transaction(
+            connection,
+            &mutation(&f.admin, &browser),
+            &browser,
+            NOW + 1
+        ))
         .is_err());
     browser.development = true;
     f.store
-        .register_client(&mutation(&f.admin, &browser), &browser, NOW + 1)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &browser),
+                &browser,
+                NOW + 1,
+            )
+        })
         .unwrap();
 }
 
@@ -587,11 +754,7 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
             .clone(),
     );
     admission.credential = Credential::OAuthGrant(grant);
-    engine
-        .store()
-        .authority
-        .issue_authority(&admission, None, now)
-        .unwrap();
+    issue_authority(&engine.store().authority, &admission, None, now).unwrap();
     assert!(engine
         .token(TokenRequest::RefreshToken {
             client_id: oauth_as::ClientId::new("native-client"),
@@ -613,11 +776,7 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
         .await
         .unwrap()
         .is_none());
-    assert!(engine
-        .store()
-        .authority
-        .issue_authority(&admission, None, now)
-        .is_err());
+    assert!(issue_authority(&engine.store().authority, &admission, None, now).is_err());
 }
 
 #[test]
@@ -651,7 +810,7 @@ fn shortened_deadline_retires_outstanding_context_unless_another_path_preserves_
             );
         }
         while f.store.enforce_next_page(NOW).unwrap().is_some() {}
-        let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+        let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
         let session = &issued.authority.unsigned.authorization_session_id;
         policy(
             &f.store,
@@ -667,10 +826,7 @@ fn shortened_deadline_retires_outstanding_context_unless_another_path_preserves_
         while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
         if alternative {
             assert!(f.store.resolve_revocation(session).unwrap().is_none());
-            let renewed = f
-                .store
-                .issue_authority(&f.admission, Some(session), NOW + 2)
-                .unwrap();
+            let renewed = issue_authority(&f.store, &f.admission, Some(session), NOW + 2).unwrap();
             assert_eq!(
                 renewed.authority.unsigned.authorization_session_id,
                 *session
@@ -680,14 +836,10 @@ fn shortened_deadline_retires_outstanding_context_unless_another_path_preserves_
             let cutoff = f.store.resolve_revocation(session).unwrap().unwrap();
             assert_eq!(cutoff.effective_cutoff, NOW + 1);
             assert!(matches!(
-                f.store
-                    .issue_authority(&f.admission, Some(session), NOW + 2),
+                issue_authority(&f.store, &f.admission, Some(session), NOW + 2),
                 Err(AuthError::Retired)
             ));
-            let replacement = f
-                .store
-                .issue_authority(&f.admission, None, NOW + 2)
-                .unwrap();
+            let replacement = issue_authority(&f.store, &f.admission, None, NOW + 2).unwrap();
             assert_ne!(
                 replacement.authority.unsigned.authorization_session_id,
                 *session
@@ -700,21 +852,24 @@ fn shortened_deadline_retires_outstanding_context_unless_another_path_preserves_
 #[test]
 fn remembered_decline_enforces_existing_sessions_without_a_renewal() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     while f.store.enforce_next_page(NOW).unwrap().is_some() {}
     let login = f
         .store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: f.principal.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW + 1,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: f.principal.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW + 1,
+            )
+        })
         .unwrap();
     let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW + 1);
     approval.approved = vec![f.read.clone()];
@@ -726,14 +881,10 @@ fn remembered_decline_enforces_existing_sessions_without_a_renewal() {
     let session = &issued.authority.unsigned.authorization_session_id;
     assert!(f.store.resolve_revocation(session).unwrap().is_some());
     assert!(matches!(
-        f.store
-            .issue_authority(&f.admission, Some(session), NOW + 1),
+        issue_authority(&f.store, &f.admission, Some(session), NOW + 1),
         Err(AuthError::Retired)
     ));
-    let replacement = f
-        .store
-        .issue_authority(&f.admission, None, NOW + 1)
-        .unwrap();
+    let replacement = issue_authority(&f.store, &f.admission, None, NOW + 1).unwrap();
     assert!(!replacement
         .authority
         .unsigned
@@ -767,13 +918,15 @@ fn registered_development_privileges_require_eligibility_user_authority_and_cons
     };
     assert!(matches!(
         f.store
-            .register_client(&mutation(&f.principal, &client), &client, NOW),
+            .transaction(|connection| f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.principal, &client),
+                &client,
+                NOW
+            )),
         Err(AuthError::Denied)
     ));
-    let client_manager = f
-        .store
-        .create_principal(&mutation(&f.admin, &"user"), "user", NOW)
-        .unwrap();
+    let client_manager = create_user(&f.store, &f.admin, NOW);
     policy(
         &f.store,
         &f.admin,
@@ -787,16 +940,35 @@ fn registered_development_privileges_require_eligibility_user_authority_and_cons
     // Client management alone cannot assign administrative eligibility.
     assert!(matches!(
         f.store
-            .register_client(&mutation(&client_manager, &client), &client, NOW),
+            .transaction(|connection| f.store.register_client_in_transaction(
+                connection,
+                &mutation(&client_manager, &client),
+                &client,
+                NOW
+            )),
         Err(AuthError::Denied)
     ));
     f.store
-        .register_client(&mutation(&f.admin, &client), &client, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &client),
+                &client,
+                NOW,
+            )
+        })
         .unwrap();
     client.client_id = "ordinary-development-client".into();
     client.eligible_privileges.clear();
     f.store
-        .register_client(&mutation(&client_manager, &client), &client, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&client_manager, &client),
+                &client,
+                NOW,
+            )
+        })
         .unwrap();
 
     for (principal, client_id, consent, allowed) in [
@@ -808,17 +980,20 @@ fn registered_development_privileges_require_eligibility_user_authority_and_cons
     ] {
         let login = f
             .store
-            .record_verified_login(
-                &VerifiedLogin {
-                    principal_id: principal.clone(),
-                    provider_id: None,
-                    upstream_issuer: None,
-                    upstream_subject: None,
-                    verified_claims: None,
-                    expires_at: NOW + 3600,
-                },
-                NOW,
-            )
+            .transaction(|connection| {
+                SqliteAuthorizationStore::record_verified_login_in(
+                    connection,
+                    &VerifiedLogin {
+                        principal_id: principal.clone(),
+                        provider_id: None,
+                        upstream_issuer: None,
+                        upstream_subject: None,
+                        verified_claims: None,
+                        expires_at: NOW + 3600,
+                    },
+                    NOW,
+                )
+            })
             .unwrap();
         let mut approval = grant_request(principal, &login, &f.read, &f.write, NOW);
         approval.client_id = client_id.into();
@@ -844,7 +1019,7 @@ fn registered_development_privileges_require_eligibility_user_authority_and_cons
         let grant = result.unwrap();
         admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
         admission.credential = Credential::OAuthGrant(grant);
-        let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+        let issued = issue_authority(&f.store, &admission, None, NOW).unwrap();
         assert_eq!(
             issued
                 .authority
@@ -876,7 +1051,14 @@ fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
         expected_revision: 1,
     };
     f.store
-        .register_client(&mutation(&f.admin, &registration), &registration, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
         .unwrap();
     policy(
         &f.store,
@@ -890,17 +1072,20 @@ fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
     );
     let login = f
         .store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: f.principal.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: f.principal.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW,
+            )
+        })
         .unwrap();
     let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
     approval.privileges = vec![ApisAccept, ApisForceReplace];
@@ -911,7 +1096,7 @@ fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
     let mut admission = f.admission.clone();
     admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
-    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &admission, None, NOW).unwrap();
     assert!(issued
         .authority
         .unsigned
@@ -925,7 +1110,7 @@ fn replaced_platform_delegation_enforces_existing_sessions_without_a_renewal() {
     while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
     let session = &issued.authority.unsigned.authorization_session_id;
     assert!(f.store.resolve_revocation(session).unwrap().is_some());
-    let replacement = f.store.issue_authority(&admission, None, NOW + 1).unwrap();
+    let replacement = issue_authority(&f.store, &admission, None, NOW + 1).unwrap();
     assert!(replacement
         .authority
         .unsigned
@@ -944,17 +1129,20 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
         let f = fixture();
         let login = f
             .store
-            .record_verified_login(
-                &VerifiedLogin {
-                    principal_id: f.principal.clone(),
-                    provider_id: None,
-                    upstream_issuer: None,
-                    upstream_subject: None,
-                    verified_claims: None,
-                    expires_at: NOW + 3600,
-                },
-                NOW,
-            )
+            .transaction(|connection| {
+                SqliteAuthorizationStore::record_verified_login_in(
+                    connection,
+                    &VerifiedLogin {
+                        principal_id: f.principal.clone(),
+                        provider_id: None,
+                        upstream_issuer: None,
+                        upstream_subject: None,
+                        verified_claims: None,
+                        expires_at: NOW + 3600,
+                    },
+                    NOW,
+                )
+            })
             .unwrap();
         let mut remembered = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
         if expired {
@@ -987,7 +1175,7 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
         let mut admission = f.admission.clone();
         admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
         admission.credential = Credential::OAuthGrant(grant);
-        let issued = f.store.issue_authority(&admission, None, now).unwrap();
+        let issued = issue_authority(&f.store, &admission, None, now).unwrap();
         assert!(issued
             .authority
             .unsigned
@@ -998,11 +1186,11 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
         previous.runtime_id = URL_SAFE_NO_PAD.encode([8; 16]);
         if expired {
             assert!(matches!(
-                f.store.issue_authority(&previous, None, now),
+                issue_authority(&f.store, &previous, None, now),
                 Err(AuthError::RequiredMissing)
             ));
         } else {
-            let previous = f.store.issue_authority(&previous, None, now).unwrap();
+            let previous = issue_authority(&f.store, &previous, None, now).unwrap();
             assert!(!previous
                 .authority
                 .unsigned
@@ -1034,7 +1222,7 @@ fn explicit_one_off_approval_overrides_old_choices_but_honors_later_withdrawal()
             .unwrap();
         admission.refresh_family_id = Some(oauth_family(&f.store, &fresh_grant, NOW, NOW + 86400));
         admission.credential = Credential::OAuthGrant(fresh_grant);
-        let fresh = f.store.issue_authority(&admission, None, now).unwrap();
+        let fresh = issue_authority(&f.store, &admission, None, now).unwrap();
         policy(
             &f.store,
             &f.admin,
@@ -1061,17 +1249,20 @@ fn reused_remembered_approval_keeps_its_deadline_and_cannot_be_renewed_after_exp
     let f = fixture();
     let login = f
         .store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: f.principal.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: f.principal.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW,
+            )
+        })
         .unwrap();
     let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
     approval.remember_until = Some(NOW + 10);
@@ -1088,7 +1279,7 @@ fn reused_remembered_approval_keeps_its_deadline_and_cannot_be_renewed_after_exp
     let mut admission = f.admission.clone();
     admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
-    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &admission, None, NOW).unwrap();
     assert_eq!(issued.authority.unsigned.expires_at, NOW + 10);
     while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
     assert!(f
@@ -1097,7 +1288,8 @@ fn reused_remembered_approval_keeps_its_deadline_and_cannot_be_renewed_after_exp
         .unwrap()
         .is_none());
     assert!(matches!(
-        f.store.issue_authority(
+        issue_authority(
+            &f.store,
             &admission,
             Some(&issued.authority.unsigned.authorization_session_id),
             NOW + 11
@@ -1146,7 +1338,7 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
     let mut admission = f.admission.clone();
     admission.credential = Credential::ProvisionedIdentity(provisioned.identity_key_id.clone());
     admission.refresh_family_id = None;
-    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &admission, None, NOW).unwrap();
     assert_eq!(
         issued.authority.unsigned.principal_kind,
         trellis_protocol::PrincipalKind::Device
@@ -1180,11 +1372,8 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
     .unwrap();
     let bytes = serde_json::to_vec(&signed).unwrap();
     let (_, public) = nkeys::from_public_key(&ephemeral.public_key()).unwrap();
-    let inbox = trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(public)).unwrap();
-    let admitted = f
-        .store
-        .admit_provisioned(&bytes, &ephemeral.public_key(), &inbox, NOW)
-        .unwrap();
+    let admitted =
+        issue_provisioned_authority(&f.store, &bytes, &ephemeral.public_key(), NOW).unwrap();
     assert_eq!(
         admitted.authority.unsigned.principal_id,
         provisioned.principal_id
@@ -1204,15 +1393,13 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
         &SigningKey::from_bytes(&[12; 32]),
     )
     .unwrap();
-    assert!(f
-        .store
-        .admit_provisioned(
-            &serde_json::to_vec(&wrong_identity).unwrap(),
-            &ephemeral.public_key(),
-            &inbox,
-            NOW,
-        )
-        .is_err());
+    assert!(issue_provisioned_authority(
+        &f.store,
+        &serde_json::to_vec(&wrong_identity).unwrap(),
+        &ephemeral.public_key(),
+        NOW,
+    )
+    .is_err());
     let mut wrong_installation = signed.credential.clone();
     wrong_installation.trellis_instance_id = id();
     let wrong_installation = trellis_protocol::sign_provisioned_admission(
@@ -1220,60 +1407,47 @@ fn trusted_native_device_provisioning_issues_authority_and_replays_its_identity(
         &SigningKey::from_bytes(&[11; 32]),
     )
     .unwrap();
-    assert!(f
-        .store
-        .admit_provisioned(
-            &serde_json::to_vec(&wrong_installation).unwrap(),
-            &ephemeral.public_key(),
-            &inbox,
-            NOW,
-        )
-        .is_err());
-    assert!(f
-        .store
-        .admit_provisioned(
-            &bytes,
-            &nkeys::KeyPair::new_user().public_key(),
-            &inbox,
-            NOW
-        )
-        .is_err());
+    assert!(issue_provisioned_authority(
+        &f.store,
+        &serde_json::to_vec(&wrong_installation).unwrap(),
+        &ephemeral.public_key(),
+        NOW,
+    )
+    .is_err());
+    assert!(issue_provisioned_authority(
+        &f.store,
+        &bytes,
+        &nkeys::KeyPair::new_user().public_key(),
+        NOW
+    )
+    .is_err());
     let mut forged = signed.clone();
     forged.credential.runtime_id = URL_SAFE_NO_PAD.encode([18; 16]);
-    assert!(f
-        .store
-        .admit_provisioned(
-            &serde_json::to_vec(&forged).unwrap(),
-            &ephemeral.public_key(),
-            &inbox,
-            NOW
-        )
-        .is_err());
-    assert!(f
-        .store
-        .admit_provisioned(&bytes, &ephemeral.public_key(), &inbox, NOW + 60)
-        .is_err());
+    assert!(issue_provisioned_authority(
+        &f.store,
+        &serde_json::to_vec(&forged).unwrap(),
+        &ephemeral.public_key(),
+        NOW
+    )
+    .is_err());
+    assert!(
+        issue_provisioned_authority(&f.store, &bytes, &ephemeral.public_key(), NOW + 60).is_err()
+    );
     let scope = EnforcementScope::Identity(provisioned.identity_key_id);
-    f.store
-        .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
-        .unwrap();
+    revoke_root(&f.store, &mutation(&f.admin, &scope), &scope, NOW + 1).unwrap();
     assert!(matches!(
-        f.store.issue_authority(&admission, None, NOW + 1),
+        issue_authority(&f.store, &admission, None, NOW + 1),
         Err(AuthError::Denied)
     ));
-    assert!(f
-        .store
-        .admit_provisioned(&bytes, &ephemeral.public_key(), &inbox, NOW + 1)
-        .is_err());
+    assert!(
+        issue_provisioned_authority(&f.store, &bytes, &ephemeral.public_key(), NOW + 1).is_err()
+    );
 }
 
 #[test]
 fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates() {
     let f = fixture();
-    let delegate = f
-        .store
-        .create_principal(&mutation(&f.admin, &"user"), "user", NOW)
-        .unwrap();
+    let delegate = create_user(&f.store, &f.admin, NOW);
     policy(
         &f.store,
         &f.admin,
@@ -1284,23 +1458,25 @@ fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates(
         },
         NOW,
     );
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
-    let previous = f.store.issuer();
-    let next = SigningKey::from_bytes(&[99; 32]);
-    let public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
-    f.store
-        .rotate_issuer(&mutation(&delegate, &public.as_str()), &public, NOW + 1)
-        .unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
+    let previous = f.store.issuer().unwrap();
+    crate::platform::auth::phase_two_tests::rotate_issuer(&f.store, &delegate, NOW + 1).unwrap();
     drop(f.store);
-    let store = open(&f.directory, next);
+    let store = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
     let grant_scope = EnforcementScope::Grant(f.grant);
     assert!(matches!(
-        store.revoke_root(&mutation(&delegate, &grant_scope), &grant_scope, NOW + 2),
+        revoke_root(
+            &store,
+            &mutation(&delegate, &grant_scope),
+            &grant_scope,
+            NOW + 2
+        ),
         Err(AuthError::Denied)
     ));
-    let current_scope = EnforcementScope::Issuer(store.issuer().key_id);
+    let current_scope = EnforcementScope::Issuer(store.issuer().unwrap().key_id);
     assert!(matches!(
-        store.revoke_root(
+        revoke_root(
+            &store,
             &mutation(&delegate, &current_scope),
             &current_scope,
             NOW + 2
@@ -1308,11 +1484,15 @@ fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates(
         Err(AuthError::Conflict)
     ));
     let scope = EnforcementScope::Issuer(previous.key_id.clone());
-    store
-        .revoke_root(&mutation(&delegate, &scope), &scope, NOW + 2)
-        .unwrap();
+    revoke_root(&store, &mutation(&delegate, &scope), &scope, NOW + 2).unwrap();
     assert_eq!(
-        store.resolve_issuer(&previous.key_id).unwrap().state,
+        store
+            .transaction(|connection| SqliteAuthorizationStore::resolve_issuer_in(
+                connection,
+                &previous.key_id
+            ))
+            .unwrap()
+            .state,
         trellis_protocol::AuthorityIssuerState::Revoked
     );
     while store.enforce_next_page(NOW + 2).unwrap().is_some() {}
@@ -1321,14 +1501,15 @@ fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates(
         .unwrap()
         .is_some());
     assert!(matches!(
-        store.issue_authority(
+        issue_authority(
+            &store,
             &f.admission,
             Some(&issued.authority.unsigned.authorization_session_id),
             NOW + 2
         ),
         Err(AuthError::Retired)
     ));
-    assert!(store.issue_authority(&f.admission, None, NOW + 2).is_ok());
+    assert!(issue_authority(&store, &f.admission, None, NOW + 2).is_ok());
 }
 
 #[test]
@@ -1345,23 +1526,25 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
         expected_revision: 0,
     };
     f.store
-        .register_oidc_provider(&mutation(&f.admin, &provider), &provider, NOW)
+        .transaction(|connection| {
+            f.store.register_oidc_provider_in_transaction(
+                connection,
+                &mutation(&f.admin, &provider),
+                &provider,
+                NOW,
+            )
+        })
         .unwrap();
     f.store
-        .link_oidc_identity(
-            &mutation(
-                &f.admin,
-                &(
-                    f.principal.as_str(),
-                    provider.provider_id.as_str(),
-                    "upstream-user",
-                ),
-            ),
-            &f.principal,
-            &provider.provider_id,
-            "upstream-user",
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::link_oidc_identity_in(
+                connection,
+                &f.principal,
+                &provider.provider_id,
+                "upstream-user",
+                NOW,
+            )
+        })
         .unwrap();
     let role = id();
     policy(
@@ -1407,7 +1590,12 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
         verified_claims: Some(serde_json::json!({"groups":["readers"]})),
         expires_at: NOW + 3600,
     };
-    let login_id = f.store.record_verified_login(&login, NOW).unwrap();
+    let login_id = f
+        .store
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(connection, &login, NOW)
+        })
+        .unwrap();
     let request = grant_request(&f.principal, &login_id, &f.read, &f.write, NOW);
     let grant = f
         .store
@@ -1416,38 +1604,36 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
     let mut admission = f.admission.clone();
     admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
-    let first = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let first = issue_authority(&f.store, &admission, None, NOW).unwrap();
     assert_eq!(first.authority.unsigned.expires_at, NOW + 5);
     // A second linked identity at the same issuer must not replace the selected
     // identity's verified claims, even when its login is newer.
     f.store
-        .link_oidc_identity(
-            &mutation(
-                &f.admin,
-                &(
-                    f.principal.as_str(),
-                    provider.provider_id.as_str(),
-                    "another-upstream-user",
-                ),
-            ),
-            &f.principal,
-            &provider.provider_id,
-            "another-upstream-user",
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::link_oidc_identity_in(
+                connection,
+                &f.principal,
+                &provider.provider_id,
+                "another-upstream-user",
+                NOW,
+            )
+        })
         .unwrap();
     let mut other_login = login.clone();
     other_login.upstream_subject = Some("another-upstream-user".into());
     other_login.verified_claims = Some(serde_json::json!({"groups":[]}));
-    f.store.record_verified_login(&other_login, NOW).unwrap();
-    let unchanged = f
-        .store
-        .issue_authority(
-            &admission,
-            Some(&first.authority.unsigned.authorization_session_id),
-            NOW,
-        )
-        .expect("another linked subject must not remove this grant's required role");
+    f.store
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(connection, &other_login, NOW)
+        })
+        .unwrap();
+    let unchanged = issue_authority(
+        &f.store,
+        &admission,
+        Some(&first.authority.unsigned.authorization_session_id),
+        NOW,
+    )
+    .expect("another linked subject must not remove this grant's required role");
     assert!(unchanged
         .authority
         .unsigned
@@ -1455,9 +1641,14 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
         .iter()
         .any(|cap| cap.capability_id == f.read));
     login.verified_claims = Some(serde_json::json!({"groups":[]}));
-    f.store.record_verified_login(&login, NOW + 1).unwrap();
+    f.store
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(connection, &login, NOW + 1)
+        })
+        .unwrap();
     assert!(matches!(
-        f.store.issue_authority(
+        issue_authority(
+            &f.store,
             &admission,
             Some(&first.authority.unsigned.authorization_session_id),
             NOW + 1
@@ -1466,24 +1657,30 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
     ));
     other_login.verified_claims = Some(serde_json::json!({"groups":["readers"]}));
     f.store
-        .record_verified_login(&other_login, NOW + 1)
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(connection, &other_login, NOW + 1)
+        })
         .unwrap();
     assert!(
         matches!(
-            f.store.issue_authority(&admission, None, NOW + 1),
+            issue_authority(&f.store, &admission, None, NOW + 1),
             Err(AuthError::RequiredMissing)
         ),
         "another linked subject must not supply this grant's missing role"
     );
     login.verified_claims = Some(serde_json::json!({"groups":["readers"]}));
-    f.store.record_verified_login(&login, NOW + 2).unwrap();
-    let second = f.store.issue_authority(&admission, None, NOW + 2).unwrap();
+    f.store
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(connection, &login, NOW + 2)
+        })
+        .unwrap();
+    let second = issue_authority(&f.store, &admission, None, NOW + 2).unwrap();
     assert_ne!(
         second.authority.unsigned.authorization_session_id,
         first.authority.unsigned.authorization_session_id
     );
     assert!(matches!(
-        f.store.issue_authority(&admission, None, NOW + 8),
+        issue_authority(&f.store, &admission, None, NOW + 8),
         Err(AuthError::RequiredMissing)
     ));
     policy(
@@ -1497,7 +1694,7 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
         },
         NOW + 8,
     );
-    let direct = f.store.issue_authority(&admission, None, NOW + 8).unwrap();
+    let direct = issue_authority(&f.store, &admission, None, NOW + 8).unwrap();
     assert_eq!(direct.authority.unsigned.expires_at, NOW + 68);
     assert!(direct
         .authority
@@ -1510,7 +1707,7 @@ fn latest_verified_oidc_claims_and_freshness_bound_issuance_without_removing_dir
 #[test]
 fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
     let f = fixture();
-    let original = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let original = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let mut request = grant_request(
         &f.principal,
         original
@@ -1525,8 +1722,10 @@ fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
     );
     request.approved = vec![f.read.clone()];
     request.declined = vec![f.write.clone()];
-    let unknown = "phase-two/absent@v1::optional".to_owned();
-    request.selection.optional.push(unknown.clone());
+    request
+        .selection
+        .optional
+        .push("phase-two/absent@v1::optional".into());
     let grant = f
         .store
         .approve_grant(&mutation(&f.principal, &request), &request, NOW)
@@ -1535,7 +1734,7 @@ fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
     admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
     admission.runtime_id = URL_SAFE_NO_PAD.encode([8; 16]);
-    let first = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let first = issue_authority(&f.store, &admission, None, NOW).unwrap();
     assert_eq!(
         first
             .authority
@@ -1546,16 +1745,13 @@ fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
             .collect::<Vec<_>>(),
         vec![f.read.as_str()]
     );
-    assert!(first.optional_unavailable.contains(&f.write));
-    assert!(first.optional_unavailable.contains(&unknown));
-    let renewed = f
-        .store
-        .issue_authority(
-            &admission,
-            Some(&first.authority.unsigned.authorization_session_id),
-            NOW + 1,
-        )
-        .unwrap();
+    let renewed = issue_authority(
+        &f.store,
+        &admission,
+        Some(&first.authority.unsigned.authorization_session_id),
+        NOW + 1,
+    )
+    .unwrap();
     assert_eq!(
         renewed.authority.unsigned.capabilities,
         first.authority.unsigned.capabilities
@@ -1565,9 +1761,7 @@ fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
 #[test]
 fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_choices() {
     let f = fixture();
-    let login = f
-        .store
-        .issue_authority(&f.admission, None, NOW)
+    let login = issue_authority(&f.store, &f.admission, None, NOW)
         .unwrap()
         .authority
         .unsigned
@@ -1585,7 +1779,14 @@ fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_
         expected_revision: 1,
     };
     f.store
-        .register_client(&mutation(&f.admin, &client), &client, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &client),
+                &client,
+                NOW,
+            )
+        })
         .unwrap();
     let mut request = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
     request.approved.clear();
@@ -1603,7 +1804,14 @@ fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_
     client.redirect_uris = vec!["https://trusted.example/callback".into()];
     client.expected_revision = 0;
     f.store
-        .register_client(&mutation(&f.admin, &client), &client, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &client),
+                &client,
+                NOW,
+            )
+        })
         .unwrap();
     request.client_id = client.client_id;
     request.binding_kind = "browser".into();
@@ -1615,7 +1823,7 @@ fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_
     let mut admission = f.admission.clone();
     admission.refresh_family_id = Some(oauth_family(&f.store, &grant, NOW, NOW + 86400));
     admission.credential = Credential::OAuthGrant(grant);
-    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &admission, None, NOW).unwrap();
     assert!(issued
         .authority
         .unsigned
@@ -1623,7 +1831,12 @@ fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_
         .iter()
         .any(|cap| cap.capability_id == f.read));
     assert!(
-        issued.optional_unavailable.contains(&f.write),
+        !issued
+            .authority
+            .unsigned
+            .capabilities
+            .iter()
+            .any(|cap| cap.capability_id == f.write),
         "trust in the client cannot approve capabilities outside its configured subset"
     );
 }
@@ -1659,7 +1872,7 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
     let mut provider = f.admission.clone();
     provider.credential = Credential::ProvisionedIdentity(provisioned.identity_key_id);
     provider.refresh_family_id = None;
-    let initial = f.store.issue_authority(&provider, None, NOW).unwrap();
+    let initial = issue_authority(&f.store, &provider, None, NOW).unwrap();
     let certificate: trellis_protocol::SignedProviderCertificate = serde_json::from_slice(
         &f.store
             .resolve_verification_material(
@@ -1671,7 +1884,7 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
     .unwrap();
     certificate
         .verify(
-            &f.store.issuer(),
+            &f.store.issuer().unwrap(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             account_key(),
             NOW,
@@ -1682,14 +1895,13 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
         "rpc Archive { input Document; output Document; } rpc Export",
     );
     accept(&f.store, &f.admin, &expansion, false, NOW + 1);
-    let compatible = f
-        .store
-        .issue_authority(
-            &provider,
-            Some(&initial.authority.unsigned.authorization_session_id),
-            NOW + 1,
-        )
-        .unwrap();
+    let compatible = issue_authority(
+        &f.store,
+        &provider,
+        Some(&initial.authority.unsigned.authorization_session_id),
+        NOW + 1,
+    )
+    .unwrap();
     let certificate: trellis_protocol::SignedProviderCertificate = serde_json::from_slice(
         &f.store
             .resolve_verification_material(
@@ -1713,7 +1925,8 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
             start.wait();
             (0..32)
                 .map(|_| {
-                    f.store.issue_authority(
+                    issue_authority(
+                        &f.store,
                         &provider,
                         Some(&initial.authority.unsigned.authorization_session_id),
                         NOW + 2,
@@ -1733,13 +1946,10 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
         }
     }
     assert!(matches!(
-        f.store.issue_authority(&provider, None, NOW + 2),
+        issue_authority(&f.store, &provider, None, NOW + 2),
         Err(AuthError::Denied)
     ));
-    let user = f
-        .store
-        .issue_authority(&f.admission, None, NOW + 2)
-        .unwrap();
+    let user = issue_authority(&f.store, &f.admission, None, NOW + 2).unwrap();
     assert!(user
         .authority
         .unsigned
@@ -1752,21 +1962,16 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
         .capabilities
         .iter()
         .any(|cap| cap.capability_id == f.write));
-    assert!(user.optional_unavailable.contains(&f.write));
     assert_eq!(user.authority.unsigned.apis[0].generation.get(), 2);
 }
 
 #[test]
 fn rotation_authenticates_the_new_pin_and_rejects_forgery_and_rollback() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
-    let previous = f.store.issuer();
-    let next = SigningKey::from_bytes(&[99; 32]);
-    let public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
-    let rotation = f
-        .store
-        .rotate_issuer(&mutation(&f.admin, &public.as_str()), &public, NOW + 1)
-        .unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
+    let previous = f.store.issuer().unwrap();
+    let rotation =
+        crate::platform::auth::phase_two_tests::rotate_issuer(&f.store, &f.admin, NOW + 1).unwrap();
     let installed = rotation
         .verify_successor(
             &previous,
@@ -1796,37 +2001,119 @@ fn rotation_authenticates_the_new_pin_and_rejects_forgery_and_rollback() {
             NOW + 1
         )
         .is_err());
-    assert!(matches!(
-        f.store.issue_authority(&f.admission, None, NOW + 1),
-        Err(AuthError::Denied)
-    ));
-    let historical = f.store.resolve_issuer(&previous.key_id).unwrap();
+    assert_eq!(
+        issue_authority(&f.store, &f.admission, None, NOW + 1)
+            .unwrap()
+            .authority
+            .unsigned
+            .issuer_key_id,
+        installed.key_id
+    );
+    let historical = f
+        .store
+        .transaction(|connection| {
+            SqliteAuthorizationStore::resolve_issuer_in(connection, &previous.key_id)
+        })
+        .unwrap();
     assert_eq!(
         historical.state,
         trellis_protocol::AuthorityIssuerState::Retired
     );
     drop(f.store);
-    let restarted = open(&f.directory, next);
-    let renewed = restarted
-        .issue_authority(
-            &f.admission,
-            Some(&issued.authority.unsigned.authorization_session_id),
-            NOW + 1,
-        )
-        .unwrap();
+    let restarted = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
+    let renewed = issue_authority(
+        &restarted,
+        &f.admission,
+        Some(&issued.authority.unsigned.authorization_session_id),
+        NOW + 1,
+    )
+    .unwrap();
     assert_eq!(renewed.authority.unsigned.issuer_key_id, installed.key_id);
     assert_eq!(
-        restarted.resolve_authority(&issued.digest).unwrap(),
+        resolve_authority(&restarted, &issued.digest).unwrap(),
         issued.authority
     );
 }
 
+#[test]
+fn issuer_rotation_replay_does_not_rotate_again_and_stale_requests_do_not_change_custody() {
+    let f = fixture();
+    let original = f.store.issuer().unwrap();
+    let input = trellis_runtime_apis::types::AuthIssuerRotateRequest {
+        expected_current_key_id: original.key_id.clone().into(),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let identity = mutation(&f.admin, &input);
+    let rotation = f.store.rotate_issuer(&identity, &input, NOW).unwrap();
+    let replay = f.store.rotate_issuer(&identity, &input, NOW + 1).unwrap();
+    assert_eq!(
+        serde_json::to_value(&rotation).unwrap(),
+        serde_json::to_value(&replay).unwrap()
+    );
+    assert!(matches!(
+        f.store
+            .rotate_issuer(&mutation(&f.admin, &input), &input, NOW + 1),
+        Err(AuthError::Conflict)
+    ));
+    let issued = issue_authority(&f.store, &f.admission, None, NOW + 1).unwrap();
+    let successor = rotation
+        .verify_successor(
+            &original,
+            &f.store.settings.instance_id,
+            &f.store.settings.account,
+            0,
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(issued.authority.unsigned.issuer_key_id, successor.key_id);
+    assert!(matches!(
+        f.store
+            .rotate_issuer(&mutation(&f.principal, &input), &input, NOW + 1),
+        Err(AuthError::Denied)
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn unsafe_issuer_custody_refuses_rotation_without_retiring_the_current_signer() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let original = f.store.issuer().unwrap();
+    std::fs::create_dir(&f.store.custody_directory).unwrap();
+    std::fs::set_permissions(
+        &f.store.custody_directory,
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    assert!(matches!(
+        rotate_issuer(&f.store, &f.admin, NOW),
+        Err(AuthError::Unavailable)
+    ));
+    let issued = issue_authority(&f.store, &f.admission, None, NOW + 1).unwrap();
+    assert_eq!(issued.authority.unsigned.issuer_key_id, original.key_id);
+    std::fs::set_permissions(
+        &f.store.custody_directory,
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let rotation = rotate_issuer(&f.store, &f.admin, NOW + 1).unwrap();
+    assert_eq!(
+        issue_authority(&f.store, &f.admission, None, NOW + 2)
+            .unwrap()
+            .authority
+            .unsigned
+            .issuer_key_id,
+        rotation.next_key_id
+    );
+}
+
 #[tokio::test]
-async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_attachment() {
+async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker() {
     use std::time::Duration;
     use tokio::io::AsyncBufReadExt;
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let attachment = id();
     let marker = format!("{}{attachment}", super::broker::ATTACHMENT_MARKER_PREFIX);
     let directory = tempfile::tempdir().unwrap();
@@ -1931,37 +2218,6 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
             .await
             .is_err()
     );
-    let admission = Attachment {
-        attachment_id: attachment.clone(),
-        server_id: server_id.clone(),
-        broker_client_id: cid,
-        broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-            .unwrap()
-            .public_key(),
-        authorization_session_id: issued.authority.unsigned.authorization_session_id.clone(),
-        context_digest: issued.digest.clone(),
-        ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-            .unwrap()
-            .public_key(),
-        transport_policy_digest: f
-            .store
-            .transaction(|connection| {
-                f.store
-                    .compile_transport(connection, &issued.authority.unsigned)
-            })
-            .unwrap()
-            .digest()
-            .unwrap(),
-    };
-    let mut impostor = admission.clone();
-    impostor.ephemeral_nkey = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [11; 32])
-        .unwrap()
-        .public_key();
-    assert!(matches!(
-        f.store.admit_attachment(&impostor, NOW),
-        Err(AuthError::Denied)
-    ));
-    f.store.admit_attachment(&admission, NOW).unwrap();
     drain(&f.store, NOW);
     f.store
         .process_effects(&material, &revocations, &system, NOW)
@@ -1990,10 +2246,7 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         refresh_family_id: None,
         ..f.admission.clone()
     };
-    let provider_authority = f
-        .store
-        .issue_authority(&provisioned_admission, None, NOW)
-        .unwrap();
+    let provider_authority = issue_authority(&f.store, &provisioned_admission, None, NOW).unwrap();
     while f
         .store
         .process_effects(&material, &revocations, &system, NOW)
@@ -2008,21 +2261,25 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         description: "No assignments".into(),
         capabilities: vec![],
     };
-    f.store
-        .apply_policy(&mutation(&f.admin, &unused_role), &unused_role, NOW + 1)
-        .unwrap();
+    apply_policy(
+        &f.store,
+        &mutation(&f.admin, &unused_role),
+        &unused_role,
+        NOW + 1,
+    )
+    .unwrap();
     let disable_provider = PolicyMutation::PrincipalState {
         principal_id: provider.principal_id,
         expected_revision: 1,
         state: "disabled".into(),
     };
-    f.store
-        .apply_policy(
-            &mutation(&f.admin, &disable_provider),
-            &disable_provider,
-            NOW + 2,
-        )
-        .unwrap();
+    apply_policy(
+        &f.store,
+        &mutation(&f.admin, &disable_provider),
+        &disable_provider,
+        NOW + 2,
+    )
+    .unwrap();
     while f
         .store
         .process_effects(&material, &revocations, &system, NOW + 2)
@@ -2044,23 +2301,19 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         serde_json::from_slice(&provider_cutoff).unwrap();
     provider_cutoff
         .verify(
-            &f.store.issuer(),
+            &f.store.issuer().unwrap(),
             &f.store.settings.instance_id,
             &f.store.settings.account,
         )
         .unwrap();
     assert_eq!(
-        f.store
-            .resolve_authority(&provider_authority.digest)
-            .unwrap(),
+        resolve_authority(&f.store, &provider_authority.digest).unwrap(),
         provider_authority.authority
     );
     let session = issued.authority.unsigned.authorization_session_id.clone();
     let mut watcher = revocations.watch_with_history(&session).await.unwrap();
     let scope = EnforcementScope::Session(session.clone());
-    f.store
-        .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
-        .unwrap();
+    revoke_root(&f.store, &mutation(&f.admin, &scope), &scope, NOW + 1).unwrap();
     f.store
         .process_effects(&material, &revocations, &system, NOW + 1)
         .await
@@ -2075,46 +2328,16 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         serde_json::from_slice(&update.value).unwrap();
     signed
         .verify(
-            &f.store.issuer(),
+            &f.store.issuer().unwrap(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             account_key(),
         )
         .unwrap();
     assert_eq!(signed.effective_cutoff, NOW + 1);
-    let mut cache = super::revocation::RevocationCache::new(
-        "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
-        account_key().into(),
-        1,
-    )
-    .unwrap();
-    let mut forged = signed.clone();
-    forged.effective_cutoff = NOW;
-    assert!(cache.observe(forged, &f.store.issuer(), NOW + 1).is_err());
-    let issuer = f.store.issuer();
-    let policy = SessionAuthorityVerificationPolicy {
-        now_unix_seconds: NOW + 1,
-        allowed_clock_skew_seconds: 5,
-        maximum_authority_lifetime_seconds: 60,
-        maximum_authority_bytes: 65536,
-        maximum_entries: 256,
-    };
-    let verify = |cutoff| {
-        verify_session_authority(SessionAuthorityVerificationInput {
-            issuer: &issuer,
-            trellis_instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            audience_nats_account: account_key(),
-            authority: &issued.authority,
-            policy: &policy,
-            purpose: SessionAuthorityPurpose::Live,
-            revocation_cutoff: cutoff,
-        })
-    };
-    assert!(verify(cache.cutoff(&session, NOW + 1)).is_ok());
-    cache.observe(signed, &issuer, NOW + 1).unwrap();
-    assert!(verify(cache.cutoff(&session, NOW + 1)).is_err());
-    app.flush().await.unwrap(); // Publication has completed, kick is still pending.
-    f.store
-        .process_effects(&material, &revocations, &system, NOW + 1)
+    // The outbox dependency test owns claim ordering. Here the real adapters
+    // must retain the signed publication and close only its exact broker marker.
+    app.flush().await.unwrap();
+    super::broker::close_attachment(&system, &server_id, cid, &attachment)
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(5), closed.notified())
@@ -2139,9 +2362,6 @@ async fn real_broker_publishes_signed_cutoff_before_closing_only_the_matching_at
         revocations.get(&session).await.unwrap().unwrap().as_ref(),
         update.value.as_ref()
     );
-    revocations.purge(&session).await.unwrap();
-    assert!(revocations.get(&session).await.unwrap().is_none());
-    assert!(verify(cache.cutoff(&session, NOW + 1)).is_err());
     assert!(
         super::broker::close_attachment(&system, &server_id, cid, &attachment)
             .await
@@ -2155,73 +2375,10 @@ fn drain(store: &SqliteAuthorizationStore, now: i64) {
 }
 
 #[test]
-fn bounded_revocation_cache_never_evicts_live_cutoffs_and_reclaims_only_expired_entries() {
-    let f = fixture();
-    let mut admission = f.admission.clone();
-    let first = f.store.issue_authority(&admission, None, NOW).unwrap();
-    admission.runtime_id = URL_SAFE_NO_PAD.encode([8; 16]);
-    let second = f.store.issue_authority(&admission, None, NOW).unwrap();
-    for issued in [&first, &second] {
-        let scope =
-            EnforcementScope::Session(issued.authority.unsigned.authorization_session_id.clone());
-        f.store
-            .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 1)
-            .unwrap();
-    }
-    let first_id = &first.authority.unsigned.authorization_session_id;
-    let second_id = &second.authority.unsigned.authorization_session_id;
-    let mut cache = super::revocation::RevocationCache::new(
-        "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
-        account_key().into(),
-        1,
-    )
-    .unwrap();
-    let issuer = f.store.issuer();
-    cache
-        .observe(
-            f.store.resolve_revocation(first_id).unwrap().unwrap(),
-            &issuer,
-            NOW + 2,
-        )
-        .unwrap();
-    assert!(matches!(
-        cache.observe(
-            f.store.resolve_revocation(second_id).unwrap().unwrap(),
-            &issuer,
-            NOW + 2
-        ),
-        Err(AuthError::Unavailable)
-    ));
-    assert_eq!(cache.cutoff(first_id, NOW + 2), Some(NOW + 1));
-    admission.runtime_id = URL_SAFE_NO_PAD.encode([9; 16]);
-    let third = f.store.issue_authority(&admission, None, NOW + 60).unwrap();
-    let third_id = &third.authority.unsigned.authorization_session_id;
-    let scope = EnforcementScope::Session(third_id.clone());
-    f.store
-        .revoke_root(&mutation(&f.admin, &scope), &scope, NOW + 61)
-        .unwrap();
-    cache
-        .observe(
-            f.store.resolve_revocation(third_id).unwrap().unwrap(),
-            &issuer,
-            NOW + 66,
-        )
-        .unwrap();
-    assert_eq!(cache.cutoff(third_id, NOW + 66), Some(NOW + 61));
-    // Cache expiry does not destroy durable historical verification evidence.
-    f.store
-        .resolve_revocation(first_id)
-        .unwrap()
-        .unwrap()
-        .verify(&issuer, "01ARZ3NDEKTSV4RRFFQ69G5FAV", account_key())
-        .unwrap();
-}
-
-#[test]
 fn issues_verifiable_authority_and_retains_it_after_restart_and_expiry() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
-    let issuer = f.store.issuer();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
+    let issuer = f.store.issuer().unwrap();
     let policy = SessionAuthorityVerificationPolicy {
         now_unix_seconds: NOW,
         allowed_clock_skew_seconds: 5,
@@ -2245,7 +2402,7 @@ fn issues_verifiable_authority_and_retains_it_after_restart_and_expiry() {
     let restarted = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
     restarted.prune_expired_artifacts(NOW + 10000).unwrap();
     assert_eq!(
-        restarted.resolve_authority(&issued.digest).unwrap(),
+        resolve_authority(&restarted, &issued.digest).unwrap(),
         issued.authority
     );
 }
@@ -2277,7 +2434,7 @@ fn union_survives_one_entitlement_path_and_required_loss_retires_the_session() {
         },
         NOW,
     );
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     policy(
         &f.store,
         &f.admin,
@@ -2325,7 +2482,7 @@ fn union_survives_one_entitlement_path_and_required_loss_retires_the_session() {
         .unwrap()
         .is_some());
     assert!(matches!(
-        f.store.issue_authority(&f.admission, None, NOW + 2),
+        issue_authority(&f.store, &f.admission, None, NOW + 2),
         Err(AuthError::RequiredMissing)
     ));
 }
@@ -2361,9 +2518,25 @@ fn generated_review_request_preserves_canonical_evidence_for_breakage_review() {
 
 #[test]
 fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
-    let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let mut f = fixture();
+    f.admission.inbox_prefix =
+        trellis_protocol::admission_inbox_prefix(&f.admission.session_public_key).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let session = &issued.authority.unsigned.authorization_session_id;
+    let nkey = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+        .unwrap()
+        .public_key();
+    let (attachment, _) = f
+        .store
+        .admit_connection(
+            &fixture_admission(&f, &nkey, NOW),
+            &nkey,
+            &nkey,
+            "broker",
+            1,
+            NOW,
+        )
+        .unwrap();
     policy(
         &f.store,
         &f.admin,
@@ -2374,40 +2547,51 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
         },
         NOW + 1,
     );
-    // Admission checks current SQL before the durable scan has run.
-    let attachment = Attachment {
-        attachment_id: id(),
-        server_id: "server".into(),
-        broker_client_id: 1,
-        broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-            .unwrap()
-            .public_key(),
-        authorization_session_id: session.clone(),
-        context_digest: issued.digest.clone(),
-        ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-            .unwrap()
-            .public_key(),
-        transport_policy_digest: issued.digest.clone(),
-    };
+    // The admitted socket cannot renew old authority before enforcement scans it.
+    let subject = trellis_protocol::admission_get_subject(&f.admission.session_public_key).unwrap();
+    let reply = format!("{}.renewal", f.admission.inbox_prefix);
+    let request = trellis_protocol::sign_admission_get(
+        trellis_protocol::AdmissionGet {
+            trellis_instance_id: f.store.settings.instance_id.clone(),
+            runtime_id: f.admission.runtime_id.clone(),
+            session_public_key: f.admission.session_public_key.clone(),
+            attachment_id: attachment.attachment_id,
+            request_nonce: URL_SAFE_NO_PAD.encode([23; 16]),
+            issued_at: NOW + 1,
+        },
+        &subject,
+        &reply,
+        &SigningKey::from_bytes(&[9; 32]),
+    )
+    .unwrap();
     assert!(matches!(
-        f.store.admit_attachment(&attachment, NOW + 1),
+        f.store.own_context(
+            &serde_json::to_vec(&request).unwrap(),
+            &subject,
+            &reply,
+            NOW + 1
+        ),
         Err(AuthError::Retired)
     ));
     assert!(matches!(
-        f.store
-            .issue_authority(&f.admission, Some(session), NOW + 1),
+        issue_authority(&f.store, &f.admission, Some(session), NOW + 1),
         Err(AuthError::Retired)
     ));
-    let replacement = f
-        .store
-        .issue_authority(&f.admission, None, NOW + 1)
-        .unwrap();
+    let replacement = issue_authority(&f.store, &f.admission, None, NOW + 1).unwrap();
     assert_ne!(
         replacement.authority.unsigned.authorization_session_id,
         *session
     );
-    assert_eq!(replacement.authority.unsigned.capabilities.len(), 1);
-    assert_eq!(replacement.optional_unavailable, vec![f.write.clone()]);
+    assert_eq!(
+        replacement
+            .authority
+            .unsigned
+            .capabilities
+            .iter()
+            .map(|cap| cap.capability_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![f.read.as_str()]
+    );
     let replacement_session = &replacement.authority.unsigned.authorization_session_id;
     policy(
         &f.store,
@@ -2426,10 +2610,8 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
         .resolve_revocation(replacement_session)
         .unwrap()
         .is_none());
-    let expanded = f
-        .store
-        .issue_authority(&f.admission, Some(replacement_session), NOW + 3)
-        .unwrap();
+    let expanded =
+        issue_authority(&f.store, &f.admission, Some(replacement_session), NOW + 3).unwrap();
     assert_eq!(
         expanded.authority.unsigned.authorization_session_id,
         *replacement_session
@@ -2443,10 +2625,8 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
     assert_eq!(expanded.authority.unsigned.expires_at, NOW + 10);
     // The short-lived write context is no longer usable, but the earlier read
     // context still is. A spent permission deadline cannot become a root limit.
-    let read_only = f
-        .store
-        .issue_authority(&f.admission, Some(replacement_session), NOW + 16)
-        .unwrap();
+    let read_only =
+        issue_authority(&f.store, &f.admission, Some(replacement_session), NOW + 16).unwrap();
     assert_eq!(
         read_only.authority.unsigned.authorization_session_id,
         *replacement_session
@@ -2459,8 +2639,7 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
         .any(|cap| cap.capability_id == f.write));
     assert!(read_only.authority.unsigned.expires_at > replacement.authority.unsigned.expires_at);
     assert!(matches!(
-        f.store
-            .issue_authority(&f.admission, Some(session), NOW + 16),
+        issue_authority(&f.store, &f.admission, Some(session), NOW + 16),
         Err(AuthError::Retired)
     ));
 }
@@ -2481,7 +2660,14 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
         expected_revision: 1,
     };
     f.store
-        .register_client(&mutation(&f.admin, &registration), &registration, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
         .unwrap();
     policy(
         &f.store,
@@ -2495,17 +2681,20 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
     );
     let login = f
         .store
-        .record_verified_login(
-            &VerifiedLogin {
-                principal_id: f.principal.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW,
-        )
+        .transaction(|connection| {
+            SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &VerifiedLogin {
+                    principal_id: f.principal.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW,
+            )
+        })
         .unwrap();
     let mut approval = grant_request(&f.principal, &login, &f.read, &f.write, NOW);
     approval.privileges = vec![ApisAccept];
@@ -2520,9 +2709,16 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
     registration.expected_revision = 2;
     registration.eligible_privileges.clear();
     f.store
-        .register_client(&mutation(&f.admin, &registration), &registration, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
         .unwrap();
-    let unprivileged = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let unprivileged = issue_authority(&f.store, &admission, None, NOW).unwrap();
     let session = &unprivileged.authority.unsigned.authorization_session_id;
     assert!(unprivileged
         .authority
@@ -2533,7 +2729,14 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
     registration.expected_revision = 3;
     registration.eligible_privileges = vec![ApisAccept];
     f.store
-        .register_client(&mutation(&f.admin, &registration), &registration, NOW + 1)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                NOW + 1,
+            )
+        })
         .unwrap();
     approval.remember_until = Some(NOW + 10);
     f.store
@@ -2541,10 +2744,7 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
         .unwrap();
     while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
     assert!(f.store.resolve_revocation(session).unwrap().is_none());
-    let privileged = f
-        .store
-        .issue_authority(&admission, Some(session), NOW + 2)
-        .unwrap();
+    let privileged = issue_authority(&f.store, &admission, Some(session), NOW + 2).unwrap();
     assert_eq!(
         privileged.authority.unsigned.authorization_session_id,
         *session
@@ -2555,10 +2755,7 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
         .platform_privileges
         .contains(&ApisAccept));
     assert_eq!(privileged.authority.unsigned.expires_at, NOW + 10);
-    let renewed = f
-        .store
-        .issue_authority(&admission, Some(session), NOW + 16)
-        .unwrap();
+    let renewed = issue_authority(&f.store, &admission, Some(session), NOW + 16).unwrap();
     assert_eq!(
         renewed.authority.unsigned.authorization_session_id,
         *session
@@ -2569,10 +2766,7 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
     f.store
         .approve_grant(&mutation(&f.principal, &approval), &approval, NOW + 16)
         .unwrap();
-    let longer = f
-        .store
-        .issue_authority(&admission, Some(session), NOW + 17)
-        .unwrap();
+    let longer = issue_authority(&f.store, &admission, Some(session), NOW + 17).unwrap();
     assert!(longer
         .authority
         .unsigned
@@ -2586,7 +2780,7 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
     while f.store.enforce_next_page(NOW + 18).unwrap().is_some() {}
     assert!(f.store.resolve_revocation(session).unwrap().is_some());
     assert!(matches!(
-        f.store.issue_authority(&admission, Some(session), NOW + 18),
+        issue_authority(&f.store, &admission, Some(session), NOW + 18),
         Err(AuthError::Retired)
     ));
 }
@@ -2594,7 +2788,7 @@ fn gained_platform_privilege_deadline_does_not_shorten_unprivileged_contexts() {
 #[test]
 fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let updated = SOURCE.replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
     let start = std::sync::Barrier::new(2);
     let (catalog, concurrent) = std::thread::scope(|threads| {
@@ -2602,13 +2796,13 @@ fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits(
             start.wait();
             (0..32)
                 .map(|_| {
-                    f.store
-                        .issue_authority(
-                            &f.admission,
-                            Some(&issued.authority.unsigned.authorization_session_id),
-                            NOW + 1,
-                        )
-                        .unwrap()
+                    issue_authority(
+                        &f.store,
+                        &f.admission,
+                        Some(&issued.authority.unsigned.authorization_session_id),
+                        NOW + 1,
+                    )
+                    .unwrap()
                 })
                 .collect::<Vec<_>>()
         });
@@ -2623,7 +2817,7 @@ fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits(
     };
     catalog
         .verify(
-            &f.store.issuer(),
+            &f.store.issuer().unwrap(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             account_key(),
         )
@@ -2639,7 +2833,7 @@ fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits(
             serde_json::from_slice(&bytes).unwrap();
         committed
             .verify(
-                &f.store.issuer(),
+                &f.store.issuer().unwrap(),
                 "01ARZ3NDEKTSV4RRFFQ69G5FAV",
                 account_key(),
             )
@@ -2652,14 +2846,13 @@ fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits(
         );
         assert_eq!(snapshot.accepted_revision, committed.accepted_revision);
     }
-    let renewed = f
-        .store
-        .issue_authority(
-            &f.admission,
-            Some(&issued.authority.unsigned.authorization_session_id),
-            NOW + 1,
-        )
-        .unwrap();
+    let renewed = issue_authority(
+        &f.store,
+        &f.admission,
+        Some(&issued.authority.unsigned.authorization_session_id),
+        NOW + 1,
+    )
+    .unwrap();
     assert_eq!(
         renewed.authority.unsigned.authorization_session_id,
         issued.authority.unsigned.authorization_session_id
@@ -2673,18 +2866,17 @@ fn sdk_dispatch_checks_signed_bytes_new_membership_and_session_retirement() {
     use trellis_rs::client::{AuthorizationVerificationCore, RequestVerificationInput};
 
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let updated = SOURCE.replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
     let catalog = accept(&f.store, &f.admin, &updated, false, NOW + 1);
-    let renewed = f
-        .store
-        .issue_authority(
-            &f.admission,
-            Some(&issued.authority.unsigned.authorization_session_id),
-            NOW + 1,
-        )
-        .unwrap();
-    let issuer = f.store.issuer();
+    let renewed = issue_authority(
+        &f.store,
+        &f.admission,
+        Some(&issued.authority.unsigned.authorization_session_id),
+        NOW + 1,
+    )
+    .unwrap();
+    let issuer = f.store.issuer().unwrap();
     let policy = SessionAuthorityVerificationPolicy {
         now_unix_seconds: NOW + 1,
         allowed_clock_skew_seconds: 5,
@@ -2789,10 +2981,7 @@ fn stale_review_and_force_without_privilege_are_atomic_failures() {
         Err(AuthError::Conflict)
     ));
     assert_eq!(f.store.current_catalog(&f.api).unwrap().generation.get(), 1);
-    let manager = f
-        .store
-        .create_principal(&mutation(&f.admin, &"user"), "user", NOW)
-        .unwrap();
+    let manager = create_user(&f.store, &f.admin, NOW);
     policy(
         &f.store,
         &f.admin,
@@ -2823,16 +3012,16 @@ fn stale_review_and_force_without_privilege_are_atomic_failures() {
 #[test]
 fn hard_grant_revocation_blocks_offline_reissue_and_preserves_signed_cutoff() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let scope = EnforcementScope::Grant(f.grant.clone());
     let identity = mutation(&f.admin, &scope);
-    let work = f.store.revoke_root(&identity, &scope, NOW + 1).unwrap();
+    let work = revoke_root(&f.store, &identity, &scope, NOW + 1).unwrap();
     assert_eq!(
-        f.store.revoke_root(&identity, &scope, NOW + 2).unwrap(),
+        revoke_root(&f.store, &identity, &scope, NOW + 2).unwrap(),
         work
     );
     assert!(matches!(
-        f.store.issue_authority(&f.admission, None, NOW + 1),
+        issue_authority(&f.store, &f.admission, None, NOW + 1),
         Err(AuthError::Denied)
     ));
     drop(f.store);
@@ -2844,7 +3033,7 @@ fn hard_grant_revocation_blocks_offline_reissue_and_preserves_signed_cutoff() {
         .unwrap();
     revocation
         .verify(
-            &restarted.issuer(),
+            &restarted.issuer().unwrap(),
             "01ARZ3NDEKTSV4RRFFQ69G5FAV",
             account_key(),
         )
@@ -2860,38 +3049,20 @@ fn hard_grant_revocation_blocks_offline_reissue_and_preserves_signed_cutoff() {
 #[test]
 fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
-    f.store
-        .admit_attachment(
-            &Attachment {
-                attachment_id: id(),
-                server_id: "offline-broker".into(),
-                broker_client_id: 8,
-                broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-                    .unwrap()
-                    .public_key(),
-                authorization_session_id: issued
-                    .authority
-                    .unsigned
-                    .authorization_session_id
-                    .clone(),
-                ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-                    .unwrap()
-                    .public_key(),
-                transport_policy_digest: f
-                    .store
-                    .transaction(|connection| {
-                        f.store
-                            .compile_transport(connection, &issued.authority.unsigned)
-                    })
-                    .unwrap()
-                    .digest()
-                    .unwrap(),
-                context_digest: issued.digest.clone(),
-            },
+    {
+        let nkey = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+            .unwrap()
+            .public_key();
+        f.store.admit_connection(
+            &fixture_admission(&f, &nkey, NOW),
+            &nkey,
+            &nkey,
+            "offline-broker",
+            8,
             NOW,
         )
-        .unwrap();
+    }
+    .unwrap();
     policy(
         &f.store,
         &f.admin,
@@ -2950,7 +3121,7 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     let mut f = fixture();
     f.admission.inbox_prefix =
         trellis_protocol::admission_inbox_prefix(&f.admission.session_public_key).unwrap();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let subject = admission_get_subject(&f.admission.session_public_key).unwrap();
     let reply = format!("{}.initial", f.admission.inbox_prefix);
     let attachment_id = id();
@@ -2971,37 +3142,34 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     .unwrap();
     let bytes = serde_json::to_vec(&signed).unwrap();
     assert!(f.store.own_context(&bytes, &subject, &reply, NOW).is_err());
-    f.store
-        .admit_attachment(
-            &Attachment {
-                attachment_id: attachment_id.clone(),
-                server_id: "broker".into(),
-                broker_client_id: 1,
-                broker_user_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-                    .unwrap()
-                    .public_key(),
-                authorization_session_id: issued
-                    .authority
-                    .unsigned
-                    .authorization_session_id
-                    .clone(),
-                context_digest: issued.digest.clone(),
-                ephemeral_nkey: nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
-                    .unwrap()
-                    .public_key(),
-                transport_policy_digest: f
-                    .store
-                    .transaction(|connection| {
-                        f.store
-                            .compile_transport(connection, &issued.authority.unsigned)
-                    })
-                    .unwrap()
-                    .digest()
-                    .unwrap(),
-            },
+    let attachment_id = {
+        let nkey = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
+            .unwrap()
+            .public_key();
+        f.store.admit_connection(
+            &fixture_admission(&f, &nkey, NOW),
+            &nkey,
+            &nkey,
+            "broker",
+            1,
             NOW,
         )
-        .unwrap();
+    }
+    .unwrap()
+    .0
+    .attachment_id;
+    let request = AdmissionGet {
+        attachment_id,
+        ..request
+    };
+    let signed = sign_admission_get(
+        request.clone(),
+        &subject,
+        &reply,
+        &ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+    )
+    .unwrap();
+    let bytes = serde_json::to_vec(&signed).unwrap();
     assert!(f
         .store
         .own_context(&bytes, &subject, "_INBOX.attacker.reply", NOW)
@@ -3010,7 +3178,7 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     let encoded = serde_json::to_vec(&response).unwrap();
     let verified = verify_admission_context(
         &encoded,
-        &f.store.issuer(),
+        &f.store.issuer().unwrap(),
         &request,
         &subject,
         &reply,
@@ -3026,7 +3194,7 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     assert_eq!(context.digest().unwrap(), issued.digest);
     assert!(verify_admission_context(
         &encoded,
-        &f.store.issuer(),
+        &f.store.issuer().unwrap(),
         &request,
         &subject,
         "_INBOX.attacker.reply",
@@ -3038,7 +3206,7 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     other_nonce.request_nonce = URL_SAFE_NO_PAD.encode([24; 16]);
     assert!(verify_admission_context(
         &encoded,
-        &f.store.issuer(),
+        &f.store.issuer().unwrap(),
         &other_nonce,
         &subject,
         &reply,
@@ -3048,7 +3216,7 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     .is_err());
     assert!(verify_admission_context(
         &encoded,
-        &f.store.issuer(),
+        &f.store.issuer().unwrap(),
         &request,
         &subject,
         &reply,
@@ -3060,7 +3228,7 @@ fn own_context_requires_an_admitted_runtime_and_binds_the_exact_reply_before_pol
     forged.response.session_authority.push(' ');
     assert!(verify_admission_context(
         &serde_json::to_vec(&forged).unwrap(),
-        &f.store.issuer(),
+        &f.store.issuer().unwrap(),
         &request,
         &subject,
         &reply,

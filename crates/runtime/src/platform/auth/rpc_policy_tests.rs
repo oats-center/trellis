@@ -97,7 +97,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
         .role_id;
     let assign = AuthRoleAssignRequest {
         principal_id: f.principal.parse().unwrap(),
-        role_id: role_id.clone(),
+        role_id,
         expected_revision: 0.into(),
         expires_at: None,
         idempotency_key: id().into(),
@@ -129,7 +129,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
         initial
     );
     let revoke = AuthRoleRevokeRequest {
-        assignment_id: updated.assignment.assignment_id.clone(),
+        assignment_id: updated.assignment.assignment_id,
         expected_revision: AuthRevision(2.into()),
         idempotency_key: id().into(),
         extra: Default::default(),
@@ -175,7 +175,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
                 connection,
                 &AuthRoleAssignmentsListRequest {
                     principal_id: Some(assign.principal_id),
-                    role_id: Some(role_id.clone()),
+                    role_id: Some(role_id),
                     page: None,
                     extra: Default::default(),
                 },
@@ -186,7 +186,7 @@ fn assignment_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids
     // A deleted/re-created role must not redirect an older assignment ID to
     // the new role generation, even when both tuple revisions are one.
     let deleted_role = AuthRoleDeleteRequest {
-        role_id: role_id.clone(),
+        role_id,
         expected_revision: AuthRevision(1.into()),
         idempotency_key: id().into(),
         extra: Default::default(),
@@ -283,7 +283,7 @@ fn policy_lists_apply_filters_and_resume_without_duplicating_items() {
                 .assignment,
         );
     }
-    assignments.sort_by(|left, right| left.assignment_id.cmp(&right.assignment_id));
+    assignments.sort_by_key(|left| left.assignment_id);
     let input = AuthRoleAssignmentsListRequest {
         principal_id: Some(f.principal.parse().unwrap()),
         role_id: None,
@@ -322,7 +322,7 @@ fn policy_lists_apply_filters_and_resume_without_duplicating_items() {
                 connection,
                 &AuthRoleAssignmentsListRequest {
                     principal_id: Some(f.principal.parse().unwrap()),
-                    role_id: Some(assignments[1].role_id.clone()),
+                    role_id: Some(assignments[1].role_id),
                     page: None,
                     extra: Default::default(),
                 },
@@ -397,10 +397,7 @@ fn policy_lists_apply_filters_and_resume_without_duplicating_items() {
 #[test]
 fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
     let f = fixture();
-    let principal = f
-        .store
-        .create_principal(&mutation(&f.admin, &"user"), "user", NOW)
-        .unwrap();
+    let principal = crate::platform::auth::phase_two_tests::create_user(&f.store, &f.admin, NOW);
     let grant = AuthCapabilityGrantRequest {
         principal_id: principal.parse().unwrap(),
         capability_id: f.read.clone().into(),
@@ -433,7 +430,7 @@ fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
         initial
     );
     let revoke = AuthCapabilityRevokeRequest {
-        grant_id: updated.grant.grant_id.clone(),
+        grant_id: updated.grant.grant_id,
         expected_revision: AuthRevision(2.into()),
         idempotency_key: id().into(),
         extra: Default::default(),

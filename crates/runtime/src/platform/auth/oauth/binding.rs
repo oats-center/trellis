@@ -15,7 +15,6 @@ pub(crate) struct TokenBinding {
     pub(crate) replay_until: SystemTime,
     pub(crate) runtime_id: String,
     pub(crate) ephemeral_nkey: String,
-    pub(crate) ephemeral_public_key: String,
 }
 
 // Deserialize all security-relevant standard claims as well as the extension:
@@ -96,7 +95,6 @@ impl TokenBinding {
             replay_until: verified.replay_until,
             runtime_id: runtime_id.into(),
             ephemeral_nkey: ephemeral_nkey.into(),
-            ephemeral_public_key,
         })
     }
 }

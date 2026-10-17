@@ -54,13 +54,21 @@ fn builtin_provider_replay_preserves_independent_roles_and_refuses_disabled_or_r
         state: "disabled".into(),
         expected_revision: 1,
     };
-    f.store
-        .apply_policy(&mutation(&f.admin, &disabled), &disabled, NOW + 1)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::apply_policy(
+        &f.store,
+        &mutation(&f.admin, &disabled),
+        &disabled,
+        NOW + 1,
+    )
+    .unwrap();
     let retired = EnforcementScope::Identity(events.identity_key_id.clone());
-    f.store
-        .revoke_root(&mutation(&f.admin, &retired), &retired, NOW + 1)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::revoke_root(
+        &f.store,
+        &mutation(&f.admin, &retired),
+        &retired,
+        NOW + 1,
+    )
+    .unwrap();
     let reopened = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
     let platform_replay = reopened
         .initialize_builtin_provider::<trellis_platform::Participant>(&seeds[0], NOW + 2)
@@ -131,7 +139,9 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
     let mut admission = f.admission.clone();
     admission.credential = Credential::ProvisionedIdentity(health.identity_key_id.clone());
     admission.refresh_family_id = None;
-    let issued = store.issue_authority(&admission, None, NOW).unwrap();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&store, &admission, None, NOW)
+            .unwrap();
     assert_eq!(
         issued.authority.unsigned.binding,
         trellis_protocol::SessionBinding::Service {
@@ -652,7 +662,9 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
 #[test]
 fn typed_status_reports_committed_retirement_and_keeps_issued_authority() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &f.admission, None, NOW)
+            .unwrap();
     let session = issued
         .authority
         .unsigned
@@ -665,9 +677,13 @@ fn typed_status_reports_committed_retirement_and_keeps_issued_authority() {
         trellis_runtime_apis::types::AuthAuthorizationSessionState::Active
     );
     let scope = super::super::EnforcementScope::Grant(f.grant.clone());
-    f.store
-        .revoke_root(&super::mutation(&f.admin, &scope), &scope, NOW + 1)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::revoke_root(
+        &f.store,
+        &super::mutation(&f.admin, &scope),
+        &scope,
+        NOW + 1,
+    )
+    .unwrap();
     while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
     let status = f
         .store
@@ -689,7 +705,8 @@ fn typed_status_reports_committed_retirement_and_keeps_issued_authority() {
         trellis_runtime_apis::types::AuthAuthorizationSessionState::Revoked
     );
     assert_eq!(
-        f.store.resolve_authority(&issued.digest).unwrap(),
+        crate::platform::auth::phase_two_tests::resolve_authority(&f.store, &issued.digest)
+            .unwrap(),
         issued.authority
     );
 }

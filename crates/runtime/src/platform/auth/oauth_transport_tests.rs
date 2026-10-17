@@ -177,18 +177,18 @@ public_origin = "https://127.0.0.1:3000"
         .is_err());
     // Once the retained signer retires, this already-running listener must not
     // keep advertising the old startup trust snapshot to new clients.
-    let next = ed25519_dalek::SigningKey::from_bytes(&[97; 32]);
-    let public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
-    engine
-        .server
-        .store()
-        .authority
-        .rotate_issuer(&super::mutation(&admin, &public), &public, NOW + 1)
-        .unwrap();
+    let rotation = crate::platform::auth::phase_two_tests::rotate_issuer(
+        &engine.server.store().authority,
+        &admin,
+        NOW + 1,
+    )
+    .unwrap();
     let response = http.get(&metadata).send().await.unwrap();
+    assert!(response.status().is_success());
+    let metadata: serde_json::Value = response.json().await.unwrap();
     assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        metadata["trellis"]["issuers"][0]["keyId"],
+        rotation.next_key_id
     );
     shutdown.cancel();
     server.await.unwrap().unwrap();

@@ -20,7 +20,7 @@ pub use own_context::AuthorizationContextCache;
 pub(crate) use own_context::{OwnTransitionGuard, PreparedOwnCandidate};
 pub use provider_cache::{
     AuthorizationLease, AuthorizationOwner, HistoricalEventVerificationInput,
-    RuntimeAuthorizationTrust, VerifiedAuthorizationResponse,
+    ResponseVerificationInput, RuntimeAuthorizationTrust, VerifiedAuthorizationResponse,
 };
 pub(crate) use refresh::install_prepared_authorization;
 pub(crate) use refresh::spawn_authorization_context_refresh_task;

@@ -5,7 +5,7 @@ root = "client-upgrade-fixture"
 name = "client-upgrade-fixture"
 version = "0.100.0"
 digest = "-SUrfhOEIkYS1D9-9k2WxmsyA3knNy5oPOsiZR4cEnc"
-distribution-digest = "sha256:963476c7e3435d9083496c078ec160e1f19ebdcae978ad5f14aa1a5245507a42"
+distribution-digest = "sha256:7a06013ca146fe721f532e376ac3d4b76c8deb3feaa41b6b23626336abc1da70"
 
 [[packages.dependencies]]
 name = "trellis"
@@ -25,4 +25,4 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "../../../crates/runtime"
+path = "../../../crates/builtin-contracts"

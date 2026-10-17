@@ -48,12 +48,16 @@ pub(crate) fn output_paths(
     let has_rust = root.join("Cargo.toml").is_file();
     let has_ts = root.join("package.json").is_file();
     let config = &manifest.generate;
-    // A language generates when it is configured or its toolchain marker is
-    // present. Configuration alone is enough: a TypeScript app participant can
-    // emit a Rust projection for a Rust test harness, and vice versa.
+    // Explicit outputs select projections. Detect toolchains only when none are
+    // configured, so a Cargo build script can own Rust generation independently.
+    let configured = config.rust.is_some() || config.typescript.is_some();
     let targets = [
-        ("rust", has_rust, config.rust.as_ref()),
-        ("typescript", has_ts, config.typescript.as_ref()),
+        ("rust", has_rust && !configured, config.rust.as_ref()),
+        (
+            "typescript",
+            has_ts && !configured,
+            config.typescript.as_ref(),
+        ),
     ];
     let target_count = targets
         .iter()
@@ -494,22 +498,5 @@ mod tests {
         let outputs = output_paths(root.path(), &manifest).unwrap();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].0, "rust");
-    }
-
-    #[test]
-    fn multiple_targets_require_explicit_outputs() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("package.json"), "{}").unwrap();
-        fs::write(
-            root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
-        )
-        .unwrap();
-        fs::write(root.path().join("contract.trellis"), "").unwrap();
-        let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
-        assert!(output_paths(root.path(), &manifest)
-            .unwrap_err()
-            .to_string()
-            .contains("multiple languages detected"));
     }
 }

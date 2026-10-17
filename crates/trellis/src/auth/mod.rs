@@ -8,9 +8,7 @@ mod error;
 mod models;
 mod native_oauth;
 mod oauth_store;
-mod portal;
 mod protocol;
-mod session_store;
 
 pub use crate::service::payload_hash_base64url;
 pub use browser_login::generate_session_keypair;
@@ -22,19 +20,10 @@ pub use device_activation::{
 };
 pub use device_identity::{derive_device_identity, derive_device_user_companion};
 pub use error::TrellisAuthError;
-pub use models::{
-    AdminLoginOutcome, AdminReauthOutcome, AdminSessionState, AgentLoginChallenge, BoundSession,
-    DeviceCompanionIdentity, DeviceIdentity, StartAgentLoginOpts,
-};
+pub use models::{DeviceCompanionIdentity, DeviceIdentity};
 pub use native_oauth::{
     discover_native_oauth, NativeDeviceAuthorization, NativeOAuthClient, NativeOAuthError,
     NativeOAuthServer, NativeOAuthSession,
 };
 pub use oauth_store::{NativeCredentialLease, NativeCredentialScope, NativeOAuthGrant};
-pub use portal::{
-    approve_local_login, begin_local_login, complete_local_login, create_portal_binding,
-    intent_from_url, perform_local_login, start_portal_transaction, LocalLoginStep, PortalBinding,
-    PortalConsentSummary, PORTAL_BINDING_HEADER,
-};
 pub use protocol::AuthenticatedUser;
-pub use session_store::{clear_admin_session, load_admin_session, save_admin_session};

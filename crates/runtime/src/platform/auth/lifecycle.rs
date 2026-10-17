@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -75,18 +75,6 @@ pub(crate) struct GrantApproval {
 }
 
 impl SqliteAuthorizationStore {
-    /// Initial administrator provisioning is a single aggregate transaction.
-    /// There is no application participant or blanket wildcard authority.
-    pub(crate) fn bootstrap_administrator(
-        &self,
-        username: &str,
-        password: &str,
-        now: i64,
-    ) -> Result<String, AuthError> {
-        self.initialize_administrator(username, Some(password), None, None, now)
-            .map(|result| result.principal_id)
-    }
-
     pub(super) fn bootstrap_administrator_in_transaction(
         connection: &rusqlite::Connection,
         principal: &str,
@@ -153,32 +141,6 @@ impl SqliteAuthorizationStore {
         Ok(())
     }
 
-    pub(crate) fn create_principal(
-        &self,
-        identity: &Mutation,
-        kind: &str,
-        now: i64,
-    ) -> Result<String, AuthError> {
-        self.mutate(identity,"principal.create",&kind,now,|connection| {
-            Self::require_privilege(connection,&identity.actor,"principals.manage")?;
-            if !["user","service","device"].contains(&kind) {return Err(AuthError::Invalid("invalid principal kind".into()));}
-            let principal=id();
-            connection.execute("INSERT INTO auth_principals(principal_id,kind,state,created_at,updated_at,version) VALUES(?1,?2,'active',?3,?3,1)",params![principal,kind,now])?;
-            Ok(principal)
-        })
-    }
-
-    pub(crate) fn register_client(
-        &self,
-        identity: &Mutation,
-        registration: &ClientRegistration,
-        now: i64,
-    ) -> Result<u64, AuthError> {
-        self.transaction(|connection| {
-            self.register_client_in_transaction(connection, identity, registration, now)
-        })
-    }
-
     pub(super) fn register_client_in_transaction(
         &self,
         connection: &rusqlite::Connection,
@@ -227,14 +189,6 @@ impl SqliteAuthorizationStore {
         })
     }
 
-    pub(crate) fn record_verified_login(
-        &self,
-        login: &VerifiedLogin,
-        now: i64,
-    ) -> Result<String, AuthError> {
-        self.transaction(|connection| Self::record_verified_login_in(connection, login, now))
-    }
-
     pub(super) fn record_verified_login_in(
         connection: &rusqlite::Connection,
         login: &VerifiedLogin,
@@ -280,17 +234,6 @@ impl SqliteAuthorizationStore {
         Ok(session)
     }
 
-    pub(crate) fn register_oidc_provider(
-        &self,
-        identity: &Mutation,
-        registration: &OidcProviderRegistration,
-        now: i64,
-    ) -> Result<u64, AuthError> {
-        self.transaction(|connection| {
-            self.register_oidc_provider_in_transaction(connection, identity, registration, now)
-        })
-    }
-
     pub(super) fn register_oidc_provider_in_transaction(
         &self,
         connection: &rusqlite::Connection,
@@ -330,27 +273,34 @@ impl SqliteAuthorizationStore {
         })
     }
 
-    pub(crate) fn link_oidc_identity(
-        &self,
-        identity: &Mutation,
+    /// Persist a verified upstream link inside its owning account transaction.
+    /// A subject already owned by another user cannot be reassigned.
+    pub(super) fn link_oidc_identity_in(
+        connection: &Connection,
         principal: &str,
         provider: &str,
         subject: &str,
         now: i64,
-    ) -> Result<(), AuthError> {
-        self.mutate(identity, "oidc.identity.link", &(principal,provider,subject), now, |connection| {
-            Self::require_privilege(connection, &identity.actor, "principals.manage")?;
-            let valid: bool = connection.query_row(
+    ) -> Result<bool, AuthError> {
+        let valid: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM auth_principals p,auth_oidc_providers o WHERE p.principal_id=?1 AND p.kind='user' AND p.state='active' AND o.provider_id=?2 AND o.state='active')",
                 params![principal,provider], |row| row.get(0),
             )?;
-            if !valid || subject.is_empty() {return Err(AuthError::Denied);}
-            connection.execute(
+        if !valid || subject.is_empty() {
+            return Err(AuthError::Denied);
+        }
+        let existing: Option<String> = connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", params![provider, subject], |row| row.get(0)).optional()?;
+        if existing.as_ref().is_some_and(|owner| owner != principal) {
+            return Err(AuthError::Conflict);
+        }
+        if existing.is_some() {
+            return Ok(true);
+        }
+        connection.execute(
                 "INSERT INTO auth_provider_identities(identity_id,principal_id,provider,provider_subject,linked_at,last_seen_at) VALUES(?1,?2,?3,?4,?5,?5)",
                 params![id(),principal,provider,subject,now],
             )?;
-            Ok(())
-        })
+        Ok(false)
     }
 
     /// The OAuth adapter supplies authenticated client/binding and DPoP proof.

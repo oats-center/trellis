@@ -205,7 +205,7 @@ impl ProviderSessionRecord {
             return Err(LiveErrorCode::AuthorizationUnavailable);
         }
         let proof = trellis_protocol::sign_live_server_proof(
-            &digest,
+            digest,
             subject,
             body,
             manager.auth_handle().live_signing_key(),

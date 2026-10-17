@@ -32,7 +32,7 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
     .await;
     let base = GeneratedClient::connect_user(options).await.unwrap();
     let client = Client::from_generated(base.clone());
-    let evidence = runtime_trellis::participants::runtime_trellis_provider::PACKAGE_EVIDENCE;
+    let evidence = <runtime_trellis::participants::runtime_trellis_provider::Participant as trellis_rs::generated::ParticipantDescriptor>::package_evidence();
     let graph =
         trellis_idl::compile_evidence(wire(serde_json::to_value(evidence).unwrap())).unwrap();
     let reference = trellis_idl::TypeRef {

@@ -219,7 +219,7 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
                 .await
                 .unwrap();
             assert!(response.status().is_redirection());
-            let location = url::Url::parse(&oauth_origin)
+            let location = url::Url::parse(oauth_origin)
                 .unwrap()
                 .join(response.headers()["location"].to_str().unwrap())
                 .unwrap();
@@ -316,11 +316,6 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
             crate::StorageBackend::Sqlite(storage) => storage,
         },
     );
-    let signing_file = config
-        .resolve_authorization()
-        .unwrap()
-        .issuer_signing_seed_file
-        .clone();
     for step in 0..3 {
         assert_eq!(
             session.admission.credential.principal_id,
@@ -386,18 +381,15 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
         let store =
             SqliteAuthorizationStore::open(&storage, &config, &identity.audience_nats_account)
                 .unwrap();
-        let next = SigningKey::from_bytes(&[80 + step as u8; 32]);
-        let public = URL_SAFE_NO_PAD.encode(next.verifying_key().as_bytes());
-        let rotation = store
-            .rotate_issuer(
-                &mutation(&identity.principal_id, &public),
-                &public,
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
-            )
-            .unwrap();
+        let rotation = crate::platform::auth::phase_two_tests::rotate_issuer(
+            &store,
+            &identity.principal_id,
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        )
+        .unwrap();
         let expected = rotation
             .verify_successor(
                 &pinned.issuer,
@@ -410,23 +402,6 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
                     .as_secs() as i64,
             )
             .unwrap();
-        std::fs::write(
-            &signing_file,
-            format!("{}\n", URL_SAFE_NO_PAD.encode(next.to_bytes())),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&signing_file)
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
-        }
         drop(store);
         (stop, runtime) = start_runtime(&config, &origin).await;
         warm.refresh_authorization_context().await.unwrap();

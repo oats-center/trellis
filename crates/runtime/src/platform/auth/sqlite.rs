@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::{path::PathBuf, sync::Mutex};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
@@ -57,6 +57,8 @@ pub(crate) struct AuthSettings {
 pub(crate) struct SqliteAuthorizationStore {
     pub(super) connection: Mutex<Connection>,
     pub(super) signer: SigningKey,
+    pub(super) custody_directory: PathBuf,
+    current_key: Mutex<Option<(String, SigningKey)>>,
     pub(super) settings: AuthSettings,
 }
 
@@ -216,8 +218,31 @@ impl SqliteAuthorizationStore {
             login_lifetime_seconds: 86_400,
             enforcement_page_size: 128,
         };
-        Self::from_connection(connection, signer, settings)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))
+        let store = Self::from_connection(
+            connection,
+            signer,
+            settings,
+            authorization
+                .issuer_signing_seed_file
+                .with_extension("keys"),
+        )
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        let initialized: bool = store
+            .connection
+            .lock()
+            .map_err(|_| RuntimeError::Platform("authorization writer unavailable".into()))?
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_authorization_issuers)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        if initialized {
+            store
+                .issuer()
+                .map_err(|error| RuntimeError::Platform(format!("cannot load committed authorization issuer custody from '{}': {error}; restore the matching signing-key backup", store.custody_directory.display())))?;
+        }
+        Ok(store)
     }
 
     /// Takes an ordinarily initialized platform connection. Initialization and
@@ -226,6 +251,7 @@ impl SqliteAuthorizationStore {
         connection: Connection,
         signer: SigningKey,
         settings: AuthSettings,
+        custody_directory: PathBuf,
     ) -> Result<Self, AuthError> {
         let origin = url::Url::parse(&settings.oauth_origin)
             .map_err(|_| AuthError::Invalid("invalid OAuth origin".into()))?;
@@ -255,11 +281,13 @@ impl SqliteAuthorizationStore {
         Ok(Self {
             connection: Mutex::new(connection),
             signer,
+            custody_directory,
+            current_key: Mutex::new(None),
             settings,
         })
     }
 
-    pub(crate) fn issuer(&self) -> AuthorityIssuerKey {
+    fn initial_issuer(&self) -> AuthorityIssuerKey {
         let key = self.signer.verifying_key();
         AuthorityIssuerKey {
             key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(key.as_bytes())),
@@ -268,12 +296,30 @@ impl SqliteAuthorizationStore {
         }
     }
 
+    pub(crate) fn issuer(&self) -> Result<AuthorityIssuerKey, AuthError> {
+        let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        self.current_issuer(&connection)
+    }
+
+    pub(super) fn current_issuer(
+        &self,
+        connection: &Connection,
+    ) -> Result<AuthorityIssuerKey, AuthError> {
+        let signer = self.current_signer(connection)?;
+        let key = signer.verifying_key();
+        Ok(AuthorityIssuerKey {
+            key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(key.as_bytes())),
+            public_key: URL_SAFE_NO_PAD.encode(key.as_bytes()),
+            state: AuthorityIssuerState::Active,
+        })
+    }
+
     /// Capture the configured native trust pin and its persisted rotation position.
     pub(crate) fn runtime_authorization_trust(
         &self,
     ) -> Result<trellis_rs::client::RuntimeAuthorizationTrust, AuthError> {
         let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        let issuer = self.issuer();
+        let issuer = self.current_issuer(&connection)?;
         let (current,rotation_sequence):(bool,u64)=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_issuers WHERE key_id=?1 AND public_key=?2 AND is_current=1 AND state='active' AND revoked_at IS NULL), coalesce((SELECT max(sequence) FROM auth_issuer_rotations WHERE trellis_instance_id=?3 AND audience_nats_account=?4),0)",params![issuer.key_id,issuer.public_key,self.settings.instance_id,self.settings.account],|row|Ok((row.get(0)?,row.get(1)?)))?;
         if !current {
             return Err(AuthError::Denied);
@@ -297,12 +343,107 @@ impl SqliteAuthorizationStore {
         Ok(result)
     }
 
-    pub(super) fn current_signer(&self, connection: &Connection) -> Result<(), AuthError> {
+    pub(super) fn current_signer(&self, connection: &Connection) -> Result<SigningKey, AuthError> {
         let current: Option<String> = connection.query_row("SELECT key_id FROM auth_authorization_issuers WHERE is_current=1 AND state='active' AND revoked_at IS NULL", [], |row| row.get(0)).optional()?;
-        if current.as_deref() != Some(&self.issuer().key_id) {
+        let current = current.ok_or(AuthError::Denied)?;
+        if current == self.initial_issuer().key_id {
+            return Ok(self.signer.clone());
+        }
+        let mut cached = self
+            .current_key
+            .lock()
+            .map_err(|_| AuthError::Unavailable)?;
+        if let Some((key_id, key)) = cached.as_ref() {
+            if key_id == &current {
+                return Ok(key.clone());
+            }
+        }
+        // Persisted IDs are content addresses, never arbitrary filesystem paths.
+        let bytes = URL_SAFE_NO_PAD
+            .decode(&current)
+            .map_err(|_| AuthError::Denied)?;
+        if bytes.len() != 32 || URL_SAFE_NO_PAD.encode(&bytes) != current {
             return Err(AuthError::Denied);
         }
-        Ok(())
+        let metadata = std::fs::symlink_metadata(&self.custody_directory)
+            .map_err(|_| AuthError::Unavailable)?;
+        if !metadata.is_dir() {
+            return Err(AuthError::Denied);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(AuthError::Denied);
+            }
+        }
+        let key = SigningKey::from_bytes(
+            &read_custody_key(&self.custody_directory.join(format!("{current}.key")))
+                .map_err(|error| {
+                    tracing::error!(%error, key_id = %current, "cannot load committed issuer signing custody");
+                    AuthError::Unavailable
+                })?,
+        );
+        if URL_SAFE_NO_PAD.encode(Sha256::digest(key.verifying_key().as_bytes())) != current {
+            return Err(AuthError::Denied);
+        }
+        *cached = Some((current, key.clone()));
+        Ok(key)
+    }
+
+    pub(super) fn persist_successor(&self, key_id: &str, seed: &[u8; 32]) -> Result<(), AuthError> {
+        use std::{fs, io::Write};
+        let write = || -> std::io::Result<()> {
+            let mut directory = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                directory.mode(0o700);
+            }
+            match directory.create(&self.custody_directory) {
+                Ok(()) => {
+                    #[cfg(unix)]
+                    fs::File::open(
+                        self.custody_directory
+                            .parent()
+                            .ok_or_else(|| std::io::Error::other("missing custody parent"))?,
+                    )?
+                    .sync_all()?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+            let metadata = fs::symlink_metadata(&self.custody_directory)?;
+            if !metadata.is_dir() {
+                return Err(std::io::Error::other("unsafe issuer custody directory"));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(std::io::Error::other(
+                        "issuer custody directory is not private",
+                    ));
+                }
+            }
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(self.custody_directory.join(format!("{key_id}.key")))?;
+            writeln!(file, "{}", URL_SAFE_NO_PAD.encode(seed))?;
+            file.sync_all()?;
+            #[cfg(unix)]
+            fs::File::open(&self.custody_directory)?.sync_all()?;
+            Ok(())
+        };
+        write().map_err(|error| {
+            tracing::error!(%error, key_id, "cannot persist successor issuer signing custody");
+            AuthError::Unavailable
+        })
     }
 
     pub(super) fn mutate<T: Serialize + DeserializeOwned>(
@@ -355,10 +496,9 @@ impl SqliteAuthorizationStore {
     pub(crate) fn initialize_issuer(&self, now: i64) -> Result<(), AuthError> {
         self.transaction(|connection| {
             let current: Option<String> = connection.query_row("SELECT key_id FROM auth_authorization_issuers WHERE is_current=1", [], |row| row.get(0)).optional()?;
-            let issuer = self.issuer();
+            let issuer = self.initial_issuer();
             match current {
-                Some(key) if key == issuer.key_id => self.current_signer(connection),
-                Some(_) => Err(AuthError::Conflict),
+                Some(_) => self.current_signer(connection).map(|_| ()),
                 None => {
                     let count: i64 = connection.query_row("SELECT count(*) FROM auth_authorization_issuers", [], |row| row.get(0))?;
                     if count != 0 { return Err(AuthError::Conflict); }

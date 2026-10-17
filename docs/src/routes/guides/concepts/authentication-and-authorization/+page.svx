@@ -189,6 +189,21 @@ Events history stores context-digest references rather than duplicate contexts
 or grant sets. Events signed inside their validity window may remain historically
 valid after ordinary expiry, but never after an applicable explicit revocation.
 
+### Rotating issuer keys
+
+An administrator with `privileges.manage` calls `Issuers.Rotate` with the
+expected current key ID and an idempotency key. Auth generates the successor
+locally and signs its public key with the current issuer, allowing clients to
+verify the chain without trusting an unrelated key. A repeated request returns
+the original result; a stale expected key conflicts.
+
+Successor keys are private files in a sibling directory obtained by replacing
+the configured issuer seed file's extension with `.keys`. Back up that directory,
+the original seed, Auth's database, and the independent OAuth storage key
+together. Rotation does not change the OAuth storage key or revoke existing
+sessions. Restart uses the database-selected issuer and refuses missing or invalid
+custody rather than replacing it or falling back to the original key.
+
 ## Device companions
 
 A device may declare one named app or agent companion as its lexical child. The

@@ -1,12 +1,12 @@
 import { AckPolicy, jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { deadline } from "@nats-io/nats-core";
-import { ulid } from "ulid";
+import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { ulid } from "ulid";
 
 import { startTrellisRuntime } from "../../../../../integration/_support/runtime.ts";
-import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { ActiveJobCancellationRegistry } from "./cancellation-registry.ts";
 import {
   JobManager,
@@ -14,14 +14,14 @@ import {
   prepareJobSubmission,
 } from "./job-manager.ts";
 import {
+  type JobKeyState,
   createNatsJobKeyCoordinator,
   deriveJobKey,
-  type JobKeyState,
 } from "./key-coordinator.ts";
 import {
+  JobsConsumerMissingError,
   ackActionForOutcome,
   getLatestLifecycleEvent,
-  JobsConsumerMissingError,
   progressAckIntervalMs,
   startNatsWorkerHostFromBinding,
   startQueueWorkerLoop,
@@ -121,11 +121,11 @@ test("republishing a completed prepared submission after broker deduplication do
     const { manager, jsm, host, settled, completed, nc, encode } = fixture;
     await jsm.streams.update("ADAPTER_JOBS", { duplicate_window: 100_000_000 });
     const submission = prepareJobSubmission({
-      submissionId: crypto.randomUUID(),
+      submissionId: ulid(),
       mode: "create",
       service: "svc",
       queue: "refresh",
-      jobId: crypto.randomUUID(),
+      jobId: ulid(),
       payload: { tenant: "duplicate" },
       createdAt: new Date().toISOString(),
     });
@@ -299,11 +299,11 @@ test("a duplicate prepared publication is retired without repeating an active ha
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const submission = prepareJobSubmission({
-      submissionId: crypto.randomUUID(),
+      submissionId: ulid(),
       mode: "create",
       service: "svc",
       queue: "refresh",
-      jobId: crypto.randomUUID(),
+      jobId: ulid(),
       payload: { tenant: "active-duplicate" },
       createdAt: new Date().toISOString(),
     });
@@ -779,14 +779,28 @@ test("terminal work redelivers until its real key bucket recovers and cleanup co
     );
   }, true));
 
-test("keyed capacity deferral retains the delivery until a real KV slot releases", () =>
+test("keyed capacity deferral reserves work without NAK until a real KV slot releases", () =>
   withBroker(async (f) => {
     const payload = { tenant: "a" };
     const first = await f.manager.create("refresh", payload);
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
+    const executions: string[] = [];
+    const acknowledgements: string[] = [];
+    const progressingReceipts = new Set<string>();
+    const progress = f.nc.subscribe("$JS.ACK.>", {
+      callback: (_error, message) => {
+        if (message.subject.includes(".ADAPTER_JOBS.worker.")) {
+          const ack = message.string();
+          acknowledgements.push(ack);
+          if (ack === "+WPI") progressingReceipts.add(message.subject);
+        }
+      },
+    });
+    await f.nc.flush();
     try {
       await f.host(async (active) => {
+        executions.push(active.job().id);
         if (active.job().id === first.id) {
           entered.resolve();
           await release.promise;
@@ -802,10 +816,17 @@ test("keyed capacity deferral retains the delivery until a real KV slot releases
           (await f.jsm.consumers.info("ADAPTER_JOBS", "worker"))
             .num_ack_pending === 2,
       );
-      const competitor = await f.js.consumers.get("ADAPTER_JOBS", "worker");
-      const receive = competitor.next({ expires: 1_000 });
       const since = performance.now();
-      await waitFor(() => Promise.resolve(performance.now() - since > 350));
+      // Keep the key occupied across several actual broker AckWait periods.
+      // Receipt retention sends progress, not capacity-deferral NAKs; physical
+      // redelivery after a scheduler pause is a separate transport concern.
+      await waitFor(() =>
+        Promise.resolve(
+          performance.now() - since >
+            3 * f.binding.jobs.queues.refresh.ackWaitMs &&
+            progressingReceipts.size >= 2,
+        ),
+      );
       const state = await f.keyState(payload);
       assert.deepEqual(
         state.active.map((entry) => entry.jobId),
@@ -815,18 +836,16 @@ test("keyed capacity deferral retains the delivery until a real KV slot releases
         state.queued.map((entry) => entry.jobId),
         [second.id],
       );
-      assert.deepEqual(
-        (await f.jsm.consumers.info("ADAPTER_JOBS", "worker")).delivered
-          .consumer_seq,
-        2,
-      );
+      assert.deepEqual(executions, [first.id]);
+      assert(!acknowledgements.some((ack) => ack.startsWith("-NAK")));
       release.resolve();
-      assert.deepEqual(await receive, null);
       await f.settled();
+      assert.deepEqual(executions, [first.id, second.id]);
       assert.deepEqual((await f.completed(second)).tries, 1);
       assert.deepEqual((await f.keyState(payload)).active, []);
     } finally {
       release.resolve();
+      progress.unsubscribe();
     }
   }, true));
 

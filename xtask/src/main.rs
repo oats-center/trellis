@@ -125,17 +125,6 @@ const TRELLIS_PROJECTS: &[&str] = &[
 fn run_install(update: bool) -> Result<()> {
     let root = repo_root()?;
     let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
-    if update {
-        runtime.block_on(trellis_cli::package::update(
-            trellis_cli::cli::OutputFormat::Text,
-            &trellis_cli::cli::UpdateArgs {
-                dependency_alias: None,
-                project: trellis_cli::cli::ProjectRootArgs {
-                    root: root.join("crates/runtime"),
-                },
-            },
-        ))?;
-    }
     generate_builtin_package(&root).wrap_err("generating built-in package")?;
     for project in TRELLIS_PROJECTS {
         let project = root.join(project);
@@ -166,113 +155,7 @@ fn run_install(update: bool) -> Result<()> {
 }
 
 fn generate_builtin_package(root: &Path) -> Result<()> {
-    let project = root.join("crates/runtime");
-    let manifest = trellis_idl::project::read_manifest(&project.join("trellis.toml"))?;
-    let sources = trellis_idl::project::load_sources(&project, &manifest)?;
-    let graph = trellis_idl::compile_project(&manifest, sources, Default::default())?;
-    let target = root.join("crates/runtime-apis");
-    let staging = root.join("crates/.runtime-apis-generated");
-    let backup = root.join("crates/.runtime-apis-backup");
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).into_diagnostic()?;
-    }
-    miette::ensure!(
-        !backup.exists(),
-        "refusing to overwrite retained builtin generation backup {}",
-        backup.display()
-    );
-    trellis_codegen_rust::generate_rust_package(&graph, &staging, "trellis-runtime-apis")
-        .into_diagnostic()?;
-    // Only this built-in package is distributed as a runtime implementation
-    // dependency. Ordinary generated application packages remain unpublished.
-    let manifest_path = staging.join("Cargo.toml");
-    let mut manifest = std::fs::read_to_string(&manifest_path)
-        .into_diagnostic()?
-        .parse::<toml_edit::DocumentMut>()
-        .into_diagnostic()?;
-    let mut registries = toml_edit::Array::new();
-    registries.push("crates-io");
-    manifest["package"]["publish"] = toml_edit::value(registries);
-    manifest["package"]["license"] = toml_edit::value("Apache-2.0");
-    manifest["package"]["repository"] = toml_edit::value("https://github.com/oats-center/trellis");
-    manifest["package"]["description"] =
-        toml_edit::value("Internal generated administration APIs for the Trellis runtime.");
-    std::fs::write(&manifest_path, manifest.to_string()).into_diagnostic()?;
-    rustfmt_generated(&staging)?;
-    // The SDK needs native Auth wire types without depending on the generated
-    // SDK crate, whose caller facades depend on trellis-rs. Reuse the exact
-    // producer-built nominal types rather than hand-authoring those DTOs.
-    let sdk_types = root.join("crates/trellis/src/internal_types.rs");
-    let sdk_types_staging = root.join("crates/trellis/src/.internal_types.rs.generated");
-    miette::ensure!(
-        !sdk_types_staging.exists(),
-        "retained SDK type generation staging file {}",
-        sdk_types_staging.display()
-    );
-    std::fs::copy(staging.join("src/__types.rs"), &sdk_types_staging).into_diagnostic()?;
-    let sdk_health = root.join("crates/trellis/src/runtime_health.rs");
-    let sdk_health_staging = root.join("crates/trellis/src/.runtime_health.rs.generated");
-    miette::ensure!(
-        !sdk_health_staging.exists(),
-        "retained SDK Health descriptor staging file {}",
-        sdk_health_staging.display()
-    );
-    let descriptor = trellis_codegen_rust::render_runtime_action(
-        &graph,
-        "trellis.health@v1",
-        trellis_idl::ActionKind::Event,
-        "Heartbeat",
-    )
-    .into_diagnostic()?;
-    std::fs::write(&sdk_health_staging, descriptor).into_diagnostic()?;
-    let status = Command::new("rustfmt")
-        .args(["--edition", "2021"])
-        .arg(&sdk_health_staging)
-        .status()
-        .into_diagnostic()?;
-    miette::ensure!(
-        status.success(),
-        "rustfmt failed for generated Health descriptor"
-    );
-    let sdk_state = root.join("crates/trellis/src/runtime_state.rs");
-    let sdk_state_staging = root.join("crates/trellis/src/.runtime_state.rs.generated");
-    miette::ensure!(
-        !sdk_state_staging.exists(),
-        "retained SDK State descriptor staging file {}",
-        sdk_state_staging.display()
-    );
-    let descriptor = trellis_codegen_rust::render_runtime_action(
-        &graph,
-        "trellis.state@v1",
-        trellis_idl::ActionKind::Live,
-        "Watch",
-    )
-    .into_diagnostic()?;
-    std::fs::write(&sdk_state_staging, descriptor).into_diagnostic()?;
-    let status = Command::new("rustfmt")
-        .args(["--edition", "2021"])
-        .arg(&sdk_state_staging)
-        .status()
-        .into_diagnostic()?;
-    miette::ensure!(
-        status.success(),
-        "rustfmt failed for generated State descriptor"
-    );
-    if target.exists() {
-        std::fs::rename(&target, &backup).into_diagnostic()?;
-    }
-    if let Err(error) = std::fs::rename(&staging, &target) {
-        if backup.exists() {
-            std::fs::rename(&backup, &target).into_diagnostic()?;
-        }
-        return Err(error).into_diagnostic();
-    }
-    if backup.exists() {
-        std::fs::remove_dir_all(backup).into_diagnostic()?;
-    }
-    std::fs::rename(&sdk_health_staging, &sdk_health).into_diagnostic()?;
-    std::fs::rename(&sdk_state_staging, &sdk_state).into_diagnostic()?;
-    std::fs::rename(&sdk_types_staging, &sdk_types).into_diagnostic()?;
+    let graph = trellis_builtin_contracts::compile()?;
     let target = root.join("ts/packages/trellis/internal_sdk/generated");
     let staging = root.join("ts/packages/trellis/internal_sdk/.generated-staging");
     let backup = root.join("ts/packages/trellis/internal_sdk/.generated-backup");
@@ -298,49 +181,6 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
     if backup.exists() {
         std::fs::remove_dir_all(backup).into_diagnostic()?;
     }
-    let obsolete = root.join("crates/runtime/src/platform/auth/builtin_semantics.rs");
-    if obsolete.exists() {
-        miette::ensure!(
-            std::fs::symlink_metadata(&obsolete)
-                .into_diagnostic()?
-                .file_type()
-                .is_file(),
-            "refusing to remove unowned file {}",
-            obsolete.display()
-        );
-        let contents = std::fs::read_to_string(&obsolete).into_diagnostic()?;
-        miette::ensure!(
-            contents.starts_with("// Generated by `cargo xtask install`. Do not edit.\n"),
-            "refusing to remove unowned file {}",
-            obsolete.display()
-        );
-        std::fs::remove_file(obsolete).into_diagnostic()?;
-    }
-    Ok(())
-}
-
-fn rustfmt_generated(path: &Path) -> Result<()> {
-    let mut pending = vec![path.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(path) = pending.pop() {
-        if path.is_dir() {
-            pending.extend(
-                std::fs::read_dir(path)
-                    .into_diagnostic()?
-                    .map(|entry| entry.map(|entry| entry.path()))
-                    .collect::<std::io::Result<Vec<_>>>()
-                    .into_diagnostic()?,
-            );
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            files.push(path);
-        }
-    }
-    let status = Command::new("rustfmt")
-        .args(["--edition", "2021"])
-        .args(files)
-        .status()
-        .into_diagnostic()?;
-    miette::ensure!(status.success(), "rustfmt failed for generated Rust");
     Ok(())
 }
 

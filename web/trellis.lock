@@ -10,13 +10,13 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "../crates/runtime"
+path = "../crates/builtin-contracts"
 
 [[packages]]
 name = "trellis-web-generated"
 version = "0.100.0"
 digest = "tCdot3hq0Ul6wFia6TSfGzyQGV1L4lHK-5ebmDN6KFs"
-distribution-digest = "sha256:ff49018428e8ac012da1730dd3a3884c906a18103d2cba17077a63668ecc6e68"
+distribution-digest = "sha256:14fc4b986169a97e5b7923402f5de7148efd1cbe296cce5bf5071d9d435dd963"
 
 [[packages.dependencies]]
 name = "trellis"

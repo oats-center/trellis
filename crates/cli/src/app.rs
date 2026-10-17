@@ -142,8 +142,7 @@ pub(crate) fn base64url_encode(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-pub(crate) async fn connect_authenticated_cli_client(
-) -> miette::Result<(native_auth::Selection, Client)> {
+async fn connect_authenticated_cli_client() -> miette::Result<(native_auth::Selection, Client)> {
     let selection = native_auth::Selection::load()?;
     let session = selection.open().await?.resume().await.into_diagnostic()?;
     let connected = Client::connect_user(trellis_rs::client::UserConnectOptions::new(
@@ -172,10 +171,6 @@ pub(crate) fn json_value_label(value: &Value) -> String {
 
 pub(crate) fn wire<T: DeserializeOwned>(value: impl Serialize) -> miette::Result<T> {
     serde_json::from_value(serde_json::to_value(value).into_diagnostic()?).into_diagnostic()
-}
-
-pub(crate) fn wire_u64(value: impl Serialize) -> miette::Result<u64> {
-    wire::<String>(value)?.parse().into_diagnostic()
 }
 
 pub(crate) fn release_channel(prerelease: bool) -> ReleaseChannel {

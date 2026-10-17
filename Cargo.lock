@@ -4395,6 +4395,9 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "trellis-builtin-contracts",
+ "trellis-codegen-rust",
+ "trellis-idl",
  "trellis-rs",
 ]
 
@@ -5821,6 +5824,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-builtin-contracts"
+version = "0.100.0"
+dependencies = [
+ "miette",
+ "trellis-idl",
+]
+
+[[package]]
 name = "trellis-cli"
 version = "0.100.0"
 dependencies = [
@@ -6059,6 +6070,9 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "trellis-bootstrap",
+ "trellis-builtin-contracts",
+ "trellis-codegen-rust",
+ "trellis-idl",
  "trellis-local-nats",
  "trellis-protocol",
  "trellis-runtime-apis",
@@ -6134,6 +6148,8 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "trellis-builtin-contracts",
+ "trellis-codegen-rust",
  "trellis-rs",
 ]
 
@@ -7034,6 +7050,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+ "trellis-builtin-contracts",
  "trellis-cli",
  "trellis-codegen-rust",
  "trellis-codegen-ts",

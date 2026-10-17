@@ -117,6 +117,8 @@ build_testkit_live() {
     --config "patch.crates-io.trellis-events-runtime.path=\"$root/crates/events-runtime\"" \
     --config "patch.crates-io.trellis-jobs-runtime.path=\"$root/crates/jobs-runtime\"" \
     --config "patch.crates-io.trellis-idl.path=\"$root/crates/idl\"" \
+    --config "patch.crates-io.trellis-codegen-rust.path=\"$root/crates/codegen-rust\"" \
+    --config "patch.crates-io.trellis-builtin-contracts.path=\"$root/crates/builtin-contracts\"" \
     --test live \
     --message-format=json-render-diagnostics > "$json"
   local executable

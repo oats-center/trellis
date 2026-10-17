@@ -4,9 +4,8 @@ use super::{
     fixture, id, mutation, policy, AuthError, ClientRegistration, Credential, EnforcementScope,
     PolicyMutation, NOW,
 };
-use crate::platform::auth::{
-    rpc_credentials::{change_client_state, kick_connection, put_client, read_client},
-    Attachment,
+use crate::platform::auth::rpc_credentials::{
+    change_client_state, kick_connection, put_client, read_client,
 };
 use trellis_runtime_apis::__types::trellis::*;
 
@@ -75,29 +74,15 @@ fn client_put_replay_preserves_original_result_without_overwriting_later_edits()
 #[test]
 fn physical_kick_queues_exact_attachment_without_retiring_its_logical_session() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
-    let session = issued.authority.unsigned.authorization_session_id.clone();
     let nkey = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
         .unwrap()
         .public_key();
-    let policy = f
+    let credential = crate::platform::auth::phase_two_tests::fixture_admission(&f, &nkey, NOW);
+    let (attachment, _) = f
         .store
-        .transaction(|connection| {
-            f.store
-                .compile_transport(connection, &issued.authority.unsigned)
-        })
+        .admit_connection(&credential, &nkey, &nkey, "server-a", 17, NOW)
         .unwrap();
-    let attachment = Attachment {
-        attachment_id: id(),
-        server_id: "server-a".into(),
-        broker_client_id: 17,
-        broker_user_nkey: nkey.clone(),
-        authorization_session_id: session.clone(),
-        context_digest: issued.digest,
-        ephemeral_nkey: nkey,
-        transport_policy_digest: policy.digest().unwrap(),
-    };
-    f.store.admit_attachment(&attachment, NOW).unwrap();
+    let session = attachment.authorization_session_id.clone();
     let input = AuthConnectionsKickRequest {
         attachment_id: attachment.attachment_id.parse().unwrap(),
         idempotency_key: id().into(),
@@ -110,10 +95,13 @@ fn physical_kick_queues_exact_attachment_without_retiring_its_logical_session() 
         kicked
     );
     while f.store.enforce_next_page(NOW + 2).unwrap().is_some() {}
-    let renewed = f
-        .store
-        .issue_authority(&f.admission, Some(&session), NOW + 3)
-        .unwrap();
+    let renewed = crate::platform::auth::phase_two_tests::issue_authority(
+        &f.store,
+        &f.admission,
+        Some(&session),
+        NOW + 3,
+    )
+    .unwrap();
     assert_eq!(renewed.authority.unsigned.authorization_session_id, session);
     let effects = f.store.claim_effects(256, NOW + 3, 30, false).unwrap();
     let kicks: Vec<_> = effects
@@ -142,7 +130,14 @@ fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibil
         expected_revision: 0,
     };
     f.store
-        .register_client(&mutation(&f.admin, &registration), &registration, NOW)
+        .transaction(|connection| {
+            f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.admin, &registration),
+                &registration,
+                NOW,
+            )
+        })
         .unwrap();
     policy(
         &f.store,
@@ -180,7 +175,12 @@ fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibil
         .push(PlatformPrivilege::PrincipalsManage);
     assert!(matches!(
         f.store
-            .register_client(&mutation(&f.principal, &changed), &changed, NOW + 2),
+            .transaction(|connection| f.store.register_client_in_transaction(
+                connection,
+                &mutation(&f.principal, &changed),
+                &changed,
+                NOW + 2
+            )),
         Err(AuthError::Denied)
     ));
 }
@@ -188,21 +188,33 @@ fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibil
 #[test]
 fn ordinary_user_can_revoke_own_grant_but_cannot_revoke_another_login() {
     let f = fixture();
-    let issued = f.store.issue_authority(&f.admission, None, NOW).unwrap();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &f.admission, None, NOW)
+            .unwrap();
     let Credential::OAuthGrant(grant) = &f.admission.credential else {
         panic!("OAuth fixture")
     };
     let scope = EnforcementScope::Grant(grant.clone());
-    f.store
-        .revoke_root(&mutation(&f.principal, &scope), &scope, NOW + 1)
-        .unwrap();
+    crate::platform::auth::phase_two_tests::revoke_root(
+        &f.store,
+        &mutation(&f.principal, &scope),
+        &scope,
+        NOW + 1,
+    )
+    .unwrap();
     assert!(matches!(
-        f.store.issue_authority(&f.admission, None, NOW + 2),
+        crate::platform::auth::phase_two_tests::issue_authority(
+            &f.store,
+            &f.admission,
+            None,
+            NOW + 2
+        ),
         Err(AuthError::Denied)
     ));
     while f.store.enforce_next_page(NOW + 2).unwrap().is_some() {}
     assert!(matches!(
-        f.store.issue_authority(
+        crate::platform::auth::phase_two_tests::issue_authority(
+            &f.store,
             &f.admission,
             Some(&issued.authority.unsigned.authorization_session_id),
             NOW + 3
@@ -211,22 +223,29 @@ fn ordinary_user_can_revoke_own_grant_but_cannot_revoke_another_login() {
     ));
     let login = f
         .store
-        .record_verified_login(
-            &super::VerifiedLogin {
-                principal_id: f.admin.clone(),
-                provider_id: None,
-                upstream_issuer: None,
-                upstream_subject: None,
-                verified_claims: None,
-                expires_at: NOW + 3600,
-            },
-            NOW,
-        )
+        .transaction(|connection| {
+            super::SqliteAuthorizationStore::record_verified_login_in(
+                connection,
+                &super::VerifiedLogin {
+                    principal_id: f.admin.clone(),
+                    provider_id: None,
+                    upstream_issuer: None,
+                    upstream_subject: None,
+                    verified_claims: None,
+                    expires_at: NOW + 3600,
+                },
+                NOW,
+            )
+        })
         .unwrap();
     let other = EnforcementScope::Login(login);
     assert!(matches!(
-        f.store
-            .revoke_root(&mutation(&f.principal, &other), &other, NOW + 4),
+        crate::platform::auth::phase_two_tests::revoke_root(
+            &f.store,
+            &mutation(&f.principal, &other),
+            &other,
+            NOW + 4
+        ),
         Err(AuthError::Denied)
     ));
 }

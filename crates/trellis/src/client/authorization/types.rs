@@ -65,5 +65,4 @@ pub(crate) struct OwnTransportSnapshot {
     pub(crate) context_digest: String,
     pub(crate) authorization_session_id: String,
     pub(crate) policy: trellis_protocol::TransportAuthorizationV1,
-    pub(crate) runtime: AuthorizationRuntimeBinding,
 }

@@ -5,10 +5,6 @@ import { apis } from "trellis-web-generated";
 
 import { UserCreationController } from "./user_creation.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
-
 type CreateOutput = apis.auth.UsersCreateOutput;
 type SetupOutput = apis.auth.UsersPasswordResetCreateOutput;
 

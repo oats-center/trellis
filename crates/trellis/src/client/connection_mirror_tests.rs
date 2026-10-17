@@ -78,7 +78,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     )
     .unwrap();
     let grant = AuthCapabilityGrantRequest {
-        principal_id: user.user.principal.principal_id.clone(),
+        principal_id: user.user.principal.principal_id,
         capability_id: Query::CALLER_CAPABILITIES[0].to_string().into(),
         expected_revision: 0.into(),
         expires_at: None,

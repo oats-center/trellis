@@ -700,14 +700,12 @@ pub(crate) async fn run_consumer_sampler(
 
 /// Runs the platform Auth snapshot sampler until the runtime stops.
 pub(crate) async fn run_auth_sampler(
-    store: SqliteAuthorizationStore,
+    store: Arc<SqliteAuthorizationStore>,
     stop: StopHandle,
 ) -> Result<(), AuthError> {
     if !metrics_enabled() {
         return Ok(());
     }
-
-    let store = Arc::new(store);
 
     let source = SnapshotSource::register(
         Some("auth"),

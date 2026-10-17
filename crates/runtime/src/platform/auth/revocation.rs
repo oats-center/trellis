@@ -78,74 +78,6 @@ pub(crate) struct Attachment {
     pub(crate) transport_policy_digest: String,
 }
 
-/// One owner's verified revocations survive mirror reconnects and absent entries.
-/// This stores positive revocations only: a miss never establishes live trust.
-#[derive(Debug)]
-pub(crate) struct RevocationCache {
-    instance: String,
-    account: String,
-    capacity: usize,
-    records: std::collections::BTreeMap<String, trellis_protocol::SignedSessionRevocation>,
-}
-
-impl RevocationCache {
-    pub(crate) fn new(
-        instance: String,
-        account: String,
-        capacity: usize,
-    ) -> Result<Self, AuthError> {
-        if capacity == 0 {
-            return Err(AuthError::Invalid(
-                "revocation cache capacity must be positive".into(),
-            ));
-        }
-        Ok(Self {
-            instance,
-            account,
-            capacity,
-            records: std::collections::BTreeMap::new(),
-        })
-    }
-
-    /// Verify before touching known state; a forged mirror update cannot revoke
-    /// anybody or erase a previously verified cutoff. No live entry is evicted.
-    pub(crate) fn observe(
-        &mut self,
-        record: trellis_protocol::SignedSessionRevocation,
-        issuer: &trellis_protocol::AuthorityIssuerKey,
-        now: i64,
-    ) -> Result<(), AuthError> {
-        record.verify(issuer, &self.instance, &self.account)?;
-        self.records
-            .retain(|_, known| known.latest_context_expiry > now);
-        if record.latest_context_expiry <= now {
-            return Ok(());
-        }
-        if let Some(known) = self.records.get_mut(&record.authorization_session_id) {
-            if known.effective_cutoff != record.effective_cutoff {
-                return Err(AuthError::Conflict);
-            }
-            if record.latest_context_expiry > known.latest_context_expiry {
-                *known = record;
-            }
-        } else {
-            if self.records.len() >= self.capacity {
-                return Err(AuthError::Unavailable);
-            }
-            self.records
-                .insert(record.authorization_session_id.clone(), record);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn cutoff(&self, session: &str, now: i64) -> Option<i64> {
-        self.records
-            .get(session)
-            .filter(|record| record.latest_context_expiry > now)
-            .map(|record| record.effective_cutoff)
-    }
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct PendingEffect {
     pub(crate) action_id: String,
@@ -215,7 +147,7 @@ pub(super) fn retire_session(
     // the accepted skew, but clock skew never postpones an explicit deny.
     let statement = SignedSessionRevocation {
         format: SESSION_REVOCATION_FORMAT_V1.into(),
-        issuer_key_id: store.issuer().key_id,
+        issuer_key_id: store.current_issuer(connection)?.key_id,
         trellis_instance_id: store.settings.instance_id.clone(),
         audience_nats_account: store.settings.account.clone(),
         authorization_session_id: session.into(),
@@ -227,7 +159,7 @@ pub(super) fn retire_session(
         critical: vec![],
         signature: String::new(),
     }
-    .sign(&store.signer)?;
+    .sign(&store.current_signer(connection)?)?;
     connection.execute("UPDATE auth_authorization_sessions SET state=?1,retired_at=?2,revision=revision+1 WHERE authorization_session_id=?3 AND state='active'",params![if hard {"revoked"} else {"superseded"},now,session])?;
     connection.execute(
         "INSERT INTO auth_authorization_revocations VALUES(?1,?2,?3,?4,?5,?6,?7,?2)",
@@ -236,7 +168,7 @@ pub(super) fn retire_session(
             now,
             reason,
             if hard { "hard" } else { "reduction" },
-            store.issuer().key_id,
+            store.current_issuer(connection)?.key_id,
             json(&statement)?.as_bytes(),
             statement.latest_context_expiry
         ],
@@ -344,13 +276,13 @@ impl SqliteAuthorizationStore {
             // authority issuance and attachment creation, not just ContextGet.
             let registry=self.attachment_registry(connection,&issued.authority.unsigned,&policy,&policy,&attachment.attachment_id)?;
             trellis_protocol::sign_admission_context(trellis_protocol::AdmissionContext {
-                format:trellis_protocol::ADMISSION_GET_DOMAIN_V1.into(),issuer_key_id:self.issuer().key_id,
+                format:trellis_protocol::ADMISSION_GET_DOMAIN_V1.into(),issuer_key_id:self.current_issuer(connection)?.key_id,
                 trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),
                 runtime_id:issued.authority.unsigned.runtime_id.clone(),
                 request_nonce:base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8;16]),
                 request_subject:trellis_protocol::admission_get_subject(&issued.authority.unsigned.session_public_key)?,reply_subject:format!("{}.{}",issued.authority.unsigned.inbox_prefix,"x".repeat(512usize.saturating_sub(issued.authority.unsigned.inbox_prefix.len()+1))),
                 session_authority:json(&issued.authority)?,registry,issued_at:now,expires_at:issued.authority.unsigned.expires_at.min(now.saturating_add(30)),
-            },&self.signer)?;
+            },&self.current_signer(connection)?)?;
             connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,context_digest,ephemeral_nkey,broker_user_nkey,transport_policy_digest,transport_policy_json,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'admitted',?10,?10)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.context_digest,attachment.ephemeral_nkey,broker_user_nkey,attachment.transport_policy_digest,json(&policy)?,now])?;
             enqueue_attachment_event::<events::ConnectionsOpened>(connection, &attachment.attachment_id, now)?;
             Ok(Ok((attachment, policy)))
@@ -373,34 +305,6 @@ impl SqliteAuthorizationStore {
             }
             Ok(())
         })
-    }
-
-    /// Reauthorize in the attachment transaction so a delayed worker or offline
-    /// broker cannot admit a retired logical ID after a policy commit.
-    pub(crate) fn admit_attachment(
-        &self,
-        attachment: &Attachment,
-        now: i64,
-    ) -> Result<(), AuthError> {
-        let outcome=self.transaction(|connection| {
-            let active:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_sessions WHERE authorization_session_id=?1 AND state='active' AND hard_deadline>?2)",params![attachment.authorization_session_id,now],|row|row.get(0))?;
-            if !active {return Err(AuthError::Retired);}
-            let session_key:String=connection.query_row("SELECT session_public_key FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&attachment.authorization_session_id],|row|row.get(0))?;
-            let (prefix,key)=nkeys::from_public_key(&attachment.ephemeral_nkey).map_err(|_|AuthError::Denied)?;
-            use base64::Engine as _;
-            if nkeys::KeyPairType::from(prefix)!=nkeys::KeyPairType::User || base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)!=session_key {return Err(AuthError::Denied);}
-            let current=evaluate(connection,&session_credential(connection,&attachment.authorization_session_id)?,now);
-            let reduced=match &current {Ok(current)=>!current.required_missing.is_empty() || loses_authority(connection,&attachment.authorization_session_id,current,now)?,Err(AuthError::Denied|AuthError::RequiredMissing|AuthError::NotFound)=>true,Err(_)=>false};
-            if reduced {let hard=matches!(&current,Err(AuthError::Denied|AuthError::NotFound));retire_session(self,connection,&attachment.authorization_session_id,if hard {"credential_unavailable"} else {"admission_reduction"},hard,None,now)?;return Ok(Err(AuthError::Retired));}
-            current?;
-            let bytes:Vec<u8>=connection.query_row("SELECT signed_bytes FROM auth_session_authorities WHERE context_digest=?1 AND authorization_session_id=?2 AND not_before<=?3 AND expires_at>?3",params![attachment.context_digest,attachment.authorization_session_id,now],|row|row.get(0))?;
-            let authority=trellis_protocol::parse_session_authority(&bytes,trellis_protocol::MAX_SESSION_AUTHORITY_BYTES)?;
-            let policy=self.compile_transport(connection,&authority.unsigned)?;
-            if policy.digest()?!=attachment.transport_policy_digest {return Err(AuthError::Denied);}
-            connection.execute("INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,authorization_session_id,context_digest,ephemeral_nkey,broker_user_nkey,transport_policy_digest,transport_policy_json,state,created_at,admitted_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'admitted',?10,?10)",params![attachment.attachment_id,attachment.server_id,attachment.broker_client_id,attachment.authorization_session_id,attachment.context_digest,attachment.ephemeral_nkey,attachment.broker_user_nkey,attachment.transport_policy_digest,json(&policy)?,now])?;
-            Ok(Ok(()))
-        })?;
-        outcome
     }
 
     /// One bounded page commits retirements, effects and its cursor atomically.
@@ -503,17 +407,6 @@ impl SqliteAuthorizationStore {
     }
 
     /// Hard roots and the scan intent commit before the first broker effect.
-    pub(crate) fn revoke_root(
-        &self,
-        identity: &Mutation,
-        scope: &EnforcementScope,
-        now: i64,
-    ) -> Result<String, AuthError> {
-        self.transaction(|connection| {
-            self.revoke_root_in_transaction(connection, identity, scope, now)
-        })
-    }
-
     /// Reuse root revocation inside a typed RPC result/replay transaction.
     pub(super) fn revoke_root_in_transaction(
         &self,

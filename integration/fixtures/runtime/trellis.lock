@@ -5,7 +5,7 @@ root = "runtime-trellis"
 name = "runtime-trellis"
 version = "0.100.0"
 digest = "1vzSARWNiYjfMMSvFjP6M2HE_nH6VaZfBetZwWNxif4"
-distribution-digest = "sha256:6453aa967b1252dcf42841cff00387201b524f5980e5d6378a419038fe01d057"
+distribution-digest = "sha256:87b088f7a9ae593eccd9ab8bcf415bd57bbd5342a2505e12a0b280923ea9be0c"
 
 [[packages.dependencies]]
 name = "trellis"
@@ -25,4 +25,4 @@ dependencies = []
 
 [packages.source]
 kind = "path"
-path = "../../../crates/runtime"
+path = "../../../crates/builtin-contracts"

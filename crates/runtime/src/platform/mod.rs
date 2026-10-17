@@ -56,7 +56,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .as_ref()
         .and_then(|auth| auth.oauth_storage_key_file.as_deref())
         .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
-    let storage = auth::OAuthStorage::new(store.clone(), &auth::read_custody_key(custody)?)
+    let storage = auth::OAuthStorage::open(store.clone(), custody)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let initialized: bool = store
         .has_administrator()
@@ -211,6 +211,15 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 .await
                 .map_err(|error| RuntimeError::Platform(error.to_string()))
         });
+        if trellis_rs::telemetry::process_metrics_enabled() {
+            let sampler_store = store.clone();
+            let sampler_stop = task_stop.clone();
+            tasks.spawn(async move {
+                crate::telemetry::snapshots::run_auth_sampler(sampler_store, sampler_stop)
+                    .await
+                    .map_err(|error| RuntimeError::Platform(error.to_string()))
+            });
+        }
         let worker_stop = task_stop.clone();
         let provider_oauth = engine.clone();
         tasks.spawn(async move {
@@ -442,7 +451,7 @@ pub async fn initialize_admin_credentials(
         .as_ref()
         .and_then(|auth| auth.oauth_storage_key_file.as_deref())
         .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
-    let storage = auth::OAuthStorage::new(auth.clone(), &auth::read_custody_key(custody)?)
+    let storage = auth::OAuthStorage::open(auth.clone(), custody)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let initialized: bool = auth
         .has_administrator()

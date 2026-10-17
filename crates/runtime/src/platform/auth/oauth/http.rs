@@ -87,8 +87,12 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                         "SELECT j.value FROM auth_oauth_clients c,json_each(c.redirect_uris_json) j WHERE c.state='active' UNION ALL SELECT j.value FROM auth_cimd_clients c,json_each(c.metadata_json,'$.redirect_uris') j WHERE NOT EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id)"
                     ) else { return false; };
                     let Ok(values) = redirects.query_map([], |row| row.get::<_, String>(0)) else { return false; };
-                    let allowed = values.filter_map(Result::ok).any(|uri| url::Url::parse(&uri).is_ok_and(|uri| uri.origin().ascii_serialization() == origin));
-                    allowed
+                    for uri in values.filter_map(Result::ok) {
+                        if url::Url::parse(&uri).is_ok_and(|uri| uri.origin().ascii_serialization() == origin) {
+                            return true;
+                        }
+                    }
+                    false
                 }))
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
                 .allow_headers([header::CONTENT_TYPE, HeaderName::from_static("dpop")])
@@ -490,7 +494,7 @@ async fn consent_page(
     };
     let view = match consent_data(&engine, &headers, transaction).await {
         Ok(view) => view,
-        Err(response) => return response,
+        Err(code) => return error(code),
     };
     super::assets::page(view.get("redirectUri").and_then(Value::as_str))
 }
@@ -508,7 +512,7 @@ async fn consent(
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
             response
         }
-        Err(response) => response,
+        Err(code) => error(code),
     }
 }
 
@@ -516,43 +520,43 @@ async fn consent_data(
     engine: &OAuthEngine,
     headers: &HeaderMap,
     transaction: &str,
-) -> Result<Value, Response> {
-    let Some(cookie) = portal_cookie(&headers, "__Host-trellis-portal") else {
-        return Err(error(ErrorCode::AccessDenied));
+) -> Result<Value, ErrorCode> {
+    let Some(cookie) = portal_cookie(headers, "__Host-trellis-portal") else {
+        return Err(ErrorCode::AccessDenied);
     };
-    let Some(csrf) = portal_cookie(&headers, "__Host-trellis-portal-csrf") else {
-        return Err(error(ErrorCode::AccessDenied));
+    let Some(csrf) = portal_cookie(headers, "__Host-trellis-portal-csrf") else {
+        return Err(ErrorCode::AccessDenied);
     };
     let Ok(now) = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|now| now.as_secs() as i64)
     else {
-        return Err(error(ErrorCode::ServerError));
+        return Err(ErrorCode::ServerError);
     };
     let authority = &engine.server.store().authority;
     let login = match authority.portal_login(&cookie, &csrf, now) {
         Ok(login) => login,
-        Err(_) => return Err(error(ErrorCode::AccessDenied)),
+        Err(_) => return Err(ErrorCode::AccessDenied),
     };
     let flow = match engine
         .server
         .store()
-        .authorization(&transaction, &login.session_id, now)
+        .authorization(transaction, &login.session_id, now)
     {
         Ok(flow) => flow,
-        Err(_) => return Err(error(ErrorCode::InvalidRequest)),
+        Err(_) => return Err(ErrorCode::InvalidRequest),
     };
     let validated = match engine.consent_intent(&flow.request).await {
         Ok(request) => request,
-        Err(response) => return Err(error(response.error)),
+        Err(response) => return Err(response.error),
     };
     let requested = match super::RequestedAuthority::parse(&validated.authorization_details) {
         Ok(details) => details,
-        Err(response) => return Err(error(response.error)),
+        Err(response) => return Err(response.error),
     };
     let client = match engine.server.store().get_client(&validated.client_id).await {
         Ok(Some(client)) => client,
-        _ => return Err(error(ErrorCode::InvalidClient)),
+        _ => return Err(ErrorCode::InvalidClient),
     };
     let result = authority.transaction(|connection| {
         let entitled = super::super::policy::entitlements(connection,&login.principal_id,Some(&login.login_session_id),now)?;
@@ -600,7 +604,7 @@ async fn consent_data(
         engine.server.store().present_authorization(connection,transaction,&flow,presentation,now).map_err(|_|super::super::AuthError::Unavailable)?;
         Ok(serde_json::json!({"transaction":transaction,"presentationId":presentation_id,"clientId":validated.client_id.as_str(),"clientName":client.name,"registered":registered,"username":username,"principalId":login.principal_id,"redirectUri":validated.redirect_uri,"deviceUserCode":validated.device_user_code,"capabilities":capabilities,"platformPrivileges":privileges}))
     });
-    result.map_err(|_| error(ErrorCode::ServerError))
+    result.map_err(|_| ErrorCode::ServerError)
 }
 
 async fn approve(
@@ -969,8 +973,7 @@ async fn portal_login(
             &cookie,
             &csrf,
             &new_cookie,
-            &username,
-            &password,
+            (&username, &password),
             &request_id,
             now,
         )

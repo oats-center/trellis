@@ -433,9 +433,11 @@ jobs:
           }
 
           publish_workspace_crate trellis-protocol
+          publish_workspace_crate trellis-idl
+          publish_workspace_crate trellis-codegen-rust
+          publish_workspace_crate trellis-builtin-contracts
           publish_workspace_crate trellis-rs
           publish_workspace_crate trellis-runtime-apis
-          publish_workspace_crate trellis-idl
           publish_workspace_crate trellis-local-bootstrap
           publish_workspace_crate trellis-events-runtime
           publish_workspace_crate trellis-jobs-runtime
@@ -497,10 +499,10 @@ jobs:
         run: |
           set -euo pipefail
           trellis="$GITHUB_WORKSPACE/bin/trellis"
-          # The canonical APIs live in one native package (`crates/runtime`,
+          # The canonical APIs live in one native package (`crates/builtin-contracts`,
           # package `trellis`); the other crates and TypeScript packages are
           # generated consumers and carry no publishable `trellis.toml`.
-          (cd crates/runtime && "$trellis" publish)
+          (cd crates/builtin-contracts && "$trellis" publish)
 
   publish-npm:
     name: Publish npm packages

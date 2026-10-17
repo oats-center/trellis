@@ -538,7 +538,7 @@ impl LiveSessionManager {
             return Err(LiveErrorCode::AuthorizationUnavailable);
         }
         let proof = trellis_protocol::sign_live_server_proof(
-            &digest,
+            digest,
             subject,
             body,
             self.auth.live_signing_key(),

@@ -26,19 +26,12 @@ try {
     { cwd: repository },
   );
   for (const file of files.stdout.split("\0").filter(Boolean)) {
-    if (file.endsWith("deno.json")) continue;
     await cp(
       join(repository, file),
       join(project, file.slice("docs/examples/orders/".length)),
       { recursive: true },
     );
   }
-  // Include new Node manifests before the migration's first commit.
-  for (const file of ["package.json", "tsconfig.json"])
-    await cp(
-      join(repository, "docs/examples/orders", file),
-      join(project, file),
-    );
   await cp(
     join(repository, "docs/examples/orders/trellis"),
     join(project, "trellis"),

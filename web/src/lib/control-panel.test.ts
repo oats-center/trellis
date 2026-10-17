@@ -8,8 +8,6 @@ import {
   hasExactPermission,
 } from "./control-panel.ts";
 
-declare const Deno: { test(name: string, fn: () => void): void };
-
 test("navigation separates delegated administration from an ordinary API action", () => {
   const member: Authority = {
     authorityDigest: "current-ui-snapshot",

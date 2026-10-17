@@ -42,7 +42,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     let created = create_deployment(&f.store, &mutation(&f.admin, &create), &create, NOW).unwrap();
     let public = ed25519_dalek::SigningKey::from_bytes(&[19; 32]).verifying_key();
     let provision = AuthInstanceProvisionRequest {
-        deployment_id: created.deployment.deployment_id.clone(),
+        deployment_id: created.deployment.deployment_id,
         identity_public_key: Some(URL_SAFE_NO_PAD.encode(public.as_bytes()).into()),
         title: "Reader".to_string().into(),
         idempotency_key: super::super::sqlite::id().into(),
@@ -62,13 +62,15 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     admission.credential = super::super::Credential::ProvisionedIdentity(
         URL_SAFE_NO_PAD.encode(Sha256::digest(public.as_bytes())),
     );
-    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &admission, None, NOW)
+            .unwrap();
     assert_eq!(
         issued.authority.unsigned.principal_kind,
         trellis_protocol::PrincipalKind::Device
     );
     let unchanged = AuthDeploymentApplyRequest {
-        deployment_id: created.deployment.deployment_id.clone(),
+        deployment_id: created.deployment.deployment_id,
         expected_revision: created.deployment.revision,
         package_evidence: evidence,
         idempotency_key: super::super::sqlite::id().into(),
@@ -76,7 +78,8 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     };
     let unchanged_identity = mutation(&f.admin, &unchanged);
     let applied = apply_deployment(&f.store, &unchanged_identity, &unchanged, NOW + 1).unwrap();
-    f.store.issue_authority(&admission, None, NOW + 1).unwrap();
+    crate::platform::auth::phase_two_tests::issue_authority(&f.store, &admission, None, NOW + 1)
+        .unwrap();
     assert!(matches!(
         apply_deployment(
             &f.store,
@@ -108,7 +111,13 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         ..unchanged.clone()
     };
     let applied = apply_deployment(&f.store, &mutation(&f.admin, &apply), &apply, NOW + 2).unwrap();
-    let pinned = f.store.issue_authority(&admission, None, NOW + 2).unwrap();
+    let pinned = crate::platform::auth::phase_two_tests::issue_authority(
+        &f.store,
+        &admission,
+        None,
+        NOW + 2,
+    )
+    .unwrap();
     assert_eq!(
         pinned.authority.unsigned.capabilities,
         issued.authority.unsigned.capabilities
@@ -160,7 +169,12 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     )
     .unwrap();
     assert!(matches!(
-        f.store.issue_authority(&admission, None, NOW + 4),
+        crate::platform::auth::phase_two_tests::issue_authority(
+            &f.store,
+            &admission,
+            None,
+            NOW + 4
+        ),
         Err(AuthError::Denied)
     ));
     let enable = AuthDeploymentMutationRequest {
@@ -221,7 +235,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     let creation_identity = mutation(&f.admin, &create);
     let created = create_deployment(&f.store, &creation_identity, &create, NOW).unwrap();
     let missing_key = AuthInstanceProvisionRequest {
-        deployment_id: created.deployment.deployment_id.clone(),
+        deployment_id: created.deployment.deployment_id,
         identity_public_key: None,
         title: "Reader instance".to_string().into(),
         idempotency_key: super::super::sqlite::id().into(),
@@ -246,7 +260,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
             let instances = read_instances(
                 connection,
                 &AuthInstancesListRequest {
-                    deployment_id: Some(created.deployment.deployment_id.clone()),
+                    deployment_id: Some(created.deployment.deployment_id),
                     page: None,
                     extra: Default::default(),
                 },
@@ -327,7 +341,9 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     admission.credential = super::super::Credential::ProvisionedIdentity(
         URL_SAFE_NO_PAD.encode(Sha256::digest(public.as_bytes())),
     );
-    let issued = f.store.issue_authority(&admission, None, NOW).unwrap();
+    let issued =
+        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &admission, None, NOW)
+            .unwrap();
     let ephemeral = nkeys::KeyPair::new_user();
     let signed = trellis_protocol::sign_provisioned_admission(
         trellis_protocol::ProvisionedAdmission {
@@ -343,18 +359,13 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         &client_key,
     )
     .unwrap();
-    let (_, ephemeral_public) = nkeys::from_public_key(&ephemeral.public_key()).unwrap();
-    let inbox = trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(ephemeral_public))
-        .unwrap();
-    let connected = f
-        .store
-        .admit_provisioned(
-            &serde_json::to_vec(&signed).unwrap(),
-            &ephemeral.public_key(),
-            &inbox,
-            NOW,
-        )
-        .unwrap();
+    let connected = crate::platform::auth::phase_two_tests::issue_provisioned_authority(
+        &f.store,
+        &serde_json::to_vec(&signed).unwrap(),
+        &ephemeral.public_key(),
+        NOW,
+    )
+    .unwrap();
     assert_eq!(
         connected.authority.unsigned.principal_id,
         provisioned.instance.principal.principal_id.to_string()
@@ -364,15 +375,15 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         &ed25519_dalek::SigningKey::from_bytes(&[29; 32]),
     )
     .unwrap();
-    assert!(f
-        .store
-        .admit_provisioned(
+    assert!(
+        crate::platform::auth::phase_two_tests::issue_provisioned_authority(
+            &f.store,
             &serde_json::to_vec(&impostor).unwrap(),
             &ephemeral.public_key(),
-            &inbox,
             NOW
         )
-        .is_err());
+        .is_err()
+    );
     let replacement_key = AuthInstanceProvisionRequest {
         identity_public_key: Some(
             URL_SAFE_NO_PAD
@@ -400,17 +411,16 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         Err(AuthError::Conflict)
     ));
     assert_eq!(
-        f.store
-            .admit_provisioned(
-                &serde_json::to_vec(&signed).unwrap(),
-                &ephemeral.public_key(),
-                &inbox,
-                NOW
-            )
-            .unwrap()
-            .authority
-            .unsigned
-            .principal_id,
+        crate::platform::auth::phase_two_tests::issue_provisioned_authority(
+            &f.store,
+            &serde_json::to_vec(&signed).unwrap(),
+            &ephemeral.public_key(),
+            NOW
+        )
+        .unwrap()
+        .authority
+        .unsigned
+        .principal_id,
         provisioned.instance.principal.principal_id.to_string()
     );
     assert_eq!(
@@ -418,7 +428,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         provisioned.instance.principal.principal_id.to_string()
     );
     let instance_command = AuthInstanceMutationRequest {
-        instance_id: provisioned.instance.instance_id.clone(),
+        instance_id: provisioned.instance.instance_id,
         expected_revision: provisioned.instance.revision,
         idempotency_key: super::super::sqlite::id().into(),
         extra: Default::default(),
@@ -441,7 +451,12 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         .unwrap()
         .is_some());
     assert!(matches!(
-        f.store.issue_authority(&admission, None, NOW + 1),
+        crate::platform::auth::phase_two_tests::issue_authority(
+            &f.store,
+            &admission,
+            None,
+            NOW + 1
+        ),
         Err(AuthError::Denied)
     ));
     assert!(matches!(
@@ -470,7 +485,8 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     .unwrap();
     let mut fresh = admission.clone();
     fresh.runtime_id = URL_SAFE_NO_PAD.encode([24; 16]);
-    f.store.issue_authority(&fresh, None, NOW + 2).unwrap();
+    crate::platform::auth::phase_two_tests::issue_authority(&f.store, &fresh, None, NOW + 2)
+        .unwrap();
     assert_eq!(
         change_instance(
             &f.store,
@@ -498,7 +514,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     .unwrap();
     fresh.runtime_id = URL_SAFE_NO_PAD.encode([25; 16]);
     assert!(matches!(
-        f.store.issue_authority(&fresh, None, NOW + 3),
+        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &fresh, None, NOW + 3),
         Err(AuthError::Denied)
     ));
     let resurrection = AuthInstanceMutationRequest {
@@ -517,7 +533,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         Err(AuthError::Conflict)
     ));
     let deployment_command = AuthDeploymentMutationRequest {
-        deployment_id: created.deployment.deployment_id.clone(),
+        deployment_id: created.deployment.deployment_id,
         expected_revision: created.deployment.revision,
         idempotency_key: super::super::sqlite::id().into(),
         extra: Default::default(),
@@ -808,7 +824,7 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
         let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
         let public = key.verifying_key();
         let input = AuthInstanceProvisionRequest {
-            deployment_id: deployment.deployment.deployment_id.clone(),
+            deployment_id: deployment.deployment.deployment_id,
             identity_public_key: Some(URL_SAFE_NO_PAD.encode(public.as_bytes()).into()),
             title: format!("Public {name} instance").into(),
             idempotency_key: super::super::sqlite::id().into(),
@@ -833,18 +849,13 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
             &key,
         )
         .unwrap();
-        let (_, ephemeral_public) = nkeys::from_public_key(&ephemeral.public_key()).unwrap();
-        let inbox =
-            trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(ephemeral_public))
-                .unwrap();
-        let admitted = store
-            .admit_provisioned(
-                &serde_json::to_vec(&signed).unwrap(),
-                &ephemeral.public_key(),
-                &inbox,
-                NOW,
-            )
-            .unwrap();
+        let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+            &store,
+            &serde_json::to_vec(&signed).unwrap(),
+            &ephemeral.public_key(),
+            NOW,
+        )
+        .unwrap();
         assert_eq!(
             admitted.authority.unsigned.principal_id,
             provisioned.instance.principal.principal_id.to_string()
