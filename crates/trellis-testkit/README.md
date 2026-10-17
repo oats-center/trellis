@@ -25,8 +25,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
   `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
   `NatsSource::PathLookup` for `PATH` discovery.
 
-Ports are chosen automatically from kernel-assigned loopback reservations; you
-never select them.
+Ports are reserved automatically outside Linux's outbound ephemeral range; you
+never select them. The kernel enforces each reservation until startup, and
+outbound bootstrap connections cannot claim its port after release.
 
 The application listener's extra development origins can be configured with
 `TrellisTestRuntime::builder().extra_origin("http://localhost:5174")` (or

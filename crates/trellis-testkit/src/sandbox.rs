@@ -1,11 +1,11 @@
 //! Private sandbox directories, child environments, and automatic port leases.
 //!
-//! Port assignment is fully automatic: each startup attempt binds four
-//! `127.0.0.1:0` listeners and lets the kernel choose the ports, holds all four
-//! until immediately before the server spawn, and then closes them in one
-//! narrow step. No lock files, fixed ranges, PID-derived ports, or global
-//! mutex are used, so independent runtimes and processes never coordinate.
+//! Each startup reserves five loopback listeners outside Linux's automatic
+//! outbound port range, holds them until immediately before spawn, and closes
+//! them in one narrow step. No lock files, fixed listener ranges, PID-derived
+//! ports, or global mutex are used.
 
+use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 
@@ -58,7 +58,7 @@ pub(crate) struct PortSet {
     pub websocket: u16,
 }
 
-/// Five live kernel-assigned loopback reservations.
+/// Five live, kernel-enforced loopback reservations.
 pub(crate) struct PortLease {
     http: TcpListener,
     oauth: TcpListener,
@@ -70,14 +70,63 @@ pub(crate) struct PortLease {
 impl PortLease {
     /// Reserves distinct loopback ports, holding every listener open.
     pub(crate) fn reserve() -> Result<Self, TrellisTestError> {
+        let failure = |message: String| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::PortAllocation,
+                TrellisTestStage::PortAllocation,
+                message,
+            )
+        };
+        let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .map_err(|error| failure(format!("reading the automatic TCP port range: {error}")))?;
+        let bounds = range
+            .split_whitespace()
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| failure(format!("parsing the automatic TCP port range: {error}")))?;
+        let [first, last] = bounds.as_slice() else {
+            return Err(failure("invalid automatic TCP port range".into()));
+        };
+        if first > last {
+            return Err(failure("invalid automatic TCP port range".into()));
+        }
+        let lower_count = u32::from(*first).saturating_sub(1024);
+        let upper_start = (u32::from(*last) + 1).max(1024);
+        let available_count = lower_count + 65536 - upper_start;
+        if available_count == 0 {
+            return Err(failure(
+                "no nonprivileged listener ports outside the kernel ephemeral range".into(),
+            ));
+        }
         let bind = |role: &str| -> Result<TcpListener, TrellisTestError> {
-            TcpListener::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).map_err(|error| {
-                TrellisTestError::new(
-                    TrellisTestErrorKind::PortAllocation,
-                    TrellisTestStage::PortAllocation,
-                    format!("reserving the {role} loopback port: {error}"),
-                )
-            })
+            for _ in 0..32 {
+                let mut bytes = [0; 4];
+                std::fs::File::open("/dev/urandom")
+                    .and_then(|mut source| source.read_exact(&mut bytes))
+                    .map_err(|error| {
+                        failure(format!("selecting the {role} loopback port: {error}"))
+                    })?;
+                let offset = u32::from_ne_bytes(bytes) % available_count;
+                let selected = if offset < lower_count {
+                    1024 + offset
+                } else {
+                    upper_start + offset - lower_count
+                };
+                let selected = u16::try_from(selected)
+                    .expect("selected port is within the validated nonprivileged range");
+                match TcpListener::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), selected)) {
+                    Ok(listener) => return Ok(listener),
+                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+                    Err(error) => {
+                        return Err(failure(format!(
+                            "reserving the {role} loopback port: {error}"
+                        )))
+                    }
+                }
+            }
+            Err(failure(format!(
+                "no available non-ephemeral {role} loopback port"
+            )))
         };
         Ok(Self {
             http: bind("HTTP")?,
@@ -375,6 +424,49 @@ mod tests {
             .into_iter()
             .map(|port| {
                 TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("released distinct listener")
+            })
+            .collect();
+    }
+
+    #[test]
+    fn released_ports_survive_automatic_outbound_allocation() {
+        const CHILD: &str = "TRELLIS_PORT_REUSE_NAMESPACE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new("timeout")
+                .args(["20s", "unshare", "--user", "--map-root-user", "--net", "sh", "-c",
+                    "ip link set lo up && sysctl -q -w net.ipv4.ip_local_port_range='32768 32775' && exec \"$@\"",
+                    "port-availability"])
+                .arg(std::env::current_exe().expect("current test executable"))
+                .args(["--exact", "sandbox::tests::released_ports_survive_automatic_outbound_allocation"])
+                .env(CHILD, "1")
+                .output()
+                .expect("run the real TCP allocation test in a private network namespace");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let _peer = TcpListener::bind((Ipv4Addr::LOCALHOST, 12000)).expect("outbound destination");
+        let lease = PortLease::reserve().expect("reserve listeners");
+        let set = lease.ports().expect("reserved ports");
+        lease.release_for_spawn();
+        let _connections: Vec<_> = (0..8)
+            .map(|_| {
+                std::net::TcpStream::connect_timeout(
+                    &SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 12000),
+                    std::time::Duration::from_secs(2),
+                )
+                .expect("occupy an automatic outbound port")
+            })
+            .collect();
+        let _listeners: Vec<_> = [set.http, set.oauth, set.nats, set.monitor, set.websocket]
+            .into_iter()
+            .map(|port| {
+                TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                    .expect("released listener survives outbound allocation")
             })
             .collect();
     }
