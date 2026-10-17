@@ -4,7 +4,9 @@ use futures_util::StreamExt;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use trellis_rs::auth::{NativeCredentialScope, NativeOAuthClient};
-use trellis_rs::client::{ServiceConnectWithContractOptions, TrellisClient, UserConnectOptions};
+use trellis_rs::client::{
+    ResponseVerificationInput, ServiceConnectWithContractOptions, TrellisClient, UserConnectOptions,
+};
 use trellis_rs::generated::RpcDescriptor;
 use trellis_rs::service::internal::{
     dispatch_one, encode_success_reply, sign_verified_reply, InboundRequest,
@@ -319,14 +321,16 @@ async fn admitted_finite_replies_survive_caller_retirement() {
         provider_owner
             .verify_response(
                 &provider_nats,
-                &opening,
-                &digest,
-                &action,
-                Some(identity.deployment_id()),
-                &reply.reply_to,
-                &response,
-                &reply.payload,
-                &proof,
+                ResponseVerificationInput {
+                    pending_request: &opening,
+                    pending_request_digest: &digest,
+                    action: &action,
+                    expected_deployment_id: Some(identity.deployment_id()),
+                    received_subject: &reply.reply_to,
+                    response: &response,
+                    payload: &reply.payload,
+                    proof: &proof,
+                },
             )
             .await
             .unwrap();
@@ -355,14 +359,16 @@ async fn admitted_finite_replies_survive_caller_retirement() {
         assert!(provider_owner
             .verify_response(
                 &provider_nats,
-                &opening,
-                &digest,
-                &action,
-                Some(identity.deployment_id()),
-                &reply.reply_to,
-                &response,
-                b"tampered",
-                &proof
+                ResponseVerificationInput {
+                    pending_request: &opening,
+                    pending_request_digest: &digest,
+                    action: &action,
+                    expected_deployment_id: Some(identity.deployment_id()),
+                    received_subject: &reply.reply_to,
+                    response: &response,
+                    payload: b"tampered",
+                    proof: &proof,
+                },
             )
             .await
             .is_err());
