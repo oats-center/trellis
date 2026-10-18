@@ -40,7 +40,7 @@ const { values: args } = parseArgs({
     sizes: { type: "string", default: "65536,1048576,8388608" },
     sessions: { type: "string", default: "1,10,100" },
     "idle-seconds": { type: "string", default: "5" },
-    "arrival-rate": { type: "string", default: "0" },
+    "arrival-rate": { type: "string" },
     "max-outstanding": { type: "string", default: "128" },
     lane: { type: "string", default: "typescript" },
     providers: { type: "string", default: "1" },
@@ -65,7 +65,10 @@ if (lane === "transfer" && providerCount !== 1) {
     "The focused transfer audit uses one provider; replica scaling belongs to the full suite",
   );
 }
-const arrivalRate = z.coerce.number().nonnegative().parse(args["arrival-rate"]);
+const arrivalRate = z.coerce
+  .number()
+  .nonnegative()
+  .parse(args["arrival-rate"] ?? (lane === "browser" ? "0.05" : "0"));
 const maxOutstanding = positive.parse(args["max-outstanding"]);
 const sizes = z
   .array(positive.max(64 * 1024 * 1024))
@@ -220,7 +223,7 @@ try {
         topology:
           "loopback; native NATS TCP; plaintext HTTP/1.1 keep-alive; no compression or HTTP caching",
         setup:
-          "Contracts, resources and consent prepared before measurement; backend warm; each fresh login uses distinct OAuth custody. First-process connect includes lazy SDK initialization, not module parsing; OS caches are not cleared",
+          "Contracts, resources and platform grants prepared before measurement; backend warm; fresh login includes ordinary login/consent and distinct OAuth custody. First-process connect includes lazy SDK initialization, not module parsing; OS caches are not cleared",
         security:
           "Trellis production auth; HTTP unauthenticated lower bound, NOT security equivalent",
         storage:
@@ -492,7 +495,16 @@ try {
     const windows = [];
     try {
       await writeFile(`${output}/browser-version.txt`, browser.version());
+      const scheduleStarted = performance.now();
       for (let index = 0; index < samples; index++) {
+        // Browser latency samples are fresh-login/resume pairs, not an auth
+        // overload test. Pace arrivals before starting either measured action.
+        if (arrivalRate > 0) {
+          const delay =
+            scheduleStarted + (index * 1000) / arrivalRate - performance.now();
+          if (delay > 0)
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
         for (const resume of [false, true]) {
           await writeFile(
             `${output}/phase.txt`,

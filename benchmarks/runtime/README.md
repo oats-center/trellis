@@ -70,6 +70,12 @@ npm run bench:runtime -- --providers=4 --output=/tmp/opencode/provider-perf
   result. Document TTFB, navigation-to-first-authorized-response, and
   transferred bytes are reported. This is SDK/page delivery, **not Console
   rendering**. Document, bundle, and WASM delivery deliberately use `no-store`.
+  Browser latency defaults to one fresh-login/resume pair every 20 seconds
+  (`--arrival-rate=0.05`); spacing is outside measured durations and is recorded
+  in metadata. This avoids confusing single-user latency with authentication
+  overload. Use `--arrival-rate=0` for an unpaced burst; production OAuth limits
+  remain enabled and throttled samples fail. Different offered rates are not
+  matched comparisons.
 - Lifecycle uses a supported 120-second context window; metadata records the
   lifetime, lead, jitter, minimum-lifetime, and clock-skew settings. Real 10 Hz
   RPC traffic crosses two **verified authority promotions**, observed through

@@ -72,6 +72,12 @@ Authorization refresh is owned SDK maintenance that preserves the logical
 connection; genuine transport loss triggers the owned recovery lifecycle.
 Authorization contexts and route credentials remain process-memory state.
 
+Request status observation belongs to the exact physical transport that carries
+the request. Share its status monitor and detach each request's listener when the
+exchange settles; completed requests must not retain payloads until another
+transport event arrives. Rollover must not redirect retained requests' status
+observation to a newer attachment.
+
 ## Minimal installable service example
 
 ```trellis

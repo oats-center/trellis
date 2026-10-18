@@ -142,6 +142,8 @@ export type TransportAcquireOptions = {
 /** One held transport generation. The holder releases it when its work ends. */
 export type TransportLease = {
   readonly nc: NatsConnection;
+  /** Observe this physical attachment until the returned callback detaches. @internal */
+  watchStatus(listener: (event: unknown) => void): () => void;
   release(): void;
 };
 
@@ -195,7 +197,26 @@ export type TrellisTransportProvider = {
 export function fixedTransportProvider(
   nc: NatsConnection,
 ): TrellisTransportProvider {
-  const lease: TransportLease = { nc, release: () => {} };
+  const listeners = new Set<(event: unknown) => void>();
+  const lease: TransportLease = {
+    nc,
+    watchStatus: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    release: () => {},
+  };
+  void (async () => {
+    try {
+      for await (const event of nc.status()) {
+        for (const listener of listeners) listener(event);
+      }
+    } finally {
+      listeners.clear();
+    }
+  })().catch(() => undefined);
   return {
     currentNats: () => nc,
     acquireCurrent: () => Promise.resolve(lease),
@@ -215,6 +236,8 @@ export function fixedTransportProvider(
  * actually connected with.
  */
 export class TransportGeneration {
+  /** Request listeners fed by the existing physical status monitor. @internal */
+  readonly statusListeners = new Set<(event: unknown) => void>();
   readonly id: number;
   readonly nc: NatsConnection;
   readonly contextDigest: string;
@@ -326,6 +349,12 @@ export class TransportGeneration {
     let released = false;
     return {
       nc: this.nc,
+      watchStatus: (listener) => {
+        this.statusListeners.add(listener);
+        return () => {
+          this.statusListeners.delete(listener);
+        };
+      },
       release: () => {
         if (released) return;
         released = true;
@@ -681,6 +710,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       const source = generation.lease();
       return {
         nc: source.nc,
+        watchStatus: source.watchStatus,
         release: source.release,
         generationId: generation.id,
       };
@@ -1302,6 +1332,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         while (true) {
           const next = await iterator.next();
           if (next.done) return;
+          for (const listener of generation.statusListeners)
+            listener(next.value);
           const event = next.value as {
             type?: unknown;
             isAuthError?: () => boolean;
@@ -1324,6 +1356,8 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         }
       } catch {
         // The connection is gone; `nc.closed()` performs the recovery.
+      } finally {
+        generation.statusListeners.clear();
       }
     })();
   }

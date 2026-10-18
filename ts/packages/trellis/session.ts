@@ -6874,7 +6874,7 @@ export class Trellis<
     deadlineMs: number;
     signal?: AbortSignal;
     callerCapabilities?: readonly string[];
-  }): Promise<Result<{ nc: NatsConnection; release(): void }, TransportError>> {
+  }): Promise<Result<TransportLease, TransportError>> {
     try {
       const authority = this.ownAuthority;
       if (authority && !authority.current) {
@@ -6934,7 +6934,7 @@ export class Trellis<
           }),
         );
       }
-      return ok({ nc: this.#nats, release: () => {} });
+      return ok(await this.#transport.acquireCurrent());
     }
     let lease: TransportLease;
     try {
@@ -6958,7 +6958,7 @@ export class Trellis<
         }),
       );
     }
-    return ok({ nc: lease.nc, release: () => lease.release() });
+    return ok(lease);
   }
 
   async #requestMessage(args: {
@@ -7142,23 +7142,18 @@ export class Trellis<
           // Publish denials arrive on this generation's own status stream, not
           // the reply inbox. Watch the leased connection, never a mutable
           // logical default.
-          const statusIterator = nc.status()[Symbol.asyncIterator]();
-          const stopWatching = (async () => {
-            while (true) {
-              const next = await statusIterator.next();
-              if (next.done) return;
-              const error = (next.value as { error?: unknown } | null)?.error;
-              if (
-                error instanceof Error &&
-                ((error.name === "PermissionViolationError" &&
-                  Reflect.get(error, "operation") === "publish" &&
-                  Reflect.get(error, "subject") === args.subject) ||
-                  error.name === "AuthorizationError" ||
-                  error.name === "UserAuthenticationExpiredError")
-              )
-                response.reject(error);
-            }
-          })().catch(() => undefined);
+          const stopWatching = acquiredTransport.watchStatus((event) => {
+            const error = (event as { error?: unknown } | null)?.error;
+            if (
+              error instanceof Error &&
+              ((error.name === "PermissionViolationError" &&
+                Reflect.get(error, "operation") === "publish" &&
+                Reflect.get(error, "subject") === args.subject) ||
+                error.name === "AuthorizationError" ||
+                error.name === "UserAuthenticationExpiredError")
+            )
+              response.reject(error);
+          });
           try {
             if (args.signal?.aborted) {
               abort();
@@ -7170,8 +7165,7 @@ export class Trellis<
             verified = true;
             clearTimeout(timer);
             args.signal?.removeEventListener("abort", abort);
-            void statusIterator.return?.();
-            void stopWatching;
+            stopWatching();
             subscription.unsubscribe();
           }
         });

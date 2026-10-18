@@ -8,12 +8,13 @@ import {
   connectNativeClient,
   discoverNativeOAuth,
   NativeOAuthClient,
+  type NativeOAuthSession,
 } from "@oatscenter/trellis/native";
 import { sha256 } from "@noble/hashes/sha256";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { ensureTelemetryRuntime } from "@oatscenter/trellis/telemetry";
 import { err, isErr, ok } from "@oatscenter/result";
-import { loginNativeTestClient } from "../../ts/packages/trellis-testkit/src/admin/native_auth.ts";
+import { approveNativeDeviceCode } from "../../ts/packages/trellis-testkit/src/admin/native_auth.ts";
 import { apps, participants } from "./packages/performance-trellis/index.js";
 import {
   deadline,
@@ -295,22 +296,25 @@ if (options.role === "provider") {
       })
     ).orThrow();
     try {
-      const login = initializedCredentials.has(credentialHandle)
-        ? {
-            session: (await native.resume()).orThrow(),
-            servers: server.natsServers,
-          }
-        : await loginNativeTestClient({
-            issuer: options.trellisUrl,
-            directory,
-            client: native,
-            clientId: apps.Caller.request.id,
-            request: apps.Caller.request,
-            username: options.username,
-            password: options.password,
-          });
+      let session: NativeOAuthSession;
+      if (initializedCredentials.has(credentialHandle)) {
+        session = (await native.resume()).orThrow();
+      } else {
+        const device = (
+          await native.startDevice(apps.Caller.request)
+        ).orThrow();
+        await approveNativeDeviceCode({
+          issuer: server.issuer,
+          clientId: apps.Caller.request.id,
+          userCode: device.userCode,
+          username: options.username,
+          password: options.password,
+        });
+        session = (await device.complete()).orThrow();
+      }
       const client = await connectNativeClient({
-        ...login,
+        session,
+        servers: server.natsServers,
         name: "benchmark-client",
         request: apps.Caller.request,
       }).orThrow();
