@@ -1,5 +1,6 @@
 //! Production runtime hosting, isolated bootstrap, and managed broker ownership.
 
+use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -212,6 +213,7 @@ impl TrellisTestRuntimeBuilder {
 struct Infrastructure {
     sandbox: Option<Sandbox>,
     nats: Option<LocalNats>,
+    port_ownership: Option<[UdpSocket; 5]>,
     stop: Option<StopHandle>,
     task: Option<AbortOnDropHandle<Result<(), RuntimeError>>>,
     starting: bool,
@@ -257,10 +259,13 @@ impl Infrastructure {
         if failure.is_some() {
             self.mark_failed();
         }
-        // Both guards stay in the blocking worker if the shutdown future is cancelled.
+        // All guards stay in the blocking worker if the shutdown future is cancelled.
         let nats = self.nats.take();
         let sandbox = self.sandbox.take();
-        let cleanup = tokio::task::spawn_blocking(move || cleanup_broker(nats, sandbox)).await;
+        let port_ownership = self.port_ownership.take();
+        let cleanup =
+            tokio::task::spawn_blocking(move || cleanup_broker(nats, sandbox, port_ownership))
+                .await;
         match cleanup {
             Ok(Err(error)) => failure = Some(merge_failure(failure, error)),
             Err(error) => {
@@ -290,11 +295,12 @@ impl Drop for Infrastructure {
         self.task = None; // abort-on-drop, including cancellation during startup
         let nats = self.nats.take();
         let sandbox = self.sandbox.take();
+        let port_ownership = self.port_ownership.take();
         if nats.is_some() || sandbox.is_some() {
             let _ = std::thread::Builder::new()
                 .name("trellis-testkit-cleanup".into())
                 .spawn(move || {
-                    let _ = cleanup_broker(nats, sandbox);
+                    let _ = cleanup_broker(nats, sandbox, port_ownership);
                 });
         }
     }
@@ -303,6 +309,7 @@ impl Drop for Infrastructure {
 fn cleanup_broker(
     mut nats: Option<LocalNats>,
     mut sandbox: Option<Sandbox>,
+    _port_ownership: Option<[UdpSocket; 5]>,
 ) -> Result<(), TrellisTestError> {
     let mut failure = nats
         .as_mut()
@@ -331,6 +338,7 @@ async fn start_once(
     let mut infrastructure = Infrastructure {
         sandbox: Some(sandbox),
         nats: None,
+        port_ownership: None,
         stop: None,
         task: None,
         starting: true,
@@ -442,7 +450,7 @@ async fn start_once(
                 monitor: ports.monitor,
                 websocket: ports.websocket,
             });
-        lease.release_for_spawn();
+        infrastructure.port_ownership = Some(lease.release_for_spawn());
         match builder.start() {
             Ok(nats) => {
                 infrastructure.nats = Some(nats);

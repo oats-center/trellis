@@ -16,6 +16,17 @@ test("port reservations exclude other listeners until their release completes", 
     await assert.rejects(() => reserveLocalPort(first.port), {
       code: "EADDRINUSE",
     });
+    await first.releaseForSpawn();
+    await promisify(execFile)(process.execPath, [
+      "--experimental-transform-types",
+      "--input-type=module",
+      "--eval",
+      `
+      import assert from "node:assert/strict";
+      import { reserveLocalPort } from ${JSON.stringify(new URL("../src/ports.ts", import.meta.url).href)};
+      await assert.rejects(() => reserveLocalPort(${first.port}), { code: "EADDRINUSE" });
+      `,
+    ]);
     await Promise.all([first.releaseForSpawn(), first.release()]);
     second = await reserveLocalPort(first.port);
     await second.releaseForSpawn();
@@ -67,9 +78,12 @@ test("released listener ports remain bindable when automatic outbound ports are 
           connections.push(connection);
           await once(connection, "connect");
         }
-        replacement = await reserveLocalPort(first.port);
+        replacement = createServer();
+        replacement.listen(first.port, "127.0.0.1");
+        await once(replacement, "listening");
       } finally {
-        await replacement?.release();
+        if (replacement?.listening) await new Promise(resolve => replacement.close(resolve));
+        await first.release();
         for (const connection of connections) connection.destroy();
         await new Promise(resolve => peer.close(resolve));
       }

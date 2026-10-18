@@ -2,11 +2,12 @@
 //!
 //! Each startup reserves five loopback listeners outside Linux's automatic
 //! outbound port range, holds them until immediately before spawn, and closes
-//! them in one narrow step. No lock files, fixed listener ranges, PID-derived
-//! ports, or global mutex are used.
+//! them in one narrow step. Same-port UDP ownership survives that handoff so
+//! other Rust and Node harnesses cannot steal released TCP ports during startup.
+//! No lock files, PID-derived ports, or global mutex are used.
 
 use std::io::Read;
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::path::{Path, PathBuf};
 
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
@@ -58,13 +59,13 @@ pub(crate) struct PortSet {
     pub websocket: u16,
 }
 
-/// Five live, kernel-enforced loopback reservations.
+/// Five live TCP reservations with same-port UDP handoff ownership.
 pub(crate) struct PortLease {
-    http: TcpListener,
-    oauth: TcpListener,
-    nats: TcpListener,
-    monitor: TcpListener,
-    websocket: TcpListener,
+    http: (TcpListener, UdpSocket),
+    oauth: (TcpListener, UdpSocket),
+    nats: (TcpListener, UdpSocket),
+    monitor: (TcpListener, UdpSocket),
+    websocket: (TcpListener, UdpSocket),
 }
 
 impl PortLease {
@@ -100,7 +101,7 @@ impl PortLease {
                 "no nonprivileged listener ports outside the kernel ephemeral range".into(),
             ));
         }
-        let bind = |role: &str| -> Result<TcpListener, TrellisTestError> {
+        let bind = |role: &str| -> Result<(TcpListener, UdpSocket), TrellisTestError> {
             for _ in 0..32 {
                 let mut bytes = [0; 4];
                 std::fs::File::open("/dev/urandom")
@@ -116,8 +117,17 @@ impl PortLease {
                 };
                 let selected = u16::try_from(selected)
                     .expect("selected port is within the validated nonprivileged range");
+                let ownership = match UdpSocket::bind((Ipv4Addr::LOCALHOST, selected)) {
+                    Ok(socket) => socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+                    Err(error) => {
+                        return Err(failure(format!(
+                            "reserving the {role} handoff ownership: {error}"
+                        )))
+                    }
+                };
                 match TcpListener::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), selected)) {
-                    Ok(listener) => return Ok(listener),
+                    Ok(listener) => return Ok((listener, ownership)),
                     Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
                     Err(error) => {
                         return Err(failure(format!(
@@ -154,21 +164,28 @@ impl PortLease {
                 })
         };
         Ok(PortSet {
-            http: port_of(&self.http, "HTTP")?,
-            oauth: port_of(&self.oauth, "OAuth")?,
-            nats: port_of(&self.nats, "NATS")?,
-            monitor: port_of(&self.monitor, "monitor")?,
-            websocket: port_of(&self.websocket, "WebSocket")?,
+            http: port_of(&self.http.0, "HTTP")?,
+            oauth: port_of(&self.oauth.0, "OAuth")?,
+            nats: port_of(&self.nats.0, "NATS")?,
+            monitor: port_of(&self.monitor.0, "monitor")?,
+            websocket: port_of(&self.websocket.0, "WebSocket")?,
         })
     }
 
-    /// Closes every reservation in one narrow step just before broker startup.
-    pub(crate) fn release_for_spawn(self) {
-        drop(self.http);
-        drop(self.oauth);
-        drop(self.nats);
-        drop(self.monitor);
-        drop(self.websocket);
+    /// Closes the TCP listeners, retaining exclusive ownership through startup.
+    pub(crate) fn release_for_spawn(self) -> [UdpSocket; 5] {
+        drop(self.http.0);
+        drop(self.oauth.0);
+        drop(self.nats.0);
+        drop(self.monitor.0);
+        drop(self.websocket.0);
+        [
+            self.http.1,
+            self.oauth.1,
+            self.nats.1,
+            self.monitor.1,
+            self.websocket.1,
+        ]
     }
 }
 
@@ -442,7 +459,7 @@ mod tests {
         for port in [set.http, set.oauth, set.nats, set.monitor, set.websocket] {
             assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
         }
-        lease.release_for_spawn();
+        let _ownership = lease.release_for_spawn();
         let _connections: Vec<_> = (0..8)
             .map(|_| {
                 std::net::TcpStream::connect_timeout(
@@ -460,6 +477,51 @@ mod tests {
             })
             .collect();
         println!("released listeners bound after outbound allocation");
+    }
+
+    #[test]
+    fn node_reservations_respect_rust_handoff_ownership() {
+        let lease = PortLease::reserve().expect("reserve listeners");
+        let port = lease.ports().expect("reserved ports").http;
+        let mut ownership = Some(lease.release_for_spawn());
+        let module = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ts/packages/trellis-testkit/src/ports.ts")
+            .canonicalize()
+            .expect("Node allocator source");
+        let script = format!(
+            r#"
+            import assert from "node:assert/strict";
+            import {{ reserveLocalPort }} from {};
+            if (process.argv[1] === "held") {{
+                await assert.rejects(() => reserveLocalPort({port}), {{ code: "EADDRINUSE" }});
+            }} else {{
+                const lease = await reserveLocalPort({port});
+                await lease.release();
+            }}
+            "#,
+            serde_json::to_string(&module).expect("module path")
+        );
+        for phase in ["held", "released"] {
+            if phase == "released" {
+                drop(ownership.take());
+            }
+            let output = std::process::Command::new("node")
+                .args([
+                    "--experimental-transform-types",
+                    "--input-type=module",
+                    "--eval",
+                    &script,
+                    phase,
+                ])
+                .output()
+                .expect("run the ordinary Node allocator");
+            assert!(
+                output.status.success(),
+                "{phase}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]
