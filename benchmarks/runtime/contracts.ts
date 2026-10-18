@@ -59,7 +59,7 @@ scale = "contract.trellis"
 [generate.typescript]
 output = "packages/scale"
 [dependencies]
-trellis = { package = "trellis", path = ${JSON.stringify(relative(dir, `${root}/crates/runtime`))} }
+trellis = { package = "trellis", path = ${JSON.stringify(relative(dir, `${root}/crates/builtin-contracts`))} }
 `,
   );
   const started = performance.now();
