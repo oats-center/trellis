@@ -74,9 +74,9 @@ async function startSplitRole(
   const seedFile = join(root, "identity.seed");
   await writeFile(seedFile, seed, { mode: 0o600 });
   const reservation = await reserveLocalPort();
-  const port = reservation.port;
-  const configPath = join(root, "config.toml");
   try {
+    const port = reservation.port;
+    const configPath = join(root, "config.toml");
     const config = parse(platformConfig);
     const http = config.http;
     assert(http && typeof http === "object" && !Array.isArray(http));
@@ -128,50 +128,51 @@ async function startSplitRole(
       ),
     );
     await writeFile(configPath, stringify(config));
-  } finally {
     await reservation.releaseForSpawn();
-  }
-  const child = spawnTracked(serverBinary(), ["--config", configPath, role], {
-    env: {
-      PATH: process.env["PATH"] ?? "",
-      HOME: join(root, "home"),
-      XDG_CONFIG_HOME: join(root, "config"),
-      XDG_DATA_HOME: join(root, "data"),
-      XDG_STATE_HOME: join(root, "state"),
-      XDG_RUNTIME_DIR: join(root, "runtime"),
-    },
-  });
-  child.stdout.pipe(process.stdout);
-  child.stderr.pipe(process.stderr);
-  try {
-    await Promise.race([
-      runtime.waitFor(
-        async () => {
-          try {
-            return (await fetch(`http://127.0.0.1:${port}/readyz`)).ok;
-          } catch {
-            return false;
-          }
-        },
-        { timeoutMs: 60_000 },
-      ),
-      child.exited.then((exit) => {
-        throw new Error(
-          `split ${role} exited before readiness: ${JSON.stringify(exit)}`,
-        );
-      }),
-    ]);
-  } catch (error) {
-    child.kill("SIGTERM");
-    await child.exited;
-    throw error;
-  }
-  return {
-    status: child.exited,
-    kill: () => {
+    const child = spawnTracked(serverBinary(), ["--config", configPath, role], {
+      env: {
+        PATH: process.env["PATH"] ?? "",
+        HOME: join(root, "home"),
+        XDG_CONFIG_HOME: join(root, "config"),
+        XDG_DATA_HOME: join(root, "data"),
+        XDG_STATE_HOME: join(root, "state"),
+        XDG_RUNTIME_DIR: join(root, "runtime"),
+      },
+    });
+    child.stdout.pipe(process.stdout);
+    child.stderr.pipe(process.stderr);
+    try {
+      await Promise.race([
+        runtime.waitFor(
+          async () => {
+            try {
+              return (await fetch(`http://127.0.0.1:${port}/readyz`)).ok;
+            } catch {
+              return false;
+            }
+          },
+          { timeoutMs: 60_000 },
+        ),
+        child.exited.then((exit) => {
+          throw new Error(
+            `split ${role} exited before readiness: ${JSON.stringify(exit)}`,
+          );
+        }),
+      ]);
+    } catch (error) {
       child.kill("SIGTERM");
-    },
-  };
+      await child.exited;
+      throw error;
+    }
+    return {
+      status: child.exited,
+      kill: () => {
+        child.kill("SIGTERM");
+      },
+    };
+  } finally {
+    await reservation.release();
+  }
 }
 
 function jsonFrame(frame: unknown): Record<string, unknown> {
