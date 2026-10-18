@@ -3,9 +3,9 @@
 Status: Revision 7, unreleased. Phase B functional implementation includes
 production startup, Callout/ACL lifecycle wiring, OAuth browser/native
 custody, native CLI flows, shared SDK authority ownership, provider/resource
-integration, and the Console cutover. Phase C closeout remains open for full-scope
-review repairs, main integration, exact-head acceptance, and matched performance
-evidence. Build-owned generation and strict Check are part of that acceptance.
+integration, and the Console cutover. Main reconciliation is integrated. Phase C
+closeout remains open for final review repairs, exact-head acceptance, and matched
+performance evidence. Build-owned generation and strict Check are part of that acceptance.
 This is not a release. This is an unreleased clean break,
 not a compatibility path for GrantBinding or the former browser bind protocol.
 
@@ -501,9 +501,11 @@ to the verified provider. The continuation and redirect suppress referrers;
 replayed or unreviewed handoffs cannot begin upstream linking.
 
 Issuer rotation installs a signed, preceding-key-bound, monotonic chain record
-and retains retired public keys and immutable signed contexts. Rotation commits
-the successor's public identity; its private key remains operator-owned and must
-be installed as the configured runtime signer before further issuance. A
+and retains retired public keys and immutable signed contexts. Auth generates and
+durably stores the successor's private key in the Auth database's sibling
+`<database-stem>.issuer-keys` directory (`platform.issuer-keys` by default) before committing its public identity and selecting it
+for issuance. Original configuration and seed material may remain read-only;
+missing committed successor custody fails startup rather than being regenerated. A
 previous signer cannot continue issuing after that commitment. Rotation itself
 does not retire sessions. Explicit key compromise revokes affected sessions and
 makes that key unusable; restart must not reinstall it as an active signer.
@@ -522,7 +524,11 @@ explicit recovery. Failed transport preparation uses bounded recovery without
 retransmitting application requests or clearing known revocations.
 Native renewal leases the current maintenance attachment rather than retaining
 the initial socket; that finite lease carries signer resolution through the
-existing private preparation and checked authority-promotion boundary.
+existing private preparation and checked authority-promotion boundary. Verified
+issuer-chain changes wake renewal immediately. Private admission reads use their
+bound runtime-key proof and retained transport policy even when application
+authority needs a new signer; fresh application work remains fenced until the
+replacement authority is verified and promoted.
 Provider ingress preparation retains the verified private candidate authority,
 not the suspended predecessor. This applies to Live and Operation observation
 providers alike. Retention still verifies provider actions against the accepted

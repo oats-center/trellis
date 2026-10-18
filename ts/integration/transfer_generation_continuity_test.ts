@@ -7,6 +7,7 @@
  * with the exact bytes, then clean up.
  */
 
+import { connectNativeClient } from "@oatscenter/trellis/native";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { TrellisService } from "@oatscenter/trellis/service";
@@ -489,7 +490,7 @@ test("download endAck retires the last caller and provider generation leases", a
         const targetExit = growthTarget.wait().catch((error: unknown) => error);
         try {
           await growthTarget.handleExtend(() => Result.ok({}));
-          const caller = await runtime.connectClient({
+          const login = await runtime.registerClient({
             name: "download-ack-caller",
             contract: callerContract,
           });
@@ -505,6 +506,14 @@ test("download endAck retires the last caller and provider generation leases", a
             expectedRevision: callerGrant.revision,
             idempotencyKey: ulid(),
           });
+          // Renew the original consented credential after setup reduction, before
+          // physical admission: revocation retires an already admitted session.
+          const session = (await login.session.refresh()).orThrow();
+          const caller = await connectNativeClient({
+            ...login,
+            session,
+            request: callerContract,
+          }).orThrow();
           let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
           try {
             const bytes = Uint8Array.from(
@@ -585,20 +594,28 @@ test("download endAck retires the last caller and provider generation leases", a
                   ],
                 ] as const
               ).map(async ([attachments, old]) => {
-                await runtime.waitFor(
-                  async () => {
-                    const items = await attachments();
-                    return (
-                      items.some(
-                        (item) => item.attachmentId === old.attachmentId,
-                      ) &&
-                      items.some(
-                        (item) => item.attachmentId !== old.attachmentId,
-                      )
+                await runtime
+                  .waitFor(
+                    async () => {
+                      const items = await attachments();
+                      return (
+                        items.some(
+                          (item) => item.attachmentId === old.attachmentId,
+                        ) &&
+                        items.some(
+                          (item) => item.attachmentId !== old.attachmentId,
+                        )
+                      );
+                    },
+                    { timeoutMs: Math.max(1, promotionDeadline - Date.now()) },
+                  )
+                  .catch(async (cause: unknown) => {
+                    const observed = await attachments();
+                    throw new Error(
+                      `Expected overlap for ${old.attachmentId}; observed ${observed.map((item) => `${item.attachmentId}:${item.state}`).join(", ")}`,
+                      { cause },
                     );
-                  },
-                  { timeoutMs: Math.max(1, promotionDeadline - Date.now()) },
-                );
+                  });
               }),
             );
             // No other requests or observation sessions own either old generation.

@@ -113,7 +113,8 @@ locally generates and durably flushes a private successor key before atomically
 committing its old-key-signed chain link, activation, publication intent, and
 replay result. Replays do not rotate again. Restart loads the database-current
 key and fails closed on missing custody, without replacing the bootstrap seed.
-Back up the issuer seed and the database's sibling `.issuer-keys` directory with Auth's database
+Back up the issuer seed and the database's sibling `<database-stem>.issuer-keys`
+directory (`platform.issuer-keys` by default) with Auth's database
 and the independent OAuth storage key. Private keys never cross the RPC.
 OAuth sessions retain
 their original verified refresh family; CONNECT, Authority.Renew, OwnContextGet,

@@ -285,7 +285,10 @@ for (const run of rows) {
     if (!run.success || row.errors) group.failures++;
     else {
       for (const [phase, value] of Object.entries(row.phases)) {
-        if (value !== null) (group.phases[phase] ??= []).push(value);
+        if (value !== null) {
+          group.phases[phase] ??= [];
+          group.phases[phase].push(value);
+        }
       }
       if (row.medianMs !== null) group.medians.push(row.medianMs);
       if (row.p95Ms !== null) group.p95s.push(row.p95Ms);
@@ -423,7 +426,7 @@ if (args.compare) {
   }
   const comparisonKeys = [
     "host",
-    "deno",
+    "node",
     "cpuModel",
     "logicalCpus",
     "cgroup",

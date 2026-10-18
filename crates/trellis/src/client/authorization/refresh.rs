@@ -262,11 +262,20 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                 _ = tokio::time::sleep(delay) => {},
                 result = changes.recv() => {
                     if matches!(result, Err(tokio::sync::broadcast::error::RecvError::Closed)) { return; }
-                    if runtime.contexts.owner.own_authority().is_err() {
+                    if let Ok(authority) = runtime.contexts.owner.own_authority() {
+                        if runtime.contexts.owner.current_trust().is_ok_and(|trust| {
+                            trust.issuer.key_id == authority.authority().issuer_key_id
+                        }) {
+                            continue;
+                        }
+                    } else {
                         runtime.contexts.suspend();
                         runtime.generations.authorization_promoted();
+                        if runtime.contexts.owner.staged_own_authority().is_ok() {
+                            // Coverage-only recovery belongs to the mirror supervisor.
+                            continue;
+                        }
                     }
-                    continue;
                 }
             }
             if runtime.contexts.owner.own_authority().is_err() {

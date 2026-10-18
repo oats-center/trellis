@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { z } from "zod";
 
+// Keep automatic HTTP/WSS listeners above Fetch's restricted low ports (through 10080).
+const MIN_AUTOMATIC_PORT = 10_240;
+
 /** Owned TCP reservation, held until the production child is ready to bind. */
 export type ReservedPort = {
   /** Selected TCP port. */
@@ -32,8 +35,8 @@ export async function reserveLocalPort(port = 0): Promise<ReservedPort> {
           .trim()
           .split(/\s+/),
       );
-    lowerCount = Math.max(0, first - 1024);
-    upperStart = Math.max(1024, last + 1);
+    lowerCount = Math.max(0, first - MIN_AUTOMATIC_PORT);
+    upperStart = Math.max(MIN_AUTOMATIC_PORT, last + 1);
     availableCount = lowerCount + 65536 - upperStart;
     if (availableCount === 0)
       throw new Error(
@@ -46,7 +49,7 @@ export async function reserveLocalPort(port = 0): Promise<ReservedPort> {
       port !== 0
         ? port
         : offset < lowerCount
-          ? 1024 + offset
+          ? MIN_AUTOMATIC_PORT + offset
           : upperStart + offset - lowerCount;
     const listener = createServer();
     try {

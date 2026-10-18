@@ -70,6 +70,8 @@ pub(crate) struct PortLease {
 impl PortLease {
     /// Reserves distinct loopback ports, holding every listener open.
     pub(crate) fn reserve() -> Result<Self, TrellisTestError> {
+        // HTTP/WSS clients reject Fetch's restricted low ports (through 10080).
+        const MIN_AUTOMATIC_PORT: u32 = 10_240;
         let failure = |message: String| {
             TrellisTestError::new(
                 TrellisTestErrorKind::PortAllocation,
@@ -90,8 +92,8 @@ impl PortLease {
         if first > last {
             return Err(failure("invalid automatic TCP port range".into()));
         }
-        let lower_count = u32::from(*first).saturating_sub(1024);
-        let upper_start = (u32::from(*last) + 1).max(1024);
+        let lower_count = u32::from(*first).saturating_sub(MIN_AUTOMATIC_PORT);
+        let upper_start = (u32::from(*last) + 1).max(MIN_AUTOMATIC_PORT);
         let available_count = lower_count + 65536 - upper_start;
         if available_count == 0 {
             return Err(failure(
@@ -108,7 +110,7 @@ impl PortLease {
                     })?;
                 let offset = u32::from_ne_bytes(bytes) % available_count;
                 let selected = if offset < lower_count {
-                    1024 + offset
+                    MIN_AUTOMATIC_PORT + offset
                 } else {
                     upper_start + offset - lower_count
                 };

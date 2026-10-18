@@ -420,7 +420,13 @@ impl AuthorizationContextCache {
         &self,
         _transition: &OwnTransitionGuard<'_>,
     ) -> Result<(trellis_protocol::TransportAuthorizationV1, i64), TrellisClientError> {
-        self.retained_context_digest()?;
+        // Private admission reads use their own runtime-key proof, not application
+        // authority. The existing transport policy remains bounded by its lease;
+        // requiring a current issuer here would prevent renewing retired authority.
+        let (digest, _) = self.owner.maintenance_identity()?;
+        if self.stored_context_digest()? != digest {
+            return Err(unavailable());
+        }
         Ok((
             self.installed
                 .read()
@@ -438,6 +444,7 @@ impl AuthorizationContextCache {
         transition: &OwnTransitionGuard<'_>,
     ) -> Result<Option<(trellis_protocol::TransportAuthorizationV1, i64)>, TrellisClientError> {
         self.owner.own_authority()?;
+        self.retained_context_digest()?;
         let transport = self.maintenance_transport_locked(transition)?;
         Ok(self.availability.borrow().is_usable().then_some(transport))
     }
@@ -445,11 +452,13 @@ impl AuthorizationContextCache {
     pub(crate) fn own_transport_snapshot(
         &self,
     ) -> Result<OwnTransportSnapshot, TrellisClientError> {
-        let authority = self.owner.staged_own_authority()?;
-        self.retained_context_digest()?;
+        let (context_digest, authorization_session_id) = self.owner.maintenance_identity()?;
+        if self.stored_context_digest()? != context_digest {
+            return Err(unavailable());
+        }
         Ok(OwnTransportSnapshot {
-            context_digest: authority.digest().to_owned(),
-            authorization_session_id: authority.authority().authorization_session_id.clone(),
+            context_digest,
+            authorization_session_id,
             policy: self
                 .installed
                 .read()

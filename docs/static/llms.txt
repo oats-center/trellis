@@ -148,8 +148,9 @@ a hostname emits a security warning because cookies are not port-scoped. TLS
 is required outside explicitly configured loopback development. Installation
 identity and the independently provisioned OAuth storage key survive restarts
 and issuer rotation. Admin `Issuers.Rotate` durably creates successor custody
-and a signed trust-chain link; back up the Auth database's sibling `.issuer-keys`
-directory with the Auth database. Missing committed keys stop startup.
+and a signed trust-chain link; back up the Auth database's sibling
+`<database-stem>.issuer-keys` directory (`platform.issuer-keys` by default)
+with the Auth database. Missing committed keys stop startup.
 Browser credential custody uses nonextractable keys and
 cross-tab refresh ownership; native custody uses owner-only files and a
 cross-process family lock.

@@ -8,7 +8,7 @@ use axum::{
 use rust_embed::Embed;
 
 #[derive(Embed)]
-#[folder = "../../crates/runtime/generated/portal"]
+#[folder = "generated/portal"]
 struct PortalAssets;
 
 pub(super) fn asset(path: &str) -> Response {

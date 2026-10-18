@@ -13,6 +13,7 @@ import { TrellisService } from "@oatscenter/trellis/service";
 import { apps } from "../../integration/fixtures/client-upgrade-narrow/packages/client-upgrade/index.js";
 import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
+import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 test("administrator issuer rotation is idempotent and cold native custody follows the chain across restart", async () => {
@@ -79,6 +80,28 @@ test("administrator issuer rotation is idempotent and cold native custody follow
         idempotencyKey: ulid(),
       });
       assert.notEqual(second.keyId, rotated.keyId);
+      const freshCredentials = await loginNativeTestClient({
+        issuer: runtime.oauthIssuer,
+        directory: join(runtime.workdir, "fresh-issuer-custody", ulid()),
+        clientId: "trellis.cli",
+        request: adminParticipant,
+        username: runtime.adminUsername,
+        password: runtime.adminPassword,
+        platformPrivileges: { required: ["principals.manage"] },
+      });
+      const freshClient = await connectNativeClient({
+        ...freshCredentials,
+        request: adminParticipant,
+      }).orThrow();
+      try {
+        // The first fresh Auth opening must recover its provider's retired
+        // signer before dispatch, without requiring a successful warm-up call.
+        const users = await freshClient.usersList({}).orThrow();
+        assert(users.items.length > 0);
+      } finally {
+        await freshClient.connection.close();
+        await freshCredentials.session.close();
+      }
       await client.connection.close();
       await service.stop();
       await serviceExit;

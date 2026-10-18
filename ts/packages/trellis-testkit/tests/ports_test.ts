@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { reserveLocalPort, type ReservedPort } from "../src/ports.ts";
@@ -7,13 +9,27 @@ import { reserveLocalPort, type ReservedPort } from "../src/ports.ts";
 test("port reservations exclude other listeners until their release completes", async () => {
   const first = await reserveLocalPort();
   let second: ReservedPort | undefined;
+  const server = createServer((_request, response) =>
+    response.end("HTTP handoff"),
+  );
   try {
     await assert.rejects(() => reserveLocalPort(first.port), {
       code: "EADDRINUSE",
     });
     await Promise.all([first.releaseForSpawn(), first.release()]);
     second = await reserveLocalPort(first.port);
+    await second.releaseForSpawn();
+    server.listen(first.port, "127.0.0.1");
+    await once(server, "listening");
+    const response = await fetch(`http://127.0.0.1:${first.port}`);
+    assert.equal(await response.text(), "HTTP handoff");
   } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      });
+    }
     await first.release();
     if (second) await second.release();
   }

@@ -1065,6 +1065,30 @@ impl AuthorizationOwner {
         Ok(authority)
     }
 
+    /// Return only retained transport identity, never application authority.
+    /// Expiry and issuer retirement require renewal; known session cutoffs still
+    /// forbid reusing the attachment and require ordinary fresh admission.
+    pub(crate) fn maintenance_identity(&self) -> Result<(String, String), TrellisClientError> {
+        let state = self.state.read().map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
+        })?;
+        let authority = state.own.as_ref().ok_or_else(|| {
+            TrellisClientError::AuthorizationUnavailable("own authority not installed".into())
+        })?;
+        if state.revocation_overflow_until > self.policy().now_unix_seconds {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "revocation capacity reached".into(),
+            ));
+        }
+        let session_id = &authority.authority().authorization_session_id;
+        if state.revocations.contains_key(session_id) {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "own logical session retired".into(),
+            ));
+        }
+        Ok((authority.digest().to_owned(), session_id.clone()))
+    }
+
     /// Private transport preparation only: current installed evidence remains subject to
     /// signed expiry, issuer retirement and sticky revocation, but is not application-usable.
     pub(crate) fn staged_own_authority(
@@ -1532,6 +1556,29 @@ impl AuthorizationOwner {
         })
     }
 
+    fn issuer_renewal_pending(&self) -> Result<bool, TrellisClientError> {
+        let state = self.state.read().map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
+        })?;
+        let Some(own) = state.own.as_ref() else {
+            return Ok(false);
+        };
+        if own.authority().issuer_key_id == state.current_issuer.key_id
+            || state
+                .revocations
+                .contains_key(&own.authority().authorization_session_id)
+        {
+            return Ok(false);
+        }
+        state.require_live_coverage()?;
+        if state.revocation_overflow_until > self.policy().now_unix_seconds {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "revocation capacity reached".into(),
+            ));
+        }
+        Ok(true)
+    }
+
     /// Authenticate an opening against exact bytes and the generated registered action.
     pub async fn verify_request(
         &self,
@@ -1543,7 +1590,24 @@ impl AuthorizationOwner {
     ) -> Result<VerifiedAuthorizationRequest, TrellisClientError> {
         tokio::time::timeout(RESOLUTION_TIMEOUT, async {
             loop {
-                let own = self.own_authority()?;
+                let mut changes = self.subscribe_changes();
+                let own = match self.own_authority() {
+                    Ok(own) => own,
+                    Err(error) => {
+                        if !self.issuer_renewal_pending()? {
+                            return Err(error);
+                        }
+                        if matches!(
+                            changes.recv().await,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed)
+                        ) {
+                            return Err(TrellisClientError::AuthorizationUnavailable(
+                                "authority owner closed".into(),
+                            ));
+                        }
+                        continue;
+                    }
+                };
                 let result = async {
                     let authority = self
                         .resolve_authority(transport, &request.authority_digest)
@@ -1662,9 +1726,24 @@ impl AuthorizationOwner {
                     )?)
                 }
                 .await;
-                // Only restart verification if its own-provider snapshot was
-                // superseded during cold evidence resolution. No handler has
-                // run, and missing coverage or unchanged authority is not retried.
+                // Cold caller resolution can authenticate a successor and retire
+                // this provider's signer before private renewal finishes. Retain
+                // this unopened request within the same resolution deadline;
+                // no handler has run and nothing is republished.
+                if result.is_err() {
+                    while self.issuer_renewal_pending()? {
+                        if matches!(
+                            changes.recv().await,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed)
+                        ) {
+                            return Err(TrellisClientError::AuthorizationUnavailable(
+                                "authority owner closed".into(),
+                            ));
+                        }
+                    }
+                }
+                // Recheck exact bytes only after verified own authority changed.
+                // Coverage loss, cutoffs and unchanged authority remain fenced.
                 if result.is_err()
                     && self
                         .own_authority()
@@ -2342,6 +2421,8 @@ impl AuthorizationOwner {
             .insert(successor.key_id.clone(), successor.clone());
         state.current_issuer = successor;
         state.rotation_sequence = rotation.sequence.get();
+        drop(state);
+        let _ = self.changes.send(());
         Ok(())
     }
 

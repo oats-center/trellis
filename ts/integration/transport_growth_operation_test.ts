@@ -757,7 +757,18 @@ test("Rust capability reduction retires the old session and a fresh provider ser
         const original = await attachments();
         assert.deepEqual(original.length, 1);
 
-        await caller.advance({}).orThrow();
+        await runtime.waitFor(async () => {
+          const ready = await caller.advance({});
+          if (
+            ready.isErr() &&
+            !(
+              "code" in ready.error &&
+              ready.error.code === "trellis.request.unavailable"
+            )
+          )
+            ready.orThrow();
+          return ready.isOk() ? true : undefined;
+        });
         await revokeProviderExtension(runtime, providerInstance);
         await leg.waitFor("OPERATION_PROVIDER_ERROR");
         await runtime.waitFor(
@@ -773,7 +784,21 @@ test("Rust capability reduction retires the old session and a fresh provider ser
       150_000,
       async (leg) => {
         await leg.waitFor("OPERATION_PROVIDER_READY");
-        await caller.advance({}).orThrow();
+        // The process announces configuration before run() attaches intake.
+        // Advance is this fixture's stateless readiness RPC. Only wait through
+        // unavailable intake; authorization failures and deadlines remain fatal.
+        await runtime.waitFor(async () => {
+          const ready = await caller.advance({});
+          if (
+            ready.isErr() &&
+            !(
+              "code" in ready.error &&
+              ready.error.code === "trellis.request.unavailable"
+            )
+          )
+            ready.orThrow();
+          return ready.isOk() ? true : undefined;
+        });
       },
     );
   }, runtimeOptions);
@@ -1303,9 +1328,6 @@ test("Rust durable event intake recovers when its held delivery's attachment is 
  */
 test("Rust durable event intake surfaces terminal transport loss after deployment disable", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const providerContract =
-      participants.TransportGrowthOperationProvider.participant;
-
     const providerInstance = await prepareOperationProvider(runtime);
 
     await withOperationProviderLeg(
