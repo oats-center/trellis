@@ -84,7 +84,7 @@ against the grant.
 
 ## Streaming and durable completion
 
-Transfer v2 keeps multiple raw-byte NATS frames in flight within bounded frame
+Transfer v1 keeps multiple raw-byte NATS frames in flight within bounded frame
 and byte windows. Downstream consumption releases cumulative network credit;
 there is no blocking request/reply for every chunk. The backend controls upload
 drain rate, and the caller's stream consumption controls download drain rate.

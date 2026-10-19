@@ -214,7 +214,7 @@ where
                 },
                 _ = credit_due(&scheduler), if activated => {
                     let consumed = session.consumption();
-                    publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Credit { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone(), received_seq: U64s::new(session.received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed.seq), consumed_bytes: U64s::new(consumed.bytes) }).await?;
+                    publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Credit { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), received_seq: U64s::new(session.received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed.seq), consumed_bytes: U64s::new(consumed.bytes) }).await?;
                     reported_seq = consumed.seq; reported_bytes = consumed.bytes; scheduler.clear();
                 },
                 _ = &mut cancelled => {
@@ -243,12 +243,12 @@ where
                                 session.start(store.take().ok_or_else(|| error("upload store already started"))?)?;
                                 activated = true; activate_body = Some(message.payload.clone());
                             }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Activated { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes: session.plan.grant.max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
+                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes: session.plan.grant.max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
                         },
                         TransferControl::Cancel { .. } => {
                             session.abort().await;
                             if let Some(sender) = sender.take() { let _ = sender.send((Err(ServerError::TransferCancelled { transfer_id: grant.transfer_id.clone() }), None)); }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Cancelled { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone() }).await?;
+                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Cancelled { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone() }).await?;
                             return Ok(());
                         },
                         _ => return Err(error("unsupported upload control")),
@@ -292,7 +292,7 @@ where
                              let info = match result { Ok(info) => info, Err(error) => { tracing::warn!(%error, "transfer upload backend commit failed"); if let Some(sender) = sender.take() { let _ = sender.send((Err(error), None)); } return Err(wire::error("upload backend commit failed")); } };
                             let consumed = session.consumption();
                             on_progress(session.progress());
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Credit { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone(), received_seq: complete.final_seq, consumed_seq: complete.final_seq, consumed_bytes: U64s::new(consumed.bytes) }).await?;
+                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Credit { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), received_seq: complete.final_seq, consumed_seq: complete.final_seq, consumed_bytes: U64s::new(consumed.bytes) }).await?;
                             let (persisted, done) = oneshot::channel();
                             sender.take().ok_or_else(|| error("upload completion owner missing"))?.send((Ok(info.clone()), Some(persisted))).map_err(|_| error("upload completion owner closed"))?;
                             tokio::select! {
@@ -301,7 +301,7 @@ where
                                 _ = &mut expiry => return Err(error("upload expired during Operation commit")),
                                 failure = wire::authority_failure(&local, &peer) => return Err(failure),
                             }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Committed { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone(), final_seq: complete.final_seq, info }).await?;
+                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Committed { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), final_seq: complete.final_seq, info }).await?;
                             return Ok(());
                         },
                         _ => return Err(error("unexpected upload frame")),
@@ -323,7 +323,7 @@ where
             &grant.signal_subject,
             TransferDirection::Send,
             TransferSignal::Error {
-                format: TransferFormat::V2,
+                format: TransferFormat::V1,
                 transfer_id: grant.transfer_id.clone(),
                 code: TransferErrorCode::StorageFailed,
             },

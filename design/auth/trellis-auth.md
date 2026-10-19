@@ -314,7 +314,7 @@ Auth-signed session authority exposes the verified binding to the SDK, which sti
 checks its generated provider implementation against the accepted evidence.
 
 Auth checks the current credential/root, runtime identity, and proof key before
-issuing `trellis.session-authority.v2`. It signs canonical bytes and commits the
+issuing `trellis.session-authority.v1`. It signs canonical bytes and commits the
 immutable context, logical-session association, and publication work together.
 Resolution by digest returns that exact committed object even after restart.
 

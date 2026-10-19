@@ -545,7 +545,7 @@ but retain the entire object in memory. Generated Operation
 references upload bytes with `upload(body)`; lower-level operation builders
 stream with `transfer_from(reader)` without a caller-supplied size or hash.
 Trellis counts and hashes bytes while sending and verifies size and SHA-256 on
-receipt. Transfer v2 uses bounded windowed one-way raw NATS DATA, not one RPC per
+receipt. Transfer v1 uses bounded windowed one-way raw NATS DATA, not one RPC per
 frame. Download destination writes and upload backend-reader consumption release
 cumulative credit; credit is not persistence. Upload success awaits backend write
 completion and durable Operation transfer commit, before handler execution.

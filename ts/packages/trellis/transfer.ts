@@ -305,7 +305,7 @@ class ClientSession {
       const session = this.session;
       const payload = new TextEncoder().encode(
         JSON.stringify({
-          format: "trellis.transfer.v2",
+          format: "trellis.transfer.v1",
           type: "control",
           action,
           transferId: session.grant.transferId,
@@ -524,7 +524,7 @@ export class SendTransferHandle extends BaseTransferHandle {
           const digest = `SHA-256=${base64urlEncode(hasher.digest())}`;
           const completion = new TextEncoder().encode(
             JSON.stringify({
-              format: "trellis.transfer.v2",
+              format: "trellis.transfer.v1",
               type: "complete",
               transferId: this.grant.transferId,
               finalSeq: window.highestSent.toString(),

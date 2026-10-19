@@ -168,7 +168,7 @@ for (const cancelDuringCommit of [false, true]) {
               );
               const payload = new TextEncoder().encode(
                 JSON.stringify({
-                  format: "trellis.transfer.v2",
+                  format: "trellis.transfer.v1",
                   type: "control",
                   action: "cancel",
                   transferId: grant.transferId,

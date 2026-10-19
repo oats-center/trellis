@@ -134,7 +134,7 @@ where
                                 buffer.resize(max_frame_bytes as usize, 0);
                                 window = SenderWindow::new(FlowLimits { max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes });
                             }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
+                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
                             if !activated {
                                 let (mut writer, pipe) = super::telemetry::pipe(max_frame_bytes as usize, TransferDirection::Receive, "provider-tx");
                                 let store = store.take().ok_or_else(|| error("download backend already started"))?;
@@ -150,7 +150,7 @@ where
                         },
                         TransferControl::Cancel { .. } => {
                              backend.take();
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Cancelled { format: TransferFormat::V2, transfer_id: grant.transfer_id.clone() }).await?;
+                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Cancelled { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone() }).await?;
                             return Ok(());
                         },
                         TransferControl::EndAck { final_seq, received_seq, consumed_seq, consumed_bytes, .. } => {
@@ -194,7 +194,7 @@ where
             &grant.signal_subject,
             TransferDirection::Receive,
             TransferSignal::Error {
-                format: TransferFormat::V2,
+                format: TransferFormat::V1,
                 transfer_id: grant.transfer_id.clone(),
                 code: TransferErrorCode::StorageFailed,
             },

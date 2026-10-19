@@ -164,7 +164,7 @@ handles keep grant metadata outside application output types.
 Both SDKs return the original logical file metadata after takeover; the physical
 staging locator remains private and is used only to open the staged object.
 
-Operation upload uses Transfer v2's bounded one-way raw-byte stream,
+Operation upload uses Transfer v1's bounded one-way raw-byte stream,
 independently of Live-based Operation Watch. Network credit follows
 complete-frame consumption by staging storage, never durable Operation progress
 persistence. One owned latest-value worker coalesces durable progress at 1 MiB

@@ -206,10 +206,10 @@ Rules:
   EOF and durably staged the object, or fails with a transfer error if durable
   storage was not reached
 
-### Transfer v2 Session And Wire Behavior
+### Transfer v1 Session And Wire Behavior
 
-Transfer uses `trellis.transfer.v2`, with no v1 serving, fallback, or
-negotiation. IDL `upload` and `download` declarations remain unchanged.
+Transfer uses the single `trellis.transfer.v1` wire format, with no fallback or
+version negotiation. IDL `upload` and `download` declarations remain unchanged.
 High-level generated helpers consume runtime-issued grants; applications do not
 construct subjects or resolve physical storage.
 
@@ -219,10 +219,10 @@ frame/byte limits. Receive grants additionally bind logical `FileInfo`. The
 subject families use the same canonical identity-token encoding as Live:
 
 ```text
-transfer.v2.upload.data.<b64(P)>.<b64(C)>.<T>
-transfer.v2.download.data.<b64(P)>.<b64(C)>.<T>
-transfer.v2.control.<b64(P)>.<b64(C)>.<T>
-transfer.v2.signal.<b64(P)>.<b64(C)>.<T>
+transfer.v1.upload.data.<b64(P)>.<b64(C)>.<T>
+transfer.v1.download.data.<b64(P)>.<b64(C)>.<T>
+transfer.v1.control.<b64(P)>.<b64(C)>.<T>
+transfer.v1.signal.<b64(P)>.<b64(C)>.<T>
 ```
 
 Rules:

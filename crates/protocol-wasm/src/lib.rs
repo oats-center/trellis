@@ -272,14 +272,14 @@ pub fn authorize_catalog_action(
     Ok(json!({"ok": true, "authorized": authorized}).to_string())
 }
 
-/// Generate a high-entropy canonical Transfer v2 session ID.
+/// Generate a high-entropy canonical Transfer v1 session ID.
 #[wasm_bindgen]
 pub fn transfer_generate_id() -> Result<String, JsError> {
     trellis_protocol::transfer::generate_transfer_id()
         .map_err(|error| JsError::new(&error.to_string()))
 }
 
-/// Derive an exact Transfer v2 subject from logical endpoint identities.
+/// Derive an exact Transfer v1 subject from logical endpoint identities.
 /// `kind` is upload-data, download-data, control or signal.
 #[wasm_bindgen]
 pub fn transfer_subject(

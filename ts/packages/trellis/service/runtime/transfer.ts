@@ -414,7 +414,7 @@ export class ServiceTransfer {
       throw new Error("NATS payload limit cannot carry transfer frames");
     }
     return {
-      format: "trellis.transfer.v2",
+      format: "trellis.transfer.v1",
       type: "TransferGrant",
       direction,
       service: this.opts.name,
@@ -466,7 +466,7 @@ export class ServiceTransfer {
         grant,
         args,
         store,
-        `_trellis-transfer-v2-${grant.transferId}`,
+        `_trellis-transfer-v1-${grant.transferId}`,
         args.operationId,
       );
       session.upload = args;
@@ -823,7 +823,7 @@ export class ServiceTransfer {
     session.signalLane = session.signalLane.then(async () => {
       const signal = {
         ...value,
-        format: "trellis.transfer.v2",
+        format: "trellis.transfer.v1",
         transferId: session.wire.grant.transferId,
       };
       const payload = new TextEncoder().encode(JSON.stringify(signal));

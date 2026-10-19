@@ -484,7 +484,7 @@ For upload Operations, use the generated `.transfer(body).start()` workflow.
 The provider consumes runtime-staged bytes with `transfer.stream()` or
 `transfer.bytes()`, and starts processing only after backend and durable Operation
 transfer commit. Receive grants use the high-level transfer helper's `stream()`
-for large bodies or `bytes()` for a collected buffer. Transfer v2 moves raw bytes
+for large bodies or `bytes()` for a collected buffer. Transfer v1 moves raw bytes
 over bounded one-way NATS windows; Web Streams backpressure/backend consumption
 drives cumulative credit, not a per-chunk RPC. Credit does not report upload
 success. Durable watch transfer progress is monotonic and may be coalesced, with

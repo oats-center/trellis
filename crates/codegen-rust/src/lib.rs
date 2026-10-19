@@ -2427,7 +2427,7 @@ fn download_output_round_trips_transfer_grant() {
     use trellis_rs::generated::Codec;
 
     let grant = DownloadTransferGrant {
-        format: "trellis.transfer.v2".into(),
+        format: "trellis.transfer.v1".into(),
         type_name: "TransferGrant".into(),
         direction: "receive".into(),
         service: "backend".into(),
@@ -2438,9 +2438,9 @@ fn download_output_round_trips_transfer_grant() {
         provider: TransferIdentity { connection_id: "provider".into(), session_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into() },
         consumer: TransferIdentity { connection_id: "consumer".into(), session_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into() },
         transfer_id: "AAAAAAAAAAAAAAAAAAAAAA".into(),
-        data_subject: "transfer.v2.download.data.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
-        control_subject: "transfer.v2.control.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
-        signal_subject: "transfer.v2.signal.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
+        data_subject: "transfer.v1.download.data.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
+        control_subject: "transfer.v1.control.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
+        signal_subject: "transfer.v1.signal.cHJvdmlkZXI.Y29uc3VtZXI.AAAAAAAAAAAAAAAAAAAAAA".into(),
         expires_at: "2030-01-01T00:00:00Z".into(),
         max_frame_bytes: 1_048_576,
         window_frames: 16,

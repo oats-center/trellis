@@ -773,7 +773,7 @@ exact next chunk while the pinned connection and stored chunks remain available.
 Consumers are cleaned up before their generation lease is released; native
 ObjectStore links are unsupported. Whole-buffer helpers collect the entire value
 in memory, so bounded adapter buffering is not a whole-process memory guarantee.
-Transfer v2 uses raw-byte one-way NATS DATA with bounded
+Transfer v1 uses raw-byte one-way NATS DATA with bounded
 frame/byte windows and cumulative consumed credit, not a request/reply per chunk.
 Grants bind logical connection/session identities and exact session subjects,
 never physical storage names, backend protocols, credentials, or presigned URLs.

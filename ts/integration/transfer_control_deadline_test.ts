@@ -71,7 +71,7 @@ for (const exchange of ["activation", "cancellation"] as const) {
             // Upload activation has no DATA before acceptance. Hold only the
             // provider's signed activation reply, not the connection or PONGs.
             hold = gate.armResponseHold(
-              "transfer.v2.control.",
+              "transfer.v1.control.",
               undefined,
               (body) =>
                 JSON.parse(new TextDecoder().decode(body)).type === "activated",

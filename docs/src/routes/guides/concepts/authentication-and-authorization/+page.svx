@@ -149,13 +149,12 @@ package/participant evidence, exact grants, resources, route JWT, inbox, and NAT
 endpoints server-side. The runtime verifies that complete response before its
 first CONNECT.
 
-A client CONNECTs with its session NKey signature and a
-`trellis.nats-connect-token.v2` carrying the selected context digest and a
-short-lived admission routing JWT; it presents no client JWT. Auth Callout
-validates that routing JWT, the nonce-bound connect proof, and the signed
-context, rechecks current issuable state, and installs the exact transport
-policy signed into the selected context. It never derives authority from
-subject strings or the redundant session key.
+A client CONNECTs with its session NKey signature and its
+`trellis.oauth-admission.v1` or `trellis.provisioned-admission.v1` credential;
+it presents no client JWT. Auth Callout validates the signed OAuth admission or
+identity-bound provisioned admission, rechecks current issuable state, and
+installs the exact transport policy signed into the selected session authority.
+It never derives authority from subject strings or the redundant session key.
 
 ## Browser login and the portal
 

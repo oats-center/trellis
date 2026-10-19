@@ -468,7 +468,7 @@ tokens. The application's major belongs to that full API identity, not to the
 Live protocol version. Use generated client/provider facades; dotted action
 names never imply a deployment selection or another Live protocol.
 
-Transfers use bounded, windowed raw-byte streaming over NATS, with storage
+Transfer v1 uses bounded, windowed raw-byte streaming over NATS, with storage
 protocols and credentials hidden behind runtime store handles. Use generated
 upload Operations and download helpers, not raw subjects. Network credit is not
 durability: upload success follows verified backend and durable Operation commit.

@@ -1192,7 +1192,7 @@ export type TransferFrameDescriptor = {
 
 /** Shared caller-control prefix. All counters remain decimal strings. */
 type TransferControlBase = {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   type: "control";
   transferId: string;
   controlSeq: string;
@@ -1226,7 +1226,7 @@ export type TransferGrantIdentityWire = {
 
 /** Shared public grant coordinates, with no physical backend identifiers. */
 type TransferGrantBaseWire = {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   type: "TransferGrant";
   service: string;
   origin: { apiId: string; action: CatalogActionIdentity };
@@ -1282,7 +1282,7 @@ export type TransferErrorCode =
 
 /** Strict provider signals; consumed credit is distinct from durable commit. */
 export type TransferSignalWire = {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   transferId: string;
 } & (
   | {
@@ -1306,14 +1306,14 @@ export type TransferSignalWire = {
 
 /** Ordered upload completion on the same subject as upload DATA. */
 export type TransferCompleteWire = TransferTerminalWire & {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   type: "complete";
   transferId: string;
 };
 
 /** Canonical protocol limits and header names exported by Rust/WASM. */
 export type TransferConstants = {
-  format: "trellis.transfer.v2";
+  format: "trellis.transfer.v1";
   maxFrameBytes: number;
   windowFrames: number;
   windowBytes: number;

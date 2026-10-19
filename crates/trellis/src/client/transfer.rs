@@ -94,7 +94,7 @@ fn validate_coordinates(
                 TransferDirection::Receive => "receive",
             }
     {
-        return Err(fail("invalid Transfer v2 grant discriminator"));
+        return Err(fail("invalid Transfer v1 grant discriminator"));
     }
     let identity = client.own_pinned_identity()?;
     if coordinates.consumer.session_key != identity.session_key
@@ -157,7 +157,7 @@ async fn activate(
         .map_err(fail)?,
     );
     let body = TransferControl::Activate {
-        format: TransferFormat::V2,
+        format: TransferFormat::V1,
         kind: TransferControlKind::Control,
         transfer_id: coordinates.id.into(),
         control_seq: U64s::new(1),
@@ -210,7 +210,7 @@ async fn activate(
                 _ = cancelled(cancellation), if !cancelled_sent => {
                     local.guard.reconcile().await.map_err(|error| fail(format!("activation cancellation authority: {error:?}")))?;
                     // Activation has not returned: no DATA has been authenticated or consumed.
-                    let body = TransferControl::Cancel { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: coordinates.id.into(), control_seq: U64s::new(2), received_seq: U64s::new(0), consumed_seq: U64s::new(0), consumed_bytes: U64s::new(0) };
+                    let body = TransferControl::Cancel { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: coordinates.id.into(), control_seq: U64s::new(2), received_seq: U64s::new(0), consumed_seq: U64s::new(0), consumed_bytes: U64s::new(0) };
                     let payload = Bytes::from(serde_json::to_vec(&body)?);
                     let descriptor = TransferFrameDescriptor { transfer_id: coordinates.id.into(), direction: coordinates.direction, sequence: U64s::new(2), kind: TransferFrameKind::Control, terminal: None };
                     let headers = wire::caller_headers(client, &coordinates.action, coordinates.control, coordinates.signal, &descriptor, &payload).map_err(fail)?;
@@ -447,7 +447,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                 }
             }
             if source_done && !complete_sent && staged.is_none() && !cancelled_sent {
-                let body = TransferComplete { format: TransferFormat::V2, kind: TransferCompleteKind::Complete, transfer_id: grant.transfer_id.clone(), final_seq: U64s::new(window.highest_sent.load(Ordering::Acquire)), size: transferred, digest: format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize())) };
+                let body = TransferComplete { format: TransferFormat::V1, kind: TransferCompleteKind::Complete, transfer_id: grant.transfer_id.clone(), final_seq: U64s::new(window.highest_sent.load(Ordering::Acquire)), size: transferred, digest: format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize())) };
                 let payload = Bytes::from(serde_json::to_vec(&body)?);
                 let descriptor = TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Send, sequence: body.final_seq, kind: TransferFrameKind::Complete, terminal: None };
                 let headers = wire::caller_headers(client, &coordinates.action, &grant.data_subject, &grant.signal_subject, &descriptor, &payload).map_err(fail)?;
@@ -461,7 +461,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                 _ = changes.recv() => { active.peer.guard.check_now().map_err(|e| fail(format!("upload authority lost: {e:?}")))?; },
                 _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("upload local authority lost: {e:?}")))?; },
                 _ = cancelled(cancellation), if !cancelled_sent => {
-                    publish_control(client, &active, &coordinates, TransferControl::Cancel { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(2), received_seq: U64s::new(window.highest_received.load(Ordering::Acquire)), consumed_seq: U64s::new(window.highest_consumed.load(Ordering::Acquire)), consumed_bytes: U64s::new(consumed_bytes) }).await?;
+                    publish_control(client, &active, &coordinates, TransferControl::Cancel { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(2), received_seq: U64s::new(window.highest_received.load(Ordering::Acquire)), consumed_seq: U64s::new(window.highest_consumed.load(Ordering::Acquire)), consumed_bytes: U64s::new(consumed_bytes) }).await?;
                     cancelled_sent = true;
                     staged.take();
                 },
@@ -496,7 +496,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
             &active,
             &coordinates,
             TransferControl::Cancel {
-                format: TransferFormat::V2,
+                format: TransferFormat::V1,
                 kind: TransferControlKind::Control,
                 transfer_id: grant.transfer_id.clone(),
                 control_seq: U64s::new(2),
@@ -601,7 +601,7 @@ pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + 
                         _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("download local authority lost: {e:?}")))?; },
                         _ = transfer::credit_due(&scheduler) => {
                             control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
-                            publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
+                            publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
                             reported = consumed; reported_bytes = transferred; scheduler.clear();
                         },
                         message = active.signals.next() => {
@@ -627,14 +627,14 @@ pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + 
                 if let Some(terminal) = &eof {
                     if terminal.final_seq.get() != consumed || terminal.size != transferred || transferred != grant.info.size || !transfer::transfer_digests_match(&terminal.digest, &grant.info.digest) || !transfer::transfer_digests_match(&terminal.digest, &format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize()))) { return Err(fail("download EOF integrity mismatch")); }
                     control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
-                    publish_control(client, &active, &coordinates, TransferControl::EndAck { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: terminal.final_seq, consumed_seq: terminal.final_seq, consumed_bytes: U64s::new(transferred), final_seq: terminal.final_seq }).await?;
+                    publish_control(client, &active, &coordinates, TransferControl::EndAck { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: terminal.final_seq, consumed_seq: terminal.final_seq, consumed_bytes: U64s::new(transferred), final_seq: terminal.final_seq }).await?;
                     active.lease.nats().flush().await.map_err(fail)?;
                     return Ok(grant.info.clone());
                 }
             }
             if scheduler.is_due(tokio::time::Instant::now()) {
                 control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
-                publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V2, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
+                publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
                 reported = consumed; reported_bytes = transferred; scheduler.clear();
             }
             if !queue.is_empty() { continue; }
@@ -668,7 +668,7 @@ pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + 
             &active,
             &coordinates,
             TransferControl::Cancel {
-                format: TransferFormat::V2,
+                format: TransferFormat::V1,
                 kind: TransferControlKind::Control,
                 transfer_id: grant.transfer_id.clone(),
                 control_seq: U64s::new(control_seq),
