@@ -432,40 +432,35 @@ mod tests {
 
     #[test]
     fn released_ports_survive_automatic_outbound_allocation() {
-        const CHILD: &str = "TRELLIS_PORT_REUSE_NAMESPACE_CHILD";
-        if std::env::var_os(CHILD).is_none() {
-            let output = std::process::Command::new("timeout")
-                .args(["20s", "unshare", "--user", "--map-root-user", "--net", "sh", "-c",
-                    "ip link set lo up && sysctl -q -w net.ipv4.ip_local_port_range='32768 32775' && exec \"$@\"",
-                    "port-availability"])
-                .arg(std::env::current_exe().expect("current test executable"))
-                .args(["--exact", "sandbox::tests::released_ports_survive_automatic_outbound_allocation", "--nocapture"])
-                .env(CHILD, "1")
-                .output()
-                .expect("run the real TCP allocation test in a private network namespace");
-            assert!(
-                output.status.success(),
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(String::from_utf8_lossy(&output.stdout)
-                .contains("released listeners bound after outbound allocation"));
-            return;
-        }
-        let _peer = TcpListener::bind((Ipv4Addr::LOCALHOST, 12000)).expect("outbound destination");
+        // Exercise the host's real automatic allocation without requiring
+        // privileged namespaces or changing its network configuration.
+        let peer = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("outbound destination");
+        let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
+            .expect("kernel automatic port range");
+        let bounds: Vec<u16> = range
+            .split_whitespace()
+            .map(|value| value.parse().expect("kernel port"))
+            .collect();
+        let automatic = bounds[0]..=bounds[1];
         let lease = PortLease::reserve().expect("reserve listeners");
         let set = lease.ports().expect("reserved ports");
         for port in [set.http, set.oauth, set.nats, set.monitor, set.websocket] {
             assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_err());
+            assert!(
+                !automatic.contains(&port),
+                "listener exposed to outbound reuse"
+            );
         }
         let _ownership = lease.release_for_spawn();
         let _connections: Vec<_> = (0..8)
             .map(|_| {
                 std::net::TcpStream::connect_timeout(
-                    &SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 12000),
+                    &peer.local_addr().expect("outbound address"),
                     std::time::Duration::from_secs(2),
                 )
+                .inspect(|connection| {
+                    assert!(automatic.contains(&connection.local_addr().unwrap().port()));
+                })
                 .expect("occupy an automatic outbound port")
             })
             .collect();
@@ -476,7 +471,6 @@ mod tests {
                     .expect("released listener survives outbound allocation")
             })
             .collect();
-        println!("released listeners bound after outbound allocation");
     }
 
     #[test]

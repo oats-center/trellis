@@ -277,9 +277,19 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            account.user.account.unwrap().username,
+            account.user.account.as_ref().unwrap().username,
             runtime.admin_username()
         );
+        let directory = auth
+            .users_get(&trellis_runtime_apis::types::AuthUserGetRequest {
+                user_id: account.user.principal_id,
+                extra: Default::default(),
+            })
+            .await
+            .unwrap();
+        // Directory consent does not delegate the shared administrator's
+        // account-administration privilege to this application.
+        assert!(directory.user.account.is_none());
         let missing = auth
             .users_get(&trellis_runtime_apis::types::AuthUserGetRequest {
                 user_id: ulid::Ulid::new().to_string().parse().unwrap(),
@@ -295,9 +305,7 @@ mod tests {
         else {
             panic!("unprivileged native registration must return the Auth error contract")
         };
-        // Sharing the seeded administrator's user identity does not grant this
-        // new client the CLI's privilege eligibility or approved authority.
-        assert_eq!(error.payload().unwrap().code.as_ref(), "access_denied");
+        assert_eq!(error.payload().unwrap().code.as_ref(), "not_found");
         drop(auth);
         drop(client);
         runtime.shutdown().await.unwrap();

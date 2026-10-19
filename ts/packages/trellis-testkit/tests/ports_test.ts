@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createConnection, type Socket } from "node:net";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { reserveLocalPort, type ReservedPort } from "../src/ports.ts";
@@ -47,48 +49,53 @@ test("port reservations exclude other listeners until their release completes", 
 });
 
 test("released listener ports remain bindable when automatic outbound ports are occupied", async () => {
-  await promisify(execFile)(
-    "unshare",
-    [
-      "--user",
-      "--map-root-user",
-      "--net",
-      "sh",
-      "-c",
-      'ip link set lo up && sysctl -q -w net.ipv4.ip_local_port_range="32768 32771" && exec "$@"',
-      "port-availability",
-      process.execPath,
-      "--experimental-transform-types",
-      "--input-type=module",
-      "--eval",
-      `
-      import { createServer, createConnection } from "node:net";
-      import { once } from "node:events";
-      import { reserveLocalPort } from ${JSON.stringify(new URL("../src/ports.ts", import.meta.url).href)};
-      const peer = createServer();
-      peer.listen(12000, "127.0.0.1");
-      await once(peer, "listening");
-      const first = await reserveLocalPort();
-      await first.releaseForSpawn();
-      const connections = [];
-      let replacement;
-      try {
-        for (let index = 0; index < 4; index++) {
-          const connection = createConnection({ host: "127.0.0.1", port: 12000 });
-          connections.push(connection);
-          await once(connection, "connect");
-        }
-        replacement = createServer();
-        replacement.listen(first.port, "127.0.0.1");
-        await once(replacement, "listening");
-      } finally {
-        if (replacement?.listening) await new Promise(resolve => replacement.close(resolve));
-        await first.release();
-        for (const connection of connections) connection.destroy();
-        await new Promise(resolve => peer.close(resolve));
-      }
-    `,
-    ],
-    { timeout: 10_000 },
+  const [minimum, maximum] = (
+    await readFile("/proc/sys/net/ipv4/ip_local_port_range", "utf8")
+  )
+    .trim()
+    .split(/\s+/)
+    .map(Number);
+  const first = await reserveLocalPort();
+  const peer = createServer();
+  const replacement = createServer((_request, response) =>
+    response.end("handoff"),
   );
+  const connections: Socket[] = [];
+  try {
+    assert(first.port < minimum || first.port > maximum);
+    peer.listen(0, "127.0.0.1");
+    await once(peer, "listening");
+    const address = peer.address();
+    assert(address && typeof address !== "string");
+    await first.releaseForSpawn();
+    for (let index = 0; index < 4; index++) {
+      const connection = createConnection({
+        host: "127.0.0.1",
+        port: address.port,
+      });
+      connections.push(connection);
+      await once(connection, "connect");
+      const localPort = connection.localPort;
+      assert(
+        localPort !== undefined && localPort >= minimum && localPort <= maximum,
+      );
+    }
+    replacement.listen(first.port, "127.0.0.1");
+    await once(replacement, "listening");
+    assert.equal(
+      await (await fetch(`http://127.0.0.1:${first.port}`)).text(),
+      "handoff",
+    );
+  } finally {
+    for (const connection of connections) connection.destroy();
+    for (const server of [replacement, peer]) {
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+          server.closeAllConnections();
+        });
+      }
+    }
+    await first.release();
+  }
 });

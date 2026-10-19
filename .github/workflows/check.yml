@@ -444,14 +444,6 @@ jobs:
       - name: Extract producer-built adapter-test runtime
         run: mkdir -p dist/runtime-binaries && tar -xzf dist/runtime-binaries.tar.gz -C dist/runtime-binaries ./trellis ./trellis-server
 
-      - name: Install network-namespace test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends iproute2 util-linux procps
-          printf '%s\n' /usr/sbin /sbin >> "$GITHUB_PATH"
-          export PATH="$PATH:/usr/sbin:/sbin"
-          command -v ip unshare sysctl
-
       - name: Test TypeScript packages
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis

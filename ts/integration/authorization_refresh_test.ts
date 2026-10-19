@@ -539,9 +539,11 @@ test("a real native NATS outage recovers after authorization refresh and resumes
       contract: apps.LiveProbeCaller.request,
     });
     const phases: string[] = [];
-    const unsubscribe = caller.connection.subscribe((status) =>
-      phases.push(status.phase),
-    );
+    const transitions: Array<{ at: number; status: unknown }> = [];
+    const unsubscribe = caller.connection.subscribe((status) => {
+      phases.push(status.phase);
+      transitions.push({ at: Date.now(), status });
+    });
     try {
       // Establish real functionality before cutting transport: a successful
       // Inspect proves the Rust process booted, both sides authenticated, the
@@ -600,10 +602,21 @@ test("a real native NATS outage recovers after authorization refresh and resumes
       // Ordinary NATS reconnect on the same advertised endpoint: no client or
       // provider recreation and no manual resume. The same logical caller must
       // return to connected.
-      await runtime.waitFor(
-        () => caller.connection.status.phase === "connected",
-        { timeoutMs: 30_000 },
-      );
+      await runtime
+        .waitFor(() => caller.connection.status.phase === "connected", {
+          timeoutMs: 30_000,
+        })
+        .catch((cause) => {
+          throw new Error(
+            `Native outage recovery failed: ${JSON.stringify({
+              transitions,
+              current: caller.connection.status,
+              outageStartedAt,
+              elapsedMs: Date.now() - outageStartedAt,
+            })}`,
+            { cause },
+          );
+        });
 
       // Recovery immediately after restoration is necessary but not sufficient:
       // settle past the cut-time context's validity window first.

@@ -1146,11 +1146,21 @@ test("generated runtime workflows", async (t) => {
         await t.test("state survives control-plane restart", async () => {
           await client.state.saved.set({ value: "durable" }).orThrow();
           await runtime.restart();
-          await runtime.waitFor(
-            () =>
-              client.connection.status.phase === "connected" &&
-              service.connection.status.phase === "connected",
-          );
+          await runtime
+            .waitFor(
+              () =>
+                client.connection.status.phase === "connected" &&
+                service.connection.status.phase === "connected",
+            )
+            .catch((cause) => {
+              throw new Error(
+                `Restart recovery failed: ${JSON.stringify({
+                  caller: client.connection.status,
+                  service: service.connection.status,
+                })}`,
+                { cause },
+              );
+            });
           const stored = await client.state.saved.get().orThrow();
           assert(stored);
           assert.deepEqual(stored.value.value, "durable");
