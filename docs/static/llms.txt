@@ -477,6 +477,14 @@ TypeScript download callers use `decodeTransferGrant(response.transfer)` from
 This Rust/WASM decoder checks wire structure, not authorization; the transfer
 runtime verifies provider identity and session authority before bytes move.
 
+`Auth.Users.List/Get` require selected and consented `usersRead` and return
+active directory profiles, including immutable `principalId`, names, available
+email and photos. Ordinary profiles omit `account`. Delegated and currently
+eligible `principals.manage` also exposes account lifecycle/revision, username
+and password status and permits inactive-user lookup and username search.
+`Users.Resolve` with `accountRead` is self-only and includes the caller's account.
+Names and email are not unique identity keys or application authorization.
+
 Durable transfer progress is monotonic and may be coalesced; interrupted uploads
 restart from byte zero.
 An upload transport error is not proof that durable commit failed. Resume its

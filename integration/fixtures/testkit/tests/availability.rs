@@ -323,7 +323,7 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
     admin.o_auth_clients_put(&wire(json!({"clientId":client_id,"title":"Optional fixture","description":"Selective native consent","kind":"native","redirectUris":[],"impliedConsent":[],"development":true,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
     let password = ulid::Ulid::new().to_string();
     let user = admin.users_create(&wire(json!({"username":format!("optional-{}",ulid::Ulid::new()),"password":password,"displayName":"Optional fixture","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap().user;
-    let principal = user.principal.principal_id.to_string();
+    let principal = user.principal_id.to_string();
     let read = Request::REQUIRED_CAPABILITIES[0];
     let extend = Request::OPTIONAL_CAPABILITIES[0];
     for capability in [read, extend] {
@@ -336,7 +336,7 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
             &runtime,
             &client_id,
             details.clone(),
-            &user.username,
+            &user.account.as_ref().unwrap().username,
             &password,
             Some(&[read, extend]),
         )
@@ -390,7 +390,7 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
             &runtime,
             &client_id,
             details,
-            &user.username,
+            &user.account.as_ref().unwrap().username,
             &password,
             Some(&[read]),
         )

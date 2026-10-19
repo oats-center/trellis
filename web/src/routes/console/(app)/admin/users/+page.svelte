@@ -44,7 +44,7 @@
   // User listings prefer the operator-facing local username (or display name)
   // over the stable principal/display identifier.
   function identityLabel(user: UserView): string {
-    return user.username || user.displayName;
+    return user.account?.username || user.displayName;
   }
 
   let loading = $state(true);
@@ -58,7 +58,7 @@
   let resetDialog = $state<HTMLDialogElement | null>(null);
 
   const activeUserCount = $derived(
-    users.filter((user) => user.principal.enabled).length,
+    users.filter((user) => user.account?.principal.enabled ?? true).length,
   );
   const inactiveUserCount = $derived(users.length - activeUserCount);
 
@@ -111,14 +111,14 @@
     const key = ulid();
     const intent = captureIntent<ResetInput>({
       operation: "usersPasswordResetCreate",
-      targetId: user.principal.principalId,
+      targetId: user.principalId,
       label: identityLabel(user),
       idempotencyKey: key,
-      input: { idempotencyKey: key, userId: user.principal.principalId },
+      input: { idempotencyKey: key, userId: user.principalId },
       scope: { routeKey: "users-list" },
     });
     if (!resetMutation.begin(intent)) return;
-    resetPendingUserId = user.principal.principalId;
+    resetPendingUserId = user.principalId;
     resetResult = null;
     const outcome = await resetMutation.send({
       isStillValid: () => resetPendingUserId === intent.targetId,
@@ -266,11 +266,12 @@
           </tr>
         </thead>
         <tbody>
-          {#each users as user (user.principal.principalId)}
+          {#each users as user (user.principalId)}
             <tr
               class={[
                 "users-row",
-                !user.principal.enabled && "users-row-inactive",
+                user.account?.principal.enabled === false &&
+                  "users-row-inactive",
               ]}
             >
               <td class="max-w-0 align-top">
@@ -278,7 +279,7 @@
                   <span
                     class={[
                       "mt-1.5 size-2 rounded-full",
-                      user.principal.enabled
+                      (user.account?.principal.enabled ?? true)
                         ? "bg-success"
                         : "bg-base-content/25",
                     ]}
@@ -301,42 +302,41 @@
                 >
                 <span
                   class="trellis-identifier mt-1 block truncate text-[0.68rem] text-base-content/40"
-                  title={user.principal.principalId}
-                  >{user.principal.principalId}</span
+                  title={user.principalId}>{user.principalId}</span
                 >
               </td>
               <td
                 class="hidden w-36 align-top text-xs text-base-content/60 lg:table-cell"
               >
-                {user.principal.revision}
+                {user.account?.principal.revision ?? "Not available"}
               </td>
               <td class="w-28 align-top">
-                {#if user.principal.enabled}
+                {#if user.account?.principal.enabled ?? true}
                   <span class="badge badge-success badge-sm">Active</span>
                 {:else}
                   <span class="badge badge-neutral badge-sm">Inactive</span>
                 {/if}
               </td>
               <td class="w-24 whitespace-nowrap text-right align-top">
-                <ActionMenu widthClass="w-44">
-                  <li>
-                    <a
-                      href={consoleUrl("/admin/users/edit", {
-                        query: { userId: user.principal.principalId },
-                      })}>Edit</a
-                    >
-                  </li>
-                  <li>
-                    <button
-                      type="button"
-                      onclick={() => void createPasswordReset(user)}
-                      disabled={resetPendingUserId !== null}
-                      >{resetPendingUserId === user.principal.principalId
-                        ? "Creating reset..."
-                        : "Create reset token"}</button
-                    >
-                  </li>
-                </ActionMenu>
+                {#if user.account}<ActionMenu widthClass="w-44">
+                    <li>
+                      <a
+                        href={consoleUrl("/admin/users/edit", {
+                          query: { userId: user.principalId },
+                        })}>Edit</a
+                      >
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        onclick={() => void createPasswordReset(user)}
+                        disabled={resetPendingUserId !== null}
+                        >{resetPendingUserId === user.principalId
+                          ? "Creating reset..."
+                          : "Create reset token"}</button
+                      >
+                    </li>
+                  </ActionMenu>{/if}
               </td>
             </tr>
           {/each}

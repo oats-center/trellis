@@ -207,7 +207,7 @@ export class UserCreationController {
       // The account exists from this point on. A later setup failure must never
       // re-create it.
       const created: CreatedUser = {
-        userId: outcome.value.user.principal.principalId,
+        userId: outcome.value.user.principalId,
         label: outcome.value.user.displayName,
       };
       this.#commit({

@@ -413,6 +413,29 @@ an Auth-host failure. The durable intent remains available to its current or nex
 owner. Claim settlement includes time spent awaiting broker effects rather than
 reusing the batch's original timestamp.
 
+## User Directory And Account Projection
+
+`trellis.auth@v1::usersRead` authorizes the existing `Users.List` and
+`Users.Get` actions without a platform privilege. Its consent explicitly covers
+names, email and photos. Ordinary callers see active user profiles only:
+`principalId`, `displayName`, optional given/family names and email,
+`emailVerified`, and an optional Trellis-owned avatar URL. The immutable principal
+ID is the identity key; names and email are neither unique nor authorization.
+Unknown and inactive users have the same `not_found` result for ordinary reads.
+
+`account` contains the principal lifecycle/revision, username and local-password
+status. List/Get include it only when `principals.manage` was delegated to the
+verified session and remains eligible in durable policy at the read transaction.
+Durable administrator privilege alone never expands a client's delegation.
+`Users.Resolve` requires `accountRead`, is self-only, and includes the caller's
+own account. Directory capability does not authorize account mutations.
+
+List pagination is principal-ID ordered, defaults to 50 and is bounded to 200.
+Ordinary substring search covers available profile fields, not login usernames;
+qualified administrators can also search usernames and inspect inactive users.
+Profile provenance, richer name ingestion and avatar delivery are separate from
+the directory authorization boundary; unavailable optional fields are omitted.
+
 ## Native Client Credential Custody
 
 Provisioned services authenticate with their installed identity seed. They do not

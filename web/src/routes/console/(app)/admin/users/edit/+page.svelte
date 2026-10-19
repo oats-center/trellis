@@ -36,7 +36,8 @@
   let saved = $state(false);
   const dirty = $derived(
     user !== null &&
-      (displayName !== user.displayName || enabled !== user.principal.enabled),
+      (displayName !== user.displayName ||
+        enabled !== user.account?.principal.enabled),
   );
 
   beforeNavigate((navigation) => {
@@ -60,11 +61,13 @@
       });
       const response = await trellis.usersGet(input).orThrow();
       if (!scope.isCurrent(token)) return;
-      if (response.user.principal.principalId !== userId)
+      if (response.user.principalId !== userId)
         throw new Error("User lookup returned a different identity.");
+      if (!response.user.account)
+        throw new Error("Account management authority is required.");
       user = response.user;
       displayName = user.displayName;
-      enabled = user.principal.enabled;
+      enabled = response.user.account.principal.enabled;
     } catch (cause) {
       if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
     } finally {
@@ -74,7 +77,7 @@
 
   async function save(): Promise<void> {
     if (
-      !user ||
+      !user?.account ||
       loading ||
       saving ||
       error ||
@@ -83,16 +86,16 @@
       return;
     const key = ulid();
     const input: apis.auth.UsersUpdateInput = {
-      userId: user.principal.principalId,
+      userId: user.principalId,
       displayName: displayName.trim(),
       enabled,
-      expectedRevision: user.principal.revision,
+      expectedRevision: user.account.principal.revision,
       idempotencyKey: key,
     };
     const intent = captureIntent({
       operation: "usersUpdate",
       targetId: input.userId,
-      label: user.username,
+      label: user.account.username,
       idempotencyKey: key,
       input,
       scope: { routeKey: scope.key },
@@ -103,8 +106,8 @@
     const outcome = await mutation.send({
       isStillValid: () =>
         scope.key === intent.scope.routeKey &&
-        user?.principal.principalId === input.userId &&
-        user.principal.revision === input.expectedRevision,
+        user?.principalId === input.userId &&
+        user.account?.principal.revision === input.expectedRevision,
       dispatch: async ({ input }) => await trellis.usersUpdate(input).orThrow(),
     });
     saving = false;
@@ -112,7 +115,7 @@
     if (outcome.kind === "succeeded") {
       user = outcome.value.user;
       displayName = user.displayName;
-      enabled = user.principal.enabled;
+      enabled = user.account?.principal.enabled ?? enabled;
       saved = true;
     } else
       error =
@@ -133,7 +136,7 @@
 
 <section class="space-y-4">
   <PageToolbar
-    title={user?.username ?? "Edit user"}
+    title={user?.account?.username ?? "Edit user"}
     description="Manage the user's display name, sign-in availability, and authorization sessions."
   >
     {#snippet actions()}<a
@@ -149,7 +152,7 @@
     >{/if}
   {#if saved}<Notice variant="success">Profile updated.</Notice>{/if}
   {#if loading}<LoadingState label="Loading user" />
-  {:else if !user}<EmptyState
+  {:else if !user?.account}<EmptyState
       title="User unavailable"
       description="Choose an existing user from the Users table. A failed lookup cannot be edited."
     />
@@ -162,14 +165,16 @@
       }}
     >
       <section class="px-5 py-3">
-        <h2 class="text-base font-bold">{user.username}</h2>
+        <h2 class="text-base font-bold">{user.account.username}</h2>
         <p class="trellis-identifier mt-1">
-          {user.principal.principalId}<CopyButton
-            value={user.principal.principalId}
+          {user.principalId}<CopyButton
+            value={user.principalId}
             label="Copy user ID"
           />
         </p>
-        <p class="trellis-metadata mt-1">Revision {user.principal.revision}</p>
+        <p class="trellis-metadata mt-1">
+          Revision {user.account.principal.revision}
+        </p>
       </section>
       <label class="flex items-center justify-between gap-4 px-5 py-3">
         <span
@@ -189,7 +194,7 @@
         <label class="form-control"
           ><span class="trellis-field-label">Username</span><input
             class="input input-bordered input-sm mt-1"
-            value={user.username}
+            value={user.account.username}
             readonly
           /></label
         >
@@ -215,10 +220,10 @@
         >
       </div>
     </form>
-    <UserAccess principalId={user.principal.principalId} />
+    <UserAccess principalId={user.principalId} />
     <UserSecurity
-      userId={user.principal.principalId}
-      userLabel={user.username}
+      userId={user.principalId}
+      userLabel={user.account.username}
       disabled={saving || loading}
     />
   {/if}

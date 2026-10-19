@@ -19,10 +19,7 @@ test(
       const before = await runtime.callAdminRpc("authUsersResolve", {});
       await runtime.restart();
       const after = await runtime.callAdminRpc("authUsersResolve", {});
-      assert.equal(
-        after.user.principal.principalId,
-        before.user.principal.principalId,
-      );
+      assert.equal(after.user.principalId, before.user.principalId);
     } finally {
       await runtime.stop();
     }
@@ -53,11 +50,9 @@ test(
       const { user } = await runtime.callAdminRpc("authUsersCreate", input);
       await runtime.restart();
       const retained = await runtime.callAdminRpc("authUsersCreate", input);
-      assert.equal(retained.user.username, user.username);
-      assert.equal(
-        retained.user.principal.principalId,
-        user.principal.principalId,
-      );
+      assert(user.account);
+      assert.equal(retained.user.account?.username, user.account.username);
+      assert.equal(retained.user.principalId, user.principalId);
     } finally {
       await runtime.stop();
     }

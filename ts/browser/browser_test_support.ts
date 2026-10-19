@@ -262,7 +262,7 @@ export async function createOrdinaryUserWithPassword(
     username: user.username,
     password: user.password,
   });
-  const principalId = created.user.principal.principalId;
+  const principalId = created.user.principalId;
   for (const capabilityId of [
     "trellis.auth@v1::accountRead",
     "trellis.auth@v1::identitiesRead",

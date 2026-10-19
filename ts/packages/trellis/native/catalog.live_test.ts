@@ -58,10 +58,17 @@ test(
           "utf8",
         );
         const original =
+          // Keep the intended runtime API isolated: another application's Echo
+          // must not become the target of the incompatible-output transformation.
           fixture.slice(
             fixture.indexOf("model Value"),
+            fixture.indexOf("api documents@v1"),
+          ) +
+          fixture.slice(
+            fixture.indexOf("api runtime@v1"),
             fixture.indexOf("api events@v1"),
-          ) + "\nservice EchoProvider { implements runtime; }\n";
+          ) +
+          "\nservice EchoProvider { implements runtime; }\n";
         const baseline = original.replace(
           "consent_revision 1; allows { rpc Echo; }",
           "consent_revision 1; allows { rpc Download; }",
@@ -179,10 +186,11 @@ test(
             idempotencyKey: ulid(),
           })
           .orThrow();
+        assert(user.account);
         const capabilityId = "runtime-trellis.runtime@v1::echo";
         await admin
           .capabilityGrantsGrant({
-            principalId: user.principal.principalId,
+            principalId: user.principalId,
             capabilityId,
             expectedRevision: 0n,
             idempotencyKey: ulid(),
@@ -205,7 +213,7 @@ test(
         const request = apps.EchoCaller.request;
         const login = await loginNativeTestClient({
           issuer,
-          username: user.username,
+          username: user.account.username,
           password: userPassword,
           clientId,
           request,

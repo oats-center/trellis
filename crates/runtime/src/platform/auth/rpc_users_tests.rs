@@ -108,12 +108,9 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
             NOW,
         )
         .unwrap();
-    assert_eq!(
-        login.principal_id,
-        created.user.principal.principal_id.to_string()
-    );
+    assert_eq!(login.principal_id, created.user.principal_id.to_string());
     let update = AuthUserUpdateRequest {
-        user_id: created.user.principal.principal_id,
+        user_id: created.user.principal_id,
         expected_revision: AuthRevision(1.into()),
         display_name: "Alice Updated".to_string().into(),
         enabled: true,
@@ -134,7 +131,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
     ));
     assert_eq!(
         store
-            .transaction(|connection| read_user(connection, &login.principal_id))
+            .transaction(|connection| read_user(connection, &login.principal_id, true))
             .unwrap(),
         updated.user
     );
@@ -152,7 +149,9 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
     ));
     assert!(
         store
-            .transaction(|connection| read_user(connection, &admin))
+            .transaction(|connection| read_user(connection, &admin, true))
+            .unwrap()
+            .account
             .unwrap()
             .principal
             .enabled
@@ -374,8 +373,9 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
         extra: Default::default(),
     };
     let created = create_user(&store, &mutation(&admin, &input), &input, NOW).unwrap();
-    assert_eq!(created.user.username, "reserved");
-    assert!(!created.user.has_local_password);
+    let account = created.user.account.unwrap();
+    assert_eq!(account.username, "reserved");
+    assert!(!account.has_local_password);
     let duplicate = AuthUserCreateRequest {
         username: "RESERVED".to_string().into(),
         password: Some("a usable password".to_string().into()),
@@ -579,7 +579,6 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
     let alice = create_user(&store, &mutation(&admin, &account), &account, NOW)
         .unwrap()
         .user
-        .principal
         .principal_id
         .to_string();
     for (principal, subject) in [(&alice, "alice-at-idp"), (&admin, "admin-at-idp")] {
@@ -686,7 +685,6 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
     let alice = create_user(&store, &mutation(&admin, &account), &account, NOW)
         .unwrap()
         .user
-        .principal
         .principal_id;
     let cookie = store.create_portal_session(NOW).unwrap();
     store
@@ -822,7 +820,6 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
             create_user(&store, &mutation(&admin, &input), &input, NOW)
                 .unwrap()
                 .user
-                .principal
                 .principal_id
                 .to_string(),
         );
@@ -1023,7 +1020,6 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
     let alice = create_user(&store, &mutation(&admin, &account), &account, NOW)
         .unwrap()
         .user
-        .principal
         .principal_id;
     let request = AuthPasswordResetCreateRequest {
         user_id: alice,

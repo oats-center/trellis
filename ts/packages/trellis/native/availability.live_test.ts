@@ -279,9 +279,10 @@ test(
             idempotencyKey: ulid(),
           })
           .orThrow();
+        assert(user.account);
         const read = `${api.identity}::read`;
         const extend = `${api.identity}::extend`;
-        const principalId = user.principal.principalId;
+        const principalId = user.principalId;
         for (const capabilityId of [read, extend])
           await admin
             .capabilityGrantsGrant({
@@ -294,7 +295,7 @@ test(
         const request = apps.NativeOptionalExtend.request;
         const credentials = {
           issuer,
-          username: user.username,
+          username: user.account.username,
           password: subjectPassword,
           clientId,
           request,

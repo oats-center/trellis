@@ -24,6 +24,10 @@ function adminMethod<I, O>(
 
 /** @internal Concrete Auth RPCs available to the shared test host. */
 export const adminMethods = {
+  authUsersList: adminMethod(
+    apis.auth.API.actions["rpc:Users.List"],
+    (client, input) => client.usersList(input).orThrow(),
+  ),
   authIssuersRotate: adminMethod(
     apis.auth.API.actions["rpc:Issuers.Rotate"],
     (client, input) => client.issuersRotate(input).orThrow(),

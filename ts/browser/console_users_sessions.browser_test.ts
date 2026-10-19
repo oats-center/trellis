@@ -31,7 +31,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
       displayName: "Console B25",
       username,
     });
-    const userId = created.user.principal.principalId;
+    const userId = created.user.principalId;
     assert.ok(userId);
     const other = await runtime.callAdminRpc("authUsersCreate", {
       email: "ct-b25-other@example.com",
@@ -78,7 +78,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
         )}`;
         (document.querySelector("main") ?? document.body).append(link);
         link.click();
-      }, other.user.principal.principalId);
+      }, other.user.principalId);
       await page
         .getByRole("heading", {
           name: otherUsername,
@@ -121,7 +121,7 @@ test("B25 users list renders and exact edit reloads on query change", async () =
         "Console B25",
       );
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${other.user.principal.principalId}`,
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${other.user.principalId}`,
         {
           waitUntil: "domcontentloaded",
         },
@@ -156,7 +156,7 @@ test("B27 a disabled user stays disabled after a metadata edit", async () => {
       displayName: "Console B27",
       username,
     });
-    const userId = created.user.principal.principalId;
+    const userId = created.user.principalId;
 
     const context = await launchProfile(runtime);
     try {
@@ -324,10 +324,11 @@ test("a password reset receipt clears its token when closed", async () => {
         waitUntil: "domcontentloaded",
       });
       await waitForConsoleShell(page);
-      await page.getByLabel("Search users").fill(created.user.username);
+      assert(created.user.account);
+      await page.getByLabel("Search users").fill(created.user.account.username);
       await page.getByLabel("Search users").press("Enter");
       const row = page.locator(".users-row", {
-        hasText: created.user.principal.principalId,
+        hasText: created.user.principalId,
       });
       await row.waitFor({ state: "visible", timeout: 30_000 });
       await row.locator("summary").click();
@@ -367,7 +368,7 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
       const page = await context.newPage();
       await openConsoleAsRuntimeAdmin(page, runtime);
       await page.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principal.principalId}`,
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
         {
           waitUntil: "domcontentloaded",
         },
@@ -379,7 +380,7 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
 
       const secondPage = await context.newPage();
       await secondPage.goto(
-        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principal.principalId}`,
+        `${runtime.trellisUrl}/console/admin/users/edit?userId=${created.user.principalId}`,
         { waitUntil: "domcontentloaded" },
       );
       await waitForConsoleShell(secondPage);

@@ -831,9 +831,13 @@ upgrade old pre-release layouts; migrate retained databases explicitly.
 
 Declare these dependencies only when the application uses them:
 
-- `Auth.Users.Resolve` supplies minimal display labels for known Trellis user
-  IDs. It is not a general user directory or a restriction on application
-  profiles.
+- `Auth.Users.Resolve` with `accountRead` returns only your own profile and
+  account. `Users.List/Get` with selected and consented `usersRead` provide an
+  active-user directory, including names, available email and photos. Ordinary
+  results omit `account`; delegated and currently eligible `principals.manage`
+  additionally exposes username, password status and lifecycle/revision, and
+  permits inactive-user lookup and username search. Use immutable `principalId`,
+  never a name or email, for application-owned authorization.
 - Jobs administration uses `Jobs.Query`, `Jobs.Metrics`, `Jobs.Inspect`, and
   `Jobs.Summary`, and `Jobs.Watch`. Summary is page-independent; Watch is an
   invalidation live, so reread the affected query and summary.

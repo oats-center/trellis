@@ -156,6 +156,20 @@ identity-bound provisioned admission, rechecks current issuable state, and
 installs the exact transport policy signed into the selected session authority.
 It never derives authority from subject strings or the redundant session key.
 
+### User directory
+
+Request `trellis.auth@v1::usersRead` to search active profiles through the generated
+`Users.List` and `Users.Get` actions. Consent covers names, email and photos.
+Responses identify users by immutable `principalId`; display names and emails
+are not unique and never grant access to application-owned objects.
+
+Ordinary results omit `account`. That projection contains username, local-password
+status and principal lifecycle/revision, and requires both delegated and currently
+eligible `principals.manage`. Only qualified administrators can inspect inactive
+users or search usernames. `Users.Resolve`, authorized by `accountRead`, returns
+only the caller's own profile and account. Account mutations retain their separate
+capabilities and administrative checks.
+
 ## Browser login and the portal
 
 Browser authentication starts with a proof-bound request for an installed app

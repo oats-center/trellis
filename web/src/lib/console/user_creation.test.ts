@@ -22,16 +22,20 @@ function deferred<T>() {
 function createdUser(userId: string, name: string | null = null): CreateOutput {
   return apis.auth.API.actions["rpc:Users.Create"].output.decode({
     user: {
+      principalId: userId,
+      emailVerified: false,
       displayName: name ?? userId,
-      hasLocalPassword: false,
-      username: `user-${userId}`,
-      principal: {
-        principalId: userId,
-        title: name ?? userId,
-        enabled: true,
-        kind: "user",
-        revision: "1",
-        createdAt: "2026-01-01T00:00:00.000Z",
+      account: {
+        hasLocalPassword: false,
+        username: `user-${userId}`,
+        principal: {
+          principalId: userId,
+          title: name ?? userId,
+          enabled: true,
+          kind: "user",
+          revision: "1",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
       },
     },
   });

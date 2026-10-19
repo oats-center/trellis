@@ -46,6 +46,7 @@ test(
             idempotencyKey: ulid(),
           })
           .orThrow();
+        assert(user.account);
         const approved = [
           ...new Set([
             ...request.requiredCapabilities,
@@ -66,7 +67,7 @@ test(
           .orThrow();
         await admin
           .roleAssignmentsAssign({
-            principalId: user.principal.principalId,
+            principalId: user.principalId,
             roleId: role.roleId,
             expectedRevision: 0n,
             idempotencyKey: ulid(),
@@ -88,7 +89,7 @@ test(
           .orThrow();
         const login = await loginNativeTestClient({
           issuer,
-          username: user.username,
+          username: user.account.username,
           password: userPassword,
           clientId,
           request,
@@ -104,7 +105,7 @@ test(
         const sessions = await caller.sessionsList({}).orThrow();
         assert.ok(
           sessions.items.some(
-            (session) => session.principalId === user.principal.principalId,
+            (session) => session.principalId === user.principalId,
           ),
         );
         // rolesPut was granted and explicitly approved: this is a signed request
@@ -127,7 +128,7 @@ test(
           .orThrow();
         assert.equal(unchanged.role.title, role.title);
         const unapproved = await caller.capabilityGrantsList({
-          principalId: user.principal.principalId,
+          principalId: user.principalId,
         });
         assert.equal(
           unapproved.isErr(),

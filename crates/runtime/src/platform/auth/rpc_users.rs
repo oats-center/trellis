@@ -28,17 +28,13 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
     provider.register_users_get(move |context, input| {
         let store = Arc::clone(&users);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
+            let actor = caller(&context, None).map_err(rpc_error)?;
+            let delegated = caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
             tokio::task::spawn_blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
-                        connection,
-                        &actor,
-                        "principals.manage",
-                    )?;
+                    let administrative = directory_account_access(connection, &actor, delegated)?;
                     Ok(AuthUserGetResponse {
-                        user: read_user(connection, &input.user_id.to_string())?,
+                        user: read_user(connection, &input.user_id.to_string(), administrative)?,
                         extra: Default::default(),
                     })
                 })
@@ -56,7 +52,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
             tokio::task::spawn_blocking(move || {
                 store.transaction(|connection| {
                     Ok(AuthUserGetResponse {
-                        user: read_user(connection, &actor)?,
+                        user: read_user(connection, &actor, true)?,
                         extra: Default::default(),
                     })
                 })
@@ -450,24 +446,56 @@ pub(super) fn unlink_identity(
     })
 }
 
-pub(super) fn read_user(connection: &Connection, principal: &str) -> Result<AuthUser, AuthError> {
-    let (state, revision, created, display, username, password) = connection.query_row(
-        "SELECT p.state,p.version,p.created_at,coalesce(u.display_name,p.principal_id),coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),''),c.principal_id IS NOT NULL FROM auth_principals p LEFT JOIN auth_user_profiles u USING(principal_id) LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user'",
-        [principal], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, bool>(5)?)),
+pub(super) fn directory_account_access(
+    connection: &Connection,
+    actor: &str,
+    delegated: bool,
+) -> Result<bool, AuthError> {
+    if !delegated {
+        return Ok(false);
+    }
+    match SqliteAuthorizationStore::require_privilege(connection, actor, "principals.manage") {
+        Ok(()) => Ok(true),
+        Err(AuthError::Denied) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+pub(super) fn read_user(
+    connection: &Connection,
+    principal: &str,
+    account: bool,
+) -> Result<AuthUser, AuthError> {
+    let (state, revision, created, display, username, password, email) = connection.query_row(
+        "SELECT p.state,p.version,p.created_at,coalesce(u.display_name,p.principal_id),coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),''),c.password_hash IS NOT NULL,u.email FROM auth_principals p LEFT JOIN auth_user_profiles u USING(principal_id) LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND (?2 OR p.state='active')",
+        params![principal, account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, bool>(5)?, row.get::<_, Option<String>>(6)?)),
     ).optional()?.ok_or(AuthError::NotFound)?;
     Ok(AuthUser {
-        principal: AuthPrincipal {
-            principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
-            kind: AuthPrincipalKind::User,
-            enabled: state == "active",
-            revision: AuthRevision(revision.into()),
-            created_at: timestamp(created)?,
-            title: display.clone(),
-            extra: Default::default(),
+        principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
+        account: if account {
+            Some(AuthUserAccountDetails {
+                principal: AuthPrincipal {
+                    principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
+                    kind: AuthPrincipalKind::User,
+                    enabled: state == "active",
+                    revision: AuthRevision(revision.into()),
+                    created_at: timestamp(created)?,
+                    title: display.clone(),
+                    extra: Default::default(),
+                },
+                username,
+                has_local_password: password,
+                extra: Default::default(),
+            })
+        } else {
+            None
         },
-        username,
         display_name: display,
-        has_local_password: password,
+        given_name: None,
+        family_name: None,
+        email,
+        email_verified: false,
+        avatar_url: None,
         extra: Default::default(),
     })
 }
@@ -514,7 +542,7 @@ pub(super) fn create_user(
         if let Some(hash) = &hash {
             connection.execute("INSERT INTO auth_local_credentials(principal_id,normalized_username,password_hash,hash_profile,password_changed_at,updated_at,version) VALUES(?1,?2,?3,1,?4,?4,1)", params![principal, username, hash, now])?;
         }
-        Ok(AuthUserGetResponse { user: read_user(connection, &principal)?, extra: Default::default() })
+        Ok(AuthUserGetResponse { user: read_user(connection, &principal, true)?, extra: Default::default() })
     })
 }
 
@@ -526,11 +554,11 @@ pub(super) fn update_user(
 ) -> Result<AuthUserGetResponse, AuthError> {
     store.mutate(identity, "rpc.users.update", input, now, |connection| {
         let principal = input.user_id.to_string();
-        read_user(connection, &principal)?;
+        read_user(connection, &principal, true)?;
         if input.display_name.trim().is_empty() { return Err(AuthError::Invalid("empty display name".into())); }
         apply_policy_in_transaction(connection, identity, &PolicyMutation::PrincipalState { principal_id: principal.clone(), expected_revision: input.expected_revision.0.0, state: if input.enabled { "active" } else { "disabled" }.into() }, now)?;
         connection.execute("INSERT INTO auth_user_profiles(principal_id,display_name,created_at,updated_at,version) VALUES(?1,?2,?3,?3,1) ON CONFLICT(principal_id) DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at,version=auth_user_profiles.version+1", params![principal, input.display_name.as_str(), now])?;
-        Ok(AuthUserGetResponse { user: read_user(connection, &principal)?, extra: Default::default() })
+        Ok(AuthUserGetResponse { user: read_user(connection, &principal, true)?, extra: Default::default() })
     })
 }
 

@@ -47,7 +47,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
       );
       for (const capabilityId of adminParticipant.requiredCapabilities)
         await runtime.callAdminRpc("authCapabilityGrantsGrant", {
-          principalId: created.user.principal.principalId,
+          principalId: created.user.principalId,
           capabilityId,
           expiresAt,
           expectedRevision: 0n,

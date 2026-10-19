@@ -123,9 +123,12 @@ For calls to another API, declare the narrow required or optional `use`
 selection in `contract.trellis`. Generated participant types expose only those
 selections.
 
-If the app needs labels for Trellis user ids already present on authorized
-records, `Auth.Users.Resolve` resolves explicit ids without requesting directory
-access. Application-owned profiles or user tables remain an application choice.
+For labels of other Trellis users, select and obtain consent to `usersRead`,
+then use `Auth.Users.List/Get` for active directory profiles. `Users.Resolve`
+with `accountRead` is self-only. Ordinary profiles omit `account`; admin details
+require delegated and currently eligible `principals.manage`. A directory match
+does not grant access to application-owned records; key those rules by immutable
+`principalId`, not names or email.
 
 ```trellis
 app Dashboard {

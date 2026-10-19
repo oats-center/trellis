@@ -41,8 +41,8 @@ assert.equal(Boolean(cli), Boolean(server));
 await using runtime = await TrellisTestRuntime.start(cli && server ? { trellis: { source: { kind: "path", cli, server } } } : {});
 const username = ${JSON.stringify(`package-consumer-${ulid().toLowerCase()}`)};
 const created = await runtime.callAdminRpc("authUsersCreate", { username, displayName: username, idempotencyKey: ${JSON.stringify(ulid())} });
-const reset = await runtime.callAdminRpc("authUsersPasswordResetCreate", { userId: created.user.principal.principalId, idempotencyKey: ${JSON.stringify(ulid())} });
-assert.equal(created.user.username, username);
+const reset = await runtime.callAdminRpc("authUsersPasswordResetCreate", { userId: created.user.principalId, idempotencyKey: ${JSON.stringify(ulid())} });
+assert.equal(created.user.account?.username, username);
 assert.ok(reset.token);
 console.log("Installed staged npm testkit acquired its native host and persisted a user through generated RPCs");
 `,

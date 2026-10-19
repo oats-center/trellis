@@ -51,7 +51,7 @@ test("native startup rejects another host's ready listener without disturbing th
       idempotencyKey: ulid(),
     });
     const reset = await runtime.callAdminRpc("authUsersPasswordResetCreate", {
-      userId: user.principal.principalId,
+      userId: user.principalId,
       idempotencyKey: ulid(),
     });
     assert(reset.token);
@@ -77,12 +77,12 @@ test("native testkit concurrent hosts isolate mutations, persist through restart
         const reset = await runtime.callAdminRpc(
           "authUsersPasswordResetCreate",
           {
-            userId: user.principal.principalId,
+            userId: user.principalId,
             idempotencyKey: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
           },
         );
         assert(reset.token);
-        return user.principal.principalId;
+        return user.principalId;
       }),
     );
     const users = results.map((result) => {
@@ -185,7 +185,7 @@ for (const failure of ["stalled", "crashed"] as const) {
       const reset = await survivor.callAdminRpc(
         "authUsersPasswordResetCreate",
         {
-          userId: user.principal.principalId,
+          userId: user.principalId,
           idempotencyKey: ulid(),
         },
       );

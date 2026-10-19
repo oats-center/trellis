@@ -221,7 +221,7 @@ test("generated keyset clients cross the live runtime boundary", async () => {
       assert(jobs.length > 100);
       assert(events.length > 100);
       assert.deepEqual(
-        new Set(users.map((row) => row.principal.principalId)).size,
+        new Set(users.map((row) => row.principalId)).size,
         users.length,
       );
       assert.deepEqual(new Set(jobs.map((row) => row.id)).size, jobs.length);

@@ -94,14 +94,14 @@ test("browser consent renewal and incompatible API recovery retain the authentic
             idempotencyKey: ulid(),
           });
           const {
-            user: { principal },
+            user: { principalId },
           } = await runtime.callAdminRpc("authUsersResolve", {});
           for (const capabilityId of new Set([
             ...apps.BrowserCaller.request.requiredCapabilities,
             ...narrow.BrowserCaller.request.requiredCapabilities,
           ])) {
             await runtime.callAdminRpc("authCapabilityGrantsGrant", {
-              principalId: principal.principalId,
+              principalId,
               capabilityId,
               expectedRevision: 0n,
               idempotencyKey: ulid(),
@@ -151,14 +151,14 @@ test("browser consent renewal and incompatible API recovery retain the authentic
               const grants = await runtime.callAdminRpc(
                 "authCapabilityGrantsList",
                 {
-                  principalId: principal.principalId,
+                  principalId,
                   capabilityId:
                     apps.BrowserCaller.request.requiredCapabilities[0],
                 },
               );
               assert.equal(grants.items.length, 1);
               await runtime.callAdminRpc("authCapabilityGrantsGrant", {
-                principalId: principal.principalId,
+                principalId,
                 capabilityId:
                   apps.BrowserCaller.request.requiredCapabilities[0],
                 expectedRevision: grants.items[0].revision,

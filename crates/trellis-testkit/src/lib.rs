@@ -276,7 +276,10 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(account.user.username, runtime.admin_username());
+        assert_eq!(
+            account.user.account.unwrap().username,
+            runtime.admin_username()
+        );
         let missing = auth
             .users_get(&trellis_runtime_apis::types::AuthUserGetRequest {
                 user_id: ulid::Ulid::new().to_string().parse().unwrap(),

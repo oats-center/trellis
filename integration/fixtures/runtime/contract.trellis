@@ -116,6 +116,17 @@ service OrdinaryJobs {
   job work { title "Work"; description "Ordinary queue cancellation"; payload Value; result Value; }
 }
 agent JobEvidenceReader { use auth { required capability jobResourceBindingsRead; } }
+agent DirectoryCaller {
+  use auth {
+    required capability usersRead;
+    required capability accountRead;
+    required capability usersCreate;
+    required capability usersUpdate;
+  }
+}
+agent DirectoryOptional {
+  use auth { required capability accountRead; capability usersRead; }
+}
 agent EventEvidenceReader { use auth { required capability eventResourceBindingsRead; } }
 api optional_availability@v2 {
   title "Optional operation availability";

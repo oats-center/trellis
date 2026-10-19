@@ -289,7 +289,6 @@ staticPasswords:
     )
     .unwrap()
     .user
-    .principal
     .principal_id
     .to_string();
     let group_role = id();

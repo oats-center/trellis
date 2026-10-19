@@ -32,11 +32,10 @@ test("user updates preserve identity while disabling retires authorization and r
     const created = (await runtime.callAdminRpc("authUsersCreate", create))
       .user;
     assert.equal(
-      (await runtime.callAdminRpc("authUsersCreate", create)).user.principal
-        .principalId,
-      created.principal.principalId,
+      (await runtime.callAdminRpc("authUsersCreate", create)).user.principalId,
+      created.principalId,
     );
-    const userId = created.principal.principalId;
+    const userId = created.principalId;
     const required = [
       ...new Set([
         ...adminParticipant.requiredCapabilities,
@@ -65,16 +64,17 @@ test("user updates preserve identity while disabling retires authorization and r
     try {
       const original = await caller.sessionsMe({}).orThrow();
       assert.equal(original.principal.principalId, userId);
-      assert(
-        (await caller.usersGet({ userId })).isErr(),
-        "ordinary consent must not acquire administrator authority",
+      assert.equal(
+        (await caller.usersResolve({}).orThrow()).user.account?.username,
+        create.username,
       );
+      assert(created.account);
       const renamed = (
         await runtime.callAdminRpc("authUsersUpdate", {
           userId,
           displayName: "After",
           enabled: true,
-          expectedRevision: created.principal.revision,
+          expectedRevision: created.account.principal.revision,
           idempotencyKey: ulid(),
         })
       ).user;
@@ -83,10 +83,7 @@ test("user updates preserve identity while disabling retires authorization and r
           .displayName,
         "After",
       );
-      assert.equal(
-        renamed.principal.principalId,
-        original.principal.principalId,
-      );
+      assert.equal(renamed.principalId, original.principal.principalId);
       assert.equal(
         (await caller.sessionsMe({}).orThrow()).principal.principalId,
         userId,
@@ -99,12 +96,13 @@ test("user updates preserve identity while disabling retires authorization and r
       const originalAuthorityIds = new Set(
         admitted.items.map((session) => session.authorizationSessionId),
       );
+      assert(renamed.account);
       const disabled = (
         await runtime.callAdminRpc("authUsersUpdate", {
           userId,
           displayName: renamed.displayName,
           enabled: false,
-          expectedRevision: renamed.principal.revision,
+          expectedRevision: renamed.account.principal.revision,
           idempotencyKey: ulid(),
         })
       ).user;
@@ -120,11 +118,12 @@ test("user updates preserve identity while disabling retires authorization and r
         approvedCapabilities: required,
       });
       await assert.rejects(rejectedLogin);
+      assert(disabled.account);
       await runtime.callAdminRpc("authUsersUpdate", {
         userId,
         displayName: disabled.displayName,
         enabled: true,
-        expectedRevision: disabled.principal.revision,
+        expectedRevision: disabled.account.principal.revision,
         idempotencyKey: ulid(),
       });
       const restored = await loginNativeTestClient({

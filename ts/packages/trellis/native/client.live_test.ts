@@ -66,7 +66,7 @@ test(
           approved.map((capabilityId) =>
             admin
               .capabilityGrantsGrant({
-                principalId: subject.user.principal.principalId,
+                principalId: subject.user.principalId,
                 capabilityId,
                 expectedRevision: 0n,
                 idempotencyKey: ulid(),
@@ -98,7 +98,7 @@ test(
           sessions.items.some(
             (item) =>
               item.loginSessionId === ordinaryLogin.session.loginSessionId &&
-              item.principalId === subject.user.principal.principalId,
+              item.principalId === subject.user.principalId,
           ),
         );
         const denied = await ordinary.usersCreate({
@@ -295,13 +295,13 @@ test(
         const retiredId = retained.authority.authorizationSessionId;
         const grants = await admin
           .capabilityGrantsList({
-            principalId: subject.user.principal.principalId,
+            principalId: subject.user.principalId,
             capabilityId: sessionsRead,
           })
           .orThrow();
         const grant = grants.items.find(
           (item) =>
-            item.principalId === subject.user.principal.principalId &&
+            item.principalId === subject.user.principalId &&
             item.capability.capabilityId === sessionsRead,
         );
         assert.ok(

@@ -5,11 +5,11 @@ import { withTrellisRuntime } from "./_support/runtime.ts";
 test("generated Users.Resolve retrieves the authenticated OAuth account", async () => {
   await withTrellisRuntime(async (runtime) => {
     const resolved = await runtime.callAdminRpc("authUsersResolve", {});
-    assert.equal(resolved.user.username, runtime.adminUsername);
+    assert.equal(resolved.user.account?.username, runtime.adminUsername);
     const current = await runtime.callAdminRpc("authSessionsList", {});
     assert(
       current.items.some(
-        (login) => login.principalId === resolved.user.principal.principalId,
+        (login) => login.principalId === resolved.user.principalId,
       ),
     );
   });

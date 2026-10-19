@@ -306,13 +306,18 @@ impl AdminSession {
                     format!("calling Auth.Users.Resolve: {error}"),
                 )
             })?;
-        if !response.user.principal.enabled {
+        if !response
+            .user
+            .account
+            .as_ref()
+            .is_some_and(|account| account.principal.enabled)
+        {
             return Err(failure(
                 TrellisTestStage::AdministratorLogin,
                 "administrator account is disabled",
             ));
         }
-        Ok(response.user.principal.principal_id.to_string())
+        Ok(response.user.principal_id.to_string())
     }
 
     pub(crate) async fn create_user(
@@ -333,7 +338,7 @@ impl AdminSession {
             .await
             .map_err(|error| failure(TrellisTestStage::ClientLogin, error))?;
         Ok(crate::identity::TestUserIdentity {
-            principal_id: response.user.principal.principal_id.to_string(),
+            principal_id: response.user.principal_id.to_string(),
             username: username.to_owned(),
         })
     }

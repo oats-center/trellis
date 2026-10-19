@@ -242,9 +242,10 @@ test(
             idempotencyKey: ulid(),
           })
           .orThrow();
+        assert(user.account);
         await admin
           .capabilityGrantsGrant({
-            principalId: user.principal.principalId,
+            principalId: user.principalId,
             capabilityId: echoCapability,
             expectedRevision: 0n,
             idempotencyKey: ulid(),
@@ -272,7 +273,7 @@ test(
               .orThrow();
             login = await loginNativeTestClient({
               issuer,
-              username: user.username,
+              username: user.account.username,
               password: subjectPassword,
               clientId,
               request,

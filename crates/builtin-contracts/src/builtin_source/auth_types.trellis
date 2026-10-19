@@ -489,9 +489,18 @@ model AuthSessionsMeResponse { principal: AuthPrincipal; login?: AuthLoginSessio
 model AuthSessionsLogoutResponse { loginSessionId: ulid; enforcement: AuthEnforcementProgress; }
 model AuthLoginRevokeRequest { loginSessionId: ulid; idempotencyKey: AuthIdempotencyKey; }
 model AuthUser {
+  principalId: ulid;
+  displayName: string;
+  givenName?: string;
+  familyName?: string;
+  email?: string;
+  emailVerified: bool;
+  avatarUrl?: string;
+  account?: AuthUserAccountDetails;
+}
+model AuthUserAccountDetails {
   principal: AuthPrincipal;
   username: string;
-  displayName: string;
   hasLocalPassword: bool;
 }
 model AuthUserGetRequest { userId: ulid; }

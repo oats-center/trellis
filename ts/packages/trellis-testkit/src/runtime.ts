@@ -865,8 +865,8 @@ export class TrellisTestRuntime implements AsyncDisposable {
       idempotencyKey: ulid(),
     });
     const user = Object.freeze({
-      principalId: created.principal.principalId,
-      username: created.username,
+      principalId: created.principalId,
+      username,
     });
     this.#users.set(user.principalId, { user, password });
     return user;

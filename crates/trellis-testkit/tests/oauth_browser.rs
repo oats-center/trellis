@@ -47,7 +47,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
     admin
         .capability_grants_grant(
             &serde_json::from_value(serde_json::json!({
-                "principalId": user.user.principal.principal_id,
+                "principalId": user.user.principal_id,
                 "capabilityId": "trellis.auth@v1::accountRead",
                 "expectedRevision": "0", "idempotencyKey": ulid::Ulid::new().to_string()
             }))

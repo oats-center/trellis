@@ -733,6 +733,13 @@ The `accountRead` capability covers account resolution, reading your current
 session and signing out of the current login and its application sessions.
 `Sessions.Me` and `Sessions.Logout` require normal selection and consent.
 
+`Users.Resolve` is self-only and includes the caller's `account`. Select and
+consent to `usersRead` for `Users.List/Get`: ordinary results expose active
+profiles with immutable `principalId`, names, available email and photos, but no
+`account`. Delegated and currently eligible `principals.manage` additionally
+permits username search, inactive-user lookup and account details. Directory
+identity is not an application-object authorization grant.
+
 Refresh-successor checkpointing is restricted to actual refresh exchanges.
 Rejected cross-user Device Code reauthorization leaves prior custody usable.
 Retained browser OAuth clients refresh discovery from durable cross-tab trust

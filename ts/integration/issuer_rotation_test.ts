@@ -184,7 +184,7 @@ test("startup refuses replaced OAuth custody and restored custody retains client
       assert.deepEqual(
         (
           await runtime.callAdminRpc("authUsersGet", {
-            userId: account.principal.principalId,
+            userId: account.principalId,
           })
         ).user,
         account,

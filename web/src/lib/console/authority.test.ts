@@ -20,16 +20,20 @@ function ready(principalId: string): AuthorityLoadResult {
     ok: true,
     authority: READY_AUTHORITY,
     profile: {
-      username: principalId,
+      principalId: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
       displayName: principalId,
-      hasLocalPassword: true,
-      principal: {
-        principalId: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
-        title: principalId,
-        enabled: true,
-        kind: "user",
-        createdAt: codecs.timestamp.decode("2026-01-01T00:00:00.000Z"),
-        revision: 1n,
+      emailVerified: false,
+      account: {
+        username: principalId,
+        hasLocalPassword: true,
+        principal: {
+          principalId: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+          title: principalId,
+          enabled: true,
+          kind: "user",
+          createdAt: codecs.timestamp.decode("2026-01-01T00:00:00.000Z"),
+          revision: 1n,
+        },
       },
     },
     identity: {
@@ -142,7 +146,7 @@ test("U24 invalidation advances the generation and clears readiness", async () =
   equal(core.snapshot.authority, null);
   equal(core.snapshot.generation, before + 1);
   equal(
-    core.snapshot.profile?.username,
+    core.snapshot.profile?.account?.username,
     "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     "last-known profile may remain for non-actionable display",
   );

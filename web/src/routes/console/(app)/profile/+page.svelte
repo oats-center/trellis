@@ -49,7 +49,7 @@
   let confirmNewPassword = $state("");
 
   const connectionStatus = $derived(connection.status.phase);
-  const hasLocalIdentity = $derived(user?.hasLocalPassword ?? false);
+  const hasLocalIdentity = $derived(user?.account?.hasLocalPassword ?? false);
   const capabilityCount = $derived(platformPrivileges.length);
   const accountRole = $derived(getRoleLabel({ platformPrivileges }));
   const sessionStatusLabel = $derived(
@@ -233,7 +233,9 @@
                 >{sessionStatusLabel}</span
               >
             </div>
-            <p class="truncate text-sm text-base-content/70">{user.username}</p>
+            <p class="truncate text-sm text-base-content/70">
+              {user.account?.username ?? ""}
+            </p>
             <p class="max-w-3xl text-sm text-base-content/70">
               {mastheadSentence}
             </p>

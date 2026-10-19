@@ -201,7 +201,6 @@ pub(super) fn create_user(store: &SqliteAuthorizationStore, actor: &str, now: i6
     super::rpc_users::create_user(store, &mutation(actor, &input), &input, now)
         .unwrap()
         .user
-        .principal
         .principal_id
         .to_string()
 }

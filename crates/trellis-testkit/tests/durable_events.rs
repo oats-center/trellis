@@ -58,7 +58,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             "runtime-trellis.events@v1::publishAlpha",
             "runtime-trellis.events@v1::inspect",
         ] {
-            auth.capability_grants_grant(&serde_json::from_value(serde_json::json!({"principalId": user.user.principal.principal_id, "capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap();
+            auth.capability_grants_grant(&serde_json::from_value(serde_json::json!({"principalId": user.user.principal_id, "capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap();
         }
         let native = NativeOAuthClient::open(
             runtime.workdir().join("events-driver"),

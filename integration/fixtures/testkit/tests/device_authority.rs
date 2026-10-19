@@ -89,7 +89,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
     let password = ulid::Ulid::new().to_string();
     let user = admin.users_create(&serde_json::from_value(json!({"username":format!("companion-{}",ulid::Ulid::new()),"password":password,"displayName":"Independent companion user","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap().user;
     for capability in trellis_test_fixture::apps::trellis_test_fixture_companion_device_companion::Request::REQUIRED_CAPABILITIES {
-        admin.capability_grants_grant(&serde_json::from_value(json!({"principalId":user.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap();
+        admin.capability_grants_grant(&serde_json::from_value(json!({"principalId":user.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap();
     }
     let (unprivileged, _) = oauth(&mut runtime, false).await;
     let unprivileged =
@@ -109,7 +109,7 @@ async fn typescript_device_companion_uses_independent_native_oauth() {
         .spawn()
         .unwrap();
     let mut input = node.stdin.take().unwrap();
-    input.write_all(format!("{}\n",json!({"issuer":runtime.oauth_origin(),"provisioningSecret":provisioned.provisioning_secret,"username":user.username,"password":password})).as_bytes()).await.unwrap();
+    input.write_all(format!("{}\n",json!({"issuer":runtime.oauth_origin(),"provisioningSecret":provisioned.provisioning_secret,"username":user.account.as_ref().unwrap().username,"password":password})).as_bytes()).await.unwrap();
     let mut output = BufReader::new(node.stdout.take().unwrap()).lines();
     let mut verified = false;
     while let Some(line) = tokio::time::timeout(Duration::from_secs(45), output.next_line())

@@ -189,11 +189,20 @@ async fn users_list_command(format: OutputFormat) -> miette::Result<()> {
             .iter()
             .map(|user| {
                 vec![
-                    user.principal.principal_id.to_string(),
+                    user.principal_id.to_string(),
                     user.display_name.clone(),
-                    user.username.clone(),
-                    user.principal.enabled.to_string(),
-                    user.principal.revision.to_string(),
+                    user.account
+                        .as_ref()
+                        .map(|account| account.username.clone())
+                        .unwrap_or_default(),
+                    user.account
+                        .as_ref()
+                        .map(|account| account.principal.enabled.to_string())
+                        .unwrap_or_default(),
+                    user.account
+                        .as_ref()
+                        .map(|account| account.principal.revision.to_string())
+                        .unwrap_or_default(),
                 ]
             })
             .collect();
@@ -219,11 +228,13 @@ async fn users_show_command(format: OutputFormat, args: &UserRefArgs) -> miette:
     if output::is_json(format) {
         output::print_json(&serde_json::to_value(user).into_diagnostic()?)?;
     } else {
-        output::print_info(&format!("userId={}", user.principal.principal_id));
+        output::print_info(&format!("userId={}", user.principal_id));
         output::print_info(&format!("name={}", user.display_name));
-        output::print_info(&format!("username={}", user.username));
-        output::print_info(&format!("enabled={}", user.principal.enabled));
-        output::print_info(&format!("revision={}", user.principal.revision.0 .0));
+        if let Some(account) = user.account {
+            output::print_info(&format!("username={}", account.username));
+            output::print_info(&format!("enabled={}", account.principal.enabled));
+            output::print_info(&format!("revision={}", account.principal.revision.0 .0));
+        }
     }
     Ok(())
 }
@@ -249,7 +260,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         .user;
     let setup_flow = auth
         .users_password_reset_create(&auth_types::AuthPasswordResetCreateRequest {
-            user_id: user.principal.principal_id,
+            user_id: user.principal_id,
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })
@@ -259,7 +270,7 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         output::print_json(&json!({ "user": user, "setupFlow": setup_flow }))?;
     } else {
         output::print_success("created user");
-        output::print_info(&format!("userId={}", user.principal.principal_id));
+        output::print_info(&format!("userId={}", user.principal_id));
         output::print_info(&format!(
             "setupFlow={}",
             serde_json::to_string(&setup_flow).into_diagnostic()?
@@ -280,6 +291,9 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
         .await
         .into_diagnostic()?
         .user;
+    let account = current
+        .account
+        .ok_or_else(|| miette::miette!("account management authority is required"))?;
     let user = auth
         .users_update(&auth_types::AuthUserUpdateRequest {
             display_name: wire(trimmed_optional(&args.name).unwrap_or(current.display_name))?,
@@ -288,10 +302,10 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
             } else if args.inactive {
                 false
             } else {
-                current.principal.enabled
+                account.principal.enabled
             },
-            expected_revision: current.principal.revision,
-            user_id: current.principal.principal_id,
+            expected_revision: account.principal.revision,
+            user_id: current.principal_id,
             idempotency_key: wire(cli_idempotency_key())?,
             extra: Default::default(),
         })

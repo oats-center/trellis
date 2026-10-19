@@ -491,10 +491,10 @@ api auth@v1 {
       allows { rpc Issuers.Revoke; }
     }
     capability usersRead {
-      consent_revision 1;
-      title "Read user accounts";
-      description "List and inspect user accounts; also requires principals.manage.";
-      consequence "Reveals account profile and lifecycle information, not domain data.";
+      consent_revision 2;
+      title "Read user directory";
+      description "Search and read active users' names, email addresses and photos.";
+      consequence "Reveals directory profiles including email and photo; account management details additionally require principals.manage.";
       allows { rpc Users.List; rpc Users.Get; }
     }
     capability usersCreate {

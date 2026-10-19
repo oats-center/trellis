@@ -184,11 +184,12 @@ test(
         const { user: current } = await runtime.callAdminRpc("authUsersGet", {
           userId,
         });
+        assert(current.account);
         await runtime.callAdminRpc("authUsersUpdate", {
           userId,
           displayName: current.displayName,
           enabled: false,
-          expectedRevision: current.principal.revision,
+          expectedRevision: current.account.principal.revision,
           idempotencyKey: ulid(),
         });
         await assert.rejects(() =>

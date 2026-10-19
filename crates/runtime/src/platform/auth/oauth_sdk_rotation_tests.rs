@@ -104,7 +104,7 @@ async fn sdk_rotation(mode: &str) {
             &f.store,
             &f.admin,
             PolicyMutation::CapabilityGrant {
-                principal_id: other.user.principal.principal_id.to_string(),
+                principal_id: other.user.principal_id.to_string(),
                 capability_id: "trellis.auth@v1::identitiesRead".into(),
                 expected_revision: 0,
                 expires_at: None,

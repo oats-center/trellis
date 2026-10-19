@@ -32,16 +32,18 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     provider.register_users_list(move |context, input| {
         let store = users.clone();
         async move {
-            caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
+            let actor = caller(&context, None).map_err(rpc_error)?;
+            let delegated = caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
             tokio::task::spawn_blocking(move || store.transaction(|connection| {
+                let administrative = super::rpc_users::directory_account_access(connection, &actor, delegated)?;
                 let limit = input.page.as_ref().and_then(|page| page.limit).unwrap_or(50);
                 if !(1..=200).contains(&limit) {return Err(AuthError::Invalid("invalid page limit".into()));}
                 let cursor = input.page.as_ref().and_then(|page| page.cursor.as_deref()).unwrap_or("");
-                let mut statement = connection.prepare("SELECT p.principal_id FROM auth_principals p LEFT JOIN auth_user_profiles u USING(principal_id) LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.kind='user' AND p.principal_id>?1 AND (?2 IS NULL OR instr(lower(coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),'')),lower(?2))>0 OR instr(lower(coalesce(u.display_name,p.principal_id)),lower(?2))>0) ORDER BY p.principal_id LIMIT ?3")?;
-                let mut rows = statement.query_map(rusqlite::params![cursor,input.search.as_ref().map(|search|search.as_ref()),limit+1], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut statement = connection.prepare("SELECT p.principal_id FROM auth_principals p LEFT JOIN auth_user_profiles u USING(principal_id) LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.kind='user' AND p.principal_id>?1 AND (?4 OR p.state='active') AND (?2 IS NULL OR (?4 AND instr(lower(coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),'')),lower(?2))>0) OR instr(lower(coalesce(u.display_name,p.principal_id)),lower(?2))>0 OR instr(lower(coalesce(u.email,'')),lower(?2))>0) ORDER BY p.principal_id LIMIT ?3")?;
+                let mut rows = statement.query_map(rusqlite::params![cursor,input.search.as_ref().map(|search|search.as_ref()),limit+1,administrative], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 let next_cursor = (rows.len()>limit as usize).then(|| rows[limit as usize-1].clone());
                 rows.truncate(limit as usize);
-                let items = rows.into_iter().map(|id| super::rpc_users::read_user(connection,&id)).collect::<Result<Vec<_>,AuthError>>()?;
+                let items = rows.into_iter().map(|id| super::rpc_users::read_user(connection,&id,administrative)).collect::<Result<Vec<_>,AuthError>>()?;
                 Ok(trellis_runtime_apis::__types::CursorPage {items,page: trellis_runtime_apis::__types::CursorPageInfo {next_cursor}})
             })).await.map_err(|error| {
                 tracing::error!(%error, "Auth users query failed");

@@ -86,7 +86,7 @@ export class ConsoleAuthority {
         const account = await trellis.usersResolve({}).orThrow();
         if (
           this.#view.current !== verified ||
-          account.user.principal.principalId !== verified.principalId
+          account.user.principalId !== verified.principalId
         )
           throw new TransportError({
             code: "Unavailable",

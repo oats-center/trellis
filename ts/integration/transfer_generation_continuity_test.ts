@@ -497,7 +497,7 @@ test("download endAck retires the last caller and provider generation leases", a
           const ownUser = await runtime.callAdminRpc("authUsersResolve", {});
           const callerGrants = await runtime.callAdminRpc(
             "authCapabilityGrantsList",
-            { principalId: ownUser.user.principal.principalId, capabilityId },
+            { principalId: ownUser.user.principalId, capabilityId },
           );
           const callerGrant = callerGrants.items[0];
           assert(callerGrant);
