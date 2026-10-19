@@ -108,7 +108,7 @@ import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { text } from "node:stream/consumers";
 import { ok } from "@oatscenter/result";
-import { connectNativeClient, discoverNativeOAuth, NativeOAuthClient, type ConnectedNativeClient } from "@oatscenter/trellis/native";
+import { connectNativeClient, discoverNativeOAuth, NativeOAuthClient, MemoryNativeOAuthCustody, type ConnectedNativeClient } from "@oatscenter/trellis/native";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { apps, participants } from "./packages/scale/index.js";
 import { loginNativeTestClient } from ${JSON.stringify(`./${relative(dir, `${root}/ts/packages/trellis-testkit/src/admin/native_auth.ts`)}`)};
@@ -125,6 +125,7 @@ if (options.role === "provider") {
 } else {
   const samples: Sample[] = [];
   for (let index = 0; index < options.samples; index++) {
+    const custody = new MemoryNativeOAuthCustody();
     for (const resume of [false, true]) {
       const started = performance.now();
       const row: Sample = { scenario: "contract/${count}-actions/" + (resume ? "resume-first-rpc" : "fresh-login-first-rpc"), transport: "trellis", startedUnixMs: Date.now(), durationMs: 0 };
@@ -133,13 +134,12 @@ if (options.role === "provider") {
       let client: ConnectedNativeClient<typeof apps.Caller.request> | undefined;
       try {
         const server = (await discoverNativeOAuth(options.trellisUrl)).orThrow();
-        const directory = options.output + "/credentials";
         const credentialHandle = options.credentialHandles[index];
         if (!credentialHandle) throw new Error("Missing credential handle");
-        native = (await NativeOAuthClient.open({ directory, scope: { issuer: server.issuer, instanceId: server.trust.instanceId, account: server.trust.account, clientId: apps.Caller.request.id, credentialHandle }, trust: server.trust })).orThrow();
+        native = (await NativeOAuthClient.open({ custody, scope: { issuer: server.issuer, instanceId: server.trust.instanceId, account: server.trust.account, clientId: apps.Caller.request.id, credentialHandle }, trust: server.trust })).orThrow();
         const login = resume
           ? { session: (await native.resume()).orThrow(), servers: server.natsServers }
-          : await loginNativeTestClient({ issuer: server.issuer, directory, client: native, clientId: apps.Caller.request.id, request: apps.Caller.request, username: options.username, password: options.password });
+          : await loginNativeTestClient({ issuer: server.issuer, client: native, clientId: apps.Caller.request.id, request: apps.Caller.request, username: options.username, password: options.password });
         client = await connectNativeClient({ ...login, request: apps.Caller.request, name: "contract-scale-caller" }).orThrow();
         const connected = performance.now();
         const value = "scaled-" + index;

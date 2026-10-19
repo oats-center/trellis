@@ -1,5 +1,18 @@
 # Trellis
 
+Operation starts default to canonical routing. Explicit targeted starts persist
+deployment, invocation ULID, and frozen input before the first send and never
+fall back to another deployment. They cannot recover an unknown owner after an
+uncertain canonical start. See the TypeScript and Rust guides for typed APIs.
+Both live testkits support ordinary distinct users, explicit capability grants,
+and independent logins to one registered app without borrowing administrator
+identity or automatically restoring revoked grants.
+
+Rust and Node replicas use one deployment-scoped Operation storage codec. This
+pre-release persistence cutover does not migrate earlier records: retain existing
+installations unchanged and use fresh development/test state. Unsupported records
+fail visibly; the runtime never deletes or recreates them as empty state.
+
 Generated SDKs are disposable build artifacts, not maintained source. Commit native
 IDL, manifests, and dependency locks; run `trellis install` before compiling
 project-local consumers. Trellis-owned Rust bindings build in Cargo `OUT_DIR`.
@@ -12,8 +25,9 @@ Username defaults to `admin`; omitting an initial password returns `adminAccount
 a one-time password-setup link on the isolated OAuth origin (five-minute expiry).
 Use startup flags `--admin-username`, `--admin-password`, or
 `--admin-password-stdin`, or `trellis init admin --config <path>` with
-`--username`, `--password`, or `--password-stdin`. Restart does not overwrite
-credentials or issue a new link. `--reset-admin` explicitly issues a replacement
+`--username`, `--password`, or `--password-stdin`. Until password setup, each startup
+prints a fresh setup link and invalidates prior links. After setup, restart preserves
+credentials and prints no link. `--reset-admin` explicitly issues a replacement
 reset link; ordinary RPCs cannot reset the protected administrator.
 
 Service Jobs reconstruct retained lifecycle history through the deployment-scoped
@@ -64,6 +78,9 @@ retries never retransmit application requests or clear known revocations.
 Native providers finish accepted RPCs across ordinary authority promotion by
 reacquiring a coherent current signing snapshot within one configured deadline.
 Handlers are not redispatched; provider, issuer, expiry and revocation checks remain mandatory.
+Accepted finite responses may outlive the opening caller context, but not their
+request deadline. Current provider verification, known revocation, cancellation
+and logical shutdown remain enforced; expired evidence cannot start new work.
 Store object deletion and replacement clean up chunks only in the admitted
 identity's allocated Object Store streams, including Operation staging. This
 does not authorize KV purge, stream destruction, or cross-owner Store access.
@@ -152,11 +169,17 @@ and a signed trust-chain link; back up the Auth database's sibling
 `<database-stem>.issuer-keys` directory (`platform.issuer-keys` by default)
 with the Auth database. Missing committed keys stop startup.
 Browser credential custody uses nonextractable keys and
-cross-tab refresh ownership; native custody uses owner-only files and a
-cross-process family lock.
+cross-tab refresh ownership; Rust native custody uses owner-only files and a
+cross-process family lock. Node custody is process-local unless explicitly supplied
+by the application.
 
 Node native applications use `@oatscenter/trellis/native` for Device Code OAuth,
-durable POSIX SQLite custody, and generated native callers. This entrypoint is
+process-local memory custody, and generated native callers. Retain an explicit
+MemoryNativeOAuthCustody object for reconnects in one process. Remembered login
+across process restarts requires an application-owned NativeOAuthCustody provider;
+there is no built-in persistent Node backend or SQLite requirement. Persistent
+providers must exclusively own the family and durably commit spent-token markers,
+successors, and authenticated trust before their operations resolve. This entrypoint is
 Node/npm-only; browser applications retain IndexedDB and Web Locks. Successful
 connection transfers credential ownership to the connection until it closes.
 Discovery cannot replace a retained issuer pin; only an authenticated rotation

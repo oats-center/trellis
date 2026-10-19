@@ -8,6 +8,7 @@ import { Result } from "@oatscenter/trellis";
 import {
   connectNativeClient,
   NativeOAuthClient,
+  MemoryNativeOAuthCustody,
 } from "@oatscenter/trellis/native";
 import { TrellisService } from "@oatscenter/trellis/service";
 import { apps } from "../../integration/fixtures/client-upgrade-narrow/packages/client-upgrade/index.js";
@@ -16,7 +17,7 @@ import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/nat
 import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-test("administrator issuer rotation is idempotent and cold native custody follows the chain across restart", async () => {
+test("administrator issuer rotation is idempotent and retained native custody follows the chain across server restart", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       deployment: "rotation-provider",
@@ -35,10 +36,10 @@ test("administrator issuer rotation is idempotent and cold native custody follow
       contract: apps.Caller.request,
     });
     await prepared.session.close();
-    const directory = join(runtime.workdir, "rotation-custody", ulid());
+    const credentialCustody = new MemoryNativeOAuthCustody();
     const credentials = await loginNativeTestClient({
       issuer: runtime.oauthIssuer,
-      directory,
+      custody: credentialCustody,
       clientId: apps.Caller.request.id,
       request: apps.Caller.request,
       username: runtime.adminUsername,
@@ -82,7 +83,6 @@ test("administrator issuer rotation is idempotent and cold native custody follow
       assert.notEqual(second.keyId, rotated.keyId);
       const freshCredentials = await loginNativeTestClient({
         issuer: runtime.oauthIssuer,
-        directory: join(runtime.workdir, "fresh-issuer-custody", ulid()),
         clientId: "trellis.cli",
         request: adminParticipant,
         username: runtime.adminUsername,
@@ -114,7 +114,11 @@ test("administrator issuer rotation is idempotent and cold native custody follow
       serviceExit = service.wait().catch(() => undefined);
       await service.handleEcho(({ input }) => Result.ok(input));
       const custody = (
-        await NativeOAuthClient.open({ directory, scope, trust })
+        await NativeOAuthClient.open({
+          custody: credentialCustody,
+          scope,
+          trust,
+        })
       ).orThrow();
       try {
         const session = (await custody.resume()).orThrow();

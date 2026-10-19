@@ -20,6 +20,15 @@ framework or organization for downstream services. Consumer repositories choose
 their own test tooling. The live runtime helper is available when their tests
 need to exercise the actual Trellis boundary.
 
+Distinct-user tests use ordinary accounts, explicit capability grants, and real
+native OAuth consent. The Node testkit exposes `createUser`,
+`grantUserCapabilities`, and `registerClient`/`connectClient` with `user`; the
+Rust testkit exposes `create_user`, `grant_user_capabilities`,
+`register_native_application`, and `login_native_application_as`. User handles
+belong to one runtime, expose no password, and never borrow seeded administrator
+authority. One registered application can have independent logins for multiple
+users. Explicit-user login never adds or restores grants.
+
 Trellis behavior is distributed runtime behavior. Tests that prove Trellis
 runtime behavior must use a live Trellis control plane and real TypeScript and
 Rust client/service paths.

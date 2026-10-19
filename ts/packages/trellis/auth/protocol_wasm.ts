@@ -10,6 +10,14 @@ type JsonObject = { [key: string]: JsonValue };
 
 const protocolWasm = protocolWasmModule;
 
+/** Validate framework-private Operation state through the shared native codec. */
+export function normalizeOperationRecordWasm(value: unknown): unknown {
+  initializeProtocolWasmSync();
+  return JSON.parse(
+    protocolWasm.normalize_operation_record(JSON.stringify(value)),
+  );
+}
+
 /** Bounds and explicit clock accepted by the shared session-authority verifier. */
 export type SessionAuthorityVerificationPolicy = {
   nowUnixSeconds: number;

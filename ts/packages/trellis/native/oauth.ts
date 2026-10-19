@@ -1,8 +1,6 @@
-import { isIP } from "node:net";
 import { setTimeout } from "node:timers/promises";
 import { err, ok, type Result } from "@oatscenter/result";
 import { z } from "zod";
-import { fromPublic } from "@nats-io/nkeys";
 import { createAuth, type TrellisAuth } from "../auth/session_auth.ts";
 import {
   SessionAuthorityOwner,
@@ -12,44 +10,20 @@ import {
   verifyOAuthAdmissionWasm,
   type PlatformPrivilege,
 } from "../auth/protocol_wasm.ts";
-import {
-  base64urlDecode,
-  base64urlEncode,
-  sha256,
-  utf8,
-  toArrayBuffer,
-} from "../auth/utils.ts";
-import { codecs, type AppRequestDescriptor } from "../generated_support.ts";
+import { base64urlEncode, sha256, utf8, toArrayBuffer } from "../auth/utils.ts";
+import type { AppRequestDescriptor } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
 import { authenticateIssuerChain } from "../auth/issuer_trust.ts";
 import {
-  NativeCredentialLease,
+  MemoryNativeOAuthCustody,
+  validateNativeScope,
+  validateNativeTrust,
+  type NativeOAuthCustody,
+  type NativeOAuthCustodyLease,
   type NativeCredentialScope,
-} from "./storage.ts";
+} from "./custody.ts";
+import { boundedJson, discoverNativeOAuth } from "./discovery.ts";
 
-const metadataSchema = z.object({
-  issuer: z.string(),
-  trellis: z.object({
-    trellisInstanceId: z.string().min(1),
-    audienceNatsAccount: z.string().min(1),
-    natsEndpoints: z.array(z.string()).min(1),
-    authorityFormat: z.literal("trellis.session-authority.v1"),
-    admissionFormat: z.literal("trellis.oauth-admission.v1"),
-    issuers: z
-      .array(
-        z.object({
-          keyId: z.string().min(1),
-          publicKey: z.string().min(1),
-          state: z.enum(["active", "retired", "revoked"]),
-        }),
-      )
-      .min(1),
-    rotationSequence: z.string().regex(/^(0|[1-9][0-9]*)$/),
-    requiredAuthorizationDetailsTypes: z
-      .array(z.literal("trellis_capabilities"))
-      .min(1),
-  }),
-});
 const tokenSchema = z.object({
   token_type: z.string(),
   refresh_token: z.string().min(1).max(16384),
@@ -64,153 +38,18 @@ const deviceSchema = z.object({
   interval: z.number().int().positive().max(300).default(5),
 });
 
-/** Explicitly selected issuer, native transport addresses and initial authorization pin. */
-export type NativeOAuthServer = Readonly<{
-  issuer: string;
-  natsServers: readonly string[];
-  trust: RuntimeAuthorizationTrust;
-}>;
-
-async function boundedJson(response: Response): Promise<unknown> {
-  if (!response.body) throw new AuthError({ reason: "InvalidOAuthResponse" });
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > 65536)
-        throw new AuthError({ reason: "InvalidOAuthResponse" });
-      chunks.push(next.value);
-    }
-  } finally {
-    await reader.cancel();
-  }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-}
-
-/** Discover only the selected HTTPS origin (literal loopback HTTP is allowed), without redirects. Retained custody never repins from discovery. */
-export async function discoverNativeOAuth(
-  origin: string,
-  options: { signal?: AbortSignal } = {},
-): Promise<Result<NativeOAuthServer, AuthError>> {
-  try {
-    const url = new URL(origin);
-    const host = url.hostname.replace(/^\[|\]$/g, "");
-    const loopback =
-      host === "localhost" ||
-      host === "::1" ||
-      (isIP(host) === 4 && host.startsWith("127."));
-    if (
-      url.pathname !== "/" ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
-    )
-      throw new AuthError({ reason: "InvalidIssuer" });
-    const response = await fetch(
-      `${url.origin}/.well-known/oauth-authorization-server`,
-      {
-        redirect: "error",
-        credentials: "omit",
-        signal: AbortSignal.any([
-          AbortSignal.timeout(30000),
-          ...(options.signal ? [options.signal] : []),
-        ]),
-      },
-    );
-    if (!response.ok) throw new AuthError({ reason: "OAuthUnavailable" });
-    const metadata = metadataSchema.parse(await boundedJson(response));
-    if (metadata.issuer !== url.origin)
-      throw new AuthError({ reason: "InvalidIssuer" });
-    codecs.ulid.decode(metadata.trellis.trellisInstanceId);
-    if (
-      !metadata.trellis.audienceNatsAccount.startsWith("A") ||
-      fromPublic(metadata.trellis.audienceNatsAccount).getPublicKey() !==
-        metadata.trellis.audienceNatsAccount
-    )
-      throw new AuthError({ reason: "InvalidIssuer" });
-    for (const issuer of metadata.trellis.issuers) {
-      const bytes = base64urlDecode(issuer.publicKey);
-      if (
-        bytes.length !== 32 ||
-        base64urlEncode(bytes) !== issuer.publicKey ||
-        base64urlEncode(await sha256(bytes)) !== issuer.keyId
-      )
-        throw new AuthError({ reason: "InvalidIssuer" });
-    }
-    const active = metadata.trellis.issuers.filter(
-      (key) => key.state === "active",
-    );
-    if (
-      active.length !== 1 ||
-      new Set(metadata.trellis.issuers.map((key) => key.keyId)).size !==
-        metadata.trellis.issuers.length
-    )
-      throw new AuthError({ reason: "InvalidIssuer" });
-    for (const server of metadata.trellis.natsEndpoints) {
-      const endpoint = new URL(server);
-      if (
-        !["nats:", "tls:", "ws:", "wss:"].includes(endpoint.protocol) ||
-        !endpoint.hostname ||
-        endpoint.username ||
-        endpoint.password ||
-        (endpoint.pathname && endpoint.pathname !== "/") ||
-        endpoint.search ||
-        endpoint.hash
-      )
-        throw new AuthError({ reason: "InvalidIssuer" });
-    }
-    const nativeServers = metadata.trellis.natsEndpoints.filter((server) =>
-      /^(nats|tls):/.test(server),
-    );
-    if (nativeServers.length === 0)
-      throw new AuthError({ reason: "InvalidIssuer" });
-    return ok({
-      issuer: url.origin,
-      natsServers: nativeServers,
-      trust: {
-        instanceId: metadata.trellis.trellisInstanceId,
-        account: metadata.trellis.audienceNatsAccount,
-        issuer: active[0],
-        rotationSequence: metadata.trellis.rotationSequence,
-      },
-    });
-  } catch (cause) {
-    return err(
-      cause instanceof AuthError
-        ? cause
-        : new AuthError({
-            reason: options.signal?.aborted
-              ? "OAuthCancelled"
-              : "OAuthUnavailable",
-          }),
-    );
-  }
-}
-
 /** Native OAuth custody and a stable in-memory runtime key, independent of the transport owner. */
 export class NativeOAuthClient {
   readonly auth: TrellisAuth;
   readonly runtimeId: string;
-  readonly #lease: NativeCredentialLease;
+  readonly #lease: NativeOAuthCustodyLease;
   #tail: Promise<unknown> = Promise.resolve();
   #closing = false;
   #connected = false;
   #owner?: SessionAuthorityOwner;
   #anchor: RuntimeAuthorizationTrust;
 
-  private constructor(lease: NativeCredentialLease, auth: TrellisAuth) {
+  private constructor(lease: NativeOAuthCustodyLease, auth: TrellisAuth) {
     this.#lease = lease;
     this.#anchor = lease.trust;
     this.auth = auth;
@@ -219,20 +58,45 @@ export class NativeOAuthClient {
     );
   }
 
-  /** Acquire exclusive POSIX custody. Reopening generates a fresh Ed25519 key and 128-bit runtime nonce. */
+  /** Create process-local credentials, or acquire explicitly supplied application custody. Each opening creates a fresh transport key and runtime nonce. */
   static async open(options: {
-    directory: string;
     scope: NativeCredentialScope;
     trust: RuntimeAuthorizationTrust;
+    custody?: NativeOAuthCustody;
     signal?: AbortSignal;
   }): Promise<Result<NativeOAuthClient, AuthError>> {
-    let lease: NativeCredentialLease | undefined;
+    let lease: NativeOAuthCustodyLease | undefined;
     try {
-      lease = await NativeCredentialLease.open(
-        options.directory,
+      options.signal?.throwIfAborted();
+      validateNativeScope(options.scope);
+      lease = await (options.custody ?? new MemoryNativeOAuthCustody()).acquire(
         options.scope,
         options.trust,
         options.signal,
+      );
+      if (
+        Object.entries(options.scope).some(
+          ([key, value]) =>
+            lease?.scope[key as keyof NativeCredentialScope] !== value,
+        )
+      )
+        throw new AuthError({ reason: "InvalidCredential" });
+      await validateNativeTrust(options.scope, lease.trust);
+      const jwk = lease.publicJwk;
+      if (
+        jwk.kty !== "EC" ||
+        jwk.crv !== "P-256" ||
+        jwk.d !== undefined ||
+        !jwk.x ||
+        !jwk.y
+      )
+        throw new AuthError({ reason: "InvalidCredential" });
+      await crypto.subtle.importKey(
+        "jwk",
+        jwk,
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["verify"],
       );
       const auth = await createAuth({
         sessionKeySeed: base64urlEncode(
@@ -326,7 +190,7 @@ export class NativeOAuthClient {
       if (!this.#lease.refreshAvailable)
         throw new AuthError({ reason: "OAuthRecoveryRequired" });
       await this.#prepareTrust(options.signal);
-      const token = this.#lease.beginRotation();
+      const token = await this.#lease.beginRotation();
       try {
         return await this.#install(
           await this.#exchange(
@@ -356,12 +220,12 @@ export class NativeOAuthClient {
       options.signal?.throwIfAborted();
       if (!this.#lease.refreshAvailable)
         throw new AuthError({ reason: "OAuthRecoveryRequired" });
-      if (this.#owner) this.#lease.retainTrust(this.#owner);
+      if (this.#owner) await this.#retainTrust(this.#owner);
       // Authenticate the selected origin before spending the one-use secret.
       // An unavailable origin leaves custody intact; an ambiguous token POST
       // still retains the strict spent marker and requires explicit recovery.
       await this.#prepareTrust(options.signal);
-      const token = this.#lease.beginRotation();
+      const token = await this.#lease.beginRotation();
       try {
         return await this.#install(
           await this.#exchange(
@@ -549,6 +413,16 @@ export class NativeOAuthClient {
     throw new AuthError({ reason: "OAuthRecoveryRequired" });
   }
 
+  async #retainTrust(owner: SessionAuthorityOwner): Promise<void> {
+    const previous = this.trust;
+    const trust = SessionAuthorityOwner.prototype.trustForCredential.call(
+      owner,
+      previous,
+    );
+    await validateNativeTrust(this.scope, trust, previous);
+    await this.#lease.retainTrust(trust);
+  }
+
   async #prepareTrust(signal?: AbortSignal): Promise<void> {
     const discovered = await discoverNativeOAuth(this.scope.issuer, { signal });
     if (discovered.isErr())
@@ -561,7 +435,7 @@ export class NativeOAuthClient {
       this.#owner,
     );
     try {
-      this.#lease.retainTrust(owner);
+      await this.#retainTrust(owner);
       if (!this.#connected) this.#anchor = this.trust;
     } finally {
       if (owner !== this.#owner) owner.stop();
@@ -575,7 +449,7 @@ export class NativeOAuthClient {
   ): Promise<NativeOAuthSession> {
     const response = tokenSchema.parse(data);
     if (rotating && response.token_type.toLowerCase() === "dpop")
-      this.#lease.retainRotatedToken(response.refresh_token);
+      await this.#lease.retainRotatedToken(response.refresh_token);
     let trust = this.trust;
     let verified = await verifyOAuthAdmissionWasm(
       utf8(response.trellis_admission),
@@ -607,6 +481,11 @@ export class NativeOAuthClient {
       if (!verified.ok) throw new AuthError({ reason: "InvalidOAuthResponse" });
     }
     const body = verified.admission.credential;
+    if (
+      this.#lease.principalId !== undefined &&
+      this.#lease.principalId !== body.principalId
+    )
+      throw new AuthError({ reason: "InvalidCredential" });
     const jwk = this.#lease.publicJwk;
     const jkt = base64urlEncode(
       await sha256(
@@ -623,12 +502,13 @@ export class NativeOAuthClient {
     )
       throw new AuthError({ reason: "InvalidOAuthResponse" });
     signal?.throwIfAborted();
-    this.#lease.install({
+    await this.#lease.install({
       principalId: body.principalId,
       oauthGrantId: body.oauthGrantId,
       loginSessionId: body.loginSessionId,
       refreshToken: response.refresh_token,
     });
+    signal?.throwIfAborted();
     return new NativeOAuthSession(
       this,
       response.trellis_admission,

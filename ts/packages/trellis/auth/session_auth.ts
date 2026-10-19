@@ -5,7 +5,11 @@ import { Codec } from "@nats-io/nkeys/lib/codec.js";
 import type { SessionAuthorityOwner } from "./authority.ts";
 import { trellisCrypto } from "./crypto.ts";
 import { createProof, type RequestSignature } from "./proof.ts";
-import { signAdmissionGetWasm, type AdmissionGet, type SessionRequest } from "./protocol_wasm.ts";
+import {
+  signAdmissionGetWasm,
+  type AdmissionGet,
+  type SessionRequest,
+} from "./protocol_wasm.ts";
 import {
   type SessionProof,
   type SessionProofInput,
@@ -36,7 +40,11 @@ export type TrellisAuth = {
   ) => Promise<RequestSignature>;
   signSessionProof: (input: SessionProofInput) => Promise<SessionProof>;
   /** Sign the native pending own-context lookup using this ephemeral key. */
-  signAdmissionGet: (request: AdmissionGet, subject: string, reply: string) => Promise<string>;
+  signAdmissionGet: (
+    request: AdmissionGet,
+    subject: string,
+    reply: string,
+  ) => Promise<string>;
   natsConnectOptions: (opts: {
     inboxPrefix: string;
     /** Fresh signed admission for this exact ephemeral key, never a refresh token. */
@@ -84,7 +92,8 @@ export async function createAuth(opts: {
     contextDigest: resolveContextDigest,
     createProof: (request, payload) => createProof(signer, request, payload),
     signSessionProof: (input) => signSessionProof(input, signer, sessionKey),
-    signAdmissionGet: (request, subject, reply) => signAdmissionGetWasm(request, subject, reply, seed),
+    signAdmissionGet: (request, subject, reply) =>
+      signAdmissionGetWasm(request, subject, reply, seed),
     natsConnectOptions: (options) => {
       return Promise.resolve({
         authenticator: [

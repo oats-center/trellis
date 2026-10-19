@@ -51,8 +51,7 @@ test("orders caller invokes the real service", async () => {
         name: "caller",
         contract: apps.OrdersCaller.request,
       });
-      const order = await client.create({ customerId: "customer-1" })
-        .orThrow();
+      const order = await client.create({ customerId: "customer-1" }).orThrow();
       assert.equal(order.customerId, "customer-1");
       assert.match(order.orderId, /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
     } finally {
@@ -69,6 +68,51 @@ test("orders caller invokes the real service", async () => {
 The runtime owns isolated on-disk state. The test helper tracks and
 closes connected clients. The service is stopped before the runtime, even if an
 assertion fails; lifecycle failures are rethrown rather than hidden.
+
+## Distinct ordinary users
+
+Create accounts and grant the generated application's required capabilities
+explicitly, then authenticate each account through ordinary native consent:
+
+```ts
+const alice = await runtime.createUser({ name: "Alice" });
+const bob = await runtime.createUser({ name: "Bob" });
+for (const user of [alice, bob]) {
+  await runtime.grantUserCapabilities({
+    user,
+    capabilityIds: apps.OrdersCaller.request.requiredCapabilities,
+  });
+}
+const a1 = await runtime.connectClient({
+  name: "Alice 1",
+  contract: apps.OrdersCaller.request,
+  user: alice,
+});
+const a2 = await runtime.connectClient({
+  name: "Alice 2",
+  contract: apps.OrdersCaller.request,
+  user: alice,
+});
+const b1 = await runtime.connectClient({
+  name: "Bob 1",
+  contract: apps.OrdersCaller.request,
+  user: bob,
+});
+```
+
+These are three independent native credential families for **one** registered
+application, with two real user principals. The handle exposes a label,
+username, and principal ID, never its password. Explicit-user login does not
+grant capabilities or silently regrant revoked ones. Omit `user` to retain the
+existing seeded-administrator convenience. Service identity provisioning is
+unchanged.
+
+Rust provides the same boundary: `create_user("Alice")`,
+`grant_user_capabilities(&alice, Request::REQUIRED_CAPABILITIES)`,
+`register_native_application::<Request>("app")`, then
+`login_native_application_as(&app, &alice)` for each independent login.
+`register_client_as::<Request>("app", &alice)` is the convenience composition;
+`register_client` retains its existing seeded-administrator behavior.
 
 ## Run it
 

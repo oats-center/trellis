@@ -152,12 +152,29 @@ impl SqliteAuthorizationStore {
                         }
                         // Established work retains its deployment owner. The set
                         // contains all eligible owners, never a sticky selection.
-                        let mut deployments=connection.prepare("SELECT DISTINCT b.deployment_id FROM auth_deployment_bindings b JOIN auth_instances i USING(deployment_id) JOIN auth_deployments d USING(deployment_id) WHERE i.state='active' AND d.state='active' AND EXISTS(SELECT 1 FROM json_each(b.provided_apis_json) WHERE json_extract(value,'$.api_id')=?1 AND json_extract(value,'$.generation')=?2)")?;
-                        for deployment in deployments
-                            .query_map(params![reference.api_id, generation], |row| {
-                                row.get::<_, String>(0)
-                            })?
-                        {
+                        let mut deployments = connection.prepare(
+                            "SELECT DISTINCT b.deployment_id FROM auth_deployment_bindings b
+                             JOIN auth_instances i USING(deployment_id)
+                             JOIN auth_deployments d USING(deployment_id)
+                             WHERE i.state='active' AND d.state='active'
+                             AND EXISTS(SELECT 1 FROM json_each(b.provided_apis_json) provided
+                                 WHERE json_extract(provided.value,'$.api_id')=?1
+                                 AND json_extract(provided.value,'$.generation')=?2
+                                 AND (?3=0 OR EXISTS(
+                                     SELECT 1 FROM json_each(json_extract(provided.value,'$.implemented_actions')) action
+                                     WHERE json_extract(action.value,'$.kind')='operation'
+                                     AND json_extract(action.value,'$.direction')='invoke'
+                                     AND json_extract(action.value,'$.name')=?4)))",
+                        )?;
+                        for deployment in deployments.query_map(
+                            params![
+                                reference.api_id,
+                                generation,
+                                direction == PermissionAction::Invoke,
+                                identity.name
+                            ],
+                            |row| row.get::<_, String>(0),
+                        )? {
                             let deployment = deployment?;
                             let base = trellis_protocol::derive_bound_operation_subject(
                                 &reference.api_id,
@@ -177,6 +194,7 @@ impl SqliteAuthorizationStore {
                                     subscribe.insert(format!("{base}.updates.*"));
                                 }
                                 if direction == PermissionAction::Invoke {
+                                    publish.insert(base.clone());
                                     publish.insert(format!("{base}.observe.*.*"));
                                 }
                             }
@@ -186,6 +204,9 @@ impl SqliteAuthorizationStore {
                                         && provider.deployment_id == deployment
                                 })
                             {
+                                if direction == PermissionAction::Invoke {
+                                    subscribe.insert(base.clone());
+                                }
                                 subscribe.insert(format!("{base}.control"));
                                 // The implementation owns this deployment's
                                 // route; observers carry their own session ID,

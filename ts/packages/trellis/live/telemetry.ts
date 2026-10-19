@@ -40,11 +40,7 @@ export type LiveTelemetryFrameClass = "data" | "control";
 export type LiveTelemetryDirection = "send" | "receive";
 
 type LiveTelemetryPhase =
-  | "prepared"
-  | "activating"
-  | "active"
-  | "draining"
-  | "closing";
+  "prepared" | "activating" | "active" | "draining" | "closing";
 
 /** Local state owner for one endpoint's live telemetry. */
 export class LiveTelemetryOwner {

@@ -33,13 +33,17 @@ export function boundedObjectStream(
     throw new Error("ObjectStore reads require a native NATS connection");
   }
   if (
-    info.bucket !== bucket || info.options?.link ||
+    info.bucket !== bucket ||
+    info.options?.link ||
     !/^[A-Za-z0-9_-]+$/.test(info.nuid) ||
-    !Number.isSafeInteger(info.size) || info.size < 0 ||
-    !Number.isSafeInteger(info.chunks) || info.chunks < 0 ||
+    !Number.isSafeInteger(info.size) ||
+    info.size < 0 ||
+    !Number.isSafeInteger(info.chunks) ||
+    info.chunks < 0 ||
     (info.size === 0) !== (info.chunks === 0) ||
     !/^SHA-256=[A-Za-z0-9_-]{43}=?$/.test(info.digest)
-  ) throw new Error("invalid or unsupported ObjectStore metadata");
+  )
+    throw new Error("invalid or unsupported ObjectStore metadata");
   const expected = base64urlDecode(info.digest.slice(8));
   if (
     expected.length !== 32 ||
@@ -72,9 +76,11 @@ export function boundedObjectStream(
   }
   // Msg.size() includes subject and ACK reply as well as payload/headers.
   // The fixed ACK reserve never grows to accommodate an object or a message.
-  const budget = Math.max(1024 * 1024, maxPayload) +
+  const budget =
+    Math.max(1024 * 1024, maxPayload) +
     new TextEncoder().encode(subject).length +
-    new TextEncoder().encode(stream).length + 1024;
+    new TextEncoder().encode(stream).length +
+    1024;
   const consumerName = `TRELLIS_STORE_${nuid.next()}`;
   if (nc.isClosed()) {
     hash.destroy();
@@ -106,8 +112,10 @@ export function boundedObjectStream(
   let batchMessages = 0;
   let batchBytes = 0;
   const byteBoundary = (cause: unknown): boolean =>
-    batchMessages > 0 && cause instanceof JetStreamStatusError &&
-    cause.code === 409 && cause.message === "message size exceeds maxbytes";
+    batchMessages > 0 &&
+    cause instanceof JetStreamStatusError &&
+    cause.code === 409 &&
+    cause.message === "message size exceeds maxbytes";
   const createConsumer = async (): Promise<Consumer> => {
     const manager = await jetstreamManager(nc, { checkAPI: false });
     created = true;
@@ -159,7 +167,8 @@ export function boundedObjectStream(
                 !(cause instanceof JetStreamApiError) ||
                 (cause.code !== JetStreamApiCodes.ConsumerNotFound &&
                   cause.code !== JetStreamApiCodes.StreamNotFound)
-              ) throw cause;
+              )
+                throw cause;
             }
           }
         }
@@ -202,133 +211,145 @@ export function boundedObjectStream(
     },
   };
 
-  return new ReadableStream<Uint8Array>({
-    start(c) {
-      controller = c;
-      nc.addCloseListener(onClose);
-      statusTask = (async () => {
-        try {
-          for await (const status of statuses) {
-            if (status.type === "disconnect") {
-              // Do not await our own cleanup: it joins this status task.
-              void fail(new Error("ObjectStore read connection disconnected"));
-              break;
-            }
-          }
-        } catch (cause) {
-          void fail(cause);
-        }
-      })();
-    },
-    async pull() {
-      if (!isState("open")) return;
-      try {
-        consumer ??= createConsumer();
-        let active = await consumer;
-        if (!isState("open")) return;
-        while (isState("open")) {
-          if (!batch) {
-            // Inactivity expires backend consumers, not the public reader. Use
-            // typed INFO errors; fetch status errors erase the missing-resource
-            // distinction. Resume only from the last actually yielded chunk.
-            consumer = (async () => {
-              try {
-                await active.info();
-                return active;
-              } catch (cause) {
-                if (
-                  !(cause instanceof JetStreamApiError) ||
-                  cause.code !== JetStreamApiCodes.ConsumerNotFound
-                ) throw cause;
-                if (!isState("open")) return active;
-                return await createConsumer();
-              }
-            })();
-            active = await consumer;
-            if (!isState("open")) return;
-            // 3.4.0 prohibits max_messages with max_bytes and caps this at 100.
-            pendingBatch = active.fetch({ max_bytes: budget, expires: 30_000 })
-              .then((value) => {
-                batch = value;
-                iterator = value[Symbol.asyncIterator]();
-                batchBytes = 0;
-                batchMessages = 0;
-                return value;
-              });
-            await pendingBatch;
-            if (!isState("open")) return;
-          }
-          let next: IteratorResult<JsMsg>;
+  return new ReadableStream<Uint8Array>(
+    {
+      start(c) {
+        controller = c;
+        nc.addCloseListener(onClose);
+        statusTask = (async () => {
           try {
-            next = await iterator!.next();
+            for await (const status of statuses) {
+              if (status.type === "disconnect") {
+                // Do not await our own cleanup: it joins this status task.
+                void fail(
+                  new Error("ObjectStore read connection disconnected"),
+                );
+                break;
+              }
+            }
           } catch (cause) {
-            if (!byteBoundary(cause)) throw cause;
-            next = { done: true, value: undefined };
+            void fail(cause);
           }
+        })();
+      },
+      async pull() {
+        if (!isState("open")) return;
+        try {
+          consumer ??= createConsumer();
+          let active = await consumer;
           if (!isState("open")) return;
-          if (next.done) {
-            const error = await batch!.closed();
-            if (error && !byteBoundary(error)) throw error;
-            await iterator!.return?.();
-            batch = undefined;
-            iterator = undefined;
-            pendingBatch = undefined;
-            if (batchMessages === 0) {
-              throw new Error("ObjectStore chunks are missing");
+          while (isState("open")) {
+            if (!batch) {
+              // Inactivity expires backend consumers, not the public reader. Use
+              // typed INFO errors; fetch status errors erase the missing-resource
+              // distinction. Resume only from the last actually yielded chunk.
+              consumer = (async () => {
+                try {
+                  await active.info();
+                  return active;
+                } catch (cause) {
+                  if (
+                    !(cause instanceof JetStreamApiError) ||
+                    cause.code !== JetStreamApiCodes.ConsumerNotFound
+                  )
+                    throw cause;
+                  if (!isState("open")) return active;
+                  return await createConsumer();
+                }
+              })();
+              active = await consumer;
+              if (!isState("open")) return;
+              // 3.4.0 prohibits max_messages with max_bytes and caps this at 100.
+              pendingBatch = active
+                .fetch({ max_bytes: budget, expires: 30_000 })
+                .then((value) => {
+                  batch = value;
+                  iterator = value[Symbol.asyncIterator]();
+                  batchBytes = 0;
+                  batchMessages = 0;
+                  return value;
+                });
+              await pendingBatch;
+              if (!isState("open")) return;
             }
-            continue;
-          }
-          const msg = next.value;
-          batchMessages++;
-          // The server/SDK max_bytes account the full message envelope. JsMsg
-          // exposes only the body, which we independently bound as retained data.
-          batchBytes += msg.data.length;
-          bytes += msg.data.length;
-          chunks++;
-          if (
-            batchMessages > 100 || batchBytes > budget ||
-            msg.subject !== subject || msg.data.length === 0 ||
-            msg.info.streamSequence <= sequence ||
-            msg.info.deliverySequence !== chunks - epochBase ||
-            bytes > info.size || chunks > info.chunks
-          ) throw new Error("invalid ObjectStore chunk sequence or size");
-          sequence = msg.info.streamSequence;
-          hash.update(msg.data);
-          if (chunks === info.chunks || msg.info.pending === 0) {
+            let next: IteratorResult<JsMsg>;
+            try {
+              next = await iterator!.next();
+            } catch (cause) {
+              if (!byteBoundary(cause)) throw cause;
+              next = { done: true, value: undefined };
+            }
+            if (!isState("open")) return;
+            if (next.done) {
+              const error = await batch!.closed();
+              if (error && !byteBoundary(error)) throw error;
+              await iterator!.return?.();
+              batch = undefined;
+              iterator = undefined;
+              pendingBatch = undefined;
+              if (batchMessages === 0) {
+                throw new Error("ObjectStore chunks are missing");
+              }
+              continue;
+            }
+            const msg = next.value;
+            batchMessages++;
+            // The server/SDK max_bytes account the full message envelope. JsMsg
+            // exposes only the body, which we independently bound as retained data.
+            batchBytes += msg.data.length;
+            bytes += msg.data.length;
+            chunks++;
             if (
-              chunks !== info.chunks || bytes !== info.size ||
-              msg.info.pending !== 0 ||
-              base64urlEncode(hash.digest()) !== base64urlEncode(expected)
-            ) {
-              throw new Error(
-                "ObjectStore size, chunk count or digest mismatch",
-              );
+              batchMessages > 100 ||
+              batchBytes > budget ||
+              msg.subject !== subject ||
+              msg.data.length === 0 ||
+              msg.info.streamSequence <= sequence ||
+              msg.info.deliverySequence !== chunks - epochBase ||
+              bytes > info.size ||
+              chunks > info.chunks
+            )
+              throw new Error("invalid ObjectStore chunk sequence or size");
+            sequence = msg.info.streamSequence;
+            hash.update(msg.data);
+            if (chunks === info.chunks || msg.info.pending === 0) {
+              if (
+                chunks !== info.chunks ||
+                bytes !== info.size ||
+                msg.info.pending !== 0 ||
+                base64urlEncode(hash.digest()) !== base64urlEncode(expected)
+              ) {
+                throw new Error(
+                  "ObjectStore size, chunk count or digest mismatch",
+                );
+              }
+              await finish();
+              if (!isState("finishing")) return;
+              controller.enqueue(msg.data);
+              state = "closed";
+              controller.close();
+              return;
             }
-            await finish();
-            if (!isState("finishing")) return;
             controller.enqueue(msg.data);
-            state = "closed";
-            controller.close();
             return;
           }
-          controller.enqueue(msg.data);
-          return;
+        } catch (cause) {
+          await fail(cause);
         }
-      } catch (cause) {
-        await fail(cause);
-      }
+      },
+      async cancel() {
+        state = "cancelled";
+        try {
+          await finish();
+        } catch (cause) {
+          throw new StoreError({
+            operation: "stream",
+            cause,
+            context: { key: info.name },
+          });
+        }
+      },
     },
-    async cancel() {
-      state = "cancelled";
-      try {
-        await finish();
-      } catch (cause) {
-        throw new StoreError({
-          operation: "stream",
-          cause,
-          context: { key: info.name },
-        });
-      }
-    },
-  }, { highWaterMark: 0 });
+    { highWaterMark: 0 },
+  );
 }

@@ -649,7 +649,7 @@ mod tests {
         let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
         authority.initialize_issuer(NOW).unwrap();
         let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
-        let (admin, url) = storage
+        let (_, url) = storage
             .initialize_local_administrator("https://console.example", "operator", None, NOW)
             .unwrap();
         let url = url.unwrap();
@@ -664,28 +664,19 @@ mod tests {
         drop(authority);
         let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
         let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        let renewed = storage
+            .reset_local_administrator(NOW + 1, true)
+            .unwrap()
+            .unwrap();
+        let renewed_token = url::Url::parse(&renewed)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .unwrap()
+            .1
+            .into_owned();
         let guest = authority.create_portal_session(NOW + 1).unwrap();
         let replacement = hash_password("administrator setup password").unwrap();
-        complete_reset(
-            &storage,
-            &token,
-            &guest.cookie,
-            &guest.csrf,
-            &replacement,
-            NOW + 1,
-        )
-        .unwrap();
-        assert_eq!(
-            storage
-                .initialize_local_administrator(
-                    "https://console.example",
-                    "operator",
-                    None,
-                    NOW + 2
-                )
-                .unwrap(),
-            (admin, Some(url))
-        );
         assert!(matches!(
             complete_reset(
                 &storage,
@@ -693,7 +684,64 @@ mod tests {
                 &guest.cookie,
                 &guest.csrf,
                 &replacement,
-                NOW + 2
+                NOW + 1
+            ),
+            Err(AuthError::Denied)
+        ));
+        // A later startup must replace an expired setup link as well.
+        drop(storage);
+        drop(authority);
+        let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
+        let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        let restarted_at = NOW + 601;
+        let renewed = storage
+            .reset_local_administrator(restarted_at, true)
+            .unwrap()
+            .unwrap();
+        let current_token = url::Url::parse(&renewed)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .unwrap()
+            .1
+            .into_owned();
+        let guest = authority.create_portal_session(restarted_at).unwrap();
+        assert!(matches!(
+            complete_reset(
+                &storage,
+                &renewed_token,
+                &guest.cookie,
+                &guest.csrf,
+                &replacement,
+                restarted_at
+            ),
+            Err(AuthError::Denied)
+        ));
+        complete_reset(
+            &storage,
+            &current_token,
+            &guest.cookie,
+            &guest.csrf,
+            &replacement,
+            restarted_at,
+        )
+        .unwrap();
+        drop(storage);
+        drop(authority);
+        let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
+        let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
+        assert!(storage
+            .reset_local_administrator(restarted_at + 1, true)
+            .unwrap()
+            .is_none());
+        assert!(matches!(
+            complete_reset(
+                &storage,
+                &current_token,
+                &guest.cookie,
+                &guest.csrf,
+                &replacement,
+                restarted_at + 1
             ),
             Err(AuthError::Denied)
         ));
@@ -704,7 +752,7 @@ mod tests {
                 &self::token().unwrap(),
                 ("operator", "administrator setup password"),
                 &id(),
-                NOW + 2,
+                restarted_at + 1,
             )
             .unwrap();
     }
@@ -718,9 +766,21 @@ mod tests {
         let first = authority
             .transaction(|connection| create_local_reset_in_transaction(connection, &f.admin, now))
             .unwrap();
-        let current = authority
-            .transaction(|connection| create_local_reset_in_transaction(connection, &f.admin, now))
+        assert!(storage
+            .reset_local_administrator(now, true)
+            .unwrap()
+            .is_none());
+        let current = storage
+            .reset_local_administrator(now, false)
+            .unwrap()
             .unwrap();
+        let current_token = url::Url::parse(&current)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "token")
+            .unwrap()
+            .1
+            .into_owned();
         let guest = authority.create_portal_session(now).unwrap();
         let replacement = hash_password("replacement administrator password").unwrap();
         assert!(matches!(
@@ -736,7 +796,7 @@ mod tests {
         ));
         complete_reset(
             &storage,
-            &current.token,
+            &current_token,
             &guest.cookie,
             &guest.csrf,
             &replacement,
@@ -746,7 +806,7 @@ mod tests {
         assert!(matches!(
             complete_reset(
                 &storage,
-                &current.token,
+                &current_token,
                 &guest.cookie,
                 &guest.csrf,
                 &replacement,

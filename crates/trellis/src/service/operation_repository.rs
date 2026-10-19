@@ -3,222 +3,34 @@ use std::future::Future;
 use async_nats::jetstream::kv;
 use futures_util::stream::BoxStream;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{OperationSnapshot, OperationState, ServerError};
+use super::{OperationState, ServerError};
 
-/// Maximum persisted operation input size.
-pub const MAX_OPERATION_INPUT_BYTES: usize = 256 * 1024;
-/// Maximum persisted operation progress size.
-pub const MAX_OPERATION_PROGRESS_BYTES: usize = 64 * 1024;
-/// Maximum persisted operation output size.
-pub const MAX_OPERATION_OUTPUT_BYTES: usize = 512 * 1024;
-/// Maximum persisted operation error size.
-pub const MAX_OPERATION_ERROR_BYTES: usize = 32 * 1024;
-/// Maximum accepted signals retained by one operation.
-pub const MAX_OPERATION_SIGNALS: usize = 100;
-/// Maximum encoded payload size for one operation signal.
-pub const MAX_OPERATION_SIGNAL_BYTES: usize = 64 * 1024;
-/// Maximum encoded size of one complete operation record.
-pub const MAX_OPERATION_RECORD_BYTES: usize = 1024 * 1024;
-/// Complete durable identity, ownership, and lifecycle record for one invocation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DurableOperationRecord {
-    /// Caller-supplied or SDK-generated ULID used as the idempotency key.
-    pub invocation_id: String,
-    /// Digest binding the invocation identity, typed input, and stable creator.
-    pub invocation_digest: String,
-    /// Qualified API id owning the operation.
-    pub api_id: String,
-    /// Generated operation key.
-    pub operation: String,
-    /// Deployment that owns this operation store and execution.
-    pub deployment_id: String,
-    /// Stable principal that initiated the operation.
-    pub creator_principal_id: String,
-    /// Auth-verified application or deployment binding that initiated the operation.
-    pub creator_binding: trellis_protocol::SessionBinding,
-    /// Session key that authenticated the accepted start request.
-    pub caller_session_key: String,
-    /// Verified caller projection restored when an expired invocation is reclaimed.
-    pub caller: Option<crate::client::AuthenticatedCaller>,
-    /// Exact accepted input.
-    pub input: Value,
-    /// Current durable lifecycle snapshot.
-    pub snapshot: OperationSnapshot,
-    /// Monotonic durable mutation revision.
-    pub revision: u64,
-    /// Process executor currently allowed to mutate the record.
-    pub owner_executor_id: Option<String>,
-    /// Signed logical connection that acquired the current owner fence.
-    pub owner_connection_id: Option<String>,
-    /// Monotonic fencing token for the current owner.
-    pub owner_epoch: u64,
-    /// Server-time lease expiry in milliseconds since the Unix epoch.
-    pub lease_expires_at_ms: Option<i64>,
-    /// Durable cancellation request time, when cancellation was accepted.
-    pub cancellation_requested: bool,
-    /// Next sequence assigned to a newly accepted signal.
-    pub next_signal_sequence: u64,
-    /// Accepted durable signals in sequence order.
-    pub signals: Vec<DurableOperationSignal>,
-    /// Runtime-owned transfer staging state, when this operation accepts bytes.
-    pub transfer: Option<Value>,
-    /// Diagnostic creation trace carrier, omitted when tracing is disabled.
-    ///
-    /// Never part of the invocation digest, authorization, record identity,
-    /// lease calculation, or fence comparison.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub telemetry: Option<OperationTraceCarrier>,
-}
+use trellis_protocol::operation_record::{
+    decode_operation_record, encode_operation_record, OperationRecordError,
+};
+pub use trellis_protocol::operation_record::{
+    DurableOperationRecord, DurableOperationSignal, OperationTraceCarrier,
+    MAX_OPERATION_ERROR_BYTES, MAX_OPERATION_INPUT_BYTES, MAX_OPERATION_OUTPUT_BYTES,
+    MAX_OPERATION_PROGRESS_BYTES, MAX_OPERATION_RECORD_BYTES, MAX_OPERATION_SIGNALS,
+    MAX_OPERATION_SIGNAL_BYTES,
+};
 
-/// Diagnostic trace carrier retained with one durable operation record.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OperationTraceCarrier {
-    /// Validated W3C `traceparent` captured at creation.
-    pub traceparent: String,
-    /// Validated optional W3C `tracestate` captured at creation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tracestate: Option<String>,
-}
-
-/// One durable post-acceptance operation signal.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DurableOperationSignal {
-    /// Stable order within the operation.
-    pub sequence: u64,
-    /// Caller-generated idempotency key.
-    pub request_id: String,
-    /// Declared signal name.
-    pub name: String,
-    /// Generated-codec payload bytes.
-    pub payload: Vec<u8>,
-    /// Whether the current fenced executor durably acknowledged processing.
-    pub acknowledged: bool,
-}
-
-impl DurableOperationRecord {
-    fn validate(&self) -> Result<(), ServerError> {
-        self.invocation_id
-            .parse::<ulid::Ulid>()
-            .map_err(|_| ServerError::Nats("operation invocation id must be a ULID".to_owned()))?;
-        if self.invocation_digest
-            != operation_invocation_digest(
-                &self.api_id,
-                &self.operation,
-                &self.creator_principal_id,
-                &self.creator_binding,
-                &self.input,
-            )?
-        {
-            return Err(ServerError::Nats(
-                "operation invocation digest does not match its identity and input".to_owned(),
-            ));
+impl From<OperationRecordError> for ServerError {
+    fn from(error: OperationRecordError) -> Self {
+        match error {
+            OperationRecordError::Capacity {
+                field,
+                actual_bytes,
+                max_bytes,
+            } => Self::OperationCapacityExceeded {
+                field,
+                actual_bytes,
+                max_bytes,
+            },
+            other => Self::Nats(other.to_string()),
         }
-        let input_bytes = serde_json::to_vec(&self.input)?.len();
-        if input_bytes > MAX_OPERATION_INPUT_BYTES {
-            return Err(ServerError::OperationCapacityExceeded {
-                field: "input",
-                actual_bytes: input_bytes,
-                max_bytes: MAX_OPERATION_INPUT_BYTES,
-            });
-        }
-        if self.snapshot.progress.as_ref().is_some_and(|value| {
-            serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() > MAX_OPERATION_PROGRESS_BYTES)
-        }) {
-            return Err(ServerError::OperationCapacityExceeded {
-                field: "progress",
-                actual_bytes: serde_json::to_vec(self.snapshot.progress.as_ref().unwrap())?.len(),
-                max_bytes: MAX_OPERATION_PROGRESS_BYTES,
-            });
-        }
-        if self.snapshot.output.as_ref().is_some_and(|value| {
-            serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() > MAX_OPERATION_OUTPUT_BYTES)
-        }) {
-            return Err(ServerError::Nats(
-                "operation output exceeds 512 KiB".to_owned(),
-            ));
-        }
-        if self.signals.len() > MAX_OPERATION_SIGNALS {
-            return Err(ServerError::Nats(
-                "operation signal limit exceeded".to_owned(),
-            ));
-        }
-        for (index, signal) in self.signals.iter().enumerate() {
-            if signal.payload.len() > MAX_OPERATION_SIGNAL_BYTES {
-                return Err(ServerError::OperationCapacityExceeded {
-                    field: "signal",
-                    actual_bytes: signal.payload.len(),
-                    max_bytes: MAX_OPERATION_SIGNAL_BYTES,
-                });
-            }
-            if signal.sequence != index as u64 + 1
-                || self.signals[..index]
-                    .iter()
-                    .any(|accepted| accepted.request_id == signal.request_id)
-            {
-                return Err(ServerError::Nats(
-                    "operation signals must have unique request ids and contiguous sequences"
-                        .to_owned(),
-                ));
-            }
-        }
-        if self.next_signal_sequence != self.signals.len() as u64 + 1 {
-            return Err(ServerError::Nats(
-                "operation next signal sequence is inconsistent".to_owned(),
-            ));
-        }
-        if self.snapshot.id.as_deref() != Some(&self.invocation_id)
-            || self.snapshot.operation.as_deref() != Some(&self.operation)
-        {
-            return Err(ServerError::Nats(
-                "operation snapshot identity does not match its durable record".to_owned(),
-            ));
-        }
-        if self.snapshot.revision != self.revision {
-            return Err(ServerError::Nats(
-                "operation snapshot revision does not match its durable record".to_owned(),
-            ));
-        }
-        if self.snapshot.error.as_ref().is_some_and(|error| {
-            serde_json::to_vec(error).is_ok_and(|bytes| bytes.len() > MAX_OPERATION_ERROR_BYTES)
-        }) {
-            return Err(ServerError::Nats(
-                "operation error exceeds 32 KiB".to_owned(),
-            ));
-        }
-        let parse_time = |value: &str| {
-            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
-                .map_err(|error| ServerError::Nats(format!("invalid operation timestamp: {error}")))
-        };
-        let created_at =
-            self.snapshot.created_at.as_deref().ok_or_else(|| {
-                ServerError::Nats("operation record is missing createdAt".to_owned())
-            })?;
-        let updated_at =
-            self.snapshot.updated_at.as_deref().ok_or_else(|| {
-                ServerError::Nats("operation record is missing updatedAt".to_owned())
-            })?;
-        parse_time(created_at)?;
-        parse_time(updated_at)?;
-        let record_bytes = serde_json::to_vec(self)?.len();
-        if record_bytes > MAX_OPERATION_RECORD_BYTES {
-            return Err(ServerError::OperationCapacityExceeded {
-                field: "record",
-                actual_bytes: record_bytes,
-                max_bytes: MAX_OPERATION_RECORD_BYTES,
-            });
-        }
-        Ok(())
-    }
-
-    fn same_invocation(&self, other: &Self) -> bool {
-        self.invocation_id == other.invocation_id
-            && self.invocation_digest == other.invocation_digest
     }
 }
 
@@ -230,13 +42,13 @@ pub fn operation_invocation_digest(
     creator_binding: &trellis_protocol::SessionBinding,
     input: &Value,
 ) -> Result<String, ServerError> {
-    trellis_protocol::digest_json(&serde_json::json!({
-        "apiId": api_id,
-        "operation": operation,
-        "creatorPrincipalId": creator_principal_id,
-        "creatorBinding": creator_binding,
-        "input": input,
-    }))
+    trellis_protocol::operation_record::operation_invocation_digest(
+        api_id,
+        operation,
+        creator_principal_id,
+        creator_binding,
+        input,
+    )
     .map_err(|error| ServerError::Nats(error.to_string()))
 }
 
@@ -466,7 +278,7 @@ impl KvOperationRepository {
             return Ok(None);
         };
         Ok(Some(RevisionedOperationRecord {
-            record: serde_json::from_slice(&entry.value)?,
+            record: decode_operation_record(&entry.value)?,
             revision: entry.revision,
         }))
     }
@@ -487,7 +299,7 @@ impl OperationRepository for KvOperationRepository {
     ) -> Result<RevisionedOperationRecord, ServerError> {
         record.validate()?;
         let guard = self.store().await?;
-        let bytes = serde_json::to_vec(&record)?.into();
+        let bytes = encode_operation_record(&record)?.into();
         match guard
             .store
             .create(record.invocation_id.clone(), bytes)
@@ -518,6 +330,7 @@ impl OperationRepository for KvOperationRepository {
                     let mut cancelled = existing.record;
                     cancelled.revision += 1;
                     cancelled.cancellation_requested = true;
+                    cancelled.cancellation_requested_at = record.cancellation_requested_at.clone();
                     cancelled.snapshot.updated_at = record.snapshot.updated_at.clone();
                     if let Ok(updated) = Self::new(guard.store.clone())
                         .compare_record_exchange(existing.revision, cancelled)
@@ -584,7 +397,7 @@ impl OperationRepository for KvOperationRepository {
                 .ok_or_else(|| ServerError::Nats("operation revision overflow".to_owned()))?;
             record.snapshot.revision = record.revision;
             record.validate()?;
-            let bytes = serde_json::to_vec(&record)?.into();
+            let bytes = encode_operation_record(&record)?.into();
             if let Ok(revision) = guard
                 .store
                 .update(invocation_id, bytes, current.revision)
@@ -639,7 +452,7 @@ impl OperationRepository for KvOperationRepository {
                 .store
                 .update(
                     invocation_id,
-                    serde_json::to_vec(&record)?.into(),
+                    encode_operation_record(&record)?.into(),
                     current.revision,
                 )
                 .await
@@ -688,7 +501,7 @@ impl OperationRepository for KvOperationRepository {
             .store
             .update(
                 record.invocation_id.clone(),
-                serde_json::to_vec(&record)?.into(),
+                encode_operation_record(&record)?.into(),
                 expected_revision,
             )
             .await
@@ -772,7 +585,7 @@ impl OperationRepository for KvOperationRepository {
             .store
             .update(
                 record.invocation_id.clone(),
-                serde_json::to_vec(&record)?.into(),
+                encode_operation_record(&record)?.into(),
                 expected_revision,
             )
             .await
@@ -800,7 +613,7 @@ impl OperationRepository for KvOperationRepository {
                 move |entry| async move {
                     match entry {
                         Ok(entry) if entry.revision > snapshot_revision => Some(
-                            serde_json::from_slice(&entry.value)
+                            decode_operation_record(&entry.value)
                                 .map(|record| RevisionedOperationRecord {
                                     record,
                                     revision: entry.revision,

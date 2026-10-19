@@ -109,7 +109,7 @@ opening digest, a local stop or observation signal is observation-only
 cancellation that never dispatches a business cancel, and an executor may
 continue or finish with zero observers.
 
-New starts use canonical generated API subjects and the logical API's shared
+Untargeted new starts use canonical generated API subjects and the logical API's shared
 request queue, without caller selection of a service or deployment. Every
 serialized Operation reference requires `id`, `service`, `operation`, and
 `deploymentId`. The accepting provider supplies the durable record's deployment;
@@ -136,10 +136,29 @@ Durable references and repository records use the canonical
 method aliases are only language ergonomics: a same-named action added to another
 API cannot rename an existing Operation or merge its repository scope.
 
+Both SDKs persist one framework-private record through the shared Rust/WASM
+codec: TRKV envelope format 1, representation version 2. Descriptor-encoded JSON
+input, progress, output, errors, and signal payloads remain JSON values without
+a second binary encoding. Invocation identity, executor epoch/lease, original
+cancellation timestamp, signal acknowledgement, and upload commitment have the
+same meaning across replicas. Record revisions, fencing epochs, and update
+sequences fit the exact JSON integer range; descriptor-owned uint64 values retain
+their generated decimal-string codec.
+Application-defined error fields survive repository reads and writes.
+
+The owning deployment's CAS revision remains authoritative. Codec validation is
+not authorization, an executor claim, or permission to replay application work.
+Unsupported or corrupt persisted data fails visibly without becoming absence,
+being rewritten, or causing empty storage recreation. This pre-release storage
+cutover has no migration or dual-read path; retained installations and their old
+records are never deleted or silently converted.
+
 Upload/download staging is platform-managed rather than mapped to a participant
 Store. Committed staged bytes survive executor replacement. An interrupted
 in-flight upload is invalidated and restarted from byte zero. Generated transfer
 handles keep grant metadata outside application output types.
+Both SDKs return the original logical file metadata after takeover; the physical
+staging locator remains private and is used only to open the staged object.
 
 Operation upload uses Transfer v2's bounded one-way raw-byte stream,
 independently of Live-based Operation Watch. Network credit follows

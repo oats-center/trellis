@@ -15,7 +15,7 @@ accepting deployment, the same invocation ID and input return the same operation
 changed input conflicts. Progress, signals, cancellation, and terminal state are
 durable. Live updates are transient.
 
-New starts call the canonical API without selecting a deployment. Serialize and
+New starts default to the canonical API without selecting a deployment. Serialize and
 retain the complete accepted reference, including `deploymentId`, to restore a
 handle. The SDK verifies that deployment against the certified signed acceptance
 and routes subsequent get, watch, wait, cancel, and signals internally to it.
@@ -25,6 +25,27 @@ using the existing executor lease. The reference supplies routing, not authority
 Do not automatically retry an uncertain start: canonical routing may deliver the
 retry to another deployment, whose independent record store can accept the same
 invocation ID again. Trellis does not promise cross-deployment deduplication.
+
+If ownership must survive a lost acceptance reply, persist the deployment,
+invocation ULID, and frozen input **before the first request**, then use:
+
+```ts
+const operation = await client
+  .reportsGenerate(input)
+  .start(undefined, {
+    invocationId,
+    targetDeploymentId,
+  })
+  .orThrow();
+```
+
+An explicit replay uses that same triple. It never falls back to another
+deployment; an unavailable target remains unavailable. Cancellation-first uses
+the same options with `cancellationRequested: true`, requiring Invoke and Cancel.
+Normal replay cannot clear cancellation intent. Transfer starts also accept the
+target and invocation ID, but do not accept cancellation-first options.
+Choosing a target after losing a **canonical** reply cannot recover its unknown
+owner. After acceptance, restore the complete reference as usual.
 
 Execution is restartable and at least once. A replacement executor resumes from
 persisted state after lease expiry, so application side effects must be

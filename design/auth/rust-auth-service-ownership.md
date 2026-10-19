@@ -40,8 +40,10 @@ Password-reset flows record issuance authority: an ordinary authorization sessio
 or the local operator. Ordinary RPC issuance still rejects the protected admin.
 Local initialization/recovery may issue its reset; redemption checks the bound
 principal, credential revision, protection status, token expiry, and portal CSRF.
-Explicit local recovery revokes prior pending links. Restart neither replaces
-credentials nor silently issues a new link.
+Until the protected administrator sets a password, each startup prints a fresh
+setup link before provider admission and revokes earlier pending links. After
+setup, restart preserves credentials and emits no link; established-password reset
+requires explicit local recovery.
 
 The runtime configuration contains only online issuer seed path and context/JWT
 policy. Offline root, certificate, manifest, and trust-floor configuration and

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { test } from "node:test";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { ulid } from "ulid";
@@ -17,7 +16,6 @@ test(
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
 
-      const directory = await mkdtemp("/tmp/opencode/native-management-");
       const connections: Array<() => Promise<unknown>> = [];
       try {
         const request = apps.cli.request;
@@ -25,7 +23,6 @@ test(
           issuer,
           username,
           password,
-          directory,
           clientId: "trellis.cli",
           request,
           platformPrivileges: {
@@ -93,7 +90,6 @@ test(
           issuer,
           username: user.username,
           password: userPassword,
-          directory,
           clientId,
           request,
           approvedCapabilities: approved,
@@ -140,7 +136,6 @@ test(
         );
       } finally {
         for (const close of connections.reverse()) await close();
-        await rm(directory, { recursive: true, force: true });
       }
     });
   },

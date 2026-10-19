@@ -17,7 +17,8 @@ one-time `adminAccountUrl` password-setup link unless an initial password was
 supplied. Configure fresh credentials with startup `--admin-username`,
 `--admin-password`, or `--admin-password-stdin`; explicit initialization is
 `trellis init admin --config <path> --username admin` with optional `--password`
-or `--password-stdin`. Links expire after five minutes. Restart preserves
+or `--password-stdin`. Links expire after five minutes. Until password setup, each
+startup prints a fresh link and invalidates prior links. After setup, restart preserves
 credentials; `--reset-admin` is explicit local recovery through the same account
 flow. Ordinary RPC reset privileges do not authorize protected-admin recovery.
 
@@ -234,6 +235,9 @@ implementation, API generation, and accepted action revision. They do not requir
 consumer capabilities. Delegated publication uses whole-capability membership;
 provider certificates never grant RPC caller or event-consumption rights.
 
+Generated Rust Event subscriptions verify original bytes and proof before decoding.
+Core NATS requires live publisher authority; invalid publications are dropped
+without ending a healthy stream. Current consumer authority remains enforced.
 Durable consumers use the original broker timestamp. Targeted DLQ replay resolves
 retained original bytes and `originalPublishedAt` through authenticated Events
 inspection, even after source expiry; replay-envelope bytes cannot replace them.
@@ -322,6 +326,10 @@ options. Neither lifecycle accepts a raw NATS URL/JWT or client-authored
 assignment as authority. Treat authorization denial separately from invalid
 login rather than starting a login loop.
 
+The Rust CLI's owner-only files and operating-system lock do not depend on the
+Node SDK, whose default OAuth custody is process-local memory and whose durable
+custody is explicitly application-owned.
+
 Provision without identityPublicKey for a one-use, server-assigned enrollment
 secret. DeviceActivationOptions proves durable and ephemeral key possession;
 Devices.Reviews.Get/Decide require its confirmation code and expected revision.
@@ -356,13 +364,34 @@ They indicate that the requested service is not currently reachable, including
 during a restart; they are not malformed protocol offers or declared domain
 errors. Persist a caller-selected ULID before
 `start_with_invocation_id(id, &input)`; this is the durable operation ID,
-recoverable through `control(id)`. To cancel a reserved invocation that may not
+recoverable through `control(complete_reference)` after acceptance. To cancel a reserved invocation that may not
 yet be admitted, use `start_cancelled_with_invocation_id(id, &input)` with its
 original input. It requires both Invoke and Cancel authority and atomically
 retains cancellation intent before new handler entry. The returned reference
 does not imply finished cleanup; explicitly `wait()` for the terminal result.
 Normal replay never clears that intent; an existing terminal result is returned
 unchanged.
+
+For explicit pre-acceptance owner selection, persist deployment, invocation ULID,
+and frozen input before sending. Generated invokers expose
+`start_on_deployment_with_invocation_id(deployment_id, invocation_id, &input)`
+and `start_cancelled_on_deployment_with_invocation_id(deployment_id,
+invocation_id, &input)`. The latter requires Invoke and Cancel. Bound starts never
+fall back to another deployment. Choosing a target after losing a canonical reply
+does not recover its unknown owner; deduplication remains deployment-scoped.
+
+Rust and Node replicas use one deployment-scoped Operation storage codec. This
+pre-release persistence cutover does not migrate earlier records: retain existing
+installations unchanged and use fresh development/test state. Unsupported records
+fail visibly; the runtime never deletes or recreates them as empty state.
+
+Live user tests use `TrellisTestRuntime::create_user`, explicit
+`grant_user_capabilities(&user, Request::REQUIRED_CAPABILITIES)`, one
+`register_native_application::<Request>("app")`, then independent
+`login_native_application_as(&app, &user)` calls. `register_client_as` composes
+registration and login. User handles expose no password, are runtime-owned, and
+never auto-grant or regrant capabilities. `register_client` retains its existing
+seeded-administrator convenience.
 
 Rust schema-validation issue paths use JSON Pointer: an empty path is the root,
 `/` is an empty-name property, and property names escape `~` as `~0` and `/` as
@@ -599,10 +628,16 @@ session and signing out of the current login and its application sessions.
 Native OAuth renewal leases the current maintenance transport after HTTP refresh,
 and retains it through signer lookup and verified authority promotion. Replacing
 the physical NATS generation does not pin renewal to the original socket.
+If no safe native carrier survives, fresh admission may replace a missed retired
+logical session under the same valid provisioned credential and pinned trust.
+Removed permissions are not restored, and revoked roots or shutdown cannot recover.
 
 Native providers finish accepted RPCs across ordinary authority promotion by
 reacquiring a coherent current signing snapshot within one configured deadline.
 Handlers are not redispatched; provider, issuer, expiry and revocation checks remain mandatory.
+Accepted finite responses may outlive the opening caller context, but not their
+request deadline. Current provider verification, known revocation, cancellation
+and logical shutdown remain enforced; expired evidence cannot start new work.
 
 Generated Operation keys are `<version-qualified API>:operation:<action>`, not
 method aliases. `OperationRef::reference()` exposes the complete serializable

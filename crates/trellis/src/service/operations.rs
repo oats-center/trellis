@@ -25,32 +25,9 @@ use super::{
 use super::resources::backend::BoundStoreResourceClient;
 use super::resources::StoreResourceClient;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-#[doc = concat!("Public Trellis value set `", stringify!(OperationState), "`.")]
-pub enum OperationState {
-    /// Accepted but not yet running.
-    Pending,
-    /// Currently executing.
-    Running,
-    /// Completed successfully.
-    Completed,
-    /// Terminated with an error.
-    Failed,
-    /// Canceled before successful completion.
-    Cancelled,
-}
-
-impl OperationState {
-    /// Return whether this state ends an operation lifecycle.
-    #[doc = concat!("Trellis API operation `", stringify!(is_terminal), "`.")]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            OperationState::Completed | OperationState::Failed | OperationState::Cancelled
-        )
-    }
-}
+pub use trellis_protocol::operation_record::{
+    OperationError, OperationSnapshot, OperationState, OperationTransferProgress,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -64,76 +41,6 @@ pub struct OperationRefData {
     pub operation: String,
     /// Deployment retained in the durable operation record for owner-directed controls.
     pub deployment_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-/// Current persisted state of an operation.
-pub struct OperationSnapshot<TProgress = Value, TOutput = Value> {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(id), "` value.")]
-    pub id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(service), "` value.")]
-    pub service: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(operation), "` value.")]
-    pub operation: Option<String>,
-    #[doc = concat!("The `", stringify!(revision), "` value.")]
-    pub revision: u64,
-    #[doc = concat!("The `", stringify!(state), "` value.")]
-    pub state: OperationState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(created_at), "` value.")]
-    pub created_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(updated_at), "` value.")]
-    pub updated_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(completed_at), "` value.")]
-    pub completed_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(progress), "` value.")]
-    pub progress: Option<TProgress>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(transfer), "` value.")]
-    pub transfer: Option<OperationTransferProgress>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(output), "` value.")]
-    pub output: Option<TOutput>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[doc = concat!("The `", stringify!(error), "` value.")]
-    pub error: Option<OperationError>,
-}
-
-impl<TProgress, TOutput> Default for OperationSnapshot<TProgress, TOutput> {
-    fn default() -> Self {
-        Self {
-            id: None,
-            service: None,
-            operation: None,
-            revision: 0,
-            state: OperationState::Pending,
-            created_at: None,
-            updated_at: None,
-            completed_at: None,
-            progress: None,
-            transfer: None,
-            output: None,
-            error: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-#[doc = concat!("Public Trellis data type `", stringify!(OperationError), "`.")]
-pub struct OperationError {
-    #[serde(rename = "type")]
-    #[doc = concat!("The `", stringify!(error_type), "` value.")]
-    pub error_type: String,
-    #[doc = concat!("The `", stringify!(message), "` value.")]
-    pub message: String,
 }
 
 /// A typed operation failure payload that can be serialized into the operation snapshot.
@@ -164,22 +71,6 @@ impl OperationFailureLike for OperationFailure {
     fn fields(&self) -> serde_json::Map<String, Value> {
         serde_json::Map::new()
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-/// Backend-consumed upload progress. Durable snapshots may coalesce frames;
-/// transferred bytes are monotonic within an attempt and exact at commit.
-pub struct OperationTransferProgress {
-    /// Latest credited frame represented by this checkpoint.
-    #[doc = concat!("The `", stringify!(chunk_index), "` value.")]
-    pub chunk_index: u64,
-    /// Number of bytes carried by the latest credited frame.
-    #[doc = concat!("The `", stringify!(chunk_bytes), "` value.")]
-    pub chunk_bytes: u64,
-    /// Total backend-consumed bytes represented by this checkpoint.
-    #[doc = concat!("The `", stringify!(transferred_bytes), "` value.")]
-    pub transferred_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -833,6 +724,7 @@ where
                                     error: Some(OperationError {
                                         error_type: "OperationHandlerError".to_owned(),
                                         message: error.to_string(),
+                                        fields: Box::default(),
                                     }),
                                     cancellation_requested: false,
                                 },
@@ -1214,6 +1106,7 @@ where
                 Some(DurableOperationUpload {
                     staging_key: format!("operation-{invocation_id}"),
                     state: "pending".to_owned(),
+                    file_info: None,
                     grant: operation_upload_grant::<D>(
                         &service,
                         &service_session_key,
@@ -1258,7 +1151,9 @@ where
                     owner_epoch: 0,
                     lease_expires_at_ms: None,
                     cancellation_requested,
+                    cancellation_requested_at: cancellation_requested.then(now_timestamp),
                     next_signal_sequence: 1,
+                    update_sequence: 0,
                     signals: Vec::new(),
                     transfer: upload.as_ref().map(serde_json::to_value).transpose()?,
                     // Diagnostic creation carrier; omitted when no valid
@@ -2120,6 +2015,7 @@ where
             if !record.cancellation_requested {
                 record.revision += 1;
                 record.cancellation_requested = true;
+                record.cancellation_requested_at = Some(now_timestamp());
                 record.snapshot.updated_at = Some(now_timestamp());
                 record.snapshot.revision = record.revision;
                 return typed_snapshot(
@@ -2183,7 +2079,7 @@ where
                 .iter()
                 .find(|accepted| accepted.request_id == request_id)
             {
-                let payload = serde_json::to_vec(&input)?;
+                let payload = serde_json::to_value(&input)?;
                 if existing.name != signal || existing.payload != payload {
                     return Err(ServerError::OperationIdempotencyConflict {
                         kind: "signal",
@@ -2195,7 +2091,7 @@ where
                     operation_id,
                     signal: existing.name.clone(),
                     signal_sequence: existing.sequence,
-                    accepted_at: now_timestamp(),
+                    accepted_at: existing.accepted_at.clone(),
                     snapshot: typed_snapshot(record.snapshot)?,
                 });
             }
@@ -2206,7 +2102,8 @@ where
                 sequence,
                 request_id,
                 name: signal.clone(),
-                payload: serde_json::to_vec(&input)?,
+                payload: serde_json::to_value(&input)?,
+                accepted_at: now_timestamp(),
                 acknowledged: false,
             });
             let updated = repository
@@ -2435,17 +2332,8 @@ impl OwnerFence {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DurableOperationUpload {
-    staging_key: String,
-    state: String,
-    grant: UploadTransferGrant,
-    size: Option<u64>,
-    digest: Option<String>,
-    updated_at: Option<String>,
-    content_type: Option<String>,
-}
+type DurableOperationUpload =
+    trellis_protocol::operation_record::OperationUpload<UploadTransferGrant>;
 
 fn operation_upload_grant<D: OperationDescriptor>(
     service: &str,
@@ -2710,6 +2598,7 @@ async fn persist_operation_upload(
             ServerError::Nats("operation upload staging state is missing".to_owned())
         })?)?;
     upload.state = "committed".to_owned();
+    upload.file_info = Some(serde_json::to_value(&info)?);
     upload.size = Some(info.size);
     upload.digest = Some(info.digest);
     upload.updated_at = Some(info.updated_at);
@@ -2752,8 +2641,7 @@ where
         self.cancellation.clone()
     }
 
-    /// Return the runtime-owned committed upload associated with this invocation.
-    pub async fn upload(&self) -> Result<Option<FileTransferInfo>, ServerError> {
+    async fn committed_upload(&self) -> Result<Option<(FileTransferInfo, String)>, ServerError> {
         let record = self
             .durable
             .repository
@@ -2777,20 +2665,15 @@ where
                 "operation upload is not committed".to_owned(),
             ));
         }
-        Ok(Some(FileTransferInfo {
-            key: upload.staging_key,
-            size: upload
-                .size
-                .ok_or_else(|| ServerError::Nats("committed upload size is missing".to_owned()))?,
-            updated_at: upload.updated_at.ok_or_else(|| {
-                ServerError::Nats("committed upload timestamp is missing".to_owned())
-            })?,
-            digest: upload.digest.ok_or_else(|| {
-                ServerError::Nats("committed upload digest is missing".to_owned())
-            })?,
-            content_type: upload.content_type,
-            metadata: Default::default(),
-        }))
+        let info = serde_json::from_value(upload.file_info.ok_or_else(|| {
+            ServerError::Nats("committed upload logical metadata is missing".to_owned())
+        })?)?;
+        Ok(Some((info, upload.staging_key)))
+    }
+
+    /// Return logical metadata for the runtime-owned committed upload.
+    pub async fn upload(&self) -> Result<Option<FileTransferInfo>, ServerError> {
+        Ok(self.committed_upload().await?.map(|(info, _)| info))
     }
 
     /// Open this operation's committed staged upload as a backpressured reader.
@@ -2800,10 +2683,10 @@ where
     pub async fn open_staged_upload(
         &self,
     ) -> Result<Option<impl tokio::io::AsyncRead + Unpin + Send>, ServerError> {
-        let Some(upload) = self.upload().await? else {
+        let Some((upload, staging_key)) = self.committed_upload().await? else {
             return Ok(None);
         };
-        let object = self.staging.open(&upload.key).await?.ok_or_else(|| {
+        let object = self.staging.open(&staging_key).await?.ok_or_else(|| {
             ServerError::Nats("committed operation upload is missing from staging".to_owned())
         })?;
         if object.info().size as u64 != upload.size
@@ -3000,6 +2883,7 @@ where
             Some(OperationError {
                 error_type: error.error_type().to_string(),
                 message: error.message(),
+                fields: Box::new(error.fields()),
             }),
         )
         .await
@@ -3071,6 +2955,7 @@ where
         let mut record = current.record;
         record.revision += 1;
         record.cancellation_requested = true;
+        record.cancellation_requested_at = Some(now_timestamp());
         record.snapshot.updated_at = Some(now_timestamp());
         let updated = durable
             .repository
@@ -3141,14 +3026,14 @@ where
                         .cloned()
                     {
                         sequence = signal.sequence;
-                        let input = serde_json::from_slice(&signal.payload).unwrap_or(None);
+                        let input = Some(signal.payload.clone());
                         return Some((
                             Ok(OperationSignal {
                                 operation_id: id.clone(),
                                 signal_sequence: sequence,
                                 signal: signal.name,
                                 input,
-                                accepted_at: now_timestamp(),
+                                accepted_at: signal.accepted_at,
                             }),
                             (repository, fence, Arc::clone(&gate), id, sequence),
                         ));
@@ -3304,6 +3189,9 @@ where
         ));
     }
     record.revision += 1;
+    if cancellation_requested && !record.cancellation_requested {
+        record.cancellation_requested_at = Some(now_timestamp());
+    }
     record.cancellation_requested |= cancellation_requested;
     record.snapshot.revision += 1;
     record.snapshot.state = state.clone();

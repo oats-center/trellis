@@ -372,7 +372,7 @@ impl RouteCapabilities {
 /// An in-memory subject router for descriptor-backed RPC handlers.
 #[derive(Default)]
 pub struct Router {
-    handlers: HashMap<String, Route>,
+    handlers: HashMap<String, Arc<Route>>,
     provider_deployment_id: Option<String>,
     provider_instance_id: Option<String>,
     operation_recoveries: Vec<OperationRecovery>,
@@ -387,10 +387,13 @@ type OperationRecovery = Box<dyn Fn() -> BoxFuture<'static, Result<(), ServerErr
 
 impl Router {
     fn route(&self, subject: &str) -> Option<&Route> {
-        self.handlers.get(subject).or_else(|| {
-            let (prefix, _) = subject.rsplit_once('.')?;
-            self.handlers.get(&format!("{prefix}.*"))
-        })
+        self.handlers
+            .get(subject)
+            .or_else(|| {
+                let (prefix, _) = subject.rsplit_once('.')?;
+                self.handlers.get(&format!("{prefix}.*"))
+            })
+            .map(Arc::as_ref)
     }
 
     /// Create an empty router.
@@ -405,7 +408,7 @@ impl Router {
         subjects
     }
 
-    /// Bind established operation controls to their owning deployment.
+    /// Bind Operation routes to their owning deployment before registering handlers.
     pub fn set_provider_deployment_id(&mut self, deployment_id: impl Into<String>) {
         self.provider_deployment_id = Some(deployment_id.into());
     }
@@ -415,7 +418,7 @@ impl Router {
         self.provider_instance_id = Some(instance_id.into());
     }
 
-    /// Rebind established operation controls to the installation's verified provider owner.
+    /// Bind Operation starts and controls to the installation's verified provider owner.
     pub fn bind_provider_owner(
         &mut self,
         owner: &trellis_protocol::VerifiedSessionAuthority,
@@ -430,9 +433,11 @@ impl Router {
                 "provider requires a verified service binding".into(),
             ));
         };
-        self.provider_deployment_id = Some(deployment_id.clone());
+        let previous_deployment = self.provider_deployment_id.replace(deployment_id.clone());
         self.provider_instance_id = Some(instance_id.clone());
         let mut controls = Vec::new();
+        let mut starts = Vec::new();
+        let mut previous_starts = Vec::new();
         for (subject, route) in &self.handlers {
             if let RoutePermissionSpec::OperationControl(api, name) = &route.permission {
                 let base =
@@ -440,7 +445,32 @@ impl Router {
                         .map_err(|error| ServerError::Nats(error.to_string()))?;
                 controls.push((subject.clone(), control_subject(&base)));
             }
+            if let RoutePermissionSpec::Static(
+                api,
+                ApiSurfaceKind::Operation,
+                name,
+                PermissionAction::Invoke,
+            ) = &route.permission
+            {
+                let bound =
+                    trellis_protocol::derive_bound_operation_subject(api, deployment_id, name)
+                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                if let Some(previous) = &previous_deployment {
+                    let previous =
+                        trellis_protocol::derive_bound_operation_subject(api, previous, name)
+                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    if subject == &previous {
+                        previous_starts.push(subject.clone());
+                        continue;
+                    }
+                }
+                starts.push((bound, Arc::clone(route)));
+            }
         }
+        for previous in previous_starts {
+            self.handlers.remove(&previous);
+        }
+        self.handlers.extend(starts);
         for (old, new) in controls {
             if let Some(route) = self.handlers.remove(&old) {
                 self.handlers.insert(new, route);
@@ -559,35 +589,30 @@ impl Router {
     {
         let handler = Arc::new(handler);
         let capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
-        self.handlers.insert(
-            D::SUBJECT.to_owned(),
-            Route {
-                capabilities: RouteCapabilities::Static(capabilities),
-                permission: RoutePermissionSpec::Static(
-                    D::API_ID.to_owned(),
-                    ApiSurfaceKind::Rpc,
-                    self.descriptor_name(D::KEY),
-                    PermissionAction::Call,
-                ),
-                route_token: self.intern_route(D::API_ID, D::KEY),
-                unary_rpc: true,
-                live: false,
-                handler: Box::new(
-                move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
-                    let handler = Arc::clone(&handler);
-                    Box::pin(async move {
-                        let input = decode_generated_input::<D::Input>(&payload)?;
-                        let output = handler(ctx, input).await?;
-                        let output = crate::generated::Codec::encode(&output)
-                            .map_err(|error| ServerError::Nats(error.to_string()))?;
-                        Ok(HandlerResponse::Frames(vec![Bytes::from(serde_json::to_vec(
-                            &output,
-                        )?)]))
-                    })
-                },
-            ),
-            },
-        );
+        self.handlers.insert(D::SUBJECT.to_owned(), Arc::new(Route { capabilities: RouteCapabilities::Static(capabilities),
+        permission: RoutePermissionSpec::Static(
+            D::API_ID.to_owned(),
+            ApiSurfaceKind::Rpc,
+            self.descriptor_name(D::KEY),
+            PermissionAction::Call,
+        ),
+        route_token: self.intern_route(D::API_ID, D::KEY),
+        unary_rpc: true,
+        live: false,
+        handler: Box::new(
+        move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+            let handler = Arc::clone(&handler);
+            Box::pin(async move {
+                let input = decode_generated_input::<D::Input>(&payload)?;
+                let output = handler(ctx, input).await?;
+                let output = crate::generated::Codec::encode(&output)
+                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                Ok(HandlerResponse::Frames(vec![Bytes::from(serde_json::to_vec(
+                    &output,
+                )?)]))
+            })
+        },
+                    ), }));
     }
 
     /// Mark a registered RPC as performing exact payload-bound authorization in its handler.
@@ -604,7 +629,9 @@ impl Router {
             .handlers
             .get_mut(&subject)
             .expect("RPC must be registered before changing its authorization mode");
-        route.permission = RoutePermissionSpec::Handler(
+        Arc::get_mut(route)
+            .expect("RPC routes have one registration owner")
+            .permission = RoutePermissionSpec::Handler(
             D::API_ID.to_owned(),
             D::KEY
                 .split_once('.')
@@ -624,7 +651,7 @@ impl Router {
         let capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         self.handlers.insert(
             D::SUBJECT.to_owned(),
-            Route {
+            Arc::new(Route {
                 capabilities: RouteCapabilities::Static(capabilities),
                 permission: RoutePermissionSpec::Static(
                     D::API_ID.to_owned(),
@@ -642,7 +669,7 @@ impl Router {
                         ))
                     })
                 }),
-            },
+            }),
         );
     }
 
@@ -671,7 +698,7 @@ impl Router {
         let operation_token = self.intern_route(D::API_ID, &name);
         self.handlers.insert(
             subject.clone(),
-            Route {
+            Arc::new(Route {
                 capabilities: RouteCapabilities::Static(
                     self.descriptor_capabilities(D::CALLER_CAPABILITIES),
                 ),
@@ -685,11 +712,16 @@ impl Router {
                 unary_rpc: false,
                 live: true,
                 handler: metadata_handler(),
-            },
+            }),
         );
+        if self.provider_deployment_id.is_some() {
+            let bound = self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT);
+            self.handlers
+                .insert(bound, Arc::clone(&self.handlers[D::SUBJECT]));
+        }
         self.handlers.insert(
             control_subject(&self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT)),
-            Route {
+            Arc::new(Route {
                 capabilities: RouteCapabilities::OperationControl {
                     observe: self.descriptor_capabilities(D::OBSERVE_CAPABILITIES),
                     cancel: self.descriptor_capabilities(D::CANCEL_CAPABILITIES),
@@ -700,7 +732,7 @@ impl Router {
                 unary_rpc: false,
                 live: true,
                 handler: metadata_handler(),
-            },
+            }),
         );
     }
 
@@ -722,94 +754,89 @@ impl Router {
         let subject = D::SUBJECT.to_owned();
         let capabilities = self.descriptor_capabilities(D::SUBSCRIBE_CAPABILITIES);
         let handler_subject = subject.clone();
-        self.handlers.insert(
-            subject,
-            Route {
-                capabilities: RouteCapabilities::Static(capabilities),
-                permission: RoutePermissionSpec::Static(
-                    D::API_ID.to_owned(),
-                    ApiSurfaceKind::Live,
-                    self.descriptor_name(D::KEY),
-                    PermissionAction::Subscribe,
-                ),
-                route_token: self.intern_route(D::API_ID, D::KEY),
-                unary_rpc: false,
-                live: true,
-                handler: Box::new(
-                    move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+        self.handlers.insert(subject, Arc::new(Route { capabilities: RouteCapabilities::Static(capabilities),
+        permission: RoutePermissionSpec::Static(
+            D::API_ID.to_owned(),
+            ApiSurfaceKind::Live,
+            self.descriptor_name(D::KEY),
+            PermissionAction::Subscribe,
+        ),
+        route_token: self.intern_route(D::API_ID, D::KEY),
+        unary_rpc: false,
+        live: true,
+        handler: Box::new(
+            move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+                let handler = Arc::clone(&handler);
+                let live_owner = live_owner.clone();
+                let handler_subject = handler_subject.clone();
+                Box::pin(async move {
+                    let owner = live_owner
+                        .read()
+                        .ok()
+                        .and_then(|owner| owner.clone())
+                        .ok_or_else(|| {
+                            ServerError::Nats(format!(
+                                "live route '{handler_subject}' has no live provider owner"
+                            ))
+                        })?;
+                    let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
+                    let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
+                        return Err(ServerError::Nats("live provider requires a service binding".into()));
+                    };
+                    let provider_deployment_id = deployment_id.clone();
+                    let provider_instance_id = instance_id.clone();
+                    let opening = crate::service::live_router::parse_live_open::<D::Input>(
+                        &payload,
+                    )?;
+                    let encoded_input = crate::generated::Codec::encode(&opening.input)
+                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    let input = opening.input;
+                    let meta = crate::service::live_router::LiveOpeningMeta {
+                        open_id: opening.open_id.clone(),
+                        receive_max_payload_bytes: opening.receive_max_payload_bytes,
+                    };
+                    let cancellation = crate::live::LiveCancellation::new();
+                    let factory_cancellation = cancellation.clone();
+                    let source_factory = {
                         let handler = Arc::clone(&handler);
-                        let live_owner = live_owner.clone();
-                        let handler_subject = handler_subject.clone();
-                        Box::pin(async move {
-                            let owner = live_owner
-                                .read()
-                                .ok()
-                                .and_then(|owner| owner.clone())
-                                .ok_or_else(|| {
-                                    ServerError::Nats(format!(
-                                        "live route '{handler_subject}' has no live provider owner"
-                                    ))
-                                })?;
-                            let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
-                            let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
-                                return Err(ServerError::Nats("live provider requires a service binding".into()));
-                            };
-                            let provider_deployment_id = deployment_id.clone();
-                            let provider_instance_id = instance_id.clone();
-                            let opening = crate::service::live_router::parse_live_open::<D::Input>(
-                                &payload,
-                            )?;
-                            let encoded_input = crate::generated::Codec::encode(&opening.input)
-                                .map_err(|error| ServerError::Nats(error.to_string()))?;
-                            let input = opening.input;
-                            let meta = crate::service::live_router::LiveOpeningMeta {
-                                open_id: opening.open_id.clone(),
-                                receive_max_payload_bytes: opening.receive_max_payload_bytes,
-                            };
-                            let cancellation = crate::live::LiveCancellation::new();
-                            let factory_cancellation = cancellation.clone();
-                            let source_factory = {
-                                let handler = Arc::clone(&handler);
-                                let request = ctx.clone();
-                                move || {
-                                    let stream = handler(
-                                        LiveRequestContext {
-                                            request,
-                                            cancellation: factory_cancellation.clone(),
-                                        },
-                                        input,
-                                    );
-                                    crate::service::live_router::source_from_handler::<D::Event, S>(
-                                        stream,
-                                    )
-                                }
-                            };
-                            let lease = accepted_generation(&owner, &ctx).await?;
-                            let reserved = crate::service::live_router::reserve_live::<D, _>(
-                                owner.client(),
-                                lease,
-                                owner.manager()?,
-                                &crate::service::live_router::LiveOpenRequest {
-                                    request: ctx,
-                                    inputs: crate::service::live_router::LiveOpenInputs {
-                                        api_id: D::API_ID.to_owned(),
-                                        base_subject: handler_subject,
-                                        provider_instance_id,
-                                        provider_deployment_id,
-                                    },
-                                    opening: meta,
-                                    encoded_input,
-                                    cancellation,
+                        let request = ctx.clone();
+                        move || {
+                            let stream = handler(
+                                LiveRequestContext {
+                                    request,
+                                    cancellation: factory_cancellation.clone(),
                                 },
-                                source_factory,
+                                input,
+                            );
+                            crate::service::live_router::source_from_handler::<D::Event, S>(
+                                stream,
                             )
-                            .await?;
-                            Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
-                        })
-                    },
-                ),
+                        }
+                    };
+                    let lease = accepted_generation(&owner, &ctx).await?;
+                    let reserved = crate::service::live_router::reserve_live::<D, _>(
+                        owner.client(),
+                        lease,
+                        owner.manager()?,
+                        &crate::service::live_router::LiveOpenRequest {
+                            request: ctx,
+                            inputs: crate::service::live_router::LiveOpenInputs {
+                                api_id: D::API_ID.to_owned(),
+                                base_subject: handler_subject,
+                                provider_instance_id,
+                                provider_deployment_id,
+                            },
+                            opening: meta,
+                            encoded_input,
+                            cancellation,
+                        },
+                        source_factory,
+                    )
+                    .await?;
+                    Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
+                })
             },
-        );
+        ), }));
     }
 
     fn register_operation_routes<D, P>(&mut self, provider: Arc<P>)
@@ -840,191 +867,186 @@ impl Router {
         let cancel_capabilities = self.descriptor_capabilities(D::CANCEL_CAPABILITIES);
         let control_capabilities = self.descriptor_capabilities(D::CONTROL_CAPABILITIES);
 
-        self.handlers.insert(
-            subject.clone(),
-            Route {
-                capabilities: RouteCapabilities::Static(caller_capabilities),
-                permission: RoutePermissionSpec::Static(
-                    D::API_ID.to_owned(),
-                    ApiSurfaceKind::Operation,
-                    D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1.to_owned(),
-                    PermissionAction::Invoke,
-                ),
-                route_token: self.intern_route(D::API_ID, D::KEY),
-                unary_rpc: false,
-                live: false,
-                handler: Box::new(
-                move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
-                    let start = Arc::clone(&start);
-                    let schemas = Arc::clone(&start_schemas);
-                    Box::pin(async move {
-                        let schemas = schemas.get()?;
-                        let envelope: OperationStartEnvelope = serde_json::from_slice(&payload)?;
-                        envelope.invocation_id.parse::<ulid::Ulid>().map_err(|_| {
-                            ServerError::Nats("operation invocation id must be a ULID".to_owned())
-                        })?;
-                        schemas.input.validate(&envelope.input)?;
-                        let input = serde_json::from_value(envelope.input)?;
-                        let output = start
-                            .start_invocation(
-                                ctx,
-                                envelope.invocation_id,
-                                input,
-                                envelope.cancellation_requested.then_some(payload),
-                            )
-                            .await?;
-                        validate_operation_snapshot::<D>(&output.snapshot, schemas)?;
-                        Ok(HandlerResponse::Frames(vec![Bytes::from(
-                            serde_json::to_vec(&output)?,
-                        )]))
-                    })
-                },
-            ),
-            },
-        );
+        self.handlers.insert(subject.clone(), Arc::new(Route { capabilities: RouteCapabilities::Static(caller_capabilities),
+        permission: RoutePermissionSpec::Static(
+            D::API_ID.to_owned(),
+            ApiSurfaceKind::Operation,
+            D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1.to_owned(),
+            PermissionAction::Invoke,
+        ),
+        route_token: self.intern_route(D::API_ID, D::KEY),
+        unary_rpc: false,
+        live: false,
+        handler: Box::new(
+        move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+            let start = Arc::clone(&start);
+            let schemas = Arc::clone(&start_schemas);
+            Box::pin(async move {
+                let schemas = schemas.get()?;
+                let envelope: OperationStartEnvelope = serde_json::from_slice(&payload)?;
+                envelope.invocation_id.parse::<ulid::Ulid>().map_err(|_| {
+                    ServerError::Nats("operation invocation id must be a ULID".to_owned())
+                })?;
+                schemas.input.validate(&envelope.input)?;
+                let input = serde_json::from_value(envelope.input)?;
+                let output = start
+                    .start_invocation(
+                        ctx,
+                        envelope.invocation_id,
+                        input,
+                        envelope.cancellation_requested.then_some(payload),
+                    )
+                    .await?;
+                validate_operation_snapshot::<D>(&output.snapshot, schemas)?;
+                Ok(HandlerResponse::Frames(vec![Bytes::from(
+                    serde_json::to_vec(&output)?,
+                )]))
+            })
+        },
+                    ), }));
 
-        self.handlers.insert(
-            control_subject(&self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT)),
-            Route {
-                capabilities: RouteCapabilities::OperationControl {
-                    observe: observe_capabilities,
-                    cancel: cancel_capabilities,
-                    control: control_capabilities,
-                },
-                permission: RoutePermissionSpec::OperationControl(
-                    D::API_ID.to_owned(),
-                    D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1.to_owned(),
-                ),
-                route_token: self.intern_route(D::API_ID, D::KEY),
-                unary_rpc: false,
-                live: true,
-                handler: Box::new(
-                move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
-                    let get = Arc::clone(&get);
-                    let watch = Arc::clone(&watch);
-                    let cancel = Arc::clone(&cancel);
-                    let signal = Arc::clone(&signal);
-                    let schemas = Arc::clone(&control_schemas);
-                    let live_owner = live_owner.clone();
-                    let subject = ctx.subject.strip_suffix(".control").unwrap_or(&ctx.subject).to_owned();
-                    Box::pin(async move {
-                        let schemas = schemas.get()?;
-                        let request = serde_json::from_slice::<OperationControlRequest>(&payload)
-                            .map_err(ServerError::Json)?;
-                        tracing::debug!(
-                            subject = %subject,
-                            action = %request.action,
-                            operation_id = %request.operation_id,
-                            "operation control request"
-                        );
-                        match request.action.as_str() {
-                            "get" => Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
-                                get.get(ctx, request.operation_id).await?,
-                                schemas,
-                            )?])),
-                            "watch" => {
-                                let include_updates = request.include_updates.unwrap_or(false);
-                                if include_updates && schemas.update.is_none() {
-                                    return Err(ServerError::InvalidOperationControlAction {
-                                        subject: subject.clone(),
-                                        action: "watch:updates".to_string(),
-                                    });
-                                }
-                                let owner = live_owner
-                                    .read()
-                                    .ok()
-                                    .and_then(|owner| owner.clone())
-                                    .ok_or_else(|| {
-                                        ServerError::Nats(format!(
-                                            "operation route '{subject}' has no live provider owner"
-                                        ))
-                                    })?;
-                                let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
-                                let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
-                                    return Err(ServerError::Nats("operation provider requires a service binding".into()));
-                                };
-                                let provider_deployment_id = deployment_id.clone();
-                                let provider_instance_id = instance_id.clone();
-                                let opening =
-                                    crate::service::live_router::parse_operation_watch_open(
-                                        &payload,
-                                    )?;
-                                let include_updates = opening.include_updates;
-                                let cancellation = crate::live::LiveCancellation::new();
-                                let factory_watch = Arc::clone(&watch);
-                                let factory_ctx = ctx.clone();
-                                let factory_operation_id = opening.operation_id.clone();
-                                let schemas = Arc::clone(schemas);
-                                let source_factory = move || {
-                                    crate::service::live_router::source_from_watch_frames(
-                                        watch_response_stream::<D, D::Update>(
-                                            factory_watch
-                                                .watch(factory_ctx, factory_operation_id),
-                                            include_updates,
-                                            schemas,
-                                        ),
-                                    )
-                                };
-                                let lease = accepted_generation(&owner, &ctx).await?;
-                                let reserved = crate::service::live_router::reserve_operation_watch::<
-                                    D,
-                                    _,
-                                >(
-                                    owner.client(),
-                                    lease,
-                                    owner.manager()?,
-                                    &crate::service::live_router::OperationWatchOpenRequest {
-                                        request: ctx,
-                                        inputs: crate::service::live_router::OperationWatchOpenInputs {
-                                            base_subject: subject,
-                                            provider_instance_id,
-                                            provider_deployment_id,
-                                        },
-                                        opening,
-                                        cancellation,
-                                    },
-                                    source_factory,
-                                )
-                                .await?;
-                                Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
-                            }
-                            "cancel" if D::CANCELABLE => {
-                                Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
-                                    cancel.cancel(ctx, request.operation_id).await?,
-                                    schemas,
-                                )?]))
-                            }
-                            "signal" => {
-                                let signal_name = request.signal.ok_or_else(|| {
-                                    ServerError::InvalidOperationControlAction {
-                                        subject: subject.clone(),
-                                        action: "signal".to_string(),
-                                    }
-                                })?;
-                                let signal_schema = schemas.signals
-                                    .get(&signal_name)
-                                    .ok_or_else(|| ServerError::InvalidOperationControlAction {
-                                        subject: subject.clone(),
-                                        action: format!("signal:{signal_name}"),
-                                    })?;
-                                let signal_value = request.input.as_ref().unwrap_or(&serde_json::Value::Null);
-                                signal_schema.validate(signal_value)?;
-                                Ok(HandlerResponse::Frames(vec![signal_frame::<D>(
-                                    signal.signal(ctx, request.operation_id, signal_name, request.input)
-                                        .await?,
-                                    schemas,
-                                )?]))
-                            }
-                            action => Err(ServerError::InvalidOperationControlAction {
-                                subject,
-                                action: action.to_string(),
-                            }),
+        if self.provider_deployment_id.is_some() {
+            let bound = self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT);
+            self.handlers
+                .insert(bound, Arc::clone(&self.handlers[D::SUBJECT]));
+        }
+        self.handlers.insert(control_subject(&self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT)), Arc::new(Route { capabilities: RouteCapabilities::OperationControl {
+            observe: observe_capabilities,
+            cancel: cancel_capabilities,
+            control: control_capabilities,
+        },
+        permission: RoutePermissionSpec::OperationControl(
+            D::API_ID.to_owned(),
+            D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1.to_owned(),
+        ),
+        route_token: self.intern_route(D::API_ID, D::KEY),
+        unary_rpc: false,
+        live: true,
+        handler: Box::new(
+        move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+            let get = Arc::clone(&get);
+            let watch = Arc::clone(&watch);
+            let cancel = Arc::clone(&cancel);
+            let signal = Arc::clone(&signal);
+            let schemas = Arc::clone(&control_schemas);
+            let live_owner = live_owner.clone();
+            let subject = ctx.subject.strip_suffix(".control").unwrap_or(&ctx.subject).to_owned();
+            Box::pin(async move {
+                let schemas = schemas.get()?;
+                let request = serde_json::from_slice::<OperationControlRequest>(&payload)
+                    .map_err(ServerError::Json)?;
+                tracing::debug!(
+                    subject = %subject,
+                    action = %request.action,
+                    operation_id = %request.operation_id,
+                    "operation control request"
+                );
+                match request.action.as_str() {
+                    "get" => Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
+                        get.get(ctx, request.operation_id).await?,
+                        schemas,
+                    )?])),
+                    "watch" => {
+                        let include_updates = request.include_updates.unwrap_or(false);
+                        if include_updates && schemas.update.is_none() {
+                            return Err(ServerError::InvalidOperationControlAction {
+                                subject: subject.clone(),
+                                action: "watch:updates".to_string(),
+                            });
                         }
-                    })
-                },
-            ),
-            },
-        );
+                        let owner = live_owner
+                            .read()
+                            .ok()
+                            .and_then(|owner| owner.clone())
+                            .ok_or_else(|| {
+                                ServerError::Nats(format!(
+                                    "operation route '{subject}' has no live provider owner"
+                                ))
+                            })?;
+                        let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
+                        let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
+                            return Err(ServerError::Nats("operation provider requires a service binding".into()));
+                        };
+                        let provider_deployment_id = deployment_id.clone();
+                        let provider_instance_id = instance_id.clone();
+                        let opening =
+                            crate::service::live_router::parse_operation_watch_open(
+                                &payload,
+                            )?;
+                        let include_updates = opening.include_updates;
+                        let cancellation = crate::live::LiveCancellation::new();
+                        let factory_watch = Arc::clone(&watch);
+                        let factory_ctx = ctx.clone();
+                        let factory_operation_id = opening.operation_id.clone();
+                        let schemas = Arc::clone(schemas);
+                        let source_factory = move || {
+                            crate::service::live_router::source_from_watch_frames(
+                                watch_response_stream::<D, D::Update>(
+                                    factory_watch
+                                        .watch(factory_ctx, factory_operation_id),
+                                    include_updates,
+                                    schemas,
+                                ),
+                            )
+                        };
+                        let lease = accepted_generation(&owner, &ctx).await?;
+                        let reserved = crate::service::live_router::reserve_operation_watch::<
+                            D,
+                            _,
+                        >(
+                            owner.client(),
+                            lease,
+                            owner.manager()?,
+                            &crate::service::live_router::OperationWatchOpenRequest {
+                                request: ctx,
+                                inputs: crate::service::live_router::OperationWatchOpenInputs {
+                                    base_subject: subject,
+                                    provider_instance_id,
+                                    provider_deployment_id,
+                                },
+                                opening,
+                                cancellation,
+                            },
+                            source_factory,
+                        )
+                        .await?;
+                        Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
+                    }
+                    "cancel" if D::CANCELABLE => {
+                        Ok(HandlerResponse::Frames(vec![snapshot_frame::<D>(
+                            cancel.cancel(ctx, request.operation_id).await?,
+                            schemas,
+                        )?]))
+                    }
+                    "signal" => {
+                        let signal_name = request.signal.ok_or_else(|| {
+                            ServerError::InvalidOperationControlAction {
+                                subject: subject.clone(),
+                                action: "signal".to_string(),
+                            }
+                        })?;
+                        let signal_schema = schemas.signals
+                            .get(&signal_name)
+                            .ok_or_else(|| ServerError::InvalidOperationControlAction {
+                                subject: subject.clone(),
+                                action: format!("signal:{signal_name}"),
+                            })?;
+                        let signal_value = request.input.as_ref().unwrap_or(&serde_json::Value::Null);
+                        signal_schema.validate(signal_value)?;
+                        Ok(HandlerResponse::Frames(vec![signal_frame::<D>(
+                            signal.signal(ctx, request.operation_id, signal_name, request.input)
+                                .await?,
+                            schemas,
+                        )?]))
+                    }
+                    action => Err(ServerError::InvalidOperationControlAction {
+                        subject,
+                        action: action.to_string(),
+                    }),
+                }
+            })
+        },
+                    ), }));
     }
 
     /// Register one operation-backed provider.

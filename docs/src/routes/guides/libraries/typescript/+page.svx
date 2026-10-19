@@ -79,6 +79,35 @@ Keyed capacity waits happen before handler execution and do not consume retry
 attempts; retryable handler errors do. See
 [Jobs: TypeScript](/guides/using-jobs-ts).
 
+## Native OAuth credentials
+
+Node applications acting as a logged-in user import `discoverNativeOAuth`,
+`NativeOAuthClient`, and `connectNativeClient` from
+`@oatscenter/trellis/native`. Discover the explicitly selected authorization
+origin, open a client with its exact credential `scope` and initial `trust`, then
+complete Device Code authorization using the generated native request. Ordinary
+provisioned services use their identity seed instead; they need no local user
+credential store.
+
+`NativeOAuthClient.open({ scope, trust })` uses a fresh process-local credential
+family. It does not open files or require SQLite. To reconnect as the same user
+within a process, retain a `MemoryNativeOAuthCustody` object and pass it as
+`custody` on each opening for that exact scope. Close the previous connection
+before acquiring it again, then call `resume()` rather than prompting for another
+login. The connection owns the lease after admission; closing an old session
+reference does not release the connection's ownership.
+
+Remembering login across process restarts requires an explicitly supplied
+application-owned `NativeOAuthCustody` provider. Trellis supplies no persistent
+Node backend. Its acquired `NativeOAuthCustodyLease` must exclusively own the
+family, keep private signing material private, durably mark a refresh token spent
+before submission, atomically retain successors and verified identity, and retain
+authenticated issuer trust before spending credentials. The SDK awaits those
+commits. An ambiguous refresh is never replayed, and reopening cannot silently
+switch accounts or lower retained issuer trust. Rust CLI file custody and browser
+IndexedDB custody are unchanged. Existing Node SQLite credential files are left
+untouched; applications must choose a provider or authorize a fresh session.
+
 ## Automatic transport lifecycle
 
 The connected client is one logical connection, even when its physical NATS

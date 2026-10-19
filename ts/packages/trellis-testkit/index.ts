@@ -16,5 +16,6 @@ export type {
   TrellisTestRuntimeStartOptions,
   TrellisTestRuntimeTrellisOptions,
   TrellisTestServiceKey,
+  TrellisTestUser,
   WaitForOptions,
 } from "./src/types.ts";

@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 use trellis_rs::service::{
     operation_invocation_digest, DurableOperationRecord, DurableOperationSignal,
     KvOperationRepository, OperationRepository, OperationSnapshot, OperationState, ServerError,
-    MAX_OPERATION_RECORD_BYTES, MAX_OPERATION_SIGNAL_BYTES,
+    MAX_OPERATION_SIGNAL_BYTES,
 };
 
 fn record(id: String) -> DurableOperationRecord {
@@ -47,19 +47,11 @@ fn record(id: String) -> DurableOperationRecord {
         owner_epoch: 0,
         lease_expires_at_ms: None,
         cancellation_requested: false,
+        cancellation_requested_at: None,
         next_signal_sequence: 1,
+        update_sequence: 0,
         signals: Vec::new(),
-        transfer: Some(json!({
-            "stagingKey": "operation-upload",
-            "state": "uploading",
-            "transferId": "01J00000000000000000000000",
-            "subject": "_INBOX.operation.upload",
-            "expiresAt": "2026-09-10T00:15:00Z",
-            "size": 7,
-            "digest": null,
-            "updatedAt": null,
-            "contentType": null
-        })),
+        transfer: None,
         telemetry: None,
     }
 }
@@ -251,7 +243,8 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         sequence: 1,
         request_id: "signal-request".to_owned(),
         name: "resume".to_owned(),
-        payload: serde_json::to_vec(&Some(json!({"ok": true}))).unwrap(),
+        payload: json!({"ok": true}),
+        accepted_at: "2026-09-10T00:00:00Z".to_owned(),
         acknowledged: false,
     });
     let signalled = repository
@@ -283,6 +276,11 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
     let mut cancelled = acknowledged.record.clone();
     cancelled.revision += 1;
     cancelled.cancellation_requested = true;
+    cancelled.cancellation_requested_at = Some(
+        OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
     cancelled.snapshot.state = OperationState::Cancelled;
     let cancelled = repository
         .compare_exchange(
@@ -312,7 +310,22 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         .await
         .is_err());
 
-    let before_capacity_rejections = repository.get(&operation_id).await.unwrap().unwrap();
+    let capacity_id = ulid::Ulid::new().to_string();
+    repository
+        .create(record(capacity_id.clone()))
+        .await
+        .unwrap();
+    let now_ms = (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+    let before_capacity_rejections = repository
+        .claim_for_connection(
+            &capacity_id,
+            "executor-b",
+            "connection-b",
+            now_ms,
+            now_ms + 60_000,
+        )
+        .await
+        .unwrap();
     let mut oversized_signal = before_capacity_rejections.record.clone();
     oversized_signal.revision += 1;
     oversized_signal.next_signal_sequence += 1;
@@ -320,7 +333,8 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         sequence: oversized_signal.next_signal_sequence - 1,
         request_id: "oversized-signal".to_owned(),
         name: "resume".to_owned(),
-        payload: vec![0; MAX_OPERATION_SIGNAL_BYTES + 1],
+        payload: json!("x".repeat(MAX_OPERATION_SIGNAL_BYTES + 1)),
+        accepted_at: "2026-09-10T00:00:00Z".to_owned(),
         acknowledged: false,
     });
     assert!(matches!(
@@ -338,15 +352,23 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         })
     ));
     assert_eq!(
-        repository.get(&operation_id).await.unwrap().unwrap(),
+        repository.get(&capacity_id).await.unwrap().unwrap(),
         before_capacity_rejections
     );
 
     let mut oversized_record = before_capacity_rejections.record.clone();
     oversized_record.revision += 1;
-    oversized_record.transfer = Some(json!({
-        "padding": "x".repeat(MAX_OPERATION_RECORD_BYTES)
-    }));
+    oversized_record.signals = (0..20)
+        .map(|index| DurableOperationSignal {
+            sequence: index + 1,
+            request_id: ulid::Ulid::new().to_string(),
+            name: "resume".to_owned(),
+            payload: json!("x".repeat(60 * 1024)),
+            acknowledged: false,
+            accepted_at: "2026-09-10T00:00:00Z".to_owned(),
+        })
+        .collect();
+    oversized_record.next_signal_sequence = oversized_record.signals.len() as u64 + 1;
     assert!(matches!(
         repository
             .compare_exchange(
@@ -362,7 +384,7 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         })
     ));
     assert_eq!(
-        repository.get(&operation_id).await.unwrap().unwrap(),
+        repository.get(&capacity_id).await.unwrap().unwrap(),
         before_capacity_rejections
     );
 
@@ -403,6 +425,11 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
     let mut misrouted_cancel = deployment_a.record.clone();
     misrouted_cancel.revision += 1;
     misrouted_cancel.cancellation_requested = true;
+    misrouted_cancel.cancellation_requested_at = Some(
+        OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
     assert!(other_repository
         .compare_record_exchange(deployment_b.revision, misrouted_cancel)
         .await
@@ -415,6 +442,11 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
     let mut cancel_b = deployment_b.record.clone();
     cancel_b.revision += 1;
     cancel_b.cancellation_requested = true;
+    cancel_b.cancellation_requested_at = Some(
+        OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
     let cancelled_b = other_repository
         .compare_record_exchange(deployment_b.revision, cancel_b)
         .await

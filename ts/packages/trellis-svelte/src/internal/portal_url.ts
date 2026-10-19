@@ -87,7 +87,7 @@ export function resolveDeviceActivationUrlState(
 
   return {
     flowId: isAuthCallback
-      ? preservedState?.flowId ?? callbackFlowId
+      ? (preservedState?.flowId ?? callbackFlowId)
       : currentUrl.searchParams.get(FLOW_ID_QUERY_PARAM),
     isAuthCallback,
   };

@@ -115,10 +115,12 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
     if (this.#closed) throw new Error("transfer ingress is closed");
     if (seq !== this.#received + 1n) throw new Error("transfer sequence gap");
     if (
-      chunk.length === 0 || chunk.length > this.maxFrameBytes ||
+      chunk.length === 0 ||
+      chunk.length > this.maxFrameBytes ||
       this.#values.length >= this.windowFrames ||
       this.#bytes + chunk.length > this.windowBytes
-    ) throw new Error("transfer receive window exceeded");
+    )
+      throw new Error("transfer receive window exceeded");
     this.#received = seq;
     this.#values.push({ seq, chunk });
     this.#bytes += chunk.length;
@@ -163,7 +165,7 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
       } else if (this.#closed) {
         return;
       } else {
-        await new Promise<void>((resolve) => this.#wake = resolve);
+        await new Promise<void>((resolve) => (this.#wake = resolve));
         this.#wake = undefined;
       }
     }

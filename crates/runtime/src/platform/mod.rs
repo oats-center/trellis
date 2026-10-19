@@ -71,14 +71,10 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             )
             .map_err(|error| RuntimeError::Platform(error.to_string()))?
             .1
-    } else if context.reset_admin {
-        Some(
-            storage
-                .reset_local_administrator(now_seconds()?)
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?,
-        )
     } else {
-        None
+        storage
+            .reset_local_administrator(now_seconds()?, !context.reset_admin)
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?
     };
     if let Some(url) = account_url {
         println!("{}", serde_json::json!({"adminAccountUrl":url}));
@@ -250,6 +246,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     provider_store, provider_oauth, provider_operational, provider_servers, &provider_seed,
                 ) => result?,
             };
+            let owner = provider.runtime_native_owner();
             let publisher = provider.event_publisher();
             let publications = async {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -289,10 +286,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     }
                 }
             };
-            tokio::select! {
+            let result = tokio::select! {
                 result = provider.run() => result.map_err(|error| RuntimeError::Platform(error.to_string())),
                 result = publications => result,
-            }
+            };
+            // Cancelling intake is not logical shutdown: retained callbacks and
+            // publishers may still hold this separate Platform RPC connection.
+            // End and join its recovery workers before the host stops NATS.
+            let shutdown = owner.shutdown_native_runtime().await
+                .map_err(|error| RuntimeError::Platform(error.to_string()));
+            result.and(shutdown)
         });
         let first = tokio::select! {
             ()=task_stop.stopped()=>Ok(()),

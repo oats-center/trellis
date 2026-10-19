@@ -289,6 +289,27 @@ api probe_aux@v1 {
   capabilities { capability observe { title "Observe"; description "Observe the auxiliary route."; consequence "The caller may observe auxiliary pulses."; consent_revision 1; allows { live Pulse; } } }
 }
 
+api finite@v1 {
+  title "Finite response acceptance";
+  description "Accepted requests completing across ordinary authority renewal.";
+  error Rejected(Value);
+  rpc HoldSuccess { input Value; output Value; errors [Rejected]; }
+  rpc HoldDeclared { input Value; output Value; errors [Rejected]; }
+  rpc HoldCancelled { input Value; output Value; errors [Rejected]; }
+  rpc HoldDeadline { input Value; output Value; errors [Rejected]; }
+  capabilities {
+    capability invoke {
+      title "Wait for a result";
+      description "Execute the finite response fixture.";
+      consequence "The caller may receive a success or declared failure.";
+      consent_revision 1;
+      allows { rpc HoldSuccess; rpc HoldDeclared; rpc HoldCancelled; rpc HoldDeadline; }
+    }
+  }
+}
+service FiniteProvider { implements finite; }
+service FiniteCaller { use finite { required capability invoke; } }
+
 service TransportGrowthSubject {
   implements liveprobe;
   implements probe_aux;

@@ -87,7 +87,7 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --user-group --uid 10001 --home-dir /var/lib/trellis trellis \
-    && install --directory --owner trellis --group trellis \
+    && install --directory --mode 0700 --owner trellis --group trellis \
       /var/lib/trellis /var/cache/trellis /var/log/trellis /run/trellis /etc/trellis
 
 COPY --from=builder /src/target/release/trellis-server /usr/local/bin/trellis-server

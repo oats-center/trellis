@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import { isErr } from "@oatscenter/result";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { apps } from "../../../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
-import { connectNativeClient, NativeOAuthClient } from "../native.ts";
+import {
+  connectNativeClient,
+  NativeOAuthClient,
+  MemoryNativeOAuthCustody,
+} from "../native.ts";
 import { LiveStreamError } from "../live/types.ts";
 import type { OperationRefData } from "../operations.ts";
 
@@ -19,10 +22,10 @@ const config = JSON.parse(first.value) as {
   clientId: string;
   deploymentId: string;
 };
-const directory = await mkdtemp("/tmp/opencode/transfer-interop-");
+const credentialCustody = new MemoryNativeOAuthCustody();
 const native = await loginNativeTestClient({
   ...config,
-  directory,
+  custody: credentialCustody,
   request: apps.TransferCaller.request,
 });
 let caller = await connectNativeClient({
@@ -88,11 +91,7 @@ try {
   await caller.connection.close();
   await native.session.close();
   const custody = (
-    await NativeOAuthClient.open({
-      directory,
-      scope,
-      trust,
-    })
+    await NativeOAuthClient.open({ custody: credentialCustody, scope, trust })
   ).take();
   if (isErr(custody)) throw custody.error;
   const resumed = (await custody.resume()).take();
@@ -130,5 +129,4 @@ try {
   stdin.close();
   await caller.connection.close();
   await native.session.close();
-  await rm(directory, { recursive: true, force: true });
 }

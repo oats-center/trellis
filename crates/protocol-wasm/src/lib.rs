@@ -30,6 +30,17 @@ use trellis_protocol::{
 };
 use wasm_bindgen::prelude::*;
 
+/// Validate and normalize framework-private Operation state with the native codec.
+#[wasm_bindgen]
+pub fn normalize_operation_record(record_json: &str) -> Result<String, JsError> {
+    use trellis_protocol::operation_record::{encode_operation_record, DurableOperationRecord};
+    let record: DurableOperationRecord =
+        serde_json::from_str(record_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let bytes =
+        encode_operation_record(&record).map_err(|error| JsError::new(&error.to_string()))?;
+    String::from_utf8(bytes[9..].to_vec()).map_err(|error| JsError::new(&error.to_string()))
+}
+
 /// Sign the native own-admission request with the ephemeral session seed.
 #[wasm_bindgen]
 pub fn sign_admission_get(

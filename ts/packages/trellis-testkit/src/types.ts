@@ -110,6 +110,12 @@ export type TrellisTestRuntimeStartOptions = {
   };
 };
 
+/** Ordinary user created by this test runtime; credentials remain private to it. */
+export type TrellisTestUser = Readonly<{
+  principalId: string;
+  username: string;
+}>;
+
 /** Session-key material returned for a registered service. */
 export type TrellisTestServiceKey = {
   seed: string;

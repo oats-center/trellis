@@ -59,6 +59,7 @@ import type {
   TrellisTestParticipantLike,
   TrellisTestRuntimeStartOptions,
   TrellisTestServiceKey,
+  TrellisTestUser,
   WaitForOptions,
 } from "./types.ts";
 import { waitFor as waitForHelper } from "./wait.ts";
@@ -437,6 +438,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
   #clients = new Set<ConnectedClient>();
   #nativeSessions = new Set<NativeOAuthSession>();
   #clientRegistrations = new Map<string, Promise<unknown>>();
+  #users = new Map<string, { user: TrellisTestUser; password: string }>();
   #stopped = false;
 
   /** Returns the one-time first-administrator bootstrap URL for this runtime. */
@@ -793,7 +795,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
       };
       const admin = new TrellisTestAdminAutomation({
         oauthIssuer,
-        credentialDirectory: join(workdir, "admin-oauth"),
         trellisUrl: startedControlPlane.trellisUrl,
         adminPassword,
         defaultDeployment: deployment,
@@ -845,11 +846,64 @@ export class TrellisTestRuntime implements AsyncDisposable {
     });
   }
 
-  /** Registers a native OAuth client and completes real Device Code, Portal login, and explicit consent. */
+  /** Create an ordinary account through Auth; its random password is retained only by this runtime. */
+  async createUser(args: { name: string }): Promise<TrellisTestUser> {
+    const label =
+      args.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/gu, "-")
+        .replace(/^-+|-+$/gu, "")
+        .slice(0, 32) || "user";
+    const username = `${label}-${ulid().toLowerCase()}`;
+    const password = Buffer.from(
+      crypto.getRandomValues(new Uint8Array(32)),
+    ).toString("base64url");
+    const { user: created } = await this.callAdminRpc("authUsersCreate", {
+      username,
+      displayName: args.name,
+      password,
+      idempotencyKey: ulid(),
+    });
+    const user = Object.freeze({
+      principalId: created.principal.principalId,
+      username: created.username,
+    });
+    this.#users.set(user.principalId, { user, password });
+    return user;
+  }
+
+  /** Explicit setup only: grant the requested capabilities without borrowing administrator authority. */
+  async grantUserCapabilities(args: {
+    user: TrellisTestUser;
+    capabilityIds: readonly string[];
+  }): Promise<void> {
+    this.#credentialsFor(args.user);
+    await this.#admin.grantClientCapabilities(
+      args.user.principalId,
+      args.capabilityIds,
+    );
+  }
+
+  #credentialsFor(user?: TrellisTestUser): {
+    username: string;
+    password: string;
+  } {
+    if (user === undefined)
+      return { username: ADMIN_USERNAME, password: this.adminPassword };
+    const credentials = this.#users.get(user.principalId);
+    if (credentials?.user !== user)
+      throw new Error("Test user does not belong to this runtime");
+    return { username: user.username, password: credentials.password };
+  }
+
+  /** Registers one application, then completes genuine per-user Device Code login and explicit consent. */
   async registerClient(args: {
     name: string;
     contract: TrellisTestClientParticipant;
+    user?: TrellisTestUser;
+    approvedCapabilities?: readonly string[];
   }): Promise<{ session: NativeOAuthSession; servers: readonly string[] }> {
+    const credentials = this.#credentialsFor(args.user);
     const clientId = args.contract.id;
     let registration = this.#clientRegistrations.get(clientId);
     if (!registration) {
@@ -867,17 +921,17 @@ export class TrellisTestRuntime implements AsyncDisposable {
       this.#clientRegistrations.set(clientId, registration);
     }
     await registration;
-    await this.#admin.prepareClientCapabilities([
-      ...args.contract.requiredCapabilities,
-      ...args.contract.optionalCapabilities,
-    ]);
+    if (args.user === undefined)
+      await this.#admin.prepareClientCapabilities([
+        ...args.contract.requiredCapabilities,
+        ...args.contract.optionalCapabilities,
+      ]);
     const login = await loginNativeTestClient({
       issuer: this.oauthIssuer,
-      directory: join(this.workdir, "native-oauth", ulid()),
       clientId,
       request: args.contract,
-      username: ADMIN_USERNAME,
-      password: this.adminPassword,
+      ...credentials,
+      approvedCapabilities: args.approvedCapabilities,
     });
     this.#nativeSessions.add(login.session);
     return login;
@@ -888,19 +942,21 @@ export class TrellisTestRuntime implements AsyncDisposable {
     clientId: string;
     userCode: string;
     contract: TrellisTestClientParticipant;
+    user?: TrellisTestUser;
     approvedCapabilities?: readonly string[];
     signal?: AbortSignal;
   }): Promise<void> {
-    await this.#admin.prepareClientCapabilities([
-      ...args.contract.requiredCapabilities,
-      ...args.contract.optionalCapabilities,
-    ]);
+    const credentials = this.#credentialsFor(args.user);
+    if (args.user === undefined)
+      await this.#admin.prepareClientCapabilities([
+        ...args.contract.requiredCapabilities,
+        ...args.contract.optionalCapabilities,
+      ]);
     await approveNativeDeviceCode({
       issuer: this.oauthIssuer,
       clientId: args.clientId,
       userCode: args.userCode,
-      username: ADMIN_USERNAME,
-      password: this.adminPassword,
+      ...credentials,
       approvedCapabilities: args.approvedCapabilities,
       signal: args.signal,
     });
@@ -911,6 +967,8 @@ export class TrellisTestRuntime implements AsyncDisposable {
     args: ClientOpts & {
       name: string;
       contract: TContract;
+      user?: TrellisTestUser;
+      approvedCapabilities?: readonly string[];
     },
   ): Promise<TrellisTestConnectedClient<TContract>> {
     const startedAt = performance.now();

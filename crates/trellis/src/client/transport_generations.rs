@@ -2336,24 +2336,28 @@ async fn reconcile(inner: &Arc<ManagerInner>) -> Result<(), TrellisClientError> 
 
         // Open a candidate for the newest desired policy.
         let id = inner.alloc_id();
-        let candidate =
-            match open_generation(inner, id, Some(&desired), "authorization_growth").await {
-                Ok(candidate) => candidate,
-                Err(error) => {
-                    inner.clear_opening(id);
-                    // Do not self-signal: retries stay demand-driven so an outage
-                    // does not spin the worker.
-                    tracing::warn!(
-                        event = "transport_generation.open_failed",
-                        generation_id = id,
-                        context_digest = %desired.context_digest,
-                        logical_terminal = ?inner.terminated_error(),
-                        %error,
-                        "failed to open transport generation"
-                    );
-                    return Err(error);
-                }
-            };
+        // Without a surviving admitted carrier, the retained snapshot is only
+        // maintenance identity. Auth may independently replace its retired
+        // logical session. The fresh-admission path still verifies the credential,
+        // runtime key, signed identity, policy and pinned trust before promotion.
+        let expected = (!keep.is_empty()).then_some(&desired);
+        let candidate = match open_generation(inner, id, expected, "authorization_growth").await {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                inner.clear_opening(id);
+                // Do not self-signal: retries stay demand-driven so an outage
+                // does not spin the worker.
+                tracing::warn!(
+                    event = "transport_generation.open_failed",
+                    generation_id = id,
+                    context_digest = %desired.context_digest,
+                    logical_terminal = ?inner.terminated_error(),
+                    %error,
+                    "failed to open transport generation"
+                );
+                return Err(error);
+            }
+        };
 
         // A superseded policy must not be published. Read it before taking the
         // state lock to preserve the contexts-before-state lock order. This branch

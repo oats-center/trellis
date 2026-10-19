@@ -83,6 +83,43 @@ impl fmt::Debug for TestServiceIdentity {
     }
 }
 
+/// An ordinary account created by one test runtime. Its password is never exported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestUserIdentity {
+    pub(crate) principal_id: String,
+    pub(crate) username: String,
+}
+
+impl TestUserIdentity {
+    /// Actual principal returned by authenticated Auth user creation.
+    #[must_use]
+    pub fn principal_id(&self) -> &str {
+        &self.principal_id
+    }
+
+    /// Normalized local Portal username.
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+}
+
+/// One registered native application, reusable for independent logins by different users.
+#[derive(Debug)]
+pub struct TestRegisteredNativeClient<P: trellis_rs::generated::AppRequestDescriptor> {
+    pub(crate) name: String,
+    pub(crate) client_id: String,
+    pub(crate) request: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<P: trellis_rs::generated::AppRequestDescriptor> TestRegisteredNativeClient<P> {
+    /// Registered OAuth application ID, shared by all of its users' logins.
+    #[must_use]
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+}
+
 /// A logged-in application or agent caller identity.
 pub struct TestClientIdentity {
     pub(crate) name: String,

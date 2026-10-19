@@ -20,7 +20,10 @@ import {
   type Result,
 } from "@oatscenter/result";
 import { ulid } from "ulid";
-import { controlSubject as operationControlSubject } from "../../operations.ts";
+import {
+  controlSubject as operationControlSubject,
+  operationStartSubject,
+} from "../../operations.ts";
 import { base64urlEncode, utf8 } from "../../auth/utils.ts";
 
 import { encodeSchema, type JsonValue, parseSchema } from "../../codec.ts";
@@ -4178,11 +4181,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           const reconcileSubject = `${operationControlSubject(ctx, this.#operationDeploymentId ?? "").slice(0, -".control".length)}.reconcile.${base64urlEncode(
             utf8(this.#operationConnectionId),
           )}`;
-          const startSub = target.nc.subscribe(startSubject, {
-            queue: routeQueueGroup(
-              `${ctx.permissions.invoke.apiId}@${ctx.permissions.invoke.apiVersion}`,
-            ),
-          });
+          const startSubs = [
+            startSubject,
+            operationStartSubject(ctx, this.#operationDeploymentId ?? ""),
+          ].map((subject) =>
+            target.nc.subscribe(subject, {
+              queue: routeQueueGroup(subject),
+            }),
+          );
           const reconcileSub = target.nc.subscribe(reconcileSubject, {
             queue: routeQueueGroup(reconcileSubject),
           });
@@ -4206,7 +4212,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               return undefined;
             }
           };
-          const startPump = (async () => {
+          const startPumps = startSubs.map(async (startSub) => {
             for await (const msg of startSub) {
               const lease = acquireDeliveryLease(msg);
               if (!lease && target.lease) continue;
@@ -4216,7 +4222,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 ...(lease ? { lease } : {}),
               });
             }
-          })();
+          });
           const reconcilePump = (async () => {
             for await (const msg of reconcileSub) {
               const lease = acquireDeliveryLease(msg);
@@ -4230,13 +4236,21 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           })();
           return Promise.resolve({
             drain: async () => {
-              await startSub.drain().catch(() => undefined);
-              await reconcileSub.drain().catch(() => undefined);
+              await Promise.all(
+                [...startSubs, reconcileSub].map((sub) =>
+                  sub.drain().catch(() => undefined),
+                ),
+              );
             },
-            done: Promise.all([startPump, reconcilePump]).then(() => undefined),
+            done: Promise.all([...startPumps, reconcilePump]).then(
+              () => undefined,
+            ),
             dispose: async () => {
-              await startSub.drain().catch(() => undefined);
-              await reconcileSub.drain().catch(() => undefined);
+              await Promise.all(
+                [...startSubs, reconcileSub].map((sub) =>
+                  sub.drain().catch(() => undefined),
+                ),
+              );
             },
           });
         };

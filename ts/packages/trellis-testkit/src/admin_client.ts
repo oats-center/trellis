@@ -1,3 +1,4 @@
+import { codecs } from "@oatscenter/trellis/generated";
 import {
   connectNativeClient,
   type NativeOAuthSession,
@@ -30,7 +31,6 @@ export class TrellisTestAdminAutomation {
   readonly #oauthIssuer: string;
   readonly #adminPassword: string;
   readonly #getBootstrapUrl: () => Promise<string>;
-  readonly #credentialDirectory: string;
   #nativeSession: NativeOAuthSession | undefined;
   #bootstrapComplete: Promise<void> | undefined;
   #adminClient: Promise<AdminClient> | undefined;
@@ -44,7 +44,6 @@ export class TrellisTestAdminAutomation {
     adminPassword: string;
     defaultDeployment: string;
     getBootstrapUrl: () => Promise<string>;
-    credentialDirectory: string;
     bootstrapComplete?: boolean;
     resourceReadyTimeoutMs?: number;
   }) {
@@ -52,7 +51,6 @@ export class TrellisTestAdminAutomation {
     this.#oauthIssuer = args.oauthIssuer;
     this.#adminPassword = args.adminPassword;
     this.#getBootstrapUrl = args.getBootstrapUrl;
-    this.#credentialDirectory = args.credentialDirectory;
     this.#deployment = {
       defaultDeployment: args.defaultDeployment,
       deploymentIds: new Map(),
@@ -135,7 +133,6 @@ export class TrellisTestAdminAutomation {
         await this.completeBootstrap();
         const login = await loginNativeTestClient({
           issuer: this.#oauthIssuer,
-          directory: this.#credentialDirectory,
           // OAuth registration identity is independent of the local generated request descriptor.
           clientId: "trellis.cli",
           request: adminParticipant,
@@ -175,33 +172,44 @@ export class TrellisTestAdminAutomation {
   /** Grants declared test-user capabilities once, preserving subsequent explicit revocations. */
   async prepareClientCapabilities(
     capabilityIds: readonly string[],
+    targetPrincipalId?: string,
   ): Promise<void> {
     const client = await this.#client();
-    const { principal } = await client.sessionsMe({}).orThrow();
+    const principalId =
+      targetPrincipalId ??
+      (await client.sessionsMe({}).orThrow()).principal.principalId;
     for (const capabilityId of new Set(capabilityIds)) {
-      let setup = this.#clientCapabilitySetup.get(capabilityId);
+      const key = JSON.stringify([principalId, capabilityId]);
+      let setup = this.#clientCapabilitySetup.get(key);
       if (!setup) {
-        setup = (async () => {
-          const grants = await client
-            .capabilityGrantsList({
-              principalId: principal.principalId,
-              capabilityId,
-            })
-            .orThrow();
-          if (grants.items.length === 0) {
-            await client
-              .capabilityGrantsGrant({
-                principalId: principal.principalId,
-                capabilityId,
-                expectedRevision: 0n,
-                idempotencyKey: ulid(),
-              })
-              .orThrow();
-          }
-        })();
-        this.#clientCapabilitySetup.set(capabilityId, setup);
+        setup = this.grantClientCapabilities(principalId, [capabilityId]);
+        this.#clientCapabilitySetup.set(key, setup);
       }
       await setup;
+    }
+  }
+
+  /** Explicitly grant missing capabilities to one principal, including after a deliberate revocation. */
+  async grantClientCapabilities(
+    principalId: string,
+    capabilityIds: readonly string[],
+  ): Promise<void> {
+    const principal = codecs.ulid.decode(principalId);
+    const client = await this.#client();
+    for (const capabilityId of new Set(capabilityIds)) {
+      const grants = await client
+        .capabilityGrantsList({ principalId: principal, capabilityId })
+        .orThrow();
+      if (grants.items.length === 0) {
+        await client
+          .capabilityGrantsGrant({
+            principalId: principal,
+            capabilityId,
+            expectedRevision: 0n,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+      }
     }
   }
 

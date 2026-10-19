@@ -1,6 +1,5 @@
 import { ok } from "@oatscenter/result";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import {
   connect as connectTcp,
   createServer,
@@ -156,14 +155,12 @@ test(
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
 
-      const directory = await mkdtemp("/tmp/opencode/native-forged-reply-");
       const close: Array<() => Promise<unknown>> = [];
       try {
         const adminLogin = await loginNativeTestClient({
           issuer,
           username,
           password,
-          directory,
           clientId: "trellis.cli",
           request: adminApps.cli.request,
           platformPrivileges: {
@@ -277,7 +274,6 @@ test(
               issuer,
               username: user.username,
               password: subjectPassword,
-              directory,
               clientId,
               request,
               approvedCapabilities: [echoCapability],
@@ -370,7 +366,6 @@ test(
         }
       } finally {
         for (const dispose of close.reverse()) await dispose();
-        await rm(directory, { recursive: true, force: true });
       }
     });
   },

@@ -56,7 +56,6 @@ test("a non-renewing native attachment cannot outlive its required capability gr
         });
       const login = await loginNativeTestClient({
         issuer: runtime.oauthIssuer,
-        directory: join(runtime.workdir, "bounded-native"),
         clientId,
         request: adminParticipant,
         username,

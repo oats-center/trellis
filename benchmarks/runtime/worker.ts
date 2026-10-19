@@ -8,6 +8,7 @@ import {
   connectNativeClient,
   discoverNativeOAuth,
   NativeOAuthClient,
+  MemoryNativeOAuthCustody,
   type NativeOAuthSession,
 } from "@oatscenter/trellis/native";
 import { sha256 } from "@noble/hashes/sha256";
@@ -276,15 +277,20 @@ if (options.role === "provider") {
   const held: Awaited<ReturnType<typeof connect>>[] = [];
   let credentialIndex = 0;
   const initializedCredentials = new Set<string>();
+  const custodyByCredential = new Map<string, MemoryNativeOAuthCustody>();
   async function connect(
     credentialHandle = options.credentialHandles[credentialIndex++],
   ) {
     if (!credentialHandle) throw new Error("Insufficient credential handles");
     const server = (await discoverNativeOAuth(options.trellisUrl)).orThrow();
-    const directory = `${options.output}/credentials`;
+    let custody = custodyByCredential.get(credentialHandle);
+    if (!custody) {
+      custody = new MemoryNativeOAuthCustody();
+      custodyByCredential.set(credentialHandle, custody);
+    }
     const native = (
       await NativeOAuthClient.open({
-        directory,
+        custody,
         scope: {
           issuer: server.issuer,
           instanceId: server.trust.instanceId,

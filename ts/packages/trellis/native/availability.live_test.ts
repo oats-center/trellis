@@ -2,7 +2,7 @@ import { ok } from "@oatscenter/result";
 import { credsAuthenticator } from "@nats-io/nats-core";
 import { connect } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { join } from "node:path";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
@@ -32,7 +32,6 @@ test(
       const trellisUrl = runtime.oauthIssuer;
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
-      const directory = await mkdtemp("/tmp/opencode/native-optional-");
       const close: Array<() => Promise<unknown>> = [];
       const system = await connect({
         servers: runtime.natsUrl,
@@ -107,7 +106,6 @@ test(
           issuer,
           username,
           password,
-          directory,
           clientId: "trellis.cli",
           request: adminApps.cli.request,
           platformPrivileges: {
@@ -298,7 +296,6 @@ test(
           issuer,
           username: user.username,
           password: subjectPassword,
-          directory,
           clientId,
           request,
           signal: context.signal,
@@ -442,7 +439,6 @@ test(
         assert.equal(executions, 4);
       } finally {
         for (const stop of close.reverse()) await stop();
-        await rm(directory, { recursive: true, force: true });
       }
     });
   },

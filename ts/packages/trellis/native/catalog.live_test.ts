@@ -104,7 +104,6 @@ test(
           issuer,
           username,
           password,
-          directory,
           clientId: "trellis.cli",
           request: adminApps.cli.request,
           platformPrivileges: {
@@ -207,7 +206,6 @@ test(
           issuer,
           username: user.username,
           password: userPassword,
-          directory,
           clientId,
           request,
           signal: context.signal,

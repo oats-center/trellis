@@ -4641,6 +4641,7 @@ dependencies = [
  "tokio",
  "toml",
  "trellis-idl",
+ "trellis-protocol",
  "trellis-rs",
  "trellis-runtime-apis",
  "trellis-test-fixture",

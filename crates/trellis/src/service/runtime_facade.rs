@@ -1198,6 +1198,17 @@ impl<C> ConnectedServiceRuntime<C> {
         EventPublisher::new(Arc::clone(self.client()))
     }
 
+    /// Retain the service's native logical owner for host-managed shutdown.
+    ///
+    /// The host must close and join this owner before releasing its broker,
+    /// including when cancellation drops the service's running future while
+    /// accepted callbacks still retain client references.
+    #[cfg(feature = "runtime-internals")]
+    #[doc(hidden)]
+    pub fn runtime_native_owner(&self) -> super::LiveProviderOwner {
+        super::LiveProviderOwner::from_connected_client(Arc::clone(self.client()))
+    }
+
     /// Start a descriptor-backed event listener.
     pub async fn listen_event<D, F, Fut>(
         &self,
@@ -1313,7 +1324,7 @@ impl<C> ConnectedServiceRuntime<C> {
 
     /// Register one operation business handler and record its runtime-owned lifecycle routes.
     ///
-    /// Starts use canonical subjects; lifecycle controls retain their deployment owner.
+    /// Starts accept canonical and explicitly deployment-bound subjects; controls retain their owner.
     pub fn register_operation_handler<D, F, Fut>(&mut self, handler: F)
     where
         D: OperationDescriptor + 'static,
@@ -1352,8 +1363,7 @@ impl<C> ConnectedServiceRuntime<C> {
             ),
         );
         self.registered_subjects.insert(D::SUBJECT.to_owned());
-        // A start selects an eligible provider; subsequent controls target that
-        // operation's deployment-owned repository rather than another provider.
+        // Explicit starts and established controls share the same deployment repository.
         let action = D::KEY
             .split_once(":operation:")
             .expect("generated canonical Operation identity")
@@ -1364,6 +1374,7 @@ impl<C> ConnectedServiceRuntime<C> {
             action,
         )
         .expect("generated operation metadata must form a valid owner subject");
+        self.registered_subjects.insert(owner_subject.clone());
         self.registered_subjects
             .insert(control_subject(&owner_subject));
     }

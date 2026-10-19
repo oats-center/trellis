@@ -1,5 +1,29 @@
 # Trellis Consumer Guide
 
+Operation starts default to canonical routing. Persist deployment, invocation
+ULID, and frozen input before an explicit targeted start. TypeScript uses
+`.start(undefined, { invocationId, targetDeploymentId })`; Rust generated invokers
+use `start_on_deployment_with_invocation_id(deployment_id, invocation_id, &input)`.
+Cancellation-first adds `cancellationRequested: true` in TypeScript or uses
+`start_cancelled_on_deployment_with_invocation_id` in Rust, requiring Invoke and
+Cancel. Targets never fall back, and choosing a target after losing a canonical
+reply does not recover its unknown owner. Deduplication stays deployment-scoped;
+accepted references and controls, including replica takeover, are unchanged.
+
+Rust and Node replicas use one deployment-scoped Operation storage codec. This
+pre-release persistence cutover does not migrate earlier records: retain existing
+installations unchanged and use fresh development/test state. Unsupported records
+fail visibly; the runtime never deletes or recreates them as empty state.
+
+Distinct-user live tests use ordinary accounts and explicit grants. Node exposes
+`createUser`, `grantUserCapabilities`, and `registerClient`/`connectClient` with
+`user`. Rust exposes `create_user`, `grant_user_capabilities`,
+`register_native_application`, and `login_native_application_as` (or
+`register_client_as`). One app registration supports independent real OAuth
+logins for multiple users. User handles are runtime-owned and expose no password;
+explicit-user login never grants or restores revoked capabilities. Existing
+seeded-administrator convenience and service-seed provisioning remain unchanged.
+
 Console and the isolated OAuth listener require HTTPS outside explicit loopback
 development. The HTTP insecure-origin allowlist does not relax that requirement.
 
@@ -10,7 +34,9 @@ OAuth origin; no default password exists. The link expires after five minutes.
 Startup flags `--admin-username`, `--admin-password`, and `--admin-password-stdin`
 configure fresh credentials. Explicit initialization uses `trellis init admin
 --config <path>` with `--username` (default `admin`), optional `--password`, or
-`--password-stdin`. Restarts preserve credentials and emit no replacement link.
+`--password-stdin`. Until password setup, each startup prints a fresh setup link
+before provider admission and invalidates prior links. After setup, restarts
+preserve credentials and emit no replacement link.
 Explicit `--reset-admin` supersedes pending links without restoring or recreating
 authority. Reset completion revokes existing logins. Ordinary RPCs cannot reset
 the protected administrator.
@@ -89,6 +115,16 @@ retries never retransmit application requests or clear known revocations.
 Native providers finish accepted RPCs across ordinary authority promotion by
 reacquiring a coherent current signing snapshot within one configured deadline.
 Handlers are not redispatched; provider, issuer, expiry and revocation checks remain mandatory.
+Accepted finite responses may outlive the opening caller context, but not their
+request deadline. Current provider verification, known revocation, cancellation
+and logical shutdown remain enforced; expired evidence cannot start new work.
+
+Generated Rust Event subscriptions verify original bytes and proof before decoding.
+Core NATS requires live publisher authority; durable delivery uses trusted original
+publication time, not today's publisher-context expiry. Consumer authority remains current.
+If no safe native carrier survives, fresh admission may replace a missed retired
+logical session under the same valid provisioned credential and pinned trust.
+Removed permissions are not restored, and revoked roots or shutdown cannot recover.
 Store object deletion and replacement clean up chunks only in the admitted
 identity's allocated Object Store streams, including Operation staging. This
 does not authorize KV purge, stream destruction, or cross-owner Store access.
@@ -173,11 +209,17 @@ pin. Credential-recovery failure closes transport without erasing the durable
 record.
 
 Node native applications import `@oatscenter/trellis/native`, discover the selected
-issuer, and open `NativeOAuthClient` with explicit scope, trust and a private
-POSIX custody directory. Resume existing credentials or start Device Code with
+issuer, and open `NativeOAuthClient` with explicit scope and trust. The default
+custody is process-local memory, with no files or SQLite dependency. Retain an
+explicit `MemoryNativeOAuthCustody` object for reconnects within one process.
+Remembered login across process restarts requires an application-owned
+`NativeOAuthCustody` provider; Trellis ships no persistent Node backend.
+Resume explicitly retained credentials or start Device Code with
 the generated native request, then connect through `connectNativeClient`.
-The Node/npm-only entrypoint uses SQLite for exclusive custody and durable
-spent-token markers. A successful connection owns custody until it closes;
+Persistent providers must exclusively acquire the exact family, durably mark a
+refresh token spent before returning it for submission, and atomically retain
+successors and authenticated trust. The SDK awaits those commits. A successful
+connection owns custody until it closes;
 closing an earlier session reference cannot release that ownership. Discovery
 cannot repin existing credentials; trust advances only through authenticated
 issuer rotation. Browser applications retain IndexedDB and Web Locks.
@@ -458,8 +500,9 @@ decisions are rejected and refreshed; policy denial is an authorization error,
 while unavailable runtime/resource evidence remains bounded pending.
 
 The SDK validates OAuth state, callback, PKCE and DPoP bindings before retaining
-credentials. Browser custody is IndexedDB; native custody is Node SQLite or the
-Rust native store. A valid login can authenticate new consent without another
+credentials. Browser custody is IndexedDB; Node custody is process-local memory
+or an explicit application provider; the Rust CLI uses its native file store.
+A valid login can authenticate new consent without another
 password. Authorization denial is not a reason to create a login loop, and
 consent cannot grant missing account entitlement.
 

@@ -74,6 +74,38 @@ reconnect them after restart and verify their stored values through public APIs.
 
 ## Browser and portal-driven tests
 
+### Distinct ordinary users
+
+```rust,no_run
+# use trellis_testkit::TrellisTestRuntime;
+# use my_contract::apps::my_caller::Request;
+# use trellis_rs::generated::AppRequestDescriptor;
+# async fn users() -> Result<(), trellis_testkit::TrellisTestError> {
+let mut runtime = TrellisTestRuntime::builder().start().await?;
+let alice = runtime.create_user("Alice").await?;
+let bob = runtime.create_user("Bob").await?;
+for user in [&alice, &bob] {
+    runtime.grant_user_capabilities(user, Request::REQUIRED_CAPABILITIES).await?;
+}
+let app = runtime.register_native_application::<Request>("shared app").await?;
+let a1 = runtime.login_native_application_as(&app, &alice).await?;
+let b1 = runtime.login_native_application_as(&app, &bob).await?;
+let a2 = runtime.login_native_application_as(&app, &alice).await?;
+// Each identity supplies connect_options() once to the generated client.
+# runtime.shutdown().await?;
+# Ok(())
+# }
+```
+
+`TestRegisteredNativeClient<P>` retains the exact generated request descriptor;
+all logins reuse its client ID but have separate credential scopes and DPoP keys.
+`TestUserIdentity` exposes its label, username, and real principal ID, never its
+password. Handles belong to their runtime. Explicit-user login never grants or
+restores capabilities. `register_client_as::<P>` composes registration and user
+login; `register_client::<P>` preserves the seeded-administrator convenience.
+
+### Seeded administrator
+
 The runtime exposes the isolated administrator credentials it bootstrapped:
 `TrellisTestRuntime::admin_username()` and `admin_password()`. Use them to drive
 a real browser or portal login against `oauth_origin()`. The administrator is

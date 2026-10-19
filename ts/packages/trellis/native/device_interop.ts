@@ -9,7 +9,9 @@ import {
 } from "../../../../integration/fixtures/testkit/packages/trellis-test-fixture/index.js";
 import { TrellisDevice, checkDeviceActivation } from "../device.ts";
 import { deriveDeviceIdentity } from "../auth/device_activation.ts";
-import { discoverNativeOAuth, NativeOAuthClient } from "./oauth.ts";
+import { NativeOAuthClient } from "./oauth.ts";
+import { discoverNativeOAuth } from "./discovery.ts";
+import { MemoryNativeOAuthCustody } from "./custody.ts";
 import { connectNativeClient } from "./connection.ts";
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
 
@@ -71,10 +73,13 @@ const scope = {
   clientId: review.clientId,
   credentialHandle: ulid(),
 };
-async function authorize(credentialHandle: string) {
+async function authorize(
+  credentialHandle: string,
+  custody = new MemoryNativeOAuthCustody(),
+) {
   const native = (
     await NativeOAuthClient.open({
-      directory,
+      custody,
       scope: { ...scope, credentialHandle },
       trust: server.trust,
     })
@@ -82,14 +87,14 @@ async function authorize(credentialHandle: string) {
   return (
     await loginNativeTestClient({
       ...config,
-      directory,
       clientId: review.clientId,
       client: native,
       request,
     })
   ).session;
 }
-const session = await authorize(scope.credentialHandle);
+const credentialCustody = new MemoryNativeOAuthCustody();
+const session = await authorize(scope.credentialHandle, credentialCustody);
 const attachment = await connectNativeClient({
   request,
   session,
@@ -118,7 +123,11 @@ const sibling = await connectNativeClient({
   servers: server.natsServers,
 }).orThrow();
 const resumed = (
-  await NativeOAuthClient.open({ directory, scope, trust: server.trust })
+  await NativeOAuthClient.open({
+    custody: credentialCustody,
+    scope,
+    trust: server.trust,
+  })
 ).orThrow();
 const assigned = (await resumed.resume()).orThrow();
 const device = await TrellisDevice.connect({

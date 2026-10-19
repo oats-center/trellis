@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { join } from "node:path";
 import { ulid } from "ulid";
 import { Result } from "@oatscenter/trellis";
 import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 import {
   connectNativeClient,
   NativeOAuthClient,
+  MemoryNativeOAuthCustody,
 } from "@oatscenter/trellis/native";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
@@ -47,10 +47,10 @@ test("native request expansion and revised capability meaning require fresh expl
         contract: request,
       });
       await prepared.session.close();
-      const directory = join(runtime.workdir, "upgrade-custody", ulid());
+      const custody = new MemoryNativeOAuthCustody();
       const credentials = await loginNativeTestClient({
         issuer: runtime.oauthIssuer,
-        directory,
+        custody,
         clientId: request.id,
         request,
         username: runtime.adminUsername,
@@ -65,7 +65,7 @@ test("native request expansion and revised capability meaning require fresh expl
       }).orThrow();
       clients.add(client);
       return {
-        directory,
+        custody,
         scope,
         trust,
         grantId,

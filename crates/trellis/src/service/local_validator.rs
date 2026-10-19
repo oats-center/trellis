@@ -157,6 +157,14 @@ impl LocalAuthVerifier {
         let event: trellis_protocol::SessionEvent =
             serde_json::from_str(&required_event_header(headers, "Trellis-Session-Event")?)
                 .map_err(|error| EventVerificationFailure::rejected(error.to_string()))?;
+        if headers
+            .get("authorization-context")
+            .is_some_and(|digest| digest.as_str() != event.authority_digest)
+        {
+            return Err(EventVerificationFailure::rejected(
+                "event authority header mismatch",
+            ));
+        }
         if event.subject != subject || event.api_id != api_id || event.action != action.name {
             return Err(EventVerificationFailure::rejected(
                 "event does not match registered descriptor and transport",
@@ -236,6 +244,14 @@ impl LocalAuthVerifier {
             authority.verified().as_ref().clone()
         };
         let authority = authority.authority();
+        if headers
+            .get("session-key")
+            .is_some_and(|key| key.as_str() != authority.session_public_key)
+        {
+            return Err(EventVerificationFailure::rejected(
+                "event session key header mismatch",
+            ));
+        }
         let (kind, deployment_id, instance_id, participant_id) = match &authority.binding {
             trellis_protocol::SessionBinding::Service {
                 participant_id,

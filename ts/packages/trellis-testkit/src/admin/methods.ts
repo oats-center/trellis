@@ -140,6 +140,10 @@ export const adminMethods = {
     apis.auth.API.actions["rpc:ServiceInstances.Disable"],
     (client, input) => client.serviceInstancesDisable(input).orThrow(),
   ),
+  authServiceInstancesRemove: adminMethod(
+    apis.auth.API.actions["rpc:ServiceInstances.Remove"],
+    (client, input) => client.serviceInstancesRemove(input).orThrow(),
+  ),
   authSessionsList: adminMethod(
     apis.auth.API.actions["rpc:Sessions.List"],
     (client, input) => client.sessionsList(input).orThrow(),

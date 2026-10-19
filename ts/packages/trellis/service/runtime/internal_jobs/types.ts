@@ -53,12 +53,10 @@ export const PreparedJobSubmissionSchema = Type.Object({
   lineage: Type.Optional(JobLineageSchema),
 });
 
-export type PreparedJobSubmission<TPayload = unknown> =
-  & Omit<
-    StaticDecode<typeof PreparedJobSubmissionSchema>,
-    "payload"
-  >
-  & { payload: TPayload };
+export type PreparedJobSubmission<TPayload = unknown> = Omit<
+  StaticDecode<typeof PreparedJobSubmissionSchema>,
+  "payload"
+> & { payload: TPayload };
 
 export const JobWaitTargetSchema = Type.Object({
   kind: Type.Union([
@@ -147,12 +145,13 @@ export const JobSchema = Type.Object({
   waitingOn: Type.Optional(Type.Array(JobWaitEdgeSchema)),
 });
 
-export type Job<TPayload = unknown, TResult = unknown> =
-  & Omit<StaticDecode<typeof JobSchema>, "payload" | "result">
-  & {
-    payload: TPayload;
-    result?: TResult;
-  };
+export type Job<TPayload = unknown, TResult = unknown> = Omit<
+  StaticDecode<typeof JobSchema>,
+  "payload" | "result"
+> & {
+  payload: TPayload;
+  result?: TResult;
+};
 
 export const JobEventSchema = Type.Object({
   jobId: Type.String({ minLength: 1 }),
@@ -195,12 +194,13 @@ export const JobEventSchema = Type.Object({
   timestamp: Type.String({ format: "date-time" }),
 });
 
-export type JobEvent<TPayload = unknown, TResult = unknown> =
-  & Omit<StaticDecode<typeof JobEventSchema>, "payload" | "result">
-  & {
-    payload?: TPayload;
-    result?: TResult;
-  };
+export type JobEvent<TPayload = unknown, TResult = unknown> = Omit<
+  StaticDecode<typeof JobEventSchema>,
+  "payload" | "result"
+> & {
+  payload?: TPayload;
+  result?: TResult;
+};
 
 export const WorkerHeartbeatSchema = Type.Object({
   service: Type.String({ minLength: 1 }),

@@ -123,10 +123,7 @@ export type JobIdentity = {
 };
 
 export type JobNotEnqueuedReason =
-  | "active-limit"
-  | "queue-depth"
-  | "stale-blocked"
-  | "coalesced";
+  "active-limit" | "queue-depth" | "stale-blocked" | "coalesced";
 
 export type JobNotEnqueuedErrorData = {
   id: string;
@@ -241,25 +238,25 @@ export class RetryJobError extends BaseError<RetryJobErrorData> {
 export type JobSubmitOutcome<TPayload, TResult, TUpdate = never> =
   | { kind: "accepted"; ref: JobRef<TPayload, TResult, TUpdate>; key?: string }
   | {
-    kind: "rejected";
-    key: string;
-    reason: "active-limit" | "queue-depth" | "stale-blocked";
-    active: number;
-    queued: number;
-    limit: number;
-  }
+      kind: "rejected";
+      key: string;
+      reason: "active-limit" | "queue-depth" | "stale-blocked";
+      active: number;
+      queued: number;
+      limit: number;
+    }
   | {
-    kind: "coalesced";
-    key: string;
-    existing: JobIdentity;
-    reason: string;
-  }
+      kind: "coalesced";
+      key: string;
+      existing: JobIdentity;
+      reason: string;
+    }
   | {
-    kind: "replaced";
-    key: string;
-    replaced: JobIdentity;
-    ref: JobRef<TPayload, TResult, TUpdate>;
-  };
+      kind: "replaced";
+      key: string;
+      replaced: JobIdentity;
+      ref: JobRef<TPayload, TResult, TUpdate>;
+    };
 
 export type JobSnapshot<TPayload, TResult> = {
   id: string;
@@ -362,10 +359,14 @@ export function decodeJobUpdateEnvelope(
     const sequence = Reflect.get(value, "sequence");
     const timestamp = Reflect.get(value, "timestamp");
     if (
-      typeof jobId !== "string" || jobId.length === 0 ||
-      !Number.isInteger(attempt) || attempt < 1 ||
-      !Number.isInteger(sequence) || sequence < 1 ||
-      typeof timestamp !== "string" || Number.isNaN(Date.parse(timestamp)) ||
+      typeof jobId !== "string" ||
+      jobId.length === 0 ||
+      !Number.isInteger(attempt) ||
+      attempt < 1 ||
+      !Number.isInteger(sequence) ||
+      sequence < 1 ||
+      typeof timestamp !== "string" ||
+      Number.isNaN(Date.parse(timestamp)) ||
       !Reflect.has(value, "update")
     ) {
       return undefined;
@@ -409,8 +410,7 @@ export async function runWithActiveJobContext<T>(
 
 /** @internal Returns the current active job, if called inside a job handler. */
 export function getActiveJobSnapshot():
-  | JobSnapshot<unknown, unknown>
-  | undefined {
+  JobSnapshot<unknown, unknown> | undefined {
   return activeJobStorage?.getStore()?.job;
 }
 
@@ -468,20 +468,25 @@ export class JobRef<TPayload, TResult, TUpdate = never> {
   }
 
   wait(): AsyncResult<TerminalJob<TPayload, TResult>, BaseError> {
-    return AsyncResult.from((async () => {
-      try {
-        const waited = runActiveJobWait({
-          kind: "job",
-          id: this.id,
-          service: this.service,
-          type: this.type,
-        }, async () => await this.#wait());
-        if (waited) return await waited;
-        return await this.#wait();
-      } catch (cause) {
-        return Result.err(toUnexpectedError(cause));
-      }
-    })());
+    return AsyncResult.from(
+      (async () => {
+        try {
+          const waited = runActiveJobWait(
+            {
+              kind: "job",
+              id: this.id,
+              service: this.service,
+              type: this.type,
+            },
+            async () => await this.#wait(),
+          );
+          if (waited) return await waited;
+          return await this.#wait();
+        } catch (cause) {
+          return Result.err(toUnexpectedError(cause));
+        }
+      })(),
+    );
   }
 
   cancel(): AsyncResult<JobSnapshot<TPayload, TResult>, BaseError> {
@@ -497,9 +502,11 @@ export class JobRef<TPayload, TResult, TUpdate = never> {
     options?: JobUpdatesOptions,
   ): AsyncResult<JobUpdateSubscription<TUpdate>, BaseError> {
     if (!this.#updates) {
-      return AsyncResult.err(toUnexpectedError(
-        new Error("Job updates are unavailable for this reference"),
-      ));
+      return AsyncResult.err(
+        toUnexpectedError(
+          new Error("Job updates are unavailable for this reference"),
+        ),
+      );
     }
     try {
       return this.#updates(options);
@@ -546,18 +553,20 @@ export class ActiveJob<TPayload, TResult, TUpdate = never> {
     this.ref = ref;
     this.payload = payload;
     this.context = Object.freeze({ ...context });
-    this.#cancelled = typeof cancelled === "function"
-      ? cancelled
-      : () => cancelled;
+    this.#cancelled =
+      typeof cancelled === "function" ? cancelled : () => cancelled;
     this.#heartbeat = impl.heartbeat;
     this.#cancellationReason = impl.cancellationReason ?? (() => undefined);
     this.#progress = impl.progress;
     this.#log = impl.log;
-    this.#emitUpdate = impl.emitUpdate ??
+    this.#emitUpdate =
+      impl.emitUpdate ??
       (() =>
-        AsyncResult.err(toUnexpectedError(
-          new Error("Job updates are not configured for this queue"),
-        )));
+        AsyncResult.err(
+          toUnexpectedError(
+            new Error("Job updates are not configured for this queue"),
+          ),
+        ));
     this.#waitFor = impl.waitFor;
     this.#redeliveryCount = impl.redeliveryCount ?? 0;
     this.signal = impl.signal ?? new AbortController().signal;
@@ -665,40 +674,48 @@ export class JobQueue<TPayload, TResult, TUpdate = never> {
     jobType?: string;
   }) {
     this.#create = impl.create;
-    this.#route = impl.jobType === undefined
-      ? UNKNOWN_ROUTE
-      : routeToken("job", impl.jobType);
+    this.#route =
+      impl.jobType === undefined
+        ? UNKNOWN_ROUTE
+        : routeToken("job", impl.jobType);
     this.#handle = impl.handle;
-    this.#submit = impl.submit ??
+    this.#submit =
+      impl.submit ??
       ((payload) =>
         impl.create(payload).map((ref) => ({ kind: "accepted", ref })));
-    this.#updates = impl.updates ?? (() =>
-      AsyncResult.err(toUnexpectedError(
-        new Error("Job updates are not configured for this queue"),
-      )));
+    this.#updates =
+      impl.updates ??
+      (() =>
+        AsyncResult.err(
+          toUnexpectedError(
+            new Error("Job updates are not configured for this queue"),
+          ),
+        ));
   }
 
   create(
     payload: TPayload,
   ): AsyncResult<JobRef<TPayload, TResult, TUpdate>, BaseError> {
-    return AsyncResult.from((async () => {
-      const startedAt = performance.now();
-      let result: Result<JobRef<TPayload, TResult, TUpdate>, BaseError>;
-      try {
-        result = await this.#create(payload);
-      } catch (cause) {
-        result = Result.err(toUnexpectedError(cause));
-      }
-      recordCatalogDuration(
-        "trellis.job.submission.duration",
-        performance.now() - startedAt,
-        {
-          "trellis.route": this.#route,
-          "trellis.outcome": result.isOk() ? "accepted" : "error",
-        },
-      );
-      return result;
-    })());
+    return AsyncResult.from(
+      (async () => {
+        const startedAt = performance.now();
+        let result: Result<JobRef<TPayload, TResult, TUpdate>, BaseError>;
+        try {
+          result = await this.#create(payload);
+        } catch (cause) {
+          result = Result.err(toUnexpectedError(cause));
+        }
+        recordCatalogDuration(
+          "trellis.job.submission.duration",
+          performance.now() - startedAt,
+          {
+            "trellis.route": this.#route,
+            "trellis.outcome": result.isOk() ? "accepted" : "error",
+          },
+        );
+        return result;
+      })(),
+    );
   }
 
   /** Subscribes to transient updates for a known or preallocated job id. */
@@ -720,29 +737,31 @@ export class JobQueue<TPayload, TResult, TUpdate = never> {
   submit(
     payload: TPayload,
   ): AsyncResult<JobSubmitOutcome<TPayload, TResult, TUpdate>, BaseError> {
-    return AsyncResult.from((async () => {
-      const startedAt = performance.now();
-      let result: Result<
-        JobSubmitOutcome<TPayload, TResult, TUpdate>,
-        BaseError
-      >;
-      try {
-        result = await this.#submit(payload);
-      } catch (cause) {
-        result = Result.err(toUnexpectedError(cause));
-      }
-      recordCatalogDuration(
-        "trellis.job.submission.duration",
-        performance.now() - startedAt,
-        {
-          "trellis.route": this.#route,
-          "trellis.outcome": result.isOk()
-            ? jobSubmissionOutcome(result.take())
-            : "error",
-        },
-      );
-      return result;
-    })());
+    return AsyncResult.from(
+      (async () => {
+        const startedAt = performance.now();
+        let result: Result<
+          JobSubmitOutcome<TPayload, TResult, TUpdate>,
+          BaseError
+        >;
+        try {
+          result = await this.#submit(payload);
+        } catch (cause) {
+          result = Result.err(toUnexpectedError(cause));
+        }
+        recordCatalogDuration(
+          "trellis.job.submission.duration",
+          performance.now() - startedAt,
+          {
+            "trellis.route": this.#route,
+            "trellis.outcome": result.isOk()
+              ? jobSubmissionOutcome(result.take())
+              : "error",
+          },
+        );
+        return result;
+      })(),
+    );
   }
 
   handle(
@@ -797,21 +816,21 @@ export class JobWorkerHostAdapter implements JobWorkerHost {
 
 export type JobsFacade = {};
 
-export type JobsFacadeOf<TJobs extends Record<string, JobTypeMetadata>> =
-  & {
-    [K in keyof TJobs]: JobQueue<
-      TJobs[K]["payload"],
-      TJobs[K]["result"],
-      TJobs[K]["update"]
-    >;
-  }
-  & JobsFacade;
+export type JobsFacadeOf<TJobs extends Record<string, JobTypeMetadata>> = {
+  [K in keyof TJobs]: JobQueue<
+    TJobs[K]["payload"],
+    TJobs[K]["result"],
+    TJobs[K]["update"]
+  >;
+} & JobsFacade;
 
 /** Bounded job submission outcome for catalog observation. */
 function jobSubmissionOutcome(outcome: unknown): string {
   const kind = (outcome as { kind?: unknown } | undefined)?.kind;
-  return kind === "accepted" || kind === "rejected" ||
-      kind === "coalesced" || kind === "replaced"
+  return kind === "accepted" ||
+    kind === "rejected" ||
+    kind === "coalesced" ||
+    kind === "replaced"
     ? kind
     : "error";
 }

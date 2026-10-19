@@ -29,10 +29,7 @@ export function startClientSpan(route: string): Span {
 }
 
 /** Starts one server RPC span for a bounded route token. */
-export function startServerSpan(
-  route: string,
-  parentContext?: Context,
-): Span {
+export function startServerSpan(route: string, parentContext?: Context): Span {
   return getTrellisTracer().startSpan(
     "trellis.rpc.server",
     {

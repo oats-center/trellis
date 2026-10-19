@@ -224,7 +224,7 @@ async fn sdk_rotation(mode: &str) {
 }
 
 #[tokio::test]
-async fn node_process_restart_authenticates_issuer_chain_before_spending_and_retains_inflight_successor(
+async fn node_connection_reopen_authenticates_issuer_chain_before_spending_and_retains_inflight_successor(
 ) {
     sdk_rotation("native").await;
 }

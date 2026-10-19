@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { promisify } from "node:util";
@@ -24,7 +26,7 @@ test(
         issuer && username && password && binary,
         "supply an ordinary runtime, administrator, and producer-built CLI",
       );
-      const directory = await mkdtemp("/tmp/opencode/cli-management-");
+      const directory = await mkdtemp(join(tmpdir(), "cli-management-"));
       const env = { ...process.env, XDG_CONFIG_HOME: directory };
       const browser = await chromium.launch({ headless: true });
       const page = await browser.newPage();

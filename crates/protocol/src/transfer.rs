@@ -757,7 +757,7 @@ pub struct TransferSendGrant {
     pub metadata: Option<std::collections::BTreeMap<String, String>>,
 }
 
-fn present_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn present_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

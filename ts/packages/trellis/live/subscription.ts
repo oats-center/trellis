@@ -20,12 +20,7 @@ type Slot<T> = { kind: "value"; item: Admitted<T> } | { kind: "filtered" };
 
 /** Consumer-visible session phase. */
 export type ConsumerPhase =
-  | "prepared"
-  | "activating"
-  | "active"
-  | "draining"
-  | "closing"
-  | "closed";
+  "prepared" | "activating" | "active" | "draining" | "closing" | "closed";
 
 /** Local usage error for an unsupported iterator call. */
 export class LiveUsageError extends Error {
@@ -319,8 +314,7 @@ export class LiveSubscription<T> implements AsyncIterableIterator<T> {
   readonly #cancellation: LiveCancellation;
   readonly #closeFn: () => Promise<LiveCloseReceipt>;
   readonly #fence:
-    | (() => LiveEnd | undefined | Promise<LiveEnd | undefined>)
-    | undefined;
+    (() => LiveEnd | undefined | Promise<LiveEnd | undefined>) | undefined;
   readonly #closed = Promise.withResolvers<LiveEnd>();
   #closedResolved = false;
   #nextPending = false;
@@ -500,25 +494,24 @@ export class LiveSubscription<T> implements AsyncIterableIterator<T> {
 }
 
 /** Build one abnormal consumer terminal outcome. */
-export function consumerFailure(
-  code: string,
-  message: string,
-): LiveEnd {
-  const reason = code === "consumer_slow"
-    ? "consumer_slow"
-    : code === "delivery_gap"
-    ? "delivery_gap"
-    : code === "authorization_unavailable"
-    ? "authorization_lost"
-    : code === "permission_denied" || code === "authorization_revoked" ||
-        code === "authorization_expired"
-    ? "authorization_lost"
-    : code === "setup_timeout"
-    ? "setup_timeout"
-    : code === "peer_lost"
-    ? "peer_lost"
-    : code === "disconnected"
-    ? "disconnected"
-    : "protocol_error";
+export function consumerFailure(code: string, message: string): LiveEnd {
+  const reason =
+    code === "consumer_slow"
+      ? "consumer_slow"
+      : code === "delivery_gap"
+        ? "delivery_gap"
+        : code === "authorization_unavailable"
+          ? "authorization_lost"
+          : code === "permission_denied" ||
+              code === "authorization_revoked" ||
+              code === "authorization_expired"
+            ? "authorization_lost"
+            : code === "setup_timeout"
+              ? "setup_timeout"
+              : code === "peer_lost"
+                ? "peer_lost"
+                : code === "disconnected"
+                  ? "disconnected"
+                  : "protocol_error";
   return new LiveEnd(reason, new LiveStreamError(code, message));
 }

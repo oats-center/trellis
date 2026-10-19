@@ -25,7 +25,7 @@ import {
 } from "./core.ts";
 import type { TrellisAuth as SessionAuth } from "../../auth/session_auth.ts";
 import { connectProvisioned } from "../../auth/connection.ts";
-import { discoverNativeOAuth } from "../../native/oauth.ts";
+import { discoverNativeOAuth } from "../../native/discovery.ts";
 import { Type } from "typebox";
 import { ContractResourceBindingsSchema } from "../../participant_runtime/schemas.ts";
 import {

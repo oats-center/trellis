@@ -25,8 +25,8 @@ export type JsonValue =
   | null
   | JsonValue[]
   | {
-    [key: string]: JsonValue;
-  };
+      [key: string]: JsonValue;
+    };
 
 const X_TRELLIS_VALIDATION = "x-trellis-validation";
 
@@ -55,7 +55,9 @@ function resolveSchemaNode(
   let current = root;
   for (const part of parts) {
     if (
-      current === null || current === undefined || typeof current !== "object"
+      current === null ||
+      current === undefined ||
+      typeof current !== "object"
     ) {
       return undefined;
     }
@@ -69,10 +71,9 @@ function resolveRequiredErrorNode(
   error: TLocalizedValidationError,
 ): unknown | undefined {
   const params = error.params as Record<string, unknown> | undefined;
-  const missingProperty = (
-    params?.missingProperty ??
-      (params?.requiredProperties as string[] | undefined)?.[0]
-  ) as string | undefined;
+  const missingProperty = (params?.missingProperty ??
+    (params?.requiredProperties as string[] | undefined)?.[0]) as
+    string | undefined;
   if (!missingProperty) return undefined;
 
   const objNode = resolveSchemaNode(root, error.schemaPath);
@@ -107,10 +108,9 @@ function keywordAllowsHint(keyword: string): boolean {
 function typeboxIssueToPath(error: TLocalizedValidationError): string {
   if (error.keyword === "required") {
     const params = error.params as Record<string, unknown> | undefined;
-    const missingProperty = (
-      params?.missingProperty ??
-        (params?.requiredProperties as string[] | undefined)?.[0]
-    ) as string | undefined;
+    const missingProperty = (params?.missingProperty ??
+      (params?.requiredProperties as string[] | undefined)?.[0]) as
+      string | undefined;
     if (missingProperty) {
       return error.instancePath
         ? `${error.instancePath}/${missingProperty}`
@@ -131,13 +131,15 @@ function collectValidationIssues(
   const unannotated: TLocalizedValidationError[] = [];
 
   for (const error of [...errors]) {
-    const schemaNode = error.keyword === "required"
-      ? resolveRequiredErrorNode(root, error)
-      : resolveSchemaNode(root, error.schemaPath);
+    const schemaNode =
+      error.keyword === "required"
+        ? resolveRequiredErrorNode(root, error)
+        : resolveSchemaNode(root, error.schemaPath);
 
-    const extension = schemaNode !== undefined
-      ? readTrellisValidationExtension(schemaNode)
-      : undefined;
+    const extension =
+      schemaNode !== undefined
+        ? readTrellisValidationExtension(schemaNode)
+        : undefined;
 
     if (
       extension !== undefined &&
@@ -179,9 +181,10 @@ function buildValidationError(
     return new SchemaValidationError({ issues: annotated, cause });
   }
   return new ValidationError({
-    errors: unannotated.length > 0
-      ? unannotated
-      : annotated.map((i) => ({ path: i.path, message: i.message })),
+    errors:
+      unannotated.length > 0
+        ? unannotated
+        : annotated.map((i) => ({ path: i.path, message: i.message })),
     cause,
   });
 }
@@ -191,9 +194,8 @@ function parseWithSchema(schema: TSchema, data: JsonValue): unknown {
 }
 
 function encodeWithSchema(schema: TSchema, data: unknown): string {
-  return JSON.stringify(
-    Value.Encode(schema, data),
-    (_key, value) => typeof value === "bigint" ? value.toString() : value,
+  return JSON.stringify(Value.Encode(schema, data), (_key, value) =>
+    typeof value === "bigint" ? value.toString() : value,
   );
 }
 

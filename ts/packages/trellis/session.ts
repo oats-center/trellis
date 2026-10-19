@@ -47,6 +47,7 @@ import type {
   PendingSessionRequest,
   VerifiedAuthority,
 } from "./auth/authority.ts";
+import { operationRecordRepresentation } from "./service/runtime/operation_record.ts";
 import {
   fixedTransportProvider,
   type TransportLease,
@@ -123,6 +124,7 @@ import {
   OperationInvoker,
   type OperationRefData,
   type OperationTransport,
+  operationStartSubject,
 } from "./operations.ts";
 import type { Span } from "./telemetry/mod.ts";
 import {
@@ -1502,77 +1504,6 @@ export type DurableOperationRecord = {
   signals: RuntimeOperationSignal[];
   snapshot: RuntimeOperationSnapshot;
 };
-
-const DurableOperationSignalSchema = Type.Object({
-  operationId: Type.String(),
-  sequence: Type.Number(),
-  requestId: Type.String(),
-  signal: Type.String(),
-  input: Type.Optional(Type.Any()),
-  acceptedAt: Type.String(),
-  acknowledged: Type.Boolean(),
-});
-
-const DurableOperationSnapshotSchema = Type.Object({
-  id: Type.String(),
-  service: Type.String(),
-  operation: Type.String(),
-  revision: Type.Number(),
-  state: Type.Union([
-    Type.Literal("pending"),
-    Type.Literal("running"),
-    Type.Literal("completed"),
-    Type.Literal("failed"),
-    Type.Literal("cancelled"),
-  ]),
-  createdAt: Type.String(),
-  updatedAt: Type.String(),
-  completedAt: Type.Optional(Type.String()),
-  progress: Type.Optional(Type.Any()),
-  transfer: Type.Optional(
-    Type.Object({
-      chunkIndex: Type.Number(),
-      chunkBytes: Type.Number(),
-      transferredBytes: Type.Number(),
-    }),
-  ),
-  output: Type.Optional(Type.Any()),
-  error: Type.Optional(
-    Type.Object({
-      id: Type.Optional(Type.String()),
-      type: Type.String(),
-      message: Type.String(),
-      context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-      traceId: Type.Optional(Type.String()),
-    }),
-  ),
-});
-
-export const DurableOperationRecordSchema = Type.Object({
-  invocationId: Type.String(),
-  deploymentId: Type.String(),
-  callerSessionKey: Type.String(),
-  apiId: Type.String(),
-  operation: Type.String(),
-  input: Type.Any(),
-  telemetry: Type.Optional(
-    Type.Object({
-      traceparent: Type.String(),
-      tracestate: Type.Optional(Type.String()),
-    }),
-  ),
-  ownerInstanceId: Type.String(),
-  ownerConnectionId: Type.String(),
-  ownerEpoch: Type.Number(),
-  leaseExpiresAt: Type.String(),
-  cancelRequestedAt: Type.Optional(Type.String()),
-  transferGrant: Type.Optional(Type.Any()),
-  uploadStorageKey: Type.Optional(Type.String()),
-  sequence: Type.Number(),
-  signalSequence: Type.Number(),
-  signals: Type.Array(DurableOperationSignalSchema),
-  snapshot: DurableOperationSnapshotSchema,
-});
 
 export type RuntimeOperationAcceptedEnvelope = {
   kind: "accepted";
@@ -3225,14 +3156,7 @@ export class Trellis<
         const result = await TypedKV.open<DurableOperationRecord>(
           this.#transport,
           bucket,
-          {
-            version: 1,
-            migrations: {},
-            codec: {
-              encode: (value: DurableOperationRecord) => value,
-              decode: (value) => value as DurableOperationRecord,
-            },
-          },
+          operationRecordRepresentation,
           {
             // The platform producer owns framework retention and size limits.
             bindOnly: true,
@@ -3316,39 +3240,8 @@ export class Trellis<
       sequence: runtime.sequence,
       signalSequence: runtime.signalSequence,
       signals: runtime.signals,
-      snapshot: runtime.snapshot,
+      snapshot: { ...runtime.snapshot, revision },
     };
-    const byteLength = (value: unknown) =>
-      new TextEncoder().encode(JSON.stringify(value)).byteLength;
-    if (byteLength(record.input) > MAX_OPERATION_INPUT_BYTES) {
-      throw new Error("operation input exceeds 256 KiB");
-    }
-    if (
-      record.snapshot.progress !== undefined &&
-      byteLength(record.snapshot.progress) > MAX_OPERATION_PROGRESS_BYTES
-    )
-      throw new Error("operation progress exceeds 64 KiB");
-    if (
-      record.snapshot.output !== undefined &&
-      byteLength(record.snapshot.output) > MAX_OPERATION_OUTPUT_BYTES
-    )
-      throw new Error("operation output exceeds 512 KiB");
-    if (
-      record.snapshot.error !== undefined &&
-      byteLength(record.snapshot.error) > MAX_OPERATION_ERROR_BYTES
-    )
-      throw new Error("operation error exceeds 32 KiB");
-    if ((record.signals?.length ?? 0) > MAX_OPERATION_SIGNALS) {
-      throw new Error("operation signal limit exceeded");
-    }
-    for (const signal of record.signals) {
-      if (byteLength(signal.input ?? null) > MAX_OPERATION_SIGNAL_BYTES) {
-        throw new Error("operation signal payload exceeds 64 KiB");
-      }
-    }
-    if (byteLength(record) > MAX_OPERATION_RECORD_BYTES) {
-      throw new Error("operation record exceeds 1 MiB");
-    }
     const saved =
       createOnly || loadedValue === undefined
         ? await store.create(runtime.id, record)
@@ -3357,6 +3250,7 @@ export class Trellis<
     if (isErr(value)) throw value.error;
     runtime.cancelRequestedAt = record.cancelRequestedAt;
     runtime.revision = revision;
+    runtime.snapshot.revision = revision;
   }
 
   /**
@@ -4281,19 +4175,40 @@ export class Trellis<
         const route = trellisRoute("operation", operation.toString());
         const error = unavailable?.();
         const permissions = descriptor.permissions;
+        const boundStart =
+          expectedDeploymentId === undefined
+            ? undefined
+            : operationStartSubject(descriptor, expectedDeploymentId);
+        const isStart =
+          subject === descriptor.subject || subject === boundStart;
+        if (
+          !isStart &&
+          (boundStart === undefined || subject !== `${boundStart}.control`)
+        ) {
+          return AsyncResult.from(
+            Promise.resolve(
+              err(
+                new TransportError({
+                  code: "trellis.operation.invalid_route",
+                  message:
+                    "Operation subject does not match its descriptor and deployment.",
+                  hint: "Use the generated Operation start or restored owner reference.",
+                }),
+              ),
+            ),
+          );
+        }
         const control =
           body && typeof body === "object" && !Array.isArray(body)
             ? body
             : undefined;
-        const permission =
-          subject === descriptor.subject
-            ? permissions.invoke
-            : control?.action === "cancel"
-              ? permissions.cancel
-              : control?.action === "signal" &&
-                  typeof control.signal === "string"
-                ? permissions.control[control.signal]
-                : permissions.observe;
+        const permission = isStart
+          ? permissions.invoke
+          : control?.action === "cancel"
+            ? permissions.cancel
+            : control?.action === "signal" && typeof control.signal === "string"
+              ? permissions.control[control.signal]
+              : permissions.observe;
         return error
           ? AsyncResult.from(Promise.resolve(err(error)))
           : this.#requestJson(

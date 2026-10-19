@@ -45,19 +45,19 @@ type VerificationFailure = {
 
 type CachedRequestVerificationResult =
   | {
-    ok: true;
-    contextDigest: string;
-    context: VerifiedAuthorizationContextTokenProjection["context"];
-  }
+      ok: true;
+      contextDigest: string;
+      context: VerifiedAuthorizationContextTokenProjection["context"];
+    }
   | VerificationFailure;
 
 type CachedEventVerificationResult =
   | {
-    ok: true;
-    contextDigest: string;
-    context: VerifiedAuthorizationContextTokenProjection["context"];
-    publisher: VerifiedAuthorizationEventPublisher;
-  }
+      ok: true;
+      contextDigest: string;
+      context: VerifiedAuthorizationContextTokenProjection["context"];
+      publisher: VerifiedAuthorizationEventPublisher;
+    }
   | VerificationFailure;
 
 /** Observable provider registry health. */
@@ -69,8 +69,7 @@ export type AuthorizationProviderCacheHealth = {
 
 /** Provider I/O counters used by local hot-path tests and diagnostics. */
 export type AuthorizationProviderIoCounters =
-  & AuthorizationRegistryIoCounters
-  & {
+  AuthorizationRegistryIoCounters & {
     contextResolves: number;
     contextVerifications: number;
   };
@@ -283,11 +282,14 @@ export class AuthorizationProviderCache {
     TransportOwnCoveragePreparation
   >();
   readonly #candidateAborts = new Set<AbortController>();
-  readonly #candidateBindings = new Map<AuthorizationRefreshAttempt, {
-    entry: ProviderContextEntry;
-    expected: CoverageBinding | undefined;
-    binding: CoverageBinding;
-  }>();
+  readonly #candidateBindings = new Map<
+    AuthorizationRefreshAttempt,
+    {
+      entry: ProviderContextEntry;
+      expected: CoverageBinding | undefined;
+      binding: CoverageBinding;
+    }
+  >();
   #onOwnInvalidated?: (reason: OwnInvalidationReason) => void;
   #onOwnResumed?: () => void;
   #ownRevokedDigest?: string;
@@ -323,17 +325,13 @@ export class AuthorizationProviderCache {
   ): Promise<AuthorizationProviderCache> {
     if (
       canonicalizeJsonValue(binding) !==
-        canonicalizeJsonValue(cache.bundle().authorizationRegistry)
+      canonicalizeJsonValue(cache.bundle().authorizationRegistry)
     ) {
       throw new Error("authorization registry binding does not match");
     }
     return new AuthorizationProviderCache(
       nats,
-      await AuthorizationRegistryReader.open(
-        nats,
-        binding,
-        inboxPrefix,
-      ),
+      await AuthorizationRegistryReader.open(nats, binding, inboxPrefix),
       cache,
       binding,
       inboxPrefix,
@@ -356,18 +354,26 @@ export class AuthorizationProviderCache {
       const healthy = this.#started && !this.#stopped;
       const now = this.#now();
       const current = (entry: ProviderContextEntry) =>
-        healthy && entry.epoch === this.#cacheEpoch && entry.covered &&
-        !entry.disposed && entry.revokedAt === undefined &&
+        healthy &&
+        entry.epoch === this.#cacheEpoch &&
+        entry.covered &&
+        !entry.disposed &&
+        entry.revokedAt === undefined &&
         this.#contexts.get(entry.contextDigest) === entry &&
         typeof entry.context.notBefore === "number" &&
         entry.context.notBefore <= now &&
         typeof entry.context.expiresAt === "number" &&
-        entry.context.expiresAt > now && entry.issuer.state !== "revoked";
+        entry.context.expiresAt > now &&
+        entry.issuer.state !== "revoked";
       const installedDigest = this.#cache.storedContextDigest();
-      const own = installedDigest === undefined
-        ? undefined
-        : this.#contexts.get(installedDigest);
-      const ownCovered = !!own && this.#ownUsable && current(own) &&
+      const own =
+        installedDigest === undefined
+          ? undefined
+          : this.#contexts.get(installedDigest);
+      const ownCovered =
+        !!own &&
+        this.#ownUsable &&
+        current(own) &&
         (this.#ownEntry === own || this.#cache.hasCandidate());
       let peerCovered = 0;
       let peerUnavailable = 0;
@@ -467,9 +473,7 @@ export class AuthorizationProviderCache {
     // Supersede any in-flight preparation that targeted a different identity
     // (including a cleared publication). A committed binding is never aborted.
     for (const provisional of this.#provisionals.values()) {
-      if (
-        provisional.generationId !== generationId && !provisional.committed
-      ) {
+      if (provisional.generationId !== generationId && !provisional.committed) {
         provisional.abort.abort();
       }
     }
@@ -631,7 +635,8 @@ export class AuthorizationProviderCache {
         // so this never becomes an immediate retry loop.
         const transport = this.#transport;
         if (
-          !this.#stopped && transport &&
+          !this.#stopped &&
+          transport &&
           (provisional.abort.signal.aborted ||
             transport.publishedGenerationId() !== provisional.generationId)
         ) {
@@ -709,9 +714,12 @@ export class AuthorizationProviderCache {
         if (entry.revokedAt !== undefined) return false;
         if (entry.binding !== expected) return false;
         if (
-          !binding.initialized || binding.ended || signal.aborted ||
+          !binding.initialized ||
+          binding.ended ||
+          signal.aborted ||
           !committedCandidate.usable()
-        ) return false;
+        )
+          return false;
         entry.binding = binding;
         // Mark committed synchronously, before any publication can interleave,
         // so a superseding publication never aborts the winning binding.
@@ -756,10 +764,7 @@ export class AuthorizationProviderCache {
    * no further publication arrives. A changed publication supersedes the retry
    * through the normal abort path.
    */
-  #scheduleProvisionalRetry(
-    entry: ProviderContextEntry,
-    target: number,
-  ): void {
+  #scheduleProvisionalRetry(entry: ProviderContextEntry, target: number): void {
     const digest = entry.contextDigest;
     if (this.#retryTimers.has(digest)) return;
     const timer = setTimeout(() => {
@@ -862,14 +867,12 @@ export class AuthorizationProviderCache {
   liveLeaseCoverage(lease: LiveLeaseView): LiveLeaseCoverage {
     const entry = lease.entry;
     if (entry.revokedAt !== undefined) return "revoked";
-    if (
-      entry.epoch !== this.#cacheEpoch || !this.#started ||
-      this.#stopped
-    ) {
+    if (entry.epoch !== this.#cacheEpoch || !this.#started || this.#stopped) {
       return "epoch";
     }
     if (
-      !entry.covered || entry.disposed ||
+      !entry.covered ||
+      entry.disposed ||
       this.#contexts.get(entry.contextDigest) !== entry
     ) {
       return "lost";
@@ -902,16 +905,19 @@ export class AuthorizationProviderCache {
         Math.floor((this.#cache.nowMilliseconds() + offset) / 1_000);
       const isCurrent = () => {
         if (
-          !this.#started || this.#stopped || this.#cacheEpoch !== epoch ||
+          !this.#started ||
+          this.#stopped ||
+          this.#cacheEpoch !== epoch ||
           this.#cache.hasCandidate() ||
           this.#ownRevokedDigest === digest ||
           this.#cache.serverClockOffsetMs() !== offset ||
-          (attachment && (
-            transport?.publishedGenerationId() !== attachment.generationId ||
-            transport.currentGeneration()?.nc !== attachment.nc ||
-            !transport.currentGeneration()?.ready || attachment.nc.isClosed()
-          ))
-        ) return false;
+          (attachment &&
+            (transport?.publishedGenerationId() !== attachment.generationId ||
+              transport.currentGeneration()?.nc !== attachment.nc ||
+              !transport.currentGeneration()?.ready ||
+              attachment.nc.isClosed()))
+        )
+          return false;
         try {
           return this.#cache.current(nowSeconds()) === origin;
         } catch {
@@ -923,21 +929,22 @@ export class AuthorizationProviderCache {
         epoch,
         transport
           ? {
-            ownResume: true,
-            nowSeconds,
-            isCurrent,
-            acquireAttachment: async () => {
-              attachment = await transport.acquireOwnRegistryMaintenance(
-                origin.context.transportAuthorization,
-                isCurrent,
-              );
-              return attachment;
-            },
-          }
+              ownResume: true,
+              nowSeconds,
+              isCurrent,
+              acquireAttachment: async () => {
+                attachment = await transport.acquireOwnRegistryMaintenance(
+                  origin.context.transportAuthorization,
+                  isCurrent,
+                );
+                return attachment;
+              },
+            }
           : undefined,
       );
       if (
-        isCurrent() && this.#finalizeOwnInstallation("resume", digest, epoch)
+        isCurrent() &&
+        this.#finalizeOwnInstallation("resume", digest, epoch)
       ) {
         this.#transport?.authorizationPromoted();
         this.#notifyLiveChanges();
@@ -946,9 +953,7 @@ export class AuthorizationProviderCache {
       if (!this.#pendingIsCandidate) this.#dropPending();
       this.#cache.requestRefresh();
     }
-    throw new Error(
-      "authorization context coverage changed during resumption",
-    );
+    throw new Error("authorization context coverage changed during resumption");
   }
 
   /**
@@ -994,24 +999,30 @@ export class AuthorizationProviderCache {
     let entry: ProviderContextEntry | undefined;
     try {
       if (this.#transport) {
-        preparation = await this.#transport.prepareOwnCoverage({
-          contextDigest: digest,
-          policy: candidate.context.transportAuthorization,
-          notBefore: candidate.context.notBefore,
-          expiresAt: candidate.context.expiresAt,
-          routingJwtExpiresAt: snapshot.routing.bootstrapJwtExpiresAt,
-          nowSeconds,
-          isCurrent: () =>
-            snapshot.isCurrent() && this.#pendingAttempt === attempt &&
-            epoch === this.#cacheEpoch && !this.#stopped,
-        }, () => {
-          if (!prepareConnect) {
-            throw new Error(
-              "authorization candidate CONNECT preparation is unavailable",
-            );
-          }
-          return prepareConnect(snapshot);
-        }, { signal: abort.signal });
+        preparation = await this.#transport.prepareOwnCoverage(
+          {
+            contextDigest: digest,
+            policy: candidate.context.transportAuthorization,
+            notBefore: candidate.context.notBefore,
+            expiresAt: candidate.context.expiresAt,
+            routingJwtExpiresAt: snapshot.routing.bootstrapJwtExpiresAt,
+            nowSeconds,
+            isCurrent: () =>
+              snapshot.isCurrent() &&
+              this.#pendingAttempt === attempt &&
+              epoch === this.#cacheEpoch &&
+              !this.#stopped,
+          },
+          () => {
+            if (!prepareConnect) {
+              throw new Error(
+                "authorization candidate CONNECT preparation is unavailable",
+              );
+            }
+            return prepareConnect(snapshot);
+          },
+          { signal: abort.signal },
+        );
         this.#candidatePreparations.set(attempt, preparation);
       }
       entry = await this.#lease(
@@ -1019,17 +1030,19 @@ export class AuthorizationProviderCache {
         false,
         preparation
           ? {
-            attempt,
-            signal: preparation.signal,
-            acquireAttachment: preparation.acquireAttachment,
-            nowSeconds,
-          }
+              attempt,
+              signal: preparation.signal,
+              acquireAttachment: preparation.acquireAttachment,
+              nowSeconds,
+            }
           : undefined,
       );
       this.#requireEntry(entry);
       if (
-        !snapshot.isCurrent() || this.#pendingAttempt !== attempt ||
-        epoch !== this.#cacheEpoch || entry.revokedAt !== undefined ||
+        !snapshot.isCurrent() ||
+        this.#pendingAttempt !== attempt ||
+        epoch !== this.#cacheEpoch ||
+        entry.revokedAt !== undefined ||
         digest === this.#ownRevokedDigest
       ) {
         throw new AuthorizationProviderUnavailableError(
@@ -1078,7 +1091,8 @@ export class AuthorizationProviderCache {
     now: number,
   ): void {
     if (
-      candidate.context.notBefore > now || candidate.context.expiresAt <= now
+      candidate.context.notBefore > now ||
+      candidate.context.expiresAt <= now
     ) {
       throw new AuthorizationProviderUnavailableError(
         "authorization candidate is not currently valid",
@@ -1104,9 +1118,13 @@ export class AuthorizationProviderCache {
     if (epoch !== this.#cacheEpoch) return false;
     const entry = this.#pendingEntry;
     if (
-      !entry || entry.contextDigest !== digest || !entry.covered ||
-      entry.disposed || entry.revokedAt !== undefined ||
-      entry.epoch !== epoch || this.#contexts.get(digest) !== entry ||
+      !entry ||
+      entry.contextDigest !== digest ||
+      !entry.covered ||
+      entry.disposed ||
+      entry.revokedAt !== undefined ||
+      entry.epoch !== epoch ||
+      this.#contexts.get(digest) !== entry ||
       this.#ownRevokedDigest === digest
     ) {
       return false;
@@ -1115,9 +1133,7 @@ export class AuthorizationProviderCache {
     if (mode === "promote") {
       if (!attempt || this.#pendingAttempt !== attempt) return false;
       const candidate = attempt.origin;
-      if (
-        !this.#cache.candidateSnapshot(candidate).isCurrent()
-      ) {
+      if (!this.#cache.candidateSnapshot(candidate).isCurrent()) {
         return false;
       }
       verified = candidate;
@@ -1139,10 +1155,12 @@ export class AuthorizationProviderCache {
       : undefined;
     if (
       replacement &&
-      (replacement.entry !== entry || entry.binding !== replacement.expected ||
+      (replacement.entry !== entry ||
+        entry.binding !== replacement.expected ||
         replacement.binding.candidateSignal?.aborted ||
         replacement.binding.ended)
-    ) return false;
+    )
+      return false;
     if (mode === "promote") this.#cache.promote(verified);
     if (replacement) {
       entry.binding = replacement.binding;
@@ -1226,17 +1244,20 @@ export class AuthorizationProviderCache {
     void (async () => {
       for await (const message of subscription) {
         if (
-          this.#stopped || this.#cacheEpoch !== epoch ||
+          this.#stopped ||
+          this.#cacheEpoch !== epoch ||
           this.#hintSubscription !== subscription
-        ) return;
+        )
+          return;
         if (hintFormat(message) !== "trellis.authorization-change.v1") continue;
         if (this.#hintTimer !== undefined) continue;
         const trigger = () => {
           if (this.#stopped || this.#cacheEpoch !== epoch) return;
           const now = performance.now();
-          const remaining = this.#hintLastTriggeredAt === undefined
-            ? 0
-            : 1_000 - (now - this.#hintLastTriggeredAt);
+          const remaining =
+            this.#hintLastTriggeredAt === undefined
+              ? 0
+              : 1_000 - (now - this.#hintLastTriggeredAt);
           if (remaining > 0) {
             this.#hintTimer = setTimeout(trigger, Math.ceil(remaining));
             return;
@@ -1257,8 +1278,10 @@ export class AuthorizationProviderCache {
   ): Promise<void> {
     const entry = await this.#lease(digest, false, source);
     if (
-      entry.revokedAt !== undefined || !entry.covered ||
-      entry.epoch !== epoch || epoch !== this.#cacheEpoch ||
+      entry.revokedAt !== undefined ||
+      !entry.covered ||
+      entry.epoch !== epoch ||
+      epoch !== this.#cacheEpoch ||
       (source && !source.isCurrent())
     ) {
       this.#dropRetained(entry);
@@ -1297,14 +1320,16 @@ export class AuthorizationProviderCache {
     if (
       this.#pendingEntry !== entry &&
       this.#pendingAttempt?.origin.contextDigest !== entry.contextDigest
-    ) entry.candidatePending = false;
+    )
+      entry.candidatePending = false;
     if (this.#ownEntry === entry) {
       this.#release(entry);
       return;
     }
     this.#release(entry);
     if (
-      entry.leases <= 0 && this.#contexts.get(entry.contextDigest) === entry
+      entry.leases <= 0 &&
+      this.#contexts.get(entry.contextDigest) === entry
     ) {
       this.#invalidate(entry);
     }
@@ -1477,9 +1502,7 @@ export class AuthorizationProviderCache {
   }
 
   async #restoreOwnContext(epoch: number): Promise<void> {
-    while (
-      !this.#stopped && this.#connected && this.#cacheEpoch === epoch
-    ) {
+    while (!this.#stopped && this.#connected && this.#cacheEpoch === epoch) {
       try {
         await this.retainOwnContext();
         return;
@@ -1497,9 +1520,8 @@ export class AuthorizationProviderCache {
     try {
       const state = await this.#verified(entry, false);
       this.#requireEntry(entry);
-      const { assertAuthorizationContextHandleCurrentWasm } = await import(
-        "../protocol_wasm.ts"
-      );
+      const { assertAuthorizationContextHandleCurrentWasm } =
+        await import("../protocol_wasm.ts");
       assertAuthorizationContextHandleCurrentWasm(
         state.handle,
         this.#policy(this.#now()),
@@ -1532,11 +1554,14 @@ export class AuthorizationProviderCache {
     return await this.#verifyRequest(request, request);
   }
 
-  async #verifyRequest(request: AuthorizationProviderRequest, transfer?: {
-    transferId: string;
-    providerConnectionId: string;
-    consumerConnectionId: string;
-  }): Promise<CachedRequestVerificationResult> {
+  async #verifyRequest(
+    request: AuthorizationProviderRequest,
+    transfer?: {
+      transferId: string;
+      providerConnectionId: string;
+      consumerConnectionId: string;
+    },
+  ): Promise<CachedRequestVerificationResult> {
     try {
       const entry = await this.#lease(request.contextDigest, false);
       try {
@@ -1552,9 +1577,7 @@ export class AuthorizationProviderCache {
         const {
           verifyAuthorizationRequestWasm,
           verifyTransferAuthorizationRequestWasm,
-        } = await import(
-          "../protocol_wasm.ts"
-        );
+        } = await import("../protocol_wasm.ts");
         const input = {
           contextHandle: state.handle,
           subject: request.subject,
@@ -1568,11 +1591,11 @@ export class AuthorizationProviderCache {
         };
         const result = transfer
           ? await verifyTransferAuthorizationRequestWasm(
-            input,
-            transfer.providerConnectionId,
-            transfer.consumerConnectionId,
-            transfer.transferId,
-          )
+              input,
+              transfer.providerConnectionId,
+              transfer.consumerConnectionId,
+              transfer.transferId,
+            )
           : await verifyAuthorizationRequestWasm(input);
         this.#requireEntry(entry);
         if (!result.ok) return result;
@@ -1606,9 +1629,8 @@ export class AuthorizationProviderCache {
         if (event.sessionKey !== state.verified.context.sessionKey) {
           return eventFailure("InvalidInput", "/session-key");
         }
-        const { verifyAuthorizationEventWasm } = await import(
-          "../protocol_wasm.ts"
-        );
+        const { verifyAuthorizationEventWasm } =
+          await import("../protocol_wasm.ts");
         const result = await verifyAuthorizationEventWasm({
           contextHandle: state.handle,
           descriptorIdentity: event.descriptorIdentity,
@@ -1662,9 +1684,10 @@ export class AuthorizationProviderCache {
       // this entry and its controller, so only a stop or verifier reset
       // cancels the pre-entry setup of a coalesced load.
       const abort = new AbortController();
-      const signal = source && !("ownResume" in source)
-        ? AbortSignal.any([abort.signal, source.signal])
-        : abort.signal;
+      const signal =
+        source && !("ownResume" in source)
+          ? AbortSignal.any([abort.signal, source.signal])
+          : abort.signal;
       pending = {
         epoch,
         owner,
@@ -1687,9 +1710,12 @@ export class AuthorizationProviderCache {
       // A successor sharing the digest must not inherit its abandoned origin's
       // canceled cold load. It warms through its own exact preparation instead.
       if (
-        source && !("ownResume" in source) && !source.signal.aborted &&
+        source &&
+        !("ownResume" in source) &&
+        !source.signal.aborted &&
         pending.signal.aborted &&
-        !this.#stopped && pending.epoch === this.#cacheEpoch
+        !this.#stopped &&
+        pending.epoch === this.#cacheEpoch
       ) {
         if (this.#inFlight.get(contextDigest) === pending) {
           this.#inFlight.delete(contextDigest);
@@ -1720,7 +1746,8 @@ export class AuthorizationProviderCache {
         attachment = await source.acquireAttachment();
         this.#requireEntry(entry);
         if (
-          !attachment || !source.isCurrent() ||
+          !attachment ||
+          !source.isCurrent() ||
           entry.binding?.generationId !== attachment.generationId ||
           entry.binding.lease?.nc !== attachment.nc
         ) {
@@ -1776,7 +1803,8 @@ export class AuthorizationProviderCache {
           }
           this.#requireEntry(entry);
           if (
-            signal.aborted || entry.binding !== expected ||
+            signal.aborted ||
+            entry.binding !== expected ||
             entry.revokedAt !== undefined
           ) {
             throw new AuthorizationProviderUnavailableError(
@@ -1896,9 +1924,8 @@ export class AuthorizationProviderCache {
     signal?: AbortSignal,
     loadSource?: ContextLoadSource,
   ): Promise<ProviderContextEntry> {
-    const candidateSource = loadSource && !("ownResume" in loadSource)
-      ? loadSource
-      : undefined;
+    const candidateSource =
+      loadSource && !("ownResume" in loadSource) ? loadSource : undefined;
     assertDigest(contextDigest);
     this.#contextResolves += 1;
     // The revocation watch lives on one exact socket and, for a managed cache,
@@ -1934,9 +1961,7 @@ export class AuthorizationProviderCache {
       }
     };
     let watch:
-      | Awaited<
-        ReturnType<AuthorizationRegistryReader["watchRevocation"]>
-      >
+      | Awaited<ReturnType<AuthorizationRegistryReader["watchRevocation"]>>
       | undefined;
     try {
       watch = await this.#registryIo(
@@ -2057,7 +2082,9 @@ export class AuthorizationProviderCache {
         const transport = this.#transport;
         const published = transport?.publishedGenerationId();
         if (
-          transport && published !== undefined && published !== generationId
+          transport &&
+          published !== undefined &&
+          published !== generationId
         ) {
           this.#scheduleReconcile();
         }
@@ -2222,7 +2249,8 @@ export class AuthorizationProviderCache {
       assertDigest(keyId);
       assertDigest(record.publicKey);
       if (
-        record.state !== "active" && record.state !== "retired" &&
+        record.state !== "active" &&
+        record.state !== "retired" &&
         record.state !== "revoked"
       ) {
         throw new Error("authorization issuer state is invalid");
@@ -2249,23 +2277,24 @@ export class AuthorizationProviderCache {
     let pending = entry[key];
     if (!pending) {
       this.#contextVerifications += 1;
-      const created = import("../protocol_wasm.ts").then(
-        ({ createAuthorizationContextHandleWasm }) =>
+      const created = import("../protocol_wasm.ts")
+        .then(({ createAuthorizationContextHandleWasm }) =>
           createAuthorizationContextHandleWasm({
             issuer: entry.issuer,
             context: entry.context,
             policy: this.#policy(now),
             historical,
           }),
-      ).then((verified) => {
-        if (entry.resourcesDisposed) {
-          verified.handle.free();
-          throw new AuthorizationProviderUnavailableError(
-            "authorization context lost revocation coverage",
-          );
-        }
-        return verified;
-      });
+        )
+        .then((verified) => {
+          if (entry.resourcesDisposed) {
+            verified.handle.free();
+            throw new AuthorizationProviderUnavailableError(
+              "authorization context lost revocation coverage",
+            );
+          }
+          return verified;
+        });
       pending = created.catch((error) => {
         if (entry[key] === pending) entry[key] = undefined;
         throw error;
@@ -2294,7 +2323,8 @@ export class AuthorizationProviderCache {
     this.#requireRunning();
     const pending = this.#inFlight.get(contextDigest);
     if (
-      epoch !== this.#cacheEpoch || pending?.epoch !== epoch ||
+      epoch !== this.#cacheEpoch ||
+      pending?.epoch !== epoch ||
       pending.owner !== owner
     ) {
       throw new AuthorizationProviderUnavailableError(
@@ -2306,8 +2336,10 @@ export class AuthorizationProviderCache {
   #requireEntry(entry: ProviderContextEntry): void {
     this.#requireRunning();
     if (
-      entry.epoch !== this.#cacheEpoch || !entry.covered ||
-      entry.disposed || this.#contexts.get(entry.contextDigest) !== entry
+      entry.epoch !== this.#cacheEpoch ||
+      !entry.covered ||
+      entry.disposed ||
+      this.#contexts.get(entry.contextDigest) !== entry
     ) {
       throw new AuthorizationProviderUnavailableError(
         "authorization context lost revocation coverage",
@@ -2335,7 +2367,9 @@ export class AuthorizationProviderCache {
     }
     if (entry.leases === 0) this.#disposeResources(entry);
     if (
-      wasOwn && entry.revokedAt === undefined && this.#connected &&
+      wasOwn &&
+      entry.revokedAt === undefined &&
+      this.#connected &&
       !this.#cache.hasCandidate()
     ) {
       void this.#restoreOwnContext(this.#cacheEpoch);

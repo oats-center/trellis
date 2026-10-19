@@ -475,7 +475,7 @@ where
         invocation_id: impl Into<String>,
         input: &D::Input,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
-        self.start_invocation(invocation_id.into(), input, false)
+        self.start_invocation(invocation_id.into(), input, false, None)
             .await
     }
 
@@ -489,12 +489,37 @@ where
         invocation_id: impl Into<String>,
         input: &D::Input,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
-        if !D::CANCELABLE {
-            return Err(TrellisClientError::OperationProtocol(
-                "operation is not cancelable".to_owned(),
-            ));
-        }
-        self.start_invocation(invocation_id.into(), input, true)
+        self.start_invocation(invocation_id.into(), input, true, None)
+            .await
+    }
+
+    /// Start or replay an invocation on a deployment selected before its first publication.
+    ///
+    /// Persist the authenticated deployment ID, invocation ULID, and identical input
+    /// before sending. A lost canonical reply cannot be recovered by choosing an
+    /// owner afterward. This method never retries or falls back to another deployment;
+    /// execution and application side effects remain at-least-once.
+    pub async fn start_on_deployment_with_invocation_id(
+        &self,
+        deployment_id: &str,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
+        self.start_invocation(invocation_id.into(), input, false, Some(deployment_id))
+            .await
+    }
+
+    /// Admit or replay cancellation on the deployment persisted before the first start.
+    ///
+    /// Requires Invoke and Cancel authority and retains the existing monotone
+    /// cancellation intent. Admission acknowledges ownership, not completed cleanup.
+    pub async fn start_cancelled_on_deployment_with_invocation_id(
+        &self,
+        deployment_id: &str,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
+        self.start_invocation(invocation_id.into(), input, true, Some(deployment_id))
             .await
     }
 
@@ -503,12 +528,29 @@ where
         invocation_id: String,
         input: &D::Input,
         cancellation_requested: bool,
+        deployment_id: Option<&str>,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
-        invocation_id.parse::<ulid::Ulid>().map_err(|_| {
+        if cancellation_requested && !D::CANCELABLE {
+            return Err(TrellisClientError::OperationProtocol(
+                "operation is not cancelable".to_owned(),
+            ));
+        }
+        let parsed_id = invocation_id.parse::<ulid::Ulid>().map_err(|_| {
             TrellisClientError::OperationProtocol(
                 "operation invocation id must be a ULID".to_owned(),
             )
         })?;
+        if let Some(deployment_id) = deployment_id {
+            if !deployment_id
+                .parse::<ulid::Ulid>()
+                .is_ok_and(|id| id.to_string() == deployment_id)
+                || parsed_id.to_string() != invocation_id
+            {
+                return Err(TrellisClientError::OperationProtocol(
+                    "targeted operation requires a canonical deployment identity and invocation ULID".into(),
+                ));
+            }
+        }
         let body = serde_json::to_value(input)?;
         validate_operation_schema(&self.schemas()?.input, &body, "operation input")?;
         let mut envelope = serde_json::json!({
@@ -518,21 +560,32 @@ where
         if cancellation_requested {
             envelope["cancellationRequested"] = Value::Bool(true);
         }
-        self.start_encoded(envelope).await
+        self.start_encoded(envelope, deployment_id).await
     }
 
     pub(crate) async fn start_encoded(
         &self,
         body: Value,
+        deployment_id: Option<&str>,
     ) -> Result<OperationRef<'a, T, D>, TrellisClientError> {
         let schemas = self.schemas()?;
+        let action = operation_action::<D>(trellis_protocol::PermissionAction::Invoke);
+        let subject = match deployment_id {
+            Some(deployment_id) => trellis_protocol::derive_bound_operation_subject(
+                D::API_ID,
+                deployment_id,
+                &action.name,
+            )
+            .map_err(|error| TrellisClientError::OperationProtocol(error.to_string()))?,
+            None => D::SUBJECT.to_owned(),
+        };
         let response = self
             .transport
             .request_json_value(
                 D::API_ID,
-                operation_action::<D>(trellis_protocol::PermissionAction::Invoke),
-                None,
-                D::SUBJECT.to_owned(),
+                action,
+                deployment_id.map(str::to_owned),
+                subject,
                 body,
             )
             .await?;
@@ -543,6 +596,11 @@ where
                 "expected accepted envelope, got '{}'",
                 accepted.kind
             )));
+        }
+        if deployment_id.is_some_and(|target| accepted.operation_ref.deployment_id != target) {
+            return Err(TrellisClientError::OperationProtocol(
+                "accepted operation belongs to a different deployment".into(),
+            ));
         }
         if accepted.transfer.as_ref().is_some_and(|grant| {
             grant.origin.api_id != D::API_ID

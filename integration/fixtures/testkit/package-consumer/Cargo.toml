@@ -7,12 +7,14 @@ publish = false
 [workspace]
 
 [dependencies]
+async-nats = "0.50"
 futures-util = "0.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json", "form"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml = "1.1.2"
 trellis-rs = "0.100.0"
+trellis-protocol = "0.100.0"
 trellis-test-fixture = { path = "../crates/trellis-test-fixture" }
 trellis-testkit = "0.100.0"
 

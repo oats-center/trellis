@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { test } from "node:test";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { apps } from "../../trellis-testkit/trellis/index.js";
@@ -21,85 +20,77 @@ test(
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
 
-      const directory = await mkdtemp("/tmp/opencode/native-metadata-");
+      const login = await loginNativeTestClient({
+        issuer,
+        username,
+        password,
+        clientId: "trellis.cli",
+        request: apps.cli.request,
+        approvedCapabilities: apps.cli.request.requiredCapabilities,
+        signal: context.signal,
+      });
+      const connected = await connectNativeSession({
+        ...login,
+        signal: context.signal,
+      }).orThrow();
       try {
-        const login = await loginNativeTestClient({
-          issuer,
-          username,
-          password,
-          directory,
-          clientId: "trellis.cli",
-          request: apps.cli.request,
-          approvedCapabilities: apps.cli.request.requiredCapabilities,
-          signal: context.signal,
-        });
-        const connected = await connectNativeSession({
-          ...login,
-          signal: context.signal,
-        }).orThrow();
+        const lease = connected.owner.own();
         try {
-          const lease = connected.owner.own();
+          assert.deepEqual(lease.authority.platformPrivileges, []);
+          const status = await connected.owner.readIssuerMetadata({
+            kind: "authorityStatus",
+            authorizationSessionId: lease.authority.authorizationSessionId,
+          });
+          assert.equal(status.result.kind, "value");
+          if (status.result.kind !== "value")
+            throw new Error("signed status unavailable");
+          assert.equal(
+            AuthAuthorityStatusResponseCodec.decode(
+              JSON.parse(status.result.payload),
+            ).authorizationSessionId,
+            lease.authority.authorizationSessionId,
+          );
+          const resolved = await connected.owner.readIssuerMetadata({
+            kind: "authorityResolve",
+            contextDigest: lease.digest,
+          });
+          assert.equal(resolved.result.kind, "value");
+          if (resolved.result.kind !== "value")
+            throw new Error("signed authority unavailable");
+          const material = AuthAuthorityResolveResponseCodec.decode(
+            JSON.parse(resolved.result.payload),
+          );
+          const verified = await createSessionAuthorityHandleWasm({
+            authorityBytes: material.authority,
+            verification: {
+              issuer: connected.owner.trustSnapshot.issuer,
+              trellisInstanceId: connected.owner.instanceId,
+              audienceNatsAccount: connected.owner.account,
+              policy: connected.owner.policy(),
+              purpose: "live",
+              revocationCutoff: null,
+            },
+          });
           try {
-            assert.deepEqual(lease.authority.platformPrivileges, []);
-            const status = await connected.owner.readIssuerMetadata({
-              kind: "authorityStatus",
-              authorizationSessionId: lease.authority.authorizationSessionId,
-            });
-            assert.equal(status.result.kind, "value");
-            if (status.result.kind !== "value")
-              throw new Error("signed status unavailable");
-            assert.equal(
-              AuthAuthorityStatusResponseCodec.decode(
-                JSON.parse(status.result.payload),
-              ).authorizationSessionId,
-              lease.authority.authorizationSessionId,
-            );
-            const resolved = await connected.owner.readIssuerMetadata({
-              kind: "authorityResolve",
-              contextDigest: lease.digest,
-            });
-            assert.equal(resolved.result.kind, "value");
-            if (resolved.result.kind !== "value")
-              throw new Error("signed authority unavailable");
-            const material = AuthAuthorityResolveResponseCodec.decode(
-              JSON.parse(resolved.result.payload),
-            );
-            const verified = await createSessionAuthorityHandleWasm({
-              authorityBytes: material.authority,
-              verification: {
-                issuer: connected.owner.trustSnapshot.issuer,
-                trellisInstanceId: connected.owner.instanceId,
-                audienceNatsAccount: connected.owner.account,
-                policy: connected.owner.policy(),
-                purpose: "live",
-                revocationCutoff: null,
-              },
-            });
-            try {
-              assert.equal(verified.verified.authorityDigest, lease.digest);
-            } finally {
-              verified.handle.free();
-            }
-            const chain = await connected.owner.readIssuerMetadata({
-              kind: "issuerChain",
-              pinnedKeyId: lease.authority.issuerKeyId,
-              targetKeyId: lease.authority.issuerKeyId,
-            });
-            assert.equal(chain.result.kind, "value");
-            if (chain.result.kind !== "value")
-              throw new Error("signed issuer chain unavailable");
-            AuthIssuerChainResponseCodec.decode(
-              JSON.parse(chain.result.payload),
-            );
-            lease.assertCurrent();
+            assert.equal(verified.verified.authorityDigest, lease.digest);
           } finally {
-            lease.release();
+            verified.handle.free();
           }
+          const chain = await connected.owner.readIssuerMetadata({
+            kind: "issuerChain",
+            pinnedKeyId: lease.authority.issuerKeyId,
+            targetKeyId: lease.authority.issuerKeyId,
+          });
+          assert.equal(chain.result.kind, "value");
+          if (chain.result.kind !== "value")
+            throw new Error("signed issuer chain unavailable");
+          AuthIssuerChainResponseCodec.decode(JSON.parse(chain.result.payload));
+          lease.assertCurrent();
         } finally {
-          await connected.manager.close();
+          lease.release();
         }
       } finally {
-        await rm(directory, { recursive: true, force: true });
+        await connected.manager.close();
       }
     });
   },

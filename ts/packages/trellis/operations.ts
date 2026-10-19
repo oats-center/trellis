@@ -183,8 +183,15 @@ export type OperationWaitOptions = {
 };
 
 /** Identify an invocation within its accepting deployment, not across alternative providers. */
-export type OperationStartOptions = {
-  invocationId?: string;
+export type OperationStartOptions = (
+  | { invocationId?: string; targetDeploymentId?: never }
+  | {
+      /** Persist this ID and its deployment before the first publication. */
+      invocationId: string;
+      /** Authenticated routing destination, not authority. Never falls back or retries automatically. */
+      targetDeploymentId: string;
+    }
+) & {
   /**
    * Admit cancellation intent atomically for an ordinary operation start.
    * Requires Invoke and Cancel authority; the provider enters cleanup with an
@@ -194,6 +201,11 @@ export type OperationStartOptions = {
   cancellationRequested?: boolean;
   /** Abort only automatic callback observation; not a business cancel. */
   observationSignal?: AbortSignal;
+};
+
+/** Transfer admission retains explicit targeting without cancellation-requested starts. */
+export type OperationTransferStartOptions = OperationStartOptions & {
+  cancellationRequested?: never;
 };
 
 export type AcceptedOperationEvent<TProgress = unknown, TOutput = unknown> = {
@@ -391,7 +403,7 @@ export interface TransferOperationBuilder<
   ): TransferOperationBuilder<TDesc, TProgress, TOutput, TUpdate>;
   start(
     callbacks?: OperationObserverCallbacks<TProgress, TOutput, TUpdate>,
-    options?: Omit<OperationStartOptions, "cancellationRequested">,
+    options?: OperationTransferStartOptions,
   ): AsyncResult<
     StartedTransfer<TDesc, TProgress, TOutput, TUpdate>,
     OperationControlError | UnexpectedError | TransferError
@@ -556,8 +568,8 @@ function encodeOperationInput(schema: unknown, value: unknown): JsonValue {
   return value as JsonValue;
 }
 
-/** Route established controls to their durable deployment using the existing owner subject family. */
-export function controlSubject(
+/** Derive an explicit Operation destination from authenticated deployment identity. @internal */
+export function operationStartSubject(
   descriptor: Pick<OperationShape, "subject" | "permissions">,
   deploymentId: string,
 ): string {
@@ -569,7 +581,8 @@ export function controlSubject(
     parts.length < 4 ||
     !apiId ||
     !apiVersion ||
-    !deploymentId
+    !deploymentId ||
+    /[\s\p{Cc}]/u.test(deploymentId)
   ) {
     throw new Error("invalid operation owner route");
   }
@@ -579,7 +592,15 @@ export function controlSubject(
       .replaceAll("/", "_")
       .replace(/=+$/u, ""),
   );
-  return ["operation", "v1", ...tokens, ...parts.slice(3), "control"].join(".");
+  return ["operation", "v1", ...tokens, ...parts.slice(3)].join(".");
+}
+
+/** Route established controls to their durable deployment using the existing owner subject family. */
+export function controlSubject(
+  descriptor: Pick<OperationShape, "subject" | "permissions">,
+  deploymentId: string,
+): string {
+  return `${operationStartSubject(descriptor, deploymentId)}.control`;
 }
 
 function isTerminalState(state: OperationState): boolean {
@@ -1343,22 +1364,43 @@ function invokeOperation<
   transport: OperationTransport,
   descriptor: TDesc,
   input: unknown,
-  invocationId: string,
+  invocationId: string | undefined,
   cancellationRequested = false,
+  targetDeploymentId?: string,
 ): AsyncResult<
   InvokedOperation<TDesc, TProgress, TOutput, TUpdate>,
   OperationControlError | UnexpectedError
 > {
   return AsyncResult.from(
     (async () => {
+      if (
+        (targetDeploymentId !== undefined &&
+          (typeof targetDeploymentId !== "string" ||
+            !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(targetDeploymentId) ||
+            invocationId === undefined)) ||
+        (invocationId !== undefined &&
+          !/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/u.test(invocationId))
+      ) {
+        return err(
+          createTransportError({
+            code: "trellis.operation.invalid_start",
+            message:
+              "Operation start requires a canonical invocation ULID and a valid explicit deployment.",
+            hint: "Persist the deployment, invocation ID, and identical input before the first targeted request.",
+          }),
+        );
+      }
       const responseValue = await settleRequest(() =>
         transport.requestJson(
-          descriptor.subject,
+          targetDeploymentId === undefined
+            ? descriptor.subject
+            : operationStartSubject(descriptor, targetDeploymentId),
           operationRequestBody(
             encodeOperationInput(descriptor.input, input),
-            invocationId,
+            invocationId ?? ulid(),
             cancellationRequested,
           ),
+          targetDeploymentId,
         ),
       );
       if (isErr(responseValue)) {
@@ -1370,6 +1412,19 @@ function invokeOperation<
       ).take();
       if (isErr(envelope)) {
         return envelope;
+      }
+
+      if (
+        targetDeploymentId !== undefined &&
+        envelope.ref.deploymentId !== targetDeploymentId
+      ) {
+        return err(
+          createTransportError({
+            code: "trellis.operation.invalid_accept",
+            message: "Accepted operation belongs to a different deployment.",
+            hint: "Do not change the persisted destination to recover an uncertain invocation.",
+          }),
+        );
       }
 
       return ok({
@@ -1532,8 +1587,9 @@ function startObservedOperation<
         transport,
         descriptor,
         input,
-        options?.invocationId ?? ulid(),
+        options?.invocationId,
         options?.cancellationRequested,
+        options?.targetDeploymentId,
       ).take();
       if (isErr(startedValue)) {
         return startedValue;
@@ -1597,7 +1653,7 @@ function startObservedTransfer<
   input: unknown,
   body: TransferBody,
   callbacks: OperationObserverCallbacks<TProgress, TOutput, TUpdate>,
-  options?: Omit<OperationStartOptions, "cancellationRequested">,
+  options?: OperationTransferStartOptions,
 ): AsyncResult<
   StartedTransfer<TDesc, TProgress, TOutput, TUpdate>,
   OperationControlError | UnexpectedError | TransferError
@@ -1609,7 +1665,14 @@ function startObservedTransfer<
         TProgress,
         TOutput,
         TUpdate
-      >(transport, descriptor, input, options?.invocationId ?? ulid()).take();
+      >(
+        transport,
+        descriptor,
+        input,
+        options?.invocationId,
+        false,
+        options?.targetDeploymentId,
+      ).take();
       if (isErr(startedValue)) {
         return startedValue;
       }
@@ -1960,7 +2023,7 @@ function createTransferOperationBuilder<
     },
     start(
       startCallbacks?: OperationObserverCallbacks<TProgress, TOutput, TUpdate>,
-      options?: OperationStartOptions,
+      options?: OperationTransferStartOptions,
     ) {
       return startObservedTransfer<TDesc, TProgress, TOutput, TUpdate>(
         transport,

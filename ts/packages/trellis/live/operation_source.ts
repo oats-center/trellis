@@ -42,13 +42,15 @@ export function parseOperationWatchOpen(
   const record = value as Record<string, unknown>;
   if (record.action !== "watch") return;
   if (
-    typeof record.operationId !== "string" || record.operationId.length === 0
+    typeof record.operationId !== "string" ||
+    record.operationId.length === 0
   ) {
     return;
   }
   const observation = record.observation;
   if (
-    !observation || typeof observation !== "object" ||
+    !observation ||
+    typeof observation !== "object" ||
     Array.isArray(observation)
   ) {
     return;

@@ -33,7 +33,9 @@ mod runtime;
 mod sandbox;
 
 pub use error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
-pub use identity::{TestClientIdentity, TestServiceIdentity};
+pub use identity::{
+    TestClientIdentity, TestRegisteredNativeClient, TestServiceIdentity, TestUserIdentity,
+};
 pub use runtime::{NatsSource, TestTimeouts, TrellisTestRuntime, TrellisTestRuntimeBuilder};
 pub use sandbox::{remove_retained_workdirs, WorkdirRetention};
 

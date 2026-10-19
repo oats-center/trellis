@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer } from "node:https";
 import { join } from "node:path";
@@ -12,6 +11,15 @@ import { chromium, type Page } from "playwright";
 import { build } from "vite";
 import { z } from "zod";
 import { AuthIssuerChainResponseCodec } from "../packages/trellis-testkit/trellis/types/index.js";
+import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
+import {
+  MemoryNativeOAuthCustody,
+  NativeOAuthClient,
+  type NativeOAuthSession,
+  type NativeCredentialScope,
+  type RuntimeAuthorizationTrust,
+} from "../packages/trellis/native.ts";
 
 const mode = process.argv[2];
 assert.ok(mode === "native" || mode === "browser");
@@ -158,61 +166,118 @@ const proxy = createServer(tls, async (incoming, outgoing) => {
 proxy.listen(Number(new URL(issuer).port), new URL(issuer).hostname);
 await once(proxy, "listening");
 
-async function nativeWorker(operation: string, slot: string, inflight = false) {
-  const config = join(directory, `${slot}.json`);
-  const child = spawn(
-    process.execPath,
-    [
-      "--experimental-transform-types",
-      "ts/packages/trellis/native/issuer_rotation_worker.ts",
-      operation,
-      join(directory, slot),
-      config,
-    ],
-    { stdio: ["pipe", "pipe", "inherit"], env: process.env },
-  );
-  const exited = once(child, "exit");
-  const output = createInterface({ input: child.stdout });
-  const events = output[Symbol.asyncIterator]();
-  try {
-    const event = await events.next();
-    assert.equal(
-      event.done,
-      false,
-      "worker must report its public custody outcome",
-    );
-    let result = JSON.parse(event.value);
-    if (inflight) {
-      assert.equal(result.ready, true);
-      pauseRefresh = true;
-      child.stdin.write("refresh\n");
-      const next = await events.next();
-      assert.equal(next.done, false);
-      result = JSON.parse(next.value);
-      assert.equal(result.preserved, true);
+function nativeSummary(session: NativeOAuthSession) {
+  return {
+    scope: session.scope,
+    trust: session.trust,
+    principalId: session.principalId,
+    grantId: session.oauthGrantId,
+    loginId: session.loginSessionId,
+    dpop: session.durableDpopJkt,
+    runtime: session.runtimeId,
+    nkey: session.auth.sessionNkey,
+  };
+}
+const nativeCredentials = new Map<
+  string,
+  {
+    custody: MemoryNativeOAuthCustody;
+    scope: NativeCredentialScope;
+    trust: RuntimeAuthorizationTrust;
+    initial: ReturnType<typeof nativeSummary>;
+  }
+>();
+
+async function nativeAction(operation: string, slot: string, inflight = false) {
+  if (operation === "login") {
+    const custody = new MemoryNativeOAuthCustody();
+    const { session } = await loginNativeTestClient({
+      issuer,
+      custody,
+      clientId: "trellis.cli",
+      request: apps.Denied.request,
+      approvedCapabilities: apps.Denied.request.requiredCapabilities,
+      username: "admin",
+      password: "a strong bootstrap password",
+    });
+    try {
+      const initial = nativeSummary(session);
+      nativeCredentials.set(slot, {
+        custody,
+        scope: session.scope,
+        trust: session.trust,
+        initial,
+      });
+      return initial;
+    } finally {
+      await session.close();
     }
-    const [code] = await exited;
-    assert.equal(code, 0, "public native worker must finish successfully");
-    if (operation === "login") await writeFile(config, JSON.stringify(result));
-    return result;
+  }
+  const previous = nativeCredentials.get(slot);
+  assert(previous);
+  const client = (await NativeOAuthClient.open(previous)).orThrow();
+  try {
+    if (operation === "reauthorize") {
+      await assert.rejects(
+        loginNativeTestClient({
+          issuer,
+          client,
+          clientId: previous.scope.clientId,
+          request: apps.Denied.request,
+          approvedCapabilities: apps.Denied.request.requiredCapabilities,
+          username: "other-user",
+          password: "another strong local password",
+        }),
+        { reason: "InvalidCredential" },
+      );
+      const reopened = (await NativeOAuthClient.open(previous)).orThrow();
+      try {
+        const retained = nativeSummary((await reopened.resume()).orThrow());
+        for (const key of [
+          "principalId",
+          "grantId",
+          "loginId",
+          "dpop",
+        ] as const)
+          assert.equal(retained[key], previous.initial[key]);
+        return retained;
+      } finally {
+        await reopened.close();
+      }
+    }
+    const resumed = await client.resume();
+    if (operation === "denied") {
+      assert.equal(resumed.error?.reason, "OAuthTrustUnavailable");
+      return previous.initial;
+    }
+    const session = resumed.orThrow();
+    const current = nativeSummary(session);
+    for (const key of ["principalId", "grantId", "loginId", "dpop"] as const)
+      assert.equal(current[key], previous.initial[key]);
+    assert.notEqual(current.runtime, previous.initial.runtime);
+    assert.notEqual(current.nkey, previous.initial.nkey);
+    if (inflight) {
+      pauseRefresh = true;
+      const refreshed = await session.refresh();
+      assert.equal(refreshed.error?.reason, "OAuthTrustUnavailable");
+    }
+    return current;
   } finally {
-    child.kill("SIGKILL");
-    await exited;
-    output.close();
+    await client.close();
   }
 }
 
 async function native() {
-  const first = await nativeWorker("login", "single");
-  const second = await nativeWorker("login", "double");
-  await nativeWorker("reauthorize", "single");
+  const first = await nativeAction("login", "single");
+  const second = await nativeAction("login", "double");
+  await nativeAction("reauthorize", "single");
   assert.equal(first.trust.issuer.keyId, second.trust.issuer.keyId);
   const k2 = await rotate();
   for (const malformed of ["missing", "forged"] as const) {
     chain = malformed;
     const requests = refreshRequests;
     const priorTampering = tampered[malformed];
-    await nativeWorker("denied", "double");
+    await nativeAction("denied", "double");
     assert.equal(tampered[malformed], priorTampering + 1);
     assert.equal(
       refreshRequests,
@@ -221,26 +286,26 @@ async function native() {
     );
   }
   chain = "valid";
-  const resumed = await nativeWorker("resume", "single");
+  const resumed = await nativeAction("resume", "single");
   assert.equal(resumed.trust.issuer.keyId, k2);
   const k3 = await rotate();
-  const twoHop = await nativeWorker("resume", "double");
+  const twoHop = await nativeAction("resume", "double");
   assert.equal(twoHop.trust.issuer.keyId, k3);
   assert.equal(
     BigInt(twoHop.trust.rotationSequence) -
       BigInt(second.trust.rotationSequence),
     2n,
   );
-  await nativeWorker("inflight", "single", true);
+  await nativeAction("inflight", "single", true);
   const checkpoint = successes.at(-1);
   assert.ok(checkpoint);
   chain = "valid";
-  const recovered = await nativeWorker("resume", "single");
+  const recovered = await nativeAction("resume", "single");
   assert.equal(recovered.trust.issuer.keyId, rotatedInFlight);
   assert.equal(
     successes.at(-1)?.spent,
     checkpoint.successor,
-    "restart must use the fresh unspent successor, never the old spent credential",
+    "reopening must use the fresh unspent successor, never the old spent credential",
   );
   assert.notEqual(checkpoint.spent, checkpoint.successor);
 }

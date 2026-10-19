@@ -15,7 +15,9 @@ use trellis_runtime::{
 
 use crate::admin::{AdminSession, ADMIN_USERNAME};
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
-use crate::identity::{TestClientIdentity, TestServiceIdentity};
+use crate::identity::{
+    TestClientIdentity, TestRegisteredNativeClient, TestServiceIdentity, TestUserIdentity,
+};
 use crate::sandbox::{ensure_supported_platform, PortLease, Sandbox, WorkdirRetention};
 
 const MAX_STARTUP_ATTEMPTS: usize = 3;
@@ -513,7 +515,7 @@ async fn start_once(
     )
     .await
     .map_err(|error| (error, false))?;
-    admin.verify().await.map_err(|error| (error, false))?;
+    let admin_principal_id = admin.verify().await.map_err(|error| (error, false))?;
     infrastructure.starting = false;
     Ok(TrellisTestRuntime {
         config,
@@ -524,11 +526,14 @@ async fn start_once(
         websocket_url,
         monitor_url: format!("http://127.0.0.1:{}", ports.monitor),
         admin: Some(admin),
+        admin_principal_id,
         infrastructure,
         username: username.to_owned(),
         password: password.to_owned(),
         names: Vec::new(),
         prepared_client_capabilities: std::collections::BTreeSet::new(),
+        users: std::collections::BTreeMap::new(),
+        native_applications: std::collections::BTreeMap::new(),
         timeouts,
         stopped: false,
     })
@@ -607,11 +612,14 @@ pub struct TrellisTestRuntime {
     websocket_url: String,
     monitor_url: String,
     admin: Option<AdminSession>,
+    admin_principal_id: String,
     infrastructure: Infrastructure,
     username: String,
     password: String,
     names: Vec<String>,
-    prepared_client_capabilities: std::collections::BTreeSet<String>,
+    prepared_client_capabilities: std::collections::BTreeSet<(String, String)>,
+    users: std::collections::BTreeMap<String, (TestUserIdentity, String)>,
+    native_applications: std::collections::BTreeMap<String, String>,
     timeouts: TestTimeouts,
     stopped: bool,
 }
@@ -676,7 +684,8 @@ impl TrellisTestRuntime {
             )
             .await?,
         );
-        self.admin
+        self.admin_principal_id = self
+            .admin
             .as_ref()
             .expect("reconnected administrator")
             .verify()
@@ -884,6 +893,104 @@ impl TrellisTestRuntime {
         &mut self,
         name: &str,
     ) -> Result<TestClientIdentity, TrellisTestError> {
+        let result = tokio::time::timeout(self.timeouts.request, async {
+            let app = self.register_native_application::<P>(name).await?;
+            let capabilities: Vec<_> = P::REQUIRED_CAPABILITIES
+                .iter()
+                .chain(P::OPTIONAL_CAPABILITIES)
+                .filter(|capability| {
+                    !self
+                        .prepared_client_capabilities
+                        .contains(&(self.admin_principal_id.clone(), (**capability).to_owned()))
+                })
+                .copied()
+                .collect();
+            if !capabilities.is_empty() {
+                self.admin()?
+                    .prepare_client_capabilities(&self.admin_principal_id, &capabilities)
+                    .await?;
+                self.prepared_client_capabilities.extend(
+                    capabilities
+                        .into_iter()
+                        .map(|capability| (self.admin_principal_id.clone(), capability.to_owned())),
+                );
+            }
+            self.login_native_application(&app, &self.username, &self.password)
+                .await
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(request_timeout(
+                "registering a client",
+                TrellisTestStage::ClientLogin,
+            ))
+        });
+        if result.is_err() {
+            self.mark_failed();
+        }
+        result
+    }
+
+    /// Create an ordinary account through Auth, retaining its random password privately.
+    ///
+    /// # Errors
+    /// Returns an error when the runtime is stopped or authenticated creation fails.
+    pub async fn create_user(&mut self, name: &str) -> Result<TestUserIdentity, TrellisTestError> {
+        self.ensure_running()?;
+        let username = format!(
+            "user-{}",
+            ulid::Ulid::new().to_string().to_ascii_lowercase()
+        );
+        let password = generate_password();
+        let user = self
+            .admin()?
+            .create_user(&username, name, &password)
+            .await?;
+        self.users
+            .insert(user.principal_id.clone(), (user.clone(), password));
+        Ok(user)
+    }
+
+    /// Explicitly grant capabilities to this runtime's ordinary user; login never regrants them.
+    ///
+    /// # Errors
+    /// Rejects foreign handles, stopped runtimes, and failed administrative grants.
+    pub async fn grant_user_capabilities(
+        &mut self,
+        user: &TestUserIdentity,
+        capability_ids: &[&str],
+    ) -> Result<(), TrellisTestError> {
+        self.ensure_running()?;
+        if !self
+            .users
+            .get(&user.principal_id)
+            .is_some_and(|(owned, _)| owned == user)
+        {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::Validation,
+                "test user does not belong to this runtime",
+            ));
+        }
+        self.admin()?
+            .prepare_client_capabilities(&user.principal_id, capability_ids)
+            .await?;
+        self.prepared_client_capabilities.extend(
+            capability_ids
+                .iter()
+                .map(|capability| (user.principal_id.clone(), (*capability).to_owned())),
+        );
+        Ok(())
+    }
+
+    /// Register one native application without logging in or granting user capabilities.
+    ///
+    /// # Errors
+    /// Rejects non-native requests, duplicate names, stopped runtimes, and failed registration.
+    pub async fn register_native_application<P: AppRequestDescriptor>(
+        &mut self,
+        name: &str,
+    ) -> Result<TestRegisteredNativeClient<P>, TrellisTestError> {
         self.ensure_running()?;
         if P::KIND != trellis_rs::generated::AppKind::Native {
             return Err(TrellisTestError::new(
@@ -893,53 +1000,70 @@ impl TrellisTestRuntime {
             ));
         }
         self.reserve_name(name)?;
-        let result = match tokio::time::timeout(
-            self.timeouts.request,
-            self.register_client_inner::<P>(name),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(request_timeout(
-                "registering a client",
-                TrellisTestStage::ClientLogin,
-            )),
-        };
-        if result.is_err() {
-            self.mark_failed();
-        }
-        result
-    }
-    async fn register_client_inner<P: AppRequestDescriptor>(
-        &mut self,
-        name: &str,
-    ) -> Result<TestClientIdentity, TrellisTestError> {
-        let capabilities: Vec<_> = P::REQUIRED_CAPABILITIES
-            .iter()
-            .chain(P::OPTIONAL_CAPABILITIES)
-            .filter(|capability| !self.prepared_client_capabilities.contains(**capability))
-            .copied()
-            .collect();
-        if !capabilities.is_empty() {
-            self.admin()?
-                .prepare_client_capabilities(&capabilities)
-                .await?;
-            self.prepared_client_capabilities
-                .extend(capabilities.into_iter().map(str::to_owned));
-        }
         let client_id = self.admin()?.register_native_client(name).await?;
-        let (session, nats_servers) = crate::admin::login_client(
-            &self.oauth_origin,
-            &self.workdir.join("credentials").join(&client_id),
-            &client_id,
-            &serde_json::json!([{"type":"trellis_capabilities","required":P::REQUIRED_CAPABILITIES,"optional":P::OPTIONAL_CAPABILITIES}]),
-            &self.username,
-            &self.password,
-        )
-        .await?;
-        Ok(TestClientIdentity {
+        self.native_applications
+            .insert(client_id.clone(), P::ID.to_owned());
+        Ok(TestRegisteredNativeClient {
             name: name.to_owned(),
             client_id,
+            request: std::marker::PhantomData,
+        })
+    }
+
+    /// Complete independent Device Code and Portal consent for a user on the same registered app.
+    ///
+    /// # Errors
+    /// Rejects foreign handles and real authentication/consent failures, without admin fallback.
+    pub async fn login_native_application_as<P: AppRequestDescriptor>(
+        &self,
+        app: &TestRegisteredNativeClient<P>,
+        user: &TestUserIdentity,
+    ) -> Result<TestClientIdentity, TrellisTestError> {
+        self.ensure_running()?;
+        let Some((owned, password)) = self
+            .users
+            .get(&user.principal_id)
+            .filter(|(owned, _)| owned == user)
+        else {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::Validation,
+                "test user does not belong to this runtime",
+            ));
+        };
+        self.login_native_application(app, &owned.username, password)
+            .await
+    }
+
+    async fn login_native_application<P: AppRequestDescriptor>(
+        &self,
+        app: &TestRegisteredNativeClient<P>,
+        username: &str,
+        password: &str,
+    ) -> Result<TestClientIdentity, TrellisTestError> {
+        if self
+            .native_applications
+            .get(&app.client_id)
+            .map(String::as_str)
+            != Some(P::ID)
+        {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::Authentication,
+                TrellisTestStage::Validation,
+                "native application does not belong to this runtime",
+            ));
+        }
+        let (session, nats_servers) = tokio::time::timeout(self.timeouts.request, crate::admin::login_client(
+            &self.oauth_origin,
+            &self.workdir.join("credentials").join(&app.client_id).join(ulid::Ulid::new().to_string()),
+            &app.client_id,
+            &serde_json::json!([{"type":"trellis_capabilities","required":P::REQUIRED_CAPABILITIES,"optional":P::OPTIONAL_CAPABILITIES}]),
+            username,
+            password,
+        )).await.map_err(|_| request_timeout("logging in a native application", TrellisTestStage::ClientLogin))??;
+        Ok(TestClientIdentity {
+            name: app.name.clone(),
+            client_id: app.client_id.clone(),
             session,
             nats_servers,
             trellis_url: self.trellis_url.clone(),

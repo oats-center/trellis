@@ -284,44 +284,52 @@ impl super::OAuthStorage {
         Ok((initialized.principal_id, url))
     }
 
-    /// Explicit local recovery supersedes outstanding links without altering the
-    /// administrator's authority or credentials until the reset is completed.
-    pub(crate) fn reset_local_administrator(&self, now: i64) -> Result<String, AuthError> {
-        let principal: String = self.authority.transaction(|connection| {
-            connection
+    /// Supersede pending setup links, unless password setup is already complete.
+    /// Explicit recovery may also reset an administrator with a password.
+    pub(crate) fn reset_local_administrator(
+        &self,
+        now: i64,
+        only_without_password: bool,
+    ) -> Result<Option<String>, AuthError> {
+        self.authority.transaction(|connection| {
+            let (principal, password_hash): (String, Option<String>) = connection
                 .query_row(
-                    "SELECT principal_id FROM auth_bootstrap_administrator WHERE singleton=1",
+                    "SELECT a.principal_id, c.password_hash FROM auth_bootstrap_administrator a JOIN auth_local_credentials c ON c.principal_id=a.principal_id WHERE a.singleton=1",
                     [],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?
-                .ok_or(AuthError::NotFound)
-        })?;
-        let identity = super::Mutation {
-            actor: principal.clone(),
-            request_id: super::sqlite::id(),
-            request_digest: super::sqlite::digest(&principal)?,
-        };
-        let sealed = self.authority.mutate(
-            &identity,
-            "administrator.reset",
-            &principal,
-            now,
-            |connection| {
-                let response = super::oauth::account::create_local_reset_in_transaction(
-                    connection, &principal, now,
-                )?;
-                self.encode("administrator-reset", &identity.request_id, &response)
-                    .map_err(|_| AuthError::Unavailable)
-            },
-        )?;
-        let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse =
-            self.decode("administrator-reset", &identity.request_id, &sealed)
-                .map_err(|_| AuthError::Unavailable)?;
-        Ok(format!(
-            "{}/account/reset?token={}",
-            self.authority.settings.oauth_origin, response.token
-        ))
+                .ok_or(AuthError::NotFound)?;
+            if only_without_password && password_hash.is_some() {
+                return Ok(None);
+            }
+            let identity = super::Mutation {
+                actor: principal.clone(),
+                request_id: super::sqlite::id(),
+                request_digest: super::sqlite::digest(&principal)?,
+            };
+            let sealed = self.authority.mutate_in_transaction(
+                connection,
+                &identity,
+                "administrator.reset",
+                &principal,
+                now,
+                |connection| {
+                    let response = super::oauth::account::create_local_reset_in_transaction(
+                        connection, &principal, now,
+                    )?;
+                    self.encode("administrator-reset", &identity.request_id, &response)
+                        .map_err(|_| AuthError::Unavailable)
+                },
+            )?;
+            let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse =
+                self.decode("administrator-reset", &identity.request_id, &sealed)
+                    .map_err(|_| AuthError::Unavailable)?;
+            Ok(Some(format!(
+                "{}/account/reset?token={}",
+                self.authority.settings.oauth_origin, response.token
+            )))
+        })
     }
 }
 

@@ -152,7 +152,6 @@ test(
         issuer,
         username,
         password,
-        directory,
         clientId: "trellis.cli",
         request,
         platformPrivileges: { required: ["principals.manage"] },
@@ -166,12 +165,10 @@ test(
       connections.push(() => admin.connection.close());
       // Two independent sessions of the same principal isolate physical target
       // selection from principal identity. Both stay on the same live broker.
-      const secondDirectory = `${directory}/second-custody`;
       const siblingLogin = await loginNativeTestClient({
         issuer,
         username,
         password,
-        directory: secondDirectory,
         clientId: "trellis.cli",
         request,
         signal: context.signal,

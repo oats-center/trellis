@@ -77,8 +77,8 @@ class RegistryWatchQueue implements AsyncIterator<RegistryWatchEntry> {
     if (this.#closed) {
       return Promise.resolve({ done: true, value: undefined });
     }
-    return new Promise((resolve, reject) =>
-      this.#waiting = { resolve, reject }
+    return new Promise(
+      (resolve, reject) => (this.#waiting = { resolve, reject }),
     );
   }
 }
@@ -166,10 +166,7 @@ export class AuthorizationRegistryReader {
   async getContext(digest: string): Promise<RegistryEntry | null> {
     assertRegistryKey(digest, "authorization context digest");
     this.#contextGets += 1;
-    return await this.#putOrNull(
-      this.#binding.contextBucket,
-      digest,
-    );
+    return await this.#putOrNull(this.#binding.contextBucket, digest);
   }
 
   /**
@@ -239,7 +236,8 @@ export class AuthorizationRegistryReader {
 
     const initialize = (): void => {
       if (
-        !initialized && initialBoundary !== undefined &&
+        !initialized &&
+        initialBoundary !== undefined &&
         receivedConsumerSequence >= initialBoundary
       ) {
         initialized = true;
@@ -352,13 +350,16 @@ export class AuthorizationRegistryReader {
       // A subscription created after the abort won the race is unreachable by
       // the caller, so the late resolution must still stop it.
       const opened = await raceAbort(consumePromise).catch((error) => {
-        void consumePromise.then((subscription) => {
-          try {
-            subscription.stop();
-          } catch {
-            // Late cleanup is best effort.
-          }
-        }, () => undefined);
+        void consumePromise.then(
+          (subscription) => {
+            try {
+              subscription.stop();
+            } catch {
+              // Late cleanup is best effort.
+            }
+          },
+          () => undefined,
+        );
         throw error;
       });
       messages = opened;
@@ -368,8 +369,10 @@ export class AuthorizationRegistryReader {
       // whose subscription is still live.
       if (stopped) {
         stopMessages(terminalError);
-        throw terminalError ??
-          new Error("authorization revocation watch stopped during setup");
+        throw (
+          terminalError ??
+          new Error("authorization revocation watch stopped during setup")
+        );
       }
       const status = opened.status();
       statusTask = (async () => {
@@ -466,9 +469,12 @@ export class AuthorizationRegistryReader {
       });
     } catch (error) {
       if (
-        typeof error === "object" && error !== null && "code" in error &&
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
         error.code === 404
-      ) return null;
+      )
+        return null;
       throw error;
     }
     if (!entry) return null;
@@ -482,9 +488,7 @@ export class AuthorizationRegistryReader {
 
 function validateBinding(binding: AuthorizationRegistryBinding): void {
   const entries = Object.entries(binding);
-  if (
-    entries.length !== 1 || !("contextBucket" in binding)
-  ) {
+  if (entries.length !== 1 || !("contextBucket" in binding)) {
     throw new Error("authorization registry binding is invalid");
   }
   for (const [name, value] of entries) {

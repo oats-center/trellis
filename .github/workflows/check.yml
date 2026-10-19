@@ -288,7 +288,7 @@ jobs:
           mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
           cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
           bash scripts/acquire-test-nats.sh --dest "$PWD/dist/runtime-binaries/nats"
-          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
+          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch finite_rpc operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
           cp target/debug/examples/health_watch dist/runtime-binaries/examples/
@@ -389,6 +389,7 @@ jobs:
 
       - name: Test Rust workspace
         env:
+          NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
           TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
           TRELLIS_TEST_NATS_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
           TRELLIS_NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
@@ -1245,7 +1246,7 @@ jobs:
       - name: Generate pins from the verified Check archives and stage the package
         run: node ts/tools/stage_testkit.ts dist/native dist/testkit-npm
       - name: Dry-run the staged npm publication input
-        run: npm publish --dry-run --access public dist/testkit-npm
+        run: npm publish --dry-run --access public ./dist/testkit-npm
       - name: Test the installed staged package through public clients
         run: |
           mkdir -p dist/runtime

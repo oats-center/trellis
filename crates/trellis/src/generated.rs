@@ -1117,6 +1117,53 @@ where
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
     }
 
+    /// Start or replay on the authenticated deployment persisted before the first request.
+    ///
+    /// Persist the deployment, invocation ULID, and identical input before sending.
+    /// A lost canonical reply has no known owner; choosing one afterward is not recovery.
+    /// No automatic retry, fallback, or cross-deployment deduplication is performed.
+    pub async fn start_on_deployment_with_invocation_id(
+        &self,
+        deployment_id: &str,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, D>, crate::client::CallError<D::Error>> {
+        self.client
+            .ensure_available(OptionalAction::operation(
+                D::API_ID,
+                action_name(D::DESCRIPTOR_NAME),
+            ))
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        self.inner
+            .start_on_deployment_with_invocation_id(deployment_id, invocation_id, input)
+            .await
+            .map(|inner| OperationRef { inner })
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
+    }
+
+    /// Admit cancellation on the deployment persisted before the first targeted start.
+    ///
+    /// Requires Invoke and Cancel; retries preserve durable monotone cancellation.
+    /// The returned owner reference acknowledges admission, not completed cleanup.
+    pub async fn start_cancelled_on_deployment_with_invocation_id(
+        &self,
+        deployment_id: &str,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, D>, crate::client::CallError<D::Error>> {
+        self.client
+            .ensure_available(OptionalAction::operation(
+                D::API_ID,
+                action_name(D::DESCRIPTOR_NAME),
+            ))
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        self.inner
+            .start_cancelled_on_deployment_with_invocation_id(deployment_id, invocation_id, input)
+            .await
+            .map(|inner| OperationRef { inner })
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
+    }
+
     /// Restore typed control from a complete serialized Operation reference.
     /// Its deployment routes the durable workflow; receivers still authorize controls.
     pub fn control(

@@ -413,6 +413,35 @@ an Auth-host failure. The durable intent remains available to its current or nex
 owner. Claim settlement includes time spent awaiting broker effects rather than
 reusing the batch's original timestamp.
 
+## Native Client Credential Custody
+
+Provisioned services authenticate with their installed identity seed. They do not
+need a local user credential store. Native OAuth custody belongs to applications
+acting as a logged-in user, not to ordinary service bootstrap or discovery.
+
+The Node SDK keeps credentials in process-local memory by default. Closing that
+client releases its lease; a fresh default client requires a new authorization.
+Applications can retain an explicit `MemoryNativeOAuthCustody` object to resume
+the same family across connections within their process. It keeps the DPoP key,
+authenticated issuer floor, principal binding, and spent-token state together.
+Only one client can acquire that object at a time. No SDK-owned SQLite database,
+filesystem credential directory, or implicit remembered login is required.
+
+Remembered login across process restarts is an explicit application-owned
+`NativeOAuthCustody` implementation. Its acquired lease must retain exclusive
+family ownership across read, exchange, and commit; durably commit the spent
+marker before returning a token for submission; atomically retain a received
+unsubmitted successor and verified identity; and persist authenticated issuer
+trust before spending credentials. The SDK awaits these operations and never
+retries an ambiguous token exchange. Failed acquisition does not release another
+owner's lease. Credential scope and account binding cannot change on reuse.
+
+The SDK ships no persistent Node backend. Existing Node SQLite credential files
+are not migrated, opened, or deleted; those applications must explicitly choose
+their credential provider or authorize a new process-local session. The Rust CLI
+retains its existing owner-only file custody and operating-system family lock.
+Browser IndexedDB and cross-tab Web Lock custody are unchanged.
+
 ## Issuers And Bootstrap
 
 Cold OAuth resume reads the bounded public issuer chain from
@@ -486,7 +515,10 @@ response under OAuth sealing custody, never a renewed deadline. Reset completion
 checks the originating logical session, current accepted `principals.manage`,
 credential CAS, and protected-administrator status before atomically changing the
 password and revoking login/grant families. Bootstrap-administrator reset remains
-on the existing local recovery path. Linking requires the exact initiating portal
+on the existing local recovery path. Until the protected administrator sets a
+password, each startup issues and prints a fresh setup link before provider
+admission, superseding prior pending links. Once a password exists, startup never
+issues a link without explicit local recovery. Linking requires the exact initiating portal
 user and a fresh nonce/PKCE-verified upstream exchange; provider disablement or a
 revision change invalidates the action, and another user's identity cannot be
 reassigned. Native forms enforce Origin and CSRF without accepting actor IDs from
@@ -529,6 +561,21 @@ issuer-chain changes wake renewal immediately. Private admission reads use their
 bound runtime-key proof and retained transport policy even when application
 authority needs a new signer; fresh application work remains fenced until the
 replacement authority is verified and promoted.
+When no safe admitted carrier survives, an expired retained maintenance snapshot
+does not require fresh admission to reuse its retired logical session. The same
+provisioned credential may receive independently verified replacement authority
+with reduced permissions. Installation, pinned issuer trust, runtime proof key,
+credential association and signed transport policy remain checked; known cutoffs
+are preserved and revoked roots or terminal shutdown cannot recover.
+
+Accepted finite RPC results retain their authenticated opening rather than
+requiring that opening's context to remain live at delivery. Ordinary renewal
+and opening-context expiry do not reject a signed success or declared error
+received within the original request deadline. Current provider trust and
+authority, the exact request/response transcript, caller revocation coverage, known
+revocation, cancellation and logical shutdown remain enforced. This evidence
+cannot authorize a new request.
+
 Provider ingress preparation retains the verified private candidate authority,
 not the suspended predecessor. This applies to Live and Operation observation
 providers alike. Retention still verifies provider actions against the accepted
@@ -542,6 +589,11 @@ and certificate. Retained events require both signed event time and genuine
 original JetStream publication time within those validity windows and before any
 signed revocation cutoff; ordinary certificate expiry and issuer retirement do
 not invalidate that historical evidence. Compromised issuers remain unusable.
+Generated Rust ephemeral and explicit-acknowledgement Event subscriptions verify
+the actual subject, original bytes and proof before exposing decoded data.
+Ephemeral delivery requires live publisher authority; invalid publications are
+dropped without ending a healthy stream. Current subscriber authority remains
+independent of publisher authenticity, including for retained delivery.
 Durable consumers verify at the broker's original publication time. The existing
 dead-letter journal retains that time with the original stream, sequence, bytes,
 and proof headers even after source retention removes the event. Targeted replay

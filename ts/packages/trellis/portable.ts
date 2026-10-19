@@ -129,6 +129,7 @@ export type {
   OperationStartOptions,
   OperationState,
   OperationTransferProgress,
+  OperationTransferStartOptions,
   OperationWatchOptions,
   ProgressOperationEvent,
   ProgressOperationSnapshot,

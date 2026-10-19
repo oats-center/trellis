@@ -30,6 +30,7 @@ agent cli {
     capability oauthClientsRead;
     capability oauthClientsPut;
     capability serviceInstancesDisable;
+    capability serviceInstancesRemove;
     capability serviceInstancesProvision;
     capability usersCreate;
     capability usersRead;

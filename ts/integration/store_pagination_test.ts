@@ -181,7 +181,6 @@ test("generated keyset clients cross the live runtime boundary", async () => {
       );
       const login = await loginNativeTestClient({
         issuer: runtime.oauthIssuer,
-        directory: join(runtime.workdir, "pagination-admin"),
         clientId: "trellis.cli",
         request: adminParticipant,
         username: "admin",

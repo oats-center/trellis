@@ -51,21 +51,23 @@ type ProviderBase<TService> = TService extends {
   readonly name: infer TName;
   readonly createSqlOutbox: infer TCreateSqlOutbox;
   readonly createTransfer: infer TCreateTransfer;
-} ? {
-    readonly health: THealth;
-    readonly connection: TConnection;
-    readonly name: TName;
-    readonly createSqlOutbox: TCreateSqlOutbox;
-    readonly createTransfer: TCreateTransfer;
-    wait(): Promise<void>;
-    stop(): Promise<void>;
-  }
+}
+  ? {
+      readonly health: THealth;
+      readonly connection: TConnection;
+      readonly name: TName;
+      readonly createSqlOutbox: TCreateSqlOutbox;
+      readonly createTransfer: TCreateTransfer;
+      wait(): Promise<void>;
+      stop(): Promise<void>;
+    }
   : {};
 
 type ProviderIdentity<TService> = TService extends {
   readonly connection: infer TConnection;
   readonly name: infer TName;
-} ? { readonly connection: TConnection; readonly name: TName }
+}
+  ? { readonly connection: TConnection; readonly name: TName }
   : {};
 
 type ServiceContract<TContract extends GeneratedParticipant> = Extract<
@@ -79,29 +81,27 @@ type ServiceContract<TContract extends GeneratedParticipant> = Extract<
 >;
 type OwnedApi<TContract extends GeneratedParticipant> = TContract extends {
   readonly __runtimeTypes?: { readonly ownedApi: infer TApi };
-} ? Extract<TApi, RuntimeApi>
+}
+  ? Extract<TApi, RuntimeApi>
   : never;
 
-type JobsOfContract<TContract extends GeneratedParticipant> = TContract extends
-  {
+type JobsOfContract<TContract extends GeneratedParticipant> =
+  TContract extends {
     readonly __runtimeTypes?: { jobs: infer TJobs };
-  } ? Extract<TJobs, ParticipantJobsMetadata>
-  : Record<string, never>;
+  }
+    ? Extract<TJobs, ParticipantJobsMetadata>
+    : Record<string, never>;
 
-type ProviderEventPublisher<TEvent> =
-  & ((event: TEvent) => AsyncResult<void, BaseError>)
-  & {
-    prepare(
-      event: TEvent,
-    ): Result<PreparedTrellisEvent, BaseError>;
-  };
+type ProviderEventPublisher<TEvent> = ((
+  event: TEvent,
+) => AsyncResult<void, BaseError>) & {
+  prepare(event: TEvent): Result<PreparedTrellisEvent, BaseError>;
+};
 
-type ProviderResources<
-  TContract extends GeneratedParticipant,
-  TService,
-> = {
+type ProviderResources<TContract extends GeneratedParticipant, TService> = {
   readonly kv: TService extends { readonly kv: infer TKv } ? TKv : never;
-  readonly store: TService extends { readonly store: infer TStore } ? TStore
+  readonly store: TService extends { readonly store: infer TStore }
+    ? TStore
     : never;
   readonly jobs: ServiceJobsFacadeOf<
     JobsOfContract<TContract>,
@@ -112,18 +112,16 @@ type ProviderResources<
 type ProviderHandlerCommon<
   TContract extends GeneratedParticipant,
   TService,
-> =
-  & ProviderIdentity<TService>
-  & Pick<
+> = ProviderIdentity<TService> &
+  Pick<
     CallerRuntime<TContract>,
     "availability" | "watchAvailability" | "publishPrepared" | "transfer"
   >;
 
 type ProviderOwnedPublish<TContract extends GeneratedParticipant> = {
   readonly [
-    K in
-      & keyof OwnedApi<TContract>["events"]
-      & string as `publish${PascalActionName<K>}`
+    K in keyof OwnedApi<TContract>["events"] &
+      string as `publish${PascalActionName<K>}`
   ]: ProviderEventPublisher<
     InferSchemaType<OwnedApi<TContract>["events"][K]["event"]>
   >;
@@ -133,53 +131,43 @@ type ProviderOwnedPublish<TContract extends GeneratedParticipant> = {
 export type ProviderHandlerClient<
   TContract extends GeneratedParticipant,
   TService,
-> =
-  & CallerHandlerActionSurface<TContract>
-  & ProviderOwnedPublish<TContract>
-  & ProviderResources<TContract, TService>
-  & ProviderHandlerCommon<TContract, TService>;
+> = CallerHandlerActionSurface<TContract> &
+  ProviderOwnedPublish<TContract> &
+  ProviderResources<TContract, TService> &
+  ProviderHandlerCommon<TContract, TService>;
 
-type ProviderOwnedRegistrations<TContract extends GeneratedParticipant> =
-  & {
-    readonly [
-      K in
-        & keyof OwnedApi<TContract>["rpc"]
-        & string as `handle${PascalActionName<K>}`
-    ]: (handler: RpcHandler<ServiceContract<TContract>, K>) => Promise<void>;
-  }
-  & {
-    readonly [
-      K in
-        & keyof OwnedApi<TContract>["operations"]
-        & string as `handle${PascalActionName<K>}`
-    ]:
-      & ((
-        handler: OperationHandler<ServiceContract<TContract>, K>,
-      ) => Promise<void>)
-      & OperationControlRegistration<OwnedApi<TContract>, K>;
-  }
-  & {
-    readonly [
-      K in
-        & keyof NonNullable<OwnedApi<TContract>["lives"]>
-        & string as `handle${PascalActionName<K>}`
-    ]: (handler: LiveHandler<ServiceContract<TContract>, K>) => Promise<void>;
-  }
-  & {
-    readonly [
-      K in
-        & keyof OwnedApi<TContract>["events"]
-        & string as `on${PascalActionName<K>}`
-    ]: (
-      handler: (args: {
-        event: InferSchemaType<OwnedApi<TContract>["events"][K]["event"]>;
-        context: EventListenerContext;
-        client: ServiceHandlerClient<ServiceContract<TContract>>;
-      }) => unknown | Promise<unknown>,
-      subjectData?: Record<string, unknown>,
-      options?: EventOpts,
-    ) => AsyncResult<void, BaseError>;
-  };
+type ProviderOwnedRegistrations<TContract extends GeneratedParticipant> = {
+  readonly [
+    K in keyof OwnedApi<TContract>["rpc"] &
+      string as `handle${PascalActionName<K>}`
+  ]: (handler: RpcHandler<ServiceContract<TContract>, K>) => Promise<void>;
+} & {
+  readonly [
+    K in keyof OwnedApi<TContract>["operations"] &
+      string as `handle${PascalActionName<K>}`
+  ]: ((
+    handler: OperationHandler<ServiceContract<TContract>, K>,
+  ) => Promise<void>) &
+    OperationControlRegistration<OwnedApi<TContract>, K>;
+} & {
+  readonly [
+    K in keyof NonNullable<OwnedApi<TContract>["lives"]> &
+      string as `handle${PascalActionName<K>}`
+  ]: (handler: LiveHandler<ServiceContract<TContract>, K>) => Promise<void>;
+} & {
+  readonly [
+    K in keyof OwnedApi<TContract>["events"] &
+      string as `on${PascalActionName<K>}`
+  ]: (
+    handler: (args: {
+      event: InferSchemaType<OwnedApi<TContract>["events"][K]["event"]>;
+      context: EventListenerContext;
+      client: ServiceHandlerClient<ServiceContract<TContract>>;
+    }) => unknown | Promise<unknown>,
+    subjectData?: Record<string, unknown>,
+    options?: EventOpts,
+  ) => AsyncResult<void, BaseError>;
+};
 
 type ProviderSelectedEventSubscriptions<
   TContract extends GeneratedParticipant,
@@ -205,11 +193,10 @@ type ProviderSelectedEventSubscriptions<
 export type ProviderRuntime<
   TContract extends GeneratedParticipant,
   TService,
-> =
-  & ProviderBase<TService>
-  & ProviderHandlerClient<TContract, TService>
-  & ProviderOwnedRegistrations<TContract>
-  & ProviderSelectedEventSubscriptions<TContract, TService>;
+> = ProviderBase<TService> &
+  ProviderHandlerClient<TContract, TService> &
+  ProviderOwnedRegistrations<TContract> &
+  ProviderSelectedEventSubscriptions<TContract, TService>;
 
 type ProviderQueue = {
   create(payload: unknown): unknown;
@@ -236,8 +223,7 @@ type ProviderService = {
       string,
       Record<
         string,
-        & ((handler: (args: Record<string, unknown>) => unknown) => unknown)
-        & {
+        ((handler: (args: Record<string, unknown>) => unknown) => unknown) & {
           accept?: (args: unknown) => unknown;
           control?: (operationId: string) => unknown;
           reconcile?: (operationId: string) => unknown;
@@ -283,28 +269,36 @@ export function createProviderRuntime<
   };
   const queues = service.jobs as Record<string, ProviderQueue>;
   provider.jobs = Object.fromEntries(
-    Object.entries(queues).map(([name, queue]) => [name, {
-      create: (payload: unknown) => queue.create(payload),
-      submit: (payload: unknown) => queue.submit(payload),
-      updates: (jobId: string, options?: unknown) =>
-        queue.updates(jobId, options),
-      handle: (
-        handler: (args: Record<string, unknown>) => unknown,
-        options?: unknown,
-      ) =>
-        queue.handle((args) => handler({ ...args, client: provider }), options),
-    }]),
+    Object.entries(queues).map(([name, queue]) => [
+      name,
+      {
+        create: (payload: unknown) => queue.create(payload),
+        submit: (payload: unknown) => queue.submit(payload),
+        updates: (jobId: string, options?: unknown) =>
+          queue.updates(jobId, options),
+        handle: (
+          handler: (args: Record<string, unknown>) => unknown,
+          options?: unknown,
+        ) =>
+          queue.handle(
+            (args) => handler({ ...args, client: provider }),
+            options,
+          ),
+      },
+    ]),
   );
-  const caller = createCallerRuntime(service[PROVIDER_CALLER], contract) as
-    & Record<string, unknown>
-    & CallerRuntime<TContract>;
+  const caller = createCallerRuntime(
+    service[PROVIDER_CALLER],
+    contract,
+  ) as Record<string, unknown> & CallerRuntime<TContract>;
   provider.availability = caller.availability;
   provider.watchAvailability = caller.watchAvailability;
   provider.transfer = caller.transfer;
   for (const action of getParticipantRuntime(contract).actions) {
     const connected = caller[action.connectedName];
     if (
-      action.descriptor.kind === "event" && action.direction === "subscribe"
+      action.descriptor.kind === "event" &&
+      action.direction === "subscribe"
     ) {
       provider[action.connectedName] = (
         handler: (args: Record<string, unknown>) => unknown,
@@ -315,14 +309,16 @@ export function createProviderRuntime<
         if (unavailable) {
           return AsyncResult.from(Promise.resolve(err(unavailable)));
         }
-        return (service[PROVIDER_CALLER] as {
-          listenEvent(
-            event: string,
-            subjectData: Record<string, unknown>,
-            handler: (message: unknown, context: unknown) => unknown,
-            options?: unknown,
-          ): unknown;
-        }).listenEvent(
+        return (
+          service[PROVIDER_CALLER] as {
+            listenEvent(
+              event: string,
+              subjectData: Record<string, unknown>,
+              handler: (message: unknown, context: unknown) => unknown,
+              options?: unknown,
+            ): unknown;
+          }
+        ).listenEvent(
           action.name,
           subjectData ?? {},
           (message, context) =>
@@ -335,25 +331,22 @@ export function createProviderRuntime<
     }
   }
 
-  for (
-    const name of Object.keys(getParticipantRuntime(contract).ownedApi.rpc)
-  ) {
+  for (const name of Object.keys(
+    getParticipantRuntime(contract).ownedApi.rpc,
+  )) {
     const [group, leaf] = surfacePath(name);
     const register = service.handle.rpc![group]![leaf]!;
     provider[`handle${pascalSurfaceName(name)}`] = (
       handler: (args: Record<string, unknown>) => unknown,
     ) => register((args) => handler({ ...args, client: provider }));
   }
-  for (
-    const name of Object.keys(
-      getParticipantRuntime(contract).ownedApi.operations,
-    )
-  ) {
+  for (const name of Object.keys(
+    getParticipantRuntime(contract).ownedApi.operations,
+  )) {
     const [group, leaf] = surfacePath(name);
     const register = service.handle.operation![group]![leaf]!;
-    const expose = (
-      handler: (args: Record<string, unknown>) => unknown,
-    ) => register((args) => handler({ ...args, client: provider }));
+    const expose = (handler: (args: Record<string, unknown>) => unknown) =>
+      register((args) => handler({ ...args, client: provider }));
     provider[`handle${pascalSurfaceName(name)}`] = Object.assign(expose, {
       ...(register.accept ? { accept: register.accept.bind(register) } : {}),
       ...(register.control ? { control: register.control.bind(register) } : {}),
@@ -362,33 +355,33 @@ export function createProviderRuntime<
         : {}),
     });
   }
-  for (
-    const name of Object.keys(
-      getParticipantRuntime(contract).ownedApi.lives ?? {},
-    )
-  ) {
+  for (const name of Object.keys(
+    getParticipantRuntime(contract).ownedApi.lives ?? {},
+  )) {
     const [group, leaf] = surfacePath(name);
     const register = service.handle.live![group]![leaf]!;
     provider[`handle${pascalSurfaceName(name)}`] = (
       handler: (args: Record<string, unknown>) => unknown,
     ) => register((args) => handler({ ...args, client: provider }));
   }
-  for (
-    const name of Object.keys(getParticipantRuntime(contract).ownedApi.events)
-  ) {
+  for (const name of Object.keys(
+    getParticipantRuntime(contract).ownedApi.events,
+  )) {
     provider[`on${pascalSurfaceName(name)}`] = (
       handler: (args: Record<string, unknown>) => unknown,
       subjectData?: Record<string, unknown>,
       options?: unknown,
     ) =>
-      (service[PROVIDER_CALLER] as {
-        listenEvent(
-          event: string,
-          subjectData: Record<string, unknown>,
-          handler: (message: unknown, context: unknown) => unknown,
-          options?: unknown,
-        ): unknown;
-      }).listenEvent(
+      (
+        service[PROVIDER_CALLER] as {
+          listenEvent(
+            event: string,
+            subjectData: Record<string, unknown>,
+            handler: (message: unknown, context: unknown) => unknown,
+            options?: unknown,
+          ): unknown;
+        }
+      ).listenEvent(
         name,
         subjectData ?? {},
         (message, context) =>
@@ -397,17 +390,21 @@ export function createProviderRuntime<
       );
     const publish = Object.assign(
       (event: Record<string, unknown>) =>
-        (service[PROVIDER_CALLER] as {
-          publish(event: string, data: Record<string, unknown>): unknown;
-        }).publish(name, event),
+        (
+          service[PROVIDER_CALLER] as {
+            publish(event: string, data: Record<string, unknown>): unknown;
+          }
+        ).publish(name, event),
       {
         prepare: (event: Record<string, unknown>) =>
-          (service[PROVIDER_CALLER] as {
-            prepare(
-              event: string,
-              data: Record<string, unknown>,
-            ): Result<PreparedTrellisEvent, BaseError>;
-          }).prepare(name, event),
+          (
+            service[PROVIDER_CALLER] as {
+              prepare(
+                event: string,
+                data: Record<string, unknown>,
+              ): Result<PreparedTrellisEvent, BaseError>;
+            }
+          ).prepare(name, event),
       },
     );
     provider[`publish${pascalSurfaceName(name)}`] = publish;

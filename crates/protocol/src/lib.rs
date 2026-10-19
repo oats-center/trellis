@@ -13,6 +13,7 @@ mod error;
 mod identifiers;
 mod issuer_metadata;
 pub mod live;
+pub mod operation_record;
 mod pagination;
 mod participant;
 mod permissions;

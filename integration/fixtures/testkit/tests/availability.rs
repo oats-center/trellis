@@ -24,6 +24,9 @@ mod state_lifecycle;
 #[path = "support/transfer_interop.rs"]
 mod transfer_interop;
 
+#[path = "support/users.rs"]
+mod users;
+
 fn wire<T: DeserializeOwned>(value: Json) -> T {
     serde_json::from_value(value).unwrap()
 }

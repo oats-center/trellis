@@ -51,17 +51,18 @@ export function injectTraceContext(carrier: HeaderCarrier, span?: Span): void {
  * inheriting an unrelated active span. Invalid carriers never reject a request.
  */
 export function extractTraceContext(carrier: HeaderCarrier): Context {
-  const traceparent = carrier.get("traceparent") ??
+  const traceparent =
+    carrier.get("traceparent") ??
     carrier.get("Traceparent") ??
     carrier.get("TRACEPARENT");
-  const tracestate = carrier.get("tracestate") ?? carrier.get("Tracestate") ??
+  const tracestate =
+    carrier.get("tracestate") ??
+    carrier.get("Tracestate") ??
     carrier.get("TRACESTATE");
   if (!validateTraceparent(traceparent)) {
     return ROOT_CONTEXT;
   }
-  const pairs = new Map<string, string>([
-    ["traceparent", traceparent],
-  ]);
+  const pairs = new Map<string, string>([["traceparent", traceparent]]);
   if (tracestate !== undefined && validateTracestate(tracestate)) {
     pairs.set("tracestate", tracestate);
   }
@@ -108,18 +109,22 @@ export function validateTraceparent(
     keys: (source: Map<string, string>) => [...source.keys()],
   });
   const spanContext = trace.getSpanContext(extracted);
-  return spanContext !== undefined &&
-    spanContext.traceId !== "00000000000000000000000000000000";
+  return (
+    spanContext !== undefined &&
+    spanContext.traceId !== "00000000000000000000000000000000"
+  );
 }
 
 /** Validates one `tracestate` value: bounded size, members, and printable ASCII. */
 export function validateTracestate(value: string | undefined): value is string {
   if (value === undefined) return false;
   const encoder = new TextEncoder();
-  return value.length > 0 &&
+  return (
+    value.length > 0 &&
     encoder.encode(value).length <= TRACESTATE_MAX_BYTES &&
     /^[\x20-\x7e]*$/.test(value) &&
-    value.split(",").length <= TRACESTATE_MAX_MEMBERS;
+    value.split(",").length <= TRACESTATE_MAX_MEMBERS
+  );
 }
 
 export function createMapCarrier(): HeaderCarrier {

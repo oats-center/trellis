@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer, request } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
 import { test } from "node:test";
 import { createInterface } from "node:readline";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
@@ -12,7 +11,6 @@ test(
   { timeout: 45000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
-      const directory = await mkdtemp("/tmp/opencode/native-loss-");
       let drop = false;
       let tokens = 0;
       const targets = new WeakMap<object, string>();
@@ -70,14 +68,14 @@ test(
     import { once } from "node:events";
     import { loginNativeTestClient } from ${moduleUrl("../../trellis-testkit/src/admin/native_auth.ts")};
     import { apps } from ${moduleUrl("../../trellis-testkit/trellis/index.js")};
-    import { connectNativeSession, NativeOAuthClient } from ${moduleUrl("../native.ts")};
-    const directory = ${JSON.stringify(directory)};
-    const login = await loginNativeTestClient({ issuer:process.env.TRELLIS_NATIVE_TEST_ISSUER, username:process.env.TRELLIS_NATIVE_TEST_USERNAME,password:process.env.TRELLIS_NATIVE_TEST_PASSWORD,directory,clientId:"trellis.cli",request:apps.cli.request });
+    import { connectNativeSession, NativeOAuthClient, MemoryNativeOAuthCustody } from ${moduleUrl("../native.ts")};
+    const custody = new MemoryNativeOAuthCustody();
+    const login = await loginNativeTestClient({ issuer:process.env.TRELLIS_NATIVE_TEST_ISSUER, username:process.env.TRELLIS_NATIVE_TEST_USERNAME,password:process.env.TRELLIS_NATIVE_TEST_PASSWORD,custody,clientId:"trellis.cli",request:apps.cli.request });
     const session = login.session;
     const scope = session.scope; const trust = session.trust;
     const connected = await connectNativeSession({session,servers:login.servers}).orThrow();
     await session.close();
-    const contender = await NativeOAuthClient.open({directory,scope:session.scope,trust:session.trust,signal:AbortSignal.timeout(100)});
+    const contender = await NativeOAuthClient.open({custody,scope:session.scope,trust:session.trust});
     assert.equal(contender.isErr(),true);
     const successful = (await session.refresh()).orThrow(); assert.equal(successful.auth,session.auth); assert.equal(successful.runtimeId,session.runtimeId); assert.equal(successful.principalId,session.principalId);
     console.log("ready"); await once(process.stdin,"data");
@@ -85,7 +83,7 @@ test(
     console.log("spent"); await once(process.stdin,"data");
     const retry = await session.refresh(); assert.equal(retry.isErr(),true); assert.equal(retry.error.reason,"OAuthRecoveryRequired");
     await connected.manager.close();
-    const reopened = (await NativeOAuthClient.open({directory,scope,trust})).orThrow();
+    const reopened = (await NativeOAuthClient.open({custody,scope,trust})).orThrow();
     const restart = await reopened.resume(); assert.equal(restart.isErr(),true); assert.equal(restart.error.reason,"OAuthRecoveryRequired"); await reopened.close();
     console.log("done");
   `,
@@ -152,7 +150,6 @@ test(
         proxy.closeAllConnections();
         proxy.close();
         forwarding.close();
-        await rm(directory, { recursive: true, force: true });
       }
     });
   },

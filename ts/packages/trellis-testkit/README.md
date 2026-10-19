@@ -13,7 +13,7 @@ evidence by hand.
 ```ts
 import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "test-trellis";
+import { apps, participants } from "test-trellis";
 
 await using runtime = await TrellisTestRuntime.start();
 const identity = await runtime.registerService({
@@ -21,28 +21,65 @@ const identity = await runtime.registerService({
   contract: participants.provider.participant,
 });
 const service = await TrellisService.connect({
-  trellisUrl: runtime.trellisUrl,
+  trellisUrl: runtime.oauthIssuer,
   participant: participants.provider.participant,
   name: "provider",
   seed: identity.seed,
 }).orThrow();
 const client = await runtime.connectClient({
   name: "caller",
-  contract: participants.caller.participant,
+  contract: apps.caller.request,
 });
 ```
 
 Register generated handlers before starting the service. Exercise generated
 caller methods and inspect their `Result` values with ordinary assertions. Stop
 the service in `finally`, await its run task, and let `await using` stop the
-test runtime. Ephemeral authorization storage is appropriate only for isolated
-tests; production clients need persistent trust state.
+test runtime. Node native OAuth defaults to process-local custody; applications
+that need persistent login provide their own explicit custody adapter.
 
 For events, subscribe through a generated surface before publishing, then await
 the actual typed payload. For operations and jobs, await their public terminal
 result. No helper should replace a real boundary with a fabricated result.
 
 ## Ownership and Waiting
+
+### Ordinary users sharing one app
+
+```ts
+const alice = await runtime.createUser({ name: "Alice" });
+const bob = await runtime.createUser({ name: "Bob" });
+for (const user of [alice, bob]) {
+  await runtime.grantUserCapabilities({
+    user,
+    capabilityIds: apps.caller.request.requiredCapabilities,
+  });
+}
+const a1 = await runtime.connectClient({
+  name: "Alice 1",
+  contract: apps.caller.request,
+  user: alice,
+});
+const a2 = await runtime.connectClient({
+  name: "Alice 2",
+  contract: apps.caller.request,
+  user: alice,
+});
+const b1 = await runtime.connectClient({
+  name: "Bob 1",
+  contract: apps.caller.request,
+  user: bob,
+});
+```
+
+The app registration is reused; every login has independent OAuth/DPoP custody.
+Alice's sessions retain one principal, distinct from Bob's. Runtime-owned user
+handles expose `name`, `username`, and `principalId`, never passwords. Explicit
+user login uses real consent and never grants or restores capabilities. This
+also applies to `registerClient` and `authorizeNativeUserCode` with `user`.
+Omitting `user` retains the seeded-admin convenience; service seeds are unchanged.
+
+### Runtime lifecycle
 
 The released package acquires the exact-version production CLI and server from
 release archives pinned by SHA-256. Automatic acquisition currently supports

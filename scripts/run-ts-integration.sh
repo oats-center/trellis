@@ -50,6 +50,7 @@ fixture_bins=(
   live_probe
   live_probe_caller
   empty_watch
+  finite_rpc
   operation_lease_loss
   device_companion
   transport_growth_subject

@@ -43,6 +43,8 @@ export function isDeviceActivationAuthCallback(
   preservedState: DeviceActivationCallbackState | null,
 ): boolean {
   if (!preservedState) return false;
-  return currentUrl.searchParams.get(ACTIVATION_CALLBACK_QUERY_PARAM) ===
-    preservedState.callbackToken;
+  return (
+    currentUrl.searchParams.get(ACTIVATION_CALLBACK_QUERY_PARAM) ===
+    preservedState.callbackToken
+  );
 }

@@ -12,9 +12,7 @@ import {
  * is revoked", which is a separate observation.
  */
 export type TransportAuthorizationStatus =
-  | "unavailable"
-  | "current"
-  | "upgrade_available";
+  "unavailable" | "current" | "upgrade_available";
 
 /**
  * Prefix the runtime sets on every callout-owned attachment's authenticated
@@ -39,11 +37,14 @@ export function admissionContextDigest(
   const fields = remainder.split(":");
   const [digest, serverId, clientId] = fields;
   if (
-    fields.length !== 3 || !digest || !serverId ||
+    fields.length !== 3 ||
+    !digest ||
+    !serverId ||
     /[\p{White_Space}\uFEFF]/u.test(remainder) ||
     !/^[1-9][0-9]*$/u.test(clientId) ||
     BigInt(clientId) > 18446744073709551615n
-  ) return undefined;
+  )
+    return undefined;
   return digest;
 }
 
@@ -177,8 +178,8 @@ export class TransportAuthorizationState {
       relation === "current"
         ? "current"
         : relation === "upgrade_available"
-        ? "upgrade_available"
-        : "unavailable",
+          ? "upgrade_available"
+          : "unavailable",
     );
   }
 

@@ -12,6 +12,7 @@ import {
   connectNativeClient,
   discoverNativeOAuth,
   NativeOAuthClient,
+  MemoryNativeOAuthCustody,
 } from "@oatscenter/trellis/native";
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
@@ -87,9 +88,10 @@ test("an enrolled device uses an independently browser-consented native companio
       });
       await prepared.session.close();
       const server = (await discoverNativeOAuth(runtime.oauthIssuer)).orThrow();
+      const credentialCustody = new MemoryNativeOAuthCustody();
       const custody = (
         await NativeOAuthClient.open({
-          directory: join(runtime.workdir, "companion-custody"),
+          custody: credentialCustody,
           scope: {
             issuer: server.issuer,
             instanceId: server.trust.instanceId,
@@ -149,7 +151,7 @@ test("an enrolled device uses an independently browser-consented native companio
         }
         const resumedCustody = (
           await NativeOAuthClient.open({
-            directory: join(runtime.workdir, "companion-custody"),
+            custody: credentialCustody,
             scope,
             trust: server.trust,
           })

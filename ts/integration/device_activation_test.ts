@@ -13,6 +13,7 @@ import {
   connectNativeClient,
   discoverNativeOAuth,
   NativeOAuthClient,
+  MemoryNativeOAuthCustody,
 } from "@oatscenter/trellis/native";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
 import {
@@ -70,7 +71,6 @@ test("device enrollment and independent companion consent survive restart withou
       seed: identity.identitySeedBase64url,
       participant,
     };
-    const directory = join(runtime.workdir, "companion-oauth");
     let device:
       | Awaited<
           ReturnType<
@@ -120,9 +120,10 @@ test("device enrollment and independent companion consent survive restart withou
         contract: request,
       });
       await prepared.session.close();
+      const credentialCustody = new MemoryNativeOAuthCustody();
       const login = await loginNativeTestClient({
         issuer: runtime.oauthIssuer,
-        directory,
+        custody: credentialCustody,
         clientId: `trellis.device.${deployment.deploymentId}.companion`,
         request,
         username: runtime.adminUsername,
@@ -151,7 +152,7 @@ test("device enrollment and independent companion consent survive restart withou
       }
       let custody = (
         await NativeOAuthClient.open({
-          directory,
+          custody: credentialCustody,
           scope,
           trust,
         })
@@ -181,7 +182,7 @@ test("device enrollment and independent companion consent survive restart withou
       );
       custody = (
         await NativeOAuthClient.open({
-          directory,
+          custody: credentialCustody,
           scope,
           trust,
         })
@@ -221,7 +222,11 @@ test("device enrollment and independent companion consent survive restart withou
       device = undefined;
       // Parent shutdown closes its wrapper, not the independent OAuth grant.
       custody = (
-        await NativeOAuthClient.open({ directory, scope, trust })
+        await NativeOAuthClient.open({
+          custody: credentialCustody,
+          scope,
+          trust,
+        })
       ).orThrow();
       session = (await custody.resume()).orThrow();
       const independent = await connectNativeClient({

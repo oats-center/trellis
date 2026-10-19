@@ -575,7 +575,7 @@ mod tests {
         second.abort();
         assert!(second.await.unwrap_err().is_cancelled());
         assert!(owner.assert_current(&authority).is_err());
-        assert!(owner.assert_accepted_request_current(&authority).is_err());
+        assert!(owner.assert_accepted_response_allowed(&authority).is_err());
         assert!(owner.own_authority().is_err());
         let (third, snapshot) = start_mirror();
         tokio::time::timeout(RESOLUTION_TIMEOUT, snapshot)
@@ -642,7 +642,7 @@ mod tests {
             .unwrap();
         assert!(owner.assert_current(&authority).is_err());
         owner.assert_current(&replacement).unwrap();
-        owner.assert_accepted_request_current(&authority).unwrap();
+        owner.assert_accepted_response_allowed(&authority).unwrap();
         let retirement = SignedSessionRevocation {
             format: trellis_protocol::SESSION_REVOCATION_FORMAT_V1.into(),
             issuer_key_id: issuer.key_id.clone(),
@@ -677,7 +677,7 @@ mod tests {
             .unwrap();
         owner.accept_revocation(retirement).unwrap();
         assert!(owner.assert_current(&replacement).is_err());
-        assert!(owner.assert_accepted_request_current(&authority).is_err());
+        assert!(owner.assert_accepted_response_allowed(&authority).is_err());
         assert!(owner
             .promote_own(replacement.clone(), Some(replacement.digest()))
             .is_err());
@@ -692,7 +692,7 @@ mod tests {
             owner.assert_current(&replacement),
             Err(TrellisClientError::Protocol(_))
         ));
-        assert!(owner.assert_accepted_request_current(&authority).is_err());
+        assert!(owner.assert_accepted_response_allowed(&authority).is_err());
         fourth.abort();
         assert!(fourth.await.unwrap_err().is_cancelled());
 
@@ -1181,22 +1181,6 @@ impl AuthorizationOwner {
         &self,
         authority: &VerifiedSessionAuthority,
     ) -> Result<(), TrellisClientError> {
-        self.assert_authority_current(authority, true)
-    }
-
-    /// Recheck a published request without requiring its signing snapshot to remain installed.
-    pub(crate) fn assert_accepted_request_current(
-        &self,
-        authority: &VerifiedSessionAuthority,
-    ) -> Result<(), TrellisClientError> {
-        self.assert_authority_current(authority, false)
-    }
-
-    fn assert_authority_current(
-        &self,
-        authority: &VerifiedSessionAuthority,
-        require_installed_own: bool,
-    ) -> Result<(), TrellisClientError> {
         let state = self.state.read().map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
         })?;
@@ -1204,8 +1188,7 @@ impl AuthorizationOwner {
         let policy = self.policy();
         if authority.authority().trellis_instance_id != self.trust.instance_id
             || authority.authority().audience_nats_account != self.trust.account
-            || (require_installed_own
-                && authority.authority().runtime_id == self.runtime_id
+            || (authority.authority().runtime_id == self.runtime_id
                 && authority.authority().session_public_key == self.session_public_key
                 && state.own.as_ref().map(|own| own.digest()) != Some(authority.digest()))
             || state.revocation_overflow_until > policy.now_unix_seconds
@@ -1226,6 +1209,41 @@ impl AuthorizationOwner {
                 .revocations
                 .contains_key(&authority.authority().authorization_session_id),
         )?;
+        Ok(())
+    }
+
+    /// Permit delivery of a verified finite response to its already-accepted opening.
+    /// The opening need not remain live, but terminal ownership, lost coverage,
+    /// known revocation and compromised issuer trust still fence delivery.
+    pub(crate) fn assert_accepted_response_allowed(
+        &self,
+        opening: &VerifiedSessionAuthority,
+    ) -> Result<(), TrellisClientError> {
+        let state = self.state.read().map_err(|_| {
+            TrellisClientError::AuthorizationUnavailable("authority owner unavailable".into())
+        })?;
+        state.require_live_coverage()?;
+        let body = opening.authority();
+        let policy = self.policy();
+        if body.trellis_instance_id != self.trust.instance_id
+            || body.audience_nats_account != self.trust.account
+            || body.runtime_id != self.runtime_id
+            || body.session_public_key != self.session_public_key
+            || !state.own.as_ref().is_some_and(|own| {
+                own.authority().authorization_session_id == body.authorization_session_id
+            })
+            || state
+                .revocations
+                .contains_key(&body.authorization_session_id)
+            || state.revocation_overflow_until > policy.now_unix_seconds
+            || !state
+                .issuer(&body.issuer_key_id, policy.now_unix_seconds)
+                .is_some_and(|issuer| issuer.state != AuthorityIssuerState::Revoked)
+        {
+            return Err(TrellisClientError::AuthorizationUnavailable(
+                "accepted response ownership no longer trusted".into(),
+            ));
+        }
         Ok(())
     }
 

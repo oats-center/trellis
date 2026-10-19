@@ -1,6 +1,4 @@
-import type {
-  AuthorizationContextVerificationPolicy,
-} from "../protocol_wasm.ts";
+import type { AuthorizationContextVerificationPolicy } from "../protocol_wasm.ts";
 import type {
   AuthorizationContextBundle,
   AuthorizationContextVerificationMaterial,
@@ -85,8 +83,8 @@ export class AuthorizationContextCache {
         nextRuntime.loginSessionId !== verified.context.loginSessionId ||
         nextRuntime.participantId !== verified.context.participantId ||
         nextRuntime.inboxPrefix !== verified.context.inboxPrefix ||
-        !Object.values(nextRuntime.transports).some((transport) =>
-          transport.natsServers.length > 0
+        !Object.values(nextRuntime.transports).some(
+          (transport) => transport.natsServers.length > 0,
         ))
     ) {
       throw new Error(
@@ -112,9 +110,8 @@ export class AuthorizationContextCache {
       runtime: installedRuntime,
       routing: nextRouting,
       clockOffsetMs,
-      commitAdditional: typeof commitAdditional === "function"
-        ? commitAdditional
-        : undefined,
+      commitAdditional:
+        typeof commitAdditional === "function" ? commitAdditional : undefined,
     };
     return verified;
   }
@@ -126,21 +123,25 @@ export class AuthorizationContextCache {
   ): VerifiedAuthorizationContext {
     const candidate = this.#candidate;
     if (
-      !candidate || candidate.operation !== this.#operation ||
-      candidate.verified !== origin || !shouldInstall()
+      !candidate ||
+      candidate.operation !== this.#operation ||
+      candidate.verified !== origin ||
+      !shouldInstall()
     ) {
       throw new Error("authorization candidate changed before promotion");
     }
     // Eligibility can synchronously invalidate or supersede this preparation.
     if (
-      this.#candidate !== candidate || candidate.operation !== this.#operation
+      this.#candidate !== candidate ||
+      candidate.operation !== this.#operation
     ) {
       throw new Error("authorization candidate changed before promotion");
     }
     candidate.commitAdditional?.();
     // Fence the installed cache after the last reentrant callback.
     if (
-      this.#candidate !== candidate || candidate.operation !== this.#operation
+      this.#candidate !== candidate ||
+      candidate.operation !== this.#operation
     ) {
       throw new Error("authorization candidate changed before promotion");
     }
@@ -191,9 +192,11 @@ export class AuthorizationContextCache {
   }> {
     const candidate = this.#candidate;
     if (
-      !candidate || candidate.verified !== origin ||
+      !candidate ||
+      candidate.verified !== origin ||
       candidate.operation !== this.#operation
-    ) throw new Error("authorization candidate changed before retention");
+    )
+      throw new Error("authorization candidate changed before retention");
     return Object.freeze({
       verified: origin,
       get runtime() {
@@ -219,9 +222,8 @@ export class AuthorizationContextCache {
 
   transportRoutingJwt(): string {
     const routing = this.#candidate?.routing ?? this.#routing;
-    if (
-      !routing || routing.bootstrapJwtExpiresAt <= this.correctedNowSeconds()
-    ) throw new Error("authorization routing JWT expired");
+    if (!routing || routing.bootstrapJwtExpiresAt <= this.correctedNowSeconds())
+      throw new Error("authorization routing JWT expired");
     return routing.bootstrapJwt;
   }
 
@@ -252,7 +254,8 @@ export class AuthorizationContextCache {
   ): VerifiedAuthorizationContext {
     const verified = this.#verified;
     if (
-      !verified || verified.context.notBefore > nowUnixSeconds ||
+      !verified ||
+      verified.context.notBefore > nowUnixSeconds ||
       verified.context.expiresAt <= nowUnixSeconds
     ) {
       throw new Error("no current authorization context");
@@ -304,7 +307,8 @@ export class AuthorizationContextCache {
       (this.#verified?.contextDigest ?? null) !== guard[0] ||
       (this.#routing?.bootstrapJwt ?? null) !== guard[1] ||
       this.#operation !== guard[2]
-    ) return false;
+    )
+      return false;
     this.#operation += 1;
     this.#bundle = undefined;
     this.#verified = undefined;
@@ -363,9 +367,7 @@ export class AuthorizationContextCache {
    * This is an in-process handoff; it performs no registry I/O.
    */
   installedVerificationMaterial(): AuthorizationContextVerificationMaterial {
-    if (
-      !this.#bundle || !this.#verified
-    ) {
+    if (!this.#bundle || !this.#verified) {
       throw new Error("no authorization verification material is installed");
     }
     return {
@@ -427,9 +429,8 @@ export async function verifyAuthorizationContext(args: {
   bundle: AuthorizationContextBundle;
   policy: AuthorizationContextVerificationPolicy;
 }): Promise<VerifiedAuthorizationContext> {
-  const { verifyAuthorizationContextWasm } = await import(
-    "../protocol_wasm.ts"
-  );
+  const { verifyAuthorizationContextWasm } =
+    await import("../protocol_wasm.ts");
   const result = await verifyAuthorizationContextWasm({
     issuer: args.bundle.issuer,
     context: args.bundle.context,

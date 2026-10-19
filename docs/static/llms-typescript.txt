@@ -18,7 +18,8 @@ one-time `adminAccountUrl` password-setup link unless an initial password was
 supplied. Configure fresh credentials with startup `--admin-username`,
 `--admin-password`, or `--admin-password-stdin`; explicit initialization is
 `trellis init admin --config <path> --username admin` with optional `--password`
-or `--password-stdin`. Links expire after five minutes. Restart preserves
+or `--password-stdin`. Links expire after five minutes. Until password setup, each
+startup prints a fresh link and invalidates prior links. After setup, restart preserves
 credentials; `--reset-admin` is explicit local recovery through the same account
 flow. Ordinary RPC reset privileges do not authorize protected-admin recovery.
 
@@ -62,6 +63,9 @@ retries never retransmit application requests or clear known revocations.
 Native providers finish accepted RPCs across ordinary authority promotion by
 reacquiring a coherent current signing snapshot within one configured deadline.
 Handlers are not redispatched; provider, issuer, expiry and revocation checks remain mandatory.
+Accepted finite responses may outlive the opening caller context, but not their
+request deadline. Current provider verification, known revocation, cancellation
+and logical shutdown remain enforced; expired evidence cannot start new work.
 Store object deletion and replacement clean up chunks only in the admitted
 identity's allocated Object Store streams, including Operation staging. This
 does not authorize KV purge, stream destruction, or cross-owner Store access.
@@ -127,7 +131,14 @@ as cookie isolation.
 Node native applications import `@oatscenter/trellis/native`, not browser custody.
 Use `discoverNativeOAuth`, `NativeOAuthClient.open`, Device Code or `resume`, and
 `connectNativeClient` with a generated native request. The entrypoint is
-Node/npm-only and uses private POSIX SQLite custody. Connection ownership keeps
+Node/npm-only and defaults to process-local memory, with no credential files or
+SQLite requirement. Retain an explicit MemoryNativeOAuthCustody object to resume
+the same family across connections within one process. For remembered login
+across process restarts, explicitly supply an application-owned NativeOAuthCustody
+provider; Trellis ships no persistent Node backend. Providers must exclusively
+acquire the exact family, durably mark a token spent before returning it for
+submission, atomically commit successors, and retain authenticated trust.
+Connection ownership keeps
 the credential family exclusive until transport closes; an old session reference
 cannot release that ownership. Lost refresh responses are never retried with the
 spent token. Retained issuer pins advance only through authenticated rotations.
@@ -492,6 +503,26 @@ already-aborted cleanup before accessing it, and require a transfer handle on
 the ordinary upload branch. The TypeScript transfer-start builder does not
 expose the cancellation-first option because its result describes an actual
 transfer.
+
+Starts default to canonical routing. For explicit pre-acceptance ownership,
+persist deployment, invocation ULID, and frozen input before sending, then use
+`.start(undefined, { invocationId, targetDeploymentId })`. Explicit replay stays
+on that deployment and never falls back. Cancellation-first adds
+`cancellationRequested: true`; transfer starts accept the target and invocation
+ID but not cancellation-first. Choosing a target after losing a canonical reply
+cannot recover its unknown owner. Accepted references and controls are unchanged.
+
+Rust and Node replicas use one deployment-scoped Operation storage codec. This
+pre-release persistence cutover does not migrate earlier records: retain existing
+installations unchanged and use fresh development/test state. Unsupported records
+fail visibly; the runtime never deletes or recreates them as empty state.
+
+Live testkit users are ordinary accounts: `runtime.createUser({ name })`, then
+`runtime.grantUserCapabilities({ user, capabilityIds })`, then
+`runtime.connectClient({ name, contract, user })` (or `registerClient`). One app
+registration supports independent credential families for multiple users. Handles
+are runtime-owned and expose no password; explicit-user login never grants or
+restores revoked capabilities. Omitting `user` retains the seeded-admin helper.
 
 Private queues are available as `service.jobs.<queue>`. Register handlers with
 `handle(...)`, create work with `create(...)`, and observe the returned job

@@ -39,16 +39,14 @@ export async function postJson(
     responseUrl.username = "";
     responseUrl.password = "";
     throw new Error(
-      `Trellis HTTP response was not valid JSON: ${
-        JSON.stringify({
-          status: response.status,
-          url: responseUrl.toString(),
-          redirected: response.redirected,
-          contentType: response.headers.get("content-type"),
-          contentLength: response.headers.get("content-length"),
-          bodyByteLength: bytes.byteLength,
-        })
-      }`,
+      `Trellis HTTP response was not valid JSON: ${JSON.stringify({
+        status: response.status,
+        url: responseUrl.toString(),
+        redirected: response.redirected,
+        contentType: response.headers.get("content-type"),
+        contentLength: response.headers.get("content-length"),
+        bodyByteLength: bytes.byteLength,
+      })}`,
     );
   }
 }

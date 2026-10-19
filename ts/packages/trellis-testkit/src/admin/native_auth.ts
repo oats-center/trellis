@@ -3,6 +3,7 @@ import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 import {
   NativeOAuthClient,
   discoverNativeOAuth,
+  type NativeOAuthCustody,
 } from "@oatscenter/trellis/native";
 import type {
   NativeOAuthSession,
@@ -34,10 +35,11 @@ const presentationSchema = z.object({
 /** Complete public native Device Code, real Portal local login, and explicit consent; no browser realm or injected authority. Node-only. */
 export async function loginNativeTestClient(options: {
   issuer: string;
-  directory: string;
   clientId: string;
   /** Reauthorize an existing custody handle instead of opening a fresh client. */
   client?: NativeOAuthClient;
+  /** Explicit process-local or application-owned custody for reconnecting this exact family. */
+  custody?: NativeOAuthCustody;
   request: AppRequestDescriptor;
   username: string;
   password: string;
@@ -57,7 +59,7 @@ export async function loginNativeTestClient(options: {
     options.client ??
     (
       await NativeOAuthClient.open({
-        directory: options.directory,
+        custody: options.custody,
         scope: {
           issuer: server.issuer,
           instanceId: server.trust.instanceId,

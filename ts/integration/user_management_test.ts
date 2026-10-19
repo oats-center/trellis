@@ -52,7 +52,6 @@ test("user updates preserve identity while disabling retires authorization and r
       });
     const login = await loginNativeTestClient({
       issuer: runtime.oauthIssuer,
-      directory: join(runtime.workdir, "managed-user-first"),
       clientId,
       request: adminParticipant,
       username: create.username,
@@ -114,7 +113,6 @@ test("user updates preserve identity while disabling retires authorization and r
       );
       const rejectedLogin = loginNativeTestClient({
         issuer: runtime.oauthIssuer,
-        directory: join(runtime.workdir, "managed-user-disabled"),
         clientId,
         request: adminParticipant,
         username: create.username,
@@ -131,7 +129,6 @@ test("user updates preserve identity while disabling retires authorization and r
       });
       const restored = await loginNativeTestClient({
         issuer: runtime.oauthIssuer,
-        directory: join(runtime.workdir, "managed-user-restored"),
         clientId,
         request: adminParticipant,
         username: create.username,

@@ -17,6 +17,7 @@ use trellis_runtime_apis::types::{
     AuthApiAcceptRequest, AuthApiGetRequest, AuthApiReviewRequest, AuthCapabilityGrantRequest,
     AuthCapabilityGrantsListRequest, AuthDeploymentCreateRequest, AuthDeploymentKind, AuthEmpty,
     AuthInstanceProvisionRequest, AuthOAuthClientPutRequest, AuthPublicClientKind,
+    AuthUserCreateRequest,
 };
 
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
@@ -292,7 +293,7 @@ impl AdminSession {
         })
     }
 
-    pub(crate) async fn verify(&self) -> Result<(), TrellisTestError> {
+    pub(crate) async fn verify(&self) -> Result<String, TrellisTestError> {
         let response = self
             .auth
             .users_resolve(&AuthEmpty {
@@ -311,28 +312,44 @@ impl AdminSession {
                 "administrator account is disabled",
             ));
         }
-        Ok(())
+        Ok(response.user.principal.principal_id.to_string())
+    }
+
+    pub(crate) async fn create_user(
+        &self,
+        username: &str,
+        name: &str,
+        password: &str,
+    ) -> Result<crate::identity::TestUserIdentity, TrellisTestError> {
+        let response = self
+            .auth
+            .users_create(&AuthUserCreateRequest {
+                username: username.to_owned().into(),
+                display_name: name.to_owned().into(),
+                password: Some(password.to_owned().into()),
+                idempotency_key: ulid::Ulid::new().to_string().into(),
+                extra: Default::default(),
+            })
+            .await
+            .map_err(|error| failure(TrellisTestStage::ClientLogin, error))?;
+        Ok(crate::identity::TestUserIdentity {
+            principal_id: response.user.principal.principal_id.to_string(),
+            username: username.to_owned(),
+        })
     }
 
     /// Grants a declared test-user capability through ordinary administration.
     pub(crate) async fn prepare_client_capabilities(
         &self,
+        principal_id: &str,
         capability_ids: &[&str],
     ) -> Result<(), TrellisTestError> {
-        let principal = self
-            .auth
-            .sessions_me(&AuthEmpty {
-                extra: Default::default(),
-            })
-            .await
-            .map_err(|error| failure(TrellisTestStage::ClientLogin, error))?
-            .principal;
         use futures_util::TryStreamExt;
         let grants: Vec<_> = self
             .auth
             .capability_grants_list_items(AuthCapabilityGrantsListRequest {
                 capability_id: None,
-                principal_id: Some(principal.principal_id),
+                principal_id: Some(wire(principal_id)?),
                 page: None,
                 extra: Default::default(),
             })
@@ -348,7 +365,7 @@ impl AdminSession {
             }
             self.auth
                 .capability_grants_grant(&AuthCapabilityGrantRequest {
-                    principal_id: principal.principal_id,
+                    principal_id: wire(principal_id)?,
                     capability_id: (*capability_id).to_owned().into(),
                     expected_revision: 0.into(),
                     expires_at: None,

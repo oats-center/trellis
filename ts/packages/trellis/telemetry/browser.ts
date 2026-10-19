@@ -111,12 +111,15 @@ export function browserOwner(
       const deadline = performance.now() + BROWSER_OWNER_BUDGET_MILLIS;
       if (closing) return Promise.resolve();
       if (active === undefined) {
-        const work = run([
-          () => tracerProvider.forceFlush(),
-          async () => {
-            if (!closing) await meterProvider.forceFlush();
-          },
-        ], deadline);
+        const work = run(
+          [
+            () => tracerProvider.forceFlush(),
+            async () => {
+              if (!closing) await meterProvider.forceFlush();
+            },
+          ],
+          deadline,
+        );
         active = work;
         void work.finally(() => {
           if (active === work) active = undefined;
@@ -131,10 +134,10 @@ export function browserOwner(
       const previous = active;
       const work = (async () => {
         if (previous) await previous;
-        await run([
-          () => tracerProvider.shutdown(),
-          () => meterProvider.shutdown(),
-        ], deadline);
+        await run(
+          [() => tracerProvider.shutdown(), () => meterProvider.shutdown()],
+          deadline,
+        );
       })();
       active = work;
       void work.finally(() => {
@@ -175,8 +178,11 @@ export function sanitizeBrowserEndpoint(
   // A network-path reference (`//host`) is cross-origin, not a local path.
   if (trimmed.startsWith("//")) return undefined;
   if (
-    trimmed.includes("://") || trimmed.includes("?") || trimmed.includes("#") ||
-    trimmed.includes("@") || trimmed.includes("\\")
+    trimmed.includes("://") ||
+    trimmed.includes("?") ||
+    trimmed.includes("#") ||
+    trimmed.includes("@") ||
+    trimmed.includes("\\")
   ) {
     return undefined;
   }
@@ -197,7 +203,10 @@ export function sanitizeBrowserEndpoint(
 /** Validates the opt-in trace ratio. */
 function traceRatio(value: number | undefined): number {
   if (
-    value === undefined || !Number.isFinite(value) || value < 0 || value > 1
+    value === undefined ||
+    !Number.isFinite(value) ||
+    value < 0 ||
+    value > 1
   ) {
     return DEFAULT_BROWSER_TRACE_RATIO;
   }

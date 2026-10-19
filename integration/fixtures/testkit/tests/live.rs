@@ -210,6 +210,212 @@ async fn t04_real_rpc_and_event_between_provider_and_caller() {
     runtime.shutdown().await.expect("shutdown runtime");
 }
 
+/// Broker publish access is not authority to emit a generated typed Event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
+    use trellis_rs::client::{ServiceConnectWithContractOptions, TrellisClient};
+    use trellis_test_fixture::apis::trellis_test_fixture_echo_v1::events::Observed;
+
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<ProviderParticipant>("event-auth-provider")
+        .await
+        .unwrap();
+    let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
+        .await
+        .unwrap();
+    let provider =
+        TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+            nats_servers: server.nats_servers,
+            trust: server.trust,
+            participant_id: identity.participant_id(),
+            provisioned_identity_seed_base64url: identity.seed(),
+            name: Some(identity.name()),
+            timeout_ms: 10_000,
+        })
+        .await
+        .unwrap();
+    let identity = runtime
+        .register_client::<CallerRequest>("event-auth-caller")
+        .await
+        .unwrap();
+    let caller = CallerClient::from_generated(
+        trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .unwrap(),
+    );
+    let api = caller.trellis_test_fixture_echo_v1();
+    let broker = async_nats::ConnectOptions::with_credentials_file(
+        runtime
+            .workdir()
+            .join("config/nats/creds/trellis-auth.creds"),
+    )
+    .await
+    .unwrap()
+    .connect(runtime.nats_url())
+    .await
+    .unwrap();
+    let mut captured = broker.subscribe(Observed::SUBJECT).await.unwrap();
+    broker.flush().await.unwrap();
+    let mut events = api
+        .subscribe_observed(EventSubscribeOptions::ephemeral())
+        .await
+        .unwrap();
+    provider
+        .publish::<Observed>(&value("genuine-before"))
+        .await
+        .unwrap();
+    let original = tokio::time::timeout(Duration::from_secs(10), captured.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let headers = original.headers.unwrap();
+    let event: trellis_protocol::SessionEvent =
+        serde_json::from_str(headers.get("Trellis-Session-Event").unwrap().as_str()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), events.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .value,
+        "genuine-before"
+    );
+
+    broker
+        .publish(
+            Observed::SUBJECT,
+            serde_json::to_vec(&value("unsigned")).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    broker
+        .publish_with_headers(
+            Observed::SUBJECT,
+            headers.clone(),
+            serde_json::to_vec(&value("tampered")).unwrap().into(),
+        )
+        .await
+        .unwrap();
+
+    let rogue_identity = runtime
+        .register_client::<CallerRequest>("event-auth-nonpublisher")
+        .await
+        .unwrap();
+    let rogue = TrellisClient::connect_user(rogue_identity.connect_options())
+        .await
+        .unwrap();
+    let rogue_context = rogue.authorization_context().unwrap().unwrap().context;
+    let rogue_api = rogue_context
+        .unsigned
+        .apis
+        .iter()
+        .find(|api| api.api_id == Observed::API_ID)
+        .unwrap();
+    let mut unauthorized = event.clone();
+    unauthorized.authority_digest = rogue_context.digest().unwrap();
+    unauthorized.api_generation = rogue_api.generation;
+    unauthorized.accepted_revision = rogue_api.accepted_revision;
+    let mut wrong_generation = event.clone();
+    wrong_generation.api_generation = trellis_protocol::U64s::new(event.api_generation.get() + 1);
+
+    let mut foreign_runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let foreign_identity = foreign_runtime
+        .register_service::<ProviderParticipant>("foreign-event-provider")
+        .await
+        .unwrap();
+    let foreign_server = trellis_rs::auth::discover_native_oauth(foreign_runtime.oauth_origin())
+        .await
+        .unwrap();
+    let foreign_provider =
+        TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+            nats_servers: foreign_server.nats_servers,
+            trust: foreign_server.trust,
+            participant_id: foreign_identity.participant_id(),
+            provisioned_identity_seed_base64url: foreign_identity.seed(),
+            name: Some(foreign_identity.name()),
+            timeout_ms: 10_000,
+        })
+        .await
+        .unwrap();
+    let foreign_context = foreign_provider
+        .authorization_context()
+        .unwrap()
+        .unwrap()
+        .context;
+    let foreign_api = foreign_context
+        .unsigned
+        .apis
+        .iter()
+        .find(|api| api.api_id == Observed::API_ID)
+        .unwrap();
+    let mut wrong_installation = event.clone();
+    wrong_installation.authority_digest = foreign_context.digest().unwrap();
+    wrong_installation.api_generation = foreign_api.generation;
+    wrong_installation.accepted_revision = foreign_api.accepted_revision;
+
+    // These proofs are authentic: only publish eligibility, generation, or selected
+    // installation is wrong. All injections share one subject and broker carrier.
+    for (mut publication, signer, text) in [
+        (unauthorized, rogue.auth(), "unauthorized"),
+        (wrong_generation, provider.auth(), "wrong-generation"),
+        (
+            wrong_installation,
+            foreign_provider.auth(),
+            "wrong-installation",
+        ),
+    ] {
+        let prepared = trellis_rs::client::prepare_event::<Observed>(&value(text)).unwrap();
+        publication.event_id = prepared.event_id().to_owned();
+        publication.event_time = prepared.event_time().to_owned();
+        let mut injected = headers.clone();
+        injected.insert(
+            "authorization-context",
+            publication.authority_digest.as_str(),
+        );
+        injected.insert("session-key", signer.session_key.as_str());
+        injected.insert("Nats-Msg-Id", publication.event_id.as_str());
+        injected.insert("Trellis-Event-Time", publication.event_time.as_str());
+        injected.insert(
+            "Trellis-Session-Event",
+            serde_json::to_string(&publication).unwrap(),
+        );
+        injected.insert(
+            "proof",
+            signer
+                .create_event_proof(&publication, prepared.payload())
+                .unwrap()
+                .as_str(),
+        );
+        broker
+            .publish_with_headers(Observed::SUBJECT, injected, prepared.payload_bytes())
+            .await
+            .unwrap();
+    }
+    broker.flush().await.unwrap();
+    provider
+        .publish::<Observed>(&value("genuine-after"))
+        .await
+        .unwrap();
+    let received = tokio::time::timeout(Duration::from_secs(10), events.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .value;
+
+    drop(events);
+    drop(captured);
+    broker.drain().await.unwrap();
+    drop(caller);
+    drop(rogue);
+    drop(provider);
+    drop(foreign_provider);
+    foreign_runtime.shutdown().await.unwrap();
+    runtime.shutdown().await.unwrap();
+    assert_eq!(received, "genuine-after");
+}
+
 /// T06: two providers registered under different names keep distinct
 /// deployment and instance identities.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

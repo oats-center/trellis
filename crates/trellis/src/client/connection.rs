@@ -1852,23 +1852,68 @@ impl TrellisClient {
         .map_err(|_| TrellisClientError::Timeout)?
         .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
 
-        let stream =
-            stream::try_unfold((lease, subscriber), |(lease, mut subscriber)| async move {
-                match subscriber.next().await {
-                    Some(message) => {
+        timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            lease.nats().flush(),
+        )
+        .await
+        .map_err(|_| TrellisClientError::Timeout)?
+        .map_err(|error| TrellisClientError::NatsRequest(error.to_string()))?;
+
+        let owner = self.authorization_owner().clone();
+        let verifier =
+            crate::service::LocalAuthVerifier::new(owner.clone(), lease.nats().clone(), D::API_ID);
+        let action_name = D::KEY.split_once('.').map_or(D::KEY, |(_, name)| name);
+        let publish_action = trellis_protocol::CatalogActionIdentity {
+            kind: trellis_protocol::ApiSurfaceKind::Event,
+            name: action_name.to_owned(),
+            direction: trellis_protocol::PermissionAction::Publish,
+        };
+        let subscribe_action = trellis_protocol::CatalogActionIdentity {
+            direction: trellis_protocol::PermissionAction::Subscribe,
+            ..publish_action.clone()
+        };
+        let stream = stream::try_unfold(
+            (lease, subscriber, owner, verifier),
+            move |(lease, mut subscriber, owner, verifier)| {
+                let publish_action = publish_action.clone();
+                let subscribe_action = subscribe_action.clone();
+                async move {
+                    while let Some(message) = subscriber.next().await {
+                        owner.own_authority()?;
+                        if let Err(error) = verifier
+                            .verify_event(
+                                message.subject.as_ref(),
+                                &message.payload,
+                                message.headers.as_ref(),
+                                D::API_ID,
+                                &publish_action,
+                                None,
+                            )
+                            .await
+                        {
+                            tracing::warn!(subject = %message.subject, error = %error.message(), "Event auth validation failed");
+                            continue;
+                        }
+                        let own = owner.own_authority()?;
+                        owner
+                            .authorize_action(lease.nats(), &own, D::API_ID, &subscribe_action)
+                            .await?;
                         let value: Value = serde_json::from_slice(&message.payload)?;
                         let event = D::Event::decode(value)
                             .map_err(|error| TrellisClientError::Codec(error.to_string()))?;
-                        Ok(Some((event, (lease, subscriber))))
+                        return Ok(Some((event, (lease, subscriber, owner, verifier))));
                     }
-                    None => Ok(None),
+                    Ok(None)
                 }
-            });
+            },
+        );
 
         Ok(Box::pin(stream) as BoxStream<'static, Result<D::Event, TrellisClientError>>)
     }
 
-    /// Subscribe to descriptor-backed event messages with explicit ack/nak/term control.
+    /// Subscribe to authenticated descriptor-backed event messages with explicit ack/nak/term control.
+    /// Retained messages are verified at their original broker publication time.
     pub async fn subscribe_messages<D>(
         &self,
         options: EventSubscribeOptions,
@@ -1880,12 +1925,67 @@ impl TrellisClient {
         D: EventDescriptor,
         D::Event: Send + 'static,
     {
-        self.event_messages(
-            options,
-            Some(self.descriptor_subject(D::SUBSCRIBE_SUBJECT)),
-            None,
-        )
-        .await
+        let messages = self
+            .event_messages(
+                options,
+                Some(self.descriptor_subject(D::SUBSCRIBE_SUBJECT)),
+                None,
+            )
+            .await?;
+        let owner = self.authorization_owner().clone();
+        Ok(messages
+            .then(move |message| {
+                let owner = owner.clone();
+                async move {
+                    let message = message?;
+                    owner.own_authority()?;
+                    let lease = message._lease.as_ref().ok_or_else(|| {
+                        TrellisClientError::EventSubscriptionProtocol(
+                            "event transport unavailable".into(),
+                        )
+                    })?;
+                    let verifier = crate::service::LocalAuthVerifier::new(
+                        owner.clone(),
+                        lease.nats().clone(),
+                        D::API_ID,
+                    );
+                    let action = trellis_protocol::CatalogActionIdentity {
+                        kind: trellis_protocol::ApiSurfaceKind::Event,
+                        name: D::KEY
+                            .split_once('.')
+                            .map_or(D::KEY, |(_, name)| name)
+                            .to_owned(),
+                        direction: trellis_protocol::PermissionAction::Publish,
+                    };
+                    let status = verifier
+                        .historical_status(message.headers())
+                        .await
+                        .map_err(|error| {
+                            TrellisClientError::EventSubscriptionProtocol(
+                                error.message().to_owned(),
+                            )
+                        })?;
+                    let publication = message.original_publication()?;
+                    verifier
+                        .verify_event(
+                            message.subject(),
+                            message.payload(),
+                            message.headers(),
+                            D::API_ID,
+                            &action,
+                            Some((&publication, &status)),
+                        )
+                        .await
+                        .map_err(|error| {
+                            TrellisClientError::EventSubscriptionProtocol(
+                                error.message().to_owned(),
+                            )
+                        })?;
+                    owner.own_authority()?;
+                    Ok(message)
+                }
+            })
+            .boxed())
     }
 
     pub(crate) async fn event_messages<T: Send + 'static>(
@@ -2336,7 +2436,7 @@ impl TrellisClient {
                 )
                 .await?;
             self.authorization_owner()
-                .assert_accepted_request_current(&own)?;
+                .assert_accepted_response_allowed(&own)?;
             if response.kind == trellis_protocol::SessionResponseKind::Error {
                 return Err(TrellisClientError::RpcError(
                     RpcErrorPayload::from_json_slice(&message.payload)?,

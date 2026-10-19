@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { setTimeout } from "node:timers/promises";
 import { test } from "node:test";
 import { connect } from "@nats-io/transport-node";
@@ -26,7 +25,6 @@ test(
       const issuer = runtime.oauthIssuer;
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
-      const directory = await mkdtemp("/tmp/opencode/native-live-");
       const close: Array<() => Promise<unknown>> = [];
       const signal = context.signal;
       try {
@@ -34,7 +32,6 @@ test(
           issuer,
           username,
           password,
-          directory,
           clientId: "trellis.cli",
           request: apps.cli.request,
           platformPrivileges: {
@@ -81,7 +78,6 @@ test(
           issuer,
           username: subjectUsername,
           password: subjectPassword,
-          directory,
           clientId: "trellis.cli",
           request: apps.cli.request,
           signal,
@@ -413,7 +409,6 @@ test(
         }
       } finally {
         for (const dispose of close.reverse()) await dispose();
-        await rm(directory, { recursive: true, force: true });
       }
     });
   },

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { apps } from "../../../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
@@ -15,10 +14,8 @@ const input = JSON.parse(message.value) as {
   password: string;
   clientId: string;
 };
-const directory = await mkdtemp("/tmp/opencode/operation-interop-caller-");
 const native = await loginNativeTestClient({
   ...input,
-  directory,
   request: apps.NativeOptionalExtend.request,
   approvedCapabilities: [
     ...apps.NativeOptionalExtend.request.requiredCapabilities,
@@ -61,5 +58,4 @@ try {
 } finally {
   await caller.connection.close();
   await native.session.close();
-  await rm(directory, { recursive: true, force: true });
 }
