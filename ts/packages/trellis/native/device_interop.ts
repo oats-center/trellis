@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createInterface } from "node:readline";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
 import {
@@ -28,7 +30,7 @@ const config: {
   username: string;
   password: string;
 } = await receive();
-const directory = await mkdtemp("/tmp/opencode/device-interop-");
+const directory = await mkdtemp(join(tmpdir(), "device-interop-"));
 const rootSecret = crypto.getRandomValues(new Uint8Array(32));
 const participant = participants.CompanionDevice.participant;
 const request = apps.CompanionDevice_Companion.request;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -10,7 +11,7 @@ test(
   "packed SDK root and native entrypoints work in an empty npm consumer",
   { timeout: 120000 },
   async () => {
-    const directory = await mkdtemp("/tmp/opencode/native-npm-consumer-");
+    const directory = await mkdtemp(join(tmpdir(), "native-npm-consumer-"));
     const run = (command: string, args: string[], cwd: string) => {
       const result = spawnSync(command, args, {
         cwd,

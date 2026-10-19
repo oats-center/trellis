@@ -328,7 +328,8 @@ login rather than starting a login loop.
 
 The Rust CLI's owner-only files and operating-system lock do not depend on the
 Node SDK, whose default OAuth custody is process-local memory and whose durable
-custody is explicitly application-owned.
+custody is explicitly application-owned. Node native connection.close() awaits
+asynchronous lease release before returning and reports release failures.
 
 Provision without identityPublicKey for a one-use, server-assigned enrollment
 secret. DeviceActivationOptions proves durable and ephemeral key possession;

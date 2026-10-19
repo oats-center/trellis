@@ -92,6 +92,8 @@ export type InitiateUploadArgs = {
 /** Runtime-issued grant plus the provider's durable staged-upload handle. */
 export type OperationUploadTransfer = {
   grant: SendTransferGrant;
+  /** Actual private staging identity allocated for this attempt. */
+  storageKey: string;
   transfer: OperationTransferHandle;
 };
 /** Admitted caller and logical source selected by a download RPC. */
@@ -440,7 +442,9 @@ export class ServiceTransfer {
   /** Prepare exact provider subscriptions before returning an upload grant. */
   async initiateUpload(
     args: InitiateUploadArgs,
-  ): Promise<ResultType<SendTransferGrant, TransferError>> {
+  ): Promise<
+    ResultType<{ grant: SendTransferGrant; storageKey: string }, TransferError>
+  > {
     try {
       const store = await this.#staging();
       const status = (await store.status()).take();
@@ -466,7 +470,7 @@ export class ServiceTransfer {
         args.operationId,
       );
       session.upload = args;
-      return Result.ok(grant);
+      return Result.ok({ grant, storageKey: session.storageKey });
     } catch (cause) {
       return Result.err(
         new TransferError({ operation: "initiateUpload", cause }),
@@ -486,7 +490,7 @@ export class ServiceTransfer {
           new AsyncValueBroadcaster<RuntimeOperationTransferProgress>();
         const completed = deferred<ResultType<FileInfo, TransferError>>();
         const stored = deferred<ResultType<StoredTransfer, TransferError>>();
-        const grant = (
+        const prepared = (
           await this.initiateUpload({
             ...args,
             onProgress: (progress) => {
@@ -510,9 +514,11 @@ export class ServiceTransfer {
             },
           })
         ).take();
-        if (isErr(grant)) return Result.err(grant.error);
+        if (isErr(prepared)) return Result.err(prepared.error);
+        const { grant, storageKey } = prepared;
         return Result.ok({
           grant,
+          storageKey,
           transfer: {
             updates: () => updates.subscribe(),
             completed: () => AsyncResult.from(completed.promise),

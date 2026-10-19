@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             std::io::stdout().flush().unwrap();
             let mut signals = operation.signals().await?;
-            if let Some(signal) = signals.next().await {
+            while let Some(signal) = signals.next().await {
                 let signal = signal?;
                 operation.acknowledge_signal(signal.signal_sequence).await?;
                 let value = signal
@@ -45,6 +45,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .as_ref()
                     .and_then(|input| input["value"].as_str())
                     .unwrap_or_default();
+                if value == "during-upload" {
+                    println!("{}", json!({"uploadSignal":signal.signal_sequence}));
+                    std::io::stdout().flush().unwrap();
+                    continue;
+                }
                 if value == "ack-before" {
                     println!("{}", json!({"acknowledged":signal.signal_sequence}));
                     std::io::stdout().flush().unwrap();
@@ -57,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         })
                         .await?;
                 }
+                break;
             }
             Ok(())
         });

@@ -82,7 +82,7 @@ test(
     const refresh = await session.refresh(); assert.equal(refresh.isErr(),true); assert.equal(refresh.error.reason,"OAuthRecoveryRequired");
     console.log("spent"); await once(process.stdin,"data");
     const retry = await session.refresh(); assert.equal(retry.isErr(),true); assert.equal(retry.error.reason,"OAuthRecoveryRequired");
-    await connected.manager.close();
+    await connected.close();
     const reopened = (await NativeOAuthClient.open({custody,scope,trust})).orThrow();
     const restart = await reopened.resume(); assert.equal(restart.isErr(),true); assert.equal(restart.error.reason,"OAuthRecoveryRequired"); await reopened.close();
     console.log("done");

@@ -1,3 +1,4 @@
+import type { OperationRefData } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import assert from "node:assert/strict";
 import { createInterface } from "node:readline";
@@ -106,6 +107,7 @@ for (const rustFirst of [true, false]) {
                 await readiness.release();
                 return provider;
               }
+              runtime.nativeTransportGate().arm(boundSubject);
               const service = await TrellisService.connect({
                 trellisUrl: runtime.oauthIssuer,
                 participant: participants.OperationProvider.participant,
@@ -121,15 +123,77 @@ for (const rustFirst of [true, false]) {
                 },
               };
               providers.push(provider);
-              if (upload) {
-                await service.handleUpload(async ({ transfer, op, signal }) => {
-                  assert(transfer);
-                  const received = await transfer.bytes().orThrow();
-                  assert.deepEqual(received, bytes);
-                  events.push({
-                    uploaded: Array.from(received),
-                    info: await transfer.completed().orThrow(),
+              const registered = async (registration: Promise<void>) => {
+                let acknowledged = false;
+                let finished = false;
+                void registration.then(() => {
+                  finished = true;
+                });
+                void runtime
+                  .nativeTransportGate()
+                  .barrierHeld()
+                  .then(() => {
+                    acknowledged = true;
                   });
+                try {
+                  await runtime.waitFor(() => acknowledged || finished);
+                  assert.equal(
+                    finished,
+                    false,
+                    "registration must wait for the broker's subscription acknowledgement",
+                  );
+                } finally {
+                  await runtime.nativeTransportGate().release();
+                }
+                await registration;
+              };
+              if (upload) {
+                await registered(
+                  service.handleUpload(async ({ transfer, op, signal }) => {
+                    assert(transfer);
+                    const received = await transfer.bytes().orThrow();
+                    assert.deepEqual(received, bytes);
+                    events.push({
+                      uploaded: Array.from(received),
+                      info: await transfer.completed().orThrow(),
+                    });
+                    const accepted = await op.nextSignal("Continue").orThrow();
+                    await op.acknowledgeSignal(accepted.sequence).orThrow();
+                    const value =
+                      accepted.input &&
+                      typeof accepted.input === "object" &&
+                      "value" in accepted.input
+                        ? accepted.input.value
+                        : undefined;
+                    if (value === "ack-before") {
+                      events.push({ acknowledged: accepted.sequence });
+                      if (!signal.aborted)
+                        await new Promise<void>((resolve) =>
+                          signal.addEventListener("abort", () => resolve(), {
+                            once: true,
+                          }),
+                        );
+                      return;
+                    }
+                    await op.complete({ value: `node:${value}` }).orThrow();
+                  }),
+                );
+                return provider;
+              }
+              await registered(
+                service.handleWork(async ({ input, op, signal }) => {
+                  if (signal.aborted) return;
+                  if (input.value === "handoff-node")
+                    await op
+                      .progress({
+                        value: "retained-checkpoint",
+                        nested: {
+                          count: 9_223_372_036_854_775_807n,
+                          payload: new Uint8Array([0, 127, 255]),
+                        },
+                      })
+                      .orThrow();
+                  events.push({ entered: input.value });
                   const accepted = await op.nextSignal("Continue").orThrow();
                   await op.acknowledgeSignal(accepted.sequence).orThrow();
                   const value =
@@ -149,47 +213,28 @@ for (const rustFirst of [true, false]) {
                     return;
                   }
                   await op.complete({ value: `node:${value}` }).orThrow();
-                });
-                return provider;
-              }
-              await service.handleWork(async ({ input, op, signal }) => {
-                if (signal.aborted) return;
-                if (input.value === "handoff-node")
-                  await op
-                    .progress({
-                      value: "retained-checkpoint",
-                      nested: {
-                        count: 9_223_372_036_854_775_807n,
-                        payload: new Uint8Array([0, 127, 255]),
-                      },
-                    })
-                    .orThrow();
-                events.push({ entered: input.value });
-                const accepted = await op.nextSignal("Continue").orThrow();
-                await op.acknowledgeSignal(accepted.sequence).orThrow();
-                const value =
-                  accepted.input &&
-                  typeof accepted.input === "object" &&
-                  "value" in accepted.input
-                    ? accepted.input.value
-                    : undefined;
-                if (value === "ack-before") {
-                  events.push({ acknowledged: accepted.sequence });
-                  if (!signal.aborted)
-                    await new Promise<void>((resolve) =>
-                      signal.addEventListener("abort", () => resolve(), {
-                        once: true,
-                      }),
-                    );
-                  return;
-                }
-                await op.complete({ value: `node:${value}` }).orThrow();
-              });
+                }),
+              );
               return provider;
             };
             let stage = "initial provider/start";
+            let finishUpload = () => {};
             try {
               const first = await startProvider(rustFirst);
+              let second: Awaited<ReturnType<typeof startProvider>> | undefined;
+              const releasedUpload = new Promise<void>((resolve) => {
+                finishUpload = resolve;
+              });
+              let uploadPaused = false;
+              const body =
+                rustFirst && upload
+                  ? (async function* () {
+                      yield bytes.subarray(0, 4096);
+                      uploadPaused = true;
+                      await releasedUpload;
+                      yield bytes.subarray(4096);
+                    })()
+                  : bytes;
               const input = {
                 value: rustFirst ? "handoff-rust" : "handoff-node",
               };
@@ -197,21 +242,81 @@ for (const rustFirst of [true, false]) {
                 invocationId: ulid(),
                 targetDeploymentId: identities[0].deploymentId,
               };
-              const startedUpload = upload
-                ? await client
+              let accepted: OperationRefData | undefined;
+              const uploading = upload
+                ? client
                     .upload(input)
-                    .transfer(bytes)
+                    .transfer(body)
+                    .onAccepted(({ snapshot }) => {
+                      accepted = {
+                        ...snapshot,
+                        deploymentId: identities[0].deploymentId,
+                      };
+                    })
                     .start(undefined, options)
                     .orThrow()
                 : undefined;
+              void uploading?.catch(() => undefined);
+              if (upload) await runtime.waitFor(() => accepted !== undefined);
               const operation =
-                startedUpload?.operation ??
+                (accepted ? client.upload.resume(accepted) : undefined) ??
                 (await client.work(input).start(undefined, options).orThrow());
+              let uploadSignals = 0;
+              if (rustFirst && upload) {
+                stage = "Node signal acceptance during Rust upload";
+                await runtime.waitFor(() => uploadPaused);
+                const before = new Set(
+                  runtime
+                    .nativeTransportGate()
+                    .connections()
+                    .map(({ id }) => id),
+                );
+                second = await startProvider(false);
+                const controlSubject = `operation.v1.${Buffer.from(apis.runtime.API.identity).toString("base64url")}.${Buffer.from(identities[0].deploymentId).toString("base64url")}.Upload.control`;
+                const node = runtime
+                  .nativeTransportGate()
+                  .connections()
+                  .find(
+                    (connection) =>
+                      !before.has(connection.id) &&
+                      connection.subs.some(
+                        ({ subject }) => subject === controlSubject,
+                      ),
+                  );
+                assert(node);
+                let nodeReceived = false;
+                void runtime
+                  .nativeTransportGate()
+                  .waitForDelivery(controlSubject, node.id)
+                  .then(() => {
+                    nodeReceived = true;
+                  });
+                // Each distinct signal is accepted through the public client. The
+                // receiving-provider barrier, not a delay, proves a foreign write.
+                while (!nodeReceived && uploadSignals < 32) {
+                  await operation
+                    .signal("Continue", { value: "during-upload" })
+                    .orThrow();
+                  uploadSignals++;
+                }
+                assert(
+                  nodeReceived,
+                  "Node must accept a signal while Rust still owns the unfinished upload",
+                );
+                finishUpload();
+              }
+              const startedUpload = await uploading;
               await runtime.waitFor(() =>
                 events.some((event) =>
                   upload ? event.uploaded : event.entered,
                 ),
               );
+              if (uploadSignals)
+                await runtime.waitFor(
+                  () =>
+                    events.filter((event) => event.uploadSignal).length ===
+                    uploadSignals,
+                );
               stage = "initial durable checkpoint read";
               if (!upload)
                 assert.deepEqual((await operation.get().orThrow()).progress, {
@@ -226,12 +331,14 @@ for (const rustFirst of [true, false]) {
                 .signal("Continue", { value: "ack-before" })
                 .orThrow();
               await runtime.waitFor(() =>
-                events.some((event) => event.acknowledged === 1),
+                events.some(
+                  (event) => event.acknowledged === uploadSignals + 1,
+                ),
               );
               await operation.signal("Continue", { value: "finish" }).orThrow();
               await first.stop();
               stage = "replacement startup";
-              const second = await startProvider(!rustFirst);
+              second ??= await startProvider(!rustFirst);
               // A killed executor keeps its signed 30-second storage lease. Observe
               // actual takeover before opening a new Live observer; do not change
               // an RPC deadline or ask observation to retry an unavailable owner.
@@ -250,7 +357,9 @@ for (const rustFirst of [true, false]) {
                 `${rustFirst ? "node" : "rust"}:finish`,
               );
               assert.equal(
-                events.filter((event) => event.acknowledged === 1).length,
+                events.filter(
+                  (event) => event.acknowledged === uploadSignals + 1,
+                ).length,
                 1,
               );
               if (!upload)
@@ -332,6 +441,7 @@ for (const rustFirst of [true, false]) {
                 cause,
               });
             } finally {
+              finishUpload();
               await Promise.all(providers.map((provider) => provider.stop()));
               await client.connection.close();
             }

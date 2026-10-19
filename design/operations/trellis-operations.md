@@ -42,6 +42,10 @@ output/error, cancellation request, ordered durable signals, executor lease
 ownership, timestamps, and transfer reference. Storage revision is the CAS
 token. Terminal states are completed, failed, or cancelled; owner crash is not a
 business failure.
+Replica control writes preserve the complete retained upload attempt, including
+unfinished state, staging locator, grant, and transfer metadata. Only creation or
+a fenced replacement may allocate another staging identity; accepting a signal
+or cancellation must not reconstruct it.
 
 Each process has an executor ULID. A 30-second lease renewed every 10 seconds
 fences all owner mutations. After expiry a replica may resume nonterminal work

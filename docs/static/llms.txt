@@ -182,6 +182,8 @@ providers must exclusively own the family and durably commit spent-token markers
 successors, and authenticated trust before their operations resolve. This entrypoint is
 Node/npm-only; browser applications retain IndexedDB and Web Locks. Successful
 connection transfers credential ownership to the connection until it closes.
+Await native connection.close() before reacquiring: asynchronous lease release
+is joined exactly once and release failures remain observable.
 Discovery cannot replace a retained issuer pin; only an authenticated rotation
 chain can advance it. Lost refresh responses require recovery, not token replay.
 Live authority requires a verified initial revocation snapshot and ongoing

@@ -47,7 +47,10 @@ import type {
   PendingSessionRequest,
   VerifiedAuthority,
 } from "./auth/authority.ts";
-import { operationRecordRepresentation } from "./service/runtime/operation_record.ts";
+import {
+  operationRecordRepresentation,
+  type PersistedOperationUpload,
+} from "./service/runtime/operation_record.ts";
 import {
   fixedTransportProvider,
   type TransportLease,
@@ -1464,8 +1467,8 @@ export type RuntimeOperationRecord = {
   leaseExpiresAt: string;
   cancelRequestedAt?: string;
   transferGrant?: SendTransferGrant;
-  /** Internal physical staging key committed with the upload; never public metadata. */
-  uploadStorageKey?: string;
+  /** Retained upload attempt, including its private staging locator and state. */
+  uploadState?: PersistedOperationUpload;
   snapshot: RuntimeOperationSnapshot;
   sequence: number;
   signalSequence: number;
@@ -1497,8 +1500,8 @@ export type DurableOperationRecord = {
   leaseExpiresAt: string;
   cancelRequestedAt?: string;
   transferGrant?: SendTransferGrant;
-  /** Persisted physical staging locator, separate from the public logical FileInfo key. */
-  uploadStorageKey?: string;
+  /** Persisted upload attempt, separate from the public logical FileInfo key. */
+  uploadState?: PersistedOperationUpload;
   sequence: number;
   signalSequence: number;
   signals: RuntimeOperationSignal[];
@@ -3234,9 +3237,7 @@ export class Trellis<
       ...(runtime.transferGrant
         ? { transferGrant: runtime.transferGrant }
         : {}),
-      ...(runtime.uploadStorageKey
-        ? { uploadStorageKey: runtime.uploadStorageKey }
-        : {}),
+      ...(runtime.uploadState ? { uploadState: runtime.uploadState } : {}),
       sequence: runtime.sequence,
       signalSequence: runtime.signalSequence,
       signals: runtime.signals,
@@ -4380,6 +4381,8 @@ export class Trellis<
         done: installed.done,
       });
       ingress.disposeFns.push({ intakeId: id, dispose: installed.dispose });
+      // Registration is usable only once the broker has acknowledged SUB.
+      await ingress.nc.flush();
     }
   }
 

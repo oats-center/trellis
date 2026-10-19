@@ -165,6 +165,7 @@ type RegisteredRuntimeOperationDesc = RuntimeOperationDesc & {
 
 type RuntimeOperationTransferSession = {
   grant: SendTransferGrant;
+  storageKey: string;
   transfer: OperationTransferHandle;
 };
 
@@ -830,7 +831,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         existing.signalSequence = durable.signalSequence;
         existing.signals = durable.signals;
         existing.transferGrant = durable.transferGrant;
-        existing.uploadStorageKey = durable.uploadStorageKey;
+        existing.uploadState = durable.uploadState;
         existing.terminal =
           durable.snapshot.state === "completed" ||
           durable.snapshot.state === "failed" ||
@@ -873,9 +874,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       ...(durable.transferGrant
         ? { transferGrant: durable.transferGrant }
         : {}),
-      ...(durable.uploadStorageKey
-        ? { uploadStorageKey: durable.uploadStorageKey }
-        : {}),
+      ...(durable.uploadState ? { uploadState: durable.uploadState } : {}),
       snapshot: durable.snapshot,
       sequence: durable.sequence,
       terminal:
@@ -1282,7 +1281,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             runtime.sequence = durable.sequence + 1;
             runtime.signalSequence = durable.signalSequence;
             runtime.signals = durable.signals;
-            runtime.uploadStorageKey = durable.uploadStorageKey;
+            runtime.uploadState = durable.uploadState;
             if (opts.uploadCommit) {
               if (!durable.transferGrant) {
                 throw new Error("operation upload grant is missing");
@@ -1293,7 +1292,15 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 "committed",
                 opts.uploadCommit.info,
               );
-              runtime.uploadStorageKey = opts.uploadCommit.storageKey;
+              runtime.uploadState = {
+                stagingKey: opts.uploadCommit.storageKey,
+                state: "committed",
+                fileInfo: opts.uploadCommit.info,
+                size: opts.uploadCommit.info.size,
+                digest: opts.uploadCommit.info.digest,
+                updatedAt: opts.uploadCommit.info.updatedAt,
+                contentType: opts.uploadCommit.info.contentType,
+              };
             }
             runtime.leaseExpiresAt = new Date(
               Date.now() + 30_000,
@@ -1504,7 +1511,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           runtime.revision = durable.revision;
           runtime.snapshot = durable.snapshot;
           runtime.transferGrant = durable.transferGrant;
-          runtime.uploadStorageKey = durable.uploadStorageKey;
+          runtime.uploadState = durable.uploadState;
           runtime.sequence = durable.sequence;
           runtime.signalSequence = durable.signalSequence;
           runtime.signals = durable.signals;
@@ -1522,7 +1529,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           durable.transferGrant &&
           Reflect.get(durable.transferGrant, "committed");
         if (
-          durable.uploadStorageKey === storageKey &&
+          durable.uploadState?.stagingKey === storageKey &&
           durable.transferGrant?.transferId === transferId &&
           Value.Check(FileInfoSchema, committed)
         )
@@ -1613,6 +1620,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         runtime.ownerConnectionId = durable.ownerConnectionId;
         runtime.ownerEpoch = durable.ownerEpoch;
         runtime.transferGrant = durable.transferGrant;
+        runtime.uploadState = durable.uploadState;
         runtime.leaseExpiresAt = durable.leaseExpiresAt;
         runtime.cancelRequestedAt = new Date().toISOString();
         runtime.snapshot = buildRuntimeOperationSnapshot(
@@ -3930,15 +3938,16 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             const committed = Reflect.get(runtime.transferGrant, "committed");
             if (Value.Check(FileInfoSchema, committed)) {
               if (!this.#transferSupport) return;
-              if (!runtime.uploadStorageKey) return;
+              if (!runtime.uploadState) return;
               const staged = await this.#transferSupport
-                .openStagedOperation(runtime.uploadStorageKey, committed)
+                .openStagedOperation(runtime.uploadState.stagingKey, committed)
                 .take();
               if (isErr(staged)) return;
               startLeaseHeartbeat(runtime, fence);
               watchCancellation(runtime, fence);
               const transferSession = {
                 grant: runtime.transferGrant,
+                storageKey: runtime.uploadState.stagingKey,
                 transfer: staged,
               };
               this.#operationTransferSessions.set(runtime.id, transferSession);
@@ -3984,7 +3993,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               .take();
             if (isErr(reopened)) return;
             runtime.transferGrant = reopened.grant;
-            delete runtime.uploadStorageKey;
+            runtime.uploadState = {
+              stagingKey: reopened.storageKey,
+              state: "pending",
+            };
             const current = await this.loadOperationRecord(runtime.id);
             if (!current || !this.#ownsOperation(current, fence)) {
               runtime.cancellation.abort("operation ownership lost");
@@ -4494,7 +4506,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               ownerEpoch: 1,
               leaseExpiresAt: new Date(Date.now() + 30_000).toISOString(),
               ...(transferSession
-                ? { transferGrant: transferSession.grant }
+                ? {
+                    transferGrant: transferSession.grant,
+                    uploadState: {
+                      stagingKey: transferSession.storageKey,
+                      state: "pending",
+                    },
+                  }
                 : {}),
               snapshot: {
                 id: operationId,

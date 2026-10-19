@@ -220,7 +220,9 @@ Persistent providers must exclusively acquire the exact family, durably mark a
 refresh token spent before returning it for submission, and atomically retain
 successors and authenticated trust. The SDK awaits those commits. A successful
 connection owns custody until it closes;
-closing an earlier session reference cannot release that ownership. Discovery
+closing an earlier session reference cannot release that ownership. Await native
+connection.close() before reacquiring: it joins settled exchanges and asynchronous
+lease release, reports release failures, and releases once across repeated closes. Discovery
 cannot repin existing credentials; trust advances only through authenticated
 issuer rotation. Browser applications retain IndexedDB and Web Locks.
 TypeScript signed reply verification waits for already-received ordered revocation

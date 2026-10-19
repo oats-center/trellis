@@ -95,7 +95,10 @@ within a process, retain a `MemoryNativeOAuthCustody` object and pass it as
 `custody` on each opening for that exact scope. Close the previous connection
 before acquiring it again, then call `resume()` rather than prompting for another
 login. The connection owns the lease after admission; closing an old session
-reference does not release the connection's ownership.
+reference does not release the connection's ownership. Await
+`client.connection.close()` before reacquiring: it settles active exchanges and
+awaits the application's asynchronous lease release. Repeated closes join the
+same disposal result, including a release failure.
 
 Remembering login across process restarts requires an explicitly supplied
 application-owned `NativeOAuthCustody` provider. Trellis supplies no persistent

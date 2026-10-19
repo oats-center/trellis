@@ -90,7 +90,7 @@ test(
           lease.release();
         }
       } finally {
-        await connected.manager.close();
+        await connected.close();
       }
     });
   },

@@ -238,7 +238,7 @@ test(
         });
         const session = login.session;
         const raw = await connectNativeSession({ ...login, signal }).orThrow();
-        close.push(() => raw.manager.close());
+        close.push(() => raw.close());
         // The second physical attachment has no SDK owner or revocation observer.
         // Its closure can only be broker enforcement, not cooperative SDK cleanup.
         const uncooperative = await connect({

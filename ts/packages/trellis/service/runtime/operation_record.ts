@@ -53,6 +53,12 @@ type StoredRecord = {
   };
 };
 
+/** Lossless transfer metadata projected from the shared Rust record. @internal */
+export type PersistedOperationUpload = Omit<
+  NonNullable<StoredRecord["transfer"]>,
+  "grant"
+>;
+
 /** Private repository adapter. TRKV framing and carrier ownership remain in KV. */
 export const operationRecordRepresentation: KvRepresentation<DurableOperationRecord> =
   {
@@ -103,10 +109,10 @@ export const operationRecordRepresentation: KvRepresentation<DurableOperationRec
           ...(value.telemetry ? { telemetry: value.telemetry } : {}),
           transfer: grant
             ? {
-                stagingKey:
-                  value.uploadStorageKey ??
-                  `_trellis-transfer-v2-${grant.transferId}`,
-                state: info ? "committed" : "pending",
+                ...value.uploadState,
+                state: info
+                  ? "committed"
+                  : (value.uploadState?.state ?? "pending"),
                 grant,
                 ...(info
                   ? {
@@ -166,7 +172,14 @@ export const operationRecordRepresentation: KvRepresentation<DurableOperationRec
           })),
           ...(record.telemetry ? { telemetry: record.telemetry } : {}),
           ...(grant ? { transferGrant: grant } : {}),
-          ...(upload ? { uploadStorageKey: upload.stagingKey } : {}),
+          ...(record.transfer
+            ? (() => {
+                const { grant: _grant, ...uploadState } = record.transfer;
+                return {
+                  uploadState,
+                };
+              })()
+            : {}),
         };
       },
     },

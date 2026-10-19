@@ -140,7 +140,9 @@ acquire the exact family, durably mark a token spent before returning it for
 submission, atomically commit successors, and retain authenticated trust.
 Connection ownership keeps
 the credential family exclusive until transport closes; an old session reference
-cannot release that ownership. Lost refresh responses are never retried with the
+cannot release that ownership. Await connection.close() before reacquiring; it
+joins asynchronous lease release exactly once and reports release failures.
+Lost refresh responses are never retried with the
 spent token. Retained issuer pins advance only through authenticated rotations.
 The shared authority owner requires an applied initial revocation snapshot and
 current coverage; stale watchers cannot alter replacement coverage.

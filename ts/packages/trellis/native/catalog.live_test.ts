@@ -9,7 +9,8 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { pathToFileURL } from "node:url";
@@ -42,7 +43,7 @@ test(
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
 
-      const directory = await mkdtemp("/tmp/opencode/native-catalog-");
+      const directory = await mkdtemp(join(tmpdir(), "native-catalog-"));
       const close: Array<() => Promise<unknown>> = [];
       try {
         // Compile native IDL with the ordinary installed compiler in isolated output

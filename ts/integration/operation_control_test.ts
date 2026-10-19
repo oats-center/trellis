@@ -1,6 +1,7 @@
 import { TrellisService } from "@oatscenter/trellis/service";
 import {
   OperationNotFoundError,
+  TransportError,
   UnexpectedError,
 } from "@oatscenter/trellis/errors";
 import { isOk, Result } from "@oatscenter/result";
@@ -10,6 +11,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  apis,
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
@@ -471,92 +473,107 @@ test("handler cancellation stays nonterminal until cleanup returns", async () =>
 });
 
 test("interrupted cancellation recovers through cleanup without rerunning business work", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const firstIdentity = await runtime.registerService({
-      name: "operation-interrupted-cancel-replicas",
-      contract: participants.Provider.participant,
-    });
-    const secondIdentity = await runtime.services.createInstance({
-      name: "operation-interrupted-cancel-replica-b",
-      contract: participants.Provider.participant,
-    });
-    const services = await Promise.all(
-      [firstIdentity, secondIdentity].map((identity) =>
-        TrellisService.connect({
-          trellisUrl: runtime.oauthIssuer,
-          participant: participants.Provider.participant,
-          name: "operation-interrupted-cancel-replicas",
-          seed: identity.seed,
-        }).orThrow(),
-      ),
-    );
-    const firstStarted = Promise.withResolvers<number>();
-    const cancellationObserved = Promise.withResolvers<void>();
-    let executions = 0;
-    let businessExecutions = 0;
-    for (const [index, service] of services.entries()) {
-      await service.handleWork(async ({ op, signal }) => {
-        const count = ++executions;
-        if (signal.aborted) {
-          assert.deepEqual(count, 2);
-          return;
-        }
-        businessExecutions++;
-        await op.started().orThrow();
-        if (count === 1) {
-          firstStarted.resolve(index);
-          await new Promise<void>((resolve) => {
-            if (signal.aborted) {
-              resolve();
-            } else {
-              signal.addEventListener("abort", () => resolve(), {
-                once: true,
-              });
-            }
-          });
-          cancellationObserved.resolve();
-          return await new Promise<never>(() => {});
-        }
-        throw new Error("recovery entered business work");
+  await withTrellisRuntime(
+    async (runtime) => {
+      const firstIdentity = await runtime.registerService({
+        name: "operation-interrupted-cancel-replicas",
+        contract: participants.Provider.participant,
       });
-    }
-    const client = await runtime.connectClient({
-      name: "operation-interrupted-cancel-caller",
-      contract: apps.Caller.request,
-    });
-    const exits = services.map((service) => service.wait());
-    try {
-      const operation = await client
-        .work({ value: "interrupted-cancel" })
-        .start()
-        .orThrow();
-      const owner = await firstStarted.promise;
-      // The caller-visible cancel request resolves only after cleanup, so fire
-      // it without awaiting and wait for the handler to observe the abort.
-      const cancellation = operation.cancel();
-      await cancellationObserved.promise;
-      // The owner dies mid-cleanup. The durable cancellation request survives,
-      // so the successor must re-enter cleanup with an already-aborted signal.
-      await services[owner].stop();
-      await exits[owner];
-      const terminal = await Promise.race([
-        cancellation.orThrow(),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () => reject(new Error("cancellation did not finalize")),
-            90_000,
-          ),
+      const secondIdentity = await runtime.services.createInstance({
+        name: "operation-interrupted-cancel-replica-b",
+        contract: participants.Provider.participant,
+      });
+      const services = await Promise.all(
+        [firstIdentity, secondIdentity].map((identity) =>
+          TrellisService.connect({
+            trellisUrl: runtime.oauthIssuer,
+            participant: participants.Provider.participant,
+            name: "operation-interrupted-cancel-replicas",
+            seed: identity.seed,
+          }).orThrow(),
         ),
-      ]);
-      assert.deepEqual(terminal.state, "cancelled");
-      assert.deepEqual(executions, 2);
-      assert.deepEqual(businessExecutions, 1);
-    } finally {
-      await client.connection.close();
-      await Promise.all(services.map((service) => service.stop()));
-      await Promise.all(exits);
-    }
-  });
+      );
+      const firstStarted = Promise.withResolvers<number>();
+      const cancellationObserved = Promise.withResolvers<void>();
+      let executions = 0;
+      let businessExecutions = 0;
+      for (const [index, service] of services.entries()) {
+        await service.handleWork(async ({ op, signal }) => {
+          const count = ++executions;
+          if (signal.aborted) {
+            assert.deepEqual(count, 2);
+            return;
+          }
+          businessExecutions++;
+          await op.started().orThrow();
+          if (count === 1) {
+            firstStarted.resolve(index);
+            await new Promise<void>((resolve) => {
+              if (signal.aborted) {
+                resolve();
+              } else {
+                signal.addEventListener("abort", () => resolve(), {
+                  once: true,
+                });
+              }
+            });
+            cancellationObserved.resolve();
+            return await new Promise<never>(() => {});
+          }
+          throw new Error("recovery entered business work");
+        });
+      }
+      const client = await runtime.connectClient({
+        name: "operation-interrupted-cancel-caller",
+        contract: apps.Caller.request,
+      });
+      const exits = services.map((service) => service.wait());
+      try {
+        const operation = await client
+          .work({ value: "interrupted-cancel" })
+          .start()
+          .orThrow();
+        const owner = await firstStarted.promise;
+        const controlSubject = `operation.v1.${Buffer.from(apis.runtime.API.identity).toString("base64url")}.${Buffer.from(firstIdentity.deploymentId).toString("base64url")}.Work.control`;
+        const reply = runtime
+          .nativeTransportGate()
+          .armResponseHold(controlSubject);
+        try {
+          // Withhold the actual signed acknowledgement. Losing the owner can
+          // lose this reply; a timeout does not retract durable cancellation.
+          const cancellation = operation.cancel();
+          await cancellationObserved.promise;
+          await reply.held;
+          await services[owner].stop();
+          await exits[owner];
+          const terminal = runtime.waitFor(
+            async () => {
+              const snapshot = await operation.get().orThrow();
+              return snapshot.state === "cancelled" ? snapshot : false;
+            },
+            { timeoutMs: 90_000 },
+          );
+          const [outcome, snapshot] = await Promise.all([
+            cancellation,
+            terminal,
+          ]);
+          assert(outcome.isErr());
+          assert(outcome.error instanceof TransportError);
+          assert.equal(outcome.error.code, "trellis.request.timeout");
+          assert.equal(snapshot.state, "cancelled");
+          assert.deepEqual(executions, 2);
+          assert.deepEqual(businessExecutions, 1);
+        } finally {
+          await reply.release();
+        }
+      } finally {
+        await client.connection.close();
+        await Promise.all(services.map((service) => service.stop()));
+        await Promise.all(exits);
+      }
+    },
+    { interruptibleNativeProxy: true },
+  );
 });
 
 test("cancellation request serializes with handler completion", async () => {

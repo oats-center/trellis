@@ -31,7 +31,12 @@ import type { NativeOAuthSession } from "./oauth.ts";
 /** The shared admitted connection: one authority owner and ordinary generation manager. */
 export type NativeSessionConnection = Awaited<
   ReturnType<typeof connectAdmitted>
->;
+> & {
+  /** Stop transport work and join exclusive credential-custody release. */
+  close(): Promise<void>;
+  /** Observe terminal transport completion after credential custody is released. */
+  closed(): Promise<void | Error>;
+};
 
 /** Connect a verified native OAuth session through the unchanged admission/authority/transport pipeline. Consumes session connection ownership. */
 export function connectNativeSession(
@@ -48,7 +53,7 @@ export function connectNativeSession(
       const session = options.session;
       let custody:
         ReturnType<NativeOAuthSession["claimConnection"]> | undefined;
-      let connected: NativeSessionConnection | undefined;
+      let connected: Awaited<ReturnType<typeof connectAdmitted>> | undefined;
       try {
         custody = session.claimConnection();
         let admission = session.admission;
@@ -107,14 +112,34 @@ export function connectNativeSession(
         } finally {
           own.release();
         }
-        void connected.manager
-          .closed()
-          .then(() => custody?.close())
-          .catch(() => undefined);
-        return Result.ok(connected);
+        const manager = connected.manager;
+        const claimedCustody = custody;
+        const closed = manager.closed().then(async (result) => {
+          await claimedCustody.close();
+          return result;
+        });
+        // Retain the original rejection for close()/closed(), even when no
+        // observer is installed when an unsolicited terminal closure occurs.
+        void closed.catch(() => undefined);
+        let closing: Promise<void> | undefined;
+        return Result.ok({
+          ...connected,
+          closed: () => closed,
+          close: () =>
+            (closing ??= (async () => {
+              try {
+                await manager.close();
+              } finally {
+                await closed;
+              }
+            })()),
+        });
       } catch (cause) {
-        await connected?.manager.close();
-        await custody?.close();
+        try {
+          await connected?.manager.close();
+        } finally {
+          await custody?.close();
+        }
         return Result.err(
           cause instanceof AuthError || cause instanceof TransportError
             ? cause
@@ -185,7 +210,7 @@ export function connectNativeClient<const T extends AppRequestDescriptor>(
                     if (
                       !(await Promise.race([
                         projected,
-                        connected.manager.closed().then(() => false),
+                        connected.closed().then(() => false),
                       ]))
                     )
                       return;
@@ -196,8 +221,8 @@ export function connectNativeClient<const T extends AppRequestDescriptor>(
                 yield status;
               }
             },
-            closed: () => connected.manager.closed(),
-            close: () => connected.manager.close(),
+            closed: () => connected.closed(),
+            close: () => connected.close(),
             isClosed: () => connected.manager.isClosed(),
             getServer: () => connected.manager.currentNats().getServer(),
           },
@@ -241,7 +266,7 @@ export function connectNativeClient<const T extends AppRequestDescriptor>(
           }),
         );
       } catch (cause) {
-        await connected.manager.close();
+        await connected.close();
         return Result.err(
           cause instanceof AuthError || cause instanceof TransportError
             ? cause

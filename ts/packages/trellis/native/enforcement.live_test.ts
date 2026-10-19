@@ -3,7 +3,8 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -19,7 +20,7 @@ test(
   "failed broker enforcement survives Auth restart and kicks only its exact attachment",
   { timeout: 150_000 },
   async (context) => {
-    const directory = await mkdtemp("/tmp/opencode/native-enforcement-");
+    const directory = await mkdtemp(join(tmpdir(), "native-enforcement-"));
     const cli = resolve(
       process.env.TRELLIS_TEST_CLI_BIN ?? "target/release/trellis",
     );

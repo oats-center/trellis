@@ -1,6 +1,5 @@
 /** Real broker expiration and enforcement after ordinary runtime recovery. */
 import assert from "node:assert/strict";
-import { join } from "node:path";
 import { test } from "node:test";
 import { Result } from "@oatscenter/trellis";
 import { codecs } from "@oatscenter/trellis/generated";
@@ -117,7 +116,7 @@ test("recovered service attachments remain subject to server enforcement after r
       seed: identity.seed,
     }).orThrow();
     const exited = service.wait().catch((error: unknown) => error);
-    const caller = await runtime.connectClient({
+    let caller = await runtime.connectClient({
       name: "restart-caller",
       contract: apps.EchoCaller.request,
     });
@@ -156,12 +155,17 @@ test("recovered service attachments remain subject to server enforcement after r
         beforeIds,
       );
       assert(beforeSockets.length > 0);
+      // Check the recovered service attachment, not native caller startup
+      // latency: an admission attempt can outlast the generic readiness window.
+      await caller.connection.close();
       await runtime.restart();
       await runtime.waitFor(
-        () =>
-          service.connection.status.phase === "connected" &&
-          caller.connection.status.phase === "connected",
+        () => service.connection.status.phase === "connected",
       );
+      caller = await runtime.connectClient({
+        name: "restart-caller",
+        contract: apps.EchoCaller.request,
+      });
       assert.deepEqual(await caller.echo({ value: "after" }).orThrow(), {
         value: "after",
       });
