@@ -831,6 +831,11 @@ upgrade old pre-release layouts; migrate retained databases explicitly.
 
 Declare these dependencies only when the application uses them:
 
+- `Auth.Users.Profile.Update` with `accountProfileWrite` edits only your own
+  profile. Use the self account's `profileRevision` and an idempotency key.
+  Omitted fields stay unchanged; clear flags restore eligible linked-provider
+  values. Manual email is unverified and never links accounts. Manual choices
+  survive OIDC login; matching-sub bounded UserInfo enriches presentation only.
 - `Auth.Users.Resolve` with `accountRead` returns only your own profile and
   account. `Users.List/Get` with selected and consented `usersRead` provide an
   active-user directory, including names, available email and photos. Ordinary

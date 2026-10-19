@@ -17,6 +17,8 @@ mod oauth;
 mod own_context;
 pub(crate) use own_context::OwnContextService;
 mod policy;
+mod profiles;
+mod remote_http;
 mod resources;
 mod state;
 pub(crate) use state::StateDeclaration;

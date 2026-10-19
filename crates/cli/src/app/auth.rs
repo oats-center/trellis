@@ -249,6 +249,9 @@ async fn users_create_command(format: OutputFormat, args: &UserCreateArgs) -> mi
         .trellis_auth_v1();
     let user = auth
         .users_create(&auth_types::AuthUserCreateRequest {
+            given_name: None,
+            family_name: None,
+            email: None,
             display_name: wire(trimmed_optional(&args.name).unwrap_or_else(|| username.clone()))?,
             username: wire(username)?,
             password: None,
@@ -296,6 +299,10 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
         .ok_or_else(|| miette::miette!("account management authority is required"))?;
     let user = auth
         .users_update(&auth_types::AuthUserUpdateRequest {
+            given_name: None,
+            family_name: None,
+            email: None,
+            clear_email: None,
             display_name: wire(trimmed_optional(&args.name).unwrap_or(current.display_name))?,
             enabled: if args.active {
                 true

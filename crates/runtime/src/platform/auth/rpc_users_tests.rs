@@ -85,6 +85,9 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         .map(|initialized| initialized.principal_id)
         .unwrap();
     let input = AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         username: "Alice".to_string().into(),
         display_name: "Alice Example".to_string().into(),
         password: Some("initial alice password".to_string().into()),
@@ -110,6 +113,10 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         .unwrap();
     assert_eq!(login.principal_id, created.user.principal_id.to_string());
     let update = AuthUserUpdateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
+        clear_email: None,
         user_id: created.user.principal_id,
         expected_revision: AuthRevision(1.into()),
         display_name: "Alice Updated".to_string().into(),
@@ -120,6 +127,10 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
     let updated = update_user(&store, &mutation(&admin, &update), &update, NOW + 1).unwrap();
     assert_eq!(updated.user.display_name, "Alice Updated");
     let stale = AuthUserUpdateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
+        clear_email: None,
         enabled: false,
         display_name: "Stale write".to_string().into(),
         idempotency_key: id().into(),
@@ -136,6 +147,10 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         updated.user
     );
     let protected = AuthUserUpdateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
+        clear_email: None,
         user_id: admin.parse().unwrap(),
         expected_revision: AuthRevision(1.into()),
         display_name: "Disabled administrator".to_string().into(),
@@ -366,6 +381,9 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
         .map(|initialized| initialized.principal_id)
         .unwrap();
     let input = AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         username: "Reserved".to_string().into(),
         display_name: "Pending account".to_string().into(),
         password: None,
@@ -377,6 +395,9 @@ fn passwordless_account_reserves_username_without_creating_a_sign_in_credential(
     assert_eq!(account.username, "reserved");
     assert!(!account.has_local_password);
     let duplicate = AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         username: "RESERVED".to_string().into(),
         password: Some("a usable password".to_string().into()),
         idempotency_key: id().into(),
@@ -570,6 +591,9 @@ fn identity_unlink_uses_persistent_owner_scoped_id_and_preserves_last_sign_in() 
         .provider_id
         .to_string();
     let account = AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: None,
@@ -676,6 +700,9 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
     let storage = crate::platform::auth::OAuthStorage::new(store.clone(), &[21; 32]).unwrap();
     let session = reset_session(&store, &admin, &admin, "admin", "administrator password");
     let account = AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: Some("initial alice password".to_string().into()),
@@ -810,6 +837,9 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     let mut principals = vec![];
     for username in ["operator", "alice"] {
         let input = AuthUserCreateRequest {
+            given_name: None,
+            family_name: None,
+            email: None,
             username: username.to_string().into(),
             display_name: username.to_string().into(),
             password: Some("initial account password".to_string().into()),
@@ -1011,6 +1041,9 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
         Arc::new(crate::platform::auth::OAuthStorage::new(store.clone(), &[23; 32]).unwrap());
     let session = reset_session(&store, &admin, &admin, "admin", "administrator password");
     let account = AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: None,

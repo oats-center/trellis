@@ -1,5 +1,6 @@
 import {
   AuthEmpty,
+  AuthUserProfileUpdateRequest,
   AuthErrorDetails,
   AuthPageRequest,
   AuthMutationResult,
@@ -199,6 +200,7 @@ api auth@v1 {
 
   // Own-account data, bounded by the named capabilities below.
   rpc Users.Resolve { input AuthEmpty; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.Profile.Update { input AuthUserProfileUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Users.Password.Change { input AuthPasswordChangeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Users.IdentityLink.Create { input AuthIdentityLinkCreateRequest; output AuthIdentityLinkCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc UserIdentities.List { input AuthPageRequest; output AuthUserIdentitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
@@ -715,6 +717,13 @@ api auth@v1 {
       description "Read your account and current session, or end your current login.";
       consequence "Reveals your username and display name, and may end your current login and its application sessions.";
       allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; }
+    }
+    capability accountProfileWrite {
+      consent_revision 1;
+      title "Manage your profile";
+      description "Update your own display name, email and avatar preferences.";
+      consequence "Changes profile information shared with applications allowed to read the user directory. An entered email is not verified identity evidence.";
+      allows { rpc Users.Profile.Update; }
     }
     capability passwordChange {
       consent_revision 1;

@@ -483,6 +483,13 @@ email and photos. Ordinary profiles omit `account`. Delegated and currently
 eligible `principals.manage` also exposes account lifecycle/revision, username
 and password status and permits inactive-user lookup and username search.
 `Users.Resolve` with `accountRead` is self-only and includes the caller's account.
+
+Select `accountProfileWrite` for `Users.Profile.Update`: own names, manual
+unverified email, HTTPS picture override and Gravatar preference. Use the self
+account's `profileRevision` and an `idempotencyKey`; omitted fields are unchanged,
+and clear flags restore eligible linked-provider defaults. Manual choices survive
+OIDC login; email equality never links identities. Optional matching-sub UserInfo
+enriches presentation only, with bounded HTTPS and no impact on valid login.
 Names and email are not unique identity keys or application authorization.
 
 Durable transfer progress is monotonic and may be coalesced; interrupted uploads

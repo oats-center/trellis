@@ -310,9 +310,7 @@ test("B28 user creation rotates the one-time setup receipt", async () => {
 test("a password reset receipt clears its token when closed", async () => {
   await withTrellisRuntime(async (runtime) => {
     const created = await runtime.callAdminRpc("authUsersCreate", {
-      email: null,
       idempotencyKey: ulid(),
-      image: null,
       displayName: "Console N07",
       username: `ct-n07-${ulid()}`,
     });
@@ -357,9 +355,7 @@ test("N09 a stale user edit cannot overwrite a concurrent update and can be resu
   await withTrellisRuntime(async (runtime) => {
     const username = `ct-n09-${ulid()}`.toLowerCase();
     const created = await runtime.callAdminRpc("authUsersCreate", {
-      email: null,
       idempotencyKey: ulid(),
-      image: null,
       displayName: "Original name",
       username,
     });

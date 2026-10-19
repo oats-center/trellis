@@ -40,6 +40,23 @@ PKCE, and current portal-user continuity are checked before the identity is link
 An identity belonging to another user cannot be reassigned. Creation retries
 return the original response; they do not renew or revive consumed actions.
 
+## Own directory profile
+
+Select `trellis.auth@v1::accountProfileWrite` and call `Users.Profile.Update`
+to edit your own display/given/family names, email, picture override and Gravatar
+preference. Use `Users.Resolve`'s `user.account.profileRevision` as
+`expectedRevision`, plus a fresh `idempotencyKey`. There is no target user ID.
+Omitted fields stay unchanged. Explicit `clearEmail`/`clearAvatarOverride` restore
+eligible linked-provider data; do not send a value and its clear flag together.
+Manually entered email is not verified and never links or authenticates accounts.
+Manual choices survive future OIDC logins. Provider unlink removes only its
+nonmanual profile contributions, not your other sign-in methods.
+
+Configure upstream providers with `openid profile email` when you want standard
+profile claims; Trellis preserves explicitly configured scope choices. Optional
+UserInfo fills missing signed-token profile fields only when its `sub` matches.
+An unavailable or malformed enrichment response does not block valid login.
+
 ## Installed participants
 
 Every participant is installed in Auth before it can be granted access. An
@@ -80,10 +97,9 @@ The user edit screen keeps profile, access grants, sign-in methods, and active
 sessions together. Profile and access edits save separately because they are
 independent transactions.
 
-Administrators can rename an existing local username without changing the user
-ID or password. A username already used by another account is rejected without
-saving any of the accompanying profile edits. Users without a local username
-can establish a local sign-in method through a password-reset account flow.
+Administrative profile updates preserve the immutable user ID and local username.
+Users without a local password can establish a local sign-in method through a
+password-reset account flow.
 
 Generate a password-reset link for the selected user, then securely give that
 one-use, time-limited link to them. Generating the link does not reset their

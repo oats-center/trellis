@@ -192,6 +192,9 @@ pub(super) fn rotate_issuer(
 /// Create an ordinary passwordless user through the production account aggregate.
 pub(super) fn create_user(store: &SqliteAuthorizationStore, actor: &str, now: i64) -> String {
     let input = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         idempotency_key: id().into(),
         username: id().into(),
         display_name: "Test user".to_owned().into(),

@@ -351,6 +351,7 @@ pub(super) fn complete_link(
         let live: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_portal_sessions s JOIN auth_login_sessions l ON l.login_session_id=s.login_session_id JOIN auth_principals p ON p.principal_id=l.principal_id JOIN auth_oidc_providers o ON o.provider_id=?1 WHERE s.portal_session_id=?2 AND l.principal_id=?3 AND l.revoked_at IS NULL AND l.expires_at>?4 AND s.expires_at>?4 AND p.state='active' AND o.state='active' AND o.revision=?5 AND s.cookie_hash=?6 AND s.csrf_hash=?7)", params![flow.provider.provider_id, login.session_id, action.target, now, flow.provider.revision, hash(cookie), hash(csrf)], |row| row.get(0))?;
         if !live { return Err(AuthError::Denied); }
         let already_linked = SqliteAuthorizationStore::link_oidc_identity_in(connection, &action.target, &flow.provider.provider_id, &verified.subject, now)?;
+        super::super::profiles::ingest(connection, &action.target, &flow.provider.provider_id, &verified.subject, &verified.profile, now)?;
         consume(connection, &action.id, now)?;
         let audit = serde_json::json!({"flowId":action.id,"providerId":flow.provider.provider_id,"identityAlreadyLinked":already_linked});
         let identity = Mutation { actor: login.principal_id, request_id: flow.request_id.clone(), request_digest: digest(&audit)? };

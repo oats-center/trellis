@@ -329,6 +329,9 @@ impl AdminSession {
         let response = self
             .auth
             .users_create(&AuthUserCreateRequest {
+                given_name: None,
+                family_name: None,
+                email: None,
                 username: username.to_owned().into(),
                 display_name: name.to_owned().into(),
                 password: Some(password.to_owned().into()),

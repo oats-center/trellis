@@ -2,15 +2,14 @@
 //! DNS, the actual socket destination, response bounds, and cache lifetime do not.
 
 use std::collections::BTreeMap;
-use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine;
 use oauth_as::cimd::{CimdPolicy, ClientIdUrl, ValidatedClientIdDocument};
-use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use sha2::{Digest, Sha256};
 
+use super::super::remote_http::{client, public_address, public_url};
 use super::super::AuthError;
 
 #[derive(Clone)]
@@ -29,68 +28,10 @@ pub(crate) struct ClientDocuments {
     portal_origin: String,
 }
 
-struct PublicDns;
-
-impl Resolve for PublicDns {
-    fn resolve(&self, name: Name) -> Resolving {
-        let host = name.as_str().to_owned();
-        Box::pin(async move {
-            let addresses: Vec<_> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
-            // Refuse a mixed public/private answer altogether. Never let fallback
-            // or happy-eyeballs select a destination rejected by policy.
-            if addresses.is_empty() || addresses.iter().any(|addr| !public_address(addr.ip())) {
-                return Err(std::io::Error::other("CIMD destination is not public").into());
-            }
-            Ok(Box::new(addresses.into_iter()) as Addrs)
-        })
-    }
-}
-
-fn public_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => {
-            let [a, b, c, _] = address.octets();
-            !address.is_private()
-                && !address.is_loopback()
-                && !address.is_link_local()
-                && !address.is_unspecified()
-                && !address.is_multicast()
-                && !address.is_broadcast()
-                && !address.is_documentation()
-                && a != 0
-                && a < 240
-                && !(a == 100 && (64..128).contains(&b))
-                && !(a == 192 && b == 0 && c == 0)
-                && !(a == 192 && b == 88 && c == 99)
-                && !(a == 198 && (b == 18 || b == 19))
-        }
-        IpAddr::V6(address) => {
-            let [a, b, ..] = address.segments();
-            // Global unicast only; exclude protocol-assignment, documentation,
-            // 6to4, mapped IPv4, local, multicast, and reserved destinations.
-            (0x2000..0x4000).contains(&a)
-                && !(a == 0x2001 && b < 0x0200)
-                && !(a == 0x2001 && b == 0x0db8)
-                && a != 0x2002
-                && a != 0x3ffe
-                && !(a == 0x3fff && b < 0x1000)
-        }
-    }
-}
-
 impl ClientDocuments {
     pub(crate) fn new(portal_origin: String) -> Result<Self, AuthError> {
-        // The runtime selects ring, but reqwest's no-provider build must have
-        // that choice installed before constructing its TLS connector. Preserve
-        // an already selected process provider, including concurrent startup.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
-            .https_only(true)
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
+        let client = client()
             .timeout(Duration::from_secs(5))
-            .connect_timeout(Duration::from_secs(3))
-            .dns_resolver(Arc::new(PublicDns))
             .build()
             .map_err(|_| AuthError::Unavailable)?;
         let mut policy = CimdPolicy::new();
@@ -111,20 +52,10 @@ impl ClientDocuments {
             ClientIdUrl::parse(client_id, &self.policy).map_err(|_| AuthError::Denied)?;
         let url = url::Url::parse(client_id).map_err(|_| AuthError::Denied)?;
         if url.origin().ascii_serialization() == self.portal_origin
-            || url.port_or_known_default() != Some(443)
+            || !public_url(&url)
             || url.as_str() != client_id
         {
             return Err(AuthError::Denied);
-        }
-        if let Some(host) = url.host() {
-            let address = match host {
-                url::Host::Ipv4(address) => Some(IpAddr::V4(address)),
-                url::Host::Ipv6(address) => Some(IpAddr::V6(address)),
-                url::Host::Domain(_) => None,
-            };
-            if address.is_some_and(|address| !public_address(address)) {
-                return Err(AuthError::Denied);
-            }
         }
         {
             let mut cache = self.cache.lock().map_err(|_| AuthError::Unavailable)?;
@@ -255,10 +186,5 @@ mod tests {
         ] {
             assert!(documents.get(client).await.is_err(), "{client}");
         }
-        let resolver = PublicDns;
-        assert!(resolver
-            .resolve("localhost".parse().unwrap())
-            .await
-            .is_err());
     }
 }

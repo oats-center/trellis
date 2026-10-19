@@ -502,6 +502,8 @@ model AuthUserAccountDetails {
   principal: AuthPrincipal;
   username: string;
   hasLocalPassword: bool;
+  profileRevision: AuthRevision;
+  gravatarEnabled: bool;
 }
 model AuthUserGetRequest { userId: ulid; }
 model AuthUserGetResponse { user: AuthUser; }
@@ -510,12 +512,31 @@ model AuthUserCreateRequest {
   username: AuthName;
   displayName: AuthName;
   password?: AuthPassword;
+  givenName?: AuthName;
+  familyName?: AuthName;
+  email?: string;
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthUserUpdateRequest {
   userId: ulid;
   displayName: AuthName;
   enabled: bool;
+  givenName?: AuthName;
+  familyName?: AuthName;
+  email?: string;
+  clearEmail?: bool;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
+}
+model AuthUserProfileUpdateRequest {
+  displayName?: AuthName;
+  givenName?: AuthName;
+  familyName?: AuthName;
+  email?: string;
+  avatarOverrideUrl?: string;
+  clearEmail?: bool;
+  clearAvatarOverride?: bool;
+  gravatarEnabled?: bool;
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }

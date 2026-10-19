@@ -120,6 +120,7 @@ agent DirectoryCaller {
   use auth {
     required capability usersRead;
     required capability accountRead;
+    required capability accountProfileWrite;
     required capability usersCreate;
     required capability usersUpdate;
   }

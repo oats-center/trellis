@@ -3,7 +3,6 @@
   import { isErr } from "@oatscenter/result";
   import { apis } from "trellis-web-generated";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
-  import { resolve } from "$lib/console_paths";
   import { onMount } from "svelte";
   import { catalogPage, traverseAll } from "$lib/console/paging.ts";
   import { getInitials, getRoleLabel } from "$lib/control-panel.ts";
@@ -47,6 +46,16 @@
   let currentPassword = $state("");
   let newPassword = $state("");
   let confirmNewPassword = $state("");
+  let profileName = $state("");
+  let givenName = $state("");
+  let familyName = $state("");
+  let email = $state("");
+  let pictureOverride = $state("");
+  let clearPicture = $state(false);
+  let gravatarEnabled = $state(true);
+  let profilePending = $state(false);
+  let profileUncertain = $state(false);
+  let profileError = $state<string | null>(null);
 
   const connectionStatus = $derived(connection.status.phase);
   const hasLocalIdentity = $derived(user?.account?.hasLocalPassword ?? false);
@@ -153,12 +162,66 @@
     }
   }
 
+  async function saveProfile(event: SubmitEvent) {
+    event.preventDefault();
+    if (!user?.account || profilePending || profileUncertain) return;
+    profilePending = true;
+    profileError = null;
+    try {
+      const response = await trellis
+        .usersProfileUpdate({
+          displayName:
+            profileName !== user.displayName ? profileName : undefined,
+          givenName:
+            givenName && givenName !== user.givenName ? givenName : undefined,
+          familyName:
+            familyName && familyName !== user.familyName
+              ? familyName
+              : undefined,
+          email: email && email !== user.email ? email : undefined,
+          clearEmail: !email && !!user.email ? true : undefined,
+          avatarOverrideUrl:
+            !clearPicture && pictureOverride ? pictureOverride : undefined,
+          clearAvatarOverride: clearPicture || undefined,
+          gravatarEnabled:
+            gravatarEnabled !== user.account.gravatarEnabled
+              ? gravatarEnabled
+              : undefined,
+          expectedRevision: user.account.profileRevision,
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      user = response.user;
+      pictureOverride = "";
+      clearPicture = false;
+      email = response.user.email ?? "";
+      notifications.success("Your profile was saved.", "Profile updated");
+      await authority.reload();
+    } catch (cause) {
+      profileUncertain = classifyMutationError(cause).kind === "unknown";
+      profileError = profileUncertain
+        ? "The outcome is unknown. Refresh your profile before saving again."
+        : errorMessage(cause);
+    } finally {
+      profilePending = false;
+    }
+  }
+
   async function loadProfile() {
     loading = true;
     error = null;
     try {
       const me = await getAuthenticatedUser(trellis);
       user = me.user;
+      profileName = me.user?.displayName ?? "";
+      givenName = me.user?.givenName ?? "";
+      familyName = me.user?.familyName ?? "";
+      email = me.user?.email ?? "";
+      gravatarEnabled = me.user?.account?.gravatarEnabled ?? true;
+      pictureOverride = "";
+      clearPicture = false;
+      profileError = null;
+      profileUncertain = false;
       if (!me.user) {
         identities = [];
         return;
@@ -265,6 +328,106 @@
         </dl>
       </div>
     </div>
+
+    <Panel title="Directory profile">
+      <p class="mb-4 text-sm text-base-content/70">
+        Applications you approve for directory access can read your name, email
+        and photo. Your principal ID remains your identity; an email is not a
+        login or sharing permission.
+      </p>
+      <form class="space-y-4" onsubmit={saveProfile}>
+        <fieldset
+          class="grid gap-4 sm:grid-cols-2"
+          disabled={profilePending || profileUncertain}
+        >
+          <label class="form-control"
+            ><span class="trellis-field-label">Display name</span><input
+              class="input input-bordered input-sm w-full"
+              required
+              maxlength="256"
+              bind:value={profileName}
+            /></label
+          >
+          <div class="form-control">
+            <label for="profile-email" class="trellis-field-label">Email</label
+            ><input
+              id="profile-email"
+              aria-describedby="profile-email-help"
+              class="input input-bordered input-sm w-full"
+              type="email"
+              maxlength="320"
+              bind:value={email}
+            /><span
+              id="profile-email-help"
+              class="mt-1 text-xs text-base-content/60"
+              >{user.emailVerified
+                ? "Verified by your linked provider. Editing removes verification."
+                : "Not verified. This address cannot supply a Gravatar image."} Clearing
+              a manual address restores linked-provider details.</span
+            >
+          </div>
+          <label class="form-control"
+            ><span class="trellis-field-label">Given name</span><input
+              class="input input-bordered input-sm w-full"
+              maxlength="256"
+              bind:value={givenName}
+            /></label
+          >
+          <label class="form-control"
+            ><span class="trellis-field-label">Family name</span><input
+              class="input input-bordered input-sm w-full"
+              maxlength="256"
+              bind:value={familyName}
+            /></label
+          >
+          <div class="form-control sm:col-span-2">
+            <label for="profile-picture" class="trellis-field-label"
+              >New profile picture URL</label
+            ><input
+              id="profile-picture"
+              aria-describedby="profile-picture-help"
+              class="input input-bordered input-sm w-full"
+              type="url"
+              placeholder="https://… (leave blank to keep your choice)"
+              maxlength="2048"
+              disabled={clearPicture}
+              bind:value={pictureOverride}
+            /><span
+              id="profile-picture-help"
+              class="mt-1 text-xs text-base-content/60"
+              >Trellis retrieves eligible public HTTPS images. Your browser
+              never contacts the image provider.</span
+            >
+          </div>
+          <label class="flex items-start gap-2 text-sm"
+            ><input
+              class="checkbox checkbox-sm"
+              type="checkbox"
+              bind:checked={clearPicture}
+            /><span
+              >Remove my picture override and use the linked-provider fallback</span
+            ></label
+          >
+          <label class="flex items-start gap-2 text-sm"
+            ><input
+              class="checkbox checkbox-sm"
+              type="checkbox"
+              bind:checked={gravatarEnabled}
+            /><span
+              >Allow Gravatar fallback for my verified email. Gravatar receives
+              an email-derived hash.</span
+            ></label
+          >
+        </fieldset>
+        {#if profileError}<Notice variant="error">{profileError}</Notice>{/if}
+        <button
+          type="submit"
+          class="btn btn-primary btn-sm"
+          disabled={profilePending || profileUncertain || !user.account}
+          >{profilePending ? "Saving…" : "Save profile"}</button
+        >
+      </form>
+    </Panel>
 
     <Panel title="Ledger">
       <div class="divide-y divide-base-300">

@@ -316,13 +316,20 @@ pub(super) async fn callback(
             return error(ErrorCode::AccessDenied);
         }
     };
-    let identity = match snapshot.verify(&client, &tokens, &flow.nonce) {
+    let mut identity = match snapshot.verify(&client, &tokens, &flow.nonce) {
         Ok(identity) => identity,
         Err(_) => {
             tracing::warn!(provider_id=%flow.provider.provider_id,"upstream OIDC ID token verification rejected");
             return error(ErrorCode::AccessDenied);
         }
     };
+    snapshot
+        .enrich(
+            &mut identity,
+            &tokens,
+            &authority.settings.upstream_tls_roots_pem,
+        )
+        .await;
     let Ok(now) = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|time| time.as_secs() as i64)

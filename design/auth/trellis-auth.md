@@ -413,6 +413,27 @@ an Auth-host failure. The durable intent remains available to its current or nex
 owner. Claim settlement includes time spent awaiting broker effects rather than
 reusing the batch's original timestamp.
 
+## Source-Aware User Profiles
+
+Profiles are local presentation data, never account-linking or authorization
+evidence. `Users.Profile.Update`, selected through `accountProfileWrite`, changes
+only the verified caller's profile using `expectedRevision` and `idempotencyKey`.
+Use the self account's `profileRevision`, not its principal-policy revision.
+Omitted fields are unchanged; set-and-clear contradictions fail atomically.
+Manual emails are unverified. Clearing email/picture overrides restores eligible
+linked-provider fallbacks; `gravatarEnabled` is a private account preference.
+
+Manual names and email take precedence over standard OIDC profile claims.
+Each linked identity retains only its bounded presentation snapshot. Missing
+claims preserve earlier values; unlinking or disabling a provider recomputes
+nonmanual fields without erasing manual choices. ID-token signature, audience,
+nonce, expiry and access-token-hash checks are unchanged. Optional UserInfo has a
+three-second/32-KiB/no-redirect budget and must match the authenticated `sub`;
+it fills missing profile fields only, never policy claims. An operator-selected
+issuer retains its configured TLS boundary; other discovered destinations must
+pass the same public-only HTTPS/DNS policy as CIMD. Enrichment failure does not
+fail otherwise valid authentication. Email equality never selects a principal.
+
 ## User Directory And Account Projection
 
 `trellis.auth@v1::usersRead` authorizes the existing `Users.List` and

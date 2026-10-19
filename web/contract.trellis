@@ -58,6 +58,7 @@ app Console {
     required capability identitiesManage;
     required capability passwordChange;
     required capability accountRead;
+    required capability accountProfileWrite;
   }
   use events {
     required capability consumersInspect;

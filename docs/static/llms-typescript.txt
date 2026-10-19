@@ -734,6 +734,10 @@ session and signing out of the current login and its application sessions.
 `Sessions.Me` and `Sessions.Logout` require normal selection and consent.
 
 `Users.Resolve` is self-only and includes the caller's `account`. Select and
+consent to `accountProfileWrite` for `usersProfileUpdate`: use
+`user.account.profileRevision` as `expectedRevision` and a fresh idempotency key.
+Omission keeps fields, explicit clear flags restore linked-provider defaults,
+manual email is unverified, and manual choices survive OIDC enrichment. Select and
 consent to `usersRead` for `Users.List/Get`: ordinary results expose active
 profiles with immutable `principalId`, names, available email and photos, but no
 `account`. Delegated and currently eligible `principals.manage` additionally

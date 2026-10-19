@@ -1,6 +1,7 @@
 //! Live upstream interoperability with the unmodified production Dex binary.
 use super::super::oauth::{OAuthEngine, OAuthListener, OAuthStorage, OAuthTransport};
 use super::*;
+use axum::response::IntoResponse as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use oauth_as::jwt::EcdsaP256Key;
 use openidconnect::TokenResponse as _;
@@ -106,7 +107,9 @@ async fn upstream_oidc_verifies_nonce_and_maps_real_signed_group_claims_into_tre
     let idp_socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let idp_address = idp_socket.local_addr().unwrap();
     drop(idp_socket);
-    let issuer = url::Url::parse(&format!("https://{idp_address}/dex")).unwrap();
+    let public_idp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer =
+        url::Url::parse(&format!("https://{}/dex", public_idp.local_addr().unwrap())).unwrap();
     let portal_socket = tokio::net::TcpListener::bind("127.0.0.2:0").await.unwrap();
     let origin = format!("https://{}", portal_socket.local_addr().unwrap());
     let callback = url::Url::parse(&format!("{origin}/portal/oidc/callback")).unwrap();
@@ -165,6 +168,77 @@ staticPasswords:
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
+    // Real Dex still owns discovery, signing, authentication and UserInfo bearer
+    // validation. The HTTPS fixture alters only optional UserInfo presentation
+    // fields, including an adversarial sub, never an ID token or verified context.
+    let userinfo_mode = Arc::new(std::sync::atomic::AtomicU8::new(1));
+    let proxy_http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .add_root_certificate(reqwest::Certificate::from_pem(certificate.pem.as_bytes()).unwrap())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let mode = userinfo_mode.clone();
+    let proxy = axum::Router::new().fallback(move |request: axum::extract::Request| {
+        let http = proxy_http.clone();
+        let mode = mode.clone();
+        async move {
+            let (parts, body) = request.into_parts();
+            let userinfo = parts.uri.path().ends_with("/userinfo");
+            let target = format!(
+                "https://{idp_address}{}",
+                parts.uri.path_and_query().unwrap()
+            );
+            let Ok(body) = axum::body::to_bytes(body, 65536).await else {
+                return axum::http::StatusCode::BAD_REQUEST.into_response();
+            };
+            let Ok(response) = http
+                .request(parts.method, target)
+                .headers(parts.headers)
+                .body(body)
+                .send()
+                .await
+            else {
+                return axum::http::StatusCode::BAD_GATEWAY.into_response();
+            };
+            let status = response.status();
+            let mut headers = response.headers().clone();
+            headers.remove(axum::http::header::CONTENT_LENGTH);
+            headers.remove(axum::http::header::TRANSFER_ENCODING);
+            let Ok(body) = response.bytes().await else {
+                return axum::http::StatusCode::BAD_GATEWAY.into_response();
+            };
+            if userinfo && status.is_success() {
+                let mut profile: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                profile["given_name"] =
+                    serde_json::json!(if mode.load(std::sync::atomic::Ordering::SeqCst) == 1 {
+                        "UserInfo given"
+                    } else {
+                        "Wrong principal"
+                    });
+                profile["name"] = serde_json::json!("Must not replace the ID-token name");
+                if mode.load(std::sync::atomic::Ordering::SeqCst) == 2 {
+                    profile["sub"] = serde_json::json!("another-authenticated-subject");
+                }
+                return (status, headers, serde_json::to_vec(&profile).unwrap()).into_response();
+            }
+            (status, headers, body).into_response()
+        }
+    });
+    let proxy_handle = axum_server::Handle::new();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+        &certificate.certificate,
+        &certificate.private_key,
+    )
+    .await
+    .unwrap();
+    let proxy_server = tokio::spawn(
+        axum_server::from_tcp_rustls(public_idp.into_std().unwrap(), tls)
+            .unwrap()
+            .handle(proxy_handle.clone())
+            .serve(proxy.into_make_service()),
+    );
     let ready = async {
         let mut interval = tokio::time::interval(Duration::from_millis(50));
         loop {
@@ -260,7 +334,7 @@ staticPasswords:
                 .seal_upstream_client_secret(&provider, secret)
                 .unwrap(),
         ),
-        config: serde_json::json!({"scopes":["groups"]}),
+        config: serde_json::json!({"scopes":["profile","email","groups"]}),
         claim_freshness_seconds: 300,
         expected_revision: 0,
     };
@@ -275,6 +349,9 @@ staticPasswords:
         })
         .unwrap();
     let account = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
         username: "alice".to_string().into(),
         display_name: "Alice".to_string().into(),
         password: Some("initial alice password".to_string().into()),
@@ -291,6 +368,24 @@ staticPasswords:
     .user
     .principal_id
     .to_string();
+    // An existing profile with the OP's email must never become the login target.
+    let shadow = trellis_runtime_apis::__types::trellis::AuthUserCreateRequest {
+        username: "email-shadow".to_string().into(),
+        display_name: "Different existing person".to_string().into(),
+        email: Some("admin@example.com".into()),
+        password: None,
+        idempotency_key: id().into(),
+        ..account.clone()
+    };
+    let shadow = super::super::rpc_users::create_user(
+        &authority,
+        &mutation(&f.admin, &shadow),
+        &shadow,
+        NOW,
+    )
+    .unwrap()
+    .user
+    .principal_id;
     let group_role = id();
     let role = PolicyMutation::RolePut {
         role_id: group_role.clone(),
@@ -526,6 +621,13 @@ staticPasswords:
             );
             let linked: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
             assert_eq!(linked, f.principal);
+            let profile = authority
+                .transaction(|connection| {
+                    super::super::rpc_users::read_user(connection, &linked, true)
+                })
+                .unwrap();
+            assert_eq!(profile.given_name.as_deref(), Some("UserInfo given"));
+            assert_eq!(profile.display_name, "Alice");
         } else {
             assert_eq!(completed.status(), reqwest::StatusCode::BAD_REQUEST);
             let unchanged: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
@@ -788,9 +890,28 @@ staticPasswords:
     let retry = http.get(&begin).send().await.unwrap();
     let upstream_authorize =
         url::Url::parse(retry.headers()["location"].to_str().unwrap()).unwrap();
+    userinfo_mode.store(2, std::sync::atomic::Ordering::SeqCst);
     let verified = dex_login(&http, upstream_authorize, &issuer, &callback).await;
     let logged_in = http.get(verified).send().await.unwrap();
     assert_eq!(logged_in.status(), reqwest::StatusCode::SEE_OTHER);
+    let profile = authority
+        .transaction(|connection| {
+            super::super::rpc_users::read_user(connection, &f.principal, true)
+        })
+        .unwrap();
+    assert_eq!(profile.principal_id.to_string(), f.principal);
+    assert_eq!(profile.email.as_deref(), Some("admin@example.com"));
+    assert!(profile.email_verified);
+    let separate = authority
+        .transaction(|connection| {
+            super::super::rpc_users::read_user(connection, &shadow.to_string(), true)
+        })
+        .unwrap();
+    assert_ne!(separate.principal_id.to_string(), f.principal);
+    assert_eq!(separate.email.as_deref(), Some("admin@example.com"));
+    assert!(!separate.email_verified);
+    assert_eq!(profile.given_name.as_deref(), Some("UserInfo given"));
+    assert_eq!(profile.display_name, "Alice");
     let consent = http
         .get(format!("{origin}/portal/authorization/{transaction}"))
         .send()
@@ -940,6 +1061,8 @@ staticPasswords:
     );
     shutdown.cancel();
     server.await.unwrap().unwrap();
+    proxy_handle.graceful_shutdown(Some(Duration::from_secs(3)));
+    proxy_server.await.unwrap().unwrap();
     idp.kill().await.unwrap();
     idp.wait().await.unwrap();
 }

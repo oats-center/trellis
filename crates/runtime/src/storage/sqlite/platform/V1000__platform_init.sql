@@ -33,6 +33,7 @@ CREATE TABLE auth_provider_identities (
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
     linked_at INTEGER NOT NULL CHECK (linked_at BETWEEN 0 AND 9007199254740991),
     last_seen_at INTEGER NOT NULL CHECK (last_seen_at BETWEEN 0 AND 9007199254740991),
+    profile_json TEXT CHECK (profile_json IS NULL OR json_valid(profile_json)),
     PRIMARY KEY (provider, provider_subject)
 );
 
@@ -222,12 +223,28 @@ CREATE TABLE auth_resource_binding_evidence (
 
 CREATE TABLE auth_user_profiles (
     principal_id TEXT PRIMARY KEY REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
-    display_name TEXT CHECK (display_name IS NULL OR length(display_name) > 0),
-    email TEXT,
-    image_url TEXT,
+    display_name TEXT CHECK (display_name IS NULL OR length(display_name) BETWEEN 1 AND 256),
+    given_name TEXT CHECK (given_name IS NULL OR length(given_name) BETWEEN 1 AND 256),
+    family_name TEXT CHECK (family_name IS NULL OR length(family_name) BETWEEN 1 AND 256),
+    display_name_source TEXT NOT NULL DEFAULT 'default' CHECK (display_name_source IN ('manual','oidc','default')),
+    given_name_source TEXT NOT NULL DEFAULT 'unset' CHECK (given_name_source IN ('manual','oidc','unset')),
+    family_name_source TEXT NOT NULL DEFAULT 'unset' CHECK (family_name_source IN ('manual','oidc','unset')),
+    email TEXT CHECK (email IS NULL OR length(email) BETWEEN 1 AND 320),
+    email_verified INTEGER NOT NULL DEFAULT 0 CHECK (email_verified IN (0,1)),
+    email_source TEXT NOT NULL DEFAULT 'unset' CHECK (email_source IN ('manual','oidc','unset')),
+    email_provider_id TEXT REFERENCES auth_oidc_providers(provider_id),
+    oidc_picture_url TEXT CHECK (oidc_picture_url IS NULL OR length(oidc_picture_url) BETWEEN 1 AND 2048),
+    avatar_override_url TEXT CHECK (avatar_override_url IS NULL OR length(avatar_override_url) BETWEEN 1 AND 2048),
+    gravatar_enabled INTEGER NOT NULL DEFAULT 1 CHECK (gravatar_enabled IN (0,1)),
     created_at INTEGER NOT NULL CHECK (created_at BETWEEN 0 AND 9007199254740991),
     updated_at INTEGER NOT NULL CHECK (updated_at BETWEEN 0 AND 9007199254740991),
-    version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 9007199254740991)
+    version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 9007199254740991),
+    CHECK (display_name IS NOT NULL OR display_name_source='default'),
+    CHECK ((given_name IS NULL AND given_name_source='unset') OR (given_name IS NOT NULL AND given_name_source IN ('manual','oidc'))),
+    CHECK ((family_name IS NULL AND family_name_source='unset') OR (family_name IS NOT NULL AND family_name_source IN ('manual','oidc'))),
+    CHECK ((email IS NULL AND email_source='unset' AND email_verified=0 AND email_provider_id IS NULL)
+        OR (email IS NOT NULL AND email_source='manual' AND email_verified=0 AND email_provider_id IS NULL)
+        OR (email IS NOT NULL AND email_source='oidc' AND email_provider_id IS NOT NULL))
 );
 
 CREATE TABLE auth_local_credentials (

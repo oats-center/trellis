@@ -39,6 +39,29 @@ test("a denied administrative read preserves ordinary account access and navigat
           { cause },
         );
       }
+      await page
+        .getByLabel("Display name", { exact: true })
+        .fill("Chosen directory name");
+      await page.getByLabel("Given name", { exact: true }).fill("Directory");
+      await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
+      await page
+        .getByRole("button", { name: "Save profile", exact: true })
+        .click();
+      await page
+        .getByRole("heading", { name: "Chosen directory name", exact: true })
+        .waitFor();
+      await page.reload();
+      await page
+        .getByRole("heading", { name: "Chosen directory name", exact: true })
+        .waitFor();
+      assert.equal(
+        await page.getByLabel("Given name", { exact: true }).inputValue(),
+        "Directory",
+      );
+      assert.equal(
+        await page.getByLabel("Email", { exact: true }).inputValue(),
+        "owner@example.com",
+      );
       await page.goto(`${runtime.trellisUrl}/console/admin/services`);
       await waitForConsoleShell(page);
       await page

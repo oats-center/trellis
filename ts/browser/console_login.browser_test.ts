@@ -72,9 +72,7 @@ test("browser carrier interruption resumes a fresh authenticated RPC without rel
       // a fresh authenticated RPC, not merely redisplaying cached data.
       const username = `resume-${ulid()}`.toLowerCase();
       await runtime.callAdminRpc("authUsersCreate", {
-        email: null,
         idempotencyKey: ulid(),
-        image: null,
         displayName: username,
         username,
       });

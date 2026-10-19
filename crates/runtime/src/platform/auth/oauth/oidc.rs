@@ -71,6 +71,7 @@ pub(super) struct VerifiedIdentity {
     pub(super) subject: String,
     pub(super) claims: Value,
     pub(super) expires_at: i64,
+    pub(super) profile: super::super::profiles::VerifiedProfile,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -201,11 +202,109 @@ impl ProviderSnapshot {
                 return Err(AuthError::Denied);
             }
         }
+        let json = serde_json::to_value(claims)?;
         Ok(VerifiedIdentity {
             subject: claims.subject().as_str().into(),
-            claims: serde_json::to_value(claims)?,
+            profile: super::super::profiles::VerifiedProfile::from_claims(&json),
+            claims: json,
             expires_at: claims.expiration().timestamp(),
         })
+    }
+
+    /// Best-effort standard profile enrichment; authentication has already
+    /// completed. Cross-origin discovery cannot redirect bearer credentials to
+    /// private destinations; an explicitly configured issuer keeps its existing
+    /// operator-selected TLS boundary, including approved private installations.
+    pub(super) async fn enrich(
+        &self,
+        identity: &mut VerifiedIdentity,
+        token: &TokenResponse,
+        roots: &[String],
+    ) {
+        if identity.profile.name.is_some()
+            && identity.profile.given_name.is_some()
+            && identity.profile.family_name.is_some()
+            && identity.profile.email.is_some()
+            && identity.profile.email_verified.is_some()
+            && identity.profile.picture.is_some()
+        {
+            return;
+        }
+        let Some(endpoint) = self.metadata.userinfo_endpoint() else {
+            return;
+        };
+        let Ok(url) = url::Url::parse(endpoint.as_str()) else {
+            return;
+        };
+        if url.scheme() != "https"
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return;
+        }
+        let Ok(issuer) = url::Url::parse(&self.identity.issuer) else {
+            return;
+        };
+        let mut builder = if url.origin() == issuer.origin() {
+            let mut builder = reqwest::Client::builder()
+                .https_only(true)
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none());
+            for root in roots {
+                let Ok(certificate) = reqwest::Certificate::from_pem(root.as_bytes()) else {
+                    return;
+                };
+                builder = builder.add_root_certificate(certificate);
+            }
+            builder
+        } else {
+            if !super::super::remote_http::public_url(&url) {
+                return;
+            }
+            super::super::remote_http::client()
+        };
+        builder = builder
+            .timeout(Duration::from_secs(3))
+            .connect_timeout(Duration::from_secs(3));
+        let Ok(client) = builder.build() else {
+            return;
+        };
+        let result = tokio::time::timeout(Duration::from_secs(3), async {
+            let mut response = client
+                .get(url)
+                .bearer_auth(token.access_token().secret())
+                .timeout(Duration::from_secs(3))
+                .send()
+                .await
+                .ok()?;
+            if !response.status().is_success()
+                || response
+                    .content_length()
+                    .is_some_and(|length| length > 32768)
+            {
+                return None;
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.ok()? {
+                if bytes.len() + chunk.len() > 32768 {
+                    return None;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let claims: Value = serde_json::from_slice(&bytes).ok()?;
+            (claims.get("sub").and_then(Value::as_str) == Some(identity.subject.as_str()))
+                .then_some(claims)
+        })
+        .await;
+        if let Ok(Some(claims)) = result {
+            identity
+                .profile
+                .fill(super::super::profiles::VerifiedProfile::from_claims(
+                    &claims,
+                ));
+        }
     }
 }
 
@@ -271,6 +370,7 @@ impl super::super::SqliteAuthorizationStore {
             flow.provider.revision,
             &identity.subject,
             &identity.claims,
+            &identity.profile,
         );
         let mutation = super::super::Mutation {
             actor: principal.clone(),
@@ -286,6 +386,7 @@ impl super::super::SqliteAuthorizationStore {
             let expires_at=identity.expires_at.min(now.saturating_add(i64::from(self.settings.login_lifetime_seconds)));
             let login=super::super::VerifiedLogin {principal_id:principal.clone(),provider_id:Some(flow.provider.provider_id.clone()),upstream_issuer:Some(flow.provider.issuer.clone()),upstream_subject:Some(identity.subject.clone()),verified_claims:Some(identity.claims.clone()),expires_at};
             let login_session_id=Self::record_verified_login_in(connection,&login,now)?;
+            super::super::profiles::ingest(connection, &principal, &flow.provider.provider_id, &identity.subject, &identity.profile, now)?;
             if connection.execute("UPDATE auth_portal_sessions SET cookie_hash=?1,login_session_id=?2,expires_at=?3 WHERE portal_session_id=?4 AND cookie_hash=?5 AND csrf_hash=?6 AND expires_at>?7 AND login_session_id IS NULL",params![replacement_hash,login_session_id,expires_at,flow.session_id,cookie_hash,csrf_hash,now])?!=1 {return Err(AuthError::Denied);}
             Ok(super::portal::PortalLogin {session_id:flow.session_id.clone(),principal_id:principal.clone(),login_session_id,expires_at})
         })

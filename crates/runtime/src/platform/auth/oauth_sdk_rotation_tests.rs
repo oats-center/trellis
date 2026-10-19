@@ -87,6 +87,9 @@ async fn sdk_rotation(mode: &str) {
     }
     if mode == "native" {
         let input = trellis_runtime_apis::types::AuthUserCreateRequest {
+            given_name: None,
+            family_name: None,
+            email: None,
             username: "other-user".to_string().into(),
             display_name: "Other user".to_string().into(),
             password: Some("another strong local password".to_string().into()),

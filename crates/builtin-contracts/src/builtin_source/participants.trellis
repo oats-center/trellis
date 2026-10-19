@@ -93,6 +93,7 @@ agent cli {
     capability resourcesRead;
     capability resourcesRemove;
     capability accountRead;
+    capability accountProfileWrite;
     capability passwordChange;
     capability identitiesRead;
     capability identitiesManage;
@@ -181,6 +182,7 @@ app console {
     capability resourcesRemove;
     capability securityObserve;
     capability accountRead;
+    capability accountProfileWrite;
     capability passwordChange;
     capability identitiesRead;
     capability identitiesManage;

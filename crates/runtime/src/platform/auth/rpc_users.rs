@@ -92,6 +92,25 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
     }
     admin_mutation!(register_users_create, create_user);
     admin_mutation!(register_users_update, update_user);
+    let profiles = Arc::clone(&store);
+    provider.register_users_profile_update(move |context, input| {
+        let store = Arc::clone(&profiles);
+        async move {
+            let identity =
+                mutation(&context, &input.idempotency_key, None, &input).map_err(rpc_error)?;
+            tokio::task::spawn_blocking(move || {
+                update_profile(
+                    &store,
+                    &identity,
+                    &input,
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                )
+            })
+            .await
+            .map_err(|_| rpc_error(AuthError::Unavailable))?
+            .map_err(rpc_error)
+        }
+    });
     admin_mutation!(register_oidc_providers_disable, disable_provider);
     admin_mutation!(register_oidc_providers_delete, delete_provider);
 
@@ -441,6 +460,7 @@ pub(super) fn unlink_identity(
             store.revoke_root_in_transaction(connection, &root, &scope, now)?;
         }
         connection.execute("DELETE FROM auth_provider_identities WHERE identity_id=?1 AND principal_id=?2", params![input.identity_id.to_string(), identity.actor])?;
+        super::profiles::write(connection, &identity.actor, None, now)?;
         SqliteAuthorizationStore::policy_changed(connection, &EnforcementScope::Principal(identity.actor.clone()), now)?;
         Ok(AuthMutationResult { revision: AuthRevision(1.into()), enforcement: None, extra: Default::default() })
     })
@@ -466,9 +486,10 @@ pub(super) fn read_user(
     principal: &str,
     account: bool,
 ) -> Result<AuthUser, AuthError> {
-    let (state, revision, created, display, username, password, email) = connection.query_row(
-        "SELECT p.state,p.version,p.created_at,coalesce(u.display_name,p.principal_id),coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),''),c.password_hash IS NOT NULL,u.email FROM auth_principals p LEFT JOIN auth_user_profiles u USING(principal_id) LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND (?2 OR p.state='active')",
-        params![principal, account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, bool>(5)?, row.get::<_, Option<String>>(6)?)),
+    let profile = super::profiles::read(connection, principal)?;
+    let (state, revision, created, username, password) = connection.query_row(
+        "SELECT p.state,p.version,p.created_at,coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),''),c.password_hash IS NOT NULL FROM auth_principals p LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND (?2 OR p.state='active')",
+        params![principal, account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, bool>(4)?)),
     ).optional()?.ok_or(AuthError::NotFound)?;
     Ok(AuthUser {
         principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
@@ -480,21 +501,23 @@ pub(super) fn read_user(
                     enabled: state == "active",
                     revision: AuthRevision(revision.into()),
                     created_at: timestamp(created)?,
-                    title: display.clone(),
+                    title: profile.display_name.clone(),
                     extra: Default::default(),
                 },
                 username,
                 has_local_password: password,
+                profile_revision: AuthRevision(profile.revision.into()),
+                gravatar_enabled: profile.gravatar_enabled,
                 extra: Default::default(),
             })
         } else {
             None
         },
-        display_name: display,
-        given_name: None,
-        family_name: None,
-        email,
-        email_verified: false,
+        display_name: profile.display_name,
+        given_name: profile.given_name,
+        family_name: profile.family_name,
+        email: profile.email,
+        email_verified: profile.email_verified,
         avatar_url: None,
         extra: Default::default(),
     })
@@ -535,7 +558,12 @@ pub(super) fn create_user(
         if taken { return Err(AuthError::Conflict); }
         let principal = id();
         connection.execute("INSERT INTO auth_principals(principal_id,kind,state,created_at,updated_at,version) VALUES(?1,'user','active',?2,?2,1)", params![principal, now])?;
-        connection.execute("INSERT INTO auth_user_profiles(principal_id,display_name,created_at,updated_at,version) VALUES(?1,?2,?3,?3,1)", params![principal, input.display_name.as_str(), now])?;
+        let patch = AuthUserProfileUpdateRequest {
+            display_name: Some(input.display_name.clone()), given_name: input.given_name.clone(), family_name: input.family_name.clone(), email: input.email.clone(),
+            avatar_override_url: None, clear_email: None, clear_avatar_override: None, gravatar_enabled: None,
+            expected_revision: AuthRevision(0.into()), idempotency_key: input.idempotency_key.clone(), extra: Default::default(),
+        };
+        super::profiles::write(connection, &principal, Some(&patch), now)?;
         // The local identity reserves the normalized username even before an
         // account establishes a password. It is not itself a sign-in credential.
         connection.execute("INSERT INTO auth_provider_identities(identity_id,provider,provider_subject,principal_id,linked_at,last_seen_at) VALUES(?1,'local',?2,?3,?4,?4)", params![id(), username, principal, now])?;
@@ -555,10 +583,52 @@ pub(super) fn update_user(
     store.mutate(identity, "rpc.users.update", input, now, |connection| {
         let principal = input.user_id.to_string();
         read_user(connection, &principal, true)?;
-        if input.display_name.trim().is_empty() { return Err(AuthError::Invalid("empty display name".into())); }
-        apply_policy_in_transaction(connection, identity, &PolicyMutation::PrincipalState { principal_id: principal.clone(), expected_revision: input.expected_revision.0.0, state: if input.enabled { "active" } else { "disabled" }.into() }, now)?;
-        connection.execute("INSERT INTO auth_user_profiles(principal_id,display_name,created_at,updated_at,version) VALUES(?1,?2,?3,?3,1) ON CONFLICT(principal_id) DO UPDATE SET display_name=excluded.display_name,updated_at=excluded.updated_at,version=auth_user_profiles.version+1", params![principal, input.display_name.as_str(), now])?;
-        Ok(AuthUserGetResponse { user: read_user(connection, &principal, true)?, extra: Default::default() })
+        if input.display_name.trim().is_empty() {
+            return Err(AuthError::Invalid("empty display name".into()));
+        }
+        apply_policy_in_transaction(
+            connection,
+            identity,
+            &PolicyMutation::PrincipalState {
+                principal_id: principal.clone(),
+                expected_revision: input.expected_revision.0 .0,
+                state: if input.enabled { "active" } else { "disabled" }.into(),
+            },
+            now,
+        )?;
+        let patch = AuthUserProfileUpdateRequest {
+            display_name: Some(input.display_name.clone()),
+            given_name: input.given_name.clone(),
+            family_name: input.family_name.clone(),
+            email: input.email.clone(),
+            clear_email: input.clear_email,
+            avatar_override_url: None,
+            clear_avatar_override: None,
+            gravatar_enabled: None,
+            expected_revision: AuthRevision(0.into()),
+            idempotency_key: input.idempotency_key.clone(),
+            extra: Default::default(),
+        };
+        super::profiles::write(connection, &principal, Some(&patch), now)?;
+        Ok(AuthUserGetResponse {
+            user: read_user(connection, &principal, true)?,
+            extra: Default::default(),
+        })
+    })
+}
+
+pub(super) fn update_profile(
+    store: &SqliteAuthorizationStore,
+    identity: &Mutation,
+    input: &AuthUserProfileUpdateRequest,
+    now: i64,
+) -> Result<AuthUserGetResponse, AuthError> {
+    store.mutate(identity, "rpc.users.profile.update", input, now, |connection| {
+        let active: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind='user' AND state='active')", [&identity.actor], |row| row.get(0))?;
+        if !active { return Err(AuthError::Denied); }
+        if super::profiles::read(connection, &identity.actor)?.revision != input.expected_revision.0.0 { return Err(AuthError::Conflict); }
+        super::profiles::write(connection, &identity.actor, Some(input), now)?;
+        Ok(AuthUserGetResponse { user: read_user(connection, &identity.actor, true)?, extra: Default::default() })
     })
 }
 
@@ -713,6 +783,9 @@ fn set_provider_state(
         SqliteAuthorizationStore::require_privilege(connection, &identity.actor, "principals.manage")?;
         let provider = input.provider_id.to_string();
         if connection.execute("UPDATE auth_oidc_providers SET state=?1,revision=revision+1,updated_at=?2 WHERE provider_id=?3 AND revision=?4 AND state!='deleted'", params![state, now, provider, input.expected_revision.0.0])? != 1 { return Err(AuthError::Conflict); }
+        let mut statement = connection.prepare("SELECT DISTINCT principal_id FROM auth_provider_identities WHERE provider=?1")?;
+        let owners = statement.query_map([&provider], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for owner in owners { super::profiles::write(connection, &owner, None, now)?; }
         SqliteAuthorizationStore::policy_changed(connection, &EnforcementScope::OidcProvider(provider), now)?;
         Ok(AuthMutationResult { revision: AuthRevision((input.expected_revision.0.0 + 1).into()), enforcement: None, extra: Default::default() })
     })

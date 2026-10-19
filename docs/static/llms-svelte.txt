@@ -124,7 +124,11 @@ selection in `contract.trellis`. Generated participant types expose only those
 selections.
 
 For labels of other Trellis users, select and obtain consent to `usersRead`,
-then use `Auth.Users.List/Get` for active directory profiles. `Users.Resolve`
+then use `Auth.Users.List/Get` for active directory profiles. For owner edits,
+select `accountProfileWrite` and call generated `usersProfileUpdate` with the
+self account's `profileRevision` and an idempotency key. Omitted fields stay
+unchanged; explicit clears restore linked-provider defaults, and manually set
+email is unverified. Manual choices survive later OIDC login. `Users.Resolve`
 with `accountRead` is self-only. Ordinary profiles omit `account`; admin details
 require delegated and currently eligible `principals.manage`. A directory match
 does not grant access to application-owned records; key those rules by immutable
