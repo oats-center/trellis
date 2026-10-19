@@ -45,7 +45,7 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cli = std::env::var_os("TRELLIS_CLI_BIN")
+    let cli = std::env::var_os("TRELLIS_TEST_CLI_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("target/release/trellis"));
     let reserved: Vec<_> = (0..5)
@@ -77,7 +77,7 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
         ])
         .output()
         .await
-        .expect("provide the producer-built CLI through TRELLIS_CLI_BIN");
+        .expect("provide the producer-built CLI through TRELLIS_TEST_CLI_BIN");
     assert!(
         generated.status.success(),
         "bootstrap failed: {}",
