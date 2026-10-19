@@ -280,9 +280,10 @@ fn codecs_errors_and_generated_surfaces_compile() {
 
     let packages = temp.path().join("node_modules/@oatscenter");
     fs::create_dir_all(&packages).unwrap();
+    // Exercise generated code against SDK source, independently of npm staging.
     for name in ["trellis", "result"] {
         std::os::unix::fs::symlink(
-            repo.join(format!("ts/packages/{name}/npm")),
+            repo.join(format!("ts/packages/{name}")),
             packages.join(name),
         )
         .unwrap();
@@ -292,12 +293,12 @@ fn codecs_errors_and_generated_surfaces_compile() {
         temp.path().join("tsconfig.json"),
         serde_json::to_string_pretty(&serde_json::json!({
             "compilerOptions": {
-                "target": "ES2022",
+                "target": "ES2024",
                 "module": "NodeNext",
                 "strict": true,
                 "noEmit": true,
                 "preserveSymlinks": true,
-                "skipLibCheck": true,
+                "allowImportingTsExtensions": true,
                 "types": ["node"],
                 "typeRoots": [repo.join("node_modules/@types")]
             },
@@ -401,7 +402,7 @@ test("generated TypeScript package exercises WO-03 B2-B4", () => {
     );
     run(
         Command::new("node")
-            .arg("--preserve-symlinks")
+            .arg("--experimental-transform-types")
             .arg("--test")
             .arg(temp.path().join("fixture_test.ts")),
         "generated TypeScript test",

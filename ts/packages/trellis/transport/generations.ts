@@ -2339,9 +2339,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
   ): Promise<void> {
     // Bounded coalesced recovery: one open per policy at a time, and no
     // immediate retry of a policy that just failed.
+    // Timer expiry owns this window: it can precede the wall-clock deadline.
     if (
       this.#failure?.digest === desiredDigest &&
-      Date.now() < this.#failure.nextRetryAtMs
+      this.#failureTimer !== undefined
     ) {
       return;
     }
