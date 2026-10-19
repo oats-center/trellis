@@ -90,3 +90,44 @@ test("a denied administrative read preserves ordinary account access and navigat
     }
   }, browserRuntimeOptions());
 });
+
+test("an unavailable profile photo falls back to local initials without browser requests to the source", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    const credentials = {
+      username: "avatar-owner",
+      password: "avatar-owner-password",
+    };
+    await createOrdinaryUserWithPassword(runtime, credentials);
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      const requests: string[] = [];
+      page.on("request", (request) => requests.push(request.url()));
+      await openConsole(page, runtime, credentials);
+      await page.goto(`${runtime.trellisUrl}/console/profile`);
+      await page
+        .getByLabel("New profile picture URL", { exact: true })
+        .fill("https://images.invalid/photo.png");
+      const unavailable = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname.startsWith("/profile/avatars/") &&
+          response.status() === 404,
+      );
+      await page
+        .getByRole("button", { name: "Save profile", exact: true })
+        .click();
+      await unavailable;
+      await page
+        .locator('img[referrerpolicy="no-referrer"][hidden]')
+        .waitFor({ state: "attached" });
+      assert(
+        await page.getByLabel("Profile initials", { exact: true }).isVisible(),
+      );
+      assert(
+        requests.every((url) => new URL(url).hostname !== "images.invalid"),
+      );
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});

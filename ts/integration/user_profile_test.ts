@@ -139,6 +139,46 @@ test(
       ).user;
       assert.equal(cleared.email, undefined);
       assert.equal(cleared.emailVerified, false);
+      assert(cleared.account);
+      const picture = (
+        await alice
+          .usersProfileUpdate({
+            avatarOverrideUrl: "https://images.invalid/owner.png",
+            expectedRevision: cleared.account.profileRevision,
+            idempotencyKey: ulid(),
+          })
+          .orThrow()
+      ).user;
+      assert(picture.avatarUrl);
+      assert.equal(
+        new URL(picture.avatarUrl).origin,
+        new URL(runtime.oauthIssuer).origin,
+      );
+      assert(
+        new URL(picture.avatarUrl).pathname.startsWith("/profile/avatars/"),
+      );
+      assert(!picture.avatarUrl.includes("images.invalid"));
+      const directoryPhoto = (
+        await bob
+          .usersGet({ userId: codecs.ulid.decode(owner.principalId) })
+          .orThrow()
+      ).user;
+      assert(directoryPhoto.avatarUrl);
+      assert.equal(directoryPhoto.account, undefined);
+      assert.equal((await fetch(picture.avatarUrl)).status, 404);
+      assert.equal(
+        (await alice.usersResolve({}).orThrow()).user.displayName,
+        "Chosen name",
+      );
+      assert(picture.account);
+      await alice
+        .usersProfileUpdate({
+          clearAvatarOverride: true,
+          expectedRevision: picture.account.profileRevision,
+          idempotencyKey: ulid(),
+        })
+        .orThrow();
+      assert.equal((await fetch(picture.avatarUrl)).status, 404);
       await Promise.all(clients.map((client) => client.connection.close()));
       await runtime.restart();
       const login = await runtime.registerClient({

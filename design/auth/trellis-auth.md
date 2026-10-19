@@ -434,6 +434,39 @@ issuer retains its configured TLS boundary; other discovered destinations must
 pass the same public-only HTTPS/DNS policy as CIMD. Enrichment failure does not
 fail otherwise valid authentication. Email equality never selects a principal.
 
+## Profile Image Delivery
+
+Authorized directory/self reads mint an image-only bearer at the dedicated OAuth
+origin's `/profile/avatars/{token}`. It contains only a version, principal ID,
+profile revision, expiry and MAC. A domain-separated key derived from retained
+OAuth storage custody binds it to the installation; its maximum lifetime is ten
+minutes. Issuer rotation does not change that key. Profile changes invalidate
+old URLs. Revoking directory access prevents new URLs, not the remaining lifetime
+of an already issued image bearer. URLs must not be logged or used as authority.
+
+Directory reads perform no outbound image work. Image GET tries owner override,
+linked OIDC picture, then opted-in verified-email Gravatar (trim/lowercase UTF-8,
+SHA-256, `s=128&d=404`). Manual/unverified email never supplies Gravatar. The
+provider receives an email-derived hash, not the raw email, but the hash remains
+personal information. `auth.avatar.external_fetch_enabled=false` disables all
+remote-derived delivery, including cached images; initials remain local.
+
+Fetching reuses CIMD's public-only pinned DNS resolver, rejects private/reserved
+addresses, non-HTTPS, credentials, fragments, non-default ports and redirects,
+and carries no OAuth cookies or tokens. Eight bounded fetch/decode slots and a
+three-second total budget protect the listener; image requests have a separate
+rate budget from login and token requests. At most 256 KiB of PNG/JPEG/WebP is
+decoded within 2048-pixel/32-MiB limits, oriented and re-encoded as a static
+128-pixel PNG without metadata, capped at 128 KiB. SQLite caches success for
+seven days, absence for one day and transient failure for fifteen minutes.
+Source/profile changes discard earlier cache entries. Failures return no image,
+never a directory/login failure or a redirect to an upstream image host.
+
+Image responses use private caching bounded by bearer expiry, `nosniff` and
+cross-origin image embedding without credentialed CORS. Consumers use
+`referrerpolicy="no-referrer"`, local initials on image error and a new authorized
+directory read to renew an expired URL.
+
 ## User Directory And Account Projection
 
 `trellis.auth@v1::usersRead` authorizes the existing `Users.List` and

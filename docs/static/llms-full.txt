@@ -1,5 +1,12 @@
 # Trellis Consumer Guide
 
+User avatarUrl is a Trellis-hosted image-only bearer lasting at most ten minutes;
+do not log it. Render local initials on image error and reread the authorized
+directory to renew. Use referrerpolicy="no-referrer". Manual unverified email
+never triggers Gravatar; opted-in verified email uses its normalized SHA-256 hash,
+which remains personal information. auth.avatar.external_fetch_enabled=false
+disables all remote-derived delivery, including cached images.
+
 Operation starts default to canonical routing. Persist deployment, invocation
 ULID, and frozen input before an explicit targeted start. TypeScript uses
 `.start(undefined, { invocationId, targetDeploymentId })`; Rust generated invokers

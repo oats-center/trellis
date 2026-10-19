@@ -43,7 +43,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 let mut rows = statement.query_map(rusqlite::params![cursor,input.search.as_ref().map(|search|search.as_ref()),limit+1,administrative], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
                 let next_cursor = (rows.len()>limit as usize).then(|| rows[limit as usize-1].clone());
                 rows.truncate(limit as usize);
-                let items = rows.into_iter().map(|id| super::rpc_users::read_user(connection,&id,administrative)).collect::<Result<Vec<_>,AuthError>>()?;
+                let items = rows.into_iter().map(|id| super::rpc_users::read_user(&store, connection, &id, administrative)).collect::<Result<Vec<_>,AuthError>>()?;
                 Ok(trellis_runtime_apis::__types::CursorPage {items,page: trellis_runtime_apis::__types::CursorPageInfo {next_cursor}})
             })).await.map_err(|error| {
                 tracing::error!(%error, "Auth users query failed");

@@ -40,6 +40,25 @@ PKCE, and current portal-user continuity are checked before the identity is link
 An identity belonging to another user cannot be reassigned. Creation retries
 return the original response; they do not renew or revive consumed actions.
 
+## Profile photos
+
+Directory responses can include `avatarUrl`, a Trellis-hosted image-only bearer
+valid for at most ten minutes. Use it in an `<img referrerpolicy="no-referrer">`,
+render local initials when absent or broken, and reread the authorized directory
+to renew it. Do not log or share this URL: access to the URL permits reading only
+that image until expiry. Profile edits invalidate earlier URLs. Revoking
+`usersRead` prevents issuing new URLs but does not instantly revoke existing ones.
+
+Trellis tries your explicit picture URL, linked-provider picture, then Gravatar
+for a verified email when you have not opted out. Gravatar receives a normalized
+SHA-256 email hash, not raw email; the hash is still personal information. Manual
+unverified addresses never trigger Gravatar. Your browser contacts Trellis only,
+and failed image retrieval does not prevent login or directory lookup.
+
+Operators can set `[auth.avatar] external_fetch_enabled = false` to disable all
+remote-derived images, including cached photos. Safe retrieval permits only
+public HTTPS destinations with no redirects, and stores sanitized small PNGs.
+
 ## Own directory profile
 
 Select `trellis.auth@v1::accountProfileWrite` and call `Users.Profile.Update`

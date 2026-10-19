@@ -76,6 +76,7 @@ fn runtime_config() -> RuntimeConfig {
             renew_ms: None,
         }),
         auth: Some(crate::AuthConfig {
+            avatar: None,
             instance_id: None,
             oauth: None,
             oauth_storage_key_file: None,

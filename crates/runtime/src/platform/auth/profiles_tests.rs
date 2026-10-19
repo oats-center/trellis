@@ -86,7 +86,7 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
     ));
     let other = store
         .transaction(|connection| {
-            rpc_users::read_user(connection, &bob.principal_id.to_string(), true)
+            rpc_users::read_user(&store, connection, &bob.principal_id.to_string(), true)
         })
         .unwrap();
     assert_eq!(other.display_name, "Shared name");
@@ -94,7 +94,7 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
     drop(store);
     let store = open(&directory, key);
     let retained = store
-        .transaction(|connection| rpc_users::read_user(connection, &actor, true))
+        .transaction(|connection| rpc_users::read_user(&store, connection, &actor, true))
         .unwrap();
     assert_eq!(retained.given_name.as_deref(), Some("Alice"));
     assert_eq!(retained.family_name.as_deref(), Some("Owner"));
@@ -179,7 +179,7 @@ fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unl
         })
         .unwrap();
     let user = store
-        .transaction(|connection| rpc_users::read_user(connection, &actor, true))
+        .transaction(|connection| rpc_users::read_user(&store, connection, &actor, true))
         .unwrap();
     assert_eq!(user.display_name, "Manual name");
     assert_eq!(user.given_name.as_deref(), Some("Linked"));
@@ -203,7 +203,7 @@ fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unl
         })
         .unwrap();
     let current = store
-        .transaction(|connection| rpc_users::read_user(connection, &actor, true))
+        .transaction(|connection| rpc_users::read_user(&store, connection, &actor, true))
         .unwrap();
     assert_eq!(current.given_name.as_deref(), Some("Chosen"));
     assert_eq!(current.email.as_deref(), Some("chosen@example.com"));
@@ -236,7 +236,7 @@ fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unl
     };
     rpc_users::unlink_identity(&store, &mutation(&actor, &unlink), &unlink, NOW + 7).unwrap();
     let current = store
-        .transaction(|connection| rpc_users::read_user(connection, &actor, true))
+        .transaction(|connection| rpc_users::read_user(&store, connection, &actor, true))
         .unwrap();
     assert_eq!(current.display_name, "Manual name");
     assert_eq!(current.given_name.as_deref(), Some("Chosen"));

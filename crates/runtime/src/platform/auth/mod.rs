@@ -16,6 +16,7 @@ mod native_projection;
 mod oauth;
 mod own_context;
 pub(crate) use own_context::OwnContextService;
+mod avatars;
 mod policy;
 mod profiles;
 mod remote_http;

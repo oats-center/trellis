@@ -34,6 +34,7 @@ clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 jsonschema.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 libc = "0.2.186"
 nats-jwt-rs.workspace = true
 nkeys.workspace = true

@@ -40,6 +40,7 @@ pub(crate) struct OAuthEngine {
     pub(super) device_entries: FixedWindowRateLimiter,
     pub(super) upstream_http: openidconnect::reqwest::Client,
     documents: super::ClientDocuments,
+    pub(super) avatars: super::super::avatars::Avatars,
     nonces: Mutex<super::nonce::DpopNonces>,
 }
 
@@ -319,6 +320,7 @@ impl OAuthEngine {
         }
         let origin = storage.authority.settings.oauth_origin.clone();
         let documents = super::ClientDocuments::new(origin.clone())?;
+        let avatars = super::super::avatars::Avatars::new(storage.authority.clone())?;
         let upstream_http =
             super::oidc::http_client(&storage.authority.settings.upstream_tls_roots_pem)?;
         let mut config = ServerConfig::new(&origin, format!("{origin}/device"));
@@ -342,6 +344,7 @@ impl OAuthEngine {
             server,
             verifiers,
             documents,
+            avatars,
             upstream_http,
             device_entries: FixedWindowRateLimiter::new(),
             nonces: Mutex::new(

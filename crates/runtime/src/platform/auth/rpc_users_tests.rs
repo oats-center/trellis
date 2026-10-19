@@ -142,7 +142,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
     ));
     assert_eq!(
         store
-            .transaction(|connection| read_user(connection, &login.principal_id, true))
+            .transaction(|connection| read_user(&store, connection, &login.principal_id, true))
             .unwrap(),
         updated.user
     );
@@ -164,7 +164,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
     ));
     assert!(
         store
-            .transaction(|connection| read_user(connection, &admin, true))
+            .transaction(|connection| read_user(&store, connection, &admin, true))
             .unwrap()
             .account
             .unwrap()

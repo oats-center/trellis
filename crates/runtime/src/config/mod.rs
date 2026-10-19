@@ -1127,6 +1127,9 @@ pub struct ResolvedLeasesConfig {
 /// Runtime authentication configuration.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AuthConfig {
+    /// Optional external profile-image resolution policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<AvatarConfig>,
     /// Stable installation ULID, provisioned once and retained across key rotations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance_id: Option<String>,
@@ -1143,6 +1146,15 @@ pub struct AuthConfig {
     /// Authorization trust and short-lived context runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<AuthorizationConfig>,
+}
+
+/// External image policy. Disabling immediately prevents serving remote-derived
+/// images, including already cached ones. Local initials remain available.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvatarConfig {
+    /// Fetch public HTTPS OIDC, owner-override and verified-email Gravatar images.
+    pub external_fetch_enabled: bool,
 }
 
 /// Explicit dedicated OAuth listener configuration.

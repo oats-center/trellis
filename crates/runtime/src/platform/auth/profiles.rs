@@ -246,6 +246,10 @@ pub(super) fn write(
     current.picture = upstream.picture;
     if current != before {
         current.revision += 1;
+        connection.execute(
+            "DELETE FROM auth_avatar_cache WHERE principal_id=?1",
+            [principal],
+        )?;
         connection.execute("INSERT INTO auth_user_profiles(principal_id,display_name,given_name,family_name,display_name_source,given_name_source,family_name_source,email,email_verified,email_source,email_provider_id,oidc_picture_url,avatar_override_url,gravatar_enabled,created_at,updated_at,version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15,?16) ON CONFLICT(principal_id) DO UPDATE SET display_name=excluded.display_name,given_name=excluded.given_name,family_name=excluded.family_name,display_name_source=excluded.display_name_source,given_name_source=excluded.given_name_source,family_name_source=excluded.family_name_source,email=excluded.email,email_verified=excluded.email_verified,email_source=excluded.email_source,email_provider_id=excluded.email_provider_id,oidc_picture_url=excluded.oidc_picture_url,avatar_override_url=excluded.avatar_override_url,gravatar_enabled=excluded.gravatar_enabled,updated_at=excluded.updated_at,version=excluded.version",
             params![principal,current.display_name,current.given_name,current.family_name,current.display_source,current.given_source,current.family_source,current.email,current.email_verified,current.email_source,current.email_provider,current.picture,current.avatar_override,current.gravatar_enabled,now,current.revision])?;
     }

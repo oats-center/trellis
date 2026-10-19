@@ -1,5 +1,11 @@
 # Trellis For Rust Consumers
 
+Directory avatar_url is a Trellis-hosted image-only bearer valid at most ten
+minutes. Do not log it; refresh through an authorized directory read. Render
+local initials on missing/broken photos. Revoking usersRead stops new URLs, not
+already issued image bearers. Gravatar requires opted-in verified email and
+receives its normalized SHA-256 hash, not raw email.
+
 Admin `Issuers.Rotate` generates private successor custody on Auth's host and
 stores it in the private `<database-stem>.issuer-keys` directory (`platform.issuer-keys`
 by default) beside Auth's persistent

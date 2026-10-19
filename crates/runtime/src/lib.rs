@@ -48,12 +48,12 @@ pub mod supervisor;
 mod telemetry;
 
 pub use config::{
-    AuthConfig, AuthorizationConfig, ClientConfig, ConfigError, HttpConfig, LeasesConfig,
-    LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthConfig, OAuthListenerConfig, OAuthProviderConfig, OAuthTransport,
-    ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig, RuntimeConfig,
-    RuntimePathDefaults, RuntimePathsConfig, SqliteStorageConfig, StorageBackend, StorageConfig,
-    SubsystemConfig, WebSourceConfig,
+    AuthConfig, AuthorizationConfig, AvatarConfig, ClientConfig, ConfigError, HttpConfig,
+    LeasesConfig, LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig,
+    NatsConfig, NatsRuntimeConfig, OAuthConfig, OAuthListenerConfig, OAuthProviderConfig,
+    OAuthTransport, ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig,
+    RuntimeConfig, RuntimePathDefaults, RuntimePathsConfig, SqliteStorageConfig, StorageBackend,
+    StorageConfig, SubsystemConfig, WebSourceConfig,
 };
 pub use mode::{RuntimeMode, RuntimeModeParseError, SubsystemName};
 pub use server::{

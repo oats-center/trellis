@@ -38,6 +38,8 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         (Instant, u32),
     >::new()));
     let maintenance = Arc::new(Mutex::new(Instant::now()));
+    // Image fan-out cannot spend the login, consent or token request budget.
+    let image_requests = Arc::new(Mutex::new(BTreeMap::new()));
     let maintenance_engine = engine.clone();
     let metadata_engine = engine.clone();
     // Discovery must work before a previously unknown client is prepared.
@@ -109,6 +111,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
     Router::new()
         .merge(metadata)
         .merge(public)
+        .route("/profile/avatars/{token}", get(avatar))
         .route("/authorize", get(authorize))
         .route("/device", get(super::device::page))
         .route(
@@ -138,7 +141,11 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
         .layer(DefaultBodyLimit::max(32 * 1024))
         .layer(middleware::from_fn(move |request: Request, next: Next| {
             let origin = origin.clone();
-            let requests = requests.clone();
+            let requests = if request.uri().path().starts_with("/profile/avatars/") {
+                image_requests.clone()
+            } else {
+                requests.clone()
+            };
             let maintenance = maintenance.clone();
             let maintenance_engine = maintenance_engine.clone();
             async move {
@@ -250,6 +257,37 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             }
         }))
         .with_state(engine)
+}
+
+async fn avatar(State(engine): State<Arc<OAuthEngine>>, Path(token): Path<String>) -> Response {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let mut response = match engine.avatars.get(&token, now).await {
+        Ok((bytes, expires)) if expires > time::OffsetDateTime::now_utc().unix_timestamp() => {
+            let max_age = expires - time::OffsetDateTime::now_utc().unix_timestamp();
+            let cache = format!("private, max-age={}", max_age.max(0));
+            (
+                [
+                    (header::CONTENT_TYPE, "image/png"),
+                    (header::CACHE_CONTROL, cache.as_str()),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        _ => ([(header::CACHE_CONTROL, "no-store")], StatusCode::NOT_FOUND).into_response(),
+    };
+    response.headers_mut().insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    response.headers_mut().insert(
+        "cross-origin-resource-policy",
+        HeaderValue::from_static("cross-origin"),
+    );
+    response
+        .headers_mut()
+        .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    response
 }
 
 async fn issuer_chain(

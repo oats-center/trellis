@@ -623,7 +623,7 @@ staticPasswords:
             assert_eq!(linked, f.principal);
             let profile = authority
                 .transaction(|connection| {
-                    super::super::rpc_users::read_user(connection, &linked, true)
+                    super::super::rpc_users::read_user(&authority, connection, &linked, true)
                 })
                 .unwrap();
             assert_eq!(profile.given_name.as_deref(), Some("UserInfo given"));
@@ -896,7 +896,7 @@ staticPasswords:
     assert_eq!(logged_in.status(), reqwest::StatusCode::SEE_OTHER);
     let profile = authority
         .transaction(|connection| {
-            super::super::rpc_users::read_user(connection, &f.principal, true)
+            super::super::rpc_users::read_user(&authority, connection, &f.principal, true)
         })
         .unwrap();
     assert_eq!(profile.principal_id.to_string(), f.principal);
@@ -904,7 +904,7 @@ staticPasswords:
     assert!(profile.email_verified);
     let separate = authority
         .transaction(|connection| {
-            super::super::rpc_users::read_user(connection, &shadow.to_string(), true)
+            super::super::rpc_users::read_user(&authority, connection, &shadow.to_string(), true)
         })
         .unwrap();
     assert_ne!(separate.principal_id.to_string(), f.principal);

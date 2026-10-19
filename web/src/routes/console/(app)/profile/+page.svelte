@@ -285,8 +285,27 @@
       >
         <div class="flex min-w-0 items-start gap-3">
           <div class="avatar avatar-placeholder">
-            <div class="w-12 rounded-full bg-neutral text-neutral-content">
-              <span class="text-base">{getInitials(user)}</span>
+            <div
+              class="relative w-12 rounded-full bg-neutral text-neutral-content"
+            >
+              <span class="text-base" aria-label="Profile initials"
+                >{getInitials(user)}</span
+              >
+              {#if user.avatarUrl}
+                {#key user.avatarUrl}
+                  <img
+                    src={user.avatarUrl}
+                    alt=""
+                    width="48"
+                    height="48"
+                    class="absolute inset-0 h-full w-full object-cover"
+                    referrerpolicy="no-referrer"
+                    onerror={(event) => {
+                      event.currentTarget.setAttribute("hidden", "");
+                    }}
+                  />
+                {/key}
+              {/if}
             </div>
           </div>
           <div class="min-w-0 space-y-1">

@@ -313,6 +313,7 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
         connection,
         key,
         AuthSettings {
+            avatar_external_fetch_enabled: true,
             upstream_tls_roots_pem: Vec::new(),
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             account: account_key().into(),

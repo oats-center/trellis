@@ -1,4 +1,7 @@
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
@@ -43,6 +46,7 @@ pub(crate) enum AuthError {
 
 #[derive(Clone, Debug)]
 pub(crate) struct AuthSettings {
+    pub(crate) avatar_external_fetch_enabled: bool,
     pub(crate) instance_id: String,
     pub(crate) account: String,
     pub(crate) oauth_origin: String,
@@ -59,6 +63,7 @@ pub(crate) struct SqliteAuthorizationStore {
     pub(super) signer: SigningKey,
     pub(super) custody_directory: PathBuf,
     current_key: Mutex<Option<(String, SigningKey)>>,
+    pub(super) avatar_signer: std::sync::OnceLock<Arc<super::avatars::AvatarSigner>>,
     pub(super) settings: AuthSettings,
 }
 
@@ -200,6 +205,11 @@ impl SqliteAuthorizationStore {
         let signer =
             SigningKey::from_bytes(&read_custody_key(&authorization.issuer_signing_seed_file)?);
         let settings = AuthSettings {
+            avatar_external_fetch_enabled: config
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.avatar.as_ref())
+                .is_none_or(|avatar| avatar.external_fetch_enabled),
             instance_id,
             account: account.into(),
             oauth_origin: oauth.origin.clone(),
@@ -283,6 +293,7 @@ impl SqliteAuthorizationStore {
             signer,
             custody_directory,
             current_key: Mutex::new(None),
+            avatar_signer: std::sync::OnceLock::new(),
             settings,
         })
     }

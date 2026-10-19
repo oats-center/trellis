@@ -247,6 +247,18 @@ CREATE TABLE auth_user_profiles (
         OR (email IS NOT NULL AND email_source='oidc' AND email_provider_id IS NOT NULL))
 );
 
+CREATE TABLE auth_avatar_cache (
+    principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
+    source_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ok','not_found','temporary_error')),
+    mime TEXT,
+    image_bytes BLOB CHECK (image_bytes IS NULL OR length(image_bytes) BETWEEN 1 AND 131072),
+    fetched_at INTEGER NOT NULL CHECK (fetched_at BETWEEN 0 AND 9007199254740991),
+    expires_at INTEGER NOT NULL CHECK (expires_at BETWEEN 0 AND 9007199254740991),
+    PRIMARY KEY (principal_id,source_fingerprint),
+    CHECK ((status='ok' AND mime='image/png' AND image_bytes IS NOT NULL) OR (status!='ok' AND mime IS NULL AND image_bytes IS NULL))
+);
+
 CREATE TABLE auth_local_credentials (
     principal_id TEXT PRIMARY KEY REFERENCES auth_principals(principal_id) ON DELETE CASCADE,
     normalized_username TEXT NOT NULL UNIQUE CHECK (length(normalized_username) > 0),

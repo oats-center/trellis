@@ -434,6 +434,12 @@ impl OAuthStorage {
         authority: Arc<SqliteAuthorizationStore>,
         key: &[u8; 32],
     ) -> Result<Self, StorageError> {
+        authority.avatar_signer.get_or_init(|| {
+            Arc::new(super::super::avatars::AvatarSigner::new(
+                key,
+                &authority.settings.instance_id,
+            ))
+        });
         Ok(Self {
             authority,
             sealing_key: LessSafeKey::new(
@@ -1027,6 +1033,7 @@ mod tests {
                 connection,
                 ed25519_dalek::SigningKey::from_bytes(&[21; 32]),
                 super::super::super::sqlite::AuthSettings {
+                    avatar_external_fetch_enabled: true,
                     instance_id: ulid::Ulid::new().to_string(),
                     account: "cimd-retention".into(),
                     oauth_origin: "https://auth.example".into(),

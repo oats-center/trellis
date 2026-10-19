@@ -34,7 +34,12 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 store.transaction(|connection| {
                     let administrative = directory_account_access(connection, &actor, delegated)?;
                     Ok(AuthUserGetResponse {
-                        user: read_user(connection, &input.user_id.to_string(), administrative)?,
+                        user: read_user(
+                            &store,
+                            connection,
+                            &input.user_id.to_string(),
+                            administrative,
+                        )?,
                         extra: Default::default(),
                     })
                 })
@@ -52,7 +57,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
             tokio::task::spawn_blocking(move || {
                 store.transaction(|connection| {
                     Ok(AuthUserGetResponse {
-                        user: read_user(connection, &actor, true)?,
+                        user: read_user(&store, connection, &actor, true)?,
                         extra: Default::default(),
                     })
                 })
@@ -482,6 +487,7 @@ pub(super) fn directory_account_access(
 }
 
 pub(super) fn read_user(
+    store: &SqliteAuthorizationStore,
     connection: &Connection,
     principal: &str,
     account: bool,
@@ -491,6 +497,26 @@ pub(super) fn read_user(
         "SELECT p.state,p.version,p.created_at,coalesce(c.normalized_username,(SELECT i.provider_subject FROM auth_provider_identities i WHERE i.principal_id=p.principal_id AND i.provider='local'),''),c.password_hash IS NOT NULL FROM auth_principals p LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND (?2 OR p.state='active')",
         params![principal, account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, bool>(4)?)),
     ).optional()?.ok_or(AuthError::NotFound)?;
+    let avatar_url = if state == "active"
+        && store.settings.avatar_external_fetch_enabled
+        && (profile.avatar_override.is_some()
+            || profile.picture.is_some()
+            || (profile.email_verified && profile.gravatar_enabled && profile.email.is_some()))
+    {
+        store
+            .avatar_signer
+            .get()
+            .and_then(|signer| {
+                signer.mint(
+                    principal,
+                    profile.revision,
+                    time::OffsetDateTime::now_utc().unix_timestamp(),
+                )
+            })
+            .map(|token| format!("{}/profile/avatars/{token}", store.settings.oauth_origin))
+    } else {
+        None
+    };
     Ok(AuthUser {
         principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
         account: if account {
@@ -518,7 +544,7 @@ pub(super) fn read_user(
         family_name: profile.family_name,
         email: profile.email,
         email_verified: profile.email_verified,
-        avatar_url: None,
+        avatar_url,
         extra: Default::default(),
     })
 }
@@ -570,7 +596,7 @@ pub(super) fn create_user(
         if let Some(hash) = &hash {
             connection.execute("INSERT INTO auth_local_credentials(principal_id,normalized_username,password_hash,hash_profile,password_changed_at,updated_at,version) VALUES(?1,?2,?3,1,?4,?4,1)", params![principal, username, hash, now])?;
         }
-        Ok(AuthUserGetResponse { user: read_user(connection, &principal, true)?, extra: Default::default() })
+        Ok(AuthUserGetResponse { user: read_user(store, connection, &principal, true)?, extra: Default::default() })
     })
 }
 
@@ -582,7 +608,7 @@ pub(super) fn update_user(
 ) -> Result<AuthUserGetResponse, AuthError> {
     store.mutate(identity, "rpc.users.update", input, now, |connection| {
         let principal = input.user_id.to_string();
-        read_user(connection, &principal, true)?;
+        read_user(store, connection, &principal, true)?;
         if input.display_name.trim().is_empty() {
             return Err(AuthError::Invalid("empty display name".into()));
         }
@@ -611,7 +637,7 @@ pub(super) fn update_user(
         };
         super::profiles::write(connection, &principal, Some(&patch), now)?;
         Ok(AuthUserGetResponse {
-            user: read_user(connection, &principal, true)?,
+            user: read_user(store, connection, &principal, true)?,
             extra: Default::default(),
         })
     })
@@ -628,7 +654,7 @@ pub(super) fn update_profile(
         if !active { return Err(AuthError::Denied); }
         if super::profiles::read(connection, &identity.actor)?.revision != input.expected_revision.0.0 { return Err(AuthError::Conflict); }
         super::profiles::write(connection, &identity.actor, Some(input), now)?;
-        Ok(AuthUserGetResponse { user: read_user(connection, &identity.actor, true)?, extra: Default::default() })
+        Ok(AuthUserGetResponse { user: read_user(store, connection, &identity.actor, true)?, extra: Default::default() })
     })
 }
 

@@ -1,5 +1,11 @@
 # Trellis
 
+Directory avatarUrl is a Trellis-hosted image-only bearer lasting at most ten
+minutes. Use referrerpolicy="no-referrer", local initials on error, and an
+authorized directory read to renew. Manual unverified emails never use Gravatar;
+verified-email Gravatar sends an email-derived SHA-256 hash. Operators disable
+remote images, including cached ones, with auth.avatar.external_fetch_enabled=false.
+
 Operation starts default to canonical routing. Explicit targeted starts persist
 deployment, invocation ULID, and frozen input before the first send and never
 fall back to another deployment. They cannot recover an unknown owner after an

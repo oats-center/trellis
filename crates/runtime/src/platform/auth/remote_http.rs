@@ -85,4 +85,29 @@ mod tests {
             .await
             .is_err());
     }
+
+    #[tokio::test]
+    async fn image_transport_refuses_private_destinations_before_tcp_connect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = client().build().unwrap();
+        assert!(client
+            .get(format!("https://localhost:{}/", address.port()))
+            .send()
+            .await
+            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+        for value in [
+            "https://127.0.0.1/photo",
+            "https://169.254.169.254/photo",
+            "https://10.0.0.1/photo",
+            "https://[::ffff:127.0.0.1]/photo",
+        ] {
+            assert!(!public_url(&url::Url::parse(value).unwrap()));
+        }
+    }
 }

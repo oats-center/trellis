@@ -1,5 +1,10 @@
 # Trellis AI guidance for Svelte browser apps
 
+Directory avatarUrl is a Trellis-hosted image-only bearer lasting at most ten
+minutes. Do not log it. Render with referrerpolicy="no-referrer" and local initials
+on missing/broken images; reread the authorized directory to renew an expired URL.
+The browser never needs to contact Gravatar or an identity-provider image host.
+
 Use the guide from the same Trellis revision as the installed libraries. This
 guide describes the optional Trellis Svelte integration. Trellis does not
 require Svelte, a UI design system, a configuration parser, or a particular
