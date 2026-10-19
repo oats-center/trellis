@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo build output directory"));
     let generated = out.join("generated");
-    trellis_codegen_rust::generate_rust_package(&graph, &generated, "runtime-trellis")?;
+    trellis_codegen_rust::generate_rust_package(&graph, &generated, &env::var("CARGO_PKG_NAME")?)?;
     fs::write(
         out.join("modules.rs"),
         format!(

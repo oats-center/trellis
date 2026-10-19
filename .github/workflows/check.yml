@@ -64,6 +64,7 @@ jobs:
             web/trellis
             ts/packages/trellis-testkit/trellis
             integration/fixtures/runtime/packages/runtime-trellis
+            integration/fixtures/runtime/v2/packages/runtime-trellis
             integration/fixtures/runtime-pinned/packages/runtime-trellis
             integration/fixtures/runtime-removed/packages/runtime-trellis
             integration/fixtures/client-upgrade/packages/client-upgrade
@@ -288,7 +289,7 @@ jobs:
           mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
           cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
           bash scripts/acquire-test-nats.sh --dest "$PWD/dist/runtime-binaries/nats"
-          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller empty_watch finite_rpc operation_target operation_storage_upload operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
+          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller live_application_versions empty_watch finite_rpc operation_target operation_storage_upload operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
           cp target/debug/examples/health_watch dist/runtime-binaries/examples/

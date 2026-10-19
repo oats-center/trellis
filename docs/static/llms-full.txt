@@ -731,6 +731,13 @@ protocol liveness and credit bounds, not a total age or message cap; closing
 returns a receipt whose remote-cleanup state is complete, incomplete, or
 unconfirmed, and reconnect is an explicit new open rather than a silent reopen.
 
+Live uses `trellis.live.v1` even for application APIs such as `documents@v2`.
+Generated canonical opening subjects are
+`live.v1.route.<b64(full_api_id)>.<action>`, with unpadded base64url identity
+tokens. The application's major belongs to that full API identity, not to the
+Live protocol version. Use generated client/provider facades; dotted action
+names never imply a deployment selection or another Live protocol.
+
 Declare expected RPC/operation errors in IDL to obtain typed generated error
 handling. Runtime validation and transport failures remain distinct from those
 business errors. Application-local error handling is an application decision.

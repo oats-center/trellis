@@ -11,6 +11,19 @@ model DeliveryStats { attempts: list<int64>; active: int64; maxActive: int64; su
 model KeyedValue { key: string; value: string; }
 model ResourceValue { value: string; }
 
+api documents@v1 {
+  title "Live application major one";
+  description "A versioned application API using the shared Live protocol.";
+  live Watch { input Value; event Value; }
+  live List.Watch { input Value; event Value; }
+  rpc Echo { input Value; output Value; }
+  capabilities {
+    capability read { title "Read live documents"; description "Observe the first application major."; consequence "The caller can observe version-one values."; consent_revision 1; allows { live Watch; live List.Watch; rpc Echo; } }
+  }
+}
+service LiveV1Provider { implements documents; }
+agent LiveV1Caller { use documents { required capability read; } }
+
 api runtime@v1 {
   title "Runtime acceptance";
   description "Small generated transport and durability fixture.";

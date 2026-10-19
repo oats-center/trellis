@@ -1218,7 +1218,7 @@ mod tests {
 
     #[test]
     fn live_open_publishes_on_the_same_base_subject() {
-        let base = "live.v1.route.Watch";
+        let base = "live.v1.route.YXBpQHYx.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         verify_offer_identity(&open, &offer(LiveSessionKind::Standalone, base))
             .expect("live offer");
@@ -1226,8 +1226,8 @@ mod tests {
 
     #[test]
     fn operation_watch_offer_binds_the_operation_route_not_control() {
-        let base = "operation.v1.Billing.Refund";
-        let publish = "operation.v1.Billing.Refund.control";
+        let base = "operation.v1.YXBpQHYx.ZGVw.Refund";
+        let publish = "operation.v1.YXBpQHYx.ZGVw.Refund.control";
         let open = open(LiveSessionKind::Operation, base, publish);
         verify_offer_identity(&open, &offer(LiveSessionKind::Operation, base))
             .expect("operation watch offer");
@@ -1235,8 +1235,8 @@ mod tests {
 
     #[test]
     fn operation_watch_rejects_control_subject_as_offer_base() {
-        let base = "operation.v1.Billing.Refund";
-        let publish = "operation.v1.Billing.Refund.control";
+        let base = "operation.v1.YXBpQHYx.ZGVw.Refund";
+        let publish = "operation.v1.YXBpQHYx.ZGVw.Refund.control";
         let open = open(LiveSessionKind::Operation, base, publish);
         let error = verify_offer_identity(&open, &offer(LiveSessionKind::Operation, publish))
             .expect_err("control is not the offer base");
@@ -1245,11 +1245,11 @@ mod tests {
 
     #[test]
     fn operation_watch_rejects_live_session_kind() {
-        let base = "operation.v1.Billing.Refund";
+        let base = "operation.v1.YXBpQHYx.ZGVw.Refund";
         let open = open(
             LiveSessionKind::Operation,
             base,
-            "operation.v1.Billing.Refund.control",
+            "operation.v1.YXBpQHYx.ZGVw.Refund.control",
         );
         let error = verify_offer_identity(&open, &offer(LiveSessionKind::Standalone, base))
             .expect_err("kind must match");
@@ -1289,7 +1289,7 @@ mod tests {
 
     #[test]
     fn offer_deployment_must_match_authenticated_certificate() {
-        let base = "live.v1.route.Watch";
+        let base = "live.v1.route.YXBpQHYx.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         let error = verify_offer_claims(
             &open,
@@ -1308,7 +1308,7 @@ mod tests {
 
     #[test]
     fn offer_with_a_mutated_provider_tuple_is_rejected() {
-        let base = "live.v1.route.Watch";
+        let base = "live.v1.route.YXBpQHYx.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         let mut mutated = provider_identity();
         if let trellis_protocol::SessionBinding::Service { instance_id, .. } = &mut mutated.binding
@@ -1329,7 +1329,7 @@ mod tests {
 
     #[test]
     fn offer_with_a_mutated_consumer_tuple_is_rejected() {
-        let base = "live.v1.route.Watch";
+        let base = "live.v1.route.YXBpQHYx.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         let mut mutated = consumer_identity();
         mutated.principal_id = "other".into();
@@ -1347,7 +1347,7 @@ mod tests {
 
     #[test]
     fn certified_provider_and_browser_consumer_are_accepted() {
-        let base = "live.v1.route.Watch";
+        let base = "live.v1.route.YXBpQHYx.Watch";
         let open = open(LiveSessionKind::Standalone, base, base);
         verify_offer_claims(
             &open,

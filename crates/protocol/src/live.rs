@@ -10,7 +10,8 @@
 //! # Wire grammar
 //!
 //! ```text
-//! Live base:      live.v1.route.<b64(apiId)>.<b64(providerDeploymentId)>.<action>
+//! Live base:      live.v1.route.<b64(apiId)>.<action>
+//! Bound Live:     live.v1.route.<b64(apiId)>.<b64(providerDeploymentId)>.<action>
 //! Operation base: operation.v1.<b64(apiId)>.<b64(providerDeploymentId)>.<action>
 //! Owner control:  <base>.observe.<b64(P)>.<sessionId>
 //! Live delivery:  live.v1.data.<b64(P)>.<b64(C)>.<sessionId>
@@ -23,7 +24,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::{identifiers::validate_logical_name, subjects, ProtocolError};
+use crate::{
+    identifiers::{validate_logical_name, validate_version},
+    subjects, ProtocolError,
+};
 
 /// Exact protocol discriminator for every live-session body.
 pub const LIVE_VERSION: &str = "trellis.live.v1";
@@ -1519,8 +1523,13 @@ pub fn derive_live_observe_wildcard_subject(
 /// # Errors
 ///
 /// Returns [`ProtocolError::Live`] unless the subject is exactly
-/// `live.v1.route.<logical-name>`, `operations.v1.<logical-name>`, or
+/// `live.v1.route.<api-token>.<action>`,
+/// `live.v1.route.<api-token>.<deployment-token>.<action>`,
+/// `operations.vN.<logical-name>`, or
 /// `operation.v1.<api-token>.<deployment-token>.<action>`.
+/// A standalone Live action may contain dots, including a leading component that
+/// is also a valid deployment token. Its canonical or deployment-bound meaning
+/// must come from the exact catalog-derived route, never from counting tokens.
 pub fn validate_base_subject(
     base_subject: &str,
     tokens: impl IntoIterator<Item = &'static str> + Clone,
@@ -1532,27 +1541,25 @@ pub fn validate_base_subject(
             "base subject must be a canonical Live or Operation route",
         )
     };
-    if let Some(action) = base_subject
-        .strip_prefix("live.v1.route.")
-        .or_else(|| base_subject.strip_prefix("operations.v1."))
-    {
-        validate_logical_name(action).map_err(|_| invalid())?;
-        return Ok(base_subject);
-    }
     let parts = base_subject.split('.').collect::<Vec<_>>();
-    let prefix_len = match parts.first() {
-        Some(&"operation") if parts.get(1) == Some(&"v1") => 2,
+    let (api_token, action) = match parts.as_slice() {
+        ["live", "v1", "route", api_token, action @ ..] => (*api_token, action),
+        ["operation", "v1", api_token, deployment_token, action @ ..] => {
+            validate_subject_token(deployment_token, ["baseSubject"])?;
+            (*api_token, action)
+        }
+        ["operations", version, action @ ..] => {
+            validate_version(version).map_err(|_| invalid())?;
+            validate_logical_name(&action.join(".")).map_err(|_| invalid())?;
+            return Ok(base_subject);
+        }
         _ => return Err(invalid()),
     };
-    if parts.len() < prefix_len + 3 {
-        return Err(invalid());
-    }
-    let api_token = parts[prefix_len];
-    let deployment_token = parts[prefix_len + 1];
-    let action = parts[prefix_len + 2..].join(".");
     validate_subject_token(api_token, ["baseSubject"])?;
-    validate_subject_token(deployment_token, ["baseSubject"])?;
-    validate_logical_name(&action).map_err(|_| invalid())?;
+    let api_id = URL_SAFE_NO_PAD.decode(api_token).map_err(|_| invalid())?;
+    let api_id = std::str::from_utf8(&api_id).map_err(|_| invalid())?;
+    crate::validate_api_id(api_id).map_err(|_| invalid())?;
+    validate_logical_name(&action.join(".")).map_err(|_| invalid())?;
     Ok(base_subject)
 }
 
@@ -1582,7 +1589,7 @@ pub fn validate_live_subject(subject: &str) -> Result<(), ProtocolError> {
         return Ok(());
     }
     match tokens.first() {
-        Some(&"live") | Some(&"operation") => {
+        Some(&"live") | Some(&"operation") | Some(&"operations") => {
             // A base action may itself contain dots, so locate the observe
             // marker relative to the fixed trailing provider/session tokens.
             let Some(observe_index) = tokens.len().checked_sub(3) else {
@@ -1935,7 +1942,7 @@ mod tests {
             derive_live_data_subject(provider, consumer, &session).unwrap(),
             format!("live.v1.data.{provider_token}.{consumer_token}.{session}")
         );
-        let base = crate::derive_live_subject("v1", "Health.Watch").unwrap();
+        let base = crate::derive_live_subject("trellis.health@v1", "Watch").unwrap();
         assert_eq!(
             derive_live_observe_subject(&base, provider, &session).unwrap(),
             format!("{base}.observe.{provider_token}.{session}")
@@ -1947,6 +1954,9 @@ mod tests {
         assert!(derive_live_data_subject("", consumer, &session).is_err());
         validate_live_subject(&derive_live_observe_subject(&base, provider, &session).unwrap())
             .unwrap();
+        let operation = crate::derive_operation_subject("v2", "documents.Work").unwrap();
+        let observe = derive_live_observe_subject(&operation, provider, &session).unwrap();
+        validate_live_subject(&observe).unwrap();
         assert!(derive_live_observe_subject("events.v1.X.Watch", provider, &session).is_err());
     }
 

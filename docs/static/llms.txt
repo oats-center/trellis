@@ -461,6 +461,13 @@ bounds, not a total age or message cap; an explicit close returns a receipt
 whose remote-cleanup state is complete, incomplete, or unconfirmed, and
 reconnect is an explicit new open rather than a silent reopen.
 
+Live uses `trellis.live.v1` even for application APIs such as `documents@v2`.
+Generated canonical opening subjects are
+`live.v1.route.<b64(full_api_id)>.<action>`, with unpadded base64url identity
+tokens. The application's major belongs to that full API identity, not to the
+Live protocol version. Use generated client/provider facades; dotted action
+names never imply a deployment selection or another Live protocol.
+
 Transfers use bounded, windowed raw-byte streaming over NATS, with storage
 protocols and credentials hidden behind runtime store handles. Use generated
 upload Operations and download helpers, not raw subjects. Network credit is not

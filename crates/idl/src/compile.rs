@@ -945,10 +945,7 @@ fn derive_api_subjects(
             ActionDefinition::Live { .. } => {
                 result.lives.insert(
                     id.name.clone(),
-                    protocol(trellis_protocol::derive_live_subject(
-                        &version,
-                        &logical_name,
-                    ))?,
+                    protocol(trellis_protocol::derive_live_subject(api_id, &id.name))?,
                 );
             }
         }

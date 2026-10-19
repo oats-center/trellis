@@ -1,0 +1,16 @@
+model Value { value: string; }
+
+api documents@v2 {
+  title "Live application major two";
+  description "A second application major using the same Live wire protocol.";
+  live Watch { input Value; event Value; }
+  live List.Watch { input Value; event Value; }
+  rpc Echo { input Value; output Value; }
+  operation Work { input Value; output Value; }
+  capabilities {
+    capability read { title "Read live documents"; description "Observe the second application major."; consequence "The caller can observe version-two values."; consent_revision 1; allows { live Watch; live List.Watch; rpc Echo; } }
+    capability work { title "Run document work"; description "Run second-major work."; consequence "The caller can run and observe document work."; consent_revision 1; allows { operation Work; } }
+  }
+}
+service LiveV2Provider { implements documents; }
+agent LiveV2Caller { use documents { required capability read; required capability work; } }

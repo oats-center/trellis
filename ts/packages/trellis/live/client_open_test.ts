@@ -32,9 +32,9 @@ function offer(): LiveOfferWire {
     openId: "open",
     requestId: "req",
     sessionId: "session",
-    baseSubject: "live.v1.route.Watch",
+    baseSubject: "live.v1.route.YXBpQHYx.Watch",
     dataSubject: "live.v1.data.A.B.C",
-    controlSubject: "live.v1.route.Watch.observe.A.C",
+    controlSubject: "live.v1.route.YXBpQHYx.Watch.observe.A.C",
     provider: {
       connectionId: "P",
       sessionKey: "K",

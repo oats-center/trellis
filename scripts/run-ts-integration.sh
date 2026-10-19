@@ -49,6 +49,7 @@ fixture_bins=(
   events
   live_probe
   live_probe_caller
+  live_application_versions
   empty_watch
   finite_rpc
   operation_target
