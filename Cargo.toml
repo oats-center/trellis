@@ -45,7 +45,7 @@ trellis-protocol = { path = "crates/protocol" }
 trellis-models = { path = "crates/models" }
 
 [workspace.package]
-version = "0.100.0"
+version = "0.100.0-rc.3"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/oats-center/trellis"
@@ -113,5 +113,5 @@ rand = "0.10.0"
 tempfile = "3.27.0"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 ulid = "1.2.1"
-trellis-protocol = { path = "crates/protocol", version = "0.100.0" }
-trellis-models = { path = "crates/models", version = "0.101.0" }
+trellis-protocol = { path = "crates/protocol", version = "0.100.0-rc.3" }
+trellis-models = { path = "crates/models", version = "0.101.0-rc.3" }

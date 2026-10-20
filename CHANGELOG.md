@@ -8,11 +8,28 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.3] - 2026-10-20
+
 ### Added
 
+- Revision 7 OAuth authorization for browser and native applications, including
+  Authorization Code with PKCE, Device Code, DPoP-bound credentials, explicit
+  capability consent, and client metadata discovery. Public discovery supports
+  first contact from previously unknown browser origins.
+- Administrator-owned issuer rotation with durable successor-key custody,
+  authenticated trust-chain recovery, and idempotent replay. Successor keys live
+  on private writable persistent storage separately from read-only configuration
+  and the OAuth credential-encryption key.
+- Capability-gated user directory profiles, owner-managed profile edits with
+  independent revision checks, linked-provider profile provenance, and cached,
+  sanitized avatars. Browser avatar delivery uses expiring image references
+  instead of exposing upstream image requests or credentials.
 - Console manages user profiles, local sign-in names, sign-in security, and
   application-scoped access grants inline. Grant revision conflicts preserve the
   draft while loading the latest version for renewed review.
+- Operation starts can select a deployment and caller-chosen invocation ID.
+  Missing targets do not fall back to a different deployment; exact-owner replay
+  preserves durable acceptance without automatically retransmitting starts.
 - Operations can reserve a caller-selected invocation with cancellation already
   requested. Cancellation survives replay and owner replacement, and cleanup
   must succeed before the operation becomes terminal.
@@ -26,6 +43,37 @@ and this project adheres to
 
 ### Fixed
 
+- Rust and TypeScript share Operation persistence for same-deployment takeover,
+  checkpoints, signals, cancellation, and committed uploads. Unfinished upload
+  locators and exact logical file metadata survive unrelated control writes.
+- RPC and Live-opening queue groups agree across Rust and TypeScript providers,
+  preventing one publication from executing once per SDK implementation.
+- Profile updates use their own compare-and-swap revision; lifecycle-only account
+  changes do not overwrite newer owner profile edits. Self-account access has an
+  explicit consent capability independently of directory access.
+- Finite RPC success and declared-error replies remain verifiable after their
+  accepted opening expires. Rust typed and explicit-ack Event consumers verify
+  publishers, including retained publications under historical authority.
+- Native and browser recovery preserves credential custody through issuer
+  rotation, attachment replacement, and missed retirement. Recovery survives
+  early retry timers and cancelled renewal, without authorizing expired contexts
+  or retrying potentially executed requests.
+- Credential close joins custody disposal; Rust credential leases explicitly
+  release file locks even when another process inherited a descriptor.
+- Fresh application leases require current authorization and revocation coverage;
+  private renewal can recover authority while application use remains fenced.
+- Identical deployment reapplication and disable/re-enable preserve valid resource
+  evidence and retained data. Missing previously committed infrastructure fails
+  closed rather than silently recreating empty storage; resource destruction
+  remains an explicit authorized administrative action.
+- Passwordless protected administrators receive a fresh one-time setup URL on
+  each startup until a password is installed; restarts preserve installed
+  passwords and do not emit another setup URL.
+- Packaged CLI generation no longer depends on its producer checkout. Clean demo
+  builds, source-free Rust consumers, non-root read-only images, managed broker
+  shutdown, and real TLS deployments are exercised by acceptance checks.
+- Concurrent process-testkit startup waits for the broker's actual NATS greeting,
+  rather than treating an inherited reservation listener as a ready broker.
 - Exact grant approvals retain pending resource permissions while issuance uses
   only available permissions and keeps required-resource readiness retryable.
 - Correcting grant-draft expiry or permission errors allows review and saving
@@ -82,16 +130,37 @@ and this project adheres to
 
 ### Changed
 
-- Trellis NATS connections no longer present a client JWT in CONNECT. A client
-  authenticates with its session NKey signature and a connect token of wire
-  format `trellis.nats-connect-token.v2`, which carries the selected context
-  digest and the short-lived admission routing JWT. In operator mode a JWT-less
-  CONNECT is routed to the external Auth Callout through a server-generated,
-  non-expiring, server-only deny-all Auth-account `default_sentinel` that
-  confers no Trellis application authority; a CONNECT that supplies any other
-  client JWT is rejected, with no dual-protocol fallback. Clients keep the
-  routing JWT current for the next CONNECT independently of the policy already
-  admitted on the current socket.
+- This prerelease is a breaking authentication and persistence cutover. Retired
+  pre-OAuth bootstrap, browser-bind, proof-building, and context-refresh APIs are
+  removed without compatibility endpoints. Use fresh development/test databases
+  for the new schema; no automatic database or Operation-record migration is
+  provided, and existing installations are not deleted or rewritten.
+- Provisioned services and devices authenticate using their identity seed;
+  interactive applications use OAuth. NATS admission binds a fresh session NKey
+  to signed installation/account authority, and application messages carry
+  verified authorization-context references and proofs.
+- Standalone Live and Transfer use Trellis wire v1 independently of authored
+  application API majors. Live v1 supports concurrent application API majors
+  without cross-major routing or compatibility aliases.
+- Public Rust distribution consists of `trellis-rs`, `trellis-protocol`,
+  `trellis-models`, and `trellis-testkit`. Server/compiler implementation crates
+  remain private. Frozen built-in model bundles are independently versioned;
+  generated consumers share exact model types and can upgrade the SDK without
+  regenerating an unchanged model snapshot. Consumer builds do not require the
+  Trellis compiler or a repository checkout.
+- The Rust testkit owns production CLI/server and NATS processes rather than
+  embedding the runtime. It retains the broker through server restarts, verifies
+  cached release archives, and supports explicit offline executable inputs.
+- TypeScript native OAuth defaults to process-local custody without SQLite or a
+  credential directory. Retain `MemoryNativeOAuthCustody` for same-process
+  reconnects, or supply an application-owned custody adapter for persistent
+  login. Rust CLI file custody and browser IndexedDB custody are unchanged.
+- TypeScript tooling, tests, demos, and benchmark consumers use Node 24 and npm;
+  npm is the only JavaScript publication target.
+- Split runtime roles use authenticated resource-binding queries rather than
+  reading another role's database or signing secrets. Deployment configuration
+  separates application and OAuth listeners, installation identity, persistent
+  provider identity, and independent OAuth encryption custody.
 - Refreshing renewable Trellis authorization no longer restarts a healthy NATS
   connection. An identity-preserving refresh retains the new context in place
   and keeps the physical attachment; additional transport authority is adopted

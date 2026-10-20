@@ -2875,7 +2875,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-builtin-contracts"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "miette",
  "trellis-idl",
@@ -2883,10 +2883,11 @@ dependencies = [
 
 [[package]]
 name = "trellis-codegen-rust"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "prettyplease",
  "semver",
+ "serde",
  "serde_json",
  "syn 2.0.119",
  "thiserror",
@@ -2897,7 +2898,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-idl"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "logos",
@@ -2912,7 +2913,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-models"
-version = "0.101.0"
+version = "0.101.0-rc.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2921,7 +2922,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-protocol"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -2940,7 +2941,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-rs"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "async-nats",
  "base64 0.22.1",
@@ -2977,7 +2978,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-runtime-apis"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "futures-util",
  "serde",
@@ -2991,7 +2992,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-test-fixture"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "futures-util",
  "serde",
@@ -3003,7 +3004,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-test-fixture-live"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "async-nats",
  "futures-util",
@@ -3024,7 +3025,7 @@ dependencies = [
 
 [[package]]
 name = "trellis-testkit"
-version = "0.100.0"
+version = "0.100.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "flate2",
