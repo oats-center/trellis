@@ -382,6 +382,13 @@ mod tests {
             )
             .unwrap();
         }
+        let generated = root.join("ts/packages/trellis/internal_sdk/generated/package.json");
+        fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        fs::write(
+            &generated,
+            "{\n  \"name\": \"native-contract-client\",\n  \"version\": \"0.42.0\",\n  \"trellisGenerated\": true,\n  \"dependencies\": {\n    \"@oatscenter/trellis\": \"^0.100.0\"\n  }\n}\n",
+        )
+        .unwrap();
         prepare_release(
             &root,
             &ReleaseVersion {
@@ -390,6 +397,13 @@ mod tests {
             },
         )
         .expect("prepare release");
+        let client: serde_json::Value =
+            serde_json::from_slice(&fs::read(&generated).unwrap()).unwrap();
+        assert_eq!(client["version"], "0.42.0");
+        assert_eq!(
+            client["dependencies"]["@oatscenter/trellis"],
+            "^0.100.0-rc.1"
+        );
         for (project, name) in projects {
             let manifest = fs::read_to_string(root.join(project).join("trellis.toml"))
                 .expect("read IDL manifest")

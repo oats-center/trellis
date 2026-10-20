@@ -201,6 +201,15 @@ fn is_json_manifest(path: &Path) -> bool {
 }
 
 fn json_manifest_version(contents: &str) -> Option<String> {
+    // Native-IDL outputs retain their project's version independently of the SDK.
+    if serde_json::from_str::<serde_json::Value>(contents).is_ok_and(|manifest| {
+        manifest
+            .get("trellisGenerated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    }) {
+        return None;
+    }
     for line in contents.lines() {
         if !line.contains("\"version\"") {
             continue;

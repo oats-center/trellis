@@ -1236,7 +1236,7 @@ jobs:
       - name: Generate pins from the verified Check archives and stage the package
         run: node ts/tools/stage_testkit.ts dist/native dist/testkit-npm
       - name: Dry-run the staged npm publication input
-        run: npm publish --dry-run --access public ./dist/testkit-npm
+        run: npm publish --dry-run --access public --tag rc ./dist/testkit-npm
       - name: Test the installed staged package through public clients
         run: |
           mkdir -p dist/runtime

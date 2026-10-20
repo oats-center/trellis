@@ -194,6 +194,15 @@ and owned by the publisher;
 after publication, repeat the fixture smoke against the real crates.io versions
 with no patch entries.
 
+Crates.io trusted publishing requires an initial token-authenticated upload for
+each new crate name. To register a new name before publishing its actual release,
+use local Cargo credentials to publish a separate `0.0.0` bootstrap package with
+no public API or dependencies. Do not relabel the actual model bundle or SDK as
+this bootstrap package. Then configure the crate's trusted publisher for
+`oats-center/trellis`, workflow `release.yml`, with no environment. The ordinary
+release workflow remains OIDC-only and publishes the accepted release package at
+its real version after Check passes.
+
 ### Database schema baselines
 
 Before the first release, each independently migrated schema has exactly one
