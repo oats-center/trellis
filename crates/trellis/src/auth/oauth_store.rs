@@ -60,10 +60,20 @@ struct Record {
     trust: Option<StoredTrust>,
 }
 
+struct CustodyLock(fs::File);
+
+impl Drop for CustodyLock {
+    fn drop(&mut self) {
+        // Release lease ownership even when a concurrent pre-exec child still
+        // holds the same open file description. Closing this FD alone cannot.
+        let _ = self.0.unlock();
+    }
+}
+
 /// Holds the cross-process family lock through read, exchange and durable commit.
 /// Private key bytes have no public getter. Drop releases the operating-system lock.
 pub struct NativeCredentialLease {
-    _lock: fs::File,
+    _lock: CustodyLock,
     path: PathBuf,
     record: Record,
     signing_key: SigningKey,
@@ -243,6 +253,7 @@ impl NativeCredentialLease {
             ));
             let lock = private_file(&directory.join(format!("{identity}.lock")), true)?;
             lock.lock()?;
+            let lock = CustodyLock(lock);
             let path = directory.join(format!("{identity}.json"));
             let record = match private_file(&path, false) {
                 Ok(file) => {

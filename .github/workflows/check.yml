@@ -993,6 +993,7 @@ jobs:
           tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C "$bundle/native"
           cp -R integration/fixtures/testkit/package-consumer \
              integration/fixtures/testkit/tests integration/fixtures/testkit/crates "$bundle/consumer/"
+          cp -R integration/fixtures/compiler-portable "$bundle/consumer/compiler-project"
           bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
           cp scripts/verify-rust-test-package.sh "$bundle/"
 

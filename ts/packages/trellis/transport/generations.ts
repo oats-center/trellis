@@ -379,6 +379,8 @@ export type TransportGenerationManagerOptions = {
    * reference equality to detect a concurrent promotion across awaits.
    */
   desiredPolicy(): TransportAuthorizationV1 | undefined;
+  /** Fresh application leases require current own authority and mirror coverage. */
+  applicationUsable?(): boolean;
   /** Capture immutable CONNECT material for the newest desired policy. */
   prepare(): Promise<TransportGenerationPrepared | undefined>;
   /** Open one physical NATS connection with the frozen CONNECT bundle. */
@@ -1121,6 +1123,10 @@ export class TransportGenerationManager implements TrellisTransportProvider {
       this.#throwIfClosed();
       this.#assertNotAborted(opts);
       const changeVersion = this.#changeVersion;
+      if (this.#options.applicationUsable?.() === false) {
+        await this.#waitForChange(changeVersion, opts);
+        continue;
+      }
       if (!this.#initialized) {
         this.#requestAdoption("authorization_growth");
         await this.#waitForChange(changeVersion, opts);
@@ -1135,6 +1141,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         this.#throwIfClosed();
         if (
           this.#options.desiredPolicy() === desired &&
+          this.#options.applicationUsable?.() !== false &&
           generation.state !== "closed" &&
           generation.ready &&
           !generation.nc.isClosed() &&
@@ -1182,6 +1189,7 @@ export class TransportGenerationManager implements TrellisTransportProvider {
         if (this.#currentGeneration() !== current) continue;
         if (
           safe &&
+          this.#options.applicationUsable?.() !== false &&
           current.state !== "closed" &&
           current.ready &&
           !current.nc.isClosed() &&

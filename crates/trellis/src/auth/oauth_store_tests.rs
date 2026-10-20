@@ -32,9 +32,13 @@ fn native_custody_preserves_key_possession_and_recovers_instead_of_replaying_aft
         .retain_rotated_token("unsolicited-successor".into())
         .is_err());
     assert_eq!(first.begin_rotation().unwrap(), "rotating-one");
+    // A pre-exec child can inherit this open file description. Retain a real
+    // duplicate so release does not depend on concurrent process scheduling.
+    let inherited = first._lock.0.try_clone().unwrap();
     drop(first);
     competing.try_lock().unwrap();
     competing.unlock().unwrap();
+    drop(inherited);
     let mut reopened = NativeCredentialLease::lock(&root, scope.clone()).unwrap();
     let payload = b"new runtime proof signed by the persisted native DPoP identity";
     let signature = Signature::from_slice(&reopened.sign_dpop(payload)).unwrap();

@@ -8,7 +8,7 @@ import { deadline } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { Result } from "@oatscenter/trellis";
+import { Result, TransportError } from "@oatscenter/trellis";
 import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
   admittedConnections,
@@ -203,7 +203,7 @@ for (const scenario of ["outage", "expiry", "cancelled-renewal"] as const) {
                   service.connection.availability().resources.extras === false
                 );
               },
-              { continuous: spansExpiry },
+              { continuous: true },
             );
             await deadline(hold.held, 30_000);
           }
@@ -265,6 +265,30 @@ for (const scenario of ["outage", "expiry", "cancelled-renewal"] as const) {
             ?.outboundContexts.filter(
               (item) => item.subject === kvSubject,
             ).length;
+          if (!spansExpiry) {
+            // Observe a complete acquisition budget while every replacement
+            // reply stays held, rather than racing a single broker read against
+            // the asynchronous lease checks before the write reaches the wire.
+            const unavailable = await records.put("own-recovery", {
+              value: "must not publish without coverage",
+            });
+            assert(unavailable.isErr());
+            assert(unavailable.error instanceof TransportError);
+            assert.equal(unavailable.error.code, "trellis.transport.timeout");
+            assert.equal(
+              gate
+                .connection(proxy.id)
+                ?.outboundContexts.filter((item) => item.subject === kvSubject)
+                .length,
+              countBefore,
+            );
+            const retained = await manager.streams.getMessage(stream, {
+              last_by_subj: kvSubject,
+            });
+            assert(retained);
+            assert.equal(retained.seq, baseline.seq);
+            assert.deepEqual(retained.data, baseline.data);
+          }
           let outcome: "success" | "error" | undefined;
           write = records
             .put("own-recovery", { value: "recovered" })

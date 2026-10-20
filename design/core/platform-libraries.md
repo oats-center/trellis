@@ -33,9 +33,8 @@ connection walkthroughs, and exact public signatures belong in:
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
 | `@oatscenter/trellis`              | Canonical core Trellis runtime package: client/device helpers, Result helpers, transfers, and generated-contract support | Frontend apps, services, CLI tools  |
 | `@oatscenter/trellis/service`      | Service-side runtime facade, extracted handler types, and service-only helpers                                           | Backend services                    |
-| `@oatscenter/trellis/service`      | Shared Node-compatible native service runtime                                                                            | Node 24 services                    |
-| `@oatscenter/trellis/auth`         | Full auth helper and auth protocol surface, including browser bind helpers                                               | Apps, services, docs, tests         |
-| `@oatscenter/trellis/auth/browser` | Browser-only auth and portal-flow helper facade                                                                          | Browser apps, custom portals        |
+| `@oatscenter/trellis/auth`         | Shared authorization proofs, verification, and browser OAuth helpers                                                     | Apps, services, docs, tests         |
+| `@oatscenter/trellis/auth/browser` | Browser OAuth authorization, credential custody, and recovery helpers                                                    | Browser apps                        |
 | `@oatscenter/trellis/participant`  | Participant metadata and canonical runtime types                                                                         | Generated code and tooling          |
 | Configured local generated package | One ordinary ESM package with `apis` and `participants` namespaces                                                       | Apps and services that consume APIs |
 | `@oatscenter/trellis/telemetry`    | Specialized Trellis telemetry facade for tracing, propagation, and metrics                                               | Runtime libraries and services      |
@@ -106,6 +105,8 @@ and Rust-model-ABI bindings, checked against the compiled provider. Generated
 crates depend directly on their model bundle; they do not borrow the SDK's
 current snapshot. Old bundles can coexist with the SDK's newer models. Shared
 model metadata is not authority evidence and does not change runtime authorization.
+The CLI embeds its selected model bindings at build time; generation does not
+read the compiler producer's checkout at runtime.
 
 SDK-only release preparation preserves protocol, native-contract, and model
 versions. `release prepare` accepts explicit `--protocol-version`,
@@ -135,14 +136,17 @@ validation.
 
 Canonical TypeScript entrypoint for contract-driven RPC, operation, event, and
 transfer-grant-driven file communication. The root package is browser-safe, does
-not eagerly load generated SDKs, exports the normal kind-specific contract
-builders plus health helpers, and keeps host-specific service helpers on
+not eagerly load generated SDKs, consumes generated native-IDL descriptors,
+and keeps host-specific service helpers on
 `@oatscenter/trellis/service*` subpaths.
 
 Rules:
 
-- browser auth uses a session key stored in IndexedDB plus a bind flow;
-  SvelteKit apps may layer on `@oatscenter/trellis-svelte`
+- browser auth uses `BrowserOAuthClient` for authorization-code/PKCE login and
+  `BrowserSessionStore` for IndexedDB custody of non-extractable DPoP keys,
+  refresh credentials, and authenticated issuer trust. Runtime/NATS keys are
+  ephemeral and owned by the connection, not the durable login. SvelteKit apps
+  may layer on `@oatscenter/trellis-svelte`
 - app, agent, device, service, and CLI code should communicate through
   contract-derived RPC, operation, event, live, state, and transfer facades
   rather than raw NATS subjects
@@ -221,12 +225,9 @@ Rules:
 - app-facing auth helpers should not require raw URL plumbing or placeholder
   positional arguments from app code; they should expose options-shaped APIs
   with sensible redirect defaults
-- app-facing auth helpers should accept opaque portal context so apps and custom
-  portals can coordinate runtime UX without hard-coding portal-specific
-  parameters
-- browser clients should route revoked or missing sessions (`session_not_found`)
-  through the auth-required path so Svelte apps can redirect to their login
-  route and preserve the current return URL
+- browser clients classify OAuth and connection recovery with
+  `classifyBrowserAuthError`; recoverable consent or login requirements return
+  through the app's auth-required path while preserving the current return URL
 - dynamic auth-instance selection remains a valid advanced case, but the default
   public browser-app API should optimize for the fixed-instance path rather than
   forcing every app through explicit auth-state construction
@@ -238,9 +239,12 @@ Rules:
 
 ## `@oatscenter/trellis/auth`
 
-Provides the full auth helper, schema, protocol, and browser bind surface. The
-browser-only portal/login helper facade also lives at
-`@oatscenter/trellis/auth/browser`. See:
+Provides shared authorization-proof and verification helpers plus browser OAuth
+exports. `@oatscenter/trellis/auth/browser` exposes `BrowserOAuthClient`,
+`BrowserSessionStore`, and browser recovery classification without native host
+custody. Node's `NativeOAuthClient` and application-provided custody belong on
+`@oatscenter/trellis/native`; provisioned services use `TrellisService.connect`
+with their identity seed rather than interactive login. See:
 
 - [../auth/trellis-auth.md](./../auth/trellis-auth.md)
 - [../auth/auth-api.md](./../auth/auth-api.md)

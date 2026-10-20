@@ -405,12 +405,22 @@ async fn start_once(
                 .check_startup()?;
             let mut ready = true;
             for port in [ports.nats, ports.monitor, ports.websocket] {
-                ready &= tokio::time::timeout(
-                    Duration::from_millis(100),
-                    tokio::net::TcpStream::connect(("127.0.0.1", port)),
-                )
+                ready &= tokio::time::timeout(Duration::from_millis(100), async {
+                    let socket = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+                    if port == ports.nats {
+                        // Another concurrent pre-exec child can still hold a
+                        // reservation listener. TCP connect alone therefore
+                        // cannot prove that the production broker is ready.
+                        let mut info = [0; 5];
+                        Ok::<_, std::io::Error>(
+                            socket.peek(&mut info).await? == info.len() && info == *b"INFO ",
+                        )
+                    } else {
+                        Ok(true)
+                    }
+                })
                 .await
-                .is_ok_and(|result| result.is_ok());
+                .is_ok_and(|result| result.unwrap_or(false));
             }
             if ready {
                 break;

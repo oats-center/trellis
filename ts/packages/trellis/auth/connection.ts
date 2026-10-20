@@ -393,6 +393,14 @@ export async function connectAdmitted(options: {
     kind: options.kind,
     nowSeconds: options.auth.currentIat,
     desiredPolicy: () => desired,
+    applicationUsable: () => {
+      try {
+        owner.own().release();
+        return true;
+      } catch {
+        return false;
+      }
+    },
     prepare,
     readAdmission,
     open: async (connect) => {
@@ -500,12 +508,13 @@ export async function connectAdmitted(options: {
       // A reduction can withdraw the attachment while the existing admission
       // pipeline is preparing its replacement. Explicit renewal must join that
       // bounded recovery rather than treating an unpublished interval as final.
-      const available = await manager.acquireCurrent({
-        deadlineMs: Date.now() + (options.timeout ?? 30_000),
-        signal,
-      });
-      available.release();
-      const lease = await manager.acquirePublishedAttachment();
+      const deadlineMs = Date.now() + (options.timeout ?? 30_000);
+      let lease = await manager.acquirePublishedAttachment();
+      if (!lease) {
+        const available = await manager.acquireCurrent({ deadlineMs, signal });
+        available.release();
+        lease = await manager.acquirePublishedAttachment();
+      }
       if (!lease)
         throw new TransportError({
           code: "trellis.transport.unavailable",

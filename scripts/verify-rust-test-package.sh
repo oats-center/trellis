@@ -230,6 +230,19 @@ for package in data["packages"]:
 print("dependency audit passed for", len(data["packages"]), "packages")
 PY
 
+# Generate and execute a fresh Rust consumer with the distributed CLI. This job
+# has no source checkout, including the compiler producer's built-in IDL tree.
+if [[ "$mode" == full ]]; then
+  cp -R "$consumer_src/compiler-project" "$work/compiler-project"
+  (
+    cd "$work/compiler-project"
+    export TRELLIS_CACHE="$work/compiler-cache"
+    "$TRELLIS_TEST_CLI_BIN" update
+    "$TRELLIS_TEST_CLI_BIN" generate
+    cargo run --config "$config"
+  )
+fi
+
 # 6. Run the consumer's live target under the frozen lockfile.
 #
 # Serialize independent cases; the isolation case still starts eight concurrent runtimes.

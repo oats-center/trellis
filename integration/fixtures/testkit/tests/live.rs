@@ -577,10 +577,10 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
     use tokio::sync::Barrier;
 
     let barrier = Arc::new(Barrier::new(8));
-    let mut handles = Vec::new();
+    let mut handles = tokio::task::JoinSet::new();
     for index in 0..8u32 {
         let barrier = Arc::clone(&barrier);
-        handles.push(tokio::spawn(async move {
+        handles.spawn(async move {
             let mut runtime = TrellisTestRuntime::builder()
                 .start()
                 .await
@@ -635,7 +635,7 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
             );
             runtime.shutdown().await.expect("shutdown runtime");
             endpoints
-        }));
+        });
     }
 
     let mut http = std::collections::HashSet::new();
@@ -643,11 +643,11 @@ async fn t07_eight_concurrent_runtimes_are_isolated() {
     let mut websocket = std::collections::HashSet::new();
     let mut monitor = std::collections::HashSet::new();
     let mut workdirs = std::collections::HashSet::new();
-    for handle in handles {
-        let (h, n, w, m, dir) = tokio::time::timeout(Duration::from_secs(300), handle)
-            .await
-            .expect("runtime task timed out")
-            .expect("join runtime task");
+    while let Some(result) = tokio::time::timeout(Duration::from_secs(300), handles.join_next())
+        .await
+        .expect("runtime task timed out")
+    {
+        let (h, n, w, m, dir) = result.expect("join runtime task");
         http.insert(h);
         nats.insert(n);
         websocket.insert(w);

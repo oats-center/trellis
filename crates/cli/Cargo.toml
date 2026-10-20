@@ -27,7 +27,6 @@ tokio.workspace = true
 trellis-rs = { path = "../trellis", version = "0.100.0", optional = true, features = ["telemetry-otlp"] }
 trellis-runtime-apis = { path = "../runtime-apis", optional = true }
 trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0" }
-trellis-builtin-contracts = { path = "../builtin-contracts" }
 trellis-codegen-ts = { path = "../codegen-ts", version = "0.100.0" }
 trellis-idl = { path = "../idl", version = "0.100.0" }
 trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.100.0" }
@@ -55,6 +54,11 @@ tempfile.workspace = true
 self_update = { workspace = true, optional = true }
 time.workspace = true
 ulid.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true
+trellis-builtin-contracts = { path = "../builtin-contracts" }
+trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0" }
 
 [dev-dependencies]
 axum.workspace = true

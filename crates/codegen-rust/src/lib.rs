@@ -49,9 +49,9 @@ struct Source {
 }
 
 /// A precompiled package whose nominal models can be reused by generated code.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RustModelBinding {
-    package: PackageId,
+    package: String,
     version: semver::Version,
     digest: String,
     module: String,
@@ -89,7 +89,7 @@ impl RustModelBinding {
             CodegenRustError::Semantic(format!("invalid model package version: {error}"))
         })?;
         Ok(Self {
-            package: graph.root().clone(),
+            package: graph.root().as_str().into(),
             version: graph.root_package().version().clone(),
             digest: graph.root_digest().into(),
             module: format!(
@@ -103,7 +103,7 @@ impl RustModelBinding {
     }
 
     fn matches(&self, graph: &PackageGraph, package: &trellis_idl::SemanticPackage) -> bool {
-        self.package == *package.identity()
+        self.package == package.identity().as_str()
             && self.version == *package.version()
             && graph.digest(package.identity()) == Some(self.digest.as_str())
     }
@@ -2399,6 +2399,11 @@ mod tests {
         )
         .unwrap();
         let binding = RustModelBinding::from_package_manifest(&graph, &model_manifest).unwrap();
+        // The CLI embeds this build-time binding instead of reading its
+        // producer's source tree. Consume the same representation before
+        // compiling the two real generated clients against the shared bundle.
+        let binding: RustModelBinding =
+            serde_json::from_slice(&serde_json::to_vec(&binding).unwrap()).unwrap();
         for name in ["client-a", "client-b"] {
             generate_rust_package(
                 &graph,
