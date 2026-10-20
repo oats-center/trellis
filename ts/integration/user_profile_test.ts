@@ -7,6 +7,133 @@ import { apps } from "../../integration/fixtures/runtime/packages/runtime-trelli
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
 test(
+  "administrative profile CAS rolls back lifecycle edits without overwriting owner changes",
+  { timeout: 180_000 },
+  async () => {
+    await withTrellisRuntime(async (runtime) => {
+      const owner = await runtime.createUser({ name: "Original profile" });
+      await runtime.grantUserCapabilities({
+        user: owner,
+        capabilityIds: apps.DirectoryCaller.request.requiredCapabilities,
+      });
+      const login = await runtime.registerClient({
+        name: "Profile CAS owner",
+        user: owner,
+        contract: apps.DirectoryCaller.request,
+      });
+      const client = await connectNativeClient({
+        ...login,
+        request: apps.DirectoryCaller.request,
+      }).orThrow();
+      try {
+        const userId = codecs.ulid.decode(owner.principalId);
+        const loaded = (await runtime.callAdminRpc("authUsersGet", { userId }))
+          .user;
+        assert(loaded.account);
+        const edited = (
+          await client
+            .usersProfileUpdate({
+              displayName: "Owner's newer profile",
+              email: "owner@example.com",
+              expectedRevision: loaded.account.profileRevision,
+              idempotencyKey: ulid(),
+            })
+            .orThrow()
+        ).user;
+        await assert.rejects(
+          runtime.callAdminRpc("authUsersUpdate", {
+            userId,
+            displayName: loaded.displayName,
+            email: "stale-admin@example.com",
+            enabled: false,
+            expectedRevision: loaded.account.principal.revision,
+            expectedProfileRevision: loaded.account.profileRevision,
+            idempotencyKey: ulid(),
+          }),
+        );
+        const after = (await runtime.callAdminRpc("authUsersGet", { userId }))
+          .user;
+        assert(after.account);
+        assert.equal(after.account.principal.enabled, true);
+        assert.equal(after.displayName, edited.displayName);
+        assert.equal(after.email, edited.email);
+        assert.equal(
+          (await client.usersResolve({}).orThrow()).user.displayName,
+          edited.displayName,
+        );
+        await assert.rejects(
+          runtime.callAdminRpc("authUsersUpdate", {
+            userId,
+            displayName: "Stale profile-only edit",
+            enabled: true,
+            expectedRevision: loaded.account.principal.revision,
+            expectedProfileRevision: loaded.account.profileRevision,
+            idempotencyKey: ulid(),
+          }),
+        );
+        const lifecycleInput = {
+          userId,
+          enabled: false,
+          expectedRevision: loaded.account.principal.revision,
+          idempotencyKey: ulid(),
+        };
+        const lifecycle = (
+          await runtime.callAdminRpc("authUsersUpdate", lifecycleInput)
+        ).user;
+        assert(lifecycle.account);
+        assert.equal(lifecycle.account.principal.enabled, false);
+        assert.equal(lifecycle.displayName, edited.displayName);
+        assert.equal(lifecycle.email, edited.email);
+        assert.deepEqual(
+          (await runtime.callAdminRpc("authUsersUpdate", lifecycleInput)).user,
+          lifecycle,
+        );
+        const current = (await runtime.callAdminRpc("authUsersGet", { userId }))
+          .user;
+        assert(current.account);
+        const freshInput = {
+          userId,
+          enabled: true,
+          displayName: "Fresh administrator edit",
+          email: "fresh-admin@example.com",
+          expectedRevision: current.account.principal.revision,
+          expectedProfileRevision: current.account.profileRevision,
+          idempotencyKey: ulid(),
+        };
+        await runtime.callAdminRpc("authUsersUpdate", freshInput);
+        const fresh = (await runtime.callAdminRpc("authUsersGet", { userId }))
+          .user;
+        assert(fresh.account);
+        assert.equal(fresh.displayName, freshInput.displayName);
+        assert.equal(fresh.email, freshInput.email);
+        assert.equal(fresh.account.principal.enabled, true);
+        for (const expectedProfileRevision of [undefined, 0n]) {
+          await assert.rejects(
+            runtime.callAdminRpc("authUsersUpdate", {
+              userId,
+              enabled: false,
+              displayName: "Missing or zero profile CAS",
+              expectedRevision: fresh.account.principal.revision,
+              ...(expectedProfileRevision === undefined
+                ? {}
+                : { expectedProfileRevision }),
+              idempotencyKey: ulid(),
+            }),
+          );
+        }
+        const unchanged = (
+          await runtime.callAdminRpc("authUsersGet", { userId })
+        ).user;
+        assert.equal(unchanged.displayName, fresh.displayName);
+        assert.equal(unchanged.account?.principal.enabled, true);
+      } finally {
+        await client.connection.close();
+      }
+    });
+  },
+);
+
+test(
   "ordinary owners update only their own durable profile with revision and replay protection",
   { timeout: 180_000 },
   async () => {

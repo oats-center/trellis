@@ -1371,6 +1371,9 @@ pub trait ParticipantDescriptor {
     /// APIs completely implemented by this participant.
     const IMPLEMENTED_API_IDS: &'static [&'static str] = &[];
 
+    /// APIs referenced by this participant's required or optional consumption selections.
+    const CONSUMED_API_IDS: &'static [&'static str] = &[];
+
     /// `event:<Name>` descriptor names this participant explicitly declares as
     /// subscribe needs. A declared durable consumer is not included: consumer
     /// `Consume` and event `Subscribe` are independent authorities.

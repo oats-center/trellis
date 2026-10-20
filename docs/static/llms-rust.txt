@@ -655,8 +655,9 @@ unusable. A retired catalog signer does not invalidate an immutable catalog
 referenced by current signed authority. Explicit native authority refresh uses
 the scheduled renewal worker and awaits authenticated publication and coverage.
 
-The `accountRead` capability covers account resolution, reading your current
-session and signing out of the current login and its application sessions.
+The `accountRead` capability reveals your own profile (names, email and verification
+status, and photo), account details and current session, and permits signing out
+of the current login and its application sessions. It does not grant directory access.
 `Sessions.Me` and `Sessions.Logout` require normal selection and consent.
 
 `Users.Resolve` is self-only and includes the caller's `account`. Select and
@@ -669,6 +670,10 @@ profiles with immutable `principalId`, names, available email and photos, but no
 `account`. Delegated and currently eligible `principals.manage` additionally
 permits username search, inactive-user lookup and account details. Directory
 identity is not an application-object authorization grant.
+
+Administrative `users_update` uses lifecycle `expected_revision`. Omit unchanged
+profile fields for lifecycle-only saves; intentional profile edits additionally
+require `expected_profile_revision`. Both revisions are checked atomically.
 
 Native OAuth renewal leases the current maintenance transport after HTTP refresh,
 and retains it through signer lookup and verified authority promotion. Replacing

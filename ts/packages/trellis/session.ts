@@ -3948,9 +3948,7 @@ export class Trellis<
       done: Promise<void>;
     } => {
       const openSub = nc.subscribe(subject, {
-        queue: routeQueueGroup(
-          `${descriptor.permission.apiId}@${descriptor.permission.apiVersion}`,
-        ),
+        queue: routeQueueGroup(subject),
       });
       const openDone = Promise.withResolvers<void>();
       const openTask = AsyncResult.try(async () => {
@@ -4339,9 +4337,7 @@ export class Trellis<
     }
 
     const sub = this.#nats.subscribe(subject, {
-      queue: routeQueueGroup(
-        `${ctx.permission.apiId}@${ctx.permission.apiVersion}`,
-      ),
+      queue: routeQueueGroup(subject),
     });
     return this.#runRpcIntake(sub, registration);
   }
@@ -4751,9 +4747,7 @@ export class Trellis<
     },
   ): { drain: () => Promise<void>; done: Promise<void> } {
     const sub = ingress.nc.subscribe(registration.subject, {
-      queue: routeQueueGroup(
-        `${registration.ctx.permission.apiId}@${registration.ctx.permission.apiVersion}`,
-      ),
+      queue: routeQueueGroup(registration.subject),
     });
     const completion = Promise.withResolvers<void>();
     const intake = this.#runRpcIntake(sub, registration, ingress.lease);

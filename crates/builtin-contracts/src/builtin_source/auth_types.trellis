@@ -519,13 +519,14 @@ model AuthUserCreateRequest {
 }
 model AuthUserUpdateRequest {
   userId: ulid;
-  displayName: AuthName;
+  displayName?: AuthName;
   enabled: bool;
   givenName?: AuthName;
   familyName?: AuthName;
   email?: string;
   clearEmail?: bool;
   expectedRevision: AuthRevision;
+  expectedProfileRevision?: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
 model AuthUserProfileUpdateRequest {

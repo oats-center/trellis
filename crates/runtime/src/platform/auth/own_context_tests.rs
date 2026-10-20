@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn oversized_provider_authority_is_rejected_during_admission() {
+    let f = fixture();
+    let mut source = String::from("model Document { id: string; }\n");
+    for index in 0..200 {
+        source.push_str(&format!(
+            r#"
+api a{index:06}@v1 {{
+ title "Documents";
+ description "Document management.";
+ rpc Get {{ input Document; output Document; }}
+ capabilities {{
+  capability read {{ title "Read"; description "Read documents."; consequence "Sees contents."; consent_revision 1; allows {{ rpc Get; }} }}
+ }}
+}}
+"#
+        ));
+    }
+    source.push_str("service LargeProvider {\n");
+    for index in 0..200 {
+        source.push_str(&format!("implements a{index:06};\n"));
+    }
+    source.push('}');
+    let proposed = evidence(&source);
+    let graph = trellis_idl::compile_evidence(proposed.clone()).unwrap();
+    let mut expected_api_generations = BTreeMap::new();
+    for api in graph.root_package().apis().keys() {
+        let review = f
+            .store
+            .review_api(&f.admin, proposed.clone(), &api.to_string(), NOW)
+            .unwrap();
+        let acceptance = ApiAcceptance {
+            review_id: review.review_id,
+            reviewed_digest: review.definition_digest,
+            force: false,
+            acknowledge_breakage: false,
+            confirm_consent_meanings: false,
+            materially_changed: review.consent_changes,
+            policy_edits: vec![],
+        };
+        let accepted = f
+            .store
+            .accept_api(&mutation(&f.admin, &acceptance), &acceptance, NOW)
+            .unwrap();
+        expected_api_generations.insert(accepted.api_id, accepted.generation.get());
+    }
+    let identity = SigningKey::from_bytes(&[11; 32]);
+    let provisioning = DeploymentProvisioning {
+        evidence: proposed,
+        participant_id: graph
+            .root_package()
+            .participants()
+            .keys()
+            .next()
+            .unwrap()
+            .to_string(),
+        expected_api_generations,
+        identity_public_key: URL_SAFE_NO_PAD.encode(identity.verifying_key().as_bytes()),
+        resource_commitments: serde_json::json!({}),
+        expires_at: None,
+    };
+    let provisioned = f
+        .store
+        .provision_deployment(&mutation(&f.admin, &provisioning), &provisioning, NOW)
+        .unwrap();
+    let ephemeral = nkeys::KeyPair::new_user();
+    let credential = trellis_protocol::sign_provisioned_admission(
+        trellis_protocol::ProvisionedAdmission {
+            format: trellis_protocol::PROVISIONED_ADMISSION_FORMAT_V1.into(),
+            trellis_instance_id: f.store.settings.instance_id.clone(),
+            audience_nats_account: f.store.settings.account.clone(),
+            credential_id: provisioned.identity_key_id,
+            runtime_id: URL_SAFE_NO_PAD.encode([17; 16]),
+            ephemeral_nkey: ephemeral.public_key(),
+            issued_at: NOW,
+            expires_at: NOW + 60,
+        },
+        &identity,
+    )
+    .unwrap();
+    let admitted = f.store.admit_connection(
+        &serde_json::to_vec(&credential).unwrap(),
+        &ephemeral.public_key(),
+        &ephemeral.public_key(),
+        "broker",
+        1,
+        NOW,
+    );
+    assert!(
+        matches!(
+            &admitted,
+            Err(AuthError::Protocol(
+                trellis_protocol::ProtocolError::Authorization {
+                    code: trellis_protocol::AuthorizationErrorCode::ContextTooLarge,
+                    ..
+                }
+            ))
+        ),
+        "oversized authority must fail at admission, not first-context retrieval: {admitted:?}"
+    );
+}
+
+#[test]
 fn overlapping_callout_attachments_resolve_only_the_signed_exact_socket() {
     use trellis_protocol::{
         admission_get_subject, sign_admission_get, verify_admission_context, AdmissionGet,

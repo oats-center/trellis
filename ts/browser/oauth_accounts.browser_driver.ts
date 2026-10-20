@@ -100,7 +100,9 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
       .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
       .waitFor();
     await page
-      .getByRole("checkbox", { name: /Read your account and sign out/ })
+      .getByRole("checkbox", {
+        name: /Read your profile and account, and sign out/,
+      })
       .check();
     await page.getByRole("button", { name: "Authorize application" }).click();
     await page.waitForURL(

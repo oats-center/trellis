@@ -119,7 +119,8 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         clear_email: None,
         user_id: created.user.principal_id,
         expected_revision: AuthRevision(1.into()),
-        display_name: "Alice Updated".to_string().into(),
+        display_name: Some("Alice Updated".to_string().into()),
+        expected_profile_revision: Some(created.user.account.as_ref().unwrap().profile_revision),
         enabled: true,
         idempotency_key: id().into(),
         extra: Default::default(),
@@ -132,7 +133,7 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         email: None,
         clear_email: None,
         enabled: false,
-        display_name: "Stale write".to_string().into(),
+        display_name: Some("Stale write".to_string().into()),
         idempotency_key: id().into(),
         ..update
     };
@@ -153,7 +154,8 @@ fn created_account_authenticates_and_profile_cas_preserves_protected_admin() {
         clear_email: None,
         user_id: admin.parse().unwrap(),
         expected_revision: AuthRevision(1.into()),
-        display_name: "Disabled administrator".to_string().into(),
+        display_name: None,
+        expected_profile_revision: None,
         enabled: false,
         idempotency_key: id().into(),
         extra: Default::default(),

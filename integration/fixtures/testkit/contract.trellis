@@ -35,6 +35,7 @@ api echo@v1 {
 }
 
 service Provider { implements echo; }
+service Consumer { use echo { required capability invoke; capability optionalSilent; } }
 service JobsProvider {
   job work { title "Work"; description "Private lifecycle recovery acceptance"; payload Value; result Value; }
 }

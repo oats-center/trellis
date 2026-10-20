@@ -47,9 +47,9 @@ export function liveControlSubject(
     : `${ownerSubject}.${subjectToken(liveId)}`;
 }
 
-/** Stable request queue shared by every provider of one logical API. Owner-directed controls pass their owner subject. */
-export function routeQueueGroup(apiOrOwnerSubject: string): string {
-  return `trellis.${sha256Base64urlSync(apiOrOwnerSubject)}`;
+/** Stable queue shared by providers of the exact subscribed route, including owner-directed framework controls. */
+export function routeQueueGroup(subject: string): string {
+  return `trellis.${sha256Base64urlSync(subject)}`;
 }
 
 export type Schema<T> = {

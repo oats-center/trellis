@@ -165,13 +165,13 @@ row.
 
 ### User Management
 
-`Auth.Users.Update` updates profile fields and account state with
-`expectedVersion`. Optional `username` renames an existing local login: the
-credential and local identity subject change atomically, while the principal ID
-and password remain unchanged. Usernames are normalized, uniqueness is enforced,
-and a conflicting username commits none of the accompanying profile changes.
-Accounts without a local login establish one through an account flow, not a
-profile update.
+`Auth.Users.Update` checks account lifecycle `expectedRevision`. Profile fields
+are optional: a lifecycle-only update leaves the profile untouched. An intentional
+profile edit must also supply `expectedProfileRevision`; its independent CAS is
+checked in the same transaction, so a stale combined update changes neither the
+account lifecycle nor its profile. Owner edits continue through
+`Auth.Users.Profile.Update` with the self account's profile revision. Creation
+does not provide a zero-revision bypass for updating existing profiles.
 
 `Auth.Users.PasswordReset.Create` accepts a target `userId` and returns a
 five-minute, one-use token. Open `/account/reset?token=...` on the isolated OAuth

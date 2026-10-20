@@ -167,14 +167,18 @@ let _ = task.await;
 # }
 ```
 
-Add `trellis-testkit` as a development dependency. The bare builder links and
-runs the real production runtime and chooses its loopback ports automatically;
-no `trellis` or `trellis-server` executable, source checkout, or private patches
-are required. Its implementation dependencies are distributed through Cargo,
-not supported APIs for services to import directly.
+Add `trellis-testkit` as a development dependency. The bare builder acquires
+verified exact-version `trellis` and `trellis-server` executables and runs
+production processes, choosing loopback ports automatically. It does not link
+the server or compiler into downstream tests. Source CI supplies both executables
+through `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`; no private Cargo
+patches are required by published consumers. Service registration reviews
+implemented and consumed APIs before deployment creation, including optional
+consumption, so consumers can be registered before their providers.
 
-NATS remains a real child process. The default uses the verified pinned download
-(first use requires network). Its verified executable/archive cache is shared
+NATS is a separate real child process and stays alive across a server restart.
+The default uses verified pinned downloads (first use requires network).
+The verified native executable/archive cache is shared
 (`TRELLIS_CACHE_DIR`, otherwise the platform cache), so later runtimes can boot
 offline. Credentials, broker state, databases, PID files, and logs remain private
 to each sandbox. For a prebuilt broker, set `TRELLIS_TEST_NATS_BIN`

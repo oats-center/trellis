@@ -712,10 +712,10 @@ api auth@v1 {
       allows { subscribe event Connections.Opened; subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event AuthorizationSessions.Retired; subscribe event Issuers.Rotated; subscribe event Issuers.Revoked; }
     }
     capability accountRead {
-      consent_revision 2;
-      title "Read your account and sign out";
-      description "Read your account and current session, or end your current login.";
-      consequence "Reveals your username and display name, and may end your current login and its application sessions.";
+      consent_revision 3;
+      title "Read your profile and account, and sign out";
+      description "Read your own profile, account details and current session, or end your current login.";
+      consequence "Reveals your username, display name, given and family names, email address and verification status, photo, account details and current session. May end your current login and its application sessions.";
       allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; }
     }
     capability accountProfileWrite {

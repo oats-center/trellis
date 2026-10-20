@@ -76,8 +76,9 @@ that provenance in the existing journal and resolves original bytes and timestam
 through authenticated, resource-scoped Events inspection, including after source
 expiry. Publisher headers and replay publication time never replace it.
 
-The `accountRead` capability covers account resolution, reading your current
-session and signing out of the current login and its application sessions.
+The `accountRead` capability reveals your own profile (names, email and verification
+status, and photo), account details and current session, and permits signing out
+of the current login and its application sessions. It does not grant directory access.
 `Sessions.Me` and `Sessions.Logout` require normal selection and consent.
 
 Rejected cross-user Device Code reauthorization preserves existing credentials.
@@ -551,11 +552,10 @@ string in `1..=9007199254740991`. `expiresAt` accepts `null`, or a JSON integer
 or decimal string in `0..=9007199254740991`. The CLI normalizes these inputs for
 the generated request. Omitting `--expected-revision` uses the current binding
 revision, or zero for creation; an explicit zero is also valid. A stale revision
-is rejected without changing the binding. `Auth.Users.Update` accepts optional
-`username` to atomically rename an existing local credential and identity,
-preserving the user ID and password; uniqueness conflicts roll back the
-accompanying profile edits. Accounts without a local login establish one through
-an account flow. `Auth.Users.PasswordReset.Create` targets `userId` and returns
+is rejected without changing the binding. `Auth.Users.Update` checks lifecycle
+`expectedRevision`; omitted profile fields are untouched. Intentional profile
+changes also require `expectedProfileRevision`. A stale combined edit rolls back
+both lifecycle and profile changes. `Auth.Users.PasswordReset.Create` targets `userId` and returns
 a five-minute, one-use token for `/account/reset?token=...` on the OAuth origin.
 Completion checks Origin/CSRF, credential CAS, and the requester's original active
 logical session and current accepted `principals.manage`, then atomically changes

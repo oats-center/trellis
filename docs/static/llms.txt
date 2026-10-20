@@ -494,7 +494,11 @@ active directory profiles, including immutable `principalId`, names, available
 email and photos. Ordinary profiles omit `account`. Delegated and currently
 eligible `principals.manage` also exposes account lifecycle/revision, username
 and password status and permits inactive-user lookup and username search.
-`Users.Resolve` with `accountRead` is self-only and includes the caller's account.
+`Users.Resolve` with `accountRead` is self-only and discloses names, email and
+verification status, photo and the caller's account. It grants no directory access.
+Administrative `Users.Update` checks lifecycle `expectedRevision`. Profile fields
+are optional; intentional changes require independent `expectedProfileRevision`.
+A stale combined save rolls back both lifecycle and profile changes.
 
 Select `accountProfileWrite` for `Users.Profile.Update`: own names, manual
 unverified email, HTTPS picture override and Gravatar preference. Use the self

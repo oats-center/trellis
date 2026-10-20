@@ -1951,6 +1951,8 @@ dependencies = [
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
  "trellis-idl",
+ "trellis-models",
+ "trellis-protocol",
  "trellis-rs",
 ]
 
@@ -1964,6 +1966,8 @@ dependencies = [
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
  "trellis-idl",
+ "trellis-models",
+ "trellis-protocol",
  "trellis-rs",
 ]
 
@@ -2792,10 +2796,13 @@ name = "trellis-codegen-rust"
 version = "0.100.0"
 dependencies = [
  "prettyplease",
+ "semver",
  "serde_json",
  "syn 2.0.119",
  "thiserror",
+ "toml",
  "trellis-idl",
+ "trellis-protocol",
 ]
 
 [[package]]
@@ -2810,6 +2817,15 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "toml",
+ "trellis-protocol",
+]
+
+[[package]]
+name = "trellis-models"
+version = "0.101.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "trellis-protocol",
 ]
 
@@ -2864,9 +2880,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
- "trellis-builtin-contracts",
- "trellis-codegen-rust",
- "trellis-idl",
+ "trellis-models",
  "trellis-protocol",
  "ulid",
  "url",
@@ -2899,6 +2913,8 @@ dependencies = [
  "serde_json",
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
+ "trellis-models",
+ "trellis-protocol",
  "trellis-rs",
 ]
 

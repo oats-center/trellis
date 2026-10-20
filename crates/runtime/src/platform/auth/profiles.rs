@@ -128,6 +128,9 @@ pub(super) fn write(
     let mut current = read(connection, principal)?;
     let before = current.clone();
     if let Some(patch) = patch {
+        if current.revision != patch.expected_revision.0 .0 {
+            return Err(AuthError::Conflict);
+        }
         if (patch.email.is_some() && patch.clear_email == Some(true))
             || (patch.avatar_override_url.is_some() && patch.clear_avatar_override == Some(true))
         {

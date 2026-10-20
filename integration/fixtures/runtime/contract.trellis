@@ -128,6 +128,7 @@ agent DirectoryCaller {
 agent DirectoryOptional {
   use auth { required capability accountRead; capability usersRead; }
 }
+agent AccountCaller { use auth { required capability accountRead; } }
 agent EventEvidenceReader { use auth { required capability eventResourceBindingsRead; } }
 api optional_availability@v2 {
   title "Optional operation availability";
@@ -386,6 +387,9 @@ agent TransportGrowthCaller {
     required capability publishTick;
     capability extend;
   }
+}
+agent RpcDistributionCaller {
+  use transport_growth { required capability control; required capability progress; }
 }
 
 agent DownloadGrowthCaller {

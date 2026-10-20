@@ -75,6 +75,7 @@ test("user updates preserve identity while disabling retires authorization and r
           displayName: "After",
           enabled: true,
           expectedRevision: created.account.principal.revision,
+          expectedProfileRevision: created.account.profileRevision,
           idempotencyKey: ulid(),
         })
       ).user;
@@ -100,7 +101,6 @@ test("user updates preserve identity while disabling retires authorization and r
       const disabled = (
         await runtime.callAdminRpc("authUsersUpdate", {
           userId,
-          displayName: renamed.displayName,
           enabled: false,
           expectedRevision: renamed.account.principal.revision,
           idempotencyKey: ulid(),
@@ -121,7 +121,6 @@ test("user updates preserve identity while disabling retires authorization and r
       assert(disabled.account);
       await runtime.callAdminRpc("authUsersUpdate", {
         userId,
-        displayName: disabled.displayName,
         enabled: true,
         expectedRevision: disabled.account.principal.revision,
         idempotencyKey: ulid(),

@@ -80,7 +80,6 @@ test(
       assert(admin.account);
       await runtime.callAdminRpc("authUsersUpdate", {
         userId: disabledId,
-        displayName: admin.displayName,
         enabled: false,
         expectedRevision: admin.account.principal.revision,
         idempotencyKey: ulid(),
@@ -118,7 +117,6 @@ test(
         (
           await a.usersUpdate({
             userId: bobId,
-            displayName: "Forbidden",
             enabled: false,
             expectedRevision: 1n,
             idempotencyKey: ulid(),

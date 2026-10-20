@@ -101,6 +101,11 @@ reaps owned children before sandbox cleanup. Server-only restart retains the
 same running broker and durable installation. Readiness matches the production
 `/readyz` process ID to the owned child. Exact-version binaries can be explicit
 or acquired from checksum-pinned releases, with offline verified-cache reuse.
+Unexpected child failures remain shutdown errors even when the child has already
+exited, preserving `OnFailure` diagnostics. Source CI stages the CLI and server
+alongside its prebuilt testkit executable; it does not depend on unpublished
+release assets. Service registration reviews implemented and consumed APIs before
+creating the deployment, so consumer-first setup does not depend on provider order.
 Only `trellis-rs`, `trellis-protocol`, `trellis-models`, and `trellis-testkit`
 are registry-distributed; server, compiler, and bootstrap implementations remain
 private and are not consumer Cargo dependencies.

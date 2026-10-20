@@ -432,6 +432,22 @@ mod tests {
 
     #[test]
     fn released_ports_survive_automatic_outbound_allocation() {
+        // A sibling test's pre-exec child can inherit our listeners before
+        // CLOEXEC closes them. Probe allocation in its own process so release
+        // is not confused with an unrelated fork retaining the same socket.
+        const NAME: &str = "sandbox::tests::released_ports_survive_automatic_outbound_allocation";
+        if !std::env::args().any(|argument| argument == NAME) {
+            let status =
+                std::process::Command::new(std::env::current_exe().expect("test executable"))
+                    .args(["--exact", NAME, "--nocapture"])
+                    .status()
+                    .expect("run isolated allocator probe");
+            assert!(
+                status.success(),
+                "isolated allocator probe failed: {status}"
+            );
+            return;
+        }
         // Exercise the host's real automatic allocation without requiring
         // privileged namespaces or changing its network configuration.
         let peer = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("outbound destination");

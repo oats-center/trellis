@@ -52,6 +52,7 @@ fixture_bins=(
   live_application_versions
   empty_watch
   finite_rpc
+  rpc_distribution
   operation_target
   operation_storage_upload
   operation_lease_loss

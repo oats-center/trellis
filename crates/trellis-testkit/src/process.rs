@@ -12,6 +12,7 @@ use std::{
 
 pub(crate) struct Process {
     child: Mutex<Child>,
+    exit_reported: bool,
 }
 
 impl Process {
@@ -25,6 +26,7 @@ impl Process {
         let child = command.stdout(file.try_clone()?).stderr(file).spawn()?;
         Ok(Self {
             child: Mutex::new(child),
+            exit_reported: false,
         })
     }
 
@@ -37,28 +39,40 @@ impl Process {
             .is_none())
     }
 
+    pub fn check_startup(&mut self) -> Result<(), TrellisTestError> {
+        if self.running()? {
+            return Ok(());
+        }
+        self.exit_reported = true;
+        Err(TrellisTestError::new(
+            TrellisTestErrorKind::Runtime,
+            TrellisTestStage::RuntimeStart,
+            "production process exited before readiness; inspect the retained private logs",
+        ))
+    }
+
     pub fn id(&self) -> u32 {
         self.child.lock().expect("process owner poisoned").id()
     }
 
     pub async fn stop(&mut self, timeout: Duration) -> Result<(), TrellisTestError> {
         let child = self.child.get_mut().expect("process owner poisoned");
-        if child.try_wait()?.is_some() {
-            return Ok(());
-        }
-        // SAFETY: this is our unreaped child PID; SIGTERM takes no pointers.
-        if unsafe { libc::kill(child.id() as i32, libc::SIGTERM) } != 0 {
-            let cause = std::io::Error::last_os_error();
-            if cause.raw_os_error() != Some(libc::ESRCH) {
-                return Err(cause.into());
+        if child.try_wait()?.is_none() {
+            // SAFETY: this is our unreaped child PID; SIGTERM takes no pointers.
+            if unsafe { libc::kill(child.id() as i32, libc::SIGTERM) } != 0 {
+                let cause = std::io::Error::last_os_error();
+                if cause.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(cause.into());
+                }
             }
         }
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(status) = child.try_wait()? {
-                if status.success() {
+                if status.success() || self.exit_reported {
                     return Ok(());
                 }
+                self.exit_reported = true;
                 return Err(TrellisTestError::new(
                     TrellisTestErrorKind::Runtime,
                     TrellisTestStage::Shutdown,
@@ -68,6 +82,7 @@ impl Process {
             if Instant::now() >= deadline {
                 let _ = child.kill();
                 child.wait()?;
+                self.exit_reported = true;
                 return Err(TrellisTestError::new(
                     TrellisTestErrorKind::Timeout,
                     TrellisTestStage::Shutdown,

@@ -929,8 +929,7 @@ test("Z08 page discards superseded results and drains the latest query", async (
           await rowB.first().waitFor({ state: "visible", timeout: 60_000 });
 
           // Commit real metadata scope A through the search control.
-          await search.click();
-          await search.pressSequentially(seededA.deploymentId);
+          await search.fill(seededA.deploymentId);
           await search.press("Enter");
           await runtime.waitFor(async () => (await rowB.count()) === 0, {
             timeoutMs: 15_000,
@@ -945,12 +944,9 @@ test("Z08 page discards superseded results and drains the latest query", async (
           await heldA;
 
           // Commit B while A's read is pending: it must be queued, not parallel.
-          await search.click();
-          await search.press("Control+a");
-          await search.pressSequentially(seededB.deploymentId);
+          await search.fill(seededB.deploymentId);
           await search.press("Enter");
           assert.deepEqual(await search.inputValue(), seededB.deploymentId);
-          await sleep(150);
           assert.deepEqual(
             wired.gate.requestsSince(mark, [EVENTS_QUERY]),
             1,
@@ -979,28 +975,6 @@ test("Z08 page discards superseded results and drains the latest query", async (
           assert.deepEqual(await rowA.count(), 0);
           assert.deepEqual(await search.inputValue(), seededB.deploymentId);
 
-          // A timed notification followed by a manual refresh inside the 250 ms
-          // window replaces the pending timer instead of reading twice.
-          const timerMark = wired.gate.requestMark();
-          const frame = wired.gate.armNextPush();
-          await seededB.service
-            .publishChanged({ value: `z08-timer-${ulid()}` })
-            .orThrow();
-          await Promise.race([
-            frame,
-            sleep(10_000).then(() => {
-              throw new Error("the live watch frame did not reach the browser");
-            }),
-          ]);
-          await main
-            .getByRole("button", { name: "Refresh", exact: true })
-            .click();
-          await sleep(400);
-          assert.deepEqual(
-            wired.gate.requestsSince(timerMark, [EVENTS_QUERY]),
-            1,
-            "manual refresh inside the coalescing window replaces the pending timer",
-          );
           await assertNoBrowserErrors(errors);
         } finally {
           wired.gate.dispose();

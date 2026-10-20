@@ -390,18 +390,23 @@ impl AdminSession {
     pub(crate) async fn accept_apis<P: ParticipantDescriptor>(
         &self,
     ) -> Result<(), TrellisTestError> {
-        for api_id in P::IMPLEMENTED_API_IDS {
+        for api_id in P::IMPLEMENTED_API_IDS
+            .iter()
+            .chain(P::CONSUMED_API_IDS)
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+        {
             let review = self
                 .auth
                 .apis_review(&AuthApiReviewRequest {
-                    api_id: (*api_id).to_owned().into(),
+                    api_id: api_id.to_owned().into(),
                     package_evidence: wire(P::package_evidence())?,
                     extra: Default::default(),
                 })
                 .await
                 .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?
                 .review;
-            match self.auth.apis_get(&AuthApiGetRequest { api_id: (*api_id).to_owned().into(), extra: Default::default() }).await {
+            match self.auth.apis_get(&AuthApiGetRequest { api_id: api_id.to_owned().into(), extra: Default::default() }).await {
                     Ok(current) if current.api.canonical_digest == review.canonical_digest => continue,
                     Ok(_) => return Err(failure(TrellisTestStage::ParticipantInstallation, "API already accepted with a different definition; explicit catalog update required")),
                     Err(CallError::Declared(error)) if matches!(error.as_ref(), ApisGetError::AuthError(error) if error.payload().is_ok_and(|payload| payload.code.as_ref() == "not_found")) => {},

@@ -1,7 +1,7 @@
 //! Live acceptance tests for the external Rust testkit.
 //!
 //! These tests are explicitly selected by the fixture's `live` target and run
-//! against the embedded production runtime and a real NATS process. They never start
+//! against production runtime and NATS processes. They never start
 //! infrastructure during compilation or documentation generation.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,6 +68,32 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
 struct ProviderFixture {
     task: tokio::task::JoinHandle<Result<(), trellis_rs::service::ServiceRuntimeError>>,
     calls: Arc<AtomicUsize>,
+}
+
+/// Consumer-first registration installs the API before any provider exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consumer_first_registration_accepts_consumed_apis_and_calls_later_provider() {
+    use trellis_test_fixture::participants::trellis_test_fixture_consumer::Participant as Consumer;
+    let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+    let identity = runtime
+        .register_service::<Consumer>("consumer first")
+        .await
+        .unwrap();
+    let consumer = Consumer::connect(identity.connect_options()).await.unwrap();
+    let api = trellis_test_fixture::apis::trellis_test_fixture_echo_v1::Client::from_generated(
+        consumer.generated_client(),
+    );
+    let task = tokio::spawn(async move { consumer.run().await });
+    let provider = start_provider(&mut runtime, "later provider").await;
+    let input = value("consumer registered first");
+    assert_eq!(api.echo(&input).await.unwrap().value, input.value);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    drop(api);
+    task.abort();
+    let _ = task.await;
+    provider.task.abort();
+    let _ = provider.task.await;
+    runtime.shutdown().await.unwrap();
 }
 
 /// Registers and runs a Provider whose Echo handler publishes `Observed`.

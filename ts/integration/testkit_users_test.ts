@@ -187,7 +187,6 @@ test(
         assert(current.account);
         await runtime.callAdminRpc("authUsersUpdate", {
           userId,
-          displayName: current.displayName,
           enabled: false,
           expectedRevision: current.account.principal.revision,
           idempotencyKey: ulid(),

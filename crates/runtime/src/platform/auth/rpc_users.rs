@@ -587,7 +587,7 @@ pub(super) fn create_user(
         let patch = AuthUserProfileUpdateRequest {
             display_name: Some(input.display_name.clone()), given_name: input.given_name.clone(), family_name: input.family_name.clone(), email: input.email.clone(),
             avatar_override_url: None, clear_email: None, clear_avatar_override: None, gravatar_enabled: None,
-            expected_revision: AuthRevision(0.into()), idempotency_key: input.idempotency_key.clone(), extra: Default::default(),
+            expected_revision: AuthRevision(super::profiles::read(connection, &principal)?.revision.into()), idempotency_key: input.idempotency_key.clone(), extra: Default::default(),
         };
         super::profiles::write(connection, &principal, Some(&patch), now)?;
         // The local identity reserves the normalized username even before an
@@ -609,9 +609,6 @@ pub(super) fn update_user(
     store.mutate(identity, "rpc.users.update", input, now, |connection| {
         let principal = input.user_id.to_string();
         read_user(store, connection, &principal, true)?;
-        if input.display_name.trim().is_empty() {
-            return Err(AuthError::Invalid("empty display name".into()));
-        }
         apply_policy_in_transaction(
             connection,
             identity,
@@ -622,20 +619,29 @@ pub(super) fn update_user(
             },
             now,
         )?;
-        let patch = AuthUserProfileUpdateRequest {
-            display_name: Some(input.display_name.clone()),
-            given_name: input.given_name.clone(),
-            family_name: input.family_name.clone(),
-            email: input.email.clone(),
-            clear_email: input.clear_email,
-            avatar_override_url: None,
-            clear_avatar_override: None,
-            gravatar_enabled: None,
-            expected_revision: AuthRevision(0.into()),
-            idempotency_key: input.idempotency_key.clone(),
-            extra: Default::default(),
-        };
-        super::profiles::write(connection, &principal, Some(&patch), now)?;
+        if input.display_name.is_some()
+            || input.given_name.is_some()
+            || input.family_name.is_some()
+            || input.email.is_some()
+            || input.clear_email.is_some()
+        {
+            let patch = AuthUserProfileUpdateRequest {
+                display_name: input.display_name.clone(),
+                given_name: input.given_name.clone(),
+                family_name: input.family_name.clone(),
+                email: input.email.clone(),
+                clear_email: input.clear_email,
+                avatar_override_url: None,
+                clear_avatar_override: None,
+                gravatar_enabled: None,
+                expected_revision: input
+                    .expected_profile_revision
+                    .ok_or_else(|| AuthError::Invalid("profile revision required".into()))?,
+                idempotency_key: input.idempotency_key.clone(),
+                extra: Default::default(),
+            };
+            super::profiles::write(connection, &principal, Some(&patch), now)?;
+        }
         Ok(AuthUserGetResponse {
             user: read_user(store, connection, &principal, true)?,
             extra: Default::default(),
@@ -652,7 +658,6 @@ pub(super) fn update_profile(
     store.mutate(identity, "rpc.users.profile.update", input, now, |connection| {
         let active: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind='user' AND state='active')", [&identity.actor], |row| row.get(0))?;
         if !active { return Err(AuthError::Denied); }
-        if super::profiles::read(connection, &identity.actor)?.revision != input.expected_revision.0.0 { return Err(AuthError::Conflict); }
         super::profiles::write(connection, &identity.actor, Some(input), now)?;
         Ok(AuthUserGetResponse { user: read_user(store, connection, &identity.actor, true)?, extra: Default::default() })
     })

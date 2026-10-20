@@ -59,12 +59,21 @@ test("one principal can log out two distinct login sessions", async () => {
       assert(firstSession && secondSession);
       assert.deepEqual(firstSession.principalId, secondSession.principalId);
       assert(firstSession.loginSessionId !== secondSession.loginSessionId);
-      await first.sessionsLogout({}).orThrow();
-      assert.deepEqual(
-        (await second.sessionsMe({}).orThrow()).login?.state,
-        "active",
-      );
-      await second.sessionsLogout({}).orThrow();
+      for (const client of [first, second]) {
+        const logout = await client.sessionsLogout({}).take();
+        if (isErr(logout)) {
+          // Self-revocation can close this request's carrier before its reply.
+          // The independent read below must still prove committed retirement.
+          assert(logout.error instanceof TransportError);
+          assert.deepEqual(logout.error.code, "trellis.request.failed");
+        }
+        if (client === first) {
+          assert.deepEqual(
+            (await second.sessionsMe({}).orThrow()).login?.state,
+            "active",
+          );
+        }
+      }
       const sessions = await runtime.callAdminRpc("authSessionsList", {
         principalId: firstSession.principalId,
       });

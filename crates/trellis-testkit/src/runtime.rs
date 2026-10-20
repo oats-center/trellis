@@ -398,18 +398,11 @@ async fn start_once(
         )?);
         let broker_deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if !infrastructure
+            infrastructure
                 .nats
                 .as_mut()
                 .expect("owned broker")
-                .running()?
-            {
-                return Err(TrellisTestError::new(
-                    TrellisTestErrorKind::Runtime,
-                    TrellisTestStage::RuntimeStart,
-                    "broker exited before readiness; inspect private nats-server.log",
-                ));
-            }
+                .check_startup()?;
             let mut ready = true;
             for port in [ports.nats, ports.monitor, ports.websocket] {
                 ready &= tokio::time::timeout(
@@ -524,7 +517,7 @@ async fn wait_for_readyz(
         })?;
     loop {
         for process in [&mut infrastructure.nats, &mut infrastructure.server] {
-            if !process
+            process
                 .as_mut()
                 .ok_or_else(|| {
                     TrellisTestError::new(
@@ -533,14 +526,7 @@ async fn wait_for_readyz(
                         "missing production process",
                     )
                 })?
-                .running()?
-            {
-                return Err(TrellisTestError::new(
-                    TrellisTestErrorKind::Runtime,
-                    TrellisTestStage::RuntimeStart,
-                    "production process exited before readiness; inspect the retained private logs",
-                ));
-            }
+                .check_startup()?;
         }
         let process_id = u64::from(
             infrastructure
@@ -779,6 +765,8 @@ impl TrellisTestRuntime {
     }
 
     /// Registers `P` as a service in its own deployment and provisions an instance.
+    /// Reviews implemented and consumed APIs before deployment creation, including
+    /// optional consumption, so consumers may be registered before providers.
     ///
     /// # Errors
     /// Returns an error when `P` is not a service or provisioning fails.

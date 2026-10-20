@@ -253,8 +253,8 @@ deployment, instance, identity key, and entitlements before authority issuance.
 Ordinary RPC requests, Operation starts, and Live openings use generated
 canonical API/action subjects. Auth does not persist caller-to-provider
 deployment selections or return such selections in bootstrap metadata.
-Providers serving one logical API share the same request queue group on each
-supported action. Normal broker operation distributes each request to one
+Providers derive the request queue group from the exact subscribed RPC or Live
+opening subject in every SDK and transport generation. Normal broker operation distributes each request to one
 eligible subscriber; this is not an exactly-once execution guarantee, and the
 SDK never automatically retries potentially executed work.
 

@@ -285,7 +285,7 @@ jobs:
           mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
           cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
           bash scripts/acquire-test-nats.sh --dest "$PWD/dist/runtime-binaries/nats"
-          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller live_application_versions empty_watch finite_rpc operation_target operation_storage_upload operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
+          for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller live_application_versions empty_watch finite_rpc rpc_distribution operation_target operation_storage_upload operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
             cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
           done
           cp target/debug/examples/health_watch dist/runtime-binaries/examples/
@@ -610,11 +610,11 @@ jobs:
           name: check-runtime-binaries
           path: ${{ env.TESTKIT_EXECUTION_ROOT }}/runtime-binaries
 
-      - name: Stage only the linked testkit executable
+      - name: Stage the testkit and its production runtime executables
         run: |
           set -euo pipefail
           mkdir -p target/debug
-          tar -xzf "$TESTKIT_EXECUTION_ROOT/runtime-binaries/runtime-binaries.tar.gz" -C target/debug ./trellis-testkit-live
+          tar -xzf "$TESTKIT_EXECUTION_ROOT/runtime-binaries/runtime-binaries.tar.gz" -C target/debug ./trellis-testkit-live ./trellis ./trellis-server
 
       - name: Acquire the pinned NATS executable
         run: |
@@ -629,6 +629,8 @@ jobs:
       - name: Run the prebuilt testkit live binary with a host probe
         id: testkit-live
         env:
+          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
+          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
           TRELLIS_TEST_NATS_BIN: ${{ env.TESTKIT_EXECUTION_ROOT }}/nats/nats-server
           RUST_BACKTRACE: "1"
         run: |

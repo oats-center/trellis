@@ -303,7 +303,8 @@ async fn users_edit_command(format: OutputFormat, args: &UserEditArgs) -> miette
             family_name: None,
             email: None,
             clear_email: None,
-            display_name: wire(trimmed_optional(&args.name).unwrap_or(current.display_name))?,
+            display_name: trimmed_optional(&args.name).map(wire).transpose()?,
+            expected_profile_revision: args.name.as_ref().map(|_| account.profile_revision),
             enabled: if args.active {
                 true
             } else if args.inactive {

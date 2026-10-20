@@ -143,8 +143,9 @@ entry does not implicitly trust or register an OAuth client.
 
 ## Generated service and application descriptors
 
-`register_service` reviews and accepts APIs from generated package evidence,
-creates a deployment, and provisions its immutable public identity through the
+`register_service` reviews and accepts implemented and consumed APIs (required
+and optional selections) from generated package evidence before creating a
+deployment. Consumers can be registered before their providers. It provisions its immutable public identity through the
 ordinary generated Auth RPCs. `register_client` takes an `AppRequestDescriptor`,
 registers a native OAuth client, and completes Device Code, portal login, and
 explicit user consent. OAuth custody is exclusive: `connect_options()` consumes
@@ -182,14 +183,17 @@ Retention is `OnFailure` by default (keep the sandbox after a failure); `Always`
 and `Never` are available through
 `TrellisTestRuntime::builder().retention(...)`.
 
-Only the cryptographically verified NATS executable and archive cache is shared:
+Only verified native executables and the archive cache are shared:
 `TRELLIS_CACHE_DIR` selects it, otherwise the production downloader uses the
 platform cache directory. A warmed cache permits subsequent runtimes to start
 without network access. Keep any override outside runtime sandboxes so sandbox
 removal does not delete it.
 
 Call `TrellisTestRuntime::shutdown` to remove a sandbox according to the
-retention policy. `Drop` and process termination are best-effort: a sandbox can
+retention policy. An unexpected nonzero or signal exit, even before shutdown
+starts, fails shutdown and retains `OnFailure` diagnostics. Startup failures
+already reported by readiness are not reported again during cleanup.
+`Drop` and process termination are best-effort: a sandbox can
 survive if the process exits or is killed before cleanup finishes, and
 `OnFailure` intentionally keeps failed-run sandboxes as evidence. Reclaim
 leftovers with `trellis_testkit::remove_retained_workdirs(parent, older_than)`,

@@ -87,7 +87,12 @@
     const key = ulid();
     const input: apis.auth.UsersUpdateInput = {
       userId: user.principalId,
-      displayName: displayName.trim(),
+      ...(displayName.trim() !== user.displayName
+        ? {
+            displayName: displayName.trim(),
+            expectedProfileRevision: user.account.profileRevision,
+          }
+        : {}),
       enabled,
       expectedRevision: user.account.principal.revision,
       idempotencyKey: key,

@@ -48,6 +48,62 @@ mod tests {
     use super::*;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn crashed_ready_server_fails_shutdown_and_retains_failure_diagnostics() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut runtime = TrellisTestRuntime::builder()
+            .workdir_parent(parent.path())
+            .retention(WorkdirRetention::OnFailure)
+            .start()
+            .await
+            .unwrap();
+        let root = runtime.workdir().to_owned();
+        let readiness: serde_json::Value =
+            reqwest::get(format!("{}/readyz", runtime.trellis_url()))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+        let pid = i32::try_from(readiness["processId"].as_u64().unwrap()).unwrap();
+        assert!(pid > 0, "readiness must identify an individual process");
+        // SAFETY: readiness identifies this test's owned production server.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                // SAFETY: siginfo_t accepts all-zero initialization, and waitid
+                // writes it for our child without consuming its exit status.
+                let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                assert_eq!(
+                    unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            u32::try_from(pid).unwrap(),
+                            &mut status,
+                            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                        )
+                    },
+                    0
+                );
+                // SAFETY: successful waitid initialized this siginfo_t.
+                if unsafe { status.si_pid() } == pid {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let error = runtime.shutdown().await.unwrap_err();
+        assert_eq!(error.kind(), TrellisTestErrorKind::Runtime);
+        assert!(root.is_dir());
+        assert!(!std::fs::read(root.join("logs/trellis-server.log"))
+            .unwrap()
+            .is_empty());
+        runtime.shutdown().await.unwrap();
+        assert!(root.is_dir());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn failed_restart_retains_owned_installation_and_stopped_runtime_cannot_restart() {
         let parent = tempfile::tempdir().unwrap();
         let mut runtime = TrellisTestRuntime::builder()
