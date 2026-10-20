@@ -4480,6 +4480,8 @@ dependencies = [
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
  "trellis-idl",
+ "trellis-models",
+ "trellis-protocol",
  "trellis-rs",
 ]
 
@@ -5953,6 +5955,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "trellis-bootstrap",
+ "trellis-builtin-contracts",
  "trellis-codegen-rust",
  "trellis-codegen-ts",
  "trellis-idl",
@@ -5974,7 +5977,9 @@ dependencies = [
  "syn 2.0.118",
  "tempfile",
  "thiserror 2.0.18",
+ "toml",
  "trellis-idl",
+ "trellis-protocol",
 ]
 
 [[package]]
@@ -6086,6 +6091,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "trellis-models"
+version = "0.100.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trellis-protocol",
+]
+
+[[package]]
 name = "trellis-protocol"
 version = "0.100.0"
 dependencies = [
@@ -6152,10 +6166,8 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "trellis-bootstrap",
- "trellis-builtin-contracts",
- "trellis-codegen-rust",
- "trellis-idl",
  "trellis-local-nats",
+ "trellis-models",
  "trellis-protocol",
  "trellis-runtime-apis",
  "trellis-testkit",
@@ -6233,6 +6245,8 @@ dependencies = [
  "serde_json",
  "trellis-builtin-contracts",
  "trellis-codegen-rust",
+ "trellis-models",
+ "trellis-protocol",
  "trellis-rs",
 ]
 
@@ -6262,26 +6276,26 @@ name = "trellis-testkit"
 version = "0.100.0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "futures-util",
  "getrandom 0.3.4",
+ "libc",
  "reqwest 0.13.5",
  "runtime-trellis",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "time",
  "tokio",
- "tokio-util",
  "toml",
  "tracing-subscriber",
- "trellis-bootstrap",
  "trellis-idl",
- "trellis-local-nats",
+ "trellis-models",
  "trellis-protocol",
  "trellis-rs",
- "trellis-runtime",
  "trellis-runtime-apis",
  "ulid",
  "url",
@@ -7129,6 +7143,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "miette",
+ "semver",
  "serde_json",
  "tempfile",
  "tokio",

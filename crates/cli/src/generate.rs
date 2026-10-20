@@ -193,8 +193,22 @@ pub(crate) fn generate_compiled(
         .into_diagnostic()?;
         let fresh = staging.path().join("new");
         match *language {
-            "rust" => trellis_codegen_rust::generate_rust_package(compiled, &fresh, name)
-                .into_diagnostic()?,
+            "rust" => {
+                let builtin = trellis_builtin_contracts::compile()?;
+                trellis_codegen_rust::generate_rust_package(
+                    compiled,
+                    &fresh,
+                    name,
+                    &[
+                        trellis_codegen_rust::RustModelBinding::from_package_manifest(
+                            &builtin,
+                            include_str!("../../models/Cargo.toml"),
+                        )
+                        .into_diagnostic()?,
+                    ],
+                )
+                .into_diagnostic()?;
+            }
             _ => {
                 trellis_codegen_ts::generate_ts_package(compiled, &fresh, name).into_diagnostic()?
             }

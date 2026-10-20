@@ -135,7 +135,7 @@ fn generated_package_exercises_wo03_b2_b4() {
     let temp = tempfile::tempdir_in(repo.join("target")).unwrap();
     let rust = temp.path().join("rust");
     let typescript = temp.path().join("typescript");
-    trellis_codegen_rust::generate_rust_package(&graph, &rust, "wo03-fixture").unwrap();
+    trellis_codegen_rust::generate_rust_package(&graph, &rust, "wo03-fixture", &[]).unwrap();
     trellis_codegen_ts::generate_ts_package(&graph, &typescript, "@fixture/wo03").unwrap();
 
     let runtime = repo.join("crates/trellis").canonicalize().unwrap();
@@ -263,8 +263,7 @@ fn codecs_errors_and_generated_surfaces_compile() {
 "#,
     )
     .unwrap();
-    // The generated package pins the workspace version; patch the library to
-    // the checkout so the test also passes for unpublished prerelease candidates.
+    // Exercise the current candidate closure, including independently versioned models.
     run(
         Command::new("cargo")
             .arg("test")
@@ -273,6 +272,16 @@ fn codecs_errors_and_generated_surfaces_compile() {
             .arg(format!(
                 "patch.crates-io.trellis-rs.path=\"{}\"",
                 repo.join("crates/trellis").display()
+            ))
+            .arg("--config")
+            .arg(format!(
+                "patch.crates-io.trellis-protocol.path={:?}",
+                repo.join("crates/protocol")
+            ))
+            .arg("--config")
+            .arg(format!(
+                "patch.crates-io.trellis-models.path={:?}",
+                repo.join("crates/models")
             ))
             .current_dir(&rust),
         "generated Rust test",

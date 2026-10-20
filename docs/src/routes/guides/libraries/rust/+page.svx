@@ -209,14 +209,18 @@ leases; confirmed revocation remains fail-closed.
 ## Test against a real runtime
 
 For live integration tests, use the published `trellis-testkit` crate. It is a
-development dependency that links the real production runtime in-process in a
-private sandbox, selects its loopback ports automatically, and returns
+development dependency that owns production server and NATS processes in a
+private sandbox, selects loopback ports automatically, and returns
 `connect_options()` values for your generated service and caller participants.
 It needs no Trellis source checkout and no private crate patches. See
 [Test Trellis services](/guides/testing-trellis-services) and the
 [`trellis-testkit` Rustdoc](/api/rust/trellis_testkit/index.html).
 
-NATS remains a real child process. Only its verified executable and archive
-cache is shared (`TRELLIS_CACHE_DIR`, or the platform cache directory); a warmed
+The harness acquires exact-version CLI/server and pinned NATS archives with
+SHA-256 verification. Set both `TRELLIS_TEST_CLI_BIN` and
+`TRELLIS_TEST_SERVER_BIN`, or select `NativeSource::Path { cli, server }`, to
+use explicit binaries without download fallback. Only verified artifact
+cache is shared (`TRELLIS_TEST_CACHE_DIR`, or the platform cache directory); a warmed
 cache works offline. Credentials, broker state, databases, PID files, and logs
-remain sandbox-local. Neither Trellis executable is required.
+remain sandbox-local. Server-only restart retains the same running broker;
+shutdown and cancellation reap owned children before sandbox cleanup.

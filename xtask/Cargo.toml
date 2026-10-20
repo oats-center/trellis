@@ -9,14 +9,13 @@ clap.workspace = true
 miette.workspace = true
 serde_json.workspace = true
 toml_edit = { workspace = true }
+semver.workspace = true
 tokio.workspace = true
 trellis-cli = { path = "../crates/cli", default-features = false }
 trellis-codegen-ts = { path = "../crates/codegen-ts" }
+trellis-codegen-rust = { path = "../crates/codegen-rust" }
 trellis-builtin-contracts = { path = "../crates/builtin-contracts" }
 trellis-idl = { path = "../crates/idl" }
 trellis-protocol = { path = "../crates/protocol" }
 wasm-bindgen-cli-support = "=0.2.125"
-
-[dev-dependencies]
 tempfile.workspace = true
-trellis-codegen-rust = { path = "../crates/codegen-rust" }

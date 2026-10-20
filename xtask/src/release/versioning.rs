@@ -405,9 +405,7 @@ fn collect_cargo_versions(
             }
         }
         if matches!(section, CargoSection::Package)
-            && package_name
-                .as_deref()
-                .is_some_and(|name| is_release_managed_package(name, path))
+            && package_name.as_deref().is_some_and(is_internal_rust_crate)
         {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -453,9 +451,7 @@ pub(super) fn rewrite_cargo_manifest_versions(
 
         let should_update_package_version = matches!(section, CargoSection::WorkspacePackage)
             || (matches!(section, CargoSection::Package)
-                && package_name
-                    .as_deref()
-                    .is_some_and(|name| is_release_managed_package(name, path)));
+                && package_name.as_deref().is_some_and(is_internal_rust_crate));
         if should_update_package_version {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -537,9 +533,7 @@ pub(super) fn rewrite_cargo_manifest_versions_for_release(
 
         let should_update_package_version = matches!(section, CargoSection::WorkspacePackage)
             || (matches!(section, CargoSection::Package)
-                && package_name
-                    .as_deref()
-                    .is_some_and(|name| is_release_managed_package(name, path)));
+                && package_name.as_deref().is_some_and(is_internal_rust_crate));
         if should_update_package_version {
             if let Some(version) = cargo_version_assignment(trimmed) {
                 if is_non_release_sentinel_version(&version) {
@@ -654,12 +648,82 @@ fn quoted_value_after_equals(value: &str) -> Option<String> {
 }
 
 fn is_internal_rust_crate(name: &str) -> bool {
-    name.starts_with("trellis-")
+    name.starts_with("trellis-") && !matches!(name, "trellis-protocol" | "trellis-models")
 }
 
-fn is_release_managed_package(name: &str, path: &Path) -> bool {
-    is_internal_rust_crate(name)
-        || (name == "trellis" && path.file_name().is_some_and(|file| file == "trellis.toml"))
+/// Change one independently versioned component and its actual dependency requirements.
+pub(super) fn prepare_component(
+    root: &Path,
+    name: &str,
+    manifest: &str,
+    version: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut changed = Vec::new();
+    let component = root.join(manifest);
+    let mut paths = release_manifest_paths(root)?;
+    paths.push(component.clone());
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        if path
+            .file_name()
+            .is_none_or(|file| file != component.file_name().expect("component manifest"))
+        {
+            continue;
+        }
+        let source = fs::read_to_string(&path).into_diagnostic()?;
+        let mut document = source.parse::<toml_edit::DocumentMut>().into_diagnostic()?;
+        if path == component {
+            document["package"]["version"] = toml_edit::value(version);
+        }
+        let update = |dependencies: &mut toml_edit::Item| {
+            let Some(dependencies) = dependencies.as_table_like_mut() else {
+                return;
+            };
+            for (key, dependency) in dependencies.iter_mut() {
+                let actual = dependency
+                    .get("package")
+                    .and_then(toml_edit::Item::as_str)
+                    .unwrap_or(&key);
+                if actual != name {
+                    continue;
+                }
+                if dependency.is_str() {
+                    *dependency = toml_edit::value(version);
+                } else if dependency.get("version").is_some() {
+                    dependency["version"] = toml_edit::value(version);
+                }
+            }
+        };
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            if let Some(dependencies) = document.get_mut(section) {
+                update(dependencies);
+            }
+        }
+        if let Some(workspace) = document.get_mut("workspace") {
+            if let Some(dependencies) = workspace.get_mut("dependencies") {
+                update(dependencies);
+            }
+        }
+        if let Some(targets) = document
+            .get_mut("target")
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            for (_, target) in targets.iter_mut() {
+                for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                    if let Some(dependencies) = target.get_mut(section) {
+                        update(dependencies);
+                    }
+                }
+            }
+        }
+        let output = document.to_string();
+        if output != source {
+            fs::write(&path, output).into_diagnostic()?;
+            changed.push(path);
+        }
+    }
+    Ok(changed)
 }
 
 fn is_internal_npm_package(name: &str) -> bool {

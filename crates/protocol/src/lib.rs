@@ -13,6 +13,10 @@ mod error;
 mod identifiers;
 mod issuer_metadata;
 pub mod live;
+pub mod model;
+
+/// Cargo package version of this protocol implementation, independent of SDK releases.
+pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod operation_record;
 mod pagination;
 mod participant;

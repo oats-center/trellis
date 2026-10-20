@@ -19,7 +19,7 @@ pub enum TrellisTestErrorKind {
     MissingBinary,
     /// A resolved executable is not a regular executable file.
     InvalidBinary,
-    /// The production runtime task or managed broker failed.
+    /// A production server or broker process failed.
     Runtime,
     /// A builder value or generated configuration is invalid.
     InvalidConfiguration,

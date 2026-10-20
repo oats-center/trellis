@@ -311,6 +311,14 @@ jobs:
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
+      - name: Download the accepted Rust consumer bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-testkit-test-bundle
+          path: dist/rust-testkit-bundle
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+
       - name: Restore the accepted generated inputs
         uses: actions/download-artifact@v4
         with:
@@ -318,21 +326,16 @@ jobs:
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
-      - name: Restore the accepted embedded browser apps
+      - name: Restore the accepted native archives
         uses: actions/download-artifact@v4
         with:
-          name: check-portal
-          path: crates/runtime/generated
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: dist/native
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
@@ -353,6 +356,8 @@ jobs:
           set -euo pipefail
 
           workspace_version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          python3 scripts/prepare-rust-native.py dist/native crates/trellis-testkit/generated/trellis-binaries.json "$workspace_version"
+          crate_versions="$(cargo metadata --format-version 1 --no-deps --locked)"
           published=()
           skipped=()
 
@@ -380,24 +385,31 @@ jobs:
 
           record_skip() {
             local crate="$1"
-            echo "Skipping ${crate}@${workspace_version} (already published)"
-            skipped+=("${crate}@${workspace_version}")
-            wait_for_crate_index "$crate" "$workspace_version"
+            local version="$2"
+            echo "Skipping ${crate}@${version} (already published)"
+            skipped+=("${crate}@${version}")
+            wait_for_crate_index "$crate" "$version"
           }
 
           record_publish() {
             local crate="$1"
-            published+=("${crate}@${workspace_version}")
+            local version="$2"
+            published+=("${crate}@${version}")
           }
 
           run_publish() {
             local crate="$1"
-            shift
+            local version="$2"
+            shift 2
             local output
             local status
 
             time bash scripts/prepare-rust-publication.sh \
               dist/rust-packages target "$crate"
+            if [[ "$crate" == trellis-testkit ]]; then
+              bash scripts/verify-rust-test-package.sh \
+                --bundle dist/rust-testkit-bundle/rust-testkit-test-bundle.tar.gz --mode smoke
+            fi
 
             set +e
             output=$(time cargo publish --allow-dirty --locked \
@@ -408,13 +420,13 @@ jobs:
             printf '%s\n' "$output"
 
             if [ "$status" -eq 0 ]; then
-              record_publish "$crate"
-              wait_for_crate_index "$crate" "$workspace_version"
+              record_publish "$crate" "$version"
+              wait_for_crate_index "$crate" "$version"
               return 0
             fi
 
             if printf '%s\n' "$output" | grep -Fq "already exists on crates.io index"; then
-              record_skip "$crate"
+              record_skip "$crate" "$version"
               return 0
             fi
 
@@ -423,27 +435,20 @@ jobs:
 
           publish_workspace_crate() {
             local crate="$1"
+            local version
+            version="$(printf '%s' "$crate_versions" | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == sys.argv[1]))' "$crate")"
 
-            if crate_exists "$crate" "$workspace_version"; then
-              record_skip "$crate"
+            if crate_exists "$crate" "$version"; then
+              record_skip "$crate" "$version"
               return 0
             fi
 
-            run_publish "$crate" -p "$crate"
+            run_publish "$crate" "$version" -p "$crate"
           }
 
           publish_workspace_crate trellis-protocol
-          publish_workspace_crate trellis-idl
-          publish_workspace_crate trellis-codegen-rust
-          publish_workspace_crate trellis-builtin-contracts
+          publish_workspace_crate trellis-models
           publish_workspace_crate trellis-rs
-          publish_workspace_crate trellis-runtime-apis
-          publish_workspace_crate trellis-local-bootstrap
-          publish_workspace_crate trellis-events-runtime
-          publish_workspace_crate trellis-jobs-runtime
-          publish_workspace_crate trellis-runtime
-          publish_workspace_crate trellis-bootstrap
-          publish_workspace_crate trellis-local-nats
           # Each dependency is available in the index before its consumer publishes.
           publish_workspace_crate trellis-testkit
 

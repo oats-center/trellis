@@ -92,15 +92,18 @@ Check runs both discovered suites against real Trellis infrastructure. Focused
 local runs select tests through the native Rust and Node test runners rather
 than a second registry or scheduler.
 
-The external `trellis-testkit` Rust harness links the real production runtime
-for service repositories, manages a real NATS process, chooses its loopback
+The external `trellis-testkit` Rust harness owns production Trellis and NATS
+processes for service repositories, chooses its loopback
 ports automatically, and drives real bootstrap, login, consent, and provisioning
-boundaries. The harness owns the runtime task and broker; the test owns the
-generated clients and service tasks it connects. Runtime task ownership is
-cancellation-safe, including nested startup tasks and native provider clients.
-Implementation crates are registry-distributed only to resolve the testkit's
-Cargo dependency closure; a service repository uses the supported `trellis-rs`
-and `trellis-testkit` APIs, not implementation crates directly.
+boundaries. The harness owns its administrator connection and server/broker
+children; the test owns generated clients and service tasks. Cancellation/drop
+reaps owned children before sandbox cleanup. Server-only restart retains the
+same running broker and durable installation. Readiness matches the production
+`/readyz` process ID to the owned child. Exact-version binaries can be explicit
+or acquired from checksum-pinned releases, with offline verified-cache reuse.
+Only `trellis-rs`, `trellis-protocol`, `trellis-models`, and `trellis-testkit`
+are registry-distributed; server, compiler, and bootstrap implementations remain
+private and are not consumer Cargo dependencies.
 
 ### Live Observation Timing Proof
 

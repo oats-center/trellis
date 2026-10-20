@@ -1,6 +1,6 @@
 [package]
 name = "trellis-protocol"
-version.workspace = true
+version = "0.100.0"
 publish = ["crates-io"]
 edition.workspace = true
 license.workspace = true

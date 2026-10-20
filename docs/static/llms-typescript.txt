@@ -675,7 +675,8 @@ or host exit, isolated process-group cleanup reclaims remaining owned children
 before sandbox removal. Startup requires `/readyz` metadata's `processId` to
 match the spawned native host, not another runtime at the selected port.
 `firstAdmin: "browser-flow"` opts into browser setup.
-The Rust testkit links the same production runtime in-process instead.
+The Rust testkit also owns production server/broker processes, without linking
+server/compiler crates; its server-only restart preserves the running broker.
 
 Browser apps use `TrellisClient.connect({ request, trellisUrl, auth: {
 clientId, redirectTo } })` with a generated browser request descriptor, or the

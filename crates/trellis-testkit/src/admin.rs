@@ -2,6 +2,14 @@
 
 use std::path::Path;
 
+use crate::apis::trellis_auth_v1::rpc::ApisGetError;
+use crate::apis::trellis_auth_v1::Client as AuthClient;
+use crate::types::{
+    AuthApiAcceptRequest, AuthApiGetRequest, AuthApiReviewRequest, AuthCapabilityGrantRequest,
+    AuthCapabilityGrantsListRequest, AuthDeploymentCreateRequest, AuthDeploymentKind, AuthEmpty,
+    AuthInstanceProvisionRequest, AuthOAuthClientPutRequest, AuthPublicClientKind,
+    AuthUserCreateRequest,
+};
 use reqwest::header::{COOKIE, LOCATION, SET_COOKIE};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -11,14 +19,6 @@ use trellis_rs::auth::{
 use trellis_rs::client::CallError;
 use trellis_rs::client::{RuntimeAuthorizationTrust, UserConnectOptions};
 use trellis_rs::generated::{AppRequestDescriptor, ParticipantDescriptor};
-use trellis_runtime_apis::apis::trellis_auth_v1::rpc::ApisGetError;
-use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
-use trellis_runtime_apis::types::{
-    AuthApiAcceptRequest, AuthApiGetRequest, AuthApiReviewRequest, AuthCapabilityGrantRequest,
-    AuthCapabilityGrantsListRequest, AuthDeploymentCreateRequest, AuthDeploymentKind, AuthEmpty,
-    AuthInstanceProvisionRequest, AuthOAuthClientPutRequest, AuthPublicClientKind,
-    AuthUserCreateRequest,
-};
 
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
 
@@ -270,7 +270,7 @@ impl AdminSession {
         password: &str,
     ) -> Result<Self, TrellisTestError> {
         let (session, nats_servers) = login_client(oauth_origin, custody, "trellis.cli", &json!([
-            {"type":"trellis_capabilities","required":[],"optional":trellis_runtime_apis::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES},
+            {"type":"trellis_capabilities","required":[],"optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES},
             {"type":"trellis_platform_privileges","required":["principals.manage","roles.manage","apis.accept","apis.forceReplace","clients.manage","privileges.manage"]}
         ]), username, password).await?;
         let trust = session.trust.clone();
@@ -390,56 +390,48 @@ impl AdminSession {
     pub(crate) async fn accept_apis<P: ParticipantDescriptor>(
         &self,
     ) -> Result<(), TrellisTestError> {
-        let evidence: trellis_idl::PackageEvidence = wire(P::package_evidence())?;
-        let graph = trellis_idl::compile_evidence(evidence)
-            .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?;
-        for package in graph.packages().values() {
-            for api in package.apis().keys() {
-                let api_id = api.as_str().to_owned();
-                let digest = trellis_idl::api_digest(&graph, api)
-                    .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?;
-                match self.auth.apis_get(&AuthApiGetRequest { api_id: api_id.clone().into(), extra: Default::default() }).await {
-                    Ok(current) if current.api.canonical_digest.as_ref() == digest => continue,
+        for api_id in P::IMPLEMENTED_API_IDS {
+            let review = self
+                .auth
+                .apis_review(&AuthApiReviewRequest {
+                    api_id: (*api_id).to_owned().into(),
+                    package_evidence: wire(P::package_evidence())?,
+                    extra: Default::default(),
+                })
+                .await
+                .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?
+                .review;
+            match self.auth.apis_get(&AuthApiGetRequest { api_id: (*api_id).to_owned().into(), extra: Default::default() }).await {
+                    Ok(current) if current.api.canonical_digest == review.canonical_digest => continue,
                     Ok(_) => return Err(failure(TrellisTestStage::ParticipantInstallation, "API already accepted with a different definition; explicit catalog update required")),
                     Err(CallError::Declared(error)) if matches!(error.as_ref(), ApisGetError::AuthError(error) if error.payload().is_ok_and(|payload| payload.code.as_ref() == "not_found")) => {},
                     Err(error) => return Err(failure(TrellisTestStage::ParticipantInstallation, error)),
                 }
-                let review = self
-                    .auth
-                    .apis_review(&AuthApiReviewRequest {
-                        api_id: api_id.clone().into(),
-                        package_evidence: wire(P::package_evidence())?,
-                        extra: Default::default(),
-                    })
-                    .await
-                    .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?
-                    .review;
-                if !review.compatible {
-                    return Err(failure(
-                        TrellisTestStage::ParticipantInstallation,
-                        "incompatible API requires explicit force replacement",
-                    ));
-                }
-                self.auth
-                    .apis_accept(&AuthApiAcceptRequest {
-                        canonical_digest: review.canonical_digest,
-                        expected_accepted_revision: review
-                            .current_accepted_revision
-                            .map_or(0, |value| value.0 .0)
-                            .into(),
-                        expected_generation: review
-                            .current_generation
-                            .map_or(0, |value| value.0 .0)
-                            .into(),
-                        review_id: review.review_id,
-                        idempotency_key: ulid::Ulid::new().to_string().into(),
-                        mapping_edits: Vec::new(),
-                        role_edits: Vec::new(),
-                        extra: Default::default(),
-                    })
-                    .await
-                    .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?;
+            if !review.compatible {
+                return Err(failure(
+                    TrellisTestStage::ParticipantInstallation,
+                    "incompatible API requires explicit force replacement",
+                ));
             }
+            self.auth
+                .apis_accept(&AuthApiAcceptRequest {
+                    canonical_digest: review.canonical_digest,
+                    expected_accepted_revision: review
+                        .current_accepted_revision
+                        .map_or(0, |value| value.0 .0)
+                        .into(),
+                    expected_generation: review
+                        .current_generation
+                        .map_or(0, |value| value.0 .0)
+                        .into(),
+                    review_id: review.review_id,
+                    idempotency_key: ulid::Ulid::new().to_string().into(),
+                    mapping_edits: Vec::new(),
+                    role_edits: Vec::new(),
+                    extra: Default::default(),
+                })
+                .await
+                .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?;
         }
         Ok(())
     }

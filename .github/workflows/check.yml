@@ -61,6 +61,9 @@ jobs:
         with:
           name: check-generated
           path: |
+            crates/trellis/generated
+            crates/models/generated
+            crates/trellis-testkit/generated
             web/trellis
             ts/packages/trellis-testkit/trellis
             integration/fixtures/runtime/packages/runtime-trellis
@@ -251,7 +254,9 @@ jobs:
           set -euo pipefail
           cargo build --bins \
             --manifest-path integration/fixtures/runtime/Cargo.toml \
-            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\""
+            --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
+            --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
+            --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\""
 
       - name: Build the testkit live test binary
         env:
@@ -261,18 +266,9 @@ jobs:
           cargo test --no-run \
             --manifest-path integration/fixtures/testkit/Cargo.toml \
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
+            --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\"" \
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
             --config "patch.crates-io.trellis-testkit.path=\"$GITHUB_WORKSPACE/crates/trellis-testkit\"" \
-            --config "patch.crates-io.trellis-runtime.path=\"$GITHUB_WORKSPACE/crates/runtime\"" \
-            --config "patch.crates-io.trellis-bootstrap.path=\"$GITHUB_WORKSPACE/crates/bootstrap\"" \
-            --config "patch.crates-io.trellis-local-bootstrap.path=\"$GITHUB_WORKSPACE/crates/local-bootstrap\"" \
-            --config "patch.crates-io.trellis-local-nats.path=\"$GITHUB_WORKSPACE/crates/local-nats\"" \
-            --config "patch.crates-io.trellis-runtime-apis.path=\"$GITHUB_WORKSPACE/crates/runtime-apis\"" \
-            --config "patch.crates-io.trellis-events-runtime.path=\"$GITHUB_WORKSPACE/crates/events-runtime\"" \
-            --config "patch.crates-io.trellis-jobs-runtime.path=\"$GITHUB_WORKSPACE/crates/jobs-runtime\"" \
-            --config "patch.crates-io.trellis-idl.path=\"$GITHUB_WORKSPACE/crates/idl\"" \
-            --config "patch.crates-io.trellis-codegen-rust.path=\"$GITHUB_WORKSPACE/crates/codegen-rust\"" \
-            --config "patch.crates-io.trellis-builtin-contracts.path=\"$GITHUB_WORKSPACE/crates/builtin-contracts\"" \
             --test live \
             --message-format=json > "$RUNNER_TEMP/testkit-live.json"
           executable="$(jq -r 'select(.executable != null) | .executable' "$RUNNER_TEMP/testkit-live.json" | tail -n1)"
@@ -930,7 +926,7 @@ jobs:
 
   rust-testkit-package:
     name: Rust testkit bundle
-    needs: [install, wasm, portal]
+    needs: [install, build-targets-linux]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     steps:
@@ -942,17 +938,22 @@ jobs:
         with:
           name: check-generated
 
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Verify publication content comparison
         run: python3 scripts/tests/test_rust_crate_contents.py
+
+      - name: Download production native archives
+        uses: actions/download-artifact@v4
+        with:
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: dist/native
+
+      - name: Prepare testkit native acquisition metadata
+        run: |
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          python3 scripts/prepare-rust-native.py dist/native crates/trellis-testkit/generated/trellis-binaries.json "$version"
 
       - name: Package the public crates
         # Prepare the complete publication closure together. The required
@@ -961,21 +962,14 @@ jobs:
         # contents against these accepted inputs before uploading each crate.
         run: |
           cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
-            -p trellis-protocol -p trellis-rs -p trellis-idl \
-            -p trellis-codegen-rust -p trellis-builtin-contracts \
-            -p trellis-local-bootstrap -p trellis-local-nats -p trellis-runtime-apis \
-            -p trellis-events-runtime -p trellis-jobs-runtime -p trellis-runtime \
-            -p trellis-bootstrap -p trellis-testkit \
+            -p trellis-protocol -p trellis-models -p trellis-rs -p trellis-testkit \
             --config .cargo/publication.toml
 
       - name: Verify publication preparation from an empty target
         run: |
           target="$(mktemp -d "$RUNNER_TEMP/rust-publication.XXXXXX")"
           bash scripts/prepare-rust-publication.sh target/package "$target" \
-            trellis-protocol trellis-idl trellis-codegen-rust trellis-builtin-contracts \
-            trellis-rs trellis-runtime-apis \
-            trellis-local-bootstrap trellis-events-runtime trellis-jobs-runtime \
-            trellis-runtime trellis-bootstrap trellis-local-nats trellis-testkit
+            trellis-protocol trellis-models trellis-rs trellis-testkit
 
       - name: Upload public Rust packages
         uses: actions/upload-artifact@v4
@@ -989,22 +983,14 @@ jobs:
           set -euo pipefail
           bundle="$RUNNER_TEMP/testkit-bundle"
           rm -rf "$bundle"
-          mkdir -p "$bundle/packages" "$bundle/nats" "$bundle/consumer"
+          mkdir -p "$bundle/packages" "$bundle/nats" "$bundle/native" "$bundle/consumer"
           cp target/package/trellis-protocol-*.crate \
+             target/package/trellis-models-*.crate \
              target/package/trellis-rs-*.crate \
-             target/package/trellis-idl-*.crate \
-             target/package/trellis-codegen-rust-*.crate \
-             target/package/trellis-builtin-contracts-*.crate \
-             target/package/trellis-local-bootstrap-*.crate \
-             target/package/trellis-local-nats-*.crate \
-             target/package/trellis-runtime-apis-*.crate \
-             target/package/trellis-events-runtime-*.crate \
-             target/package/trellis-jobs-runtime-*.crate \
-             target/package/trellis-runtime-[0-9]*.crate \
-             target/package/trellis-bootstrap-*.crate \
              target/package/trellis-testkit-*.crate "$bundle/packages/"
-          cp -R integration/fixtures/testkit/. "$bundle/consumer/"
-          rm -rf "$bundle/consumer/target"
+          tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C "$bundle/native"
+          cp -R integration/fixtures/testkit/package-consumer \
+             integration/fixtures/testkit/tests integration/fixtures/testkit/crates "$bundle/consumer/"
           bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
           cp scripts/verify-rust-test-package.sh "$bundle/"
 

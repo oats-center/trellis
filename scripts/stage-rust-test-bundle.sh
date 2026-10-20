@@ -29,7 +29,7 @@ for required in bundle output source_sha target version; do
   [[ -n "${!required}" ]] || { echo "--${required//_/-} is required" >&2; exit 2; }
 done
 [[ -d "$bundle" ]] || { echo "staging directory not found: $bundle" >&2; exit 2; }
-for dir in packages nats consumer; do
+for dir in packages nats native consumer; do
   [[ -d "$bundle/$dir" ]] || { echo "missing staging directory: $bundle/$dir" >&2; exit 1; }
 done
 [[ -f "$bundle/verify-rust-test-package.sh" ]] || {
@@ -75,7 +75,7 @@ for name in os.listdir(os.path.join(bundle, "packages")):
         if package["name"] in packages:
             raise SystemExit(f"duplicate archive for {package['name']}")
         packages[package["name"]] = package["version"]
-for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
+for package in ("trellis-protocol", "trellis-models", "trellis-rs", "trellis-testkit"):
     if package not in packages:
         raise SystemExit(f"missing {package} .crate in packages/")
 
@@ -85,7 +85,7 @@ manifest = {
     "version": version,
     "packages": packages,
     "files": files,
-    "executables": ["nats/nats-server"],
+    "executables": ["nats/nats-server", "native/trellis", "native/trellis-server"],
 }
 with open(os.path.join(bundle, "artifact-manifest.json"), "w") as handle:
     json.dump(manifest, handle, indent=2, sort_keys=True)

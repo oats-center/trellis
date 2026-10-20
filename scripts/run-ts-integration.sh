@@ -86,7 +86,9 @@ build_fixtures() {
   echo "building integration fixture helpers"
   CARGO_TARGET_DIR="$root/target" cargo build --bins \
     --manifest-path integration/fixtures/runtime/Cargo.toml \
-    --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\""
+    --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
+    --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
+    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\""
   mkdir -p "$fixture_dir"
   for bin in "${fixture_bins[@]}"; do
     cp "$root/target/debug/$bin" "$fixture_dir/$bin"
@@ -111,18 +113,9 @@ build_testkit_live() {
   CARGO_TARGET_DIR="$root/target" cargo test --no-run \
     --manifest-path integration/fixtures/testkit/Cargo.toml \
     --config "patch.crates-io.trellis-protocol.path=\"$root/crates/protocol\"" \
+    --config "patch.crates-io.trellis-models.path=\"$root/crates/models\"" \
     --config "patch.crates-io.trellis-rs.path=\"$root/crates/trellis\"" \
     --config "patch.crates-io.trellis-testkit.path=\"$root/crates/trellis-testkit\"" \
-    --config "patch.crates-io.trellis-runtime.path=\"$root/crates/runtime\"" \
-    --config "patch.crates-io.trellis-bootstrap.path=\"$root/crates/bootstrap\"" \
-    --config "patch.crates-io.trellis-local-bootstrap.path=\"$root/crates/local-bootstrap\"" \
-    --config "patch.crates-io.trellis-local-nats.path=\"$root/crates/local-nats\"" \
-    --config "patch.crates-io.trellis-runtime-apis.path=\"$root/crates/runtime-apis\"" \
-    --config "patch.crates-io.trellis-events-runtime.path=\"$root/crates/events-runtime\"" \
-    --config "patch.crates-io.trellis-jobs-runtime.path=\"$root/crates/jobs-runtime\"" \
-    --config "patch.crates-io.trellis-idl.path=\"$root/crates/idl\"" \
-    --config "patch.crates-io.trellis-codegen-rust.path=\"$root/crates/codegen-rust\"" \
-    --config "patch.crates-io.trellis-builtin-contracts.path=\"$root/crates/builtin-contracts\"" \
     --test live \
     --message-format=json-render-diagnostics > "$json"
   local executable

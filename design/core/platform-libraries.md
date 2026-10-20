@@ -76,9 +76,10 @@ connection walkthroughs, and exact public signatures belong in:
 
 ## Public Rust Packages
 
-The supported author-facing Rust crates are `trellis-rs` (the curated facade for
-clients and services), `trellis-protocol` (canonical protocol objects), and
-`trellis-testkit` (the external live-test harness).
+The supported Rust distribution consists of four crates: `trellis-rs` (the curated
+facade for clients and services), `trellis-protocol` (canonical protocol objects
+and native-IDL wire primitives), `trellis-models` (frozen transport-independent
+built-in models), and `trellis-testkit` (the external live-test harness).
 
 The default `trellis-rs` dependency boundary excludes SQL database drivers.
 Prepared events, memory stores, and common inbox/outbox interfaces remain in the
@@ -92,18 +93,38 @@ installed Rustls provider when present and otherwise select ring locally. They
 do not install a process-wide provider. Certificate verification uses platform
 trust, and OTLP retains its configured per-signal timeouts.
 
-`trellis-testkit` links the real production `trellis-runtime` and runs it as an
-owned task, using production bootstrap, direct administrator seeding, and the
-generated `trellis-runtime-apis` administration client. NATS remains a real
-managed child process. Neither Trellis executable is required by Rust tests.
+No server or compiler dependency tree is part of that registry distribution.
+Generated facades use one definition of each support type, with compile-time ABI
+checking. Models do not depend on the SDK, NATS, or compiler. Shared codecs,
+scalar wrappers and cursor data belong to the protocol layer, so different model
+snapshots do not acquire different SDK-owned primitive types.
 
-Cargo distribution also requires publishing `trellis-runtime-apis`,
-`trellis-idl`, `trellis-local-bootstrap`, `trellis-events-runtime`,
-`trellis-jobs-runtime`, `trellis-runtime`, `trellis-bootstrap`, and
-`trellis-local-nats` in lockstep. These are registry-distributed implementation
-crates, not supported authoring APIs. Normal services/apps must not depend on
-them directly; registry visibility does not change that boundary. Other private
-workspace crates remain unpublished.
+SDK archives include producer-generated, package-relative built-in bindings;
+downstream SDK builds do not compile IDL or generators. Matching native packages
+reuse a separately versioned model bundle through exact identity/version/digest
+and Rust-model-ABI bindings, checked against the compiled provider. Generated
+crates depend directly on their model bundle; they do not borrow the SDK's
+current snapshot. Old bundles can coexist with the SDK's newer models. Shared
+model metadata is not authority evidence and does not change runtime authorization.
+
+SDK-only release preparation preserves protocol, native-contract, and model
+versions. `release prepare` accepts explicit `--protocol-version`,
+`--models-version`, and `--contracts-version` component changes; contract changes
+require explicit model selection. Each model Cargo compatibility line retains one
+native snapshot and Rust representation ABI. A new snapshot needs a new incompatible
+Cargo line (`0.MINOR`, or `MAJOR` after 1.0), permitting old and new bundles to
+coexist. Model serialization fixes can remain compatible patch releases. Rust
+package versions remain distinct from wire protocol family versions.
+
+`trellis-testkit` owns ordinary production CLI/server and NATS processes instead
+of linking server/compiler implementations. Its administrative bindings are
+producer-frozen and package-relative, reusing the selected public model bundle.
+Exact-version CLI/server and pinned NATS archives are checksum-verified and
+cached privately; explicit paths support offline use without fallback downloads.
+Server-only restart preserves the separately owned NATS broker. Internal
+generators, runtime APIs, bootstrap, Jobs, Events, and runtime crates remain
+private and non-publishable. The registry boundary has exactly four package
+names: SDK, protocol, model bundles, and testkit.
 
 Jobs and Events package their canonical SQLite initialization migrations with
 their storage implementation. The production runtime reuses those refinery

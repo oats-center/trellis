@@ -4,14 +4,10 @@ use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tokio_util::task::AbortOnDropHandle;
-use trellis_local_nats::{LocalNats, LocalNatsError, LocalNatsPorts, NatsBinarySource, NatsOutput};
+use crate::distribution::{Distribution, NativeSource};
+use crate::process::Process;
+use std::process::{Command, Stdio};
 use trellis_rs::generated::{AppRequestDescriptor, ParticipantDescriptor};
-use trellis_runtime::shutdown::StopHandle;
-use trellis_runtime::{
-    NatsEndpointOverride, RuntimeConfig, RuntimeError, RuntimeMode, RuntimeOptions,
-    RuntimePathDefaults,
-};
 
 use crate::admin::{AdminSession, ADMIN_USERNAME};
 use crate::error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
@@ -19,8 +15,6 @@ use crate::identity::{
     TestClientIdentity, TestRegisteredNativeClient, TestServiceIdentity, TestUserIdentity,
 };
 use crate::sandbox::{ensure_supported_platform, PortLease, Sandbox, WorkdirRetention};
-
-const MAX_STARTUP_ATTEMPTS: usize = 3;
 
 /// Where the real managed NATS executable comes from.
 #[derive(Clone, Debug)]
@@ -54,10 +48,11 @@ impl Default for TestTimeouts {
     }
 }
 
-/// Consuming builder for a linked production runtime and real managed NATS.
+/// Consuming builder for production Trellis and NATS processes.
 #[derive(Clone)]
 pub struct TrellisTestRuntimeBuilder {
     nats: Option<NatsSource>,
+    native: Option<NativeSource>,
     workdir_parent: Option<PathBuf>,
     retention: WorkdirRetention,
     timeouts: TestTimeouts,
@@ -71,6 +66,7 @@ impl Default for TrellisTestRuntimeBuilder {
     fn default() -> Self {
         Self {
             nats: None,
+            native: None,
             workdir_parent: None,
             retention: WorkdirRetention::OnFailure,
             timeouts: TestTimeouts::default(),
@@ -83,6 +79,12 @@ impl Default for TrellisTestRuntimeBuilder {
 }
 
 impl TrellisTestRuntimeBuilder {
+    /// Select production CLI and server paths, or verified release acquisition.
+    #[must_use]
+    pub fn native(mut self, source: NativeSource) -> Self {
+        self.native = Some(source);
+        self
+    }
     /// Selects where the managed NATS executable comes from.
     #[must_use]
     pub fn nats(mut self, source: NatsSource) -> Self {
@@ -133,7 +135,7 @@ impl TrellisTestRuntimeBuilder {
         self
     }
 
-    /// Starts an isolated production runtime without a Trellis CLI or server executable.
+    /// Starts isolated production executables, acquiring pinned releases when needed.
     ///
     /// # Errors
     /// Returns invalid-input, bootstrap, broker, runtime, or authentication failures.
@@ -164,60 +166,43 @@ impl TrellisTestRuntimeBuilder {
             .clone()
             .unwrap_or_else(generate_password);
         validate_admin_credentials(username, &password)?;
-        let source = match source {
-            NatsSource::Path(path) => NatsBinarySource::Path(path),
-            NatsSource::PathLookup => NatsBinarySource::PathLookup,
-            NatsSource::DownloadPinned => NatsBinarySource::DownloadPinned,
-        };
         let parent = self
             .workdir_parent
             .clone()
             .unwrap_or_else(std::env::temp_dir);
-        let deadline = Instant::now() + timeouts.startup;
-        for attempt in 1..=MAX_STARTUP_ATTEMPTS {
-            let sandbox = Sandbox::create(&parent, self.retention)?;
-            let workdir = sandbox.root().to_owned();
-            match tokio::time::timeout_at(
-                deadline.into(),
-                start_once(
-                    sandbox,
-                    source.clone(),
-                    timeouts,
-                    username,
-                    &password,
-                    &self.extra_origins,
-                ),
+        let sandbox = Sandbox::create(&parent, self.retention)?;
+        let workdir = sandbox.root().to_owned();
+        match tokio::time::timeout(
+            timeouts.startup,
+            start_once(
+                sandbox,
+                source,
+                self.native,
+                timeouts,
+                username,
+                &password,
+                &self.extra_origins,
+            ),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(|error| error.with_workdir(workdir)),
+            Err(_) => Err(TrellisTestError::new(
+                TrellisTestErrorKind::Timeout,
+                TrellisTestStage::RuntimeStart,
+                "startup exceeded its deadline",
             )
-            .await
-            {
-                Ok(Ok(runtime)) => return Ok(runtime),
-                Ok(Err((error, retryable))) => {
-                    if retryable && attempt < MAX_STARTUP_ATTEMPTS && Instant::now() < deadline {
-                        continue;
-                    }
-                    return Err(error.with_workdir(workdir));
-                }
-                Err(_) => {
-                    return Err(TrellisTestError::new(
-                        TrellisTestErrorKind::Timeout,
-                        TrellisTestStage::RuntimeStart,
-                        "startup exceeded its deadline",
-                    )
-                    .with_workdir(workdir))
-                }
-            }
+            .with_workdir(workdir)),
         }
-        unreachable!("every startup attempt returns or retries")
     }
 }
 
 /// Also owns partially initialized resources when startup or shutdown is cancelled.
 struct Infrastructure {
     sandbox: Option<Sandbox>,
-    nats: Option<LocalNats>,
+    nats: Option<Process>,
     port_ownership: Option<[UdpSocket; 5]>,
-    stop: Option<StopHandle>,
-    task: Option<AbortOnDropHandle<Result<(), RuntimeError>>>,
+    server: Option<Process>,
     starting: bool,
 }
 
@@ -227,61 +212,40 @@ impl Infrastructure {
             sandbox.mark_failed();
         }
     }
-
     async fn shutdown(&mut self, timeout: Duration) -> Result<(), TrellisTestError> {
-        if let Some(stop) = &self.stop {
-            stop.stop();
+        if self.starting {
+            self.mark_failed();
         }
+        let deadline = Instant::now() + timeout;
         let mut failure = None;
-        if let Some(task) = self.task.as_mut() {
-            match tokio::time::timeout(timeout, &mut *task).await {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(error))) => {
-                    failure = Some(runtime_error(error, TrellisTestStage::Shutdown))
-                }
-                Ok(Err(error)) => {
-                    failure = Some(TrellisTestError::new(
-                        TrellisTestErrorKind::Runtime,
-                        TrellisTestStage::Shutdown,
-                        format!("runtime task failed: {error}"),
-                    ))
-                }
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await;
-                    failure = Some(request_timeout(
-                        "runtime shutdown",
-                        TrellisTestStage::Shutdown,
-                    ));
-                }
+        if let Some(server) = self.server.as_mut() {
+            if let Err(error) = server
+                .stop(deadline.saturating_duration_since(Instant::now()))
+                .await
+            {
+                failure = Some(error);
             }
         }
-        self.task = None;
-        self.stop = None;
+        self.server = None;
+        if let Some(nats) = self.nats.as_mut() {
+            if let Err(error) = nats
+                .stop(deadline.saturating_duration_since(Instant::now()))
+                .await
+            {
+                failure = Some(merge_failure(failure, error));
+            }
+        }
+        self.nats = None;
         if failure.is_some() {
             self.mark_failed();
         }
-        // All guards stay in the blocking worker if the shutdown future is cancelled.
-        let nats = self.nats.take();
-        let sandbox = self.sandbox.take();
-        let port_ownership = self.port_ownership.take();
-        let cleanup =
-            tokio::task::spawn_blocking(move || cleanup_broker(nats, sandbox, port_ownership))
-                .await;
-        match cleanup {
-            Ok(Err(error)) => failure = Some(merge_failure(failure, error)),
-            Err(error) => {
-                failure = Some(merge_failure(
-                    failure,
-                    TrellisTestError::new(
-                        TrellisTestErrorKind::Cleanup,
-                        TrellisTestStage::Shutdown,
-                        format!("broker cleanup task failed: {error}"),
-                    ),
-                ))
+        if let Some(sandbox) = self.sandbox.as_mut() {
+            if let Some(error) = sandbox.cleanup() {
+                failure = Some(merge_failure(failure, error));
             }
-            Ok(Ok(())) => {}
         }
+        self.sandbox = None;
+        self.port_ownership = None;
         failure.map_or(Ok(()), Err)
     }
 }
@@ -291,320 +255,320 @@ impl Drop for Infrastructure {
         if self.starting || std::thread::panicking() {
             self.mark_failed();
         }
-        if let Some(stop) = self.stop.take() {
-            stop.stop();
-        }
-        self.task = None; // abort-on-drop, including cancellation during startup
-        let nats = self.nats.take();
-        let sandbox = self.sandbox.take();
-        let port_ownership = self.port_ownership.take();
-        if nats.is_some() || sandbox.is_some() {
-            let _ = std::thread::Builder::new()
-                .name("trellis-testkit-cleanup".into())
-                .spawn(move || {
-                    let _ = cleanup_broker(nats, sandbox, port_ownership);
-                });
+        // Reap both children before any sandbox cleanup, including cancelled startup.
+        self.server = None;
+        self.nats = None;
+        if let Some(sandbox) = self.sandbox.as_mut() {
+            let _ = sandbox.cleanup();
         }
     }
-}
-
-fn cleanup_broker(
-    mut nats: Option<LocalNats>,
-    mut sandbox: Option<Sandbox>,
-    _port_ownership: Option<[UdpSocket; 5]>,
-) -> Result<(), TrellisTestError> {
-    let mut failure = nats
-        .as_mut()
-        .and_then(|nats| nats.stop().err())
-        .map(|error| nats_error(error, TrellisTestStage::Shutdown));
-    drop(nats);
-    if let Some(sandbox) = sandbox.as_mut() {
-        if failure.is_some() {
-            sandbox.mark_failed();
-        }
-        if let Some(error) = sandbox.cleanup() {
-            failure = Some(merge_failure(failure, error));
-        }
-    }
-    failure.map_or(Ok(()), Err)
 }
 
 async fn start_once(
     sandbox: Sandbox,
-    source: NatsBinarySource,
+    source: NatsSource,
+    native: Option<NativeSource>,
     timeouts: TestTimeouts,
     username: &str,
     password: &str,
     extra_origins: &[String],
-) -> Result<TrellisTestRuntime, (TrellisTestError, bool)> {
+) -> Result<TrellisTestRuntime, TrellisTestError> {
     let mut infrastructure = Infrastructure {
         sandbox: Some(sandbox),
         nats: None,
         port_ownership: None,
-        stop: None,
-        task: None,
+        server: None,
         starting: true,
     };
-    let workdir = infrastructure
-        .sandbox
-        .as_ref()
-        .expect("owned sandbox")
-        .root()
-        .to_owned();
-    let lease = PortLease::reserve().map_err(|error| (error, false))?;
-    let ports = lease.ports().map_err(|error| (error, false))?;
-    let public_origin = format!("http://127.0.0.1:{}", ports.http);
-    let oauth_origin = format!("http://127.0.0.1:{}", ports.oauth);
-    let config_dir = infrastructure
-        .sandbox
-        .as_ref()
-        .expect("owned sandbox")
-        .config_dir();
-    crate::sandbox::require_utf8_path(&workdir, "sandbox").map_err(|error| (error, false))?;
-    let mut options = trellis_bootstrap::TrellisBootstrapOptions::new(&config_dir);
-    options.runtime.trellis_port = ports.http;
-    options.runtime.nats_server_url = format!("nats://127.0.0.1:{}", ports.nats);
-    options.runtime.nats_websocket_url = format!("ws://127.0.0.1:{}", ports.websocket);
-    options.runtime.public_origin = public_origin.clone();
-    options.runtime.oauth.origin = oauth_origin.clone();
-    options.runtime.oauth.port = ports.oauth;
-    options.runtime.extra_origins = extra_origins.to_vec();
-    options.nats.nats_port = ports.nats;
-    options.nats.monitor_port = ports.monitor;
-    options.nats.websocket_port = ports.websocket;
-    trellis_bootstrap::generate_trellis_bootstrap(&options).map_err(|error| {
-        (
-            TrellisTestError::new(
-                TrellisTestErrorKind::Bootstrap,
-                TrellisTestStage::ConfigGeneration,
-                error.to_string(),
-            ),
-            false,
-        )
-    })?;
-    let config_path = config_dir.join("config.toml");
-    let (mut config, _) = RuntimeConfig::load_from_path_with_defaults(
-        &config_path,
-        RuntimePathDefaults {
-            data: workdir.join("data"),
-            state: workdir.join("state"),
-            cache: workdir.join("cache"),
-            runtime: workdir.join("runtime"),
-            logs: workdir.join("logs"),
-        },
-    )
-    .map_err(|error| {
-        (
-            TrellisTestError::new(
-                TrellisTestErrorKind::Bootstrap,
-                TrellisTestStage::ConfigGeneration,
-                error.to_string(),
-            ),
-            false,
-        )
-    })?;
-    let http = config
-        .http
-        .as_mut()
-        .expect("bootstrap generates HTTP configuration");
-    http.bind_address = Some(std::net::Ipv4Addr::LOCALHOST.into());
-    http.port = Some(ports.http);
-    http.rate_limit_max = Some(0);
-    let effective = toml::to_string_pretty(&config).map_err(|error| {
-        (
-            TrellisTestError::new(
-                TrellisTestErrorKind::Bootstrap,
-                TrellisTestStage::ConfigGeneration,
-                error.to_string(),
-            ),
-            false,
-        )
-    })?;
-    std::fs::write(&config_path, effective).map_err(|error| (error.into(), false))?;
-    trellis_runtime::platform::seed_admin_credentials(&config, username, password)
-        .await
-        .map_err(|error| {
-            (
-                runtime_error(error, TrellisTestStage::AdministratorBootstrap),
-                false,
-            )
-        })?;
-
-    // The blocking production broker API owns the complete startup guard. Cancelling
-    // its waiter cannot delete the sandbox while broker startup is still using it.
-    infrastructure = tokio::task::spawn_blocking(move || {
-        let root = infrastructure
+    let result = async {
+        let workdir = infrastructure
             .sandbox
             .as_ref()
             .expect("owned sandbox")
-            .root();
-        let builder = LocalNats::builder()
-            .binary(source)
-            .source(config_dir.join("nats"))
-            .state(root.join("state/nats"))
-            .pid_file(root.join("runtime/nats-server.pid"))
-            .output(NatsOutput::Log {
-                path: root.join("logs/nats-server.log"),
-                mirror: false,
-            })
-            .ports(LocalNatsPorts {
-                nats: ports.nats,
-                monitor: ports.monitor,
-                websocket: ports.websocket,
-            });
-        infrastructure.port_ownership = Some(lease.release_for_spawn());
-        match builder.start() {
-            Ok(nats) => {
-                infrastructure.nats = Some(nats);
-                Ok(infrastructure)
-            }
-            Err(error) => {
-                let retryable = matches!(&error, LocalNatsError::PortInUse { port } if [ports.nats, ports.monitor, ports.websocket].contains(port));
-                Err((nats_error(error, TrellisTestStage::RuntimeStart), retryable))
-            },
+            .root()
+            .to_owned();
+        let distribution = crate::distribution::resolve(native, &source).await?;
+        let lease = PortLease::reserve()?;
+        let ports = lease.ports()?;
+        let public_origin = format!("http://127.0.0.1:{}", ports.http);
+        let oauth_origin = format!("http://127.0.0.1:{}", ports.oauth);
+        let nats_url = format!("nats://127.0.0.1:{}", ports.nats);
+        let websocket_url = format!("ws://127.0.0.1:{}", ports.websocket);
+        let config_dir = infrastructure
+            .sandbox
+            .as_ref()
+            .expect("owned sandbox")
+            .config_dir();
+        let config_path = config_dir.join("config.toml");
+        std::fs::create_dir_all(workdir.join("logs"))?;
+        let mut command = Command::new(&distribution.cli);
+        command
+            .args(["init", "config", "--out"])
+            .arg(&config_dir)
+            .args([
+                "--trellis-port",
+                &ports.http.to_string(),
+                "--nats-port",
+                &ports.nats.to_string(),
+                "--nats-monitor-port",
+                &ports.monitor.to_string(),
+                "--nats-ws-port",
+                &ports.websocket.to_string(),
+                "--nats-server-url",
+                &nats_url,
+                "--nats-websocket-url",
+                &websocket_url,
+                "--public-origin",
+                &public_origin,
+                "--bind-address",
+                "127.0.0.1",
+                "--rate-limit-max",
+                "0",
+                "--nats-data-dir",
+            ])
+            .arg(workdir.join("state/nats/data"));
+        for origin in extra_origins {
+            command.arg("--extra-origin").arg(origin);
         }
-    })
-    .await
-    .map_err(|error| {
-        (
-            TrellisTestError::new(
-                TrellisTestErrorKind::Runtime,
-                TrellisTestStage::RuntimeStart,
-                format!("broker startup task failed: {error}"),
-            ),
-            false,
+        crate::process::run(
+            &mut command,
+            &workdir.join("logs/bootstrap.log"),
+            None,
+            TrellisTestStage::ConfigGeneration,
         )
-    })??;
-    let nats = infrastructure.nats.as_ref().expect("started broker");
-    let nats_url = nats.nats_url().to_owned();
-    let websocket_url = nats.websocket_url().to_owned();
-    let stop = StopHandle::new();
-    infrastructure.stop = Some(stop.clone());
-    infrastructure.task = Some(AbortOnDropHandle::new(tokio::spawn(
-        trellis_runtime::run_with_stop(
-            RuntimeOptions {
-                mode: RuntimeMode::All,
-                config: config.clone(),
-                reset_admin: false,
-                nats_override: Some(NatsEndpointOverride {
-                    runtime_servers: nats_url.clone(),
-                    advertised_native: Some(vec![nats_url.clone()]),
-                    advertised_websocket: Some(vec![websocket_url.clone()]),
-                }),
-            },
-            Some(stop),
-        ),
-    )));
-    if let Err(error) = wait_for_readyz(&public_origin, &mut infrastructure).await {
-        let retryable = matches!(&error, StartupError::Runtime(RuntimeError::Server(trellis_runtime::ServerError::Bind { addr, .. })) if addr.port() == ports.http);
-        let mut error = match error {
-            StartupError::Runtime(error) => runtime_error(error, TrellisTestStage::RuntimeStart),
-            StartupError::Test(error) => error,
-        };
-        infrastructure.mark_failed();
-        if let Err(cleanup) = infrastructure.shutdown(timeouts.shutdown).await {
-            error = error.with_cleanup(cleanup);
+        .await?;
+        let mut config: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path)?)
+            .map_err(|error| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::Bootstrap,
+                    TrellisTestStage::ConfigGeneration,
+                    error.to_string(),
+                )
+            })?;
+        config["auth"]["oauth"]["origin"] = oauth_origin.clone().into();
+        config["auth"]["oauth"]["port"] = i64::from(ports.oauth).into();
+        let mut paths = toml::map::Map::new();
+        for name in ["data", "state", "cache", "runtime", "logs"] {
+            let path = workdir.join(name);
+            std::fs::create_dir_all(&path)?;
+            paths.insert(
+                name.to_owned(),
+                crate::sandbox::require_utf8_path(&path, name)?
+                    .to_owned()
+                    .into(),
+            );
         }
-        return Err((error, retryable));
+        config
+            .as_table_mut()
+            .ok_or_else(|| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::Bootstrap,
+                    TrellisTestStage::ConfigGeneration,
+                    "generated configuration is not a TOML table",
+                )
+            })?
+            .insert("paths".into(), toml::Value::Table(paths));
+        std::fs::write(
+            &config_path,
+            toml::to_string_pretty(&config).map_err(|error| {
+                TrellisTestError::new(
+                    TrellisTestErrorKind::Bootstrap,
+                    TrellisTestStage::ConfigGeneration,
+                    error.to_string(),
+                )
+            })?,
+        )?;
+        crate::process::run(
+            Command::new(&distribution.cli)
+                .args(["init", "admin", "--config"])
+                .arg(&config_path)
+                .args(["--username", username, "--password-stdin"]),
+            &workdir.join("logs/bootstrap.log"),
+            Some(password),
+            TrellisTestStage::AdministratorBootstrap,
+        )
+        .await?;
+        infrastructure.port_ownership = Some(lease.release_for_spawn());
+        infrastructure.nats = Some(Process::spawn(
+            Command::new(&distribution.nats)
+                .arg("-c")
+                .arg(config_dir.join("nats/nats.conf"))
+                .stdin(Stdio::null()),
+            &workdir.join("logs/nats-server.log"),
+        )?);
+        let broker_deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if !infrastructure
+                .nats
+                .as_mut()
+                .expect("owned broker")
+                .running()?
+            {
+                return Err(TrellisTestError::new(
+                    TrellisTestErrorKind::Runtime,
+                    TrellisTestStage::RuntimeStart,
+                    "broker exited before readiness; inspect private nats-server.log",
+                ));
+            }
+            let mut ready = true;
+            for port in [ports.nats, ports.monitor, ports.websocket] {
+                ready &= tokio::time::timeout(
+                    Duration::from_millis(100),
+                    tokio::net::TcpStream::connect(("127.0.0.1", port)),
+                )
+                .await
+                .is_ok_and(|result| result.is_ok());
+            }
+            if ready {
+                break;
+            }
+            if Instant::now() >= broker_deadline {
+                return Err(request_timeout(
+                    "broker readiness",
+                    TrellisTestStage::RuntimeStart,
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        infrastructure.server = Some(Process::spawn(
+            Command::new(&distribution.server)
+                .arg("--config")
+                .arg(&config_path)
+                .stdin(Stdio::null()),
+            &workdir.join("logs/trellis-server.log"),
+        )?);
+        wait_for_readyz(&public_origin, &mut infrastructure).await?;
+        let admin = AdminSession::connect(
+            &oauth_origin,
+            &workdir.join("credentials/admin"),
+            username,
+            password,
+        )
+        .await?;
+        let admin_principal_id = admin.verify().await?;
+        Ok((
+            workdir,
+            distribution,
+            config_path,
+            public_origin,
+            oauth_origin,
+            nats_url,
+            websocket_url,
+            ports.monitor,
+            admin,
+            admin_principal_id,
+        ))
     }
-    let admin = AdminSession::connect(
-        &oauth_origin,
-        &workdir.join("credentials/admin"),
-        username,
-        password,
-    )
-    .await
-    .map_err(|error| (error, false))?;
-    let admin_principal_id = admin.verify().await.map_err(|error| (error, false))?;
-    infrastructure.starting = false;
-    Ok(TrellisTestRuntime {
-        config,
-        workdir,
-        trellis_url: public_origin,
-        oauth_origin,
-        nats_url,
-        websocket_url,
-        monitor_url: format!("http://127.0.0.1:{}", ports.monitor),
-        admin: Some(admin),
-        admin_principal_id,
-        infrastructure,
-        username: username.to_owned(),
-        password: password.to_owned(),
-        names: Vec::new(),
-        prepared_client_capabilities: std::collections::BTreeSet::new(),
-        users: std::collections::BTreeMap::new(),
-        native_applications: std::collections::BTreeMap::new(),
-        timeouts,
-        stopped: false,
-    })
-}
-
-enum StartupError {
-    Runtime(RuntimeError),
-    Test(TrellisTestError),
+    .await;
+    match result {
+        Ok((
+            workdir,
+            distribution,
+            config,
+            trellis_url,
+            oauth_origin,
+            nats_url,
+            websocket_url,
+            monitor,
+            admin,
+            admin_principal_id,
+        )) => {
+            infrastructure.starting = false;
+            Ok(TrellisTestRuntime {
+                config,
+                distribution,
+                workdir,
+                trellis_url,
+                oauth_origin,
+                nats_url,
+                websocket_url,
+                monitor_url: format!("http://127.0.0.1:{monitor}"),
+                admin: Some(admin),
+                admin_principal_id,
+                infrastructure,
+                username: username.to_owned(),
+                password: password.to_owned(),
+                names: Vec::new(),
+                prepared_client_capabilities: Default::default(),
+                users: Default::default(),
+                native_applications: Default::default(),
+                timeouts,
+                stopped: false,
+            })
+        }
+        Err(mut error) => {
+            infrastructure.mark_failed();
+            if let Err(cleanup) = infrastructure.shutdown(timeouts.shutdown).await {
+                error = error.with_cleanup(cleanup);
+            }
+            Err(error)
+        }
+    }
 }
 
 async fn wait_for_readyz(
     origin: &str,
     infrastructure: &mut Infrastructure,
-) -> Result<(), StartupError> {
+) -> Result<(), TrellisTestError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(1))
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| {
-            StartupError::Test(TrellisTestError::new(
+            TrellisTestError::new(
                 TrellisTestErrorKind::Runtime,
                 TrellisTestStage::RuntimeStart,
                 error.to_string(),
-            ))
+            )
         })?;
-    let task = infrastructure.task.as_mut().expect("owned runtime task");
-    let readiness = async {
-        loop {
-            if client
-                .get(format!("{origin}/readyz"))
-                .send()
-                .await
-                .is_ok_and(|response| response.status() == reqwest::StatusCode::OK)
+    loop {
+        for process in [&mut infrastructure.nats, &mut infrastructure.server] {
+            if !process
+                .as_mut()
+                .ok_or_else(|| {
+                    TrellisTestError::new(
+                        TrellisTestErrorKind::Runtime,
+                        TrellisTestStage::RuntimeStart,
+                        "missing production process",
+                    )
+                })?
+                .running()?
             {
-                return;
+                return Err(TrellisTestError::new(
+                    TrellisTestErrorKind::Runtime,
+                    TrellisTestStage::RuntimeStart,
+                    "production process exited before readiness; inspect the retained private logs",
+                ));
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    };
-    tokio::select! {
-        biased;
-        result = task => {
-            infrastructure.task = None; // a completed handle must not be polled twice
-            match result {
-                Ok(Err(error)) => Err(StartupError::Runtime(error)),
-                Ok(Ok(())) => Err(StartupError::Test(TrellisTestError::new(TrellisTestErrorKind::Runtime, TrellisTestStage::RuntimeStart, "runtime stopped before readiness"))),
-                Err(error) => Err(StartupError::Test(TrellisTestError::new(TrellisTestErrorKind::Runtime, TrellisTestStage::RuntimeStart, format!("runtime task failed: {error}")))),
+        let process_id = u64::from(
+            infrastructure
+                .server
+                .as_ref()
+                .expect("checked server owner")
+                .id(),
+        );
+        match client.get(format!("{origin}/readyz")).send().await {
+            Ok(response) if response.status() == reqwest::StatusCode::OK => {
+                if response
+                    .json::<serde_json::Value>()
+                    .await
+                    .is_ok_and(|metadata| metadata["processId"].as_u64() == Some(process_id))
+                {
+                    return Ok(());
+                }
             }
-        },
-        () = readiness => Ok(()),
+            _ => {}
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-}
-
-fn runtime_error(error: RuntimeError, stage: TrellisTestStage) -> TrellisTestError {
-    TrellisTestError::new(TrellisTestErrorKind::Runtime, stage, error.to_string())
-}
-
-fn nats_error(error: LocalNatsError, stage: TrellisTestStage) -> TrellisTestError {
-    let kind = match &error {
-        LocalNatsError::InvalidBinaryPath { .. } => TrellisTestErrorKind::InvalidBinary,
-        LocalNatsError::MissingBinary { .. } => TrellisTestErrorKind::MissingBinary,
-        LocalNatsError::PortInUse { .. } => TrellisTestErrorKind::PortConflict,
-        _ => TrellisTestErrorKind::Runtime,
-    };
-    TrellisTestError::new(kind, stage, error.to_string())
 }
 
 /// A running production Trellis runtime owned by the calling test.
 pub struct TrellisTestRuntime {
-    config: RuntimeConfig,
+    config: PathBuf,
+    distribution: Distribution,
     workdir: PathBuf,
     trellis_url: String,
     oauth_origin: String,
@@ -631,50 +595,31 @@ impl TrellisTestRuntime {
     /// # Errors
     /// Returns shutdown, startup, readiness, or administrator reconnect failures.
     pub async fn restart(&mut self) -> Result<(), TrellisTestError> {
+        if self.stopped {
+            return Err(TrellisTestError::new(
+                TrellisTestErrorKind::RuntimeStopped,
+                TrellisTestStage::RuntimeStart,
+                "the test runtime has already stopped",
+            ));
+        }
+        self.infrastructure.starting = true;
         self.admin = None;
-        if let Some(stop) = self.infrastructure.stop.take() {
-            stop.stop();
+        if let Some(server) = self.infrastructure.server.as_mut() {
+            server.stop(self.timeouts.shutdown).await?;
         }
-        if let Some(mut task) = self.infrastructure.task.take() {
-            tokio::time::timeout(self.timeouts.shutdown, &mut task)
-                .await
-                .map_err(|_| request_timeout("runtime shutdown", TrellisTestStage::Shutdown))?
-                .map_err(|error| {
-                    TrellisTestError::new(
-                        TrellisTestErrorKind::Runtime,
-                        TrellisTestStage::Shutdown,
-                        error.to_string(),
-                    )
-                })?
-                .map_err(|error| runtime_error(error, TrellisTestStage::Shutdown))?;
-        }
-        let stop = StopHandle::new();
-        self.infrastructure.stop = Some(stop.clone());
-        self.infrastructure.task = Some(AbortOnDropHandle::new(tokio::spawn(
-            trellis_runtime::run_with_stop(
-                RuntimeOptions {
-                    mode: RuntimeMode::All,
-                    config: self.config.clone(),
-                    reset_admin: false,
-                    nats_override: Some(NatsEndpointOverride {
-                        runtime_servers: self.nats_url.clone(),
-                        advertised_native: Some(vec![self.nats_url.clone()]),
-                        advertised_websocket: Some(vec![self.websocket_url.clone()]),
-                    }),
-                },
-                Some(stop),
-            ),
-        )));
+        self.infrastructure.server = Some(Process::spawn(
+            Command::new(&self.distribution.server)
+                .arg("--config")
+                .arg(&self.config)
+                .stdin(Stdio::null()),
+            &self.workdir.join("logs/trellis-server.log"),
+        )?);
         tokio::time::timeout(
             self.timeouts.startup,
             wait_for_readyz(&self.trellis_url, &mut self.infrastructure),
         )
         .await
-        .map_err(|_| request_timeout("runtime restart", TrellisTestStage::RuntimeStart))?
-        .map_err(|error| match error {
-            StartupError::Runtime(error) => runtime_error(error, TrellisTestStage::RuntimeStart),
-            StartupError::Test(error) => error,
-        })?;
+        .map_err(|_| request_timeout("runtime restart", TrellisTestStage::RuntimeStart))??;
         self.admin = Some(
             AdminSession::connect(
                 &self.oauth_origin,
@@ -690,6 +635,7 @@ impl TrellisTestRuntime {
             .expect("reconnected administrator")
             .verify()
             .await?;
+        self.infrastructure.starting = false;
         Ok(())
     }
 
@@ -792,14 +738,16 @@ impl TrellisTestRuntime {
         }
         if self
             .infrastructure
-            .task
+            .server
             .as_ref()
-            .is_none_or(AbortOnDropHandle::is_finished)
+            .map(Process::running)
+            .transpose()?
+            != Some(true)
         {
             return Err(TrellisTestError::new(
                 TrellisTestErrorKind::Runtime,
                 TrellisTestStage::RuntimeStart,
-                "the production runtime task has exited",
+                "the production server process has exited",
             ));
         }
         self.admin().map(|_| ())
@@ -1118,12 +1066,15 @@ fn validate_timeouts(timeouts: &TestTimeouts) -> Result<(), TrellisTestError> {
     Ok(())
 }
 fn validate_admin_credentials(username: &str, password: &str) -> Result<(), TrellisTestError> {
-    if username.is_empty() || username.chars().any(char::is_control) || password.chars().count() < 8
+    if username.is_empty()
+        || username.chars().any(char::is_control)
+        || password.chars().count() < 8
+        || password.contains(['\r', '\n'])
     {
         return Err(TrellisTestError::new(
             TrellisTestErrorKind::InvalidConfiguration,
             TrellisTestStage::Validation,
-            "administrator username must be nonempty without controls and password at least 8 characters",
+            "administrator username must be nonempty without controls and password at least 8 characters without line breaks",
         ));
     }
     Ok(())

@@ -57,6 +57,10 @@ pub struct InitConfigArgs {
     pub nats_ws_port: u16,
 
     #[arg(long)]
+    /// Absolute writable data directory for an independently managed NATS server.
+    pub nats_data_dir: Option<PathBuf>,
+
+    #[arg(long)]
     /// Native NATS server URL for Trellis services; defaults to nats://127.0.0.1:<nats-port>.
     pub nats_server_url: Option<String>,
 

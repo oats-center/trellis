@@ -5,10 +5,17 @@
 
 use std::sync::Arc;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
+
+pub use trellis_protocol::model::{
+    assert_model_binding, decode_typed_error, serde_base64, serde_f64, serde_i64, serde_u64, Bytes,
+    Codec, CodecError, CursorPage, CursorPageInfo, CursorQuery, Int64, ModelPackage, Nullable,
+    Number, SerializableErrorData, Timestamp, TimestampError, TrellisError, Uint64, Ulid,
+    UlidError,
+};
 
 /// Generated-code ABI version supported by this runtime.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// Fail compilation when generated source targets a different runtime ABI.
 pub const fn assert_abi(version: u32) {
@@ -414,36 +421,6 @@ pub enum ResourceKind {
     Job,
     /// Durable event consumer.
     Consumer,
-}
-
-/// Failure while converting a generated wire value.
-#[derive(Debug, thiserror::Error)]
-pub enum CodecError {
-    /// The JSON representation did not match the generated Rust type.
-    #[error("invalid generated wire value: {0}")]
-    Json(#[from] serde_json::Error),
-}
-
-/// Bidirectional JSON codec implemented by generated wire types.
-pub trait Codec: Sized {
-    /// Encode this value to its JSON wire representation.
-    fn encode(&self) -> Result<serde_json::Value, CodecError>;
-
-    /// Decode this value from its JSON wire representation.
-    fn decode(value: serde_json::Value) -> Result<Self, CodecError>;
-}
-
-impl<T> Codec for T
-where
-    T: Serialize + DeserializeOwned,
-{
-    fn encode(&self) -> Result<serde_json::Value, CodecError> {
-        Ok(serde_json::to_value(self)?)
-    }
-
-    fn decode(value: serde_json::Value) -> Result<Self, CodecError> {
-        Ok(serde_json::from_value(value)?)
-    }
 }
 
 /// Metadata emitted for one generated RPC action.
@@ -1565,308 +1542,6 @@ impl PackageEvidence {
     }
 }
 
-/// RFC 3339 timestamp normalized to canonical UTC by generated SDKs.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Timestamp(String);
-
-impl Timestamp {
-    /// Parse an RFC 3339 timestamp with up to nanosecond precision and normalize it.
-    pub fn parse(value: &str) -> Result<Self, TimestampError> {
-        use time::format_description::well_known::Rfc3339;
-
-        if !matches!(value.as_bytes().get(10), Some(b'T' | b't')) {
-            return Err(TimestampError::Separator);
-        }
-        if value.get(17..19) == Some("60") {
-            return Err(TimestampError::LeapSecond);
-        }
-        if value
-            .get(19..)
-            .and_then(|tail| tail.strip_prefix('.'))
-            .is_some_and(|fraction| fraction.bytes().take_while(u8::is_ascii_digit).count() > 9)
-        {
-            return Err(TimestampError::Precision);
-        }
-        let parsed = time::OffsetDateTime::parse(value, &Rfc3339)?;
-        Ok(Self(
-            parsed.to_offset(time::UtcOffset::UTC).format(&Rfc3339)?,
-        ))
-    }
-
-    /// Borrow the canonical wire string.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Timestamp {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::str::FromStr for Timestamp {
-    type Err = TimestampError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl Serialize for Timestamp {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Timestamp {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Invalid generated timestamp.
-#[derive(Debug, thiserror::Error)]
-pub enum TimestampError {
-    /// The value is not RFC 3339.
-    #[error("invalid RFC 3339 timestamp: {0}")]
-    Parse(#[from] time::error::Parse),
-    /// A parsed timestamp could not be rendered.
-    #[error("could not format RFC 3339 timestamp: {0}")]
-    Format(#[from] time::error::Format),
-    /// A fractional second exceeds nanosecond precision.
-    #[error("timestamp exceeds nanosecond precision")]
-    Precision,
-    /// A non-RFC 3339 date/time separator was used.
-    #[error("timestamp requires an RFC 3339 date/time separator")]
-    Separator,
-    /// Leap seconds cannot be represented without losing precision.
-    #[error("leap seconds are not supported in timestamps")]
-    LeapSecond,
-}
-
-/// Validated uppercase canonical ULID used by generated SDKs.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Ulid(ulid::Ulid);
-
-impl Ulid {
-    /// Parse an uppercase canonical ULID.
-    pub fn parse(value: &str) -> Result<Self, UlidError> {
-        let parsed = value.parse::<ulid::Ulid>().map_err(UlidError::Invalid)?;
-        if parsed.to_string() != value {
-            return Err(UlidError::NonCanonical);
-        }
-        Ok(Self(parsed))
-    }
-}
-
-impl std::fmt::Display for Ulid {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl std::str::FromStr for Ulid {
-    type Err = UlidError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl Serialize for Ulid {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for Ulid {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Invalid or non-canonical generated ULID.
-#[derive(Debug, thiserror::Error)]
-pub enum UlidError {
-    /// The value is not a ULID.
-    #[error("invalid ULID: {0}")]
-    Invalid(ulid::DecodeError),
-    /// The value does not use uppercase canonical spelling.
-    #[error("ULID must use uppercase canonical spelling")]
-    NonCanonical,
-}
-
-/// Standard serializable fields carried by generated declared errors.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SerializableErrorData {
-    /// Error instance identifier.
-    pub id: String,
-    /// Contract error discriminator.
-    #[serde(rename = "type")]
-    pub error_type: String,
-    /// Human-facing error message.
-    pub message: String,
-    /// Optional structured context.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Optional distributed trace identifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
-    /// Additive fields from newer runtimes or declared error data.
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Contract implemented by generated typed errors.
-pub trait TrellisError: std::error::Error + Serialize + DeserializeOwned {
-    /// Stable contract error discriminator.
-    const TYPE: &'static str;
-}
-
-/// Decode a generated typed error only when its discriminator matches.
-pub fn decode_typed_error<E>(value: serde_json::Value) -> Result<Option<E>, serde_json::Error>
-where
-    E: TrellisError,
-{
-    if value.get("type").and_then(serde_json::Value::as_str) != Some(E::TYPE) {
-        return Ok(None);
-    }
-    serde_json::from_value(value).map(Some)
-}
-
-/// Serde adapter for decimal-string `i64` wire values.
-pub mod serde_i64 {
-    use serde::{de::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize an `i64` as a decimal JSON string.
-    pub fn serialize<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    /// Deserialize an `i64` from a decimal JSON string.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<i64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        let digits = value.strip_prefix('-').unwrap_or(&value);
-        if digits.is_empty()
-            || !digits.bytes().all(|byte| byte.is_ascii_digit())
-            || (digits.len() > 1 && digits.starts_with('0'))
-            || value == "-0"
-        {
-            return Err(D::Error::custom("expected canonical i64 decimal string"));
-        }
-        value.parse().map_err(D::Error::custom)
-    }
-}
-
-/// Serde adapter for decimal-string `u64` wire values.
-pub mod serde_u64 {
-    use serde::{de::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize a `u64` as a decimal JSON string.
-    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    /// Deserialize a `u64` from a decimal JSON string.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        if value.is_empty()
-            || !value.bytes().all(|byte| byte.is_ascii_digit())
-            || (value.len() > 1 && value.starts_with('0'))
-        {
-            return Err(D::Error::custom("expected canonical u64 decimal string"));
-        }
-        value.parse().map_err(D::Error::custom)
-    }
-}
-
-/// Serde adapter rejecting non-finite `f64` values at both codec boundaries.
-pub mod serde_f64 {
-    use serde::{de::Error as _, ser::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize a finite JSON number.
-    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if !value.is_finite() {
-            return Err(S::Error::custom("expected finite f64"));
-        }
-        serializer.serialize_f64(*value)
-    }
-
-    /// Deserialize a finite JSON number.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = f64::deserialize(deserializer)?;
-        if !value.is_finite() {
-            return Err(D::Error::custom("expected finite f64"));
-        }
-        Ok(value)
-    }
-}
-
-/// Serde adapter for padded standard-base64 byte vectors.
-pub mod serde_base64 {
-    use base64::Engine as _;
-    use serde::{de::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize bytes as padded standard base64.
-    pub fn serialize<S>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(value))
-    }
-
-    /// Deserialize bytes from canonical padded standard base64.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&value)
-            .map_err(D::Error::custom)?;
-        if base64::engine::general_purpose::STANDARD.encode(&decoded) != value {
-            return Err(D::Error::custom(
-                "expected canonical padded standard base64",
-            ));
-        }
-        Ok(decoded)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::fmt;
@@ -1924,11 +1599,7 @@ mod tests {
         assert!(items.next().await.is_none());
     }
 
-    use super::{
-        ApiDescriptor, Codec as _, DeclaredOperationFailure, OperationAdapter,
-        OperationDeclaredError, OperationDescriptor, OperationSignal, PackageEvidence,
-        PackageSourceEvidence, SerializableErrorData, Timestamp, TrellisError, Ulid,
-    };
+    use super::{Codec as _, Timestamp, TrellisError, Ulid};
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     struct WireScalars {
@@ -2030,12 +1701,6 @@ mod tests {
         );
     }
 
-    struct ExampleApi;
-
-    impl ApiDescriptor for ExampleApi {
-        const ID: &'static str = "example/Orders@v1";
-    }
-
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     struct ExampleError {
         message: String,
@@ -2053,66 +1718,8 @@ mod tests {
         const TYPE: &'static str = "ExampleError";
     }
 
-    #[derive(Debug)]
-    struct ExampleOperationError(SerializableErrorData);
-
-    impl OperationDeclaredError for ExampleOperationError {
-        fn data(&self) -> &SerializableErrorData {
-            &self.0
-        }
-    }
-
-    struct ExampleOperation;
-
-    impl OperationDescriptor for ExampleOperation {
-        type Input = String;
-        type Output = bool;
-        type Progress = u32;
-        type Update = serde_json::Value;
-        type UpdateEvidence = crate::client::NoOperationUpdates;
-        type Error = ExampleOperationError;
-
-        const API_ID: &'static str = "example/Orders@v1";
-        const DESCRIPTOR_NAME: &'static str = "operation.Process";
-        const SUBJECT: &'static str = "operation.v1.Orders.Process";
-        const KEY: &'static str = "Orders.Process";
-        const CALLER_CAPABILITIES: &'static [&'static str] = &["orders.process"];
-        const ERRORS: &'static [&'static str] = &["example/Orders@v1.Rejected"];
-        const SIGNALS: &'static [&'static str] = &["Resume"];
-        const UPLOAD: bool = true;
-        const HAS_PROGRESS: bool = true;
-        const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
-
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            serde_json::from_value(value).map(|data| Some(ExampleOperationError(data)))
-        }
-    }
-
-    struct Resume;
-
-    impl OperationSignal for Resume {
-        type Operation = ExampleOperation;
-        type Input = String;
-
-        const NAME: &'static str = "Resume";
-    }
-
     #[test]
-    fn generated_descriptors_validate_only_local_structure() {
-        ExampleApi::validate().unwrap();
-        const PACKAGES: &[PackageSourceEvidence] = &[PackageSourceEvidence::from_generated(
-            "example",
-            "1.0.0",
-            "digest",
-            "package \"example\";\n",
-        )];
-        let evidence = PackageEvidence::from_generated("example", "digest", PACKAGES);
-        evidence.validate().unwrap();
-        assert_eq!(evidence.root_package(), "example");
-        assert_eq!(evidence.root_digest(), "digest");
-        assert_eq!(evidence.packages()[0].name(), "example");
+    fn typed_error_decoder_rejects_foreign_discriminators() {
         assert_eq!(
             super::decode_typed_error::<ExampleError>(serde_json::json!({
                 "type": "ExampleError",
@@ -2130,45 +1737,6 @@ mod tests {
             }))
             .unwrap()
             .is_none()
-        );
-    }
-
-    #[test]
-    fn generated_operation_descriptor_projects_into_current_runtime() {
-        type Runtime = OperationAdapter<ExampleOperation>;
-
-        assert_eq!(
-            <Runtime as crate::client::OperationDescriptor>::KEY,
-            ExampleOperation::KEY
-        );
-        assert_eq!(
-            <Runtime as crate::client::OperationDescriptor>::SUBJECT,
-            ExampleOperation::SUBJECT
-        );
-        assert_eq!(
-            <Runtime as crate::client::OperationDescriptor>::PROGRESS_SCHEMA_JSON,
-            Some("{}")
-        );
-        assert_eq!(
-            <<Resume as OperationSignal>::Operation as OperationDescriptor>::SIGNALS,
-            &[<Resume as OperationSignal>::NAME]
-        );
-
-        let failure = DeclaredOperationFailure::new(ExampleOperationError(SerializableErrorData {
-            id: "error-1".into(),
-            error_type: "example/Orders@v1.Rejected".into(),
-            message: "rejected".into(),
-            context: None,
-            trace_id: None,
-            extra: serde_json::Map::new(),
-        }));
-        assert_eq!(
-            crate::service::OperationFailureLike::error_type(&failure),
-            "example/Orders@v1.Rejected"
-        );
-        assert_eq!(
-            crate::service::OperationFailureLike::message(&failure),
-            "rejected"
         );
     }
 }

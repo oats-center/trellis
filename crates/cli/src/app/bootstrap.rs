@@ -131,7 +131,39 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     options.nats.names.trellis_account = args.trellis_account.clone();
     options.nats.names.server_name = args.server_name.clone();
 
+    if args
+        .nats_data_dir
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err(miette!("--nats-data-dir must be absolute"));
+    }
     generate_trellis_bootstrap(&options).map_err(bootstrap_report)?;
+    if let Some(data) = &args.nats_data_dir {
+        let nats = args.out.join("nats");
+        std::fs::create_dir_all(data.join("jwt")).into_diagnostic()?;
+        let jwt = std::fs::read_to_string(nats.join("jwt.conf")).into_diagnostic()?;
+        std::fs::write(
+            nats.join("jwt.conf"),
+            trellis_bootstrap::render_local_jwt_config(
+                &jwt,
+                &data.join("jwt").display().to_string(),
+            ),
+        )
+        .into_diagnostic()?;
+        std::fs::write(
+            nats.join("nats.conf"),
+            trellis_bootstrap::render_local_nats_config(
+                args.server_name.as_deref().unwrap_or("trellis"),
+                &data.display().to_string(),
+                "./jwt.conf",
+                args.nats_port,
+                args.nats_ws_port,
+                args.nats_monitor_port,
+            ),
+        )
+        .into_diagnostic()?;
+    }
     let trellis_config = args.out.join("config.toml");
     let nats_config = args.out.join("nats/nats.conf");
     if output::is_json(format) {

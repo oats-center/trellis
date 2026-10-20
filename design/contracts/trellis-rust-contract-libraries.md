@@ -26,11 +26,36 @@ adapters. Service/device connection paths submit identity/proof inputs;
 the server resolves assignments, approvals, exact grants, routes, and resources.
 Generated device options do not accept a reusable session seed.
 
+Primitive wire wrappers, nullable values, and cursor-page structures live in
+the transport-independent protocol library. Generated packages re-export those exact types rather
+than defining per-package copies; authored IDL models retain their own nominal
+types. Their serialization remains unchanged. Generated Rust ABI 2 requires this
+shared support; regenerate packages with the matching CLI and SDK instead of
+adding compatibility definitions. This is a Rust support-ABI change, not a wire
+protocol version change.
+
+Rust generation can bind an exact native package to a compiled model provider.
+The binding matches package identity, authored version, and semantic digest,
+including locked dependency identities. Matching packages re-export the provider's
+nominal models instead of emitting copies; other packages remain independently
+generated. Generated constants verify the actual provider's package metadata at
+compilation, including the Rust model ABI. The CLI offers the independently
+versioned `trellis-models` bundle through this generic binding mechanism;
+neither package names alone nor matching API majors select shared models.
+Generated packages declare their model dependency directly, while retaining the
+normal compatible SDK dependency range. SDK implementation updates do not require
+regeneration when execution ABI and selected models remain compatible. The SDK
+can use a newer model snapshot without making an older generated client adopt it.
+
 Generated implementations are disposable build artifacts, not committed source.
-Trellis-owned Rust libraries keep authored Cargo manifests, entrypoints, and build
-scripts; Cargo generates their implementations into `OUT_DIR` from the shared
-`trellis-builtin-contracts` native IDL package. Published crates carry their build
-dependencies, so downstream consumers do not need the Trellis CLI or repository.
+The SDK keeps authored Cargo manifests and entrypoints. `cargo xtask install`
+prepares the model bundle and SDK runtime descriptors from the shared native
+IDL inputs into ignored, package-relative directories before compilation.
+Published model and SDK archives include those frozen sources and have no
+compiler or generator build dependencies. A repository checkout therefore needs
+preparation, while an archive/registry consumer needs only ordinary Cargo; a bare
+Git dependency is not a prepared SDK distribution. Private runtime API wrappers
+may still generate into `OUT_DIR`; they are not published SDK dependencies.
 Project-local SDKs are generated before compilation through `trellis install`.
 Package generated code when distributing a consumer, rather than tracking it in
 Git. Formatting checks apply to authored code, not generated implementations.

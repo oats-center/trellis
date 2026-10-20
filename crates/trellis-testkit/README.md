@@ -2,8 +2,8 @@
 
 Isolated, live Trellis runtimes for Rust integration tests.
 
-`trellis-testkit` links and runs the real production Trellis runtime in-process,
-with a private sandbox and a real managed `nats-server` child, and gives your
+`trellis-testkit` runs production `trellis-server` and `nats-server` processes
+with a private sandbox, and gives your
 test the URLs and identities it needs to exercise your generated service/app
 facades against a real server.
 
@@ -17,13 +17,24 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ## What it needs
 
-- No Trellis executables or source checkout. Cargo resolves the linked runtime
-  with the testkit; implementation dependencies are distribution-only crates,
-  not supported service-author APIs.
+- No source checkout or compiler/runtime Cargo dependencies. The default acquires
+  the matching production CLI/server release using the checksums embedded in the
+  testkit archive (currently Linux x86-64). Network is needed on first use;
+  verified cached archives work offline. Set both `TRELLIS_TEST_CLI_BIN` and
+  `TRELLIS_TEST_SERVER_BIN`, or use `.native(NativeSource::Path { cli, server })`,
+  for an explicit exact-version pair. Invalid explicit paths never trigger a download.
 - A real NATS executable. By default the bare builder uses the verified pinned
   download (network required on first use). To use a prebuilt broker, set
   `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
   `NatsSource::PathLookup` for `PATH` discovery.
+
+`TRELLIS_TEST_CACHE_DIR` selects the owned private executable/archive cache;
+otherwise the platform cache is used. Only verified artifacts are shared, never
+credentials, broker state, databases, or logs. `trellis init config` and
+`trellis init admin --password-stdin` perform normal installation/bootstrap;
+the administrator password is not passed in process arguments.
+Hosts default to two Tokio worker threads, matching the Node testkit;
+an explicit `TOKIO_WORKER_THREADS` setting is retained.
 
 Ports are reserved automatically outside Linux's outbound ephemeral range; you
 never select them. The kernel enforces each reservation until startup, and
@@ -64,8 +75,8 @@ runtime.shutdown().await?;
 
 Your application owns the clients and services it connects; stop those
 transports before calling [`TrellisTestRuntime::shutdown`]. The runtime owns
-only its own administration connection, production runtime task, and NATS
-process.
+only its own administration connection and production server/broker processes.
+Cancellation and drop kill and reap owned children before sandbox cleanup.
 
 For persistence acceptance, `runtime.restart().await?` stops and starts the
 ordinary runtime against the same data and still-running NATS broker. It does
@@ -150,8 +161,7 @@ descriptor or its package evidence.
 
 ## What it does not do
 
-- It does not start a separate `trellis-server` process. The runtime is the same
-  production library the server uses, resolved and compiled by Cargo.
+- It does not embed the server or publish server/compiler implementation crates.
 - It does not simulate authorization. `register_client` runs real native OAuth
   and portal consent; denied calls are denied by the real server.
 - Browser application requests are rejected by the native caller helper. Drive

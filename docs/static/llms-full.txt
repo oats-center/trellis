@@ -442,6 +442,17 @@ Generated Rust device State handles include SDK-owned native-IDL Watch support;
 State-only devices need no built-in API package dependency. Completed device
 activation rechecks reuse the retained challenge through authenticated enrollment,
 not a new review; local completion never authorizes a disabled or removed device.
+Generated Rust ABI 2 shares primitive wire wrappers, nullable values, and cursor
+pages in trellis-protocol. Authored model identity and wire serialization do not change.
+Regenerate with the matching CLI and SDK; ABI mismatches fail compilation.
+Generated Rust packages select trellis-models directly for exact native package
+identity, version, semantic digest, and Rust model ABI; compilation rejects a
+mismatched provider. Model bundles are independent of SDK implementation releases.
+Old bundles can coexist with newer SDK models; unchanged bindings do not require
+regeneration for compatible SDK implementation fixes. Model Cargo compatibility
+lines preserve one immutable native snapshot and Rust representation ABI.
+Published model and SDK archives contain frozen sources and need no compiler or
+generator build dependencies. Bare Git checkouts require preparation.
 Operations are durable restartable at-least-once workflows. Consumers have local
 per-process concurrency and Events-owned scoped DLQ/replay. Jobs remain private
 durable queues. Cursor pagination ends only when `nextCursor` is absent and does
@@ -449,9 +460,9 @@ not generally promise a snapshot.
 
 Commit IDL, `trellis.toml`, and `trellis.lock`, not generated implementations.
 Run `trellis install` before compiling local SDK consumers; package generated code
-when distributing a consumer. Trellis-owned Rust libraries build their built-in
-bindings in Cargo `OUT_DIR` using published build dependencies, without a downstream
-CLI requirement. Explicit generation targets select only the named outputs.
+when distributing a consumer. Published Rust SDK archives already contain their
+built-in bindings and have no Trellis compiler/generator build dependencies.
+Explicit generation targets select only the named outputs.
 Compilation, renderer, and formatter failures preserve the last
 successful generated outputs. Namespace collisions are errors, unrelated user
 files are protected, and publication uses only short-lived staging and backups.
@@ -862,17 +873,21 @@ Choose application testing tools independently. For a test that needs real
 Trellis transport, authority, or restart behavior, the npm package
 `@oatscenter/trellis-testkit` provides `TrellisTestRuntime`. The published Rust
 crate `trellis-testkit` provides the equivalent `TrellisTestRuntime` for Rust
-test crates: it links the real production runtime in-process with no CLI/server
-executable prerequisite, selects loopback ports automatically, and returns
+test crates: it owns production server/broker processes, selects loopback ports
+automatically, and returns
 normal SDK connection options for generated participants. Both harnesses run
-real NATS child processes; the Rust bare builder defaults to the verified pinned
-download, requiring network on first use. Its verified executable/archive cache
-is shared (`TRELLIS_CACHE_DIR`, otherwise the platform cache); warmed-cache boots
+real NATS child processes. Rust acquires exact-version SHA-256-pinned CLI/server
+and pinned NATS archives, requiring network on first use. Its verified artifact cache
+is shared (`TRELLIS_TEST_CACHE_DIR`, otherwise the platform cache); warmed-cache boots
 work offline. Credentials, broker state, databases, PID files, and logs remain
 sandbox-local. `TRELLIS_TEST_NATS_BIN` or
 `NatsSource::Path` selects a prebuilt broker; `NatsSource::PathLookup` uses
-PATH. Runtime/bootstrap Cargo dependencies are distribution-only implementation
-crates, not service-author APIs. The TypeScript harness acquires its
+PATH. Set both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, or use
+`NativeSource::Path { cli, server }`, for explicit exact-version binaries with
+no fallback. Rust `restart()` restarts only the server, preserving the broker.
+Server/compiler/bootstrap crates are not consumer Cargo dependencies; only
+`trellis-rs`, `trellis-protocol`, `trellis-models`, and `trellis-testkit` are
+registry packages. The TypeScript harness acquires its
 exact-version production CLI/server from SHA-256-pinned release archives (currently Linux x86-64 only)
 automatically: no installed Trellis or nsc required. Production commands
 generate config and own managed NATS in a private sandbox with seeded admin.

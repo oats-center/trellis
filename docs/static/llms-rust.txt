@@ -275,9 +275,10 @@ local runtime. Generation does not modify the consumer's Cargo manifest.
 
 Commit native IDL, manifests, and dependency locks, not disposable generated
 implementations. Run `trellis install` before building project-local SDK consumers;
-package generated code when distributing them. Trellis-owned Rust SDK and runtime
-API crates generate their built-in bindings into Cargo `OUT_DIR` from published
-build dependencies, without requiring the Trellis CLI in downstream builds.
+package generated code when distributing them. Published Trellis Rust SDK archives
+already contain their built-in generated bindings; downstream Cargo builds do not
+need the Trellis compiler, generators, CLI, or repository. Bare Git checkouts are
+not prepared SDK distributions; use published crates or a prepared local SDK path.
 Native source packages, not canonical API/participant JSON, are the publication
 and evidence boundary. Explicit generation targets select only the named outputs.
 
@@ -285,6 +286,22 @@ An API SDK contains types and descriptors. The participant facade supplies the
 connection boundary and only the declared caller/provider surfaces. Its
 constants carry source-package/participant evidence; applications do not supply
 digests to service bootstrap.
+
+Generated Rust ABI 2 shares primitive wire wrappers, nullable values, and cursor
+pages through trellis-protocol instead of defining per-package copies. Authored
+models keep their nominal types and wire serialization is unchanged. Regenerate
+with the matching CLI and SDK; a support-ABI mismatch fails compilation and is
+not resolved through compatibility wrappers or a wire protocol version change.
+Matching built-in models come from trellis-models rather than being copied into each
+generated package. Selection uses exact native package identity, version, and
+semantic digest and Rust model ABI, checked against the compiled model provider;
+package-name equality alone never substitutes one schema for another.
+Generated crates depend directly on their selected model bundle, not the SDK's
+current snapshot. SDK implementation fixes do not require regeneration while
+execution ABI and selected model bindings remain compatible. Different native
+snapshots use distinct Cargo compatibility lines and can coexist with newer SDK
+models; wire protocol family versions are unchanged. Models and SDK archives both
+contain frozen source and require no compiler at consumer build time.
 
 ## Connection
 
@@ -601,19 +618,22 @@ SHA-256-pinned CLI/server release archives and delegates configuration and
 managed NATS to those production commands (no installed Trellis executables or
 nsc prerequisite). Its host is stopped gracefully first; bounded process-group
 cleanup also reclaims the managed broker if the host hangs or crashes. A Rust
-test uses the published `trellis-testkit` crate, which links and runs the real
-production runtime in-process, chooses loopback ports automatically, and returns
+test uses the published `trellis-testkit` crate, which owns production server
+and broker processes, chooses loopback ports automatically, and returns
 the existing SDK connection options so your generated service and app facades
-connect normally. No CLI/server executable or Trellis source checkout is
-required. NATS is a real child process: the bare builder defaults to the
-verified pinned download (network on first use). Only the verified executable and
-archive cache is shared (`TRELLIS_CACHE_DIR`, otherwise the platform cache), so
+connect normally. No source checkout or compiler/runtime Cargo dependencies are
+required. The bare builder acquires SHA-256-pinned exact-version CLI/server
+and pinned NATS archives (network on first use). Only the verified executable and
+archive cache is shared (`TRELLIS_TEST_CACHE_DIR`, otherwise the platform cache), so
 later runtimes can boot offline. Credentials, broker state, databases, PID files,
 and logs remain sandbox-local. Set `TRELLIS_TEST_NATS_BIN`,
 choose `NatsSource::Path`, or choose `NatsSource::PathLookup` for a prebuilt
-broker. Runtime/bootstrap crates are registry-distributed implementation
-dependencies, not supported service-author surfaces; a service repository uses
-`trellis-rs` and `trellis-testkit` APIs.
+broker. Set both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, or use
+`NativeSource::Path { cli, server }`, for explicit exact-version binaries with
+no fallback downloads. Rust `restart()` retains its broker and durable installation;
+shutdown/cancellation reaps owned children before sandbox cleanup.
+Only `trellis-rs`, `trellis-protocol`, `trellis-models`, and `trellis-testkit`
+are registry packages; server/compiler/bootstrap implementations remain private.
 
 Account actions use the generated Auth RPCs. PasswordReset.Create returns a
 five-minute, one-use token for `/account/reset?token=...` on the OAuth origin;

@@ -1,8 +1,8 @@
 //! Isolated live Trellis runtimes for Rust integration tests.
 //!
-//! [`TrellisTestRuntime`] links and runs the real production Trellis runtime
-//! in-process, with no `trellis` CLI or `trellis-server` prerequisite. It generates a
-//! real bootstrap bundle, starts managed NATS, reserves five loopback ports
+//! [`TrellisTestRuntime`] owns production `trellis-server` and NATS processes,
+//! acquiring verified release binaries or using explicit exact-version paths.
+//! It generates a real bootstrap bundle through the CLI, reserves five loopback ports
 //! automatically, seeds a sandbox administrator and completes normal public login,
 //! and exposes helpers that accept APIs and provision identities using
 //! the generated administration API.
@@ -27,11 +27,15 @@
 #![allow(clippy::result_large_err)]
 
 mod admin;
+include!("../generated/modules.rs");
+mod distribution;
 mod error;
 mod identity;
+mod process;
 mod runtime;
 mod sandbox;
 
+pub use distribution::NativeSource;
 pub use error::{TrellisTestError, TrellisTestErrorKind, TrellisTestStage};
 pub use identity::{
     TestClientIdentity, TestRegisteredNativeClient, TestServiceIdentity, TestUserIdentity,
@@ -42,6 +46,80 @@ pub use sandbox::{remove_retained_workdirs, WorkdirRetention};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_restart_retains_owned_installation_and_stopped_runtime_cannot_restart() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut runtime = TrellisTestRuntime::builder()
+            .workdir_parent(parent.path())
+            .retention(WorkdirRetention::OnFailure)
+            .start()
+            .await
+            .unwrap();
+        let root = runtime.workdir().to_owned();
+        let config = root.join("config/config.toml");
+        let retained = root.join("config/retained-config.toml");
+        std::fs::rename(config, &retained).unwrap();
+        let before = std::fs::read(&retained).unwrap();
+        assert!(runtime.restart().await.is_err());
+        runtime.shutdown().await.unwrap();
+        assert!(root.is_dir());
+        assert_eq!(std::fs::read(retained).unwrap(), before);
+        assert_eq!(
+            runtime.restart().await.unwrap_err().kind(),
+            TrellisTestErrorKind::RuntimeStopped
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn server_restart_keeps_the_broker_and_committed_accounts() {
+        use trellis_runtime_apis::{
+            apis::trellis_auth_v1::Client, apps::trellis_cli::Request, types::AuthUserGetRequest,
+        };
+        let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
+        let user = runtime.create_user("Before restart").await.unwrap();
+        let monitor = reqwest::Client::new();
+        let before: serde_json::Value = monitor
+            .get(format!("{}/varz", runtime.monitor_url()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        runtime.restart().await.unwrap();
+        let after: serde_json::Value = monitor
+            .get(format!("{}/varz", runtime.monitor_url()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let broker_id = before["server_id"].as_str().expect("live NATS identity");
+        assert!(!broker_id.is_empty());
+        assert_eq!(Some(broker_id), after["server_id"].as_str());
+        let identity = runtime
+            .register_client::<Request>("restart account observer")
+            .await
+            .unwrap();
+        let generated = trellis_rs::generated::Client::connect_user(identity.connect_options())
+            .await
+            .unwrap();
+        let auth = Client::from_generated(generated.clone());
+        let retained = auth
+            .users_get(&AuthUserGetRequest {
+                user_id: user.principal_id().parse().unwrap(),
+                extra: Default::default(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(retained.user.principal_id.to_string(), user.principal_id());
+        assert_eq!(retained.user.display_name, "Before restart");
+        drop(auth);
+        drop(generated);
+        runtime.shutdown().await.unwrap();
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn admitted_unprivileged_native_caller_reads_issuer_signed_metadata() {

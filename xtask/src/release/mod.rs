@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use clap::Parser;
 use clap::Subcommand;
-use miette::{miette, Result};
+use miette::{miette, IntoDiagnostic, Result};
 
 mod changelog;
 mod github;
@@ -25,6 +25,15 @@ pub(crate) enum ReleaseCommand {
     Prepare {
         #[arg(long)]
         tag: Option<String>,
+        /// Publish a new protocol implementation instead of retaining its current version.
+        #[arg(long)]
+        protocol_version: Option<String>,
+        /// Publish a new model bundle instead of retaining its current version.
+        #[arg(long)]
+        models_version: Option<String>,
+        /// Advance native built-in contracts; requires an explicitly selected model bundle.
+        #[arg(long, requires = "models_version")]
+        contracts_version: Option<String>,
     },
     #[command(name = "bump")]
     Bump {
@@ -106,13 +115,43 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
             println!("All release-managed Trellis versions are {version}.");
             Ok(())
         }
-        ReleaseCommand::Prepare { tag } => {
+        ReleaseCommand::Prepare {
+            tag,
+            protocol_version,
+            models_version,
+            contracts_version,
+        } => {
             let Some(tag) = tag.filter(|tag| !tag.trim().is_empty()) else {
                 println!("release tag is not set; skipping release version preparation.");
                 return Ok(());
             };
             let release = parse_release_tag(&tag)?;
-            let changed = prepare_release(repo_root, &release)?;
+            for version in [&protocol_version, &models_version, &contracts_version]
+                .into_iter()
+                .flatten()
+            {
+                semver::Version::parse(version).into_diagnostic()?;
+            }
+            let mut changed = prepare_release(repo_root, &release)?;
+            for (name, path, version) in [
+                (
+                    "trellis-protocol",
+                    "crates/protocol/Cargo.toml",
+                    protocol_version,
+                ),
+                ("trellis-models", "crates/models/Cargo.toml", models_version),
+                (
+                    "trellis",
+                    "crates/builtin-contracts/trellis.toml",
+                    contracts_version,
+                ),
+            ] {
+                if let Some(version) = version {
+                    changed.extend(versioning::prepare_component(
+                        repo_root, name, path, &version,
+                    )?);
+                }
+            }
             write_github_env("TRELLIS_RELEASE_VERSION", &release.version)?;
             write_github_env("TRELLIS_RELEASE_BASE_VERSION", &release.base_version)?;
             println!(
@@ -198,18 +237,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_release_prepare_command() {
-        assert_eq!(
-            parse_release_command(
-                ["prepare", "--tag", "v0.9.0-rc.1"]
-                    .into_iter()
-                    .map(str::to_string)
-            )
-            .expect("parse release prepare"),
-            ReleaseCommand::Prepare {
-                tag: Some("v0.9.0-rc.1".to_string())
-            }
-        );
+    fn native_contract_release_requires_explicit_model_bundle_selection() {
+        assert!(parse_release_command(
+            [
+                "prepare",
+                "--tag",
+                "v0.9.0-rc.1",
+                "--contracts-version",
+                "0.2.0"
+            ]
+            .into_iter()
+            .map(str::to_string)
+        )
+        .is_err());
     }
 
     #[test]
@@ -308,12 +348,12 @@ mod tests {
     }
 
     #[test]
-    fn prepare_release_versions_first_party_idl_packages() {
+    fn sdk_release_preserves_independent_contract_model_and_protocol_versions() {
         let root = temp_repo_root();
         fs::create_dir_all(&root).expect("mkdir repo");
         fs::write(
             root.join("Cargo.toml"),
-            "[workspace.package]\nversion = \"0.100.0\"\n",
+            "[workspace.package]\nversion = \"0.100.0\"\n[workspace.dependencies]\ntrellis-models = { path = \"crates/models\", version = \"0.100.0\" }\ntrellis-protocol = { path = \"crates/protocol\", version = \"0.100.0\" }\n",
         )
         .expect("write workspace manifest");
         let projects = [
@@ -330,6 +370,18 @@ mod tests {
             )
             .expect("write IDL manifest");
         }
+        for (directory, name) in [
+            ("models", "trellis-models"),
+            ("protocol", "trellis-protocol"),
+        ] {
+            let path = root.join("crates").join(directory);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(
+                path.join("Cargo.toml"),
+                format!("[package]\nname = {name:?}\nversion = \"0.100.0\"\n"),
+            )
+            .unwrap();
+        }
         prepare_release(
             &root,
             &ReleaseVersion {
@@ -338,16 +390,57 @@ mod tests {
             },
         )
         .expect("prepare release");
-        for (project, _) in projects {
+        for (project, name) in projects {
             let manifest = fs::read_to_string(root.join(project).join("trellis.toml"))
                 .expect("read IDL manifest")
                 .parse::<toml_edit::DocumentMut>()
                 .expect("parse released IDL manifest");
             assert_eq!(
                 manifest["package"]["version"].as_str(),
-                Some("0.100.0-rc.1")
+                Some(if name == "trellis" {
+                    "0.100.0"
+                } else {
+                    "0.100.0-rc.1"
+                })
             );
         }
+        assert!(super::versioning::check_versions(&root).is_ok());
+        super::versioning::prepare_component(
+            &root,
+            "trellis-models",
+            "crates/models/Cargo.toml",
+            "0.101.0-rc.1",
+        )
+        .unwrap();
+        super::versioning::prepare_component(
+            &root,
+            "trellis",
+            "crates/builtin-contracts/trellis.toml",
+            "0.100.1",
+        )
+        .unwrap();
+        let model = fs::read_to_string(root.join("crates/models/Cargo.toml"))
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(model["package"]["version"].as_str(), Some("0.101.0-rc.1"));
+        let workspace = fs::read_to_string(root.join("Cargo.toml"))
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(
+            workspace["workspace"]["dependencies"]["trellis-models"]["version"].as_str(),
+            Some("0.101.0-rc.1")
+        );
+        assert_eq!(
+            workspace["workspace"]["dependencies"]["trellis-protocol"]["version"].as_str(),
+            Some("0.100.0")
+        );
+        let contract = fs::read_to_string(root.join("crates/builtin-contracts/trellis.toml"))
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert_eq!(contract["package"]["version"].as_str(), Some("0.100.1"));
         assert!(super::versioning::check_versions(&root).is_ok());
         fs::remove_dir_all(root).expect("remove temp repo");
     }
@@ -391,11 +484,13 @@ mod tests {
             "integration/fixtures/testkit/crates/trellis-test-fixture/Cargo.toml",
             "integration/fixtures/testkit/trellis.toml",
         ] {
-            assert!(
-                fs::read_to_string(root.join(relative))
-                    .expect("read fixture manifest")
-                    .contains("0.100.0-rc.1"),
-                "{relative} should be rewritten"
+            let manifest = fs::read_to_string(root.join(relative))
+                .unwrap()
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap();
+            assert_eq!(
+                manifest["package"]["version"].as_str(),
+                Some("0.100.0-rc.1")
             );
         }
         fs::remove_dir_all(root).expect("remove temp repo");
@@ -411,9 +506,23 @@ mod tests {
             std::path::Path::new("Cargo.toml"),
         )
         .expect("rewrite cargo versions");
-        assert!(updated.contains("version = \"0.9.0\""));
-        assert!(updated.contains("trellis-protocol = \"0.9.0\""));
-        assert!(updated.contains("serde = { version = \"1.0\" }"));
+        let manifest = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(
+            manifest["workspace"]["package"]["version"].as_str(),
+            Some("0.9.0")
+        );
+        assert_eq!(
+            manifest["dependencies"]["trellis-rs"]["version"].as_str(),
+            Some("0.9.0")
+        );
+        assert_eq!(
+            manifest["dependencies"]["trellis-protocol"].as_str(),
+            Some("0.8.2")
+        );
+        assert_eq!(
+            manifest["dependencies"]["serde"]["version"].as_str(),
+            Some("1.0")
+        );
     }
 
     #[test]
@@ -426,8 +535,12 @@ mod tests {
             std::path::Path::new("Cargo.toml"),
         )
         .expect("rewrite cargo versions");
-        assert!(updated.contains("version = \"0.0.0\""));
-        assert!(updated.contains("version = \"0.9.0\""));
+        let manifest = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(manifest["package"]["version"].as_str(), Some("0.0.0"));
+        assert_eq!(
+            manifest["dependencies"]["trellis-rs"]["version"].as_str(),
+            Some("0.9.0")
+        );
     }
 
     #[test]
@@ -440,9 +553,23 @@ mod tests {
             std::path::Path::new("Cargo.toml"),
         )
         .expect("rewrite cargo release versions");
-        assert!(updated.contains("0.8.2-rc.1"));
-        assert!(updated.contains("trellis-protocol = \"0.8.2-rc.1\""));
-        assert!(updated.contains("console-trellis = { path = \"trellis\", version = \"0.0.0\" }"));
+        let manifest = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(
+            manifest["workspace"]["package"]["version"].as_str(),
+            Some("0.8.2-rc.1")
+        );
+        assert_eq!(
+            manifest["dependencies"]["trellis-rs"]["version"].as_str(),
+            Some("0.8.2-rc.1")
+        );
+        assert_eq!(
+            manifest["dependencies"]["trellis-protocol"].as_str(),
+            Some("0.8.2")
+        );
+        assert_eq!(
+            manifest["dependencies"]["console-trellis"]["version"].as_str(),
+            Some("0.0.0")
+        );
     }
 
     #[test]

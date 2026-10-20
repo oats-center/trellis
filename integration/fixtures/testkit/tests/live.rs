@@ -812,7 +812,7 @@ async fn t11_missing_nats_fails_cleanly() {
     };
     assert_eq!(
         error.kind(),
-        TrellisTestErrorKind::InvalidBinary,
+        TrellisTestErrorKind::MissingBinary,
         "an explicitly invalid NATS path must fail without falling back"
     );
 }

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal production runtime entrypoint and configuration for Trellis."
-publish = ["crates-io"]
+publish = false
 include = ["Cargo.toml", "build.rs", "src/**", "migrations/**", "generated/web/**", "generated/portal/**"]
 
 [lib]

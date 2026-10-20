@@ -5,15 +5,17 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Rust code generation for Trellis contract manifests."
-publish = ["crates-io"]
+publish = false
 
 [dependencies]
 prettyplease = "0.2.37"
+semver.workspace = true
 serde_json.workspace = true
 syn = { version = "2.0.111", features = ["full"] }
 thiserror.workspace = true
 trellis-idl = { path = "../idl", version = "0.100.0" }
+trellis-protocol.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
-semver.workspace = true
 tempfile.workspace = true

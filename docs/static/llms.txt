@@ -21,7 +21,13 @@ fail visibly; the runtime never deletes or recreates them as empty state.
 
 Generated SDKs are disposable build artifacts, not maintained source. Commit native
 IDL, manifests, and dependency locks; run `trellis install` before compiling
-project-local consumers. Trellis-owned Rust bindings build in Cargo `OUT_DIR`.
+project-local consumers. Published Rust SDK archives contain their generated
+bindings and need no Trellis compiler/generator build dependencies. Rust packages
+select independently versioned trellis-models bundles by exact native package
+identity, version, semantic digest, and Rust model ABI, checked at compilation.
+The SDK does not force callers onto its current snapshot; compatible SDK fixes
+can retain existing generated code and model dependencies. Published model
+archives also contain frozen source and need no compiler or SDK to build.
 
 Console and the isolated OAuth listener require HTTPS outside explicit loopback
 development. The HTTP insecure-origin allowlist does not relax that requirement.
@@ -507,12 +513,14 @@ activation and each cancellation exchange, not the streaming body lifetime.
 Consumer AGENTS templates are available under `templates/`. They describe the
 Trellis boundary; application policies belong in the consumer repository.
 
-For live Rust tests, `trellis-testkit` links the real production runtime and
-manages a real NATS child without requiring the CLI/server executables. Its bare
-builder defaults to the verified pinned broker download; a prebuilt broker can
-be selected with `TRELLIS_TEST_NATS_BIN` or `NatsSource`. Only the verified NATS
-executable/archive cache is shared (`TRELLIS_CACHE_DIR` or the platform cache),
-allowing offline reuse; credentials and runtime state remain private. The
+For live Rust tests, `trellis-testkit` owns production server and NATS processes,
+not linked server/compiler crates. It acquires checksum-pinned exact-version
+CLI/server and pinned NATS archives, with offline verified-cache reuse.
+Set both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, or use
+`NativeSource::Path { cli, server }`, for explicit binaries without fallback.
+Select a broker with `TRELLIS_TEST_NATS_BIN` or `NatsSource`.
+`TRELLIS_TEST_CACHE_DIR` shares verified artifacts only; credentials and state
+remain private. Rust `restart()` restarts only the server, retaining NATS. The
 TypeScript testkit
 acquires exact-version SHA-256-pinned production CLI/server archives (currently Linux x86-64 only)
 automatically; no installed Trellis executables or nsc are required. Production

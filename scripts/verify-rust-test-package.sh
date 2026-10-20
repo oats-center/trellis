@@ -4,8 +4,8 @@
 #
 # Consumes the verification bundle produced by the release/check pipeline — a
 # gzipped tarball (or an already-extracted directory) containing the complete
-# unmodified Rust `.crate` dependency closure, a verified
-# NATS executable, the consumer fixture, and artifact-manifest.json. It validates
+# four public Rust crates, verified CLI/server/NATS
+# executables, the consumer fixture, and artifact-manifest.json. It validates
 # the manifest, hashes, and executable modes, extracts the
 # archives with path-safety checks, patches the staged artifacts into
 # a fresh isolated consumer build, audits the full declared dependency graph, and
@@ -82,7 +82,7 @@ for key in ("source_sha", "target", "version", "packages", "files", "executables
         raise SystemExit(f"artifact-manifest.json is missing '{key}'")
 if not manifest["source_sha"] or not manifest["version"]:
     raise SystemExit("artifact-manifest.json has an empty source_sha or version")
-for package in ("trellis-protocol", "trellis-rs", "trellis-testkit"):
+for package in ("trellis-protocol", "trellis-models", "trellis-rs", "trellis-testkit"):
     if not manifest["packages"].get(package):
         raise SystemExit(f"artifact-manifest.json is missing the {package} version")
 
@@ -121,6 +121,12 @@ PY
 # 2. Require the bundle's own executables; never inherit ambient discovery.
 unset TRELLIS_TEST_CLI_BIN TRELLIS_TEST_SERVER_BIN TRELLIS_TEST_NATS_BIN
 export TRELLIS_TEST_NATS_BIN="$bundle/nats/nats-server"
+export TRELLIS_TEST_CLI_BIN="$bundle/native/trellis"
+export TRELLIS_TEST_SERVER_BIN="$bundle/native/trellis-server"
+if [[ "$mode" == smoke ]]; then
+  unset TRELLIS_TEST_CLI_BIN TRELLIS_TEST_SERVER_BIN TRELLIS_TEST_NATS_BIN
+  export TRELLIS_TEST_CACHE_DIR="$work/native-cache"
+fi
 
 # 3. Extract the staged archives with traversal/absolute-path checks.
 mkdir -p "$work/packages"
@@ -230,7 +236,7 @@ PY
 cargo test --manifest-path "$consumer_manifest" --locked --config "$config" \
   --test live --no-run --message-format=json-render-diagnostics > "$work/build.json"
 mkdir -p "$work/runtime-path"
-python3 - "$work/build.json" "$work/runtime-path" <<'PY'
+python3 - "$work/build.json" "$work/runtime-path" "$mode" <<'PY'
 import json, os, subprocess, sys
 executable = None
 for line in open(sys.argv[1]):
@@ -239,7 +245,18 @@ for line in open(sys.argv[1]):
         executable = artifact["executable"]
 if executable is None:
     raise SystemExit("the live consumer executable was not produced")
-# A real user execution boundary: no CLI/server on PATH, and no binary overrides.
+# No tools on PATH. Full acceptance uses verified explicit executables; release
+# smoke acquires public archives into a fresh cache and then proves offline reuse.
 env = dict(os.environ, PATH=sys.argv[2])
-raise SystemExit(subprocess.run([executable, "--test-threads=1"], env=env).returncode)
+arguments = [executable, "--test-threads=1"]
+if sys.argv[3] == "smoke":
+    arguments += ["--exact", "bare_builder_serves_embedded_apps_and_installs_a_participant"]
+status = subprocess.run(arguments, env=env).returncode
+if status == 0 and sys.argv[3] == "smoke":
+    env.update(HTTP_PROXY="http://127.0.0.1:9", HTTPS_PROXY="http://127.0.0.1:9",
+               ALL_PROXY="http://127.0.0.1:9", NO_PROXY="127.0.0.1,localhost",
+               http_proxy="http://127.0.0.1:9", https_proxy="http://127.0.0.1:9",
+               all_proxy="http://127.0.0.1:9", no_proxy="127.0.0.1,localhost")
+    status = subprocess.run(arguments, env=env).returncode
+raise SystemExit(status)
 PY

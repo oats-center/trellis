@@ -77,4 +77,4 @@ pub mod jobs;
 pub mod telemetry;
 
 extern crate self as trellis_rs;
-include!(concat!(env!("OUT_DIR"), "/modules.rs"));
+include!("../generated/modules.rs");

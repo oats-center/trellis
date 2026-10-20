@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal bootstrap generation for Trellis runtime configuration and NATS material."
-publish = ["crates-io"]
+publish = false
 
 [lints]
 workspace = true

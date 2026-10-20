@@ -11,6 +11,7 @@ members = [
   "crates/trellis-testkit",
   "crates/idl",
   "crates/protocol",
+  "crates/models",
   "crates/protocol-wasm",
   "crates/codegen-ts",
   "crates/codegen-rust",
@@ -40,6 +41,8 @@ resolver = "2"
 
 [patch.crates-io]
 trellis-rs = { path = "crates/trellis" }
+trellis-protocol = { path = "crates/protocol" }
+trellis-models = { path = "crates/models" }
 
 [workspace.package]
 version = "0.100.0"
@@ -111,3 +114,4 @@ tempfile = "3.27.0"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 ulid = "1.2.1"
 trellis-protocol = { path = "crates/protocol", version = "0.100.0" }
+trellis-models = { path = "crates/models", version = "0.100.0" }

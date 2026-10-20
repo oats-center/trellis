@@ -150,26 +150,18 @@ local CLI/server paths.
 The published Rust crate set is:
 
 - `trellis-protocol`
-- `trellis-idl`
-- `trellis-codegen-rust`
-- `trellis-builtin-contracts`
+- `trellis-models`
 - `trellis-rs`
-- `trellis-runtime-apis`
-- `trellis-local-bootstrap`
-- `trellis-events-runtime`
-- `trellis-jobs-runtime`
-- `trellis-runtime`
-- `trellis-bootstrap`
-- `trellis-local-nats`
 - `trellis-testkit`
 
-Publication follows this dependency order in lockstep, waiting for each crate to
-enter the index before its consumers. Only `trellis-protocol`, `trellis-rs`, and
-`trellis-testkit` are supported author-facing surfaces; the others are
-registry-distributed implementation dependencies for the linked testkit runtime,
-not recommended imports for services/apps.
+Publication follows this dependency order, waiting for each crate's actual
+version to enter the index before publishing its consumers. SDK-only releases
+retain protocol/model/native-contract versions; explicit component updates use
+the release preparation flags. Model snapshots require distinct Cargo
+compatibility lines when their native identity/digest or Rust ABI changes.
+Server/compiler/bootstrap implementation crates are private and non-publishable.
 
-`publish-crates` restores `check-generated`, `check-portal`, and
+`publish-crates` restores `check-generated`, accepted production native archives, and
 `rust-testkit-packages` from the accepted Check run. Check preparation and Cargo
 publication verification use the same `.cargo/publication.toml` source overrides;
 published production dependencies retain their registry version requirements.
@@ -177,22 +169,28 @@ The SDK's workspace-only testkit development dependency is path-only and is
 omitted from its published manifest. The shared
 `scripts/prepare-rust-publication.sh` explicitly packages each crate into a fresh
 archive, compares every accepted file's contents and permissions (including
-embedded browser assets and the lockfile), and runs Cargo's publication dry-run
+frozen models/bindings, native acquisition metadata, and the lockfile), and runs Cargo's publication dry-run
 with build verification enabled. Check exercises this no-upload sequence from an
 empty target directory before accepting the bundle. Release runs the same
 preparation before each upload; it neither relies on a publish dry-run's scratch
-archive location nor rebuilds browser applications.
+archive location nor rebuilds executables or browser applications.
 
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the
 prepared version. The normal `Check` workflow builds a verification
-bundle (the complete Rust `.crate` closure, a verified NATS executable, and the
+bundle (the four public Rust crates, verified CLI/server/NATS executables, and the
 fixture) and runs
 `scripts/verify-rust-test-package.sh` with no repository checkout, patching only
 the extracted staged artifacts. The live consumer runs with an empty `PATH` and
-without CLI/server overrides, proving that only the real NATS child is external.
-Before the first `trellis-testkit` upload a
-maintainer must confirm the crate name is available and owned by the publisher;
+explicit verified executable paths, proving that no source checkout, installed
+Trellis tools, or private server/compiler Cargo dependencies are needed.
+After GitHub assets exist, Rust testkit upload also requires the accepted
+bundle's `--mode smoke`: it acquires public CLI/server/NATS archives into a fresh
+cache, installs a participant through generated RPCs, then repeats with external
+HTTP access blocked to verify offline cache reuse. This gate runs before the
+testkit crate is uploaded; it never falls back to bundled executable paths.
+Before a first upload a maintainer must confirm each new crate name is available
+and owned by the publisher;
 after publication, repeat the fixture smoke against the real crates.io versions
 with no patch entries.
 

@@ -10,7 +10,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let graph = trellis_builtin_contracts::compile()?;
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo build output directory"));
     let generated = out.join("generated");
-    trellis_codegen_rust::generate_rust_package(&graph, &generated, "trellis-runtime-apis")?;
+    trellis_codegen_rust::generate_rust_package(
+        &graph,
+        &generated,
+        "trellis-runtime-apis",
+        &[
+            trellis_codegen_rust::RustModelBinding::from_package_manifest(
+                &graph,
+                include_str!("../models/Cargo.toml"),
+            )?,
+        ],
+    )?;
     fs::write(
         out.join("modules.rs"),
         format!(

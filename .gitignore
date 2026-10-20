@@ -67,7 +67,7 @@ demos/rust/target/
 demos/rust/**/target/
 xtask/Cargo.lock
 
-# Disposable generated packages; authored Rust wrappers generate into OUT_DIR.
+# Disposable generated packages; SDK sources are prepared by xtask, private wrappers use OUT_DIR.
 /crates/builtin-contracts/trellis/
 /crates/runtime-apis/src/*
 !/crates/runtime-apis/src/lib.rs

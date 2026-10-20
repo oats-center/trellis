@@ -14,17 +14,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={}", root.join(path).display());
     }
     let sources = trellis_idl::project::load_sources(&root, &manifest)?;
+    let builtin = trellis_builtin_contracts::compile()?;
+    let binding = trellis_codegen_rust::RustModelBinding::from_package_manifest(
+        &builtin,
+        include_str!("../../../../../crates/models/Cargo.toml"),
+    )?;
     let graph = trellis_idl::compile_project(
         &manifest,
         sources,
-        std::collections::BTreeMap::from([(
-            "trellis".into(),
-            trellis_builtin_contracts::compile()?,
-        )]),
+        std::collections::BTreeMap::from([("trellis".into(), builtin)]),
     )?;
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo build output directory"));
     let generated = out.join("generated");
-    trellis_codegen_rust::generate_rust_package(&graph, &generated, &env::var("CARGO_PKG_NAME")?)?;
+    trellis_codegen_rust::generate_rust_package(
+        &graph,
+        &generated,
+        &env::var("CARGO_PKG_NAME")?,
+        &[binding],
+    )?;
     fs::write(
         out.join("modules.rs"),
         format!(
