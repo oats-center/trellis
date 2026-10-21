@@ -245,7 +245,7 @@ fi
 
 # 6. Run the consumer's live target under the frozen lockfile.
 #
-# Serialize independent cases; the isolation case still starts eight concurrent runtimes.
+# Independent cases run four at a time, as the in-repo testkit suite does.
 cargo test --manifest-path "$consumer_manifest" --locked --config "$config" \
   --test live --no-run --message-format=json-render-diagnostics > "$work/build.json"
 mkdir -p "$work/runtime-path"
@@ -261,7 +261,7 @@ if executable is None:
 # No tools on PATH. Full acceptance uses verified explicit executables; release
 # smoke acquires public archives into a fresh cache and then proves offline reuse.
 env = dict(os.environ, PATH=sys.argv[2])
-arguments = [executable, "--test-threads=1"]
+arguments = [executable, "--test-threads=4"]
 if sys.argv[3] == "smoke":
     arguments += ["--exact", "bare_builder_serves_embedded_apps_and_installs_a_participant"]
 status = subprocess.run(arguments, env=env).returncode

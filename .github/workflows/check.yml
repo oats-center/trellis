@@ -26,24 +26,37 @@ env:
   RUSTUP_INIT_SKIP_PATH_CHECK: "yes"
 
 jobs:
-  rust-format:
-    name: Rust formatting
+  # Formatting runs in the separate Lint workflow so it never holds back a build.
+  # A pull request that touches only prose skips the build and test graph; the
+  # acceptance gate still reports. Pushes and manual runs always verify fully.
+  changes:
+    name: Detect code changes
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Rust formatter
-        uses: dtolnay/rust-toolchain@stable
+      - name: Classify changed paths
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
         with:
-          components: rustfmt
-
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path Cargo.toml --all --check
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!design/**'
+              - '!docs/src/**'
+              - '!docs/static/**'
+              - '!*.md'
 
   install:
     name: Install generated artifacts
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
     steps:
@@ -118,6 +131,8 @@ jobs:
 
   wasm:
     name: Protocol WASM
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 20
     steps:
@@ -144,6 +159,8 @@ jobs:
 
   dex:
     name: Build test identity provider
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Dex publishes container images but no release binaries, so build the
@@ -227,11 +244,11 @@ jobs:
           path: crates/runtime/generated
           retention-days: 1
 
-  build:
-    name: Build runtime binaries
-    needs: [install, wasm, portal]
+  clippy:
+    name: Rust lint
+    needs: [install, portal]
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -247,11 +264,48 @@ jobs:
           name: check-portal
           path: crates/runtime/generated
 
-      - name: Download protocol WASM
+      - name: Expose installed Cargo binaries
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Set up Rust
+        id: rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Enable multithreaded Zstandard caching
+        run: bash scripts/ensure-ci-zstd.sh
+
+      - name: Cache Rust lint artifacts
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-clippy-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-clippy-ci-linetables-v1-
+
+      - name: Lint Rust
+        run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres -- -D warnings
+
+  build-fixtures:
+    name: Build integration fixture binaries
+    needs: [install, portal]
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
         uses: actions/download-artifact@v4
         with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -260,38 +314,20 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
       - name: Enable multithreaded Zstandard caching
         run: bash scripts/ensure-ci-zstd.sh
 
-      - name: Cache Rust build artifacts
+      - name: Cache fixture build artifacts
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-fixture-binaries-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'integration/fixtures/**/Cargo.toml', 'integration/fixtures/**/Cargo.lock', '.cargo/config.toml') }}
           restore-keys: |
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-ci-linetables-v1-
-
-      # One producer for the executables every live, browser, demo, package, and
-      # image job runs. The release profile is shared by all of them; there is no
-      # separate debug runtime. Build version-clean (official) so the CLI and
-      # server report the same version the manifest records.
-      - name: Build runtime binaries
-        env:
-          TRELLIS_OFFICIAL_BUILD: "1"
-        run: |
-          set -euo pipefail
-          cargo build --release --manifest-path Cargo.toml -p trellis-server -p trellis-cli
-          cargo build --manifest-path Cargo.toml -p trellis-runtime --example health_watch
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-fixture-binaries-ci-linetables-v1-
 
       # Cross-language helper/provider executables for the TypeScript integration
-      # tests, plus the testkit live test binary. Built once here so the tests do
-      # not compile Rust while they run.
+      # tests, the testkit live test binary and the health_watch example. Built
+      # once here so the tests do not compile Rust while they run.
       - name: Build integration fixture helpers
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
@@ -302,6 +338,7 @@ jobs:
             --config "patch.crates-io.trellis-rs.path=\"$GITHUB_WORKSPACE/crates/trellis\"" \
             --config "patch.crates-io.trellis-protocol.path=\"$GITHUB_WORKSPACE/crates/protocol\"" \
             --config "patch.crates-io.trellis-models.path=\"$GITHUB_WORKSPACE/crates/models\""
+          cargo build --manifest-path Cargo.toml -p trellis-runtime --example health_watch
 
       - name: Build the testkit live test binary
         env:
@@ -323,40 +360,36 @@ jobs:
           fi
           cp "${executable}" target/debug/trellis-testkit-live
 
-      - name: Stage runtime binaries
+      # Upload compresses the artifact; the tar only preserves executable modes.
+      - name: Stage fixture binaries
         run: |
           set -euo pipefail
           umask 077
-          mkdir -p dist/runtime-binaries/fixtures dist/runtime-binaries/examples
-          cp target/release/trellis target/release/trellis-server target/debug/trellis-testkit-live dist/runtime-binaries/
-          bash scripts/acquire-test-nats.sh --dest "$PWD/dist/runtime-binaries/nats"
+          staging="$RUNNER_TEMP/fixture-binaries"
+          rm -rf "$staging"
+          mkdir -p "$staging/fixtures" "$staging/examples"
+          cp target/debug/trellis-testkit-live "$staging/"
           for bin in trellis-runtime-acceptance caller resources events live_probe live_probe_caller live_application_versions empty_watch finite_rpc rpc_distribution operation_target operation_storage_upload operation_lease_loss device_companion transport_growth_subject transport_growth_operation transfer_generation jobs; do
-            cp "target/debug/${bin}" dist/runtime-binaries/fixtures/
+            cp "target/debug/${bin}" "$staging/fixtures/"
           done
-          cp target/debug/examples/health_watch dist/runtime-binaries/examples/
-          # Test helpers are debug builds with full debug info; strip it so the
-          # shared artifact is a fraction of its size for every consumer.
-          find dist/runtime-binaries -type f -exec strip --strip-unneeded {} + 2>/dev/null || true
-          tar -C dist/runtime-binaries -czf dist/runtime-binaries.tar.gz .
+          cp target/debug/examples/health_watch "$staging/examples/"
+          find "$staging" -type f -exec strip --strip-unneeded {} +
+          tar -C "$staging" -cf "$RUNNER_TEMP/fixture-binaries.tar" .
 
-      - name: Report runtime build cache input sizes
-        if: always()
-        run: |
-          du -sh target 2>/dev/null || true
-          du -sh target/debug/deps target/debug/build target/debug/incremental target/release/deps target/release/build 2>/dev/null || true
-
-      - name: Upload runtime binaries
+      - name: Upload fixture binaries
         uses: actions/upload-artifact@v4
         with:
-          name: check-runtime-binaries
-          path: dist/runtime-binaries.tar.gz
+          name: check-fixture-binaries
+          path: ${{ runner.temp }}/fixture-binaries.tar
           retention-days: 1
 
-  rust:
-    name: Rust
-    needs: [install, wasm, portal, build, dex]
-    runs-on: ubuntu-latest
+  build:
+    name: Build runtime binaries
+    needs: [install, wasm, portal]
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
+    env:
+      BUILD_IMAGE: rust:bookworm
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -372,14 +405,126 @@ jobs:
           name: check-portal
           path: crates/runtime/generated
 
-      - name: Download runtime binaries
+      - name: Download protocol WASM
         uses: actions/download-artifact@v4
         with:
-          name: check-runtime-binaries
-          path: dist/runtime-binaries
+          name: check-protocol-wasm
+          path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Extract runtime binaries
-        run: tar -xzf dist/runtime-binaries/runtime-binaries.tar.gz -C dist/runtime-binaries
+      - name: Resolve the build image toolchain
+        id: toolchain
+        run: |
+          set -euo pipefail
+          docker pull --quiet "$BUILD_IMAGE"
+          echo "rustc=$(docker run --rm "$BUILD_IMAGE" rustc -V | tr -c 'A-Za-z0-9.\n' '-')" >> "$GITHUB_OUTPUT"
+
+      - name: Enable multithreaded Zstandard caching
+        run: bash scripts/ensure-ci-zstd.sh
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-bookworm-${{ steps.toolchain.outputs.rustc }}-${{ runner.arch }}-runtime-release-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            cargo-bookworm-${{ steps.toolchain.outputs.rustc }}-${{ runner.arch }}-runtime-release-v1-
+
+      # The one release build every live, browser, demo, package, and image job
+      # runs. The runtime image base is debian:bookworm-slim, so compile against
+      # the same glibc. Run as the runner user so the self-hosted workspace stays
+      # cleanable, and build version-clean (official) so the CLI and server
+      # report the version the manifest records.
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          cargo_home="$HOME/.cache/trellis-ci/bookworm-cargo"
+          mkdir -p "$cargo_home"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --env CARGO_HOME=/cargo \
+            --env CARGO_TERM_COLOR \
+            --env TRELLIS_OFFICIAL_BUILD=1 \
+            --volume "$cargo_home:/cargo" \
+            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
+            --workdir "$GITHUB_WORKSPACE" \
+            "$BUILD_IMAGE" \
+            cargo build --release --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+
+      - name: Stage runtime binaries and CLI archives
+        run: |
+          set -euo pipefail
+          staging="$RUNNER_TEMP/runtime-binaries"
+          rm -rf "$staging"
+          mkdir -p "$staging"
+          cp target/release/trellis target/release/trellis-server "$staging/"
+          bash scripts/acquire-test-nats.sh --dest "$staging/nats"
+          tar -C "$staging" -czf "$RUNNER_TEMP/runtime-binaries.tar.gz" .
+          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          target="x86_64-unknown-linux-gnu"
+          archive="trellis-${version}-${target}.tar.gz"
+          mkdir -p dist
+          tar -C target/release -czf "dist/$archive" trellis trellis-server
+          sha256sum "dist/$archive" > "dist/checksum-${version}-${target}-trellis.sha256"
+
+      - name: Upload runtime binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-runtime-binaries
+          path: ${{ runner.temp }}/runtime-binaries.tar.gz
+          retention-days: 1
+
+      - name: Upload packaged CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          retention-days: 3
+
+  rust:
+    name: Rust
+    needs: [install, wasm, portal, build, build-fixtures, dex]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+      TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
+      TRELLIS_TEST_NATS_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+      TRELLIS_NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
+      TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
+      TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
+      TRELLIS_TEST_EVENTS_BIN: ${{ github.workspace }}/dist/runtime-binaries/fixtures/events
+      TRELLIS_TEST_DEX_BIN: ${{ github.workspace }}/dist/test-identity/dex
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download generated artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: check-generated
+
+      - name: Download embedded browser apps
+        uses: actions/download-artifact@v4
+        with:
+          name: check-portal
+          path: crates/runtime/generated
+
+      - name: Download runtime and fixture binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: check-*-binaries
+          merge-multiple: true
+          path: ${{ runner.temp }}/binaries
+
+      - name: Extract runtime and fixture binaries
+        run: |
+          set -euo pipefail
+          mkdir -p dist/runtime-binaries
+          tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C dist/runtime-binaries
+          tar -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar" -C dist/runtime-binaries
 
       - name: Download test identity provider
         uses: actions/download-artifact@v4
@@ -397,7 +542,12 @@ jobs:
         id: rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       - name: Expose Rust toolchain binaries
         run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
@@ -428,38 +578,19 @@ jobs:
       - name: Install Chromium for Rust-owned browser acceptance
         run: npx playwright install --with-deps chromium
 
-      # Keep running workspace tests even if Clippy fails, then surface both failures.
-      - name: Lint Rust
-        id: rust-lint
-        continue-on-error: true
-        run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres -- -D warnings
-
+      # Nextest runs every test binary in parallel instead of one binary at a
+      # time; it does not run documentation examples, so those run separately.
       - name: Test Rust workspace
-        env:
-          NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
-          TRELLIS_CACHE_DIR: ${{ github.workspace }}/target/trellis-nats-cache
-          TRELLIS_TEST_NATS_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
-          TRELLIS_NATS_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/nats/nats-server
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
-          TRELLIS_TEST_EVENTS_BIN: ${{ github.workspace }}/dist/runtime-binaries/fixtures/events
-          TRELLIS_TEST_DEX_BIN: ${{ github.workspace }}/dist/test-identity/dex
-        run: cargo test --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres
+        run: cargo nextest run --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres --no-fail-fast
 
-      - name: Require Rust lint to pass
-        if: always()
-        env:
-          LINT_OUTCOME: ${{ steps.rust-lint.outcome }}
-        run: |
-          if [ "$LINT_OUTCOME" != "success" ]; then
-            echo "::error::Rust Clippy did not succeed ($LINT_OUTCOME)"
-            exit 1
-          fi
+      - name: Test Rust documentation examples
+        if: ${{ !cancelled() }}
+        run: cargo test --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres --doc
 
   typescript:
     name: TypeScript
     needs: [install, wasm, build]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -476,21 +607,6 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - run: npm ci
-
-      - name: Check formatting
-        run: npm exec -- prettier --ignore-path .gitignore --check ts/packages ts/tools
-
-      - name: Check TypeScript packages
-        run: npm run check:sdk
-
-      - name: Check TypeScript integration
-        run: npm run check:integration
-
       - name: Download producer-built adapter-test runtime
         uses: actions/download-artifact@v4
         with:
@@ -500,7 +616,26 @@ jobs:
       - name: Extract producer-built adapter-test runtime
         run: mkdir -p dist/runtime-binaries && tar -xzf dist/runtime-binaries.tar.gz -C dist/runtime-binaries ./trellis ./trellis-server
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Node workspace dependencies
+        id: deps
+        run: npm ci
+
+      # The checks are independent: each one reports even when another fails.
+      - name: Check TypeScript packages
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npm run check:sdk
+
+      - name: Check TypeScript integration
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        run: npm run check:integration
+
       - name: Test TypeScript packages
+        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/dist/runtime-binaries/trellis-server
@@ -653,112 +788,9 @@ jobs:
           TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
         run: cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration --test integration -- --nocapture
 
-  live-testkit:
-    name: Rust testkit integration
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      TESTKIT_EXECUTION_ROOT: ${{ github.workspace }}/.local/ci/testkit-${{ github.run_id }}-${{ github.run_attempt }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: check-runtime-binaries
-          path: ${{ env.TESTKIT_EXECUTION_ROOT }}/runtime-binaries
-
-      - name: Stage the testkit and its production runtime executables
-        run: |
-          set -euo pipefail
-          mkdir -p target/debug
-          tar -xzf "$TESTKIT_EXECUTION_ROOT/runtime-binaries/runtime-binaries.tar.gz" -C target/debug ./trellis-testkit-live ./trellis ./trellis-server
-
-      - name: Acquire the pinned NATS executable
-        run: |
-          set -euo pipefail
-          umask 077
-          # Trusted executables require non-writable ancestors, including the runner home.
-          chmod go-w "$HOME"
-          mkdir -p "$TESTKIT_EXECUTION_ROOT/nats"
-          chmod 700 "$TESTKIT_EXECUTION_ROOT" "$TESTKIT_EXECUTION_ROOT/nats"
-          bash scripts/acquire-test-nats.sh --dest "$TESTKIT_EXECUTION_ROOT/nats"
-
-      - name: Run the prebuilt testkit live binary with a host probe
-        id: testkit-live
-        env:
-          TRELLIS_TEST_CLI_BIN: ${{ github.workspace }}/target/debug/trellis
-          TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
-          TRELLIS_TEST_NATS_BIN: ${{ env.TESTKIT_EXECUTION_ROOT }}/nats/nats-server
-          RUST_BACKTRACE: "1"
-        run: |
-          set +e
-          umask 077
-          diagnostics="$TESTKIT_EXECUTION_ROOT/diagnostics"
-          mkdir -p "$diagnostics" || exit 1
-          testkit_tmp="$(mktemp -d "$diagnostics/runtime.XXXXXX")" || exit 1
-          chmod 700 "$testkit_tmp" || exit 1
-          echo "Testkit execution temp root: $testkit_tmp"
-          probe_log="$TESTKIT_EXECUTION_ROOT/host-probe.log"
-          : > "$probe_log"
-          (
-            while true; do
-              echo "=== $(date -u +%H:%M:%S) ==="
-              echo "loadavg: $(cat /proc/loadavg) nproc=$(nproc 2>/dev/null)"
-              grep -E 'MemTotal|MemAvailable|SwapTotal|SwapFree' /proc/meminfo
-              for pressure in cpu io memory; do
-                [ -r "/proc/pressure/${pressure}" ] && echo "psi ${pressure}: $(cat "/proc/pressure/${pressure}")"
-              done
-              for cg in /sys/fs/cgroup/io.stat /sys/fs/cgroup/io.max /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max; do
-                [ -r "$cg" ] && echo "cgroup $cg: $(tr '\n' '|' < "$cg")"
-              done
-              for pid in $(pgrep -f '/target/debug/trellis-testkit-live' 2>/dev/null; pgrep -x nats-server 2>/dev/null); do
-                echo "io pid $pid $(grep -E 'read_bytes|write_bytes' "/proc/$pid/io" 2>/dev/null | tr '\n' ' ')"
-              done
-              df -h /tmp "$GITHUB_WORKSPACE" 2>/dev/null | tail -3
-              vmstat 1 2 2>/dev/null | tail -1
-              ps -eo pcpu,pmem,stat,comm --sort=-pcpu 2>/dev/null | head -12
-              sleep 2
-            done
-          ) >> "$probe_log" 2>&1 &
-          probe_pid=$!
-          TMPDIR="$testkit_tmp" "$GITHUB_WORKSPACE/target/debug/trellis-testkit-live" --test-threads=4
-          status=$?
-          kill "$probe_pid" 2>/dev/null || true
-          wait "$probe_pid" 2>/dev/null || true
-          echo "===== HOST PROBE (${probe_log}) ====="
-          cat "$probe_log"
-          if [ "$status" -ne 0 ]; then
-            # This private temp root belongs only to the native execution above.
-            for owner in "$testkit_tmp"/trellis-testkit-*/.trellis-testkit-owner; do
-              [ -f "$owner" ] && [ ! -L "$owner" ] || continue
-              sandbox="${owner%/.trellis-testkit-owner}"
-              log="$sandbox/logs/nats-server.log"
-              [ -f "$log" ] && [ ! -L "$log" ] || continue
-              [ "$(realpath -e -- "$log")" = "$(realpath -e -- "$testkit_tmp")/${sandbox##*/}/logs/nats-server.log" ] || continue
-              destination="$diagnostics/nats/${sandbox##*/}"
-              mkdir -p "$destination" && cp -- "$log" "$destination/nats-server.log"
-              echo "===== NATS CHILD LOG ($log; PID in NATS log prefix) ====="
-              tail -n 200 -- "$log"
-            done
-          fi
-          exit "$status"
-
-      - name: Upload failed testkit NATS child logs
-        if: failure() && steps.testkit-live.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: testkit-nats-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.TESTKIT_EXECUTION_ROOT }}/diagnostics/nats/**/nats-server.log
-          include-hidden-files: true
-          retention-days: 3
-          if-no-files-found: warn
-
   live-typescript:
-    name: TypeScript live integration (${{ matrix.shard }}/4)
-    needs: [install, wasm, portal, build]
+    name: TypeScript live integration (${{ matrix.shard }}/8)
+    needs: [install, wasm, portal, build, build-fixtures]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Run independent test files on separate hosted runners; every shard must pass.
@@ -766,7 +798,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -793,33 +825,35 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Download runtime binaries
+      - name: Download runtime and fixture binaries
         uses: actions/download-artifact@v4
         with:
-          name: check-runtime-binaries
-          path: ${{ runner.temp }}/runtime-binaries
+          pattern: check-*-binaries
+          merge-multiple: true
+          path: ${{ runner.temp }}/binaries
 
-      - name: Stage runtime binaries
+      - name: Stage runtime and fixture binaries
         run: |
           set -euo pipefail
           mkdir -p target/debug
-          tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+          tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C target/debug
+          tar -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar" -C target/debug
 
       - name: Install Node workspace dependencies
         run: npm ci
 
       - name: Run TypeScript live integration
         env:
-          TRELLIS_TEST_SHARD: ${{ matrix.shard }}/4
-          # Two active file workers per hosted runner instead of four; keep the
-          # original eight-way aggregate parallelism across four isolated hosts.
+          TRELLIS_TEST_SHARD: ${{ matrix.shard }}/8
+          # Two active file workers per hosted runner. The suite mostly waits on
+          # real authorization expiry, so more hosts shorten the slowest shard.
           TRELLIS_TEST_CONCURRENCY: "2"
         run: npm run test:integration
 
   examples:
     name: Documented examples
     needs: [install, wasm, portal, build]
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Check out repository
@@ -852,11 +886,6 @@ jobs:
           set -euo pipefail
           mkdir -p target/debug
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
 
       - name: Verify documented Orders service
         env:
@@ -1002,8 +1031,8 @@ jobs:
 
   rust-testkit-package:
     name: Rust testkit bundle
-    needs: [install, build-targets-linux]
-    runs-on: [self-hosted, Linux, X64]
+    needs: [install, build]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Check out repository
@@ -1112,76 +1141,9 @@ jobs:
       - name: Verify the packaged testkit without a checkout
         run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode full
 
-  build-targets-linux:
-    name: Build native Linux x86-64 runtime
-    needs: [install, wasm, portal]
-    runs-on: ubuntu-latest
-    container:
-      image: rust:bookworm
-    timeout-minutes: 45
-    env:
-      TRELLIS_OFFICIAL_BUILD: "1"
-      TRELLIS_BUILD_SHA: ${{ github.sha }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      # The runtime image base is debian:bookworm-slim, so compile in the same
-      # release (rust:bookworm) on Linux x86-64.
-      - name: Build release binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release -p trellis-cli -p trellis-server --target x86_64-unknown-linux-gnu
-
-      - name: Package CLI archives
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          target="x86_64-unknown-linux-gnu"
-          staging="dist/${target}"
-          mkdir -p "$staging"
-          cp "target/${target}/release/trellis" "$staging/trellis"
-          cp "target/${target}/release/trellis-server" "$staging/trellis-server"
-          archive="trellis-${version}-${target}.tar.gz"
-          tar -C "$staging" -czf "dist/$archive" trellis trellis-server
-          sha256sum "dist/$archive" > "dist/checksum-${version}-${target}-trellis.sha256"
-
-      - name: Upload packaged CLI artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: trellis-cli-x86_64-unknown-linux-gnu
-          path: |
-            dist/*.tar.gz
-            dist/*.sha256
-          retention-days: 3
-
   verify-images:
     name: Build verified ${{ matrix.image }} image
-    needs: [install, wasm, portal, build-targets-linux]
+    needs: [install, wasm, portal, build]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
     strategy:
@@ -1282,7 +1244,7 @@ jobs:
 
   typescript-testkit-package:
     name: Stage exact TypeScript testkit release input
-    needs: [install, wasm, demos, build-targets-linux]
+    needs: [install, wasm, demos, build]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -1328,7 +1290,8 @@ jobs:
   acceptance:
     name: Acceptance gate
     needs:
-      - rust-format
+      - changes
+      - clippy
       - rust
       - typescript
       - demos
@@ -1336,32 +1299,38 @@ jobs:
       - ui-hosting
       - console
       - live-rust
-      - live-testkit
       - live-typescript
       - rust-testkit-consumer
       - typescript-testkit-package
-      - build-targets-linux
       - verify-images
     if: always()
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every verification job to succeed
         env:
           NEEDS: ${{ toJSON(needs) }}
+          CODE_CHANGED: ${{ needs.changes.outputs.code }}
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json, os, sys
           needs = json.loads(os.environ["NEEDS"])
+          # A prose-only pull request skips verification; nothing may fail.
+          allowed = {"success"} if os.environ["CODE_CHANGED"] == "true" else {"success", "skipped"}
+          if needs["changes"]["result"] != "success":
+              allowed = {"success"}
           failed = {
               name: result.get("result")
               for name, result in needs.items()
-              if result.get("result") != "success"
+              if result.get("result") not in allowed
           }
           if failed:
               print(f"verification did not all succeed: {failed}", file=sys.stderr)
               sys.exit(1)
-          print(f"all {len(needs)} verification jobs succeeded")
+          if os.environ["CODE_CHANGED"] != "true":
+              print("only documentation changed; build and test verification skipped")
+          else:
+              print(f"all {len(needs)} verification jobs succeeded")
           PY

@@ -7,8 +7,9 @@
 #   npm run test:integration [-- <node test flags and test paths>]
 #
 # No environment variable has to be preset and the tests never compile Rust while
-# they run. For CI parallelism TRELLIS_TEST_SHARD=1/4 through 4/4 selects a
-# Node-native file shard from exactly the same complete test-file list.
+# they run. For CI parallelism TRELLIS_TEST_SHARD=<index>/<total> (for example
+# 1/8) selects a Node-native file shard from exactly the same complete test-file
+# list.
 # Locally the runner builds every Rust executable the tests launch under
 # `target/debug`; in CI the producer job has already staged them there, so the
 # runner only checks that they exist. NATS is resolved by the pinned
