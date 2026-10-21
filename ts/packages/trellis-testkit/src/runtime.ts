@@ -24,6 +24,7 @@ import {
 } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ulid } from "ulid";
 import { z } from "zod";
@@ -1048,7 +1049,23 @@ export class TrellisTestRuntime implements AsyncDisposable {
     const portLeases: ReservedPort[] = [];
     try {
       for (const port of this.#launch.ports) {
-        portLeases.push(await reserveLocalPort(port));
+        // After a real process-group shutdown, an inherited native listener can
+        // take a moment to release its fixed restart port. Reacquire that
+        // exact port rather than changing the test runtime's advertised address.
+        const deadline = Date.now() + this.#timeouts.shutdownMs;
+        while (true) {
+          try {
+            portLeases.push(await reserveLocalPort(port));
+            break;
+          } catch (error) {
+            const addressInUse =
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "EADDRINUSE";
+            if (!addressInUse || Date.now() >= deadline) throw error;
+            await sleep(50);
+          }
+        }
       }
       this.#controlPlane = await startTrellisProcess({
         trellisUrl: this.trellisUrl,
