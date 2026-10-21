@@ -57,13 +57,17 @@ test(
               runtime.restoreNativeTransport();
             }
             const deadline = AbortSignal.timeout(10_000);
+            // Restoring the shared proxy recovers caller and provider
+            // independently. Caller admission alone cannot serve Echo.
             while (
-              caller.connection.status.phase !== "connected" &&
+              (caller.connection.status.phase !== "connected" ||
+                service.connection.status.phase !== "connected") &&
               !deadline.aborted
             ) {
               await delay(25);
             }
             assert.equal(caller.connection.status.phase, "connected");
+            assert.equal(service.connection.status.phase, "connected");
             assert.equal(
               (await caller.echo({ value: "after" }).orThrow()).value,
               "after",
