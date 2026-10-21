@@ -123,6 +123,12 @@ The GitHub `Release` workflow runs the same Rust release tooling used locally:
 - `release check-metadata` checks release metadata before expensive verification
 - `release write-notes` extracts the matching `CHANGELOG.md` section for GitHub release notes
 
+After changing versions and regenerating consumers, refresh the committed locks
+for standalone Cargo workspaces, including `benchmarks/runtime/native/Cargo.lock`.
+Verify the benchmark with Performance's ordinary command:
+`cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target`.
+Performance consumes that frozen lock; it does not repair it during execution.
+
 The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so `Check` verifies exactly what ships. `Check` is the single build-and-verification pipeline. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds every supported CLI target and assembles and smokes both image architectures; packages the Rust and npm packages; runs the artifact-only package consumer in full mode; and reports through one acceptance gate. Authored-source formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that same graph. `Release` is publication only: it selects the successful `Check` run for the exact candidate commit (never "the latest green Check"), downloads that run's verified artifacts, and publishes crates, npm, canonical APIs, and images without rebuilding the product. After publication gates pass, GitHub Actions creates an unsigned lightweight release tag on the candidate commit. If verification fails, no release tag is created and the same version can be retried.
 
 The `Deploy Site to GitHub Pages` workflow is separate from release publishing. It installs each worktree's locked APIs from source before building the released and current guide and Console sites.
@@ -482,8 +488,11 @@ If publication needs a workflow repair after the tag already exists, commit the
 repair on a working branch and dispatch that workflow with `publish=true` and the
 existing tag. Recovery checks out the immutable tagged candidate and consumes its
 successful Check artifacts, not artifacts built from the workflow-repair commit.
-Existing GitHub downloads must match those accepted artifacts byte-for-byte;
-recovery does not overwrite the tag or release assets.
+Existing GitHub downloads must match those accepted artifacts byte-for-byte.
+Recovery creates a missing release as a draft, verifies any existing asset bytes,
+uploads only missing assets, and publishes the complete release. A byte mismatch
+fails before uploading missing assets; recovery never overwrites the tag or an
+existing asset.
 Images are promoted from the same accepted archive under the tagged candidate's
 SHA, never rebuilt from the workflow-repair commit.
 For npm provenance, publication normalizes only `package.json`'s `repository.url`
