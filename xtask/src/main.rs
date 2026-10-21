@@ -104,6 +104,7 @@ where
 const TRELLIS_PROJECTS: &[&str] = &[
     // Trellis has a small fixed API DAG. Replace this list with dynamic graph
     // discovery only if maintaining it becomes a real problem.
+    "crates/builtin-contracts",
     "ts/packages/trellis-testkit",
     "web",
     "integration/fixtures/runtime",
