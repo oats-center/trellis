@@ -9,15 +9,16 @@ Built with SvelteKit, Tailwind CSS v4 + DaisyUI, and
 
 ## Local dev
 
-1. Start NATS and the Trellis runtime service with this app configured as its
-   default web proxy.
-2. Copy `.env.example` to `.env` if needed.
-3. Run `npm ci` at the repository root (Node 24 LTS and npm 11).
-4. Run `npm run dev` in this directory.
+The Console is compiled into `trellis-server`; the runtime does not proxy a
+Vite dev server. To try a change in the real runtime:
 
-The Vite server listens on `http://127.0.0.1:5173`. Browse the surfaces through
-Trellis at `http://localhost:3000/console`.
-The app expects NATS WebSocket at `ws://localhost:8080`.
+1. Run `npm ci` at the repository root (Node 24 LTS and npm 11).
+2. Run `npm run browser:embedded` at the repository root. It builds this app and
+   the OAuth portal into `crates/runtime/generated/`.
+3. Rebuild and restart the server: `cargo build -p trellis-server`.
+4. Open `http://localhost:3000/console`.
+
+Use `npm run check` in this directory for type and Svelte checks between builds.
 
 `trellis install` refreshes the locked contract artifacts and local SDK. The
 local Trellis context binds `createTrellisApp` to the console contract and

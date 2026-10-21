@@ -28,10 +28,6 @@ import {
   withTrellisRuntime,
 } from "./_support/runtime.ts";
 
-/** Built server binary used so each scenario can set its own environment. */
-
-const captureEndpoint = process.env["TRELLIS_OBS_CAPTURE_ENDPOINT"];
-
 /**
  * Telemetry is optional: a runtime started with no OTLP endpoint, with the SDK
  * disabled, with traces only, or with an unreachable Collector must keep
@@ -69,19 +65,6 @@ for (const scenario of [
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:49999",
     } as Record<string, string>,
   },
-  ...(captureEndpoint
-    ? [
-        {
-          name: "collector enabled",
-          env: {
-            OTEL_EXPORTER_OTLP_ENDPOINT: captureEndpoint,
-            OTEL_TRACES_SAMPLER: "always_on",
-            OTEL_METRIC_EXPORT_INTERVAL: "1000",
-            OTEL_BSP_SCHEDULE_DELAY: "100",
-          },
-        },
-      ]
-    : []),
 ]) {
   test(`generated jobs and events work with ${scenario.name} telemetry`, async () => {
     const requests: string[] = [];

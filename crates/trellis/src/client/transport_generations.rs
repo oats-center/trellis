@@ -165,13 +165,6 @@ pub(crate) struct TransportGeneration {
     nats: async_nats::Client,
     context_digest: String,
     admitted_policy: TransportAuthorizationV1,
-    /// Retained immutable generation record (invariant G2); observed through
-    /// telemetry today and reserved for generation diagnostics.
-    #[allow(dead_code)]
-    admitted_policy_digest: String,
-    /// Broker-authenticated physical attachment identity (invariant G2).
-    #[allow(dead_code)]
-    physical_connection_id: String,
     /// Terminal state is monotonic: once `Closed`, it never reactivates.
     state: Arc<AtomicU8>,
     /// Authoritative lease admission and live-count predicate. `closed` is the
@@ -726,13 +719,7 @@ pub(crate) struct OwnCoverageStage {
     finished: bool,
 }
 
-#[allow(dead_code)]
 impl OwnCoverageStage {
-    /// The provisional generation this stage opened.
-    pub(crate) fn generation_id(&self) -> u64 {
-        self.generation.id
-    }
-
     /// Finish the stage under the caller's own-installation transition guard.
     ///
     /// `transition` is the caller's own-installation guard; taking it here again
@@ -884,7 +871,6 @@ impl std::fmt::Debug for OwnCoveragePreparation {
 /// step before stage ownership fails, this closes exactly the generation and
 /// opening it created and clears only a matching opening; a newer opening is
 /// never touched.
-#[allow(dead_code)]
 struct StageConnectGuard {
     inner: Arc<ManagerInner>,
     id: u64,
@@ -892,7 +878,6 @@ struct StageConnectGuard {
     armed: bool,
 }
 
-#[allow(dead_code)]
 impl StageConnectGuard {
     fn new(inner: Arc<ManagerInner>, id: u64) -> Self {
         Self {
@@ -2793,8 +2778,6 @@ async fn open_generation(
         nats,
         context_digest: marker.clone(),
         admitted_policy: policy,
-        admitted_policy_digest,
-        physical_connection_id: attachment.to_string(),
         state,
         lease_state: Arc::new(std::sync::Mutex::new(LeaseState::default())),
         lease_wake,

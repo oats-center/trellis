@@ -1,4 +1,4 @@
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstream } from "@nats-io/jetstream";
 import {
   headers as natsHeaders,
   type MsgHdrs,
@@ -8,7 +8,6 @@ import {
 import type { VerifiedAuthority } from "../../auth/authority.ts";
 import type { StoreError } from "../../errors/index.ts";
 import {
-  installConnectionAvailability,
   observeTrellisConnection,
   type TrellisAvailability,
 } from "../../connection.ts";
@@ -31,7 +30,6 @@ import { ContractResourceBindingsSchema } from "../../participant_runtime/schema
 import {
   fixedTransportProvider,
   TransportGenerationManager,
-  type TransportGenerationPrepared,
   type TransportLease,
   type TrellisTransportProvider,
 } from "../../transport/generations.ts";
@@ -107,11 +105,6 @@ import {
   type ProviderHandlerClient,
   type ProviderRuntime,
 } from "../../provider.ts";
-import {
-  DEFAULT_SERVICE_RUNTIME_WAIT_ON_FIRST_CONNECT,
-  GENERATION_MAX_RECONNECT_ATTEMPTS,
-  selectRuntimeTransportServers,
-} from "../../runtime_transport.ts";
 import { serviceRuntimeLogger } from "./logger.ts";
 import {
   AuthError,
@@ -181,7 +174,6 @@ import {
   transitionConnectionAvailability,
   type TrellisConnection,
 } from "../../connection.ts";
-import { recordTrellisDuration } from "../../telemetry/mod.ts";
 import {
   defaultSqlOutboxTables,
   OutboxDispatcher,

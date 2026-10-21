@@ -82,30 +82,6 @@ pub struct InitConfigArgs {
     /// HTTP listener IP address.
     #[arg(long)]
     pub bind_address: Option<std::net::IpAddr>,
-    /// Maximum requests per rate-limit window; zero disables limiting.
-    #[arg(long, default_value_t = 60)]
-    pub rate_limit_max: u32,
-    /// Rate-limit window in milliseconds.
-    #[arg(long, default_value_t = 60_000)]
-    pub rate_limit_window_ms: u64,
-    /// Shared static web artifact directory.
-    #[arg(long, conflicts_with = "web_proxy")]
-    pub web_directory: Option<PathBuf>,
-    /// Shared HTTP(S) reverse-proxy upstream.
-    #[arg(long)]
-    pub web_proxy: Option<String>,
-    /// Static Login Portal artifact directory.
-    #[arg(long, conflicts_with = "portal_proxy")]
-    pub portal_directory: Option<PathBuf>,
-    /// Login Portal HTTP(S) reverse-proxy upstream.
-    #[arg(long)]
-    pub portal_proxy: Option<String>,
-    /// Static Console artifact directory.
-    #[arg(long, conflicts_with = "console_proxy")]
-    pub console_directory: Option<PathBuf>,
-    /// Console HTTP(S) reverse-proxy upstream.
-    #[arg(long)]
-    pub console_proxy: Option<String>,
     /// Authorization context lifetime in seconds.
     #[arg(long)]
     pub auth_context_lifetime_seconds: Option<u64>,

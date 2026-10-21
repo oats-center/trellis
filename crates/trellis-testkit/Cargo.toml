@@ -21,7 +21,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile.workspace = true
-thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml = "1.1.2"
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.3" }

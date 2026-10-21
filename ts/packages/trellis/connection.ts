@@ -104,7 +104,6 @@ const attachTelemetry = Symbol("attachTelemetry");
 const transitionTelemetry = Symbol("transitionTelemetry");
 const terminalTelemetry = Symbol("terminalTelemetry");
 const disposeTelemetry = Symbol("disposeTelemetry");
-const installTransportBase = Symbol("installTransportBase");
 
 type ConnectionTelemetryHandle = ReturnType<typeof trackConnection>;
 
@@ -163,7 +162,6 @@ export class TrellisConnection {
   #stopped = false;
   #telemetry?: ReturnType<typeof trackConnection>;
   #telemetryUsable = false;
-  #transportBase: TrellisConnectionTransportMetadata = {};
   readonly live = new LiveSessionManager();
 
   /** Creates a Trellis connection lifecycle handle. */
@@ -261,10 +259,6 @@ export class TrellisConnection {
     for (const listener of this.#availabilityListeners) {
       listener(this.availability());
     }
-  }
-
-  [installTransportBase](base: TrellisConnectionTransportMetadata): void {
-    this.#transportBase = base;
   }
 
   [attachTelemetry](telemetry?: ConnectionTelemetryHandle): void {
@@ -437,7 +431,6 @@ export function observeTrellisConnection(
     options.transport,
     options.transportName,
   );
-  connection[installTransportBase](baseTransport);
 
   if (statusIterator) {
     statusTask = (async () => {

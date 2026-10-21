@@ -59,39 +59,25 @@ curl http://localhost:3000/readyz
 
 Use a runtime path that explicitly includes the auth and portal services for end-to-end first-admin, portal, and CLI login flows.
 
-## 5. Start the built-in web app
+## 5. Change the built-in web apps
+
+The Console (`web/`) and the OAuth sign-in portal (`portal/`) are compiled into
+`trellis-server`. The runtime does not proxy them or serve them from another
+directory. After editing either app, rebuild the embedded assets and the
+server, then restart `trellis-server`:
 
 ```sh
-cd web
-npm run dev
+npm run browser:embedded
+cargo build -p trellis-server
 ```
 
-Point the shared built-in web source at Vite in the runtime configuration, then
-open `http://localhost:3000/console`:
-
-```toml
-[http]
-web_source = { proxy = "http://127.0.0.1:5173" }
-```
-
-Trellis reverse proxies the complete web source, including Vite modules and HMR
-WebSockets. The browser continues to use the Trellis origin.
-
-To replace either embedded UI with a built static artifact, configure its root:
-
-```toml
-[http]
-portal_source = { directory = "/opt/acme/trellis-login" }
-console_source = { directory = "/opt/acme/trellis-console" }
-```
-
-The portal root must contain `200.html`; the Console root must contain
-`index.html`.
+Then open `http://localhost:3000/console`. Signing in redirects to the portal on
+the dedicated OAuth listener and returns to the Console.
 
 ## Development workflow
 
 - **Runtime changes**: edit files under `crates/runtime/`; rebuild and restart `trellis-server` after changes.
-- **Web changes**: edit files under `web/`; Vite HMR applies changes through Trellis.
+- **Web changes**: edit files under `web/` or `portal/`, run `npm run browser:embedded`, then rebuild and restart `trellis-server`.
 - **Contract changes**: run `cargo xtask install`.
 - **CLI changes**: run `cargo build -p trellis-cli` in the `rust/` directory, then re-run `trellis ...` commands.
 - **Type checking**: run `npm run check:sdk` and `npm run check:integration`.

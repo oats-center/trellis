@@ -4,7 +4,7 @@ import {
   type Msg,
   type NatsConnection,
 } from "@nats-io/nats-core";
-import { Pointer, Value } from "typebox/value";
+import { Value } from "typebox/value";
 import type { VerifiedAuthority } from "../../auth/authority.ts";
 import {
   type PermissionAtom,
@@ -131,7 +131,6 @@ type TrellisServiceRuntimeOpts<TA extends RuntimeApi> = Omit<
   api: TA;
   inboxPrefix: string;
   transferSupport?: RuntimeOperationTransferSupport;
-  version?: string;
   operationDeploymentId?: string;
   operationConnectionId?: string;
 };
@@ -180,8 +179,6 @@ type RuntimeOperationTransferSupport = {
     operationId: string;
     expiresInMs: number;
     maxBytes?: number;
-    contentType?: string;
-    metadata?: Record<string, string>;
     commit?: (
       stored: StoredTransfer,
       progress: NonNullable<RuntimeOperationSnapshot["transfer"]>,
@@ -291,63 +288,6 @@ export class OperationObserverArbiter {
       }
     })();
   }
-}
-
-function asOptionalStringPointerValue(
-  input: unknown,
-  pointer?: `/${string}`,
-): Result<string | undefined, TransferError> {
-  if (!pointer) {
-    return ok(undefined);
-  }
-  const value = Pointer.Get(input as Record<string, unknown>, pointer);
-  if (value === undefined) {
-    return ok(undefined);
-  }
-  if (typeof value !== "string" || value.length === 0) {
-    return err(
-      new TransferError({
-        operation: "transfer",
-        context: { reason: "invalid_input", field: pointer, pointer },
-      }),
-    );
-  }
-  return ok(value);
-}
-
-function asOptionalStringRecordPointerValue(
-  input: unknown,
-  pointer?: `/${string}`,
-): Result<Record<string, string> | undefined, TransferError> {
-  if (!pointer) {
-    return ok(undefined);
-  }
-  const value = Pointer.Get(input as Record<string, unknown>, pointer);
-  if (value === undefined) {
-    return ok(undefined);
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return err(
-      new TransferError({
-        operation: "transfer",
-        context: { reason: "invalid_input", field: pointer, pointer },
-      }),
-    );
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>);
-  if (
-    entries.some(([key, item]) => key.length === 0 || typeof item !== "string")
-  ) {
-    return err(
-      new TransferError({
-        operation: "transfer",
-        context: { reason: "invalid_input", field: pointer, pointer },
-      }),
-    );
-  }
-
-  return ok(Object.fromEntries(entries) as Record<string, string>);
 }
 
 function traceIdFromTraceparent(
@@ -538,7 +478,6 @@ type OperationLiveObservation = {
 
 export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   #nats: NatsConnection;
-  #version?: string;
   #log: LoggerLike;
   #operations = new Map<string, RuntimeOperationRecord>();
   #activeOperationFences = new Map<string, RuntimeOperationFence>();
@@ -651,7 +590,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
 
     this.#nats = nats;
     this.#transport = opts?.transport;
-    this.#version = opts?.version;
     this.#log = (opts?.log ?? serviceRuntimeLogger).child({
       lib: "trellis-service-runtime",
     });
@@ -3963,15 +3901,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
               return;
             }
             if (!ctx.transfer || !this.#transferSupport) return;
-            const contentType = asOptionalStringPointerValue(
-              runtime.input,
-              ctx.transfer.contentType,
-            ).take();
-            const metadata = asOptionalStringRecordPointerValue(
-              runtime.input,
-              ctx.transfer.metadata,
-            ).take();
-            if (isErr(contentType) || isErr(metadata)) return;
             const reopened = await this.#transferSupport
               .openOperationTransfer({
                 sessionKey: runtime.callerSessionKey,
@@ -3984,8 +3913,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 expiresInMs:
                   transferConstants().operationUploadLifetimeSeconds * 1000,
                 maxBytes: transferConstants().operationUploadMaxBytes,
-                ...(contentType !== undefined ? { contentType } : {}),
-                ...(metadata !== undefined ? { metadata } : {}),
                 ...this.#operationUploadPersistence(
                   () => runtime,
                   () => fence,
@@ -4414,32 +4341,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 continue;
               }
 
-              const contentType = asOptionalStringPointerValue(
-                value.input,
-                ctx.transfer.contentType,
-              ).take();
-              if (isErr(contentType)) {
-                recordOperationServiceError(contentType.error, {
-                  operation: String(operation),
-                  phase: "start",
-                });
-                this.respondWithError(msg, contentType.error);
-                continue;
-              }
-
-              const metadata = asOptionalStringRecordPointerValue(
-                value.input,
-                ctx.transfer.metadata,
-              ).take();
-              if (isErr(metadata)) {
-                recordOperationServiceError(metadata.error, {
-                  operation: String(operation),
-                  phase: "start",
-                });
-                this.respondWithError(msg, metadata.error);
-                continue;
-              }
-
               const openedTransferValue = await this.#transferSupport
                 .openOperationTransfer({
                   sessionKey: value.sessionKey,
@@ -4452,8 +4353,6 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   expiresInMs:
                     transferConstants().operationUploadLifetimeSeconds * 1000,
                   maxBytes: transferConstants().operationUploadMaxBytes,
-                  ...(contentType !== undefined ? { contentType } : {}),
-                  ...(metadata !== undefined ? { metadata } : {}),
                   ...this.#operationUploadPersistence(
                     () => runtime,
                     () => transferFence,

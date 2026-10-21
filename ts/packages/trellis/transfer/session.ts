@@ -6,7 +6,7 @@ import {
 } from "@nats-io/nats-core";
 import { QueuedIteratorImpl } from "@nats-io/nats-core/internal";
 import { ulid } from "ulid";
-import { base64urlEncode, sha256 } from "../auth/utils.ts";
+import { base64urlEncode } from "../auth/utils.ts";
 import type { TrellisAuth } from "../session.ts";
 import { TransferError } from "../errors/TransferError.ts";
 import { TransportError } from "../errors/TransportError.ts";

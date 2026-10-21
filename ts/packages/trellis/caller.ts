@@ -6,7 +6,6 @@ import {
   type Result,
 } from "@oatscenter/result";
 import type { LiveSubscription } from "./live/subscription.ts";
-import type { Codec } from "./generated.ts";
 import type { TrellisConnection } from "./connection.ts";
 import type { TransportError } from "./errors/index.ts";
 import type { TypedKV } from "./kv.ts";
@@ -47,7 +46,6 @@ type SelectedActionShape = {
   event?: unknown;
   payload?: unknown;
 };
-type DescriptorName<T> = T extends `${string}:${infer TName}` ? TName : never;
 
 type OperationDescriptorFor<TAction> = {
   subject: string;

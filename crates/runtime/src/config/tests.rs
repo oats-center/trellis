@@ -3,10 +3,7 @@ use std::path::PathBuf;
 
 use tempfile::tempdir;
 
-use super::{
-    ConfigError, RuntimeConfig, RuntimePathDefaults, SqliteStorageConfig, StorageBackend,
-    WebSourceConfig,
-};
+use super::{ConfigError, RuntimeConfig, RuntimePathDefaults, SqliteStorageConfig, StorageBackend};
 use crate::RuntimeMode;
 
 const COMPLETE_CONFIG: &str = r#"
@@ -163,39 +160,6 @@ fn resolves_every_path_root_override_against_profile_or_config() {
             .expect("load absolute path");
         assert_eq!(get(&resolved), absolute);
     }
-}
-
-#[test]
-fn resolves_only_directory_web_sources_against_config() {
-    let directory = tempdir().expect("create temp directory");
-    let config_path = directory.path().join("config.toml");
-    fs::write(
-        &config_path,
-        r#"
-[http]
-web_source = { directory = "./web" }
-portal_source = { proxy = "http://127.0.0.1:5173" }
-console_source = { directory = "./console" }
-"#,
-    )
-    .expect("write web source config");
-
-    let (config, _) =
-        RuntimeConfig::load_from_path_with_defaults(&config_path, path_defaults(directory.path()))
-            .expect("load web source config");
-    let http = config.http.expect("HTTP config");
-    assert_eq!(
-        http.web_source,
-        Some(WebSourceConfig::Directory(directory.path().join("web")))
-    );
-    assert_eq!(
-        http.portal_source,
-        Some(WebSourceConfig::Proxy("http://127.0.0.1:5173".to_owned()))
-    );
-    assert_eq!(
-        http.console_source,
-        Some(WebSourceConfig::Directory(directory.path().join("console")))
-    );
 }
 
 #[test]

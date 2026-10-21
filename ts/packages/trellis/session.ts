@@ -56,7 +56,6 @@ import {
   type TransportLease,
   type TrellisTransportProvider,
 } from "./transport/generations.ts";
-import type { AuthorizationVerificationErrorCode } from "./auth/protocol_wasm.ts";
 import { PromotedOwnAuthorityView } from "./own_authority.ts";
 import {
   AsyncResult,
@@ -81,10 +80,8 @@ import {
   startServerSpan,
   type TrellisErrorMetricAttributes,
   trellisRoute,
-  UNKNOWN_ROUTE,
   withSpanAsync,
 } from "./telemetry/mod.ts";
-import { Type } from "typebox";
 import { Pointer } from "typebox/value";
 import { ulid } from "ulid";
 import {
@@ -415,24 +412,6 @@ function callerOwnsReply(
 ): boolean {
   if (!reply || !inboxPrefix) return false;
   return reply === inboxPrefix || reply.startsWith(`${inboxPrefix}.`);
-}
-
-function localAuthorizationErrorReason(
-  code: AuthorizationVerificationErrorCode,
-): string {
-  switch (code) {
-    case "PermissionDenied":
-      return "insufficient_permissions";
-    case "ReplySubjectMismatch":
-      return "reply_subject_mismatch";
-    case "ProofIatOutOfRange":
-      return "iat_out_of_range";
-    case "ContextExpired":
-    case "EventRevoked":
-      return "session_expired";
-    default:
-      return "invalid_signature";
-  }
 }
 
 /**
@@ -812,7 +791,6 @@ export type TrellisAuth = {
 };
 
 export type TrellisMode = "client" | "service";
-type Simplify<T> = { [K in keyof T]: T[K] } & {};
 type OwnedApiFor<TContract> = TContract extends {
   implements: readonly unknown[];
 }
@@ -1400,10 +1378,7 @@ export type RuntimeOperationDesc = {
   signals?: Record<string, { input: unknown }>;
   cancelCapabilities?: readonly string[];
   controlCapabilities?: readonly string[];
-  transfer?: {
-    contentType?: `/${string}`;
-    metadata?: `/${string}`;
-  };
+  transfer?: { direction: "send" };
   cancel?: boolean;
 };
 
@@ -1664,14 +1639,6 @@ export type RequestOpts = {
   /** Cancels the wait with trellis.request.cancelled, including after publication. */
   signal?: AbortSignal;
 };
-
-const MAX_OPERATION_INPUT_BYTES = 256 * 1024;
-const MAX_OPERATION_PROGRESS_BYTES = 64 * 1024;
-const MAX_OPERATION_OUTPUT_BYTES = 512 * 1024;
-const MAX_OPERATION_ERROR_BYTES = 32 * 1024;
-const MAX_OPERATION_SIGNALS = 100;
-const MAX_OPERATION_SIGNAL_BYTES = 64 * 1024;
-const MAX_OPERATION_RECORD_BYTES = 1024 * 1024;
 
 export type EventOpts = {
   mode?: "durable" | "ephemeral";
@@ -2603,10 +2570,6 @@ export type EventPayload<
   TContract,
   E extends EventName<TContract>,
 > = EventPayloadOf<OwnedApiFor<TContract>, E>;
-
-type DeepRecord<T> = {
-  [k: string]: T | DeepRecord<T>;
-};
 
 function activeTraceId(span: Span): string | undefined {
   const traceId = span.spanContext().traceId;
@@ -3605,7 +3568,6 @@ export class Trellis<
     input: TInput,
     opts?: LiveSubscribeOpts,
   ): AsyncResult<LiveSubscription<TEvent>, BaseError> {
-    const route = trellisRoute("rpc", live);
     let transport: { nc: NatsConnection; release(): void } | undefined;
     let subscription: LiveSubscription<TEvent> | undefined;
     const closeOnNats = () => {
@@ -3742,7 +3704,6 @@ export class Trellis<
             opts?.signal?.removeEventListener("abort", abort);
             this.#liveClosers.delete(closeOnNats);
           });
-          const _ = route;
           return ok(subscription!);
         } catch (cause) {
           opts?.signal?.removeEventListener("abort", abort);

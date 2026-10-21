@@ -1,13 +1,6 @@
 import type { AppRequestDescriptor } from "@oatscenter/trellis";
 import type { ConnectedNativeClient } from "@oatscenter/trellis/native";
 
-/** Directory or HTTP(S) proxy used by a production web surface. */
-export type TrellisControlPlaneWebSource =
-  | { directory: string }
-  | {
-      proxy: string;
-    };
-
 /** Authorization timing owned by production bootstrap. */
 export type TrellisControlPlaneAuthorization = {
   contextLifetimeSeconds: number;
@@ -87,12 +80,6 @@ export type TrellisTestRuntimeStartOptions = {
   oauthProviders?: Record<string, TrellisControlPlaneOAuthProvider>;
   /** Additional exact browser origins allowed by the test runtime. */
   webOrigins?: readonly string[];
-  /** Shared built-in web source for the real control plane. */
-  webSource?: TrellisControlPlaneWebSource;
-  /** Login Portal source overriding the shared web source. */
-  portalSource?: TrellisControlPlaneWebSource;
-  /** Console source overriding the shared web source. */
-  consoleSource?: TrellisControlPlaneWebSource;
   /** Route the advertised browser WebSocket endpoint through a replaceable TCP proxy. */
   rotatableWebsocketProxy?: boolean;
   /**

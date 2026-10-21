@@ -718,13 +718,6 @@ export const guideDocs: DocEntry[] = [
     section: "Getting started",
   },
   {
-    title: "Create a custom portal",
-    description:
-      "Build and register a custom SvelteKit portal app for provider selection and contract approval.",
-    href: "/guides/creating-custom-portal",
-    section: "Advanced",
-  },
-  {
     title: "Devices",
     description:
       "Build a Trellis device that displays a QR activation URL and completes the device activation flow.",

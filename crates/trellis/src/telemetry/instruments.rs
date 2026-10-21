@@ -434,8 +434,6 @@ pub type ObservationSource = Arc<dyn Fn() -> Vec<(f64, Vec<KeyValue>)> + Send + 
 /// share it must share one instance, so dropping an arbitrary copy can never
 /// unregister a still-live owner.
 pub struct ObservationRegistration {
-    #[allow(dead_code)]
-    family: &'static str,
     id: u64,
 }
 
@@ -701,10 +699,7 @@ pub fn register_observable(
             .expect("family was just registered");
         family_sources.sources.push((id, source));
     }
-    ObservationRegistration {
-        family: family.name(),
-        id,
-    }
+    ObservationRegistration { id }
 }
 
 /// Records one accepted Auth/contract duration sample.

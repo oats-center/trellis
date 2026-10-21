@@ -497,8 +497,6 @@ port = {trellis_port}
 public_origin = {public_origin}
 origins = [{public_origin}]
 allow_insecure_origins = [{public_origin}]
-rate_limit_max = 60
-rate_limit_window_ms = 60000
 
 [nats]
 servers = {nats_server_url}
@@ -1342,25 +1340,6 @@ mod tests {
     }
 
     #[test]
-    fn trellis_options_use_documented_defaults() {
-        let options = LocalTrellisBootstrapOptions::new("./local");
-
-        assert_eq!(options.out, PathBuf::from("./local"));
-        assert!(!options.force);
-        assert_eq!(options.container_runtime, ContainerRuntime::Auto);
-        assert_eq!(options.nats_box_image, DEFAULT_NATS_BOX_IMAGE);
-        assert_eq!(options.operator_name, DEFAULT_OPERATOR_NAME);
-        assert_eq!(options.system_account, DEFAULT_SYSTEM_ACCOUNT);
-        assert_eq!(options.auth_account, DEFAULT_AUTH_ACCOUNT);
-        assert_eq!(options.trellis_account, DEFAULT_TRELLIS_ACCOUNT);
-        assert_eq!(options.server_name, DEFAULT_SERVER_NAME);
-        assert_eq!(options.trellis_port, DEFAULT_TRELLIS_PORT);
-        assert_eq!(options.nats_server_url, DEFAULT_NATS_SERVER_URL);
-        assert_eq!(options.nats_websocket_url, DEFAULT_NATS_WEBSOCKET_URL);
-        assert_eq!(options.public_origin, DEFAULT_PUBLIC_ORIGIN);
-    }
-
-    #[test]
     fn generated_session_seed_is_base64url_encoded_32_bytes() {
         let seed = generate_session_seed();
         let decoded = URL_SAFE_NO_PAD.decode(seed).expect("decode session seed");
@@ -1405,20 +1384,6 @@ mod tests {
         }
         assert!(generate_local_authorization_issuer(directory.path()).is_err());
         assert_eq!(fs::read_to_string(&path).expect("read retained seed"), seed);
-    }
-
-    #[test]
-    fn nats_config_uses_local_defaults() {
-        let config = render_nats_config("trellis-local");
-
-        assert!(config.contains("server_name: trellis-local"));
-        assert!(config.contains("listen: 0.0.0.0:4222"));
-        assert!(config.contains("http: 0.0.0.0:8222"));
-        assert!(config.contains("timeout: \"10s\""));
-        assert!(config.contains("listen: 0.0.0.0:8080"));
-        assert!(config.contains("no_tls: true"));
-        assert!(config.contains("store_dir: /data"));
-        assert!(config.contains("include ./jwt.conf"));
     }
 
     #[test]

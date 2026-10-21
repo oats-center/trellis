@@ -322,8 +322,6 @@ async fn start_once(
                 &public_origin,
                 "--bind-address",
                 "127.0.0.1",
-                "--rate-limit-max",
-                "0",
                 "--nats-data-dir",
             ])
             .arg(workdir.join("state/nats/data"));

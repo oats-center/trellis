@@ -2,6 +2,7 @@
   "extends": "./tsconfig.npm.json",
   "compilerOptions": {
     "noEmit": true,
+    "noUnusedLocals": true,
     "rootDir": "../../..",
     "allowImportingTsExtensions": true,
     "paths": {

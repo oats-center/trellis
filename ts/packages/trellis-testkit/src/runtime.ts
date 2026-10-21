@@ -664,23 +664,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
         publicOrigin,
         "--bind-address",
         browserHost ? "0.0.0.0" : "127.0.0.1",
-        "--rate-limit-max",
-        "0",
       ];
       for (const origin of options.webOrigins ?? []) {
         initArgs.push("--extra-origin", origin);
-      }
-      for (const [surface, source] of [
-        ["web", options.webSource],
-        ["portal", options.portalSource],
-        ["console", options.consoleSource],
-      ] as const) {
-        if (source) {
-          initArgs.push(
-            `--${surface}-${"directory" in source ? "directory" : "proxy"}`,
-            "directory" in source ? source.directory : source.proxy,
-          );
-        }
       }
       for (const [flag, value] of [
         [
@@ -804,7 +790,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
       };
       const admin = new TrellisTestAdminAutomation({
         oauthIssuer,
-        trellisUrl: startedControlPlane.trellisUrl,
         adminPassword,
         defaultDeployment: deployment,
         getBootstrapUrl,

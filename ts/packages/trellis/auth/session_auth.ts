@@ -16,7 +16,7 @@ import {
   signSessionProof,
 } from "./session_proof.ts";
 import { correctedIatSeconds } from "./time.ts";
-import { base64urlDecode, base64urlEncode } from "./utils.ts";
+import { base64urlDecode } from "./utils.ts";
 
 export type NatsConnectOptions = {
   authenticator: Authenticator | Authenticator[];

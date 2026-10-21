@@ -210,13 +210,7 @@ export type OperationDesc<
   errors?: E;
   runtimeErrors?: TRuntimeErrors;
   declaredErrorTypes?: readonly string[];
-  transfer?: {
-    direction: "send";
-    store?: string;
-    key?: `/${string}`;
-    contentType?: `/${string}`;
-    metadata?: `/${string}`;
-  };
+  transfer?: { direction: "send" };
   signals?: Record<string, { input: SchemaLike }>;
   callerCapabilities: readonly string[];
   observeCapabilities: readonly string[];

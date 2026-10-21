@@ -10,14 +10,13 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 
 use trellis_protocol::{
-    derive_live_data_subject, derive_live_observe_wildcard_subject, ApiSurfaceKind,
-    CatalogActionIdentity, LiveErrorCode, LiveOfferLimits, LiveOpenKind, LiveSessionKind,
-    PermissionAction, OPEN_RESERVATION_MS,
+    ApiSurfaceKind, CatalogActionIdentity, LiveErrorCode, LiveOfferLimits, LiveOpenKind,
+    LiveSessionKind, PermissionAction, OPEN_RESERVATION_MS,
 };
 
 use crate::client::TrellisClient;
 use crate::live::authority::{
-    LiveAction, LiveAuthorityGuard, LiveAuthorityLost, LiveGuardRequirement, PinnedPeerIdentity,
+    LiveAction, LiveAuthorityGuard, LiveGuardRequirement, PinnedPeerIdentity,
 };
 use crate::live::deadlines::LiveDeadlines;
 use crate::live::manager::LiveSessionManager;
@@ -145,12 +144,7 @@ impl LiveProviderOwner {
 
 /// Inputs for one provider Live opening.
 pub(crate) struct LiveOpenInputs {
-    #[expect(dead_code, reason = "identity retained for live open diagnostics")]
-    pub api_id: String,
     pub base_subject: String,
-    #[expect(dead_code, reason = "identity retained for live open diagnostics")]
-    pub provider_instance_id: String,
-    pub provider_deployment_id: String,
 }
 
 /// The consumer's verified opening request for one provider session.
@@ -268,9 +262,6 @@ pub(crate) struct LiveOpeningMeta {
 /// Inputs for one provider Operation watch opening.
 pub(crate) struct OperationWatchOpenInputs {
     pub base_subject: String,
-    #[expect(dead_code)]
-    pub provider_instance_id: String,
-    pub provider_deployment_id: String,
 }
 
 /// The consumer's verified Operation watch opening for one provider session.
@@ -519,15 +510,9 @@ where
         consumer_max_payload_bytes: opening.receive_max_payload_bytes,
         canonical_open_hash,
     };
-    let (session, permit) = ProviderSessionRecord::reserve(
-        manager,
-        &open_request,
-        &inputs.provider_deployment_id,
-        negotiated,
-        now_ms,
-    )
-    .await
-    .map_err(|code| ServerError::Nats(format!("live reservation rejected: {code:?}")))?;
+    let (session, permit) = ProviderSessionRecord::reserve(manager, &open_request, now_ms)
+        .await
+        .map_err(|code| ServerError::Nats(format!("live reservation rejected: {code:?}")))?;
     let limits = LiveOfferLimits {
         max_data_body_bytes: negotiated,
         window_frames: trellis_protocol::WINDOW_FRAMES,
@@ -574,7 +559,6 @@ where
                 .map_err(|error| ServerError::Nats(error.to_string()))?,
             &consumer,
             limits,
-            negotiated,
         )
         .map_err(|code| ServerError::Nats(format!("offer build failed: {code:?}")))?;
     // Authenticate the exact offer bytes with the provider's live proof.
@@ -728,15 +712,9 @@ where
         consumer_max_payload_bytes: opening.receive_max_payload_bytes,
         canonical_open_hash,
     };
-    let (session, permit) = ProviderSessionRecord::reserve(
-        manager,
-        &open_request,
-        &inputs.provider_deployment_id,
-        negotiated,
-        now_ms,
-    )
-    .await
-    .map_err(|code| ServerError::Nats(format!("live reservation rejected: {code:?}")))?;
+    let (session, permit) = ProviderSessionRecord::reserve(manager, &open_request, now_ms)
+        .await
+        .map_err(|code| ServerError::Nats(format!("live reservation rejected: {code:?}")))?;
     let limits = LiveOfferLimits {
         max_data_body_bytes: negotiated,
         window_frames: trellis_protocol::WINDOW_FRAMES,
@@ -783,7 +761,6 @@ where
                 .map_err(|error| ServerError::Nats(error.to_string()))?,
             &consumer,
             limits,
-            negotiated,
         )
         .map_err(|code| ServerError::Nats(format!("offer build failed: {code:?}")))?;
     // Authenticate the exact offer bytes with the provider's live proof.
@@ -898,45 +875,4 @@ pub(crate) fn sign_live_offer(
     headers.insert("session-key", auth.session_key.as_str());
     headers.insert("trellis-live-proof", proof.as_str());
     Ok(headers)
-}
-
-/// Return the exact owner-control wildcard for one Live route.
-///
-/// # Errors
-///
-/// Returns an error for an invalid subject or connection id.
-#[expect(dead_code, reason = "subject helper for live route diagnostics")]
-pub(crate) fn owner_control_wildcard(
-    base_subject: &str,
-    provider_connection_id: &str,
-) -> Result<String, trellis_protocol::ProtocolError> {
-    derive_live_observe_wildcard_subject(base_subject, provider_connection_id)
-}
-
-/// Return the exact data subject for one session.
-///
-/// # Errors
-///
-/// Returns an error for an invalid connection id or session id.
-#[expect(dead_code, reason = "subject helper for live route diagnostics")]
-pub(crate) fn data_subject(
-    provider_connection_id: &str,
-    consumer_connection_id: &str,
-    session_id: &str,
-) -> Result<String, trellis_protocol::ProtocolError> {
-    derive_live_data_subject(provider_connection_id, consumer_connection_id, session_id)
-}
-
-/// Map one authority loss into a setup rejection.
-#[must_use]
-#[expect(dead_code, reason = "authority mapping for live route diagnostics")]
-pub(crate) fn authority_rejection(lost: &LiveAuthorityLost) -> ServerError {
-    ServerError::Nats(format!("live authority unavailable: {lost:?}"))
-}
-
-/// Map one wire error into a setup rejection.
-#[must_use]
-#[expect(dead_code, reason = "wire mapping for live route diagnostics")]
-pub(crate) fn wire_rejection(code: LiveErrorCode) -> ServerError {
-    ServerError::Nats(format!("live open rejected: {code:?}"))
 }

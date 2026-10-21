@@ -132,8 +132,6 @@ impl ProviderSessionRecord {
     pub(crate) async fn reserve(
         manager: &Arc<LiveSessionManager>,
         request: &ProviderOpenRequest,
-        own_deployment_id: &str,
-        max_data_body_bytes: u64,
         now_ms: u64,
     ) -> Result<(Arc<ProviderSession>, ProviderPermit), LiveErrorCode> {
         let permit = manager.clone().admit_provider(
@@ -144,8 +142,6 @@ impl ProviderSessionRecord {
             .register_owner_control(&request.base_subject)
             .await
             .map_err(|_| LiveErrorCode::ResourceExhausted)?;
-        let _ = own_deployment_id;
-        let _ = max_data_body_bytes;
         let session_id =
             trellis_protocol::generate_nonce().map_err(|_| LiveErrorCode::ProtocolError)?;
         let subjects = ProviderSessionSubjects {
@@ -230,9 +226,7 @@ impl ProviderSessionRecord {
         provider: &PinnedPeerIdentity,
         consumer: &PinnedPeerIdentity,
         limits: trellis_protocol::LiveOfferLimits,
-        max_data_body_bytes: u64,
     ) -> Result<Bytes, LiveErrorCode> {
-        let _ = max_data_body_bytes;
         let offer = trellis_protocol::LiveOffer {
             format: trellis_protocol::LIVE_VERSION.to_owned(),
             kind: trellis_protocol::LiveOfferKind::Offer,

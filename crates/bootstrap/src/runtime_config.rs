@@ -51,11 +51,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 origins.extend(options.runtime.extra_origins.iter().cloned());
                 origins
             }),
-            web_source: options.runtime.web_source.clone(),
-            portal_source: options.runtime.portal_source.clone(),
-            console_source: options.runtime.console_source.clone(),
-            rate_limit_max: Some(options.runtime.rate_limit_max),
-            rate_limit_window_ms: Some(options.runtime.rate_limit_window_ms),
         }),
         nats: Some(NatsConfig {
             servers: Some(options.runtime.nats_server_url.clone()),

@@ -22,7 +22,6 @@ toml.workspace = true
 trellis-protocol.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 
 [[bench]]
 name = "compile"

@@ -574,20 +574,6 @@ impl RuntimeConfig {
                 resolve_path(base_dir, &mut auth_callout.xkey_seed_file);
             }
         }
-        if let Some(http) = &mut self.http {
-            for source in [
-                &mut http.web_source,
-                &mut http.portal_source,
-                &mut http.console_source,
-            ] {
-                if let Some(WebSourceConfig::Directory(path)) = source {
-                    if path.is_relative() {
-                        *path = base_dir.join(&*path);
-                    }
-                }
-            }
-        }
-
         for storage in [
             self.platform
                 .as_mut()
@@ -816,21 +802,6 @@ pub struct HttpConfig {
     /// Insecure origins allowed for local development.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_insecure_origins: Option<Vec<String>>,
-    /// Shared source for built-in web surfaces. Absent uses embedded assets.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub web_source: Option<WebSourceConfig>,
-    /// Login Portal source overriding `web_source`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub portal_source: Option<WebSourceConfig>,
-    /// Console source overriding `web_source`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub console_source: Option<WebSourceConfig>,
-    /// Maximum requests per rate-limit window.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate_limit_max: Option<u32>,
-    /// Rate-limit window in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rate_limit_window_ms: Option<u64>,
 }
 
 impl HttpConfig {
@@ -898,16 +869,6 @@ impl std::fmt::Display for CanonicalOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.serialized)
     }
-}
-
-/// A filesystem or reverse-proxy source for a Trellis web surface.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WebSourceConfig {
-    /// Serve a static SvelteKit artifact directory.
-    Directory(PathBuf),
-    /// Reverse proxy requests to an HTTP or HTTPS upstream.
-    Proxy(String),
 }
 
 /// NATS configuration for runtime connections and auth callout material.

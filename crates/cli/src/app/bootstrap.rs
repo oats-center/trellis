@@ -69,39 +69,6 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         .unwrap_or_else(|| format!("http://localhost:{}", args.trellis_port));
     options.runtime.extra_origins = args.extra_origin.clone();
     options.runtime.bind_address = args.bind_address;
-    options.runtime.rate_limit_max = args.rate_limit_max;
-    options.runtime.rate_limit_window_ms = args.rate_limit_window_ms;
-    for (target, directory, proxy) in [
-        (
-            &mut options.runtime.web_source,
-            &args.web_directory,
-            &args.web_proxy,
-        ),
-        (
-            &mut options.runtime.portal_source,
-            &args.portal_directory,
-            &args.portal_proxy,
-        ),
-        (
-            &mut options.runtime.console_source,
-            &args.console_directory,
-            &args.console_proxy,
-        ),
-    ] {
-        *target = directory
-            .as_ref()
-            .map(|path| {
-                path.canonicalize()
-                    .map(trellis_runtime::WebSourceConfig::Directory)
-            })
-            .transpose()
-            .into_diagnostic()?
-            .or_else(|| {
-                proxy
-                    .as_ref()
-                    .map(|url| trellis_runtime::WebSourceConfig::Proxy(url.clone()))
-            });
-    }
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
         context_lifetime_seconds: args.auth_context_lifetime_seconds,
         refresh_lead_seconds: args.auth_refresh_lead_seconds,
@@ -223,10 +190,6 @@ mod tests {
                 "8183",
                 "--bind-address",
                 "127.0.0.1",
-                "--rate-limit-max",
-                "37",
-                "--rate-limit-window-ms",
-                "2300",
                 "--auth-context-lifetime-seconds",
                 "90",
                 "--auth-refresh-lead-seconds",
@@ -244,8 +207,6 @@ mod tests {
         let http = config.http.as_ref().expect("http");
         assert_eq!(http.public_origin.as_deref(), Some("http://localhost:3444"));
         assert_eq!(http.bind_address, Some("127.0.0.1".parse().unwrap()));
-        assert_eq!(http.rate_limit_max, Some(37));
-        assert_eq!(http.rate_limit_window_ms, Some(2300));
         assert_eq!(
             config.resolve_nats_runtime().unwrap().servers,
             "nats://127.0.0.1:4333"
@@ -394,40 +355,6 @@ mod tests {
         let error =
             init_config_command(OutputFormat::Json, &invalid).expect_err("invalid private input");
         assert!(!format!("{error:?}").contains("do-not-echo-this-secret"));
-        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
-    }
-
-    #[test]
-    fn web_source_flags_round_trip_and_invalid_source_preserves_output() {
-        let temp = tempfile::tempdir().unwrap();
-        let web = temp.path().join("web");
-        fs::create_dir(&web).unwrap();
-        let out = temp.path().join("bundle");
-        let (config, _) = generate_bundle(
-            &out,
-            &[
-                "--web-directory",
-                web.to_str().unwrap(),
-                "--portal-proxy",
-                "http://127.0.0.1:5199",
-            ],
-        );
-        let http = config.http.unwrap();
-        assert_eq!(
-            http.web_source,
-            Some(trellis_runtime::WebSourceConfig::Directory(
-                web.canonicalize().unwrap()
-            ))
-        );
-        assert_eq!(
-            http.portal_source,
-            Some(trellis_runtime::WebSourceConfig::Proxy(
-                "http://127.0.0.1:5199".into()
-            ))
-        );
-        let before = fs::read(out.join("config.toml")).unwrap();
-        let args = init_config_args(&out, &["--force", "--web-proxy", "ftp://example.test"]);
-        init_config_command(OutputFormat::Json, &args).expect_err("invalid proxy scheme");
         assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
     }
 

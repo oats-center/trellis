@@ -53,7 +53,7 @@ pub use config::{
     NatsConfig, NatsRuntimeConfig, OAuthConfig, OAuthListenerConfig, OAuthProviderConfig,
     OAuthTransport, ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig,
     RuntimeConfig, RuntimePathDefaults, RuntimePathsConfig, SqliteStorageConfig, StorageBackend,
-    StorageConfig, SubsystemConfig, WebSourceConfig,
+    StorageConfig, SubsystemConfig,
 };
 pub use mode::{RuntimeMode, RuntimeModeParseError, SubsystemName};
 pub use server::{

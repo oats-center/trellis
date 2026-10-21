@@ -7,31 +7,18 @@ export type {
   TrellisDeviceActivationStatus,
   TrellisDeviceNotReadyStatus,
 } from "./device/activation.ts";
-import {
-  AsyncResult,
-  type BaseError,
-  Result,
-  UnexpectedError,
-} from "@oatscenter/result";
+import { AsyncResult, Result, UnexpectedError } from "@oatscenter/result";
 import { ulid } from "ulid";
 import {
   type ProvisionedConnectionOptions,
   connectProvisioned,
 } from "./auth/connection.ts";
 import {
-  decodeTrellisHttpError,
-  isRetriableAuthorizationCode,
-  TrellisHttpError,
-} from "./auth/http_error.ts";
-import {
   connectNativeClient,
   type ConnectedNativeClient,
 } from "./native/connection.ts";
 import type { NativeOAuthSession } from "./native/oauth.ts";
-import {
-  type ContractResourceBindings,
-  ContractResourceBindingsSchema,
-} from "./participant.ts";
+import { ContractResourceBindingsSchema } from "./participant.ts";
 
 import {
   deriveDeviceConfirmationCode,
@@ -46,53 +33,32 @@ import {
   sha256,
   utf8,
 } from "./auth/utils.ts";
-import { estimateMidpointClockOffsetMs } from "./auth/time.ts";
 import { createAuth } from "./auth/session_auth.ts";
 import type { RuntimeApi } from "./participant_runtime/api.ts";
-import {
-  GENERATION_MAX_RECONNECT_ATTEMPTS,
-  loadDefaultRuntimeTransport,
-  selectRuntimeTransportServers,
-} from "./runtime_transport.ts";
+import { loadDefaultRuntimeTransport } from "./runtime_transport.ts";
 import {
   type ServiceHealth,
   ServiceHealthRuntime,
 } from "./service/runtime/health.ts";
 import { createHealthHeartbeatPublisher } from "./health_transport.ts";
-import { type RuntimeStateStoresForContract, Trellis } from "./session.ts";
+import { Trellis } from "./session.ts";
 import { logger as noopLogger, type LoggerLike } from "./globals.ts";
 import { TransportError } from "./errors/index.ts";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import {
-  installConnectionAvailability,
   observeTrellisConnection,
-  startConnectionTelemetry,
   transitionConnectionAvailability,
 } from "./connection.ts";
 import { type CallerRuntime, createCallerRuntime } from "./caller.ts";
 import {
   type GeneratedParticipant,
   getParticipantRuntime,
-  participantAvailability,
   participantEvidence,
 } from "./participant_runtime/participant.ts";
-import { recordCatalogCounter } from "./telemetry/metrics.ts";
 import type { AppRequestDescriptor } from "./generated_support.ts";
 
 type DeviceContract = GeneratedParticipant;
-
-type RuntimeStateShape = Record<
-  string,
-  { kind: "value" | "map"; value: unknown }
->;
-type BroadStateStore = {
-  get(...args: unknown[]): AsyncResult<unknown, BaseError>;
-  put(...args: unknown[]): AsyncResult<unknown, BaseError>;
-  list(...args: unknown[]): AsyncResult<unknown, BaseError>;
-  delete(...args: unknown[]): AsyncResult<unknown, BaseError>;
-};
-type BroadStateFacade = Record<string, BroadStateStore>;
 
 function deviceConnectResult<T>(
   promise: Promise<T>,
@@ -236,10 +202,6 @@ const DeviceSignedAuthorizationSchema = Type.Object({
   ),
 });
 
-type DeviceClockOffsetState = {
-  serverClockOffsetMs: number;
-};
-
 function normalizeRootSecret(rootSecret: Uint8Array | string): Uint8Array {
   if (typeof rootSecret === "string") {
     const decoded = base64urlDecode(rootSecret.trim());
@@ -280,25 +242,6 @@ function createTransportError(args: {
       ...(args.cause === undefined ? {} : transportCauseContext(args.cause)),
     },
   });
-}
-
-async function readJsonResponse(
-  response: Response,
-  args: {
-    code: string;
-    message: string;
-    hint: string;
-    context?: Record<string, unknown>;
-  },
-): Promise<unknown> {
-  try {
-    return await response.json();
-  } catch (cause) {
-    throw createTransportError({
-      ...args,
-      cause,
-    });
-  }
 }
 
 function resolveDeviceLogger(log?: LoggerLike | false): LoggerLike {

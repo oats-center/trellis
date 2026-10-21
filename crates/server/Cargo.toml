@@ -19,7 +19,6 @@ url.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-opentelemetry_sdk.workspace = true
 tracing-opentelemetry.workspace = true
 trellis-bootstrap = { path = "../bootstrap", version = "0.100.0-rc.3" }
 trellis-local-nats = { path = "../local-nats", version = "0.100.0-rc.3" }

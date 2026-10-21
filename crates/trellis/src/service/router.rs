@@ -780,11 +780,9 @@ impl Router {
                             ))
                         })?;
                     let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
-                    let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
+                    let trellis_protocol::SessionBinding::Service { .. } = &authority.authority().binding else {
                         return Err(ServerError::Nats("live provider requires a service binding".into()));
                     };
-                    let provider_deployment_id = deployment_id.clone();
-                    let provider_instance_id = instance_id.clone();
                     let opening = crate::service::live_router::parse_live_open::<D::Input>(
                         &payload,
                     )?;
@@ -821,10 +819,7 @@ impl Router {
                         &crate::service::live_router::LiveOpenRequest {
                             request: ctx,
                             inputs: crate::service::live_router::LiveOpenInputs {
-                                api_id: D::API_ID.to_owned(),
                                 base_subject: handler_subject,
-                                provider_instance_id,
-                                provider_deployment_id,
                             },
                             opening: meta,
                             encoded_input,
@@ -964,11 +959,9 @@ impl Router {
                                 ))
                             })?;
                         let authority = owner.client().authorization_owner().own_authority().map_err(|error| ServerError::Nats(error.to_string()))?;
-                        let trellis_protocol::SessionBinding::Service { deployment_id, instance_id, .. } = &authority.authority().binding else {
+                        let trellis_protocol::SessionBinding::Service { .. } = &authority.authority().binding else {
                             return Err(ServerError::Nats("operation provider requires a service binding".into()));
                         };
-                        let provider_deployment_id = deployment_id.clone();
-                        let provider_instance_id = instance_id.clone();
                         let opening =
                             crate::service::live_router::parse_operation_watch_open(
                                 &payload,
@@ -1001,8 +994,6 @@ impl Router {
                                 request: ctx,
                                 inputs: crate::service::live_router::OperationWatchOpenInputs {
                                     base_subject: subject,
-                                    provider_instance_id,
-                                    provider_deployment_id,
                                 },
                                 opening,
                                 cancellation,

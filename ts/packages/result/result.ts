@@ -44,15 +44,6 @@ function isErrValue<T, E extends BaseError>(
 }
 
 /**
- * Extract Result<never, E> types from a union while preserving specific error types.
- * This is a distributive conditional type that processes each member of the union separately.
- * For `string | Result<never, E1> | Result<never, E2>`, returns `Result<never, E1> | Result<never, E2>`.
- * The distribution over union members is key to preserving specific error types.
- */
-type ExtractErrResult<U> =
-  U extends Result<never, infer E> ? Result<never, E> : never;
-
-/**
  * Extracts the Ok type T from a Result<T, E>.
  *
  * @example

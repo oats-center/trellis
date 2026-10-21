@@ -358,25 +358,15 @@ curl http://localhost:3000/readyz
 
 Each response should include fields like `version` and `mode`.
 
-## 6. Start the built-in web app
+## 6. Open the Console
 
-In another terminal from the source checkout:
-
-```sh
-cd web
-npm run dev
-```
-
-Configure Trellis to proxy the shared built-in source:
-
-```toml
-[http]
-web_source = { proxy = "http://127.0.0.1:5173" }
-```
-
-Open `http://localhost:3000/console`. The Rust `trellis-server` owns the browser
-login, OIDC, bootstrap, portal, authorization-context, and well-known trust
-routes; there is no separate TypeScript control-plane runtime.
+Open `http://localhost:3000/console`. The Console and the OAuth sign-in portal
+are built into `trellis-server`; there is no separate web server to start.
+Signing in redirects to the dedicated OAuth listener's portal and returns to the
+Console. The Rust `trellis-server` owns browser sign-in, OIDC, consent, and the
+well-known trust routes; there is no separate TypeScript control-plane runtime.
+To change the Console or portal, build `trellis-server` from source as described
+in [In-repo development](/guides/in-repo-development).
 
 ## 7. Verify the local stack
 
@@ -392,7 +382,7 @@ At this point you have:
 - NATS running as a managed process started explicitly by `trellis-server`
 - Trellis running from the installed `trellis-server`
 - Rust runtime health and readiness checks returning version and mode metadata
-- Console running from source for UI development
+- Console served by `trellis-server` from its built-in assets
 
 ## 8. Configure HTTP and HTTPS origins
 

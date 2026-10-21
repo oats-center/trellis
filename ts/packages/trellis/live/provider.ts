@@ -34,15 +34,10 @@ import { type LiveCloseReceipt, LiveEnd, LiveStreamError } from "./types.ts";
 import {
   authorityLostEnd,
   type LiveAuthorityLost,
-  type PinnedPeerIdentity,
   type LiveAuthorityGuard,
 } from "./authority.ts";
 import { LiveTelemetryOwner } from "./telemetry.ts";
 import type { ClosedReceipt, LiveSessionManager } from "./manager.ts";
-import {
-  recordCatalogCounter,
-  recordCatalogUpDown,
-} from "../telemetry/metrics.ts";
 
 const C = liveConstants();
 

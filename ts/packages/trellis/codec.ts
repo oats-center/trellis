@@ -13,10 +13,7 @@ import {
 } from "./errors/index.ts";
 import type { SchemaValidationIssue } from "./errors/SchemaValidationError.ts";
 import type { TLocalizedValidationError } from "typebox/error";
-import type {
-  TrellisValidationExtension,
-  TrellisValidationIssueHint,
-} from "./participant_runtime/metadata.ts";
+import type { TrellisValidationExtension } from "./participant_runtime/metadata.ts";
 
 export type JsonValue =
   | string

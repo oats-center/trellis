@@ -780,14 +780,6 @@ mod tests {
     }
 
     #[test]
-    fn sampler_defaults_are_parent_based() {
-        assert!(matches!(
-            parent_based(DEFAULT_TRACE_RATIO),
-            Sampler::ParentBased(_)
-        ));
-    }
-
-    #[test]
     fn explicit_endpoint_variables_enable_each_signal_independently() {
         let resolve = |variables: &[(&str, &str)]| {
             let values: std::collections::HashMap<&str, &str> = variables.iter().copied().collect();

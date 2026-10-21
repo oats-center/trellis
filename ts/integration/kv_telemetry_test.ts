@@ -5,7 +5,6 @@ import {
   MeterProvider,
   PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import assert from "node:assert/strict";
@@ -23,25 +22,12 @@ test("typed KV records one bounded storage duration per caller operation", async
     exporter,
     exportIntervalMillis: 60_000,
   });
-  const captureEndpoint = process.env["TRELLIS_OBS_CAPTURE_ENDPOINT"];
   const provider = new MeterProvider({
     resource: resourceFromAttributes({
       "service.name": "trellis-kv-acceptance",
       "service.instance.id": crypto.randomUUID(),
     }),
-    readers: [
-      reader,
-      ...(captureEndpoint
-        ? [
-            new PeriodicExportingMetricReader({
-              exporter: new OTLPMetricExporter({
-                url: `${captureEndpoint}/v1/metrics`,
-              }),
-              exportIntervalMillis: 1_000,
-            }),
-          ]
-        : []),
-    ],
+    readers: [reader],
   });
   metrics.setGlobalMeterProvider(provider);
   try {

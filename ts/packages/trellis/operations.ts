@@ -475,10 +475,7 @@ type OperationShape = {
   progress?: unknown;
   update?: unknown;
   output?: unknown;
-  transfer?: {
-    contentType?: `/${string}`;
-    metadata?: `/${string}`;
-  };
+  transfer?: { direction: "send" };
   cancel?: boolean;
 };
 
@@ -1729,18 +1726,6 @@ function startObservedTransfer<
       });
     })(),
   );
-}
-
-function createObservedOperationRef<
-  TDesc extends OperationShape,
-  TProgress,
-  TOutput,
-  TUpdate,
->(
-  operation: RuntimeOperationRef<TDesc, TProgress, TOutput, TUpdate>,
-  observation: OperationWatchObservation<TProgress, TOutput>,
-): OperationRef<TDesc, TProgress, TOutput, TUpdate> {
-  return createPublicOperationRef(operation, observation);
 }
 
 function createPublicOperationRef<

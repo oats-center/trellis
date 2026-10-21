@@ -71,8 +71,6 @@ export type InitiateUploadArgs = {
   operationId: string;
   expiresInMs: number;
   maxBytes?: number;
-  contentType?: string;
-  metadata?: Record<string, string>;
   onProgress?: (
     progress: RuntimeOperationTransferProgress,
   ) => Promise<void> | void;
@@ -460,8 +458,6 @@ export class ServiceTransfer {
         ...this.#grant("send", args),
         direction: "send",
         ...(maxBytes === undefined ? {} : { maxBytes }),
-        ...(args.contentType ? { contentType: args.contentType } : {}),
-        ...(args.metadata ? { metadata: args.metadata } : {}),
       };
       const session = await this.#prepare(
         grant,
@@ -1086,10 +1082,7 @@ export class ServiceTransfer {
     );
     session.backend = (async () => {
       const result = (
-        await session.store.put(session.storageKey, session.ingress!, {
-          ...(args.contentType ? { contentType: args.contentType } : {}),
-          ...(args.metadata ? { metadata: args.metadata } : {}),
-        })
+        await session.store.put(session.storageKey, session.ingress!)
       ).take();
       if (isErr(result)) {
         this.opts.log?.debug(

@@ -141,7 +141,6 @@ pub struct TrellisTestError {
     stage: TrellisTestStage,
     message: String,
     workdir: Option<PathBuf>,
-    server_code: Option<String>,
     source: Option<Box<dyn std::error::Error + Send + Sync>>,
     cleanup_error: Option<Box<TrellisTestError>>,
 }
@@ -158,7 +157,6 @@ impl TrellisTestError {
             stage,
             message: message.into(),
             workdir: None,
-            server_code: None,
             source: None,
             cleanup_error: None,
         }
@@ -168,14 +166,6 @@ impl TrellisTestError {
     #[must_use]
     pub(crate) fn with_workdir(mut self, workdir: impl Into<PathBuf>) -> Self {
         self.workdir = Some(workdir.into());
-        self
-    }
-
-    /// Attaches a stable server error code.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) fn with_server_code(mut self, code: impl Into<String>) -> Self {
-        self.server_code = Some(code.into());
         self
     }
 
@@ -220,12 +210,6 @@ impl TrellisTestError {
         self.workdir.as_deref()
     }
 
-    /// Stable server error code, when the failure came from a server response.
-    #[must_use]
-    pub fn server_code(&self) -> Option<&str> {
-        self.server_code.as_deref()
-    }
-
     /// Secondary cleanup failure, when cleanup also failed.
     #[must_use]
     pub fn cleanup_error(&self) -> Option<&TrellisTestError> {
@@ -240,9 +224,6 @@ impl fmt::Display for TrellisTestError {
             "{} ({}): {}",
             self.stage, self.kind, self.message
         )?;
-        if let Some(code) = &self.server_code {
-            write!(formatter, " [server_code={code}]")?;
-        }
         if let Some(workdir) = &self.workdir {
             write!(formatter, " [workdir={}]", workdir.display())?;
         }
@@ -260,7 +241,6 @@ impl fmt::Debug for TrellisTestError {
             .field("kind", &self.kind)
             .field("stage", &self.stage)
             .field("message", &self.message)
-            .field("server_code", &self.server_code)
             .field("workdir", &self.workdir)
             .field(
                 "cleanup_error",

@@ -27,7 +27,6 @@ export { adminMethods, type TrellisTestAdminRpcMethod };
 /** Internal public-surface admin automation used by `TrellisTestRuntime`. */
 export class TrellisTestAdminAutomation {
   #clientCapabilitySetup = new Map<string, Promise<void>>();
-  readonly #trellisUrl: string;
   readonly #oauthIssuer: string;
   readonly #adminPassword: string;
   readonly #getBootstrapUrl: () => Promise<string>;
@@ -39,7 +38,6 @@ export class TrellisTestAdminAutomation {
 
   /** Creates admin automation backed by the supplied bootstrap URL provider. */
   constructor(args: {
-    trellisUrl: string;
     oauthIssuer: string;
     adminPassword: string;
     defaultDeployment: string;
@@ -47,7 +45,6 @@ export class TrellisTestAdminAutomation {
     bootstrapComplete?: boolean;
     resourceReadyTimeoutMs?: number;
   }) {
-    this.#trellisUrl = args.trellisUrl.replace(/\/$/, "");
     this.#oauthIssuer = args.oauthIssuer;
     this.#adminPassword = args.adminPassword;
     this.#getBootstrapUrl = args.getBootstrapUrl;

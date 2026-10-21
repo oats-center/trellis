@@ -21,16 +21,12 @@ workspace = true
 
 [dependencies]
 argon2.workspace = true
-async-trait = "0.1.92"
 async-nats = { workspace = true, optional = true }
 axum.workspace = true
 axum-server.workspace = true
-axum-reverse-proxy = "2.2.0"
 base64.workspace = true
-data-encoding.workspace = true
 ed25519-dalek.workspace = true
 bytes = { workspace = true, optional = true }
-clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 jsonschema.workspace = true
@@ -39,28 +35,23 @@ ipnet = { version = "2.12.0", features = ["serde"] }
 libc = "0.2.186"
 nats-jwt-rs.workspace = true
 nkeys.workspace = true
-oauth2.workspace = true
 oauth-as.workspace = true
 ring = "0.17.14"
 openidconnect.workspace = true
-opentelemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true
 rust-embed = "8"
 sha2.workspace = true
-subtle.workspace = true
 tempfile = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true, features = ["backup"] }
 refinery = { workspace = true, optional = true }
 reqwest.workspace = true
-webpki-roots.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
 tokio-util.workspace = true
 toml.workspace = true
-tower_governor.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -70,7 +61,6 @@ trellis-events-runtime = { path = "../events-runtime", version = "0.100.0-rc.3" 
 trellis-idl = { path = "../idl", version = "0.100.0-rc.3" }
 trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0-rc.3" }
 trellis-rs = { path = "../trellis", version = "0.100.0-rc.3", features = ["runtime-internals"] }
-tower = { version = "0.5.3", features = ["util"] }
 ulid.workspace = true
 url.workspace = true
 

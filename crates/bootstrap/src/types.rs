@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use trellis_runtime::{OAuthListenerConfig, OAuthProviderConfig, OAuthTransport, WebSourceConfig};
+use trellis_runtime::{OAuthListenerConfig, OAuthProviderConfig, OAuthTransport};
 
 use crate::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
@@ -119,16 +119,6 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub extra_origins: Vec<String>,
     /// Optional HTTP listener address; omission retains the production default.
     pub bind_address: Option<IpAddr>,
-    /// Maximum requests per rate-limit window; zero disables limiting.
-    pub rate_limit_max: u32,
-    /// Duration of the rate-limit window in milliseconds.
-    pub rate_limit_window_ms: u64,
-    /// Shared filesystem or reverse-proxy web source.
-    pub web_source: Option<WebSourceConfig>,
-    /// Login portal source overriding the shared web source.
-    pub portal_source: Option<WebSourceConfig>,
-    /// Console source overriding the shared web source.
-    pub console_source: Option<WebSourceConfig>,
     /// Authorization timing without access to generated signing material.
     pub authorization: BootstrapAuthorizationPolicy,
     /// OAuth providers consumed by the production runtime.
@@ -153,11 +143,6 @@ impl Default for TrellisRuntimeBootstrapConfig {
             public_origin: DEFAULT_PUBLIC_ORIGIN.to_string(),
             extra_origins: Vec::new(),
             bind_address: None,
-            rate_limit_max: 60,
-            rate_limit_window_ms: 60_000,
-            web_source: None,
-            portal_source: None,
-            console_source: None,
             authorization: BootstrapAuthorizationPolicy::default(),
             oauth_providers: BTreeMap::new(),
         }
