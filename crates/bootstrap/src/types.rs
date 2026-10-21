@@ -144,6 +144,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
                 bind_address: std::net::Ipv4Addr::LOCALHOST.into(),
                 port: 3001,
                 transport: OAuthTransport::LoopbackDevelopment,
+                trusted_proxies: Vec::new(),
             },
             name: DEFAULT_TRELLIS_NAME.to_string(),
             trellis_port: DEFAULT_TRELLIS_PORT,

@@ -445,7 +445,11 @@ staticPasswords:
     .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let server = tokio::spawn(listener.run(
-        super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]),
+        super::super::oauth::router(
+            engine.clone(),
+            vec!["tls://127.0.0.1:4222".into()],
+            Vec::new(),
+        ),
         shutdown.clone(),
     ));
     // Exercise the actual account-link forms and the same verified OIDC callback,

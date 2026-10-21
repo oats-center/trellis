@@ -100,6 +100,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let router = auth::oauth_router(
         engine.clone(),
         native.into_iter().chain(websocket).collect(),
+        oauth.trusted_proxies.clone(),
     );
     let jetstream = async_nats::jetstream::new(context.trellis_nats.clone());
     let mut buckets = Vec::new();

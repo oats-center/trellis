@@ -158,7 +158,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
     let server = tokio::spawn(
         axum::serve(
             listener,
-            super::super::oauth::router(engine.clone(), vec![]),
+            super::super::oauth::router(engine.clone(), vec![], Vec::new()),
         )
         .with_graceful_shutdown(async move { stop.cancelled().await })
         .into_future(),

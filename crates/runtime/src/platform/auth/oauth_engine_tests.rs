@@ -56,7 +56,11 @@ async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
     );
-    let router = super::super::oauth::router(engine.clone(), vec!["nats://127.0.0.1:4222".into()]);
+    let router = super::super::oauth::router(
+        engine.clone(),
+        vec!["nats://127.0.0.1:4222".into()],
+        Vec::new(),
+    );
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -522,7 +526,10 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
     let stopped = stop.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(super::super::oauth::router(engine, vec![]), stopped)
+            .run(
+                super::super::oauth::router(engine, vec![], Vec::new()),
+                stopped,
+            )
             .await
             .unwrap();
     });
@@ -581,6 +588,61 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
 }
 
 #[tokio::test]
+async fn trusted_proxy_clients_without_origin_have_independent_budgets() {
+    let mut f = fixture();
+    let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", socket.local_addr().unwrap());
+    f.store.settings.oauth_origin = origin.clone();
+    let engine = Arc::new(
+        OAuthEngine::new(OAuthStorage::new(Arc::new(f.store), &[17; 32]).unwrap()).unwrap(),
+    );
+    let listener = super::super::oauth::OAuthListener::load(
+        socket,
+        &origin,
+        &super::super::oauth::OAuthTransport::LoopbackDevelopment,
+    )
+    .await
+    .unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let stopped = stop.clone();
+    let host = tokio::spawn(async move {
+        listener
+            .run(
+                super::super::oauth::router(
+                    engine,
+                    Vec::new(),
+                    vec!["127.0.0.1/32".parse().unwrap()],
+                ),
+                stopped,
+            )
+            .await
+            .unwrap();
+    });
+    let http = reqwest::Client::new();
+    let get = |forwarded: String| {
+        http.get(format!("{origin}/.well-known/oauth-authorization-server"))
+            .header("X-Forwarded-For", forwarded)
+            .send()
+    };
+    // Native token clients and navigations send no Origin. Five clients that
+    // each spend their whole budget must not exhaust a sixth client's.
+    for client in 0..5 {
+        for _ in 0..120 {
+            let response = get(format!("198.51.100.{client}")).await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+        }
+    }
+    let fresh = get("198.51.100.5".into()).await.unwrap();
+    assert_eq!(fresh.status(), reqwest::StatusCode::OK);
+    // The proxy-identified client is still limited, including when another
+    // trusted hop appended itself after the client address.
+    let exhausted = get("198.51.100.0, 127.0.0.1".into()).await.unwrap();
+    assert_eq!(exhausted.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+    stop.cancel();
+    host.await.unwrap();
+}
+
+#[tokio::test]
 async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let mut f = fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -617,7 +679,10 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let hosted = engine.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(super::super::oauth::router(hosted, vec![]), stopped)
+            .run(
+                super::super::oauth::router(hosted, vec![], Vec::new()),
+                stopped,
+            )
             .await
             .unwrap();
     });
@@ -802,7 +867,11 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let router = super::super::oauth::router(engine.clone(), vec!["nats://127.0.0.1:4222".into()]);
+    let router = super::super::oauth::router(
+        engine.clone(),
+        vec!["nats://127.0.0.1:4222".into()],
+        Vec::new(),
+    );
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -1209,7 +1278,11 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
     );
-    let router = super::super::oauth::router(engine.clone(), vec!["nats://127.0.0.1:4222".into()]);
+    let router = super::super::oauth::router(
+        engine.clone(),
+        vec!["nats://127.0.0.1:4222".into()],
+        Vec::new(),
+    );
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -1496,7 +1569,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     let listener = tokio::net::TcpListener::bind(origin.strip_prefix("http://").unwrap())
         .await
         .unwrap();
-    let router = super::super::oauth::router(engine.clone(), vec![]);
+    let router = super::super::oauth::router(engine.clone(), vec![], Vec::new());
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -1853,7 +1926,8 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
     );
-    let router = super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]);
+    let router =
+        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new());
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)

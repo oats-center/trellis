@@ -1169,6 +1169,11 @@ pub struct OAuthListenerConfig {
     pub port: u16,
     /// TLS or explicitly insecure loopback-only development transport.
     pub transport: OAuthTransport,
+    /// Reverse-proxy addresses or CIDR ranges whose `X-Forwarded-For` header
+    /// identifies the client for request admission. Forwarding headers from
+    /// any other peer are ignored. Empty means the listener faces clients.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
 /// Transport for the dedicated OAuth listener; failed TLS never becomes plaintext.

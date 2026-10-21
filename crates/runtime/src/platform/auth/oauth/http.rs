@@ -28,9 +28,14 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> Router {
+pub(crate) fn router(
+    engine: Arc<OAuthEngine>,
+    nats_endpoints: Vec<String>,
+    trusted_proxies: Vec<ipnet::IpNet>,
+) -> Router {
     let origin = engine.server.config().issuer.clone();
     let cors_engine = engine.clone();
+    let trusted_proxies = Arc::new(trusted_proxies);
     // Single platform owner: bounded fixed-window request admission, not a
     // policy ceiling. Untrusted forwarding headers never select the peer IP.
     let requests = Arc::new(Mutex::new(BTreeMap::<
@@ -148,6 +153,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             };
             let maintenance = maintenance.clone();
             let maintenance_engine = maintenance_engine.clone();
+            let trusted_proxies = trusted_proxies.clone();
             async move {
                 // HTTP/2 supplies :authority through the URI rather than Host.
                 // If both forms are supplied, every one must select this origin.
@@ -190,10 +196,31 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     },
                     None => String::new(),
                 };
-                let ip = request
+                let mut ip = request
                     .extensions()
                     .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                     .map(|peer| peer.0.ip());
+                // Only a configured proxy's X-Forwarded-For selects the client.
+                // Walk its appended hops right to left, past other trusted
+                // proxies; a malformed hop stops at the last trusted address.
+                if ip.is_some_and(|peer| trusted_proxies.iter().any(|net| net.contains(&peer))) {
+                    let forwarded = request
+                        .headers()
+                        .get_all("x-forwarded-for")
+                        .iter()
+                        .map(|value| value.to_str().unwrap_or(""))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    for hop in forwarded.rsplit(',') {
+                        let Ok(address) = hop.trim().parse::<std::net::IpAddr>() else {
+                            break;
+                        };
+                        ip = Some(address);
+                        if !trusted_proxies.iter().any(|net| net.contains(&address)) {
+                            break;
+                        }
+                    }
+                }
                 let now = Instant::now();
                 let allowed = {
                     let Ok(mut requests) = requests.lock() else {
@@ -203,21 +230,27 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                         now.duration_since(*started) < Duration::from_secs(60)
                     });
                     let peer = (ip, String::new());
-                    let origin = (None, request_origin);
+                    // Navigations and native clients send no Origin. They are
+                    // budgeted per peer only, never in one shared origin bucket.
+                    let origin = (!request_origin.is_empty()).then_some((None, request_origin));
                     if requests.len() >= 4094
-                        && (!requests.contains_key(&peer) || !requests.contains_key(&origin))
+                        && (!requests.contains_key(&peer)
+                            || origin
+                                .as_ref()
+                                .is_some_and(|origin| !requests.contains_key(origin)))
                     {
                         false
                     } else {
-                        let window = requests.entry(peer.clone()).or_insert((now, 0));
+                        let window = requests.entry(peer).or_insert((now, 0));
                         window.1 = window.1.saturating_add(1);
                         let peer_allowed = window.1 <= 120;
-                        if peer == origin {
-                            peer_allowed
-                        } else {
-                            let window = requests.entry(origin).or_insert((now, 0));
-                            window.1 = window.1.saturating_add(1);
-                            peer_allowed && window.1 <= 600
+                        match origin {
+                            Some(origin) => {
+                                let window = requests.entry(origin).or_insert((now, 0));
+                                window.1 = window.1.saturating_add(1);
+                                peer_allowed && window.1 <= 600
+                            }
+                            None => peer_allowed,
                         }
                     }
                 };

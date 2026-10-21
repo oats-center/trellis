@@ -47,6 +47,9 @@ oauth_storage_key_file = "./auth/oauth-storage.key"
 origin = "https://auth.example.com"
 bind_address = "0.0.0.0"
 port = 3001
+# Behind a reverse proxy, list its addresses so request admission budgets each
+# forwarded client rather than the proxy. Forwarding headers are otherwise ignored.
+# trusted_proxies = ["10.0.0.5/32"]
 
 [auth.oauth.transport]
 mode = "tls"

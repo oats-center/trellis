@@ -125,7 +125,11 @@ public_origin = "https://127.0.0.1:3000"
         .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let stopping = shutdown.clone();
-    let router = super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]);
+    let router = super::super::oauth::router(
+        engine.clone(),
+        vec!["tls://127.0.0.1:4222".into()],
+        Vec::new(),
+    );
     let server = tokio::spawn(listener.run(router, stopping));
     let metadata = format!("{origin}/.well-known/oauth-authorization-server");
     let untrusted = reqwest::Client::builder().no_proxy().build().unwrap();

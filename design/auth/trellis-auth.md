@@ -35,6 +35,13 @@ all configured application origins. A shared hostname is allowed but requires a
 prominent cookie-scope warning, because cookies are not port-scoped. Console
 assets and application routers are never mounted on the OAuth listener.
 
+Request admission budgets each client address, and additionally each browser
+`Origin` when the header is present. Requests without `Origin` (native token
+clients, navigations, asset loads) share no common budget. Forwarding headers
+are ignored unless the TCP peer falls inside `auth.oauth.trusted_proxies`, a
+list of CIDR ranges (`/32` or `/128` for one address). For a trusted peer, the
+client is the right-most `X-Forwarded-For` hop outside those ranges.
+
 Remote deployments use native TLS NATS and WSS in addition to the dedicated
 HTTPS OAuth listener. Runtime startup selects its rustls provider before opening
 NATS; deployment trust roots must include the configured broker and OAuth

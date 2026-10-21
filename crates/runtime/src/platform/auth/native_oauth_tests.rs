@@ -241,7 +241,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         .unwrap();
     let mut shutdown = tokio_util::sync::CancellationToken::new();
     let mut server = tokio::spawn(listener.run(
-        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
+        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
         shutdown.clone(),
     ));
 
@@ -460,7 +460,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
             .unwrap();
         shutdown = tokio_util::sync::CancellationToken::new();
         server = tokio::spawn(listener.run(
-            super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
+            super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
             shutdown.clone(),
         ));
         session = match suspended {
@@ -569,7 +569,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         .unwrap();
     shutdown = tokio_util::sync::CancellationToken::new();
     server = tokio::spawn(listener.run(
-        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
+        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
         shutdown.clone(),
     ));
     forward.send(()).unwrap();

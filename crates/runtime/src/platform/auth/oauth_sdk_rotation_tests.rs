@@ -128,7 +128,7 @@ async fn sdk_rotation(mode: &str) {
     .unwrap();
     let mut shutdown = tokio_util::sync::CancellationToken::new();
     let mut server = tokio::spawn(listener.run(
-        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
+        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
         shutdown.clone(),
     ));
     let mut child = tokio::process::Command::new("node")
@@ -199,7 +199,11 @@ async fn sdk_rotation(mode: &str) {
                     .unwrap();
                     shutdown = tokio_util::sync::CancellationToken::new();
                     server = tokio::spawn(listener.run(
-                        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
+                        super::super::oauth::router(
+                            engine,
+                            vec!["nats://127.0.0.1:4222".into()],
+                            Vec::new(),
+                        ),
                         shutdown.clone(),
                     ));
                     let reply = serde_json::json!({"keyId":authority.issuer().unwrap().key_id});
