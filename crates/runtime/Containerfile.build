@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+# Check's single release build of `trellis-server` and `trellis` on the Debian
+# bookworm baseline the runtime image (Containerfile.release) runs on. Every
+# live, browser, demo, package and image job consumes these executables.
+#
+# The self-hosted runners reach the Docker daemon without sharing a filesystem
+# with it, so the source arrives as the build context and only the executables
+# leave through `--output type=local`. Cache mounts keep the Cargo registry and
+# target directory on the build host between runs.
+FROM docker.io/library/rust:bookworm AS build
+
+WORKDIR /src
+COPY . .
+
+# Version-clean (official) so the CLI and server report the manifest version.
+RUN --mount=type=cache,id=trellis-bookworm-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=trellis-bookworm-release-target,target=/src/target,sharing=locked \
+    TRELLIS_OFFICIAL_BUILD=1 cargo build --release -p trellis-server -p trellis-cli \
+    && mkdir /out \
+    && cp target/release/trellis target/release/trellis-server /out/
+
+FROM scratch
+COPY --from=build /out/ /

@@ -388,8 +388,6 @@ jobs:
     needs: [install, wasm, portal]
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 45
-    env:
-      BUILD_IMAGE: rust:bookworm
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -411,45 +409,16 @@ jobs:
           name: check-protocol-wasm
           path: ts/packages/trellis/auth/protocol_wasm
 
-      - name: Resolve the build image toolchain
-        id: toolchain
-        run: |
-          set -euo pipefail
-          docker pull --quiet "$BUILD_IMAGE"
-          echo "rustc=$(docker run --rm "$BUILD_IMAGE" rustc -V | tr -c 'A-Za-z0-9.\n' '-')" >> "$GITHUB_OUTPUT"
-
-      - name: Enable multithreaded Zstandard caching
-        run: bash scripts/ensure-ci-zstd.sh
-
-      - name: Cache Rust build artifacts
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: cargo-bookworm-${{ steps.toolchain.outputs.rustc }}-${{ runner.arch }}-runtime-release-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', '.cargo/config.toml') }}
-          restore-keys: |
-            cargo-bookworm-${{ steps.toolchain.outputs.rustc }}-${{ runner.arch }}-runtime-release-v1-
-
       # The one release build every live, browser, demo, package, and image job
-      # runs. The runtime image base is debian:bookworm-slim, so compile against
-      # the same glibc. Run as the runner user so the self-hosted workspace stays
-      # cleanable, and build version-clean (official) so the CLI and server
-      # report the version the manifest records.
+      # runs, compiled against the runtime image's Debian bookworm glibc. See
+      # crates/runtime/Containerfile.build for why it is a container build.
       - name: Build release binaries
         run: |
           set -euo pipefail
-          cargo_home="$HOME/.cache/trellis-ci/bookworm-cargo"
-          mkdir -p "$cargo_home"
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            --env HOME=/tmp \
-            --env CARGO_HOME=/cargo \
-            --env CARGO_TERM_COLOR \
-            --env TRELLIS_OFFICIAL_BUILD=1 \
-            --volume "$cargo_home:/cargo" \
-            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" \
-            --workdir "$GITHUB_WORKSPACE" \
-            "$BUILD_IMAGE" \
-            cargo build --release --manifest-path Cargo.toml -p trellis-server -p trellis-cli
+          docker buildx build --builder default --pull \
+            --file crates/runtime/Containerfile.build \
+            --output "type=local,dest=$RUNNER_TEMP/release" \
+            .
 
       - name: Stage runtime binaries and CLI archives
         run: |
@@ -457,14 +426,14 @@ jobs:
           staging="$RUNNER_TEMP/runtime-binaries"
           rm -rf "$staging"
           mkdir -p "$staging"
-          cp target/release/trellis target/release/trellis-server "$staging/"
+          cp "$RUNNER_TEMP/release/trellis" "$RUNNER_TEMP/release/trellis-server" "$staging/"
           bash scripts/acquire-test-nats.sh --dest "$staging/nats"
           tar -C "$staging" -czf "$RUNNER_TEMP/runtime-binaries.tar.gz" .
           version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
           target="x86_64-unknown-linux-gnu"
           archive="trellis-${version}-${target}.tar.gz"
           mkdir -p dist
-          tar -C target/release -czf "dist/$archive" trellis trellis-server
+          tar -C "$RUNNER_TEMP/release" -czf "dist/$archive" trellis trellis-server
           sha256sum "dist/$archive" > "dist/checksum-${version}-${target}-trellis.sha256"
 
       - name: Upload runtime binaries
