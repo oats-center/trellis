@@ -402,6 +402,14 @@ export class LiveProvider {
     if (!msg.reply) return;
     // Validate the shared opening bound before any resource is allocated.
     const maxDataBodyBytes = this.#negotiate(open.receiveMaxPayloadBytes);
+    // Idle routes have no session timer to adopt a promoted own context. Refresh
+    // before signing the offer, not after the observer receives stale evidence.
+    if (await this.#ownAuthorityLost()) {
+      throw new LiveStreamError(
+        "authorization_unavailable",
+        "Live provider authority is unavailable",
+      );
+    }
     const sessionId = liveGenerateNonce();
     const callerGuard = await this.#host.retainCallerAuthority(
       caller.contextDigest,

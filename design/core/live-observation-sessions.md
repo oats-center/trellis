@@ -108,6 +108,11 @@ changed runtime key, logical connection id, selected deployment, or removed
 route ends the session. Invalid or foreign frames are discarded without
 extending liveness and without closing an otherwise valid session.
 
+An idle route also adopts promoted own authority before signing a new offer.
+It cannot rely on an active session's timer to refresh the retained guard;
+otherwise the first observer after the old context expires receives stale
+authorization evidence despite a healthy renewed connection.
+
 ## Credit and buffering
 
 Live and Transfer share internal sequence/window accounting and
