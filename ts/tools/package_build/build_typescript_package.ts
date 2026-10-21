@@ -57,7 +57,7 @@ export async function buildTypeScriptPackage(
         publishConfig: { access: "public" },
         repository: {
           type: "git",
-          url: "git+https://github.com/OATS-Center/trellis.git",
+          url: "git+https://github.com/oats-center/trellis.git",
         },
         dependencies: resolveInternalNpmDependenciesForBuild(
           metadata.dependencies,

@@ -486,6 +486,9 @@ Existing GitHub downloads must match those accepted artifacts byte-for-byte;
 recovery does not overwrite the tag or release assets.
 Images are promoted from the same accepted archive under the tagged candidate's
 SHA, never rebuilt from the workflow-repair commit.
+For npm provenance, publication normalizes only `package.json`'s `repository.url`
+to the canonical GitHub repository identity; implementation files remain the
+accepted Check inputs.
 
 ```sh
 gh workflow run release.yml --ref <workflow-repair-branch> \

@@ -655,6 +655,14 @@ jobs:
             ts/packages/trellis/npm
             ts/packages/trellis-svelte/npm
           )
+          mkdir -p dist/testkit-npm
+          tar -xzf dist/testkit-npm.tar.gz -C dist/testkit-npm
+          # npm checks repository identity against GitHub provenance with
+          # case-sensitive comparison. Normalize only this metadata field;
+          # all implementation files remain Check's accepted inputs.
+          for pkg in "${packages[@]}" dist/testkit-npm; do
+            npm pkg set "repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git" --prefix "$pkg"
+          done
           for pkg in "${packages[@]}"; do
             package_json="$pkg/package.json"
             name=$(node -p "require('./${package_json}').name")
@@ -663,8 +671,6 @@ jobs:
           done
 
           # The verified pinned testkit is published only after SDK dependencies.
-          mkdir -p dist/testkit-npm
-          tar -xzf dist/testkit-npm.tar.gz -C dist/testkit-npm
           npm ci
           smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
           mkdir -p "$smoke_root/home"
