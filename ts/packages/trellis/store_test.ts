@@ -84,11 +84,19 @@ test("Store verifies demand-driven reads, cancellation, corruption and wait budg
       const received = new Uint8Array(large.length);
       received.set(first.value);
       let offset = first.value.length;
+      let deletedDuringRead = false;
       for (;;) {
         const next = await reader.read();
         if (next.done) break;
         received.set(next.value, offset);
         offset += next.value.length;
+        if (!deletedDuringRead && offset >= large.length / 2) {
+          // Resume after buffered batches as well as an initially paused read.
+          // Recovery must restart at the last yielded chunk, never the broker's
+          // ahead-of-application delivery cursor.
+          await manager.consumers.delete("OBJ_store_test", held.name);
+          deletedDuringRead = true;
+        }
       }
       assert.deepEqual(offset, large.length);
       assert.deepEqual(received, large);
@@ -102,7 +110,12 @@ test("Store verifies demand-driven reads, cancellation, corruption and wait budg
     );
 
     const cancelled = (await largeEntry.stream().orThrow()).getReader();
-    assert(!(await cancelled.read()).done);
+    let consumedBeforeCancel = 0;
+    while (consumedBeforeCancel < 2 * 1024 * 1024) {
+      const next = await cancelled.read();
+      assert(!next.done);
+      consumedBeforeCancel += next.value.length;
+    }
     await cancelled.cancel();
     cancelled.releaseLock();
     assert.deepEqual(

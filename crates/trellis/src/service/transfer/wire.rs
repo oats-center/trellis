@@ -247,11 +247,22 @@ impl TransferPeer {
             return Err(error("transfer caller boundary mismatch"));
         }
         let digest = header(headers, "authorization-context")?;
-        let candidate = self
-            .guard
-            .prepare_replacement(&digest)
-            .await
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        // Immutable retained material needs replacement validation only when
+        // its signed content address changes. Current coverage, revocation,
+        // expiry and issuer trust are still checked before and after the proof.
+        let candidate = if self.guard.context_digest() == digest {
+            self.guard
+                .check_now()
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+            None
+        } else {
+            Some(
+                self.guard
+                    .prepare_replacement(&digest)
+                    .await
+                    .map_err(|e| error(format!("transfer authority: {e:?}")))?,
+            )
+        };
         let authority = self
             .owner
             .resolve_authority(&self.transport, &digest)
@@ -293,9 +304,11 @@ impl TransferPeer {
         {
             return Err(error("transfer caller identity mismatch"));
         }
-        self.guard
-            .commit_replacement(candidate)
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        if let Some(candidate) = candidate {
+            self.guard
+                .commit_replacement(candidate)
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        }
         self.guard
             .check_now()
             .map_err(|e| error(format!("transfer authority: {e:?}")))
@@ -316,11 +329,19 @@ impl TransferPeer {
             return Err(error("transfer provider identity mismatch"));
         }
         let digest = header(headers, "authorization-context")?;
-        let candidate = self
-            .guard
-            .prepare_replacement(&digest)
-            .await
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        let candidate = if self.guard.context_digest() == digest {
+            self.guard
+                .check_now()
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+            None
+        } else {
+            Some(
+                self.guard
+                    .prepare_replacement(&digest)
+                    .await
+                    .map_err(|e| error(format!("transfer authority: {e:?}")))?,
+            )
+        };
         let proof =
             TransferServerProof::parse(header(headers, TRANSFER_PROOF_HEADER)?).map_err(error)?;
         verify_transfer_server_proof_encoded(
@@ -332,9 +353,11 @@ impl TransferPeer {
             &self.expected.session_key,
         )
         .map_err(error)?;
-        self.guard
-            .commit_replacement(candidate)
-            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        if let Some(candidate) = candidate {
+            self.guard
+                .commit_replacement(candidate)
+                .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        }
         self.guard
             .check_now()
             .map_err(|e| error(format!("transfer authority: {e:?}")))

@@ -2,6 +2,9 @@ import { renameSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { get as httpGet } from "node:http";
 import { text } from "node:stream/consumers";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createWriteStream } from "node:fs";
 import { inspect } from "node:util";
 import { StoreError, decodeTransferGrant } from "@oatscenter/trellis";
 import {
@@ -21,16 +24,20 @@ import {
   deadline,
   digest,
   payload,
+  payloadChunks,
+  streamDigest,
   type Sample,
   summarize,
   WorkerOptions,
 } from "./model.ts";
 import { snapshotResources } from "./resources.ts";
+import { captureMetrics } from "./metrics.ts";
 
 const options = WorkerOptions.parse(JSON.parse(await text(process.stdin)));
+const saveMetrics = captureMetrics(options.output, options.role);
 const telemetry = await ensureTelemetryRuntime({
   serviceName: `trellis-benchmark-${options.role}`,
-  role: options.role === "provider" ? "service" : "cli",
+  role: options.role === "client" ? "cli" : "service",
 });
 let activePhase = "";
 const phase = async (name: string) => {
@@ -40,27 +47,21 @@ const phase = async (name: string) => {
   }
 };
 
-if (options.role === "provider") {
+if (options.role !== "client") {
   const started = performance.now();
   const service = await TrellisService.connect({
     trellisUrl: options.trellisUrl,
-    name: `benchmark-provider-${options.providerIndex}`,
+    name: `benchmark-${options.role}-${options.providerIndex ?? 0}`,
     participant: participants.Provider.participant,
     seed: options.serviceSeed!,
   }).orThrow();
   const connectMs = performance.now() - started;
   const store = await service.store.files.open().orThrow();
-  for (const size of options.sizes) {
-    const body = payload(size);
-    await store.put(String(size), body).orThrow();
-    await writeFile(`${options.output}/body-${size}.bin`, body);
-  }
-  if (options.workload === "transfer") {
+  if (options.role === "storage") {
     // Runtime-private diagnostic: only the ordinary storage-neutral store API.
     const rows: Sample[] = [];
     for (const size of options.sizes) {
-      const body = payload(size);
-      const expected = await digest(body);
+      const expected = (await streamDigest(payloadChunks(size))).digest;
       for (let index = -options.warmups; index < options.samples; index++) {
         for (const action of ["write", "read"] as const) {
           const row: Sample = {
@@ -75,12 +76,7 @@ if (options.role === "provider") {
           try {
             if (action === "write") {
               await store
-                .put(
-                  `diagnostic-${size}`,
-                  (async function* () {
-                    yield body;
-                  })(),
-                )
+                .put(`diagnostic-${size}`, payloadChunks(size))
                 .orThrow();
               row.durationMs = performance.now() - started;
               // Read-back is mandatory but outside the isolated write timing.
@@ -112,6 +108,17 @@ if (options.role === "provider") {
     await writeFile(
       `${options.output}/store-samples.json`,
       JSON.stringify(rows, null, 2),
+    );
+    await service.stop();
+    await telemetry.shutdown();
+    await saveMetrics();
+    process.exit(rows.some((row) => row.error) ? 1 : 0);
+  }
+  for (const size of options.sizes) {
+    await store.put(String(size), payloadChunks(size)).orThrow();
+    await pipeline(
+      Readable.from(payloadChunks(size)),
+      createWriteStream(`${options.output}/body-${size}.bin`),
     );
   }
   await service.handleEcho(({ input }) => ok(input));
@@ -155,7 +162,7 @@ if (options.role === "provider") {
     if (!stored) throw new Error("Persisted upload is missing");
     return await op
       .complete({
-        value: await digest(await stored.bytes().orThrow()),
+        value: (await streamDigest(await stored.stream().orThrow())).digest,
       })
       .orThrow();
   });
@@ -261,6 +268,7 @@ if (options.role === "provider") {
     await service.stop();
     await serving;
     await telemetry.shutdown();
+    await saveMetrics();
   }
 } else {
   const samples: Sample[] = [];
@@ -837,8 +845,7 @@ if (options.role === "provider") {
       }
     }
     for (const size of options.sizes) {
-      const body = payload(size);
-      const expected = await digest(body);
+      const expected = (await streamDigest(payloadChunks(size))).digest;
       for (let index = -options.warmups; index < options.samples; index++) {
         for (const transport of index % 2
           ? (["http", "trellis"] as const)
@@ -878,22 +885,17 @@ if (options.role === "provider") {
               }
               const setupMs = performance.now() - start;
               let firstByteMs: number | undefined;
-              const chunks: Uint8Array[] = [];
+              const hash = sha256.create();
               let length = 0;
               for await (const chunk of stream) {
                 if (chunk.length && firstByteMs === undefined) {
                   firstByteMs = performance.now() - start;
                 }
                 length += chunk.length;
-                chunks.push(chunk);
+                hash.update(chunk);
               }
-              const received = new Uint8Array(length);
-              let offset = 0;
-              for (const chunk of chunks) {
-                received.set(chunk, offset);
-                offset += chunk.length;
-              }
-              if (length !== size || (await digest(received)) !== expected) {
+              const actual = Buffer.from(hash.digest()).toString("hex");
+              if (length !== size || actual !== expected) {
                 throw new Error("Corrupt download");
               }
               return { setupMs, firstByteMs };
@@ -906,12 +908,19 @@ if (options.role === "provider") {
             "upload-persisted",
             transport,
             async () => {
+              const started = performance.now();
+              let payloadSuppliedMs: number | undefined;
+              const body = (async function* () {
+                yield* payloadChunks(size);
+                payloadSuppliedMs = performance.now() - started;
+              })();
               if (transport === "trellis") {
                 const operation = await client
                   .upload({ value: String(size) })
                   .transfer(body)
                   .start()
                   .orThrow();
+                const committedMs = performance.now() - started;
                 const result = await operation.wait().orThrow();
                 if (
                   result.terminal.state !== "completed" ||
@@ -924,24 +933,28 @@ if (options.role === "provider") {
                 ) {
                   throw new Error("Corrupt persisted upload");
                 }
-              } else {
-                const response = await fetch(
-                  `${options.httpUrl}/upload?size=${size}`,
-                  {
-                    method: "PUT",
-                    body,
-                    headers: { "accept-encoding": "identity" },
-                    signal: AbortSignal.timeout(30_000),
-                  },
-                );
-                if (!response.ok) {
-                  throw new Error(`HTTP upload ${response.status}`);
-                }
-                const stored = await response.json();
-                if (stored.size !== size || stored.digest !== expected) {
-                  throw new Error("Corrupt persisted upload");
-                }
+                return { payloadSuppliedMs, committedMs };
               }
+              const response = await fetch(
+                `${options.httpUrl}/upload?size=${size}`,
+                {
+                  method: "PUT",
+                  body: Readable.toWeb(
+                    Readable.from(body),
+                  ) as ReadableStream<Uint8Array>,
+                  ...{ duplex: "half" },
+                  headers: { "accept-encoding": "identity" },
+                  signal: AbortSignal.timeout(30_000),
+                },
+              );
+              if (!response.ok) {
+                throw new Error(`HTTP upload ${response.status}`);
+              }
+              const stored = await response.json();
+              if (stored.size !== size || stored.digest !== expected) {
+                throw new Error("Corrupt persisted upload");
+              }
+              return { payloadSuppliedMs };
             },
             size,
             undefined,
@@ -971,6 +984,144 @@ if (options.role === "provider") {
         }
       }
     }
+    if (options.workload === "transfer" && options.sizes.length) {
+      const probeLive = async (scenario: string, active?: () => boolean) => {
+        await phase(`trellis/${scenario}`);
+        const offered = performance.now();
+        for (let index = 0; index < 30; index++) {
+          const offeredAt = offered + index * 50;
+          if (offeredAt > performance.now()) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, offeredAt - performance.now()),
+            );
+          }
+          if (active && !active()) break;
+          const started = performance.now();
+          const row: Sample = {
+            scenario,
+            transport: "trellis",
+            startedUnixMs: Date.now(),
+            offeredUnixMs: Date.now() - (started - offeredAt),
+            schedulerDelayMs: Math.max(0, started - offeredAt),
+            durationMs: 0,
+          };
+          const abort = new AbortController();
+          try {
+            const value = `${scenario}-${index}`;
+            const feed = await client
+              .performanceWatch({ value }, { signal: abort.signal })
+              .orThrow();
+            const received = await deadline(
+              feed[Symbol.asyncIterator]().next(),
+            );
+            if (received.done || received.value.value !== value)
+              throw new Error("Live probe lost its first frame");
+          } catch (error) {
+            row.error = inspect(error, { colors: false, depth: 6 });
+          } finally {
+            row.durationMs = performance.now() - offeredAt;
+            abort.abort();
+            samples.push(row);
+          }
+        }
+      };
+      await probeLive("live-first-frame-idle");
+      const size = Math.max(...options.sizes);
+      const expected = (await streamDigest(payloadChunks(size))).digest;
+      await measure(
+        "mixed-upload-download",
+        "trellis",
+        async () => {
+          let dataActive = 2;
+          const downloadReady = Promise.withResolvers<void>();
+          const uploadReady = Promise.withResolvers<void>();
+          const finished = Promise.allSettled([
+            (async () => {
+              try {
+                const response = await client
+                  .download({ value: String(size) })
+                  .orThrow();
+                const grant = decodeTransferGrant(response.transfer).orThrow();
+                if (grant.direction !== "receive")
+                  throw new Error("Download returned a send grant");
+                const stream = await client.transfer(grant).stream().orThrow();
+                const hash = sha256.create();
+                let length = 0;
+                for await (const chunk of stream) {
+                  if (chunk.length) downloadReady.resolve();
+                  length += chunk.length;
+                  hash.update(chunk);
+                }
+                if (
+                  length !== size ||
+                  Buffer.from(hash.digest()).toString("hex") !== expected
+                )
+                  throw new Error("Corrupt concurrent download");
+              } finally {
+                dataActive--;
+              }
+            })(),
+            (async () => {
+              let sending = true;
+              try {
+                const body = (async function* () {
+                  for await (const chunk of payloadChunks(size)) {
+                    uploadReady.resolve();
+                    yield chunk;
+                  }
+                })();
+                const operation = await client
+                  .upload({ value: String(size) })
+                  .transfer(body)
+                  .start()
+                  .orThrow();
+                dataActive--;
+                sending = false;
+                const result = await operation.wait().orThrow();
+                if (
+                  result.transferred.size !== size ||
+                  result.terminal.state !== "completed" ||
+                  result.terminal.output?.value !== expected
+                )
+                  throw new Error("Corrupt concurrent persisted upload");
+              } finally {
+                if (sending) dataActive--;
+              }
+            })(),
+          ]);
+          let results: Awaited<typeof finished>;
+          try {
+            await deadline(
+              Promise.race([
+                Promise.all([downloadReady.promise, uploadReady.promise]),
+                finished.then(() => {
+                  throw new Error(
+                    "Transfers settled before both sources became active",
+                  );
+                }),
+              ]),
+            );
+            await probeLive(
+              "live-first-frame-under-transfer",
+              () => dataActive > 0,
+            );
+            await phase("trellis/mixed-upload-download");
+          } finally {
+            results = await finished;
+          }
+          const failures = results.filter(
+            (result) => result.status === "rejected",
+          );
+          if (failures.length)
+            throw new AggregateError(
+              failures.map((result) => result.reason),
+              "Concurrent transfers failed",
+            );
+          return { operations: 2 };
+        },
+        2 * size,
+      );
+    }
   } catch (error) {
     samples.push({
       scenario: "suite-fatal",
@@ -995,6 +1146,7 @@ if (options.role === "provider") {
       ),
     );
     await telemetry.shutdown();
+    await saveMetrics();
     if (samples.some((sample) => sample.error)) process.exitCode = 1;
   }
 }

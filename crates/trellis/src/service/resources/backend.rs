@@ -1,7 +1,7 @@
 use std::{fmt, pin::Pin, task::Poll, time::Duration, time::Instant};
 
 use async_nats::jetstream::kv::{CreateErrorKind, Operation, UpdateErrorKind};
-use async_nats::jetstream::object_store::{InfoErrorKind, PutErrorKind};
+use async_nats::jetstream::object_store::InfoErrorKind;
 use base64::{
     engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
     Engine,
@@ -21,6 +21,8 @@ use crate::client::{
     resource_action_marker, ResourceTransportAction, ResourceTransportKind,
     TransportGenerationManager, TransportLease,
 };
+
+mod upload;
 
 /// Error for an operation that did not finish inside its absolute budget.
 fn resource_timeout(operation: &str) -> ServerError {
@@ -727,8 +729,10 @@ impl BoundStoreResourceClient {
                         state.batch_chunks = 0;
                         state.batch_bytes = 0;
                     }
+                    let wait = super::super::transfer::telemetry::wait(trellis_protocol::transfer::TransferDirection::Receive, "store", "storage_refill");
                     let next = tokio::time::timeout(Duration::from_secs(5), state.batch.as_mut().expect("active batch").next())
                         .await.map_err(std::io::Error::other)?;
+                    wait.finish("ok");
                     let error = match next {
                         Some(Ok(message)) => break message,
                         // async-nats 0.50 erases the typed status in finite Batch.
@@ -852,23 +856,7 @@ impl StoreResourceClient for BoundStoreResourceClient {
                 self.guard(ResourceTransportAction::Write, deadline)
             })
             .await?;
-        let mut reader = reader;
-        match guard.store.put(key, &mut reader).await {
-            Ok(info) => store_object_info(&info),
-            Err(error) if error.kind() == PutErrorKind::PublishMetadata => {
-                Err(ServerError::StoreCommitIndeterminate {
-                    key: key.to_string(),
-                    message: error.to_string(),
-                })
-            }
-            Err(error) if error.kind() == PutErrorKind::PurgeOldChunks => {
-                Err(ServerError::StoreCommittedCleanupFailed {
-                    key: key.to_string(),
-                    message: error.to_string(),
-                })
-            }
-            Err(error) => Err(nats_error(error)),
-        }
+        upload::write(guard, key, reader).await
     }
 
     async fn list(&self) -> Result<Vec<String>, ServerError> {

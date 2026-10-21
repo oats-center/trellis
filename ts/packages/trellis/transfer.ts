@@ -33,6 +33,7 @@ import {
   recordCatalogDuration,
 } from "./telemetry/mod.ts";
 import { recordCatalogUpDown } from "./telemetry/metrics.ts";
+import { frames, type TransferBody } from "./transfer/frames.ts";
 
 /** Failures a transfer handle operation can report. */
 export type TransferOperationError = TransferError | TransportError;
@@ -74,87 +75,7 @@ export function decodeTransferGrant(
   }
 }
 
-/** Supported streaming upload sources. */
-export type TransferBody =
-  | Uint8Array
-  | ArrayBuffer
-  | ReadableStream<Uint8Array>
-  | AsyncIterable<Uint8Array>;
-
-/** Split arbitrary source chunks using views, without payload-sized copies. */
-async function* frames(
-  body: TransferBody,
-  maxBytes: number,
-  signal: AbortSignal,
-): AsyncGenerator<Uint8Array> {
-  const reader = body instanceof ReadableStream ? body.getReader() : undefined;
-  const source: AsyncIterable<Uint8Array> =
-    body instanceof ArrayBuffer || body instanceof Uint8Array
-      ? (async function* () {
-          yield body instanceof Uint8Array ? body : new Uint8Array(body);
-        })()
-      : body;
-  const iterator: AsyncIterator<Uint8Array> = reader
-    ? {
-        next: async (): Promise<IteratorResult<Uint8Array>> => {
-          const result = await reader.read();
-          return result.done
-            ? { done: true, value: undefined }
-            : { done: false, value: result.value };
-        },
-      }
-    : source[Symbol.asyncIterator]();
-  const cancelReader = () => {
-    void reader?.cancel(signal.reason).catch(() => {});
-  };
-  signal.addEventListener("abort", cancelReader, { once: true });
-  let completed = false;
-  try {
-    while (true) {
-      const next = await transferWait(iterator.next(), signal);
-      if (next.done) {
-        completed = true;
-        return;
-      }
-      const owned = !(
-        body instanceof ArrayBuffer || body instanceof Uint8Array
-      );
-      if (owned) {
-        recordCatalogUpDown(
-          "trellis.transfer.buffered.bytes",
-          next.value.length,
-          { "trellis.direction": "upload" },
-        );
-      }
-      try {
-        for (let offset = 0; offset < next.value.length; offset += maxBytes) {
-          yield next.value.subarray(
-            offset,
-            Math.min(next.value.length, offset + maxBytes),
-          );
-        }
-      } finally {
-        if (owned) {
-          recordCatalogUpDown(
-            "trellis.transfer.buffered.bytes",
-            -next.value.length,
-            { "trellis.direction": "upload" },
-          );
-        }
-      }
-    }
-  } finally {
-    signal.removeEventListener("abort", cancelReader);
-    if (reader) {
-      if (!completed) cancelReader();
-      reader.releaseLock();
-    } else if (!completed) {
-      // Application iterators need not support interrupting an in-flight next.
-      // Observe their return, but never let that application promise pin the SDK.
-      void Promise.resolve(iterator.return?.()).catch(() => {});
-    }
-  }
-}
+export type { TransferBody } from "./transfer/frames.ts";
 
 class ClientSession {
   readonly activated = Promise.withResolvers<number>();
@@ -483,6 +404,7 @@ export class SendTransferHandle extends BaseTransferHandle {
             body,
             maxFrameBytes,
             session.abort.signal,
+            "upload",
           )) {
             size += frame.length;
             if (
@@ -491,7 +413,20 @@ export class SendTransferHandle extends BaseTransferHandle {
             )
               throw new Error("transfer maximum size exceeded");
             while (window.validateFrameSlot(frame.length) === "window_full") {
-              await transferWait(window.waitCredit(), session.abort.signal);
+              const started = performance.now();
+              try {
+                await transferWait(window.waitCredit(), session.abort.signal);
+              } finally {
+                recordCatalogDuration(
+                  "trellis.transfer.wait.duration",
+                  performance.now() - started,
+                  {
+                    "trellis.direction": "upload",
+                    "trellis.phase": "credit",
+                    "trellis.side": "client",
+                  },
+                );
+              }
             }
             if (window.validateFrameSlot(frame.length)) {
               throw new Error("transfer frame exceeds limits");

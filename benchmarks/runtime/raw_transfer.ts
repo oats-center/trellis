@@ -1,6 +1,8 @@
 import { headers, type NatsConnection } from "@nats-io/nats-core";
 import { inspect } from "node:util";
-import { deadline, digest, payload, type Sample } from "./model.ts";
+import { createHash } from "node:crypto";
+import { ulid } from "ulid";
+import { deadline, payloadChunks, streamDigest, type Sample } from "./model.ts";
 
 /** Unsigned same-broker Core NATS lower bound; not an application transfer API. */
 export async function rawTransfer(options: {
@@ -15,10 +17,13 @@ export async function rawTransfer(options: {
     const receiver = await options.connect();
     try {
       for (const size of options.sizes) {
-        const body = payload(size);
-        const expected = await digest(body);
-        // Diagnostic-only frame sizes: no public Trellis frame tuning knobs.
-        for (const requested of [64 * 1024, 1024 * 1024]) {
+        const expected = (await streamDigest(payloadChunks(size))).digest;
+        // Diagnostic-only frames/windows: no public Trellis tuning knobs.
+        for (const [requested, requestedFrames] of [
+          [64 * 1024, 16],
+          [64 * 1024, 64],
+          [1024 * 1024, 16],
+        ] as const) {
           const frameBytes = Math.min(
             requested,
             sender.info!.max_payload - 4096,
@@ -27,23 +32,25 @@ export async function rawTransfer(options: {
             throw new Error("Broker payload limit is unusable");
           }
           for (let trial = -options.warmups; trial < options.samples; trial++) {
-            const subject = `benchmark.raw.${crypto.randomUUID()}`;
+            const subject = `benchmark.raw.${ulid()}`;
             const data = receiver.subscribe(`${subject}.data`);
             const credit = sender.subscribe(`${subject}.credit`);
             const credits = credit[Symbol.asyncIterator]();
             await Promise.all([sender.flush(), receiver.flush()]);
             const row: Sample = {
-              scenario: `windowed-stream-${frameBytes}`,
+              scenario: `windowed-stream-${frameBytes}${requestedFrames === 16 ? "" : `-frames${requestedFrames}`}`,
               transport: "nats",
               bytes: size,
               warmup: trial < 0,
               maxFrameBytes: frameBytes,
+              windowFrames: requestedFrames,
+              windowBytes: 4 * 1024 * 1024,
               startedUnixMs: Date.now(),
               durationMs: 0,
             };
             const started = performance.now();
             const frameCount = Math.ceil(size / frameBytes);
-            const received = new Uint8Array(size);
+            const hash = createHash("sha256");
             const read = (async () => {
               let sequence = 0;
               let offset = 0;
@@ -56,7 +63,7 @@ export async function rawTransfer(options: {
                   message.data.length !== Math.min(frameBytes, size - offset)
                 )
                   throw new Error("Raw stream sequence/length mismatch");
-                received.set(message.data, offset);
+                hash.update(message.data);
                 offset += message.data.length;
                 if (
                   sequence - creditedSequence >= 8 ||
@@ -72,7 +79,7 @@ export async function rawTransfer(options: {
                 }
                 if (offset === size) break;
               }
-              if (offset !== size || (await digest(received)) !== expected) {
+              if (offset !== size || hash.digest("hex") !== expected) {
                 throw new Error("Corrupt raw Core NATS stream");
               }
               row.dataFrames = sequence;
@@ -81,16 +88,19 @@ export async function rawTransfer(options: {
               let sent = 0;
               let consumed = 0;
               const windowFrames = Math.min(
-                16,
+                requestedFrames,
                 Math.floor((4 * 1024 * 1024) / frameBytes),
               );
+              const source = payloadChunks(size, frameBytes)[
+                Symbol.asyncIterator
+              ]();
               while (sent < frameCount || consumed < sent) {
                 if (sent < frameCount && sent - consumed < windowFrames) {
                   const header = headers();
                   header.set("sequence", String(++sent));
                   sender.publish(
                     `${subject}.data`,
-                    body.subarray((sent - 1) * frameBytes, sent * frameBytes),
+                    (await source.next()).value!,
                     { headers: header },
                   );
                 } else {

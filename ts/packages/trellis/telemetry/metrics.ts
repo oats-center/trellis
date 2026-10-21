@@ -515,6 +515,7 @@ export const TRELLIS_CATALOG_DURATIONS = [
   "trellis.projection.duration",
   "trellis.storage.duration",
   "trellis.transfer.duration",
+  "trellis.transfer.wait.duration",
   "trellis.cli.duration",
   "trellis.browser.navigation.duration",
   "trellis.live.handshake.duration",

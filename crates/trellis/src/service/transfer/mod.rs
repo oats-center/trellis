@@ -17,16 +17,19 @@ use base64::{
     engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
     Engine as _,
 };
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 pub use download::run_download_transfer_endpoint;
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 pub use protocol::*;
 use std::{
     sync::{atomic::Ordering, Arc},
     time::Duration,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::oneshot;
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    sync::oneshot,
+};
 use trellis_protocol::transfer::*;
 pub use upload::UploadTransferSession;
 use wire::{error, publish_signal, TransferPeer};
@@ -37,6 +40,83 @@ pub(crate) fn credit_scheduler() -> CreditScheduler {
         byte_step: Some(TRANSFER_CREDIT_BYTE_STEP),
         max_delay: Duration::from_millis(TRANSFER_CREDIT_MAX_DELAY_MS),
     })
+}
+
+/// Coalesce ready short reads up to the negotiated frame limit. Only the first
+/// read may suspend: slow sources return their available bytes immediately, and
+/// cancellation in the caller's select cannot discard an accumulated prefix.
+pub(crate) async fn read_ready_frame<R: AsyncRead + Unpin + ?Sized>(
+    reader: &mut R,
+    limit: usize,
+) -> std::io::Result<Bytes> {
+    let mut bytes = BytesMut::with_capacity(limit.min(64 * 1024));
+    while bytes.len() < limit {
+        if bytes.len() == bytes.capacity() {
+            bytes.reserve(bytes.len().min(limit - bytes.len()));
+        }
+        let first = bytes.is_empty();
+        let mut bounded = (&mut *reader).take((limit - bytes.len()) as u64);
+        let read = bounded.read_buf(&mut bytes);
+        let count = if first {
+            read.await?
+        } else {
+            let Some(result) = read.now_or_never() else {
+                break;
+            };
+            result?
+        };
+        if count == 0 {
+            break;
+        }
+    }
+    Ok(bytes.freeze())
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::read_ready_frame;
+    use bytes::Bytes;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn ready_frames_coalesce_short_reads_and_flush_slow_sources_without_eof() {
+        let data: Vec<u8> = (0..71).collect();
+        let chunks = data
+            .chunks(7)
+            .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)));
+        let mut reader = tokio_util::io::StreamReader::new(futures_util::stream::iter(chunks));
+        let mut sizes = Vec::new();
+        let mut actual = Vec::new();
+        loop {
+            let frame = read_ready_frame(&mut reader, 32).await.unwrap();
+            if frame.is_empty() {
+                break;
+            }
+            sizes.push(frame.len());
+            actual.extend_from_slice(&frame);
+        }
+        assert_eq!(actual, data);
+        assert_eq!(sizes, [32, 32, 7]);
+
+        let (mut producer, mut reader) = tokio::io::duplex(64);
+        for available in [b"first".as_slice(), b"second".as_slice()] {
+            producer.write_all(available).await.unwrap();
+            let frame = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                read_ready_frame(&mut reader, 32),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                frame.as_ref(),
+                available,
+                "a held-open source must not wait to fill the target frame"
+            );
+        }
+        drop(producer);
+        assert!(read_ready_frame(&mut reader, 32).await.unwrap().is_empty());
+    }
 }
 
 pub(crate) async fn credit_due(scheduler: &CreditScheduler) {

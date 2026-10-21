@@ -138,6 +138,8 @@ pub enum DurationFamily {
     Storage,
     /// One transfer session.
     Transfer,
+    /// Time blocked on Transfer credit or the next storage chunk.
+    TransferWait,
     /// One CLI command.
     Cli,
     /// One built-in browser navigation milestone.
@@ -171,6 +173,7 @@ impl DurationFamily {
             Self::Projection => "trellis.projection.duration",
             Self::Storage => "trellis.storage.duration",
             Self::Transfer => "trellis.transfer.duration",
+            Self::TransferWait => "trellis.transfer.wait.duration",
             Self::Cli => "trellis.cli.duration",
             Self::BrowserNavigation => "trellis.browser.navigation.duration",
             Self::AuthFlow => "trellis.auth.flow.duration",

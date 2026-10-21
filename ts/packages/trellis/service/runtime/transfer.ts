@@ -8,6 +8,7 @@ import type { Msg } from "@nats-io/nats-core";
 import type { LoggerLike } from "../../globals.ts";
 import { sha256 } from "@noble/hashes/sha256";
 import { base64urlEncode } from "../../auth/utils.ts";
+import { frames } from "../../transfer/frames.ts";
 import type { TrellisTransportProvider } from "../../transport/generations.ts";
 import type { PermissionAtom } from "../../participant_runtime/api.ts";
 import {
@@ -150,8 +151,8 @@ type ProviderSession = {
   ingress?: TransferIngress;
   backend?: Promise<void>;
   download?: Promise<void>;
-  barrier?: Promise<void>;
   reader?: ReadableStreamDefaultReader<Uint8Array>;
+  barrier?: Promise<void>;
   upload?: InitiateUploadArgs;
   store: TypedStore;
   storageKey: string;
@@ -1234,69 +1235,64 @@ export class ServiceTransfer {
     const reader = stream.getReader();
     session.reader = reader;
     try {
-      while (true) {
-        const next = await transferWait(
-          reader.read(),
-          session.wire.abort.signal,
-        );
-        if (next.done) break;
-        recordCatalogUpDown(
-          "trellis.transfer.buffered.bytes",
-          next.value.length,
-          { "trellis.direction": "download" },
-        );
-        try {
-          for (
-            let offset = 0;
-            offset < next.value.length;
-            offset += session.maxFrameBytes
-          ) {
-            const frame = next.value.subarray(
-              offset,
-              Math.min(next.value.length, offset + session.maxFrameBytes),
-            );
-            while (window.validateFrameSlot(frame.length) === "window_full") {
-              await transferWait(
-                window.waitCredit(),
-                session.wire.abort.signal,
-              );
-            }
-            const seq = window.nextFrameSeq();
-            if (seq === undefined || window.validateFrameSlot(frame.length)) {
-              throw new Error("download frame accounting failed");
-            }
-            const headers = await session.wire.serverHeaders(
-              grant.dataSubject,
-              frame,
-              seq.toString(),
-              "data",
-            );
-            session.wire.throwIfAborted();
-            session.wire.lease.nc.publish(grant.dataSubject, frame, {
-              headers,
-            });
-            if (window.commitFrame(seq, frame.length)) {
-              throw new Error("download frame handoff failed");
-            }
-            session.bytes += frame.length;
-            if (session.bytes > grant.info.size) {
-              throw new Error("download source size exceeded");
-            }
-            session.hash.update(frame);
-            recordCatalogCounter("trellis.transfer.frames", 1, {
-              "trellis.direction": "download",
-            });
-            recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
-              "trellis.direction": "download",
-            });
-          }
-        } finally {
-          recordCatalogUpDown(
-            "trellis.transfer.buffered.bytes",
-            -next.value.length,
-            { "trellis.direction": "download" },
-          );
+      // The session owns store-reader teardown; the framer only borrows its bytes.
+      const source = (async function* () {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) return;
+          yield next.value;
         }
+      })();
+      for await (const frame of frames(
+        source,
+        session.maxFrameBytes,
+        session.wire.abort.signal,
+        "download",
+      )) {
+        while (window.validateFrameSlot(frame.length) === "window_full") {
+          const started = performance.now();
+          try {
+            await transferWait(window.waitCredit(), session.wire.abort.signal);
+          } finally {
+            recordCatalogDuration(
+              "trellis.transfer.wait.duration",
+              performance.now() - started,
+              {
+                "trellis.direction": "download",
+                "trellis.phase": "credit",
+                "trellis.side": "provider",
+              },
+            );
+          }
+        }
+        const seq = window.nextFrameSeq();
+        if (seq === undefined || window.validateFrameSlot(frame.length)) {
+          throw new Error("download frame accounting failed");
+        }
+        const headers = await session.wire.serverHeaders(
+          grant.dataSubject,
+          frame,
+          seq.toString(),
+          "data",
+        );
+        session.wire.throwIfAborted();
+        session.wire.lease.nc.publish(grant.dataSubject, frame, {
+          headers,
+        });
+        if (window.commitFrame(seq, frame.length)) {
+          throw new Error("download frame handoff failed");
+        }
+        session.bytes += frame.length;
+        if (session.bytes > grant.info.size) {
+          throw new Error("download source size exceeded");
+        }
+        session.hash.update(frame);
+        recordCatalogCounter("trellis.transfer.frames", 1, {
+          "trellis.direction": "download",
+        });
+        recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
+          "trellis.direction": "download",
+        });
       }
       const digest = `SHA-256=${base64urlEncode(session.hash.digest())}`;
       if (

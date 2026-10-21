@@ -11,7 +11,6 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use sha2::{Digest as _, Sha256};
 use std::sync::{atomic::Ordering, Arc};
-use tokio::io::AsyncReadExt;
 use trellis_protocol::transfer::*;
 
 /// Stream a storage-neutral push download on its exact pinned attachment.
@@ -80,7 +79,6 @@ where
         window_frames: grant.window_frames,
         window_bytes: grant.window_bytes,
     });
-    let mut buffer = vec![0; max_frame_bytes as usize];
     let mut staged: Option<super::telemetry::Payload> = None;
     let mut transferred = 0u64;
     let mut hasher = Sha256::new();
@@ -88,10 +86,12 @@ where
     let mut control_seq = 0;
     let mut control_body = None;
     let mut activate_body = None;
+    let mut credit_wait = None;
     let result: Result<(), ServerError> = async {
         loop {
             if let Some(bytes) = staged.as_ref() {
                 if window.validate_frame_slot(bytes.len() as u64, max_frame_bytes).is_ok() {
+                    if let Some(wait) = credit_wait.take() { crate::telemetry::lifecycle::Observation::finish(wait, "ok"); }
                     peer.guard.check_now().map_err(|e| error(format!("download authority: {e:?}")))?;
                     let seq = window.next_frame_seq().map_err(|e| error(format!("download sequence: {e:?}")))?;
                     let bytes = staged.take().ok_or_else(|| error("staged download frame missing"))?;
@@ -105,6 +105,7 @@ where
                     transferred = next;
                     continue;
                 }
+                credit_wait.get_or_insert_with(|| super::telemetry::wait(TransferDirection::Receive, "provider", "credit"));
             }
             tokio::select! {
                 _ = &mut expiry => return Err(error("download grant expired")),
@@ -131,7 +132,6 @@ where
                              if !activated {
                                  activate_body = Some(message.payload.clone());
                                 max_frame_bytes = max_frame_bytes.min(receive_max_frame_bytes);
-                                buffer.resize(max_frame_bytes as usize, 0);
                                 window = SenderWindow::new(FlowLimits { max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes });
                             }
                             publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
@@ -165,9 +165,9 @@ where
                     backend.take();
                     backend_result = Some(result?.ok_or_else(|| error("download object missing"))?);
                 },
-                count = async { reader.as_mut().ok_or_else(|| error("download reader missing"))?.read(&mut buffer).await.map_err(error) }, if activated && !eof && staged.is_none() => {
-                    let count = count?;
-                    if count > 0 { let mut frame = std::mem::replace(&mut buffer, vec![0; max_frame_bytes as usize]); frame.truncate(count); staged = Some(super::telemetry::Payload::new(Bytes::from(frame.into_boxed_slice()), TransferDirection::Receive, "provider-tx")); continue; }
+                bytes = async { super::read_ready_frame(reader.as_mut().ok_or_else(|| error("download reader missing"))?, max_frame_bytes as usize).await.map_err(error) }, if activated && !eof && staged.is_none() => {
+                    let bytes = bytes?;
+                    if !bytes.is_empty() { staged = Some(super::telemetry::Payload::new(bytes, TransferDirection::Receive, "provider-tx")); continue; }
                     let info = match backend_result.take() {
                         Some(info) => info,
                         None => backend.as_mut().ok_or_else(|| error("download backend missing"))?.await?.ok_or_else(|| error("download object missing"))?,
@@ -182,6 +182,7 @@ where
             }
         }
     }.await;
+    drop(credit_wait);
     backend.take();
     if result.is_err() {
         if let Err(error) = &result {

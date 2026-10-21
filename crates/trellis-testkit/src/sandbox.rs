@@ -289,7 +289,7 @@ impl Sandbox {
 /// test's sandbox; callers should still run it when no harness tests are active.
 ///
 /// This is the reclaim path for sandboxes a killed or aborted process could not
-/// remove; [`TrellisTestRuntime::shutdown`] is the per-runtime guarantee.
+/// remove; [`crate::TrellisTestRuntime::shutdown`] is the per-runtime guarantee.
 ///
 /// # Errors
 ///

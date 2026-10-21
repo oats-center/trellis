@@ -21,6 +21,7 @@ import { JetStreamStatusError } from "@nats-io/jetstream/internal";
 import { sha256 } from "@noble/hashes/sha256";
 import { base64urlDecode, base64urlEncode } from "./auth/utils.ts";
 import { StoreError } from "./errors/StoreError.ts";
+import { recordCatalogDuration } from "./telemetry/metrics.ts";
 
 /** Internal ObjectStore chunk reader: one finite batch, pulled only on demand. */
 export function boundedObjectStream(
@@ -240,25 +241,6 @@ export function boundedObjectStream(
           if (!isState("open")) return;
           while (isState("open")) {
             if (!batch) {
-              // Inactivity expires backend consumers, not the public reader. Use
-              // typed INFO errors; fetch status errors erase the missing-resource
-              // distinction. Resume only from the last actually yielded chunk.
-              consumer = (async () => {
-                try {
-                  await active.info();
-                  return active;
-                } catch (cause) {
-                  if (
-                    !(cause instanceof JetStreamApiError) ||
-                    cause.code !== JetStreamApiCodes.ConsumerNotFound
-                  )
-                    throw cause;
-                  if (!isState("open")) return active;
-                  return await createConsumer();
-                }
-              })();
-              active = await consumer;
-              if (!isState("open")) return;
               // 3.4.0 prohibits max_messages with max_bytes and caps this at 100.
               pendingBatch = active
                 .fetch({ max_bytes: budget, expires: 30_000 })
@@ -273,23 +255,55 @@ export function boundedObjectStream(
               if (!isState("open")) return;
             }
             let next: IteratorResult<JsMsg>;
+            let failure: unknown;
+            const started = performance.now();
             try {
               next = await iterator!.next();
             } catch (cause) {
-              if (!byteBoundary(cause)) throw cause;
+              if (!byteBoundary(cause)) failure = cause;
               next = { done: true, value: undefined };
+            } finally {
+              recordCatalogDuration(
+                "trellis.transfer.wait.duration",
+                performance.now() - started,
+                {
+                  "trellis.direction": "download",
+                  "trellis.phase": "storage_refill",
+                  "trellis.side": "store",
+                },
+              );
             }
             if (!isState("open")) return;
             if (next.done) {
-              const error = await batch!.closed();
-              if (error && !byteBoundary(error)) throw error;
+              const error = failure ?? (await batch!.closed());
+              if ((error && !byteBoundary(error)) || batchMessages === 0) {
+                // Healthy batches need no management RTT. Typed INFO errors
+                // reconcile only a failed/empty pull, always resuming from the
+                // application's last verified cursor.
+                try {
+                  await active.info();
+                } catch (cause) {
+                  if (
+                    !(cause instanceof JetStreamApiError) ||
+                    cause.code !== JetStreamApiCodes.ConsumerNotFound
+                  )
+                    throw cause;
+                  batch!.stop();
+                  await iterator?.return?.();
+                  batch = undefined;
+                  iterator = undefined;
+                  pendingBatch = undefined;
+                  if (!isState("open")) return;
+                  consumer = createConsumer();
+                  active = await consumer;
+                  continue;
+                }
+                throw error ?? new Error("ObjectStore chunks are missing");
+              }
               await iterator!.return?.();
               batch = undefined;
               iterator = undefined;
               pendingBatch = undefined;
-              if (batchMessages === 0) {
-                throw new Error("ObjectStore chunks are missing");
-              }
               continue;
             }
             const msg = next.value;

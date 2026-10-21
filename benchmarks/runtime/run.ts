@@ -27,6 +27,7 @@ import { snapshotResources } from "./resources.ts";
 import { TrellisTestRuntime } from "../../ts/packages/trellis-testkit/index.ts";
 import { apps, participants } from "./packages/performance-trellis/index.js";
 import { rawTransfer } from "./raw_transfer.ts";
+import { observeTransfer } from "./observe.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const exec = promisify(execFile);
@@ -50,6 +51,7 @@ const { values: args } = parseArgs({
     "contract-entry": { type: "string" },
     "contract-worker": { type: "string" },
     "keep-workdir": { type: "boolean", default: false },
+    diagnostics: { type: "boolean", default: false },
   },
 });
 const positive = z.coerce.number().int().positive();
@@ -71,7 +73,7 @@ const arrivalRate = z.coerce
   .parse(args["arrival-rate"] ?? (lane === "browser" ? "0.05" : "0"));
 const maxOutstanding = positive.parse(args["max-outstanding"]);
 const sizes = z
-  .array(positive.max(64 * 1024 * 1024))
+  .array(positive.max(512 * 1024 * 1024))
   .nonempty()
   .parse(args.sizes.split(","));
 const sessionCounts = z
@@ -106,6 +108,7 @@ const logWrites: Promise<void>[] = [];
 let runtime: TrellisTestRuntime | undefined;
 let sampler: TrackedProcess | undefined;
 let browserServer: Server | undefined;
+let stopObserver: Awaited<ReturnType<typeof observeTransfer>> | undefined;
 const browserSamples: Sample[] = [];
 async function startWorker(
   file: string,
@@ -133,9 +136,11 @@ async function startWorker(
     ? `provider-${options.providerIndex ?? 0}`
     : file === "http.ts" || file === "rust-http"
       ? "http"
-      : options.role === "resume"
-        ? "client-resume"
-        : "client";
+      : options.role === "storage"
+        ? "storage"
+        : options.role === "resume"
+          ? "client-resume"
+          : "client";
   for (const [kind, stream] of [
     ["stdout", child.stdout],
     ["stderr", child.stderr],
@@ -220,6 +225,7 @@ try {
         maxOutstanding,
         lane,
         providerCount,
+        diagnostics: args.diagnostics,
         topology:
           "loopback; native NATS TCP; plaintext HTTP/1.1 keep-alive; no compression or HTTP caching",
         setup:
@@ -336,6 +342,8 @@ try {
       lane === "lifecycle" ? { contextLifetimeSeconds: 120 } : undefined,
   });
   await runtime.ensureAdmin();
+  if (args.diagnostics)
+    stopObserver = await observeTransfer(await runtime.connectNats());
   const metadata = z
     .record(z.string(), z.unknown())
     .parse(JSON.parse(await readFile(`${output}/metadata.json`, "utf8")));
@@ -432,6 +440,12 @@ try {
       ),
     );
     await runtime.waitFor(async () => {
+      const provider = providers[providerIndex];
+      if (provider.exitCode !== null || provider.signalCode !== null) {
+        throw new Error(
+          `Provider ${providerIndex} exited before readiness (${provider.exitCode ?? provider.signalCode}); see ${output}/provider-${providerIndex}.stderr.log`,
+        );
+      }
       try {
         return JSON.parse(
           await readFile(`${output}/provider-${providerIndex}.json`, "utf8"),
@@ -446,6 +460,20 @@ try {
         throw error;
       }
     });
+  }
+  if (lane === "transfer" || lane === "rust") {
+    // Finite storage workloads are measurements, not provider startup. In
+    // particular, repeated large-object rounds must not consume readiness time.
+    const storage = await startWorker(lane === "rust" ? "rust" : "worker.ts", {
+      ...options,
+      role: "storage",
+    });
+    const result = await storage.exited;
+    if (result.code !== 0) {
+      throw new Error(
+        `Storage measurements exited ${result.code ?? result.signal}; see ${output}/storage.stderr.log`,
+      );
+    }
   }
   const ready = await runtime.waitFor(async () => {
     try {
@@ -791,15 +819,24 @@ try {
     const nativeSamples = z.array(
       z.object({
         scenario: z.string(),
-        transport: z.enum(["trellis", "http"]),
+        transport: z.enum(["trellis", "http", "store"]),
         startedUnixMs: z.number(),
         durationMs: z.number(),
         bytes: z.number().optional(),
         error: z.string().optional(),
+        warmup: z.boolean().optional(),
+        committedMs: z.number().optional(),
       }),
     );
     const rows = nativeSamples.parse(
       JSON.parse(await readFile(`${output}/native-samples.json`, "utf8")),
+    );
+    rows.push(
+      ...nativeSamples.parse(
+        JSON.parse(
+          await readFile(`${output}/native-store-samples.json`, "utf8"),
+        ),
+      ),
     );
     const windows = [
       {
@@ -811,6 +848,9 @@ try {
         after: await snapshotResources(output, cpuTicks, "coordinator"),
       },
     ];
+    windows.push(
+      ...JSON.parse(await readFile(`${output}/native-windows.json`, "utf8")),
+    );
     const resumeBefore = await snapshotResources(
       output,
       cpuTicks,
@@ -930,6 +970,11 @@ try {
   if (runtime) {
     await writeFile(`${output}/server.log`, runtime.controlPlaneOutput());
   }
+  if (stopObserver)
+    await writeFile(
+      `${output}/transfer-diagnostics.json`,
+      JSON.stringify(await stopObserver(), null, 2),
+    );
   for (const child of children) child.kill("SIGTERM");
   await Promise.all(children.map((child) => child.exited));
   await Promise.all(logWrites);

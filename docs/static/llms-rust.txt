@@ -565,13 +565,19 @@ remain available. Reader drop starts owned cleanup on the creating Tokio runtime
 including cross-thread drops; cleanup retains the generation lease. Native
 ObjectStore links are unsupported. Whole-buffer helpers consume the same reader
 but retain the entire object in memory. Generated Operation
-references upload bytes with `upload(body)`; lower-level operation builders
+references upload bytes with `upload(body)` or stream with `upload_from(reader)`;
+lower-level operation builders
 stream with `transfer_from(reader)` without a caller-supplied size or hash.
 Trellis counts and hashes bytes while sending and verifies size and SHA-256 on
 receipt. Transfer v1 uses bounded windowed one-way raw NATS DATA, not one RPC per
 frame. Download destination writes and upload backend-reader consumption release
 cumulative credit; credit is not persistence. Upload success awaits backend write
 completion and durable Operation transfer commit, before handler execution.
+Short source reads remain streaming: the runtime combines already-ready bytes
+without waiting to fill a DATA frame. Backend uploads pipeline bounded writes
+but await required acknowledgements and metadata commit before success.
+Unchanged context reuse still verifies every frame's proof and current
+authority, expiry, revocation, coverage and provider requirements.
 Across language boundaries, an upload transport error is not proof of rollback;
 resume the Operation to reconcile its durable result before retrying.
 Streaming grants contain logical session identities and runtime subjects only,

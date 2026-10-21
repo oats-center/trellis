@@ -484,6 +484,9 @@ Transfer v1 uses bounded, windowed raw-byte streaming over NATS, with storage
 protocols and credentials hidden behind runtime store handles. Use generated
 upload Operations and download helpers, not raw subjects. Network credit is not
 durability: upload success follows verified backend and durable Operation commit.
+Use streaming bodies/readers for large objects. The runtime combines ready bytes
+without waiting for full DATA frames, while preserving per-frame authentication
+and current expiry/revocation checks; applications need not batch whole objects.
 TypeScript download callers use `decodeTransferGrant(response.transfer)` from
 `@oatscenter/trellis` and check its direction before `client.transfer(grant)`.
 This Rust/WASM decoder checks wire structure, not authorization; the transfer

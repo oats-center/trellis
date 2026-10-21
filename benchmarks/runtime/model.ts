@@ -1,8 +1,9 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 
-/** Validated options shared by the isolated provider and load generator. */
+/** Validated options shared by the provider, storage probe, and load generator. */
 export const WorkerOptions = z.object({
-  role: z.enum(["provider", "client"]),
+  role: z.enum(["provider", "storage", "client"]),
   output: z.string(),
   trellisUrl: z.url(),
   httpUrl: z.url().optional(),
@@ -17,7 +18,7 @@ export const WorkerOptions = z.object({
       .number()
       .int()
       .positive()
-      .max(64 * 1024 * 1024),
+      .max(512 * 1024 * 1024),
   ),
   sessionCounts: z.array(z.number().int().positive()),
   idleSeconds: z.number().positive(),
@@ -36,11 +37,15 @@ export type Sample = {
   warmup?: boolean;
   dataFrames?: number;
   maxFrameBytes?: number;
+  windowFrames?: number;
+  windowBytes?: number;
   startedUnixMs: number;
   durationMs: number;
   bytes?: number;
   setupMs?: number;
   firstByteMs?: number;
+  payloadSuppliedMs?: number;
+  committedMs?: number;
   connectMs?: number;
   firstRpcMs?: number;
   cancellationMs?: number;
@@ -57,7 +62,42 @@ export type Sample = {
 
 /** Deterministic binary fixture; generation is outside timed transfer work. */
 export function payload(size: number): Uint8Array<ArrayBuffer> {
-  return Uint8Array.from({ length: size }, (_, index) => index % 251);
+  const bytes = new Uint8Array(size);
+  for (let index = 0; index < size; index++) bytes[index] = index % 251;
+  return bytes;
+}
+
+/** Repeat the binary fixture with bounded immutable chunks, independent of size. */
+export async function* payloadChunks(
+  size: number,
+  chunkBytes = 64 * 1024,
+): AsyncGenerator<Uint8Array> {
+  if (
+    !Number.isSafeInteger(size) ||
+    size < 0 ||
+    !Number.isSafeInteger(chunkBytes) ||
+    chunkBytes < 1
+  ) {
+    throw new Error("Invalid streaming fixture size");
+  }
+  const pattern = payload(chunkBytes + 250);
+  for (let offset = 0; offset < size; offset += chunkBytes) {
+    const start = offset % 251;
+    yield pattern.subarray(start, start + Math.min(chunkBytes, size - offset));
+  }
+}
+
+/** Hash a streamed body without retaining delivered chunks. */
+export async function streamDigest(
+  source: AsyncIterable<Uint8Array>,
+): Promise<{ size: number; digest: string }> {
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of source) {
+    size += chunk.length;
+    hash.update(chunk);
+  }
+  return { size, digest: hash.digest("hex") };
 }
 
 /** SHA-256 of a completed body, for independent transfer integrity verification. */
@@ -120,6 +160,8 @@ export function summarize(samples: Sample[]) {
             "firstRpcMs",
             "setupMs",
             "firstByteMs",
+            "payloadSuppliedMs",
+            "committedMs",
             "cancellationMs",
             "schedulerDelayMs",
             "documentTtfbMs",

@@ -4,6 +4,10 @@ Run from the repository root on Linux. This uses the ordinary production server,
 real NATS/JetStream, generated clients, and the existing testkit for isolated
 provisioning. Execution does **not** build executables.
 
+See [Streaming Transfer performance](TRANSFER_PERFORMANCE.md) for measured
+before/after results, Live latency tradeoffs, and the separately proposed window
+negotiation follow-up.
+
 ```sh
 cargo build --release -p trellis-server -p trellis-cli
 cargo xtask install
@@ -120,6 +124,54 @@ reached. Drops fail the run. Do not compare different arrival-rate
 configurations as if they measure identical workloads.
 
 ## Workloads
+
+### Large-object streaming Transfer measurements
+
+`node --experimental-transform-types tools/perf/transfer.ts
+--output=benchmarks/runtime/results/baseline --samples=3 --warmups=1` reuses this
+runner's focused Transfer lane, with 8 MiB and 128 MiB objects. Override `--sizes`
+for larger objects (up to the existing 512 MiB Operation upload limit). Fixture production, HTTP bodies, persisted
+read-back and hashing stream with bounded buffers, rather than retaining objects.
+The Rust lane also streams uploads, downloads and HTTP bodies, and measures
+isolated backend reads/writes. Native per-transfer CPU windows are distinct from
+the mixed-process startup window.
+
+Storage-only measurements run in a finite, separately admitted worker after
+provider readiness. Repeated large-object rounds do not consume the startup
+deadline; a failed storage worker fails the run and leaves its diagnostic logs.
+
+The focused TypeScript Transfer lane also records 30 idle Live first-frame
+probes at a 50 ms offered interval, then runs one upload and one download of the
+largest configured object simultaneously. Both payloads and the persisted
+Operation result are verified. Live probes repeat only while DATA is active
+(after download delivery and upload source supply have started, before download
+EOF and upload Transfer commit). Their durations include client scheduler delay;
+the mixed CPU window covers both complete file workflows plus the probes. Short
+objects may finish before 30 loaded probes fit; counts remain visible and the
+report does not invent tail percentiles. This is Live **opening/first-frame**
+responsiveness, not steady-feed update latency, and is not an HTTP-equivalent or
+native Rust Live measurement. It adds no speed-based pass/fail threshold.
+
+Raw NATS additionally compares the same 64 KiB payloads with 16 versus 64
+outstanding frames under the same 4 MiB byte cap. This separates frame-count
+pressure from the larger-frame comparison. The 64-frame case is an unsigned
+diagnostic control, **not** a change to Trellis v1 limits or a proposed public
+tuning knob. Samples retain both requested window limits.
+
+Reports distinguish source exhaustion (not delivery), authenticated Transfer
+commit, and full read-back-verified Operation completion. Production wait metrics
+are retained in `metrics-client.json` and `metrics-provider.json` (Rust also emits
+`metrics-resume.json`); they separate credit waits from backend message waits.
+All values include warmups and setup unless the file explicitly scopes them.
+Periodic resource sampling reports observed memory peaks, not allocator counts.
+
+Use `--diagnostics` for a **separate diagnostic run**. Its passive privileged
+broker observer records actual DATA size distributions, Object Store publish-to-
+ACK timings, fetch-to-first-response timings and consumer INFO counts in
+`transfer-diagnostics.json`. Only bounded aggregates are retained, never bodies
+or credentials. An observer adds a copy of broker traffic: compare only runs
+with matching diagnostic settings, and use unobserved runs for throughput claims.
+Broker ACK timing is not fsync latency; a fetch's first response can be a status.
 
 - Fresh password login through first authorized RPC, first-process SDK
   initialization, session resume, and logout.

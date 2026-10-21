@@ -1,10 +1,12 @@
 //! Same-language native SDK and HTTP performance workloads.
+mod metrics;
 use axum::{
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    body::Body,
+    extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
+use futures_util::StreamExt;
 use performance_trellis::apis::performance_trellis_performance_v1::{operations, rpc};
 use performance_trellis::{
     apps::performance_trellis_caller::{Client, Request},
@@ -17,9 +19,12 @@ use std::{
     collections::HashMap,
     io::Write as _,
     path::PathBuf,
+    pin::Pin,
+    task::{Context, Poll},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio_util::io::ReaderStream;
 use trellis_rs::{
     auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient},
     client::{OperationState, UserConnectOptions},
@@ -40,7 +45,10 @@ struct Options {
     http_url: Option<String>,
     samples: usize,
     calls: usize,
+    cpu_ticks: u64,
     sizes: Vec<usize>,
+    #[serde(default)]
+    warmups: usize,
     #[serde(default)]
     provider_index: usize,
 }
@@ -55,6 +63,10 @@ struct Sample {
     bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    warmup: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    committed_ms: Option<f64>,
 }
 fn now() -> u128 {
     SystemTime::now()
@@ -62,20 +74,109 @@ fn now() -> u128 {
         .expect("clock before Unix epoch")
         .as_millis()
 }
-fn payload(size: usize) -> Vec<u8> {
-    (0..size).map(|index| (index % 251) as u8).collect()
+struct Payload {
+    offset: usize,
+    size: usize,
+    pattern: Vec<u8>,
 }
-fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+impl Payload {
+    fn new(size: usize) -> Self {
+        Self {
+            offset: 0,
+            size,
+            pattern: (0..(64 * 1024 + 250))
+                .map(|index| (index % 251) as u8)
+                .collect(),
+        }
+    }
+}
+impl AsyncRead for Payload {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let count = buffer
+            .remaining()
+            .min(self.size - self.offset)
+            .min(64 * 1024);
+        let start = self.offset % 251;
+        buffer.put_slice(&self.pattern[start..start + count]);
+        self.offset += count;
+        Poll::Ready(Ok(()))
+    }
+}
+#[derive(Default)]
+struct Hasher {
+    hash: Sha256,
+    size: u64,
+}
+impl Hasher {
+    fn digest(&self) -> String {
+        format!("{:x}", self.hash.clone().finalize())
+    }
+}
+impl AsyncWrite for Hasher {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        bytes: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.hash.update(bytes);
+        self.size += bytes.len() as u64;
+        Poll::Ready(Ok(bytes.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+async fn snapshot_resources(options: &Options) -> Result<Vec<Value>, Error> {
+    let mut processes: Vec<Value> =
+        serde_json::from_slice(&tokio::fs::read(options.output.join("processes.json")).await?)?;
+    processes.push(json!({ "pid": std::process::id(), "role": "load-generator" }));
+    let mut rows = Vec::new();
+    for process in processes {
+        let pid = process["pid"].as_u64().ok_or("process PID missing")?;
+        let stat = tokio::fs::read_to_string(format!("/proc/{pid}/stat")).await?;
+        let stat: Vec<_> = stat
+            .rsplit_once(") ")
+            .ok_or("invalid proc stat")?
+            .1
+            .split_whitespace()
+            .collect();
+        let memory = tokio::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).await?;
+        let mut row = json!({ "pid": pid, "role": process["role"], "startTicks": stat[19].parse::<u64>()?, "userCpuSeconds": stat[11].parse::<f64>()? / options.cpu_ticks as f64, "systemCpuSeconds": stat[12].parse::<f64>()? / options.cpu_ticks as f64 });
+        for (source, key) in [("Rss:", "rssKiB"), ("Pss:", "pssKiB")] {
+            row[key] = json!(memory
+                .lines()
+                .find(|line| line.starts_with(source))
+                .ok_or("missing proc memory")?
+                .split_whitespace()
+                .nth(1)
+                .ok_or("invalid proc memory")?
+                .parse::<u64>()?);
+        }
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .init();
     let mut input = String::new();
     tokio::io::stdin().read_to_string(&mut input).await?;
     let options: Options = serde_json::from_str(&input)?;
+    let metrics = metrics::install(&options.output, &options.role);
     match options.role.as_str() {
-        "provider" => {
+        "provider" | "storage" => {
             let server = discover_native_oauth(&options.trellis_url).await?;
             let mut service = Participant::connect(ServiceConnectOptions::new(
                 server.nats_servers,
@@ -90,8 +191,65 @@ async fn main() -> Result<(), Error> {
                 .files()
                 .cloned()
                 .ok_or("store unavailable")?;
+            if options.role == "storage" {
+                let mut storage_samples = Vec::new();
+                for size in &options.sizes {
+                    let mut expected = Hasher::default();
+                    tokio::io::copy(&mut Payload::new(*size), &mut expected).await?;
+                    for index in 0..(options.samples + options.warmups) {
+                        for write in [true, false] {
+                            let started_unix_ms = now();
+                            let started = Instant::now();
+                            let key = format!("diagnostic-{size}");
+                            if write {
+                                files
+                                    .write_from(&key, Payload::new(*size), Some(*size as u64))
+                                    .await?;
+                            }
+                            let written_ms = started.elapsed().as_secs_f64() * 1000.0;
+                            let mut stored = Hasher::default();
+                            files
+                                .read_into(&key, &mut stored)
+                                .await?
+                                .ok_or("diagnostic object missing")?;
+                            if stored.size != *size as u64 || stored.digest() != expected.digest() {
+                                return Err("corrupt storage diagnostic".into());
+                            }
+                            storage_samples.push(Sample {
+                                scenario: if write {
+                                    "rust/backend-write"
+                                } else {
+                                    "rust/backend-read"
+                                }
+                                .into(),
+                                transport: "store",
+                                started_unix_ms,
+                                duration_ms: if write {
+                                    written_ms
+                                } else {
+                                    started.elapsed().as_secs_f64() * 1000.0
+                                },
+                                bytes: Some(*size),
+                                error: None,
+                                warmup: index < options.warmups,
+                                committed_ms: None,
+                            });
+                        }
+                    }
+                    files.delete(&format!("diagnostic-{size}")).await?;
+                }
+                tokio::fs::write(
+                    options.output.join("native-store-samples.json"),
+                    serde_json::to_vec_pretty(&storage_samples)?,
+                )
+                .await?;
+                metrics.shutdown()?;
+                return Ok(());
+            }
             for size in &options.sizes {
-                files.write(&size.to_string(), payload(*size)).await?;
+                files
+                    .write_from(&size.to_string(), Payload::new(*size), Some(*size as u64))
+                    .await?;
             }
             Provider::new(&mut service)
                 .performance_trellis_performance_v1()
@@ -139,7 +297,7 @@ async fn main() -> Result<(), Error> {
                             .await?;
                         Ok(rpc::DownloadOutput {
                             response: input,
-                            transfer: Some(transfer.into()),
+                            transfer: Some(transfer),
                         })
                     }
                 });
@@ -152,19 +310,15 @@ async fn main() -> Result<(), Error> {
                             .open_staged_upload()
                             .await?
                             .ok_or_else(|| ServerError::Nats("staged upload missing".into()))?;
-                        let mut body = Vec::new();
-                        reader
-                            .read_to_end(&mut body)
-                            .await
-                            .map_err(|e| ServerError::Nats(e.to_string()))?;
                         let key = format!("upload-{}", input.value);
-                        files.write(&key, body).await?;
-                        let stored = files
-                            .read(&key)
+                        files.write_from(&key, &mut reader, None).await?;
+                        let mut stored = Hasher::default();
+                        files
+                            .read_into(&key, &mut stored)
                             .await?
                             .ok_or_else(|| ServerError::Nats("persisted upload missing".into()))?;
                         op.complete(operations::UploadOutput {
-                            value: digest(&stored),
+                            value: stored.digest(),
                             extra: Default::default(),
                         })
                         .await?;
@@ -178,15 +332,17 @@ async fn main() -> Result<(), Error> {
                 b"{\"ready\":true}",
             )
             .await?;
-            service.run().await?;
+            let mut stop =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            tokio::select! { result = service.run() => result?, _ = stop.recv() => {} }
         }
         "http" => {
             for size in &options.sizes {
-                tokio::fs::write(
-                    options.output.join(format!("http-body-{size}")),
-                    payload(*size),
-                )
-                .await?;
+                let mut file =
+                    tokio::fs::File::create(options.output.join(format!("http-body-{size}")))
+                        .await?;
+                tokio::io::copy(&mut Payload::new(*size), &mut file).await?;
+                file.flush().await?;
             }
             let router =
                 Router::new()
@@ -200,8 +356,9 @@ async fn main() -> Result<(), Error> {
                         "/download/{size}",
                         get(
                             |State(output): State<PathBuf>, Path(size): Path<usize>| async move {
-                                tokio::fs::read(output.join(format!("http-body-{size}")))
+                                tokio::fs::File::open(output.join(format!("http-body-{size}")))
                                     .await
+                                    .map(|file| Body::from_stream(ReaderStream::new(file)))
                                     .map_err(|e| {
                                         (
                                             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -216,21 +373,22 @@ async fn main() -> Result<(), Error> {
                         post(
                             |State(output): State<PathBuf>,
                              Path(key): Path<String>,
-                             body: Bytes| async move {
-                                let path = output.join(format!("http-upload-{key}"));
-                                tokio::fs::write(&path, body).await.map_err(|e| {
-                                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                                })?;
-                                let stored = tokio::fs::read(path).await.map_err(|e| {
-                                    (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                                })?;
-                                Ok::<_, (axum::http::StatusCode, String)>(Json(
-                                    json!({ "value": digest(&stored) }),
-                                ))
+                             body: Body| async move {
+                                 let path = output.join(format!("http-upload-{key}"));
+                                 let work: Result<_, Error> = async {
+                                     let mut file = tokio::fs::File::create(&path).await?;
+                                     let mut stream = body.into_data_stream();
+                                     while let Some(chunk) = stream.next().await { file.write_all(&chunk?).await?; }
+                                     file.flush().await?;
+                                     drop(file);
+                                     let mut stored = Hasher::default();
+                                     tokio::io::copy(&mut tokio::fs::File::open(path).await?, &mut stored).await?;
+                                     Ok(Json(json!({ "value": stored.digest() })))
+                                 }.await;
+                                 work.map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
                             },
                         ),
                     )
-                    .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
                     .with_state(options.output.clone());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             tokio::fs::write(
@@ -244,6 +402,7 @@ async fn main() -> Result<(), Error> {
         }
         "client" | "resume" => {
             let mut samples = Vec::new();
+            let mut windows = Vec::new();
             let started = Instant::now();
             let unix = now();
             let server = discover_native_oauth(&options.trellis_url).await?;
@@ -281,14 +440,11 @@ async fn main() -> Result<(), Error> {
                 std::io::stdout().flush()?;
                 device.complete().await?
             };
-            let client = Client::from_generated(
-                trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
-                    server.nats_servers,
-                    30_000,
-                    session,
-                ))
-                .await?,
-            );
+            let streaming_client = trellis_rs::generated::Client::connect_user(
+                UserConnectOptions::new(server.nats_servers, 30_000, session),
+            )
+            .await?;
+            let client = Client::from_generated(streaming_client.clone());
             let api = client.performance_trellis_performance_v1();
             let reply = api
                 .echo(&rpc::EchoInput {
@@ -311,6 +467,8 @@ async fn main() -> Result<(), Error> {
                 duration_ms: started.elapsed().as_secs_f64() * 1000.0,
                 bytes: None,
                 error: None,
+                warmup: false,
+                committed_ms: None,
             });
             if options.role == "resume" {
                 tokio::fs::write(
@@ -370,13 +528,16 @@ async fn main() -> Result<(), Error> {
                         duration_ms: started.elapsed().as_secs_f64() * 1000.0,
                         bytes: None,
                         error: result.err().map(|e| e.to_string()),
+                        warmup: false,
+                        committed_ms: None,
                     });
                 }
             }
             for size in &options.sizes {
-                let body = payload(*size);
-                let expected = digest(&body);
-                for index in 0..options.samples {
+                let mut expected_hash = Hasher::default();
+                tokio::io::copy(&mut Payload::new(*size), &mut expected_hash).await?;
+                let expected = expected_hash.digest();
+                for index in 0..(options.samples + options.warmups) {
                     for transport in ["trellis", "http"] {
                         for upload in [false, true] {
                             let scenario = if upload {
@@ -389,8 +550,10 @@ async fn main() -> Result<(), Error> {
                                 format!("{transport}/{scenario}/{size}"),
                             )
                             .await?;
+                            let before = snapshot_resources(&options).await?;
                             let started = Instant::now();
                             let unix = now();
+                            let mut committed_ms = None;
                             let result: Result<(), Error> = async {
                                 let actual = if upload {
                                     let key = format!("{size}-{index}");
@@ -402,7 +565,9 @@ async fn main() -> Result<(), Error> {
                                                 extra: Default::default(),
                                             })
                                             .await?;
-                                        handle.upload(&body).await?;
+                                        handle.upload_from(&mut Payload::new(*size)).await?;
+                                        committed_ms =
+                                            Some(started.elapsed().as_secs_f64() * 1000.0);
                                         let completed = handle.wait().await?;
                                         if completed.state != OperationState::Completed {
                                             return Err("upload not completed".into());
@@ -416,7 +581,9 @@ async fn main() -> Result<(), Error> {
                                                 .as_deref()
                                                 .ok_or("HTTP URL missing")?
                                         ))
-                                        .body(body.clone())
+                                        .body(reqwest::Body::wrap_stream(ReaderStream::new(
+                                            Payload::new(*size),
+                                        )))
                                         .send()
                                         .await?
                                         .error_for_status()?
@@ -433,17 +600,19 @@ async fn main() -> Result<(), Error> {
                                             extra: Default::default(),
                                         })
                                         .await?;
-                                    let bytes = client
-                                        .download_transfer(
+                                    let mut received = Hasher::default();
+                                    streaming_client
+                                        .download_transfer_into(
                                             &reply.transfer.ok_or("download grant missing")?,
+                                            &mut received,
                                         )
                                         .await?;
-                                    if bytes.len() != *size {
+                                    if received.size != *size as u64 {
                                         return Err("download length mismatch".into());
                                     }
-                                    digest(&bytes)
+                                    received.digest()
                                 } else {
-                                    let bytes = http
+                                    let mut response = http
                                         .get(format!(
                                             "{}/download/{size}",
                                             options
@@ -453,13 +622,15 @@ async fn main() -> Result<(), Error> {
                                         ))
                                         .send()
                                         .await?
-                                        .error_for_status()?
-                                        .bytes()
-                                        .await?;
-                                    if bytes.len() != *size {
+                                        .error_for_status()?;
+                                    let mut received = Hasher::default();
+                                    while let Some(chunk) = response.chunk().await? {
+                                        received.write_all(&chunk).await?;
+                                    }
+                                    if received.size != *size as u64 {
                                         return Err("HTTP download length mismatch".into());
                                     }
-                                    digest(&bytes)
+                                    received.digest()
                                 };
                                 if actual != expected {
                                     return Err("transfer digest mismatch".into());
@@ -474,7 +645,14 @@ async fn main() -> Result<(), Error> {
                                 duration_ms: started.elapsed().as_secs_f64() * 1000.0,
                                 bytes: Some(*size),
                                 error: result.err().map(|e| e.to_string()),
+                                warmup: index < options.warmups,
+                                committed_ms,
                             });
+                            let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+                            let after = snapshot_resources(&options).await?;
+                            if index >= options.warmups {
+                                windows.push(json!({ "scenario": scenario, "transport": transport, "calls": 1, "bytes": size, "durationMs": duration_ms, "before": before, "after": after }));
+                            }
                             // Checkpoint raw failures even if a later workload or process fails.
                             tokio::fs::write(
                                 options.output.join("native-samples.json"),
@@ -490,11 +668,17 @@ async fn main() -> Result<(), Error> {
                 serde_json::to_vec_pretty(&samples)?,
             )
             .await?;
+            tokio::fs::write(
+                options.output.join("native-windows.json"),
+                serde_json::to_vec_pretty(&windows)?,
+            )
+            .await?;
             if samples.iter().any(|sample| sample.error.is_some()) {
                 return Err("native workload failed; raw samples retained".into());
             }
         }
         _ => return Err("unknown benchmark role".into()),
     }
+    metrics.shutdown()?;
     Ok(())
 }

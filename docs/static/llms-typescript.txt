@@ -499,6 +499,13 @@ credited frame represented rather than one event per frame. Grants hide physical
 storage protocols and credentials. Authority growth retains an in-flight
 transfer's admitting generation; physical disconnect interrupts it, and an
 uncommitted upload restarts from byte zero.
+Upload bodies accept ReadableStream<Uint8Array> and AsyncIterable<Uint8Array>.
+The runtime coalesces ready bytes without waiting to fill a frame and snapshots
+bounded blocks before advancing an iterator, so a producer may reuse a scratch
+buffer between chunks. Uint8Array/ArrayBuffer bodies remain caller-owned and
+must stay unchanged until upload settlement. Bounded SDK queues do not bound
+producer-provided backing buffers. Unchanged context reuse still verifies each
+frame's proof and current authority, expiry, revocation and coverage.
 The connection `timeout` covers transfer activation from transport acquisition
 through the provider reply, and separately bounds cancellation; it is not a body
 lifetime limit. A cancellation timeout releases local ownership but does not

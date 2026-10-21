@@ -500,6 +500,20 @@
       "boundaries": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600]
     },
     {
+      "name": "trellis.transfer.wait.duration",
+      "instrument": "Histogram<f64>",
+      "unit": "s",
+      "attributes": {
+        "trellis.direction": ["upload", "download", "send", "receive"],
+        "trellis.side": ["client", "provider", "store"],
+        "trellis.phase": ["credit", "storage_refill"],
+        "trellis.outcome": ["ok", "aborted"]
+      },
+      "owner": "Transfer sender or streaming store reader",
+      "observation": "Credit measures blocked capacity waits. Storage refill measures awaiting the next backend message, including buffered delivery and dispatch, not pure network RTT. No per-frame spans.",
+      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+    },
+    {
       "name": "trellis.transfer.wire.bytes",
       "instrument": "Counter<u64>",
       "unit": "By",

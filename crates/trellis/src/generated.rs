@@ -1295,12 +1295,24 @@ where
         &self,
         body: impl AsRef<[u8]>,
     ) -> Result<crate::client::FileInfo, crate::client::TrellisClientError> {
+        self.upload_from(&mut body.as_ref()).await
+    }
+
+    /// Stream the declared Operation upload without collecting the body in memory.
+    /// Success requires authenticated Transfer commit, not just source exhaustion.
+    pub async fn upload_from<R>(
+        &self,
+        reader: &mut R,
+    ) -> Result<crate::client::FileInfo, crate::client::TrellisClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + ?Sized,
+    {
         if !D::UPLOAD {
             return Err(crate::client::TrellisClientError::OperationProtocol(
                 "operation does not declare an upload transfer".to_owned(),
             ));
         }
-        self.inner.transfer(body).await
+        self.inner.transfer_from(reader).await
     }
 }
 

@@ -24,6 +24,7 @@ export async function snapshotResources(
         .trim()
         .split(/\s+/);
       const memory = await readFile(`${path}/smaps_rollup`, "utf8");
+      const status = await readFile(`${path}/status`, "utf8");
       return {
         pid,
         role,
@@ -32,6 +33,7 @@ export async function snapshotResources(
         systemCpuSeconds: Number(stat[12]) / ticks,
         rssKiB: Number(memory.match(/^Rss:\s+(\d+)/m)?.[1]),
         pssKiB: Number(memory.match(/^Pss:\s+(\d+)/m)?.[1]),
+        peakRssKiB: Number(status.match(/^VmHWM:\s+(\d+)/m)?.[1]),
       };
     }),
   );

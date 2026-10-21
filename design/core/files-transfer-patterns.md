@@ -261,6 +261,12 @@ MiB of newly consumed bytes, or 25 ms of pending consumption, with final credit
 during terminal handling. These are runtime protocol limits, not application
 knobs.
 
+When a frame's signed context digest matches the retained peer guard, reuse its
+verified immutable material rather than preparing the same replacement again.
+Every frame still verifies its signature/proof and checks current authority,
+expiry, revocation, coverage and issuer trust. A changed digest takes the full
+replacement path and commits only after successful frame authentication.
+
 ### Flow Control Is Not Durability
 
 An upload's authenticated completion follows all DATA on the same upload data
@@ -290,7 +296,42 @@ all DATA on the same download subject. Both endpoints verify final logical
 size/digest, and the consumer sends final credit/end acknowledgement before
 releasing session ownership. No per-frame pull RPC remains.
 
+Rust senders coalesce immediately ready short reads up to the negotiated frame
+limit. Buffers start at at most 64 KiB and grow only as ready data arrives, then
+move directly into immutable frame payloads. Only the first read may suspend:
+an available prefix is sent rather than waiting for a full bulk frame or EOF.
+This also keeps source reads cancellation-safe inside the session's select loop.
+
+TypeScript caps ready-frame formation at the smaller of the negotiated limit and
+256 KiB. This can fill the default 4 MiB / 16-frame window while bounding each
+frame's synchronous byte work; measured concurrent Live openings regressed with
+larger ready frames. This is private formation policy, not a timed flush or public
+tuning field. A standard byte-sized Web Stream queue allows up to one formed
+frame of source prefetch (plus one frame-sized block). The shared upload/download
+framer combines only chunks already queued, keeps views when no combination is
+needed, and never waits to fill a frame. Streaming source blocks are snapshotted
+before advancing an iterator that may reuse its scratch buffer; even an
+oversized producer chunk is copied only in frame-sized pieces. Store-reader cancellation and teardown
+remain session-owned; an application's uninterruptible iterator cannot pin SDK
+cleanup. Producer-provided backing buffers are not an SDK allocation guarantee.
+
 ### Store Backing
+
+The Rust JetStream writer pipelines at most eight chunks of at most 128 KiB
+(1 MiB of outstanding payload per writer). It preserves native Object Store
+metadata and SHA-256 and awaits every chunk ACK before publishing metadata.
+Source errors and pre-commit cancellation retain the admitting transport through
+owned partial-chunk cleanup. Once metadata publication can have escaped, chunks
+are retained and errors remain commit-indeterminate; confirmed commits with failed
+old-version cleanup remain distinguishable from failed writes. A chunk ACK is the
+configured JetStream durability boundary, not an additional fsync guarantee.
+
+Rust and TypeScript readers retain finite byte-capped batches, fetched on
+application demand. Paused readers must not drain the object or discard queued
+chunks on an SDK expiry timer. Consumer loss recreates from the last yielded
+stream sequence, not the broker's prefetched cursor. TypeScript queries consumer
+INFO only to reconcile a failed or empty pull. Independent overlapping fetch
+inboxes cannot be assumed to receive contiguous ranges from one consumer.
 
 Rules:
 
@@ -361,6 +402,10 @@ the endpoint that owns the actual work. Buffered bytes follow retained raw
 payload ownership and are released on consumption or cleanup. Labels are bounded
 logical direction/side/outcome values, never transfer ids, subjects, principals,
 object keys, or arbitrary errors. There are no per-frame spans.
+
+`trellis.transfer.wait.duration` separates blocked sender credit waits from
+streaming store refill waits. Refill measures awaiting the next backend message,
+including buffered delivery and local dispatch; it is not pure network RTT.
 
 ### Non-Goals
 

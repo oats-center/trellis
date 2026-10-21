@@ -30,6 +30,20 @@ pub(crate) fn observation(
     )
 }
 
+pub(crate) fn wait(
+    direction: TransferDirection,
+    side: &'static str,
+    phase: &'static str,
+) -> crate::telemetry::lifecycle::Observation {
+    let mut attrs = attributes(direction, side).to_vec();
+    attrs.push(KeyValue::new("trellis.phase", phase));
+    crate::telemetry::lifecycle::Observation::start(
+        crate::telemetry::instruments::DurationFamily::TransferWait,
+        attrs,
+        "aborted",
+    )
+}
+
 pub(crate) fn frame(descriptor: &TransferFrameDescriptor, payload: &[u8], side: &'static str) {
     let attrs = attributes(descriptor.direction, side);
     if descriptor.kind == TransferFrameKind::Data {

@@ -54,6 +54,7 @@ const metadataSchema = z.object({
   maxOutstanding: z.number(),
   lane: z.string().default("typescript"),
   providerCount: z.number().default(1),
+  diagnostics: z.boolean().default(false),
   cpuModel: z.string(),
   logicalCpus: z.number().nullable(),
   cgroup: z.record(z.string(), z.string().nullable()),
@@ -75,6 +76,9 @@ const lines = [
   "**Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a lower bound, not a security-equivalent comparison. Transfer storage differs: Trellis uses JetStream; HTTP uses filesystem storage.",
   `Lane: **${metadata.lane}**; provider replicas: **${metadata.providerCount}**.`,
   `Warmup rounds: **${metadata.warmups}**, retained in raw samples but excluded from percentiles.`,
+  metadata.diagnostics
+    ? "**Passive broker observer enabled: extra payload copies affect throughput and CPU. Compare diagnostic runs only with matching diagnostic runs.**"
+    : "Broker observer disabled for throughput measurement.",
   metadata.lane === "transfer"
     ? "Store diagnostics stay runtime-private. Backend write excludes read-back verification; backend read includes hashing. Raw NATS is an unsigned transport lower bound on the same broker, with fixed diagnostic-only windows, not a Trellis protocol or security equivalent. Upload includes staging, the handler's second persisted store write/read-back, and Operation completion; subtracting backend write does not isolate final Operation commit."
     : "",
@@ -111,6 +115,22 @@ for (const row of results.summary) {
     } | ${row.p95Ms?.toFixed(3) ?? "—"} | ${
       reference.p95Ms?.toFixed(3) ?? "—"
     } |`,
+  );
+}
+lines.push(
+  "",
+  "## Streaming throughput and completion boundaries",
+  "",
+  "Upload total includes staging, the second service store write, read-back verification and durable Operation completion. Committed is the caller's authenticated Transfer success; source exhausted is NOT delivery or durability. Download total includes EOF and digest verification. HTTP has no Transfer/Operation commit and does not fsync.",
+  "",
+  "| Workload | MiB | Total MiB/s | Source exhausted ms | Transfer committed ms | Total ms |",
+  "|---|---:|---:|---:|---:|---:|",
+);
+for (const row of results.summary) {
+  const bytes = Number(row.name.split("/").at(-2));
+  if (!bytes || row.medianMs === null) continue;
+  lines.push(
+    `| ${row.name} | ${(bytes / 1048576).toFixed(2)} | ${(bytes / 1048576 / (row.medianMs / 1000)).toFixed(2)} | ${row.phases.payloadSuppliedMs?.toFixed(3) ?? "—"} | ${row.phases.committedMs?.toFixed(3) ?? "—"} | ${row.medianMs.toFixed(3)} |`,
   );
 }
 lines.push(
@@ -194,8 +214,8 @@ lines.push(
   "",
   "CPU is per **attempt**, with failure counts above. Quantization is up to two CPU ticks per process/window; short windows are noisy. Server totals include provider + NATS + Trellis for Trellis, and HTTP provider for HTTP.",
   "",
-  "| Workload / process | Attempts | CPU ms / attempt | Peak endpoint PSS MiB |",
-  "|---|---:|---:|---:|",
+  "| Workload / process | Attempts | CPU ms / attempt | CPU % of one core | Peak endpoint PSS MiB |",
+  "|---|---:|---:|---:|---:|",
 );
 const windows = Map.groupBy(
   results.windows,
@@ -279,7 +299,9 @@ for (const [name, group] of windows) {
     lines.push(
       `| ${name} / ${role} | ${value.calls} | ${(
         value.cpuMs / value.calls
-      ).toFixed(4)} | ${(value.pssKiB / 1024).toFixed(2)} |`,
+      ).toFixed(
+        4,
+      )} | ${((100 * value.cpuMs) / group.reduce((sum, window) => sum + window.durationMs, 0)).toFixed(2)} | ${(value.pssKiB / 1024).toFixed(2)} |`,
     );
     bencher[`resources/${name}/${role}`] = {
       cpu_ms_per_attempt: { value: Math.max(0, value.cpuMs / value.calls) },
@@ -308,6 +330,28 @@ const timeline = (await readFile(`${input}/resources.jsonl`, "utf8"))
   .trim()
   .split("\n")
   .map((line) => timelineRow.parse(JSON.parse(line)));
+lines.push(
+  "",
+  "## Sampled transfer memory peaks",
+  "",
+  "Whole-process peaks observed at 250 ms intervals; brief peaks may be missed. Allocator caches and earlier setup remain included. Not per-transfer allocation measurements.",
+  "",
+  "| Phase / process | Peak sampled RSS MiB | Peak sampled PSS MiB |",
+  "|---|---:|---:|",
+);
+for (const [phase, rows] of Map.groupBy(
+  timeline.filter((row) => /\/(?:rust\/)?(?:download|upload)/.test(row.phase)),
+  (row) => row.phase,
+)) {
+  for (const [role, processes] of Map.groupBy(
+    rows.flatMap((row) => row.processes),
+    (process) => process.role,
+  )) {
+    lines.push(
+      `| ${phase} / ${role} | ${(Math.max(...processes.map((process) => process.RssKiB)) / 1024).toFixed(2)} | ${(Math.max(...processes.map((process) => process.PssKiB)) / 1024).toFixed(2)} |`,
+    );
+  }
+}
 lines.push(
   "",
   "## Idle session resource curve",
@@ -379,6 +423,7 @@ if (process.argv[3]) {
     "warmups",
     "lane",
     "providerCount",
+    "diagnostics",
     "sizes",
     "sessionCounts",
     "idleSeconds",

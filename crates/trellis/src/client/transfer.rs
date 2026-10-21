@@ -15,7 +15,7 @@ use futures_util::StreamExt;
 use sha2::{Digest as _, Sha256};
 use std::{collections::VecDeque, sync::atomic::Ordering};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt},
     sync::watch,
 };
 use trellis_protocol::transfer::*;
@@ -424,11 +424,12 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
     let mut hasher = Sha256::new();
     let observation = transfer::telemetry::observation(TransferDirection::Send, "client");
     let mut staged: Option<transfer::telemetry::Payload> = None;
-    let mut buffer = vec![0u8; active.max_frame as usize];
+    let mut credit_wait = None;
     let outcome = async {
         loop {
             if let Some(bytes) = &staged {
                 if window.validate_frame_slot(bytes.len() as u64, active.max_frame).is_ok() {
+                    if let Some(wait) = credit_wait.take() { crate::telemetry::lifecycle::Observation::finish(wait, "ok"); }
                     active.local.guard.reconcile().await.map_err(|e| fail(format!("upload local authority: {e:?}")))?;
                     active.peer.guard.check_now().map_err(|e| fail(format!("upload peer authority: {e:?}")))?;
                     let seq = window.next_frame_seq().map_err(|e| fail(format!("upload sequence: {e:?}")))?;
@@ -445,6 +446,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                     transferred = next;
                     continue;
                 }
+                credit_wait.get_or_insert_with(|| transfer::telemetry::wait(TransferDirection::Send, "client", "credit"));
             }
             if source_done && !complete_sent && staged.is_none() && !cancelled_sent {
                 let body = TransferComplete { format: TransferFormat::V1, kind: TransferCompleteKind::Complete, transfer_id: grant.transfer_id.clone(), final_seq: U64s::new(window.highest_sent.load(Ordering::Acquire)), size: transferred, digest: format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize())) };
@@ -465,10 +467,10 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                     cancelled_sent = true;
                     staged.take();
                 },
-                count = reader.read(&mut buffer), if !source_done && staged.is_none() && !cancelled_sent => {
-                    let count = count?;
-                    if count == 0 { source_done = true; }
-                    else { let mut frame = std::mem::replace(&mut buffer, vec![0u8; active.max_frame as usize]); frame.truncate(count); staged = Some(transfer::telemetry::Payload::new(Bytes::from(frame.into_boxed_slice()), TransferDirection::Send, "client-tx")); }
+                bytes = transfer::read_ready_frame(reader, active.max_frame as usize), if !source_done && staged.is_none() && !cancelled_sent => {
+                    let bytes = bytes?;
+                    if bytes.is_empty() { source_done = true; }
+                    else { staged = Some(transfer::telemetry::Payload::new(bytes, TransferDirection::Send, "client-tx")); }
                 },
                 message = active.signals.next() => {
                     let message = message.ok_or_else(|| fail("upload signal subscription closed"))?;
@@ -490,6 +492,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
             }
         }
     }.await;
+    drop(credit_wait);
     if outcome.is_err() && !cancelled_sent {
         let _ = publish_control(
             client,

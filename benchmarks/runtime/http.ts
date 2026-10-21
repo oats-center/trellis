@@ -1,10 +1,10 @@
 import { once } from "node:events";
 import { createReadStream, createWriteStream } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { text } from "node:stream/consumers";
 import { pipeline } from "node:stream/promises";
-import { digest, WorkerOptions } from "./model.ts";
+import { streamDigest, WorkerOptions } from "./model.ts";
 
 const options = WorkerOptions.parse(JSON.parse(await text(process.stdin)));
 const http = createServer((request, response) => {
@@ -53,11 +53,11 @@ const http = createServer((request, response) => {
         request,
         createWriteStream(`${options.output}/http-upload.bin`),
       );
-      const body = await readFile(`${options.output}/http-upload.bin`);
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({ size: body.length, digest: await digest(body) }),
+      const stored = await streamDigest(
+        createReadStream(`${options.output}/http-upload.bin`),
       );
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(stored));
       return;
     }
     response.writeHead(404).end("Not found");

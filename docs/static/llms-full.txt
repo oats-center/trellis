@@ -803,6 +803,15 @@ the transfer runtime separately verifies identity and authority.
 In-flight transfers pin their admitting transport generation;
 authority growth does not migrate them and physical disconnect interrupts them.
 
+Use streaming readers/bodies for large objects. The runtime combines only ready
+bytes rather than waiting for a full DATA frame; slow producers still deliver
+their available prefix. TypeScript prefetch snapshots bounded blocks before
+advancing an iterator that may reuse its scratch buffer. Caller-owned
+Uint8Array/ArrayBuffer upload bodies must remain unchanged until settlement;
+producer-provided backing buffers are not an SDK memory bound. Reusing an
+unchanged authority context never skips per-frame proofs, expiry, revocation,
+coverage, scope or provider checks.
+
 Transfers authenticate cancellation and completion and independently verify size
 and SHA-256. Frames are bounded by negotiated peer payload limits, up to 1 MiB.
 Credit follows downstream consumption, not durable persistence. Upload success

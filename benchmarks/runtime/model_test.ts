@@ -1,6 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Sample, summarize } from "./model.ts";
+import {
+  digest,
+  payload,
+  payloadChunks,
+  streamDigest,
+  type Sample,
+  summarize,
+} from "./model.ts";
+
+test("streaming fixtures preserve bytes and SHA-256 across short and final chunks", async () => {
+  for (const chunkBytes of [1, 251, 4093, 65536]) {
+    const size = 131073;
+    const expected = payload(size);
+    let offset = 0;
+    for await (const chunk of payloadChunks(size, chunkBytes)) {
+      assert.ok(chunk.length <= chunkBytes);
+      assert.deepEqual(chunk, expected.subarray(offset, offset + chunk.length));
+      offset += chunk.length;
+    }
+    assert.equal(offset, size);
+    assert.deepEqual(await streamDigest(payloadChunks(size, chunkBytes)), {
+      size,
+      digest: await digest(expected),
+    });
+  }
+});
 
 test("latency summaries retain failures and separate session cohorts", () => {
   const observed: Sample[] = [10, 30].map((durationMs) => ({
