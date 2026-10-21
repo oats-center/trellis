@@ -320,6 +320,7 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
             oauth_origin: "https://auth.example".into(),
             authority_lifetime_seconds: 60,
             clock_skew_seconds: 5,
+            oauth_admission_lifetime_seconds: 300,
             login_lifetime_seconds: 86400,
             enforcement_page_size: 2,
         },

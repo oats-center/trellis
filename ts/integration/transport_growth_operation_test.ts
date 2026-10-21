@@ -44,10 +44,11 @@ const PROVIDER_DEPLOYMENT = "tg-op-provider";
 /** Short lifetimes so growth crosses a real ordinary renewal quickly. */
 const runtimeOptions = {
   authorization: {
-    contextLifetimeSeconds: 80,
-    refreshLeadSeconds: 25,
+    contextLifetimeSeconds: 55,
+    refreshLeadSeconds: 12,
     refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 32,
+    minimumContextLifetimeSeconds: 20,
+    allowedClockSkewSeconds: 2,
   },
 };
 

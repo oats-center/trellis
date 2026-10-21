@@ -43,7 +43,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
         idempotencyKey: ulid(),
       });
       const expiresAt = codecs.timestamp.decode(
-        new Date(Date.now() + 105_000).toISOString(),
+        new Date(Date.now() + 25_000).toISOString(),
       );
       for (const capabilityId of adminParticipant.requiredCapabilities)
         await runtime.callAdminRpc("authCapabilityGrantsGrant", {
@@ -83,7 +83,7 @@ test("a non-renewing native attachment cannot outlive its required capability gr
             connection.isClosed() &&
             admittedConnections(await readRuntimeBrokerInventory(runtime), ids)
               .length === 0,
-          { timeoutMs: 115_000 },
+          { timeoutMs: 60_000 },
         );
         await closed;
       } finally {
@@ -93,10 +93,11 @@ test("a non-renewing native attachment cannot outlive its required capability gr
     },
     {
       authorization: {
-        contextLifetimeSeconds: 125,
+        contextLifetimeSeconds: 60,
         refreshLeadSeconds: 15,
         refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 46,
+        minimumContextLifetimeSeconds: 26,
+        allowedClockSkewSeconds: 2,
       },
     },
   );

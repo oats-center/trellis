@@ -698,6 +698,14 @@ export class TrellisTestRuntime implements AsyncDisposable {
           "auth-minimum-context-lifetime-seconds",
           options.authorization?.minimumContextLifetimeSeconds,
         ],
+        [
+          "auth-oauth-admission-lifetime-seconds",
+          options.authorization?.oauthAdmissionLifetimeSeconds,
+        ],
+        [
+          "auth-allowed-clock-skew-seconds",
+          options.authorization?.allowedClockSkewSeconds,
+        ],
       ] as const)
         if (value !== undefined) initArgs.push(`--${flag}`, String(value));
       if (

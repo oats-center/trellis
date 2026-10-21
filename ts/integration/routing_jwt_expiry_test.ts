@@ -35,6 +35,11 @@ test("expired OAuth admission cannot open a fresh NATS attachment", async () => 
         },
       );
       assert(verified.ok);
+      assert(
+        verified.admission.credential.expiresAt -
+          verified.admission.credential.issuedAt <= 18,
+        "the isolated runtime must issue the configured short-lived admission",
+      );
       try {
         const original = await session.auth.natsConnectOptions({
           inboxPrefix: connected.inboxPrefix,
@@ -85,6 +90,7 @@ test("expired OAuth admission cannot open a fresh NATS attachment", async () => 
         refreshLeadSeconds: 15,
         refreshJitterSeconds: 5,
         minimumContextLifetimeSeconds: 40,
+        oauthAdmissionLifetimeSeconds: 18,
       },
     },
   );

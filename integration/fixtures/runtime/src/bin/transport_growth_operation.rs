@@ -90,10 +90,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("TRELLIS_URL")?;
     let seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
-    let mut runtime = ProviderParticipant::connect(
-        trellis_runtime_acceptance::service_options(&url, &seed).await?,
-    )
-    .await?;
+    let mut options = trellis_runtime_acceptance::service_options(&url, &seed).await?;
+    if let Ok(interval) = std::env::var("TRELLIS_TEST_HEALTH_HEARTBEAT_MS") {
+        options = options.with_health_heartbeat_interval_ms(interval.parse()?);
+    }
+    let mut runtime = ProviderParticipant::connect(options).await?;
     if std::env::args().any(|argument| argument == "--jobs-preflight") {
         let (release, held) = tokio::sync::watch::channel(false);
         runtime

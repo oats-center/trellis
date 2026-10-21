@@ -14,6 +14,10 @@ export type TrellisControlPlaneAuthorization = {
   refreshLeadSeconds: number;
   refreshJitterSeconds: number;
   minimumContextLifetimeSeconds: number;
+  /** Signed OAuth admission lifetime for real NATS CONNECT. */
+  oauthAdmissionLifetimeSeconds: number;
+  /** Allowed skew for real signed authorization contexts. */
+  allowedClockSkewSeconds: number;
 };
 
 /** Provider input accepted by production bootstrap; secrets travel in private JSON files. */

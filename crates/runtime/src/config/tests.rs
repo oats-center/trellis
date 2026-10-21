@@ -558,6 +558,45 @@ registry_replicas = 1
 }
 
 #[test]
+fn oauth_admission_lifetime_defaults_and_enforces_bounds() {
+    let source = r#"
+[auth.authorization]
+issuer_signing_seed_file = "issuer.seed"
+context_lifetime_seconds = 60
+refresh_lead_seconds = 10
+refresh_jitter_seconds = 0
+minimum_context_lifetime_seconds = 15
+maximum_bootstrap_jwt_lifetime_seconds = 3600
+allowed_clock_skew_seconds = 2
+maximum_context_bytes = 16384
+maximum_permissions = 4096
+context_bucket = "contexts"
+registry_replicas = 1
+"#;
+    let parse = |value: Option<u64>| {
+        let configured = match value {
+            Some(seconds) => format!("{source}\noauth_admission_lifetime_seconds = {seconds}"),
+            None => source.to_owned(),
+        };
+        let config = RuntimeConfig::from_toml_str(&configured).expect("valid TOML");
+        config
+            .resolve_authorization()
+            .map(|auth| auth.oauth_admission_lifetime_seconds)
+    };
+    assert_eq!(parse(None).expect("old config remains valid"), 300);
+    assert_eq!(parse(Some(18)).expect("short admission is valid"), 18);
+    for value in [0, 301] {
+        assert!(matches!(
+            parse(Some(value)),
+            Err(ConfigError::InvalidAuthorizationConfig {
+                field: "oauth_admission_lifetime_seconds",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
 fn rejects_non_toml_config_path() {
     let directory = tempdir().expect("create temp directory");
     let path = directory.path().join("config.jsonc");

@@ -436,6 +436,7 @@ struct NativeConnectOptions<'a> {
     companion_descriptor: Option<crate::generated::CompanionDescriptor>,
     name: Option<&'a str>,
     timeout_ms: u64,
+    health_heartbeat_interval_ms: u64,
     kind: trellis_protocol::PrincipalKind,
 }
 
@@ -1119,6 +1120,15 @@ impl TrellisClient {
     pub async fn connect_service_with_contract(
         opts: ServiceConnectWithContractOptions<'_>,
     ) -> Result<Self, TrellisClientError> {
+        Self::connect_service_with_contract_with_health_interval(opts, None).await
+    }
+
+    /// Connect a service with an explicitly selected health-publishing interval.
+    pub(crate) async fn connect_service_with_contract_with_health_interval(
+        opts: ServiceConnectWithContractOptions<'_>,
+        health_heartbeat_interval_ms: Option<u64>,
+    ) -> Result<Self, TrellisClientError> {
+        let heartbeat_ms = health_heartbeat_interval_ms.unwrap_or(HEALTH_HEARTBEAT_INTERVAL_MS);
         Self::connect_native(NativeConnectOptions {
             nats_servers: opts.nats_servers,
             trust: opts.trust,
@@ -1128,6 +1138,7 @@ impl TrellisClient {
             companion_descriptor: None,
             name: opts.name,
             timeout_ms: opts.timeout_ms,
+            health_heartbeat_interval_ms: heartbeat_ms,
             kind: trellis_protocol::PrincipalKind::Service,
         })
         .await
@@ -1169,8 +1180,14 @@ impl TrellisClient {
             companion_descriptor,
             name,
             timeout_ms,
+            health_heartbeat_interval_ms,
             kind,
         } = opts;
+        if !(1_000..=600_000).contains(&health_heartbeat_interval_ms) {
+            return Err(TrellisClientError::Bootstrap(
+                "health heartbeat interval must be between 1000 and 600000 milliseconds".into(),
+            ));
+        }
         let identity = Arc::new(SessionAuth::from_seed_base64url(identity_seed)?);
         let (session_seed, _) = crate::auth::generate_session_keypair();
         let auth = SessionAuth::from_seed_base64url(&session_seed)?;
@@ -1248,7 +1265,7 @@ impl TrellisClient {
         let heartbeat = HealthHeartbeatConfig {
             service_name: name.unwrap_or(participant_id).to_owned(),
             started_at: now_rfc3339(),
-            publish_interval_ms: HEALTH_HEARTBEAT_INTERVAL_MS,
+            publish_interval_ms: health_heartbeat_interval_ms,
         };
         connected.service_bootstrap_binding = Some(CoreBootstrapBinding::new(
             BootstrapBinding {
@@ -1324,6 +1341,7 @@ impl TrellisClient {
             companion_descriptor: C::COMPANION,
             name: opts.name,
             timeout_ms: opts.timeout_ms,
+            health_heartbeat_interval_ms: HEALTH_HEARTBEAT_INTERVAL_MS,
             kind: trellis_protocol::PrincipalKind::Device,
         })
         .await

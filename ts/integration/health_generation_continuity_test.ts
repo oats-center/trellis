@@ -92,6 +92,7 @@ test("service health survives generation reaping and stop fences sampling", asyn
         const inventory = () =>
           completeBrokerInventory(system, {
             requiredServerIds: [g1.server],
+            onlyRequiredServers: true,
           });
 
         // An actual application health snapshot holds the finite publishing lease
@@ -196,10 +197,11 @@ test("service health survives generation reaping and stop fences sampling", asyn
     },
     {
       authorization: {
-        contextLifetimeSeconds: 125,
+        contextLifetimeSeconds: 60,
         refreshLeadSeconds: 15,
         refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 95,
+        minimumContextLifetimeSeconds: 26,
+        allowedClockSkewSeconds: 2,
       },
     },
   );
