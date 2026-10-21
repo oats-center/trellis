@@ -74,25 +74,28 @@ is no authorization-context file.
 
 ## Connect an app or agent
 
-Browser/CLI login produces a login session ID and session signing seed. A
-generated user participant wraps the public `UserConnectOptions` boundary:
+Native apps and agents authorize the user with OAuth Device Code. Discover the
+installation, open durable credential custody, and complete the user-facing code
+to obtain a `NativeOAuthSession`; a generated user participant wraps the public
+`UserConnectOptions` boundary:
 
 ```rust
-use trellis_rs::client::{UserConnectOptions, UserSessionCredentials};
+use trellis_rs::auth::{discover_native_oauth, NativeOAuthClient};
+use trellis_rs::client::UserConnectOptions;
 
-let options = UserConnectOptions::new(
-    "http://127.0.0.1:8080",
-    30_000,
-    UserSessionCredentials {
-        login_session_id,
-        session_key_seed_base64url: session_seed,
-    },
-    "acme.orders-caller",
-);
+let server = discover_native_oauth("https://auth.example.com").await?;
+let client = NativeOAuthClient::open(custody_dir, scope, server.trust.clone()).await?;
+let device = client.start_device(&authorization_details).await?;
+println!("Open {} and enter {}", device.verification_uri(), device.user_code());
+let session = device.complete().await?;
+let options = UserConnectOptions::new(server.nats_servers, 30_000, session);
 ```
 
-Connection performs context refresh before the first physical CONNECT. Do not
-assemble route credentials, NATS permissions, or semantic evidence manually.
+After a restart, `NativeOAuthClient::resume()` rotates the retained credential
+for a fresh runtime key instead of repeating consent. The connection presents
+the signed OAuth admission in CONNECT and then retrieves its signed authority.
+Do not assemble route credentials, NATS permissions, or semantic evidence
+manually.
 
 ## Connect a device
 
@@ -117,8 +120,8 @@ let connected = connect(
 Use `DeviceActivationOptions` with `check_device_activation` or
 `wait_for_device_activation` before connecting when review is required. The
 helper reuses one attempt identity/session key while polling. Approved devices
-bootstrap through `/bootstrap/device`; deployment and instance IDs are resolved
-server-side.
+connect with a signed provisioned admission in NATS CONNECT; deployment and
+instance IDs are resolved server-side.
 
 ## Call RPCs
 

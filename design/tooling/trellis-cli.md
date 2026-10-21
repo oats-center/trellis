@@ -15,13 +15,15 @@ Status: authoritative command and project-tooling model after WO-02.
 ```text
 trellis add <package> [--version <requirement>]
 trellis rm <package>
+trellis check
 trellis update
 trellis install
 trellis generate
 trellis publish
 ```
 
-`add`, `rm`, and `update` resolve the source-package graph and write an exact
+`check` parses, resolves, and validates the local source package without
+writing outputs. `add`, `rm`, and `update` resolve the source-package graph and write an exact
 `trellis.lock`. `install` recreates language outputs from that lock. `generate`
 compiles native Trellis IDL and stages all generated output before atomically
 replacing the last-good tree. `publish` pushes the source bundle and frozen
@@ -91,6 +93,20 @@ operations.
 Provisioning returns one-use service/device material once. The CLI does not
 persist returned private identity material unless the caller explicitly directs
 output to a secure destination.
+
+## Resources And Events
+
+```text
+trellis resources list|inspect|destroy ...
+trellis events query|inspect ...
+trellis events consumers query|inspect ...
+trellis events dead-letters query|inspect|replay|dismiss ...
+```
+
+Resource commands use `Auth.Resources.*`. `destroy` accepts only a detached
+resource and requires exact confirmation; no lifecycle command destroys data
+implicitly. Event commands read the Events journal and administer durable
+consumers and dead letters through the Events API.
 
 ## Users And Portals
 

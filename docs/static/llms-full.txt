@@ -487,8 +487,9 @@ and `/` as `~1`, including missing required fields.
 
 ## Connect And Authorize
 
-Service/device bootstrap sends only provisioned identity and proof inputs.
-Browser bind creates a user-login session and then performs context refresh.
+Services and devices present a signed provisioned admission in NATS CONNECT;
+there is no HTTP bootstrap. Browser and native apps obtain a DPoP-bound OAuth
+token whose signed Trellis admission authorizes CONNECT for a fresh runtime key.
 These are different identity lifecycles, not interchangeable shortcuts. A device
 companion is a native OAuth application request with independent user consent,
 credential custody and connection. Accepted deployment registration creates
@@ -814,6 +815,8 @@ coverage, scope or provider checks.
 
 Transfers authenticate cancellation and completion and independently verify size
 and SHA-256. Frames are bounded by negotiated peer payload limits, up to 1 MiB.
+Operation upload grants last 15 minutes and admit at most 512 MiB in both SDKs;
+grant expiry ends an unfinished upload.
 Credit follows downstream consumption, not durable persistence. Upload success
 requires completed backend staging and durable Operation transfer commit before
 the handler runs. A lost commit reply is not proof of rollback: staged bytes are

@@ -3,10 +3,14 @@ use clap::{Args, Subcommand};
 #[derive(Debug, Subcommand)]
 /// Query and administer Events.
 pub enum EventsCommand {
+    /// List one page of journaled events, or all events with `--all`.
     Query(PageArgs),
+    /// Inspect one event by ID or stream sequence.
     Inspect(EventInspectArgs),
+    /// Query and inspect durable event consumers.
     #[command(subcommand)]
     Consumers(ConsumersCommand),
+    /// Query, inspect, replay, or dismiss dead-lettered deliveries.
     #[command(subcommand)]
     DeadLetters(DeadLettersCommand),
 }
@@ -39,7 +43,9 @@ pub struct EventInspectArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConsumersCommand {
+    /// List consumers, optionally for one consumer resource.
     Query(ConsumerQueryArgs),
+    /// Inspect one consumer resource.
     Inspect(ResourceIdArgs),
 }
 
@@ -53,9 +59,13 @@ pub struct ConsumerQueryArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum DeadLettersCommand {
+    /// List dead letters, optionally for one consumer resource.
     Query(DeadLetterQueryArgs),
+    /// Inspect one dead letter.
     Inspect(DeadLetterRefArgs),
+    /// Redeliver one dead letter to its consumer.
     Replay(DeadLetterMutationArgs),
+    /// Dismiss one dead letter without redelivery.
     Dismiss(DeadLetterMutationArgs),
 }
 

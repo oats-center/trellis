@@ -40,31 +40,29 @@ and a hash of any one-use provisioning secret, never private key material.
 TypeScript:
 
 ```ts
-import {
-  checkDeviceActivation,
-  deriveDeviceIdentity,
-  waitForDeviceActivation,
-} from "@oatscenter/trellis/device";
+import { checkDeviceActivation } from "@oatscenter/trellis/device";
 import { participants } from "field-device-trellis";
 
-const identity = await deriveDeviceIdentity(rootSecret);
-const options = {
-  trellisUrl: "http://127.0.0.1:8080",
+const activation = await checkDeviceActivation({
+  trellisUrl: "https://auth.example.com",
   participant: participants.fieldDevice.participant,
-  identity,
+  rootSecret,
   provisioningSecret,
-};
-
-const first = await checkDeviceActivation(options).orThrow();
-const ready = first.status === "ready"
-  ? first
-  : await waitForDeviceActivation(options, first).orThrow();
+});
+if (activation.status === "not_ready") {
+  throw new Error(`Device is not ready: ${activation.reason}`);
+}
+if (activation.status === "activation_required") {
+  showQrCode(activation.activationUrl, activation.confirmationCode);
+  await activation.waitForOnlineApproval();
+}
 ```
 
 `/auth/device/enroll` verifies the durable identity and a fresh ephemeral session
-key, then creates or resumes one review. Polling reuses that attempt. The result
-is `pending`, `rejected`, or `ready`; enrollment does not install runtime
-credentials.
+key, then creates or resumes one review; polling reuses that attempt. The status
+is `activated`, `activation_required`, or `not_ready`. An offline device can
+call `activation.acceptConfirmationCode(code)` instead of waiting online.
+Enrollment does not install runtime credentials.
 
 Display the returned activation URL and confirmation code. The code is a setup
 signal, never an online credential.
@@ -81,14 +79,15 @@ participant receives no bootstrap Admin binding.
 
 ## 6. Bootstrap and connect
 
-After approval, connect with the generated device facade. The runtime calls
-`/bootstrap/device` with only identity/proof inputs. Trellis resolves the
-server-owned deployment/instance assignment, installed participant revision,
-current `GrantBinding`, resources, issuer, signed context, route JWT, inbox, and
-exact NATS endpoints.
+After approval, connect with the generated device facade. There is no HTTP
+bootstrap request: the runtime presents a signed provisioned admission in NATS
+CONNECT that proves the device's durable identity key and a fresh runtime
+session key. Auth resolves the server-owned deployment/instance assignment,
+accepted participant revision, current authority, resources, and transport
+permissions from its own records.
 
-`/bootstrap/device` never creates a review. Pending, rejected, disabled, removed,
-or unknown devices fail closed.
+Admission never creates a review. Pending, rejected, disabled, removed, or
+unknown devices fail closed.
 
 The ephemeral session key returned by the successful activation attempt is used
 for the connection. Application requests/events include the context digest,

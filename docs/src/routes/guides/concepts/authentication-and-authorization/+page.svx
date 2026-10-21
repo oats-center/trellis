@@ -207,23 +207,24 @@ capabilities and administrative checks.
 
 ## Browser login and the portal
 
-Browser authentication starts with a proof-bound request for an installed app
-participant. The portal performs local-password or OIDC authentication and
-approval under the browser-binding/CSRF controls. Bind proves session-key
-possession and creates a user login, but returns no authorization context. The
-client commits the login under its IndexedDB generation fence, then calls
-context refresh.
+Browser applications use OAuth Authorization Code with PKCE and DPoP against
+the installation's dedicated OAuth origin. Trellis's portal on that origin
+performs local-password or OIDC sign-in and explicit capability consent under its
+own cookie and CSRF controls. The token response carries a signed Trellis
+admission for the browser's fresh runtime key; the client connects with it and
+then retrieves its signed authority over NATS.
 
-Only the browser session seed, minimal login metadata, pending flow, and
-generation tombstone are durable. Contexts, route JWTs, issuer keys, grants, and
-transport endpoints remain in process memory.
+Only the browser's OAuth custody is durable: a non-extractable DPoP key and an
+encrypted refresh credential in IndexedDB. Ephemeral runtime keys, signed
+authority, issuer keys, grants, and transport endpoints remain in process
+memory.
 
 ## Devices
 
 Device enrollment uses `/auth/device/enroll` to create or resume a review.
-Approval does not install runtime credentials. Once approved, the device calls
-`/bootstrap/device`, proves its durable identity plus fresh session key, and
-receives the same shared installation shape as a service.
+Approval does not install runtime credentials. Once approved, the device's NATS
+CONNECT carries a signed provisioned admission that proves its durable identity
+plus a fresh session key, the same admission path a service uses.
 
 ## Revocation and history
 

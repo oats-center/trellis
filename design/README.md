@@ -101,7 +101,7 @@ ergonomics.
 | Document                                       | Surface                     | Read When                                                                                                |
 | ---------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `auth/auth-protocol.md`                        | Auth protocol surface       | Implementing auth callout, proofs, reply validation, or auth state model                                 |
-| `auth/auth-api.md`                             | Auth public wire API        | Implementing `/auth/*`, `operations.v1.Auth.*`, `rpc.v1.Auth.*`, or auth events                          |
+| `auth/auth-api.md`                             | Auth public wire API        | Implementing OAuth listener routes, native admission, `Auth.*` RPCs, or auth events                      |
 | `auth/trellis-auth.md`                         | Auth system/runtime design  | Implementing principals, login sessions, GrantBinding, context issuance, bootstrap, or runtime auth      |
 | `auth/device-activation.md`                    | Device activation design    | Implementing known-device activation, connect info, or activation review flows                           |
 | `operations/trellis-operations.md`             | Operations design           | Implementing caller-visible async workflows in TypeScript or Rust                                        |
