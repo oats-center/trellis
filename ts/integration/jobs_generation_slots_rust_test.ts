@@ -301,11 +301,10 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
             await readiness?.release();
             await preparation.release();
           }
-          await leg.send("JOB_STATUS initial");
-          await leg.waitFor("JOB_STATUS initial Active 1");
-
           // The free slot can only issue its first G2 pull after its old G1
           // reservation settles. Do not assume old pulls instantly disappear.
+          // Releasing readiness only forwards bytes; the first G2 pull proves
+          // publication before issuing an application request on the fixture.
           await runtime.waitFor(async () => {
             const pulls = gate
               .connection(g2)!
@@ -314,6 +313,8 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
               ? true
               : undefined;
           });
+          await leg.send("JOB_STATUS initial");
+          await leg.waitFor("JOB_STATUS initial Active 1");
           await leg.send("JOB_SUBMIT B");
           await leg.waitFor("JOB_STARTED 2 B");
           assert.deepEqual(

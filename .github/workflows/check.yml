@@ -743,10 +743,16 @@ jobs:
           if-no-files-found: warn
 
   live-typescript:
-    name: TypeScript live integration
+    name: TypeScript live integration (${{ matrix.shard }}/4)
     needs: [install, wasm, portal, build]
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Run independent test files on separate hosted runners; every shard must pass.
+    # Failures in one shard must not cancel another shard's functional evidence.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -785,8 +791,16 @@ jobs:
           mkdir -p target/debug
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
 
+      - name: Install Node workspace dependencies
+        run: npm ci
+
       - name: Run TypeScript live integration
-        run: npm ci && npm run test:integration
+        env:
+          TRELLIS_TEST_SHARD: ${{ matrix.shard }}/4
+          # Two active file workers per hosted runner instead of four; keep the
+          # original eight-way aggregate parallelism across four isolated hosts.
+          TRELLIS_TEST_CONCURRENCY: "2"
+        run: npm run test:integration
 
   examples:
     name: Documented examples

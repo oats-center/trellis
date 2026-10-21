@@ -2,7 +2,7 @@ use super::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::task::AbortOnDropHandle;
 use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
-use trellis_rs::client::UserConnectOptions;
+use trellis_rs::client::{TrellisClientError, UserConnectOptions};
 
 async fn start_runtime(
     config: &crate::RuntimeConfig,
@@ -302,7 +302,13 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
             }
             match warm_me().await {
                 Ok(me) => break me,
-                Err(trellis_rs::client::TrellisClientError::AuthorizationUnavailable(_)) => {}
+                Err(TrellisClientError::AuthorizationUnavailable(_)) => {}
+                // The baseline socket was deliberately drained. An in-flight
+                // request may lose its subscription before a replacement
+                // generation is published; only that exact transient closure
+                // is eligible for another readiness probe.
+                Err(TrellisClientError::NatsRequest(message))
+                    if message.contains("subscribe failed: channel closed") => {}
                 Err(error) => panic!("replacement socket signed readiness: {error:?}"),
             }
         }
