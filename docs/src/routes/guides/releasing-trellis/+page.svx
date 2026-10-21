@@ -478,6 +478,20 @@ The unified `Release` workflow publishes in gated stages:
 
 The workflow is idempotent where practical: npm and crates.io publish steps skip versions that already exist. A registry publish is still not an atomic transaction across registries, so if a late publish step fails, inspect the workflow logs and rerun the workflow after fixing the underlying registry or workflow issue.
 
+If publication needs a workflow repair after the tag already exists, commit the
+repair on a working branch and dispatch that workflow with `publish=true` and the
+existing tag. Recovery checks out the immutable tagged candidate and consumes its
+successful Check artifacts, not artifacts built from the workflow-repair commit.
+Existing GitHub downloads must match those accepted artifacts byte-for-byte;
+recovery does not overwrite the tag or release assets.
+Images are promoted from the same accepted archive under the tagged candidate's
+SHA, never rebuilt from the workflow-repair commit.
+
+```sh
+gh workflow run release.yml --ref <workflow-repair-branch> \
+  -f publish=true -f tag="$RELEASE_TAG"
+```
+
 ## 8. Verify the published release
 
 Check that the GitHub release body matches the intended changelog section and that the expected artifacts were attached.
