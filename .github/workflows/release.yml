@@ -626,7 +626,7 @@ jobs:
             fi
 
             set +e
-            output=$(npm publish --access public --tag "$npm_tag" "$pkg" 2>&1)
+            output=$(npm publish --access public --tag "$npm_tag" "./$pkg" 2>&1)
             status=$?
             set -e
 
