@@ -360,7 +360,8 @@ jobs:
           fi
           cp "${executable}" target/debug/trellis-testkit-live
 
-      # Upload compresses the artifact; the tar only preserves executable modes.
+      # Multithreaded zstd instead of the upload's single-threaded compression;
+      # the tar preserves executable modes.
       - name: Stage fixture binaries
         run: |
           set -euo pipefail
@@ -374,13 +375,14 @@ jobs:
           done
           cp target/debug/examples/health_watch "$staging/examples/"
           find "$staging" -type f -exec strip --strip-unneeded {} +
-          tar -C "$staging" -cf "$RUNNER_TEMP/fixture-binaries.tar" .
+          tar -C "$staging" -cf - . | zstd -T0 -q -o "$RUNNER_TEMP/fixture-binaries.tar.zst"
 
       - name: Upload fixture binaries
         uses: actions/upload-artifact@v4
         with:
           name: check-fixture-binaries
-          path: ${{ runner.temp }}/fixture-binaries.tar
+          path: ${{ runner.temp }}/fixture-binaries.tar.zst
+          compression-level: 0
           retention-days: 1
 
   build:
@@ -493,7 +495,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist/runtime-binaries
           tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C dist/runtime-binaries
-          tar -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar" -C dist/runtime-binaries
+          tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C dist/runtime-binaries
 
       - name: Download test identity provider
         uses: actions/download-artifact@v4
@@ -806,7 +808,7 @@ jobs:
           set -euo pipefail
           mkdir -p target/debug
           tar -xzf "$RUNNER_TEMP/binaries/runtime-binaries.tar.gz" -C target/debug
-          tar -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar" -C target/debug
+          tar --zstd -xf "$RUNNER_TEMP/binaries/fixture-binaries.tar.zst" -C target/debug
 
       - name: Install Node workspace dependencies
         run: npm ci
