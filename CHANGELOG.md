@@ -8,7 +8,7 @@ and this project adheres to
 
 ## [Unreleased]
 
-## [0.100.0-rc.3] - 2026-10-20
+## [0.100.0-rc.3] - 2026-10-21
 
 ### Added
 
@@ -72,6 +72,8 @@ and this project adheres to
 - Packaged CLI generation no longer depends on its producer checkout. Clean demo
   builds, source-free Rust consumers, non-root read-only images, managed broker
   shutdown, and real TLS deployments are exercised by acceptance checks.
+- Canonical API publication validates the built-in package lock during normal
+  installation and accepts GHCR's empty final tag-pagination response.
 - Concurrent process-testkit startup waits for the broker's actual NATS greeting,
   rather than treating an inherited reservation listener as a ready broker.
 - Exact grant approvals retain pending resource permissions while issuance uses
