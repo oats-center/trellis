@@ -146,15 +146,28 @@ jobs:
     name: Build test identity provider
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Dex publishes container images but no release binaries, so build the
+    # pinned v2.46.0 commit once and reuse it until the pin changes.
+    env:
+      DEX_COMMIT: 05a275057112ba93e17db21f600b756f000f1c21
     steps:
+      - name: Restore built Dex
+        id: dex-cache
+        uses: actions/cache@v4
+        with:
+          path: dex-bin/dex
+          key: dex-${{ runner.os }}-${{ runner.arch }}-${{ env.DEX_COMMIT }}
+
       - name: Check out pinned Dex source
+        if: steps.dex-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: dexidp/dex
-          ref: 05a275057112ba93e17db21f600b756f000f1c21
+          ref: ${{ env.DEX_COMMIT }}
           path: dex-source
 
       - name: Set up Go
+        if: steps.dex-cache.outputs.cache-hit != 'true'
         uses: actions/setup-go@v5
         with:
           go-version-file: dex-source/go.mod
@@ -163,14 +176,15 @@ jobs:
       # Dex's API is an in-tree module replacement, so build the pinned tree
       # rather than attempting go install against a detached module download.
       - name: Build Dex
+        if: steps.dex-cache.outputs.cache-hit != 'true'
         working-directory: dex-source
-        run: go build -mod=readonly -trimpath -o "$RUNNER_TEMP/dex" ./cmd/dex
+        run: go build -mod=readonly -trimpath -o "$GITHUB_WORKSPACE/dex-bin/dex" ./cmd/dex
 
       - name: Upload test identity provider
         uses: actions/upload-artifact@v4
         with:
           name: check-dex
-          path: ${{ runner.temp }}/dex
+          path: dex-bin/dex
           retention-days: 1
 
   portal:
