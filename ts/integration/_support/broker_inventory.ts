@@ -123,6 +123,8 @@ export function brokerConnectionKey(connection: BrokerConnection): string {
 export type BrokerInventoryOptions = {
   /** Server ids that must be covered even if STATSZ does not name them. */
   requiredServerIds?: readonly string[];
+  /** Query one named host without discovery; not valid for cluster-wide absence. */
+  onlyRequiredServers?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -426,9 +428,15 @@ export async function completeBrokerInventory(
       throw new Error("required broker server ids must be non-empty strings");
     }
   }
+  if (options.onlyRequiredServers && required.length !== 1) {
+    throw new Error("a host-specific inventory requires exactly one server id");
+  }
+  const candidates = options.onlyRequiredServers
+    ? required
+    : [...(await discoverServers(nc)), ...required];
   const requested: string[] = [];
   const seen = new Set<string>();
-  for (const serverId of [...(await discoverServers(nc)), ...required]) {
+  for (const serverId of candidates) {
     if (seen.has(serverId)) continue;
     seen.add(serverId);
     requested.push(serverId);

@@ -342,6 +342,10 @@ jobs:
       contents: read
       actions: read
       id-token: write
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - name: Check out repository
@@ -382,6 +386,9 @@ jobs:
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable multithreaded Zstandard caching
+        run: bash scripts/ensure-ci-zstd.sh
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2

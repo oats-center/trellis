@@ -46,6 +46,7 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
           ...process.env,
           TRELLIS_URL: runtime.oauthIssuer,
           TRELLIS_IDENTITY_SEED: instance.seed,
+          TRELLIS_TEST_HEALTH_HEARTBEAT_MS: "2000",
         },
       });
       child.stderr.pipe(process.stderr);
@@ -140,6 +141,13 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
           heartbeats().length > 0,
           "the ordinary service heartbeat really publishes before coverage loss",
         );
+        // Prove the actual health publisher—not the separate Jobs worker-presence
+        // publisher—is running at its short, test-configured interval.
+        const initialHeartbeats = heartbeats().length;
+        await runtime.waitFor(
+          () => (heartbeats().length > initialHeartbeats ? true : undefined),
+          { timeoutMs: 8_000, intervalMs: 50 },
+        );
         // Exhaust real ephemeral-consumer capacity without changing retained data.
         const constrained = {
           ...settings,
@@ -192,9 +200,8 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
         const suspendedAt = Date.now();
         await send("JOB_RELEASE initial");
         await marker("JOB_DONE 1 initial");
-        // The real production heartbeat interval is 30s. Keep coverage unavailable
-        // through a full due interval, using ordinary public queries to establish
-        // that this same live process remains responsive, not a paused runtime.
+        // Keep the real 2s health heartbeat unavailable across multiple
+        // due intervals while the same native process stays responsive.
         await runtime.waitFor(
           async () => {
             const after = lines.length;
@@ -208,9 +215,9 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
               heartbeatCount,
               "unsigned fresh heartbeat must not publish while own coverage is suspended",
             );
-            return Date.now() - suspendedAt >= 35_000 ? true : undefined;
+            return Date.now() - suspendedAt >= 5_000 ? true : undefined;
           },
-          { timeoutMs: 40_000, intervalMs: 250 },
+          { timeoutMs: 12_000, intervalMs: 250 },
         );
         await js.consumers.delete(stream, blocker);
         blocker = undefined;
@@ -235,7 +242,7 @@ test("Rust fresh Jobs leases reject suspended own coverage and resume on the sam
         assert.equal(gate.connection(carrier.id)?.closed, false);
         await runtime.waitFor(
           () => (heartbeats().length > heartbeatCount ? true : undefined),
-          { timeoutMs: 35_000, intervalMs: 50 },
+          { timeoutMs: 15_000, intervalMs: 50 },
         );
         await send("EXIT");
         await marker("OPERATION_PROVIDER_DONE");

@@ -67,10 +67,11 @@ const TARGET_DEPLOYMENT = "cs-target";
 /** Short lifetimes so a reduction is picked up by a real refresh promptly. */
 const runtimeOptions = {
   authorization: {
-    contextLifetimeSeconds: 80,
-    refreshLeadSeconds: 15,
+    contextLifetimeSeconds: 55,
+    refreshLeadSeconds: 12,
     refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 46,
+    minimumContextLifetimeSeconds: 20,
+    allowedClockSkewSeconds: 2,
   },
   // The private provisional stage is only observable through the native proxy's
   // readiness/reply gate, so the case runs the real intercepting path.

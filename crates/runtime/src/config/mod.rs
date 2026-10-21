@@ -1226,6 +1226,9 @@ pub struct AuthorizationConfig {
     pub maximum_bootstrap_jwt_lifetime_seconds: u64,
     /// Verification clock skew in seconds.
     pub allowed_clock_skew_seconds: u64,
+    /// Maximum signed OAuth admission lifetime in seconds.
+    #[serde(default = "default_oauth_admission_lifetime_seconds")]
+    pub oauth_admission_lifetime_seconds: u64,
     /// Maximum canonical signed-context JSON size in UTF-8 bytes.
     pub maximum_context_bytes: usize,
     /// Maximum permission atoms allowed in one context.
@@ -1234,6 +1237,10 @@ pub struct AuthorizationConfig {
     pub context_bucket: String,
     /// Replica count for both registry buckets.
     pub registry_replicas: usize,
+}
+
+fn default_oauth_admission_lifetime_seconds() -> u64 {
+    300
 }
 
 impl AuthorizationConfig {
@@ -1292,6 +1299,12 @@ impl AuthorizationConfig {
             return Err(invalid_authorization(
                 "allowed_clock_skew_seconds",
                 "must not exceed 300",
+            ));
+        }
+        if !(1..=300).contains(&self.oauth_admission_lifetime_seconds) {
+            return Err(invalid_authorization(
+                "oauth_admission_lifetime_seconds",
+                "must be between 1 and 300",
             ));
         }
         if self.maximum_context_bytes == 0 || self.maximum_context_bytes > 1_048_576 {

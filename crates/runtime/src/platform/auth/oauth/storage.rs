@@ -1040,6 +1040,7 @@ mod tests {
                     upstream_tls_roots_pem: Vec::new(),
                     authority_lifetime_seconds: 300,
                     clock_skew_seconds: 30,
+                    oauth_admission_lifetime_seconds: 300,
                     login_lifetime_seconds: 86400,
                     enforcement_page_size: 128,
                 },
