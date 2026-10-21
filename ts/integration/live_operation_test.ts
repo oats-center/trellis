@@ -71,9 +71,12 @@ test("V3 Operation observation delivers typed updates then terminal", async () =
       const handle = await caller.work({ value: "observe" }).start().orThrow();
       const subscription = await handle.live({ updates: true }).orThrow();
       const updates: string[] = [];
+      let initialSnapshotObserved = false;
       let checkpointObserved = false;
       let terminalState: string | undefined;
       let terminalOutput: string | undefined;
+      let observationEnded = false;
+      let observationError: unknown;
       const pump = (async () => {
         for await (const event of subscription as AsyncIterable<{
           type: string;
@@ -90,6 +93,7 @@ test("V3 Operation observation delivers typed updates then terminal", async () =
             error?: { type: string; message: string };
           };
         }>) {
+          if (event.snapshot !== undefined) initialSnapshotObserved = true;
           if (event.type === "update") {
             updates.push(event.update?.value ?? "");
           } else if (event.type === "progress") {
@@ -120,13 +124,45 @@ test("V3 Operation observation delivers typed updates then terminal", async () =
           }
         }
       })();
+      void pump.then(
+        () => {
+          observationEnded = true;
+        },
+        (cause: unknown) => {
+          observationEnded = true;
+          observationError = cause;
+        },
+      );
+      // Opening returns a prepared, demand-activated observation. The initial
+      // snapshot proves both backend subscriptions are installed before the
+      // handler is allowed to publish transient updates.
+      await runtime.waitFor(() => {
+        if (observationError !== undefined) throw observationError;
+        return initialSnapshotObserved;
+      });
       const batches = Math.ceil(UPDATES / BATCH);
       for (let index = 0; index < batches; index += 1) {
         await handle.signal("Continue", { value: "continue" }).orThrow();
         const expected = Math.min((index + 1) * BATCH, UPDATES);
-        await runtime.waitFor(() => updates.length >= expected, {
-          timeoutMs: 30_000,
-        });
+        try {
+          await runtime.waitFor(
+            () => {
+              if (observationError !== undefined) throw observationError;
+              if (observationEnded && updates.length < expected) {
+                throw new Error(
+                  "observation ended before the acknowledged batch",
+                );
+              }
+              return updates.length >= expected;
+            },
+            { timeoutMs: 30_000 },
+          );
+        } catch (cause) {
+          throw new Error(
+            `batch ${index + 1}: received ${updates.length}/${expected} updates; ended=${observationEnded}; checkpoint=${checkpointObserved}`,
+            { cause },
+          );
+        }
         if (index === 0) {
           await runtime.waitFor(() => checkpointObserved);
         }

@@ -363,9 +363,17 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         !sessions.items.is_empty(),
         "publisher has an active session"
     );
+    let mut config = stream.info().await.unwrap().config.clone();
+    config.duplicate_window = Duration::from_millis(100);
+    let replay_after = raw.time + config.duplicate_window;
+    context.update_stream(config).await.unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
-        while time::OffsetDateTime::now_utc().unix_timestamp() <= raw.time.unix_timestamp() {
+        // A second-boundary cutoff alone can leave this publication less than
+        // 100 ms old. Wait for both cutoff precision and broker dedup expiry.
+        while time::OffsetDateTime::now_utc().unix_timestamp() <= raw.time.unix_timestamp()
+            || time::OffsetDateTime::now_utc() <= replay_after
+        {
             tick.tick().await;
         }
     })
@@ -396,9 +404,6 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     })
     .await
     .expect("retirement preserves genuine pre-cutoff backlog");
-    let mut config = stream.info().await.unwrap().config.clone();
-    config.duplicate_window = Duration::from_millis(100);
-    context.update_stream(config).await.unwrap();
     let replay_sequence = context
         .publish_with_headers(
             raw.subject.clone(),
