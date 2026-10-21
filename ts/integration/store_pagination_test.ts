@@ -8,7 +8,6 @@ import {
   connectNativeClient,
   connectNativeSession,
 } from "@oatscenter/trellis/native";
-import { join } from "node:path";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
 import { TrellisService } from "../packages/trellis/service/mod.ts";
 import {

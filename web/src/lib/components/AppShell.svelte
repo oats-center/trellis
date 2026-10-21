@@ -26,7 +26,6 @@
     children: Snippet;
     profile: AuthorityProfile | null;
     authority: Authority | null;
-    profileLoaded: boolean;
     navSections: NavSection[];
     connectionStatus: ConnectionStatus["phase"];
     authFailure: string | null;
@@ -38,7 +37,6 @@
     children,
     profile,
     authority,
-    profileLoaded,
     navSections,
     connectionStatus,
     authFailure,

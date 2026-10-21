@@ -34,12 +34,10 @@
   } from "$lib/jobs_page.ts";
   import { loadJobsMetrics, type JobsMetrics } from "$lib/jobs_metrics.ts";
   import { getTrellis } from "$lib/trellis";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { decodeKnownJsonBytes } from "$lib/console/display_value.ts";
 
   const trellis = getTrellis();
-  const authority = getConsoleAuthority();
   type Inspection = JobInspection;
   type Job = Inspection["job"];
   type WaitEdge = NonNullable<Job["waitingOn"]>[number];
@@ -186,7 +184,6 @@
   });
 
   const UNSET = "–";
-  const NEWLINE = "\n";
 
   function parseErrorPayload(message: string | undefined): Record<string, unknown> | null {
     if (!message) return null;

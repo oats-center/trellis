@@ -1,13 +1,4 @@
 <script lang="ts" module>
-  type JsonValue =
-    | string
-    | number
-    | boolean
-    | null
-    | undefined
-    | JsonValue[]
-    | { [key: string]: JsonValue };
-
   type Summary = {
     kind:
       | "object"

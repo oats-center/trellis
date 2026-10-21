@@ -3,7 +3,6 @@
   import { afterNavigate } from "$app/navigation";
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import {
     beginOwnedWatch,
     LiveSubscription,
@@ -46,7 +45,6 @@
   type JobPathname = `/admin/jobs/${string}` & {};
 
   const trellis = getTrellis();
-  const authority = getConsoleAuthority();
   const rpcTimeout = 10_000;
   const windows: Array<{ value: MetricsWindow; label: string; title: string }> = [
     { value: "15m", label: "15m", title: "Last 15 minutes" },

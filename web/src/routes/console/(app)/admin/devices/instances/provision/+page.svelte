@@ -4,7 +4,7 @@
   import { apis } from "trellis-web-generated";
   import { page } from "$app/state";
   import { onMount } from "svelte";
-  import { catalogPage, traverseAll } from "$lib/console/paging.ts";
+  import { traverseAll } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import {
     captureIntent,

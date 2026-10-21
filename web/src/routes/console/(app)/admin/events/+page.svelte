@@ -13,7 +13,6 @@
   import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { boundedNumber, compactDuration, errorMessage, formatDate, jsonBlock } from "$lib/format";
   import { getConnection, getTrellis } from "$lib/trellis";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import {
     consumerSeverityOf,
     consumerStatus,
@@ -34,7 +33,6 @@
   import { subjectMatches } from "./subject";
 
   type WindowValue = "15m" | "1h" | "6h" | "24h" | "7d";
-  type EventResolution = "resolved" | "unresolved" | "malformed";
   type EventVerificationStatus =
     | "verified"
     | "missing-proof"
@@ -83,7 +81,6 @@
 
   const trellis = getTrellis();
   const connection = getConnection();
-  const authority = getConsoleAuthority();
   const rpcTimeout = 10_000;
   const pageLimit = 40;
   const windows: Array<{ value: WindowValue; label: string; minutes: number }> = [
@@ -270,9 +267,6 @@
     return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
   }
 
-  function isResolution(value: unknown): value is EventResolution {
-    return value === "resolved" || value === "unresolved" || value === "malformed";
-  }
 
   function isVerificationStatus(value: unknown): value is EventVerificationStatus {
     return value === "verified" || verificationIssues.includes(value as EventVerificationStatus);
@@ -958,13 +952,13 @@
 
       <aside class="event-rail flex flex-col gap-4" aria-label="Event flow and integrity">
         <Panel eyebrow="Secondary" title="Event volume">
+          {#snippet actions()}{#if metricsReady && metrics}<strong class="tabular-nums">{eventRate?.toLocaleString(undefined, { maximumFractionDigits: 1 })}/min</strong>{/if}{/snippet}
           <p class="text-sm text-base-content/70">{windowOption.label}</p>
           {#if !(metricsReady && metrics)}
             <Notice variant="warning" role="status">
               {visibleMetricsState === "pending" ? "Loading metrics for this window." : `${metricsError ?? "Event metrics are not permitted."} Event volume is unavailable for this window, not zero.`}
             </Notice>
           {:else}
-            {#snippet actions()}<strong class="tabular-nums">{eventRate?.toLocaleString(undefined, { maximumFractionDigits: 1 })}/min</strong>{/snippet}
             <p class="text-sm text-base-content/70">{metrics?.summary.total.toLocaleString()} events · {windowOption.label}</p>
             <svg viewBox="0 0 260 52" preserveAspectRatio="none" role="img" aria-label={`Event volume over ${windowOption.label}`}>
               <path class="chart-grid" d="M0 46H260 M0 26H260" />
@@ -973,12 +967,12 @@
           {/if}
         </Panel>
         <Panel eyebrow="Secondary" title="Integrity exceptions">
+          {#snippet actions()}{#if metricsReady && metrics}<strong class="tabular-nums text-error">{metrics.summary.integrityExceptions}</strong>{/if}{/snippet}
           {#if !(metricsReady && metrics)}
             <Notice variant="warning" role="status">
               {visibleMetricsState === "pending" ? "Loading metrics for this window." : `${metricsError ?? "Event metrics are not permitted."} Integrity exceptions are unavailable for this window, not zero.`}
             </Notice>
           {:else}
-            {#snippet actions()}<strong class="tabular-nums text-error">{metrics?.summary.integrityExceptions}</strong>{/snippet}
             <p class="text-sm text-base-content/70">Verification and resolution failures</p>
             <svg viewBox="0 0 260 52" preserveAspectRatio="none" role="img" aria-label={`Integrity exceptions over ${windowOption.label}`}>
               <path class="chart-grid" d="M0 46H260 M0 26H260" />

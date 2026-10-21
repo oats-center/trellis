@@ -6,7 +6,6 @@
   import { onDestroy, untrack } from "svelte";
   import { traverseAll, resolveExact } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { captureIntent, MutationController } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { resolve } from "$lib/console_paths";
@@ -24,7 +23,6 @@
 
   const trellis = getTrellis();
   const notifications = getNotifications();
-  const authority = getConsoleAuthority();
   const scope = new RequestScope("device-instance-disable");
   type DisableInput = apis.auth.DevicesDisableInput;
   const mutation = new MutationController<DisableInput, unknown>(

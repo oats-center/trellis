@@ -113,7 +113,6 @@
 <AppShell
   profile={snapshot.profile}
   authority={snapshot.authority}
-  profileLoaded={snapshot.state !== "checking"}
   {navSections}
   {connectionStatus}
   authFailure={snapshot.state === "error"

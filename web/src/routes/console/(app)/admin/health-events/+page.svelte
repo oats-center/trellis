@@ -16,7 +16,6 @@
   import { getTrellis } from "$lib/trellis";
   import { nextCursorPage, previousCursorPage } from "$lib/cursor_history.ts";
   import { TABLE_PAGE_LIMIT } from "$lib/console/paging.ts";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import {
     beginOwnedWatch,
     LiveSubscription,
@@ -27,7 +26,6 @@
   type Participant = apis.health.QueryOutput["items"][number];
 
   const trellis = getTrellis();
-  const authority = getConsoleAuthority();
   const RPC_TIMEOUT_MS = 10_000;
 
   let snapshot = $state.raw<apis.health.QueryOutput | null>(null);

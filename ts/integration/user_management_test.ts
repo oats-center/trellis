@@ -1,6 +1,5 @@
 /** Ordinary user administration through generated APIs and real native OAuth. */
 import assert from "node:assert/strict";
-import { join } from "node:path";
 import { test } from "node:test";
 import { connectNativeClient } from "@oatscenter/trellis/native";
 import { ulid } from "ulid";

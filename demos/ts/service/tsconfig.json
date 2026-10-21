@@ -1,6 +1,11 @@
 {
   "extends": "../tsconfig.json",
-  "compilerOptions": { "noEmit": false, "rootDir": "..", "outDir": "build" },
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noEmit": false,
+    "rootDir": "..",
+    "outDir": "build"
+  },
   "files": ["src/main.ts"],
   "include": []
 }

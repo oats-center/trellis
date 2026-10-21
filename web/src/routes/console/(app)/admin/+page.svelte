@@ -68,28 +68,40 @@
   const serviceInstanceTotal = $derived(instances.length);
   const disabledTotal = $derived(disabledInstances);
   const activeJobCount = $derived(jobStats.byState.active ?? 0);
+  // Overview lists read one bounded page; a further page means "at least".
+  const countLabel = (count: number, truncated: boolean) =>
+    truncated ? `${count}+` : count;
+  const instancesValue = $derived(
+    countLabel(serviceInstanceTotal, instancesTruncated),
+  );
+  const sessionsValue = $derived(countLabel(sessionCount, sessionsTruncated));
+  const connectionsValue = $derived(
+    countLabel(connectionCount, connectionsTruncated),
+  );
   const totalJobCount = $derived(jobStats.total.toLocaleString());
 
   const topology = $derived([
     {
       icon: "box",
       label: "Service instances",
-      value: serviceInstanceTotal,
-      detail: `${activeInstances} enabled / ${disabledTotal} disabled`,
+      value: instancesPanelError ? "—" : instancesValue,
+      detail:
+        instancesPanelError ??
+        `${activeInstances} enabled / ${disabledTotal} disabled`,
       tone: "text-neutral bg-base-300/60",
     },
     {
       icon: "users",
       label: "Sessions",
-      value: sessionCount,
-      detail: "live auth sessions",
+      value: sessionsPanelError ? "—" : sessionsValue,
+      detail: sessionsPanelError ?? "live auth sessions",
       tone: "text-info bg-info/10",
     },
     {
       icon: "activity",
       label: "Connections",
-      value: connectionCount,
-      detail: "current transports",
+      value: connectionsPanelError ? "—" : connectionsValue,
+      detail: connectionsPanelError ?? "current transports",
       tone: "text-secondary bg-secondary/10",
     },
     {
@@ -104,11 +116,11 @@
   const metrics = $derived([
     {
       label: "Service Instances",
-      value: serviceInstanceTotal,
+      value: instancesValue,
       detail: `/ ${disabledTotal} disabled`,
     },
-    { label: "Sessions", value: sessionCount },
-    { label: "Connections", value: connectionCount },
+    { label: "Sessions", value: sessionsValue },
+    { label: "Connections", value: connectionsValue },
     {
       label: "Jobs",
       value: totalJobCount,

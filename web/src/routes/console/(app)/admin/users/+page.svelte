@@ -4,7 +4,6 @@
   import { type apis } from "trellis-web-generated";
   import { resolve, consoleUrl } from "$lib/console_paths";
   import { onMount } from "svelte";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { captureIntent, MutationController } from "$lib/console/mutation.ts";
   import { TABLE_PAGE_LIMIT } from "$lib/console/paging.ts";
   import {
@@ -26,7 +25,6 @@
 
   const trellis = getTrellis();
   const notifications = getNotifications();
-  const authority = getConsoleAuthority();
   type ResetInput = Parameters<typeof trellis.usersPasswordResetCreate>[0];
   const resetMutation = new MutationController<
     ResetInput,
@@ -342,9 +340,27 @@
           {/each}
         </tbody>
       </DataTable>
-      <p class="text-xs text-base-content/50">
-        {users.length} user{users.length !== 1 ? "s" : ""}
-      </p>
+      <div class="flex items-center justify-between gap-2">
+        <span class="text-xs text-base-content/50"
+          >{users.length} user{users.length !== 1 ? "s" : ""} on this page</span
+        >
+        <div class="join">
+          <button
+            class="btn btn-sm join-item"
+            onclick={goPrevious}
+            disabled={cursorHistory.back.length === 0 || loading}
+          >
+            Previous
+          </button>
+          <button
+            class="btn btn-sm join-item"
+            onclick={goNext}
+            disabled={nextCursor === undefined || loading}
+          >
+            Next
+          </button>
+        </div>
+      </div>
     </div>
   {/if}
 </section>

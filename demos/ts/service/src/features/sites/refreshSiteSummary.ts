@@ -8,7 +8,7 @@ import type {
 import type { FieldOpsDeps } from "../../deps.ts";
 
 type HandlerArgs = {
-  job: ActiveJob<SiteRefreshJobPayload, SiteRefreshJobResult, unknown>;
+  job: ActiveJob<SiteRefreshJobPayload, SiteRefreshJobResult, never>;
   client: {
     kv: {
       siteSummaries: {

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
-import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import type { NatsConnection } from "@nats-io/nats-core";
 import { join } from "node:path";
 import { startTrellisRuntime } from "./_support/runtime.ts";

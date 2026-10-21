@@ -7,7 +7,6 @@
   import { onDestroy, untrack } from "svelte";
   import { traverseAll } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { captureIntent, MutationController } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
@@ -23,7 +22,6 @@
 
   const trellis = getTrellis();
   const notifications = getNotifications();
-  const authority = getConsoleAuthority();
   const scope = new RequestScope("device-deployment-disable");
   type DisableInput = apis.auth.DeploymentsDisableInput;
   const mutation = new MutationController<DisableInput, unknown>(
