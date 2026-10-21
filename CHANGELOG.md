@@ -8,6 +8,60 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `auth.oauth.trusted_proxies` lists reverse-proxy CIDR ranges whose
+  `X-Forwarded-For` identifies the client for OAuth request admission.
+  Forwarding headers from any other peer remain ignored.
+- `trellis.transfer.wait.duration` separates blocked sender credit waits from
+  streaming storage refill waits in both SDKs.
+
+### Changed
+
+- Operation upload grants follow one shared policy in both SDKs: a 15-minute
+  lifetime that bounds the whole upload and a 512 MiB size limit. TypeScript
+  providers previously expired uploads after 60 seconds with no size limit.
+- Transfer metrics use one vocabulary in both SDKs: `trellis.direction` is
+  `upload` or `download` and `trellis.side` is `client` or `provider`. Each
+  endpoint counts the DATA frames, wire bytes, and credit messages it sends or
+  verifies. TypeScript Live sessions report `trellis.kind` as `live` or
+  `operation_watch`, matching Rust and the metric catalog.
+- Transfer throughput: senders coalesce already-ready bytes into bounded frames
+  without waiting to fill them, unchanged peer authority is reused while every
+  frame is still verified, store readers fetch on demand, and the Rust Object
+  Store writer fills 128 KiB chunks and pipelines up to eight chunk
+  acknowledgements.
+
+### Removed
+
+- The `http.web_source`, `http.portal_source`, and `http.console_source`
+  settings and the `trellis init config` `--web-*`, `--portal-*`, and
+  `--console-*` directory/proxy flags. They were accepted but had no effect: the
+  Console and the OAuth portal are served only from the assets built into
+  `trellis-server`. The "Create a custom portal" guide is removed for the same
+  reason.
+- The `http.rate_limit_max` and `http.rate_limit_window_ms` settings and their
+  `--rate-limit-*` flags, which were also accepted without effect. OAuth request
+  admission has its own fixed per-client budgets.
+- Unused public API: `createTransferHandle`'s inbox prefix argument, the
+  testkit's always-empty `TrellisTestError::server_code()`, and the testkit
+  `webSource`, `portalSource`, and `consoleSource` runtime options.
+
+### Fixed
+
+- OAuth requests without an `Origin` header, including native token refreshes,
+  no longer share one server-wide request budget; each client has its own.
+- Idle Live routes adopt renewed provider authority before signing an offer, so
+  the first observer after the original context expires is not refused.
+- The Console Users list has Previous/Next pagination; users beyond the first
+  page were unreachable. The admin overview reports each panel's load failure
+  and shows `100+` when a bounded list has more entries, instead of zero or an
+  exact-looking count. The Events rail shows its event rate and integrity
+  exception counts, which were never rendered.
+- Rust transfer providers report their frames and wire bytes, and Rust
+  downloads record one transfer duration instead of two. Streamed TypeScript
+  downloads record their duration.
+
 ## [0.100.0-rc.3] - 2026-10-21
 
 ### Added
