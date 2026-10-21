@@ -89,6 +89,7 @@ fn runtime_config() -> RuntimeConfig {
                 minimum_context_lifetime_seconds: 76,
                 maximum_bootstrap_jwt_lifetime_seconds: 3_600,
                 allowed_clock_skew_seconds: 30,
+                oauth_admission_lifetime_seconds: 300,
                 maximum_context_bytes: 16_384,
                 maximum_permissions: 4_096,
                 context_bucket: "trellis_authorization_contexts".to_owned(),

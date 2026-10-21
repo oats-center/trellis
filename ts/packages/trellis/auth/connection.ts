@@ -729,6 +729,10 @@ export async function connectAdmitted(options: {
         } catch {
           /* replacement already owns recovery */
         }
+      } else {
+        // An ordinary ordered mirror update can restore coverage without
+        // renewal or transport adoption. Wake acquisitions fenced at ingress.
+        manager.applicationUsabilityChanged();
       }
     });
     return {

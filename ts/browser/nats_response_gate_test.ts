@@ -68,6 +68,24 @@ test("response gate holds only the armed reply and forwards PING", async () => {
   gate.dispose();
 });
 
+test("response gate forwards late replies from before arming and holds the next request", async () => {
+  const gate = new NatsResponseGate();
+  const payload = new Uint8Array(0);
+  gate.ingestClient(encodeNatsPub("route.A", payload, "_INBOX.old"));
+  const held = gate.armNextReply("route.A");
+  gate.ingestClient(encodeNatsPub("route.A", payload, "_INBOX.next"));
+  const old = encodeNatsMsg("_INBOX.old", "1", payload);
+  const next = encodeNatsMsg("_INBOX.next", "1", payload);
+  try {
+    assert.deepEqual(gate.ingestServer(old), [old]);
+    assert.deepEqual(gate.ingestServer(next), []);
+    assert.equal((await held).reply, "_INBOX.next");
+    assert.deepEqual(gate.release(), [next]);
+  } finally {
+    gate.dispose();
+  }
+});
+
 test("response gate observes a server push that is not an RPC reply", async () => {
   const gate = new NatsResponseGate();
   const push = gate.armNextPush();

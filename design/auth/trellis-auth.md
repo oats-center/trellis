@@ -389,6 +389,9 @@ asynchronous reply verification waits for that owner's ordered update queue,
 then repeats its live authority checks. It does not discard a received reply
 merely because this bounded ingress fence is active, retransmit the request,
 or treat lost or superseded mirror coverage as usable.
+Fresh application acquisitions fenced during that update are notified when
+coverage returns, even without renewal or transport replacement; they recheck
+current authority within their original deadline rather than retransmitting work.
 
 One cancellable supervisor retries unexpected stream loss or a temporarily
 missing published carrier with bounded backoff and jitter. Private maintenance

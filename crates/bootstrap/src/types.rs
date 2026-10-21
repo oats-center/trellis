@@ -174,6 +174,10 @@ pub struct BootstrapAuthorizationPolicy {
     pub refresh_jitter_seconds: Option<u64>,
     /// Minimum acceptable context lifetime in seconds.
     pub minimum_context_lifetime_seconds: Option<u64>,
+    /// Signed OAuth admission lifetime in seconds (production default: 300).
+    pub oauth_admission_lifetime_seconds: Option<u64>,
+    /// Authorization clock-skew allowance in seconds (production default: 30).
+    pub allowed_clock_skew_seconds: Option<u64>,
 }
 
 /// Options for generating a complete Trellis bootstrap bundle.

@@ -321,6 +321,7 @@ export type ArmPredicate = (record: ParsedNatsRecord) => boolean;
 type ArmedHold = {
   route: string;
   predicate?: ArmPredicate;
+  requestMark: number;
   resolve: (held: HeldRequest) => void;
 };
 
@@ -354,7 +355,12 @@ export class NatsResponseGate {
   armNextReply(route: string, predicate?: ArmPredicate): Promise<HeldRequest> {
     return this.#wait(
       new Promise((resolve) => {
-        this.#armed.push({ route, predicate, resolve });
+        this.#armed.push({
+          route,
+          predicate,
+          requestMark: this.#requests.length,
+          resolve,
+        });
       }),
       `RPC reply on ${route}`,
     );
@@ -468,7 +474,8 @@ export class NatsResponseGate {
       return true;
     }
     const matchIndex = this.#armed.findIndex((arm) => {
-      const request = [...this.#requests]
+      const request = this.#requests
+        .slice(arm.requestMark)
         .reverse()
         .find(
           (item) => item.reply === reply && routeMatches(item.route, arm.route),

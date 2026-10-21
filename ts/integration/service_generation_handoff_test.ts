@@ -91,6 +91,7 @@ test("a service drains accepted RPCs across growth and renews in place after rea
         const inventory = () =>
           completeBrokerInventory(system, {
             requiredServerIds: [original.server],
+            onlyRequiredServers: true,
           });
         held = caller.park({}).orThrow();
         void held.catch(() => undefined);
@@ -157,10 +158,11 @@ test("a service drains accepted RPCs across growth and renews in place after rea
     },
     {
       authorization: {
-        contextLifetimeSeconds: 125,
+        contextLifetimeSeconds: 60,
         refreshLeadSeconds: 15,
         refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 95,
+        minimumContextLifetimeSeconds: 26,
+        allowedClockSkewSeconds: 2,
       },
     },
   );

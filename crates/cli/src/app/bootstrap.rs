@@ -107,6 +107,8 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         refresh_lead_seconds: args.auth_refresh_lead_seconds,
         refresh_jitter_seconds: args.auth_refresh_jitter_seconds,
         minimum_context_lifetime_seconds: args.auth_minimum_context_lifetime_seconds,
+        oauth_admission_lifetime_seconds: args.auth_oauth_admission_lifetime_seconds,
+        allowed_clock_skew_seconds: args.auth_allowed_clock_skew_seconds,
     };
     for path in &args.oauth_providers_file {
         for (id, provider) in
@@ -233,6 +235,10 @@ mod tests {
                 "2",
                 "--auth-minimum-context-lifetime-seconds",
                 "43",
+                "--auth-oauth-admission-lifetime-seconds",
+                "12",
+                "--auth-allowed-clock-skew-seconds",
+                "2",
             ],
         );
         let http = config.http.as_ref().expect("http");
@@ -268,6 +274,8 @@ mod tests {
             ),
             (90, 10, 2, 43)
         );
+        assert_eq!(auth.oauth_admission_lifetime_seconds, 12);
+        assert_eq!(auth.allowed_clock_skew_seconds, 2);
     }
 
     #[test]

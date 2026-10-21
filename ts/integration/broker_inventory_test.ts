@@ -75,6 +75,12 @@ test("complete broker inventory is validated evidence, never a silent empty list
           );
           assert(connection.cid > 0, "every record must carry a positive cid");
         }
+        const exact = await completeBrokerInventory(system, {
+          requiredServerIds: [infoServerId],
+          onlyRequiredServers: true,
+        });
+        assert(exact.length > 0, "the identified host must answer directly");
+        assert(exact.every((connection) => connection.server === infoServerId));
         serverId = infoServerId;
       } finally {
         await system.close();
@@ -109,6 +115,7 @@ test("complete broker inventory is validated evidence, never a silent empty list
         const barrier = runtime.nativeTransportGate().armResponseHold(subject);
         const pending = completeBrokerInventory(gated, {
           requiredServerIds: [serverId],
+          onlyRequiredServers: true,
         });
         let settled: unknown;
         pending.then(

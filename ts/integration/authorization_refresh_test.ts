@@ -48,8 +48,19 @@ const runtimeOptions = {
   trellis: { source: repoTrellisSource() },
 };
 
-/** Beyond the initial authority lifetime and repeated proactive renewals. */
-const OBSERVATION_MS = 92_000;
+/** Observe genuine expiry and two scheduled renewals in a short isolated runtime. */
+const OBSERVATION_MS = 48_000;
+
+const fastRuntimeOptions = {
+  ...runtimeOptions,
+  authorization: {
+    contextLifetimeSeconds: 28,
+    refreshLeadSeconds: 7,
+    refreshJitterSeconds: 0,
+    minimumContextLifetimeSeconds: 12,
+    allowedClockSkewSeconds: 2,
+  },
+};
 
 test("verified short-lived authority remains usable after delayed admission", async () => {
   await withTrellisRuntime(
@@ -222,7 +233,7 @@ test("authorization refresh keeps a live RPC client connected and unsuspended", 
       await service.stop();
       assert.deepEqual(await serviceExit, undefined);
     }
-  }, runtimeOptions);
+  }, fastRuntimeOptions);
 });
 
 test("an active live observation continues across consumer and provider authorization refresh", async () => {
@@ -262,11 +273,11 @@ test("an active live observation continues across consumer and provider authoriz
 
       // First observe DATA across a refresh, then leave the same session quiet
       // across the next credential expiry before resuming its source.
-      await new Promise((resolve) => setTimeout(resolve, 36_000));
+      await new Promise((resolve) => setTimeout(resolve, 26_000));
       assert(frames.length > established, "DATA must continue after renewal");
       mayEmit = false;
       await new Promise((resolve) =>
-        setTimeout(resolve, OBSERVATION_MS - 36_000),
+        setTimeout(resolve, OBSERVATION_MS - 26_000),
       );
       if (sessionError) throw sessionError;
       assert.deepEqual(ended, false, "the quiet session must remain active");
@@ -290,7 +301,7 @@ test("an active live observation continues across consumer and provider authoriz
       // is the expected terminal, not a lost-authority failure.
       assert.deepEqual(await exit, undefined);
     }
-  }, runtimeOptions);
+  }, fastRuntimeOptions);
 });
 
 /**

@@ -340,6 +340,7 @@ for (const scenario of ["outage", "expiry", "cancelled-renewal"] as const) {
           const restored = admittedConnections(
             await completeBrokerInventory(system, {
               requiredServerIds: [original.server],
+              onlyRequiredServers: true,
             }),
             attachmentIds,
           );
@@ -473,10 +474,11 @@ for (const scenario of ["outage", "expiry", "cancelled-renewal"] as const) {
         ...(spansExpiry
           ? {
               authorization: {
-                contextLifetimeSeconds: 61,
-                refreshLeadSeconds: 5,
+                contextLifetimeSeconds: 42,
+                refreshLeadSeconds: 7,
                 refreshJitterSeconds: 0,
-                minimumContextLifetimeSeconds: 31,
+                minimumContextLifetimeSeconds: 16,
+                allowedClockSkewSeconds: 2,
               },
             }
           : {}),
@@ -620,10 +622,11 @@ test("a granted optional RPC waits for coverage rather than being classified as 
     {
       interruptibleNativeProxy: true,
       authorization: {
-        contextLifetimeSeconds: 125,
+        contextLifetimeSeconds: 60,
         refreshLeadSeconds: 15,
         refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 95,
+        minimumContextLifetimeSeconds: 26,
+        allowedClockSkewSeconds: 2,
       },
     },
   );

@@ -297,10 +297,11 @@ test("Rust downloads survive growth and open after the original attachment close
     },
     {
       authorization: {
-        contextLifetimeSeconds: 125,
+        contextLifetimeSeconds: 60,
         refreshLeadSeconds: 15,
         refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 95,
+        minimumContextLifetimeSeconds: 26,
+        allowedClockSkewSeconds: 2,
       },
     },
   );

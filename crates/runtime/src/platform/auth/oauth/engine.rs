@@ -115,7 +115,11 @@ impl SqliteAuthorizationStore {
         {
             return Err(AuthError::Denied);
         }
-        let expires = current.not_after.min(deadline).min(now.saturating_add(300));
+        let admission_ttl = i64::from(self.settings.oauth_admission_lifetime_seconds);
+        let expires = current
+            .not_after
+            .min(deadline)
+            .min(now.saturating_add(admission_ttl));
         if expires <= now {
             return Err(AuthError::Denied);
         }

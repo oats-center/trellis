@@ -117,7 +117,16 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                     .minimum_context_lifetime_seconds
                     .unwrap_or(76),
                 maximum_bootstrap_jwt_lifetime_seconds: 3_600,
-                allowed_clock_skew_seconds: 30,
+                allowed_clock_skew_seconds: options
+                    .runtime
+                    .authorization
+                    .allowed_clock_skew_seconds
+                    .unwrap_or(30),
+                oauth_admission_lifetime_seconds: options
+                    .runtime
+                    .authorization
+                    .oauth_admission_lifetime_seconds
+                    .unwrap_or(300),
                 maximum_context_bytes: 65_536,
                 maximum_permissions: 4_096,
                 context_bucket: "trellis_authorization_contexts".to_owned(),

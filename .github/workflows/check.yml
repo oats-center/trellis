@@ -18,9 +18,30 @@ concurrency:
 env:
   NODE_VERSION: 24
   CARGO_TERM_COLOR: always
+  # CI debug/test artifacts retain file-and-line backtraces, not full DWARF.
+  # Production release optimization and debug assertions remain unchanged.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
+  CARGO_INCREMENTAL: "0"
   RUSTUP_INIT_SKIP_PATH_CHECK: "yes"
 
 jobs:
+  rust-format:
+    name: Rust formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path Cargo.toml --all --check
+
   install:
     name: Install generated artifacts
     runs-on: [self-hosted, Linux, X64]
@@ -44,17 +65,24 @@ jobs:
       - name: Reset isolated installation state
         run: rm -rf target
 
+      - name: Enable multithreaded Zstandard caching
+        run: bash scripts/ensure-ci-zstd.sh
+
       - name: Cache installation build
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
           restore-keys: |
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-
 
       - name: Install generated artifacts
         run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
+
+      - name: Report installation cache input size
+        if: always()
+        run: du -sh target 2>/dev/null || true
 
       - name: Upload installed artifacts
         uses: actions/upload-artifact@v4
@@ -223,14 +251,17 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      - name: Enable multithreaded Zstandard caching
+        run: bash scripts/ensure-ci-zstd.sh
+
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
           restore-keys: |
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-runtime-binaries-ci-linetables-v1-
 
       # One producer for the executables every live, browser, demo, package, and
       # image job runs. The release profile is shared by all of them; there is no
@@ -293,6 +324,12 @@ jobs:
           # shared artifact is a fraction of its size for every consumer.
           find dist/runtime-binaries -type f -exec strip --strip-unneeded {} + 2>/dev/null || true
           tar -C dist/runtime-binaries -czf dist/runtime-binaries.tar.gz .
+
+      - name: Report runtime build cache input sizes
+        if: always()
+        run: |
+          du -sh target 2>/dev/null || true
+          du -sh target/debug/deps target/debug/build target/debug/incremental target/release/deps target/release/build 2>/dev/null || true
 
       - name: Upload runtime binaries
         uses: actions/upload-artifact@v4
@@ -360,10 +397,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
+          key: cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}
           restore-keys: |
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
-            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
+            cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-
 
       - name: Download protocol WASM
         uses: actions/download-artifact@v4
@@ -377,11 +414,10 @@ jobs:
       - name: Install Chromium for Rust-owned browser acceptance
         run: npx playwright install --with-deps chromium
 
-      - name: Check formatting
-        run: |
-          cargo fmt --manifest-path Cargo.toml --all --check
-
+      # Keep running workspace tests even if Clippy fails, then surface both failures.
       - name: Lint Rust
+        id: rust-lint
+        continue-on-error: true
         run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres -- -D warnings
 
       - name: Test Rust workspace
@@ -395,6 +431,16 @@ jobs:
           TRELLIS_TEST_EVENTS_BIN: ${{ github.workspace }}/dist/runtime-binaries/fixtures/events
           TRELLIS_TEST_DEX_BIN: ${{ github.workspace }}/dist/test-identity/dex
         run: cargo test --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres
+
+      - name: Require Rust lint to pass
+        if: always()
+        env:
+          LINT_OUTCOME: ${{ steps.rust-lint.outcome }}
+        run: |
+          if [ "$LINT_OUTCOME" != "success" ]; then
+            echo "::error::Rust Clippy did not succeed ($LINT_OUTCOME)"
+            exit 1
+          fi
 
   typescript:
     name: TypeScript
@@ -1268,6 +1314,7 @@ jobs:
   acceptance:
     name: Acceptance gate
     needs:
+      - rust-format
       - rust
       - typescript
       - demos

@@ -20,7 +20,7 @@ await writeFile(
       publishConfig: { access: "public" },
       repository: {
         type: "git",
-        url: "git+https://github.com/OATS-Center/trellis.git",
+        url: "git+https://github.com/oats-center/trellis.git",
       },
       exports: {
         ".": {

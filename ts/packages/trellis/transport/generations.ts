@@ -1220,6 +1220,11 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     this.#requestAdoption("authorization_growth");
   }
 
+  /** Wake acquisitions to recheck application authority without adopting a transport. @internal */
+  applicationUsabilityChanged(): void {
+    if (!this.#closed) this.#notify();
+  }
+
   /** Whether the logical connection has been closed. @internal */
   isClosed(): boolean {
     return this.#closed;

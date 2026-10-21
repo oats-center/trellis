@@ -53,6 +53,7 @@ pub(crate) struct AuthSettings {
     pub(crate) upstream_tls_roots_pem: Vec<String>,
     pub(crate) authority_lifetime_seconds: u32,
     pub(crate) clock_skew_seconds: u32,
+    pub(crate) oauth_admission_lifetime_seconds: u32,
     pub(crate) login_lifetime_seconds: u32,
     pub(crate) enforcement_page_size: usize,
 }
@@ -225,6 +226,14 @@ impl SqliteAuthorizationStore {
                     )
                 },
             )?,
+            oauth_admission_lifetime_seconds: authorization
+                .oauth_admission_lifetime_seconds
+                .try_into()
+                .map_err(|_| {
+                    RuntimeError::Platform(
+                        "OAuth admission lifetime exceeds supported range".into(),
+                    )
+                })?,
             login_lifetime_seconds: 86_400,
             enforcement_page_size: 128,
         };

@@ -199,6 +199,8 @@ pub struct ServiceConnectOptions<'a> {
     provisioned_identity_seed_base64url: &'a str,
     /// Request/connect timeout in milliseconds.
     timeout_ms: u64,
+    /// Health heartbeat interval override; absence preserves the production default.
+    health_heartbeat_interval_ms: Option<u64>,
 }
 
 impl<'a> ServiceConnectOptions<'a> {
@@ -214,6 +216,7 @@ impl<'a> ServiceConnectOptions<'a> {
             name: None,
             provisioned_identity_seed_base64url,
             timeout_ms: DEFAULT_TIMEOUT_MS,
+            health_heartbeat_interval_ms: None,
         }
     }
 
@@ -226,6 +229,13 @@ impl<'a> ServiceConnectOptions<'a> {
     /// Set the request/connect timeout in milliseconds.
     pub const fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set the interval for genuine signed health heartbeats (1000–600000 ms).
+    /// The default remains 30 seconds when this method is not called.
+    pub const fn with_health_heartbeat_interval_ms(mut self, interval_ms: u64) -> Self {
+        self.health_heartbeat_interval_ms = Some(interval_ms);
         self
     }
 }
@@ -1454,16 +1464,18 @@ impl<C> ConnectedServiceRuntime<C> {
 impl<C: crate::generated::ParticipantDescriptor> ConnectedServiceRuntime<C> {
     /// Connect with generated participant evidence and parse the returned bootstrap binding.
     pub async fn connect(options: ServiceConnectOptions<'_>) -> Result<Self, ServiceRuntimeError> {
-        let client =
-            TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+        let client = TrellisClient::connect_service_with_contract_with_health_interval(
+            ServiceConnectWithContractOptions {
                 nats_servers: options.nats_servers,
                 trust: options.trust,
                 participant_id: C::ID,
                 name: options.name,
                 provisioned_identity_seed_base64url: options.provisioned_identity_seed_base64url,
                 timeout_ms: options.timeout_ms,
-            })
-            .await?;
+            },
+            options.health_heartbeat_interval_ms,
+        )
+        .await?;
         let binding = parse_bootstrap_binding(&client)?;
         // Resource-only services have no default inbound API. Explicit generated
         // routes still supply their real API identity to the shared verifier.

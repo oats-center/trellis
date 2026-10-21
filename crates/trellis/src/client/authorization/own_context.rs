@@ -529,12 +529,15 @@ impl AuthorizationContextCache {
     pub(crate) fn refresh_delay(&self) -> Result<Duration, TrellisClientError> {
         let installed = self.installed.read().map_err(|_| unavailable())?;
         let remaining = installed.as_ref().map_or(1, |authority| {
-            authority
-                .authority
-                .authority()
+            let context = authority.authority.authority();
+            let lifetime = context.expires_at.saturating_sub(context.issued_at);
+            // Preserve the production 30s lead; short-lived test contexts must
+            // still have a meaningful serving window before normal renewal.
+            let lead = (lifetime / 3).clamp(2, 30);
+            context
                 .expires_at
                 .saturating_sub(self.owner.policy().now_unix_seconds)
-                .saturating_sub(30)
+                .saturating_sub(lead)
         });
         Ok(Duration::from_secs(remaining.max(1) as u64))
     }

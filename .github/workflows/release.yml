@@ -42,7 +42,6 @@ jobs:
       should-publish: ${{ steps.release.outputs.should-publish }}
       should-create-tag: ${{ steps.release.outputs.should-create-tag }}
       candidate-sha: ${{ steps.release.outputs.candidate-sha }}
-      resume-existing-release: ${{ steps.release.outputs.resume-existing-release }}
 
     steps:
       - name: Check out repository
@@ -95,14 +94,12 @@ jobs:
           fi
 
           candidate_sha="${GITHUB_SHA}"
-          resume_existing_release=false
           if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${should_publish}" = "true" ]; then
             remote_tag="$(git ls-remote --tags origin "refs/tags/${release_tag}")"
             if [ -n "${remote_tag}" ]; then
               # Workflow repairs cannot replace a published tag's candidate.
               git fetch --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
               candidate_sha="$(git rev-parse "refs/tags/${release_tag}^{commit}")"
-              resume_existing_release=true
             fi
           fi
 
@@ -112,7 +109,6 @@ jobs:
           echo "should-publish=${should_publish}" >> "${GITHUB_OUTPUT}"
           echo "should-create-tag=${should_create_tag}" >> "${GITHUB_OUTPUT}"
           echo "candidate-sha=${candidate_sha}" >> "${GITHUB_OUTPUT}"
-          echo "resume-existing-release=${resume_existing_release}" >> "${GITHUB_OUTPUT}"
 
   prepare-release:
     name: Prepare release workspace
@@ -130,7 +126,6 @@ jobs:
       should-create-tag: ${{ needs.resolve-release.outputs.should-create-tag }}
       check-run-id: ${{ steps.check.outputs.run-id }}
       candidate-sha: ${{ needs.resolve-release.outputs.candidate-sha }}
-      resume-existing-release: ${{ needs.resolve-release.outputs.resume-existing-release }}
     env:
       RELEASE_TAG: ${{ needs.resolve-release.outputs.release-tag }}
       SHOULD_PUBLISH: ${{ needs.resolve-release.outputs.should-publish }}
@@ -298,34 +293,43 @@ jobs:
           name: release-notes
           path: dist
 
-      - name: Publish release assets
-        if: needs.prepare-release.outputs.resume-existing-release != 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-          tag_name: ${{ needs.prepare-release.outputs.release-tag }}
-          target_commitish: ${{ needs.prepare-release.outputs.candidate-sha }}
-          files: |
-            dist/trellis-*-x86_64-unknown-linux-gnu.tar.gz
-            dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256
-          body_path: dist/release-notes.md
-          prerelease: ${{ contains(needs.prepare-release.outputs.release-tag, '-') }}
-
-      - name: Verify existing release assets
-        if: needs.prepare-release.outputs.resume-existing-release == 'true'
+      - name: Create missing release assets and verify existing bytes
         env:
           GH_TOKEN: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
         run: |
           set -euo pipefail
-          existing="$RUNNER_TEMP/existing-release"
-          mkdir -p "$existing"
+          release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == env.RELEASE_TAG) | .id')"
+          if [ -z "$release_id" ]; then
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file dist/release-notes.md "${flags[@]}"
+          fi
+          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          existing="$(mktemp -d "$RUNNER_TEMP/existing-release.XXXXXX")"
+          missing=()
           for asset in dist/trellis-*-x86_64-unknown-linux-gnu.tar.gz dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256; do
+            test -f "$asset"
             name="$(basename "$asset")"
-            gh release download "$RELEASE_TAG" --pattern "$name" --dir "$existing"
-            cmp "$asset" "$existing/$name"
+            if jq -e --arg name "$name" '.assets | any(.name == $name)' <<< "$release" >/dev/null; then
+              gh release download "$RELEASE_TAG" --pattern "$name" --dir "$existing"
+              cmp "$asset" "$existing/$name"
+            else
+              missing+=("$asset")
+            fi
           done
+          # Never overwrite published bytes, including after a partial upload.
+          if [ "${#missing[@]}" -gt 0 ]; then
+            gh release upload "$RELEASE_TAG" "${missing[@]}"
+          fi
+
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
 
   publish-crates:
     name: Publish Rust crates
@@ -338,6 +342,10 @@ jobs:
       contents: read
       actions: read
       id-token: write
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - name: Check out repository
@@ -378,6 +386,9 @@ jobs:
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Enable multithreaded Zstandard caching
+        run: bash scripts/ensure-ci-zstd.sh
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
@@ -626,7 +637,7 @@ jobs:
             fi
 
             set +e
-            output=$(npm publish --access public --tag "$npm_tag" "$pkg" 2>&1)
+            output=$(npm publish --access public --tag "$npm_tag" "./$pkg" 2>&1)
             status=$?
             set -e
 
@@ -655,6 +666,14 @@ jobs:
             ts/packages/trellis/npm
             ts/packages/trellis-svelte/npm
           )
+          mkdir -p dist/testkit-npm
+          tar -xzf dist/testkit-npm.tar.gz -C dist/testkit-npm
+          # npm checks repository identity against GitHub provenance with
+          # case-sensitive comparison. Normalize only this metadata field;
+          # all implementation files remain Check's accepted inputs.
+          for pkg in "${packages[@]}" dist/testkit-npm; do
+            npm pkg set "repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git" --prefix "$pkg"
+          done
           for pkg in "${packages[@]}"; do
             package_json="$pkg/package.json"
             name=$(node -p "require('./${package_json}').name")
@@ -663,8 +682,6 @@ jobs:
           done
 
           # The verified pinned testkit is published only after SDK dependencies.
-          mkdir -p dist/testkit-npm
-          tar -xzf dist/testkit-npm.tar.gz -C dist/testkit-npm
           npm ci
           smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
           mkdir -p "$smoke_root/home"
