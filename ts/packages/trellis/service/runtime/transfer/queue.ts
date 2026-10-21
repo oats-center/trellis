@@ -126,6 +126,7 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
     this.#bytes += chunk.length;
     recordCatalogUpDown("trellis.transfer.buffered.bytes", chunk.length, {
       "trellis.direction": this.direction,
+      "trellis.side": this.direction === "upload" ? "provider" : "client",
     });
     this.#wake?.();
   }
@@ -144,6 +145,7 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
     this.#values = [];
     recordCatalogUpDown("trellis.transfer.buffered.bytes", -this.#bytes, {
       "trellis.direction": this.direction,
+      "trellis.side": this.direction === "upload" ? "provider" : "client",
     });
     this.#bytes = 0;
     this.#wake?.();
@@ -158,7 +160,10 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
         recordCatalogUpDown(
           "trellis.transfer.buffered.bytes",
           -value.chunk.length,
-          { "trellis.direction": this.direction },
+          {
+            "trellis.direction": this.direction,
+            "trellis.side": this.direction === "upload" ? "provider" : "client",
+          },
         );
         this.consumed(value.seq, value.chunk.length);
         yield value.chunk;

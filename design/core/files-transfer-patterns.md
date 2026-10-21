@@ -236,7 +236,10 @@ Rules:
   authority growth does not migrate it, and physical disconnect ends it
 - DATA payloads are raw bytes, never JSON/base64; ordered sequences start at
   `1`, while cursor `0` means no DATA received or consumed
-- checked u64 wire counters use canonical decimal strings
+- sequence, control-sequence, and credit cursors are checked u64 values in
+  canonical decimal strings; object sizes (`size` in completion, EOF, and
+  logical `FileInfo`) are JSON integers bounded by 2^53 - 1, like every other
+  Trellis size field
 - upload frames carry session-bound request proofs over a compact digest binding
   transfer id, direction, sequence, control discriminator, and payload hash;
   there is no payload-sized proof copy or per-DATA request/reply
@@ -296,29 +299,25 @@ all DATA on the same download subject. Both endpoints verify final logical
 size/digest, and the consumer sends final credit/end acknowledgement before
 releasing session ownership. No per-frame pull RPC remains.
 
-Rust senders coalesce immediately ready short reads up to the negotiated frame
-limit. Buffers start at at most 64 KiB and grow only as ready data arrives, then
-move directly into immutable frame payloads. Only the first read may suspend:
-an available prefix is sent rather than waiting for a full bulk frame or EOF.
-This also keeps source reads cancellation-safe inside the session's select loop.
-
-TypeScript caps ready-frame formation at the smaller of the negotiated limit and
-256 KiB. This can fill the default 4 MiB / 16-frame window while bounding each
-frame's synchronous byte work; measured concurrent Live openings regressed with
-larger ready frames. This is private formation policy, not a timed flush or public
-tuning field. A standard byte-sized Web Stream queue allows up to one formed
-frame of source prefetch (plus one frame-sized block). The shared upload/download
-framer combines only chunks already queued, keeps views when no combination is
-needed, and never waits to fill a frame. Streaming source blocks are snapshotted
-before advancing an iterator that may reuse its scratch buffer; even an
-oversized producer chunk is copied only in frame-sized pieces. Store-reader cancellation and teardown
-remain session-owned; an application's uninterruptible iterator cannot pin SDK
-cleanup. Producer-provided backing buffers are not an SDK allocation guarantee.
+Senders in both SDKs form frames only from bytes that are already ready, up to
+the negotiated frame limit. Only the first read of a frame may wait: an
+available prefix is sent rather than waiting for a full frame or EOF, so slow
+producers still make progress, and source reads stay cancellation-safe inside
+the session. Source prefetch is bounded to about one formed frame. Streaming
+source blocks are snapshotted before advancing an iterator that may reuse its
+scratch buffer. TypeScript may form ready frames below the negotiated limit to
+bound each frame's synchronous work so concurrent Live traffic stays
+responsive. Exact buffer and frame-formation sizes are private implementation
+policy, documented in source, not public tuning fields. Store-reader
+cancellation and teardown remain session-owned; an application's
+uninterruptible iterator cannot pin SDK cleanup. Producer-provided backing
+buffers are not an SDK allocation guarantee.
 
 ### Store Backing
 
-The Rust JetStream writer pipelines at most eight chunks of at most 128 KiB
-(1 MiB of outstanding payload per writer). It preserves native Object Store
+The Rust JetStream writer fills each chunk to 128 KiB across short reads (only
+the final chunk may be shorter) and pipelines at most eight of them (1 MiB of
+outstanding payload per writer). It preserves native Object Store
 metadata and SHA-256 and awaits every chunk ACK before publishing metadata.
 Source errors and pre-commit cancellation retain the admitting transport through
 owned partial-chunk cleanup. Once metadata publication can have escaped, chunks
@@ -395,13 +394,16 @@ Rules:
 
 ### Transfer Observability
 
-Both runtimes retain `trellis.transfer.duration` and
-`trellis.transfer.wire.bytes`, and record `trellis.transfer.frames`,
-`trellis.transfer.credit.controls`, and `trellis.transfer.buffered.bytes` from
-the endpoint that owns the actual work. Buffered bytes follow retained raw
-payload ownership and are released on consumption or cleanup. Labels are bounded
-logical direction/side/outcome values, never transfer ids, subjects, principals,
-object keys, or arbitrary errors. There are no per-frame spans.
+Both runtimes record the same transfer metrics with the same labels:
+`trellis.direction` is `upload` or `download` and `trellis.side` is `client` or
+`provider` (`store` for storage refill waits). Each endpoint records one
+`trellis.transfer.duration` per transfer, and counts `trellis.transfer.frames`,
+`trellis.transfer.wire.bytes`, and `trellis.transfer.credit.controls` for the
+DATA frames and credit messages it sends or verifies on receipt.
+`trellis.transfer.buffered.bytes` follows retained raw payload ownership and is
+released on consumption or cleanup. Labels never include transfer ids,
+subjects, principals, object keys, or arbitrary errors. There are no per-frame
+spans.
 
 `trellis.transfer.wait.duration` separates blocked sender credit waits from
 streaming store refill waits. Refill measures awaiting the next backend message,

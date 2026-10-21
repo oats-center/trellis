@@ -113,7 +113,7 @@ mod tests {
             bytes: Payload::new(
                 Bytes::from_static(b"abcd"),
                 TransferDirection::Send,
-                "provider-rx",
+                "provider",
             ),
         })
         .await
@@ -139,7 +139,7 @@ mod tests {
             bytes: Payload::new(
                 Bytes::from_static(b"one"),
                 TransferDirection::Send,
-                "provider-rx",
+                "provider",
             ),
         })
         .await
@@ -149,7 +149,7 @@ mod tests {
             bytes: Payload::new(
                 Bytes::from_static(b"two"),
                 TransferDirection::Send,
-                "provider-rx",
+                "provider",
             ),
         })
         .await

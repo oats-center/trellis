@@ -336,6 +336,8 @@ pub fn transfer_constants() -> String {
         "creditByteStep": TRANSFER_CREDIT_BYTE_STEP,
         "creditMaxDelayMs": TRANSFER_CREDIT_MAX_DELAY_MS,
         "headerReserve": TRANSFER_HEADER_RESERVE,
+        "operationUploadLifetimeSeconds": TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS,
+        "operationUploadMaxBytes": TRANSFER_OPERATION_UPLOAD_MAX_BYTES,
         "maxControlBytes": MAX_TRANSFER_CONTROL_BYTES,
         "sequenceHeader": TRANSFER_SEQUENCE_HEADER,
         "controlHeader": TRANSFER_CONTROL_HEADER,

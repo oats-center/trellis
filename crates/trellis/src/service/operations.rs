@@ -2345,7 +2345,9 @@ fn operation_upload_grant<D: OperationDescriptor>(
 ) -> Result<UploadTransferGrant, ServerError> {
     use trellis_protocol::transfer::{
         derive_transfer_subject, generate_transfer_id, negotiate_transfer_max_frame_bytes,
-        TransferSubjectKind, TRANSFER_VERSION, TRANSFER_WINDOW_BYTES, TRANSFER_WINDOW_FRAMES,
+        TransferSubjectKind, TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS,
+        TRANSFER_OPERATION_UPLOAD_MAX_BYTES, TRANSFER_VERSION, TRANSFER_WINDOW_BYTES,
+        TRANSFER_WINDOW_FRAMES,
     };
     let transfer_id =
         generate_transfer_id().map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -2381,15 +2383,16 @@ fn operation_upload_grant<D: OperationDescriptor>(
         data_subject: subject(TransferSubjectKind::UploadData)?,
         control_subject: subject(TransferSubjectKind::Control)?,
         signal_subject: subject(TransferSubjectKind::Signal)?,
-        expires_at: (OffsetDateTime::now_utc() + time::Duration::minutes(15))
-            .format(&Rfc3339)
-            .map_err(|error| ServerError::Nats(error.to_string()))?,
+        expires_at: (OffsetDateTime::now_utc()
+            + time::Duration::seconds(TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS as i64))
+        .format(&Rfc3339)
+        .map_err(|error| ServerError::Nats(error.to_string()))?,
         max_frame_bytes: negotiate_transfer_max_frame_bytes(max_payload, max_payload)
             .map_err(|error| ServerError::Nats(error.to_string()))?,
         window_frames: TRANSFER_WINDOW_FRAMES,
         window_bytes: TRANSFER_WINDOW_BYTES,
         transfer_id,
-        max_bytes: Some(512 * 1024 * 1024),
+        max_bytes: Some(TRANSFER_OPERATION_UPLOAD_MAX_BYTES),
         content_type,
         metadata: Default::default(),
     })

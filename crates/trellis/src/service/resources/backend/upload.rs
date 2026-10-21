@@ -86,8 +86,14 @@ pub(super) async fn write<R: AsyncRead + Unpin + Send>(
             pending.acks.pop_front();
             result.map_err(nats_error)?;
         }
+        // Fill each chunk across short reads; only EOF publishes a partial one.
         let mut buffer = BytesMut::with_capacity(CHUNK_BYTES);
-        let count = reader.read_buf(&mut buffer).await.map_err(nats_error)?;
+        while buffer.len() < CHUNK_BYTES {
+            if reader.read_buf(&mut buffer).await.map_err(nats_error)? == 0 {
+                break;
+            }
+        }
+        let count = buffer.len();
         if count == 0 {
             break;
         }
@@ -231,6 +237,11 @@ mod tests {
             .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)));
         let mut reader = tokio_util::io::StreamReader::new(stream::iter(reads));
         let written = bound.write_from(key, &mut reader).await.unwrap();
+        assert_eq!(
+            native.info(key).await.unwrap().chunks,
+            data.len().div_ceil(CHUNK_BYTES),
+            "short reads must fill whole chunks rather than publish one message per read"
+        );
         let mut object_stream = context.get_stream(format!("OBJ_{bucket}")).await.unwrap();
         let (mut destination, mut received) = tokio::io::duplex(CHUNK_BYTES);
         let reading = {
@@ -349,10 +360,8 @@ mod tests {
             let bound = bound.clone();
             tokio::spawn(async move { bound.write_from("cancelled", &mut reader).await })
         };
-        producer
-            .write_all(b"partial cancelled object")
-            .await
-            .unwrap();
+        // One full chunk publishes while the writer still awaits the rest.
+        producer.write_all(&vec![7; CHUNK_BYTES + 5]).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while object_stream.info().await.unwrap().state.messages <= committed_messages {
                 tokio::task::yield_now().await;

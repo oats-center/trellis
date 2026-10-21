@@ -11,8 +11,8 @@ fn attributes(direction: TransferDirection, side: &'static str) -> [KeyValue; 2]
         KeyValue::new(
             "trellis.direction",
             match direction {
-                TransferDirection::Send => "send",
-                TransferDirection::Receive => "receive",
+                TransferDirection::Send => "upload",
+                TransferDirection::Receive => "download",
             },
         ),
         KeyValue::new("trellis.side", side),
@@ -44,6 +44,7 @@ pub(crate) fn wait(
     )
 }
 
+/// Count one sent or verified received message at the endpoint that owns it.
 pub(crate) fn frame(descriptor: &TransferFrameDescriptor, payload: &[u8], side: &'static str) {
     let attrs = attributes(descriptor.direction, side);
     if descriptor.kind == TransferFrameKind::Data {
@@ -56,7 +57,7 @@ pub(crate) fn frame(descriptor: &TransferFrameDescriptor, payload: &[u8], side: 
     } else if (descriptor.kind == TransferFrameKind::Control
         && matches!(
             parse_transfer_control(payload),
-            Ok(TransferControl::Credit { .. } | TransferControl::EndAck { .. })
+            Ok(TransferControl::Credit { .. })
         ))
         || (descriptor.kind == TransferFrameKind::Signal
             && matches!(
@@ -205,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn backend_pipe_preserves_bytes_across_bounded_backpressure_and_eof() {
         let input = (0..=255).cycle().take(16_384).collect::<Vec<u8>>();
-        let (mut writer, mut reader) = pipe(7, TransferDirection::Receive, "provider-tx");
+        let (mut writer, mut reader) = pipe(7, TransferDirection::Receive, "provider");
         let mut output = Vec::new();
         let (written, read) = tokio::join!(
             async {

@@ -1321,6 +1321,8 @@ export type TransferConstants = {
   creditByteStep: number;
   creditMaxDelayMs: number;
   headerReserve: number;
+  operationUploadLifetimeSeconds: number;
+  operationUploadMaxBytes: number;
   maxControlBytes: number;
   sequenceHeader: string;
   controlHeader: string;

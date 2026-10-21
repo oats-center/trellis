@@ -221,7 +221,6 @@ export class TransferSession {
     result.set("proof", base64urlEncode(proof));
     result.set("iat", String(iat));
     result.set("request-id", requestId);
-    result.set("Trellis-Session-Request", JSON.stringify(request));
     result.set("Trellis-Api-Generation", api.generation);
     result.set("Trellis-Accepted-Revision", api.acceptedRevision);
     if (seq !== undefined) {
@@ -523,6 +522,7 @@ export class TransferCredit {
       recordCatalogCounter("trellis.transfer.credit.controls", 1, {
         "trellis.direction":
           this.session.grant.direction === "send" ? "upload" : "download",
+        "trellis.side": this.session.provider ? "provider" : "client",
       });
     } finally {
       this.#work = undefined;

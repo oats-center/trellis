@@ -80,6 +80,7 @@ export async function* frames(
           bufferedBytes += chunk.length;
           recordCatalogUpDown("trellis.transfer.buffered.bytes", chunk.length, {
             "trellis.direction": direction,
+            "trellis.side": direction === "upload" ? "client" : "provider",
           });
         }
         controller.enqueue(chunk);
@@ -152,7 +153,10 @@ export async function* frames(
           recordCatalogUpDown(
             "trellis.transfer.buffered.bytes",
             -frame.length,
-            { "trellis.direction": direction },
+            {
+              "trellis.direction": direction,
+              "trellis.side": direction === "upload" ? "client" : "provider",
+            },
           );
         }
       }
@@ -166,6 +170,7 @@ export async function* frames(
     if (bufferedBytes)
       recordCatalogUpDown("trellis.transfer.buffered.bytes", -bufferedBytes, {
         "trellis.direction": direction,
+        "trellis.side": direction === "upload" ? "client" : "provider",
       });
   }
 }

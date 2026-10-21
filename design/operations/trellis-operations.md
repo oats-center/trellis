@@ -165,7 +165,10 @@ Both SDKs return the original logical file metadata after takeover; the physical
 staging locator remains private and is used only to open the staged object.
 
 Operation upload uses Transfer v1's bounded one-way raw-byte stream,
-independently of Live-based Operation Watch. Network credit follows
+independently of Live-based Operation Watch. Both SDKs issue upload grants from
+one shared protocol policy: a grant lasts 15 minutes and admits at most 512 MiB.
+Grant expiry ends an unfinished upload, so the lifetime bounds the whole
+transfer, not only activation. Network credit follows
 complete-frame consumption by staging storage, never durable Operation progress
 persistence. One owned latest-value worker coalesces durable progress at 1 MiB
 of newer consumption or 250 ms of pending progress; it does not enqueue one

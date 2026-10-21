@@ -136,7 +136,7 @@ where
                             }
                             publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
                             if !activated {
-                                let (mut writer, pipe) = super::telemetry::pipe(max_frame_bytes as usize, TransferDirection::Receive, "provider-tx");
+                                let (mut writer, pipe) = super::telemetry::pipe(max_frame_bytes as usize, TransferDirection::Receive, "provider");
                                 let store = store.take().ok_or_else(|| error("download backend already started"))?;
                                 let key = grant.info.key.clone();
                                 reader = Some(pipe);
@@ -167,7 +167,7 @@ where
                 },
                 bytes = async { super::read_ready_frame(reader.as_mut().ok_or_else(|| error("download reader missing"))?, max_frame_bytes as usize).await.map_err(error) }, if activated && !eof && staged.is_none() => {
                     let bytes = bytes?;
-                    if !bytes.is_empty() { staged = Some(super::telemetry::Payload::new(bytes, TransferDirection::Receive, "provider-tx")); continue; }
+                    if !bytes.is_empty() { staged = Some(super::telemetry::Payload::new(bytes, TransferDirection::Receive, "provider")); continue; }
                     let info = match backend_result.take() {
                         Some(info) => info,
                         None => backend.as_mut().ok_or_else(|| error("download backend missing"))?.await?.ok_or_else(|| error("download object missing"))?,

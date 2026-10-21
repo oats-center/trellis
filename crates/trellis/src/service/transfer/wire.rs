@@ -206,11 +206,8 @@ impl TransferPeer {
         provider_id: &str,
         signal_subject: &str,
     ) -> Result<(), ServerError> {
-        let _charge = super::telemetry::Charge::new(
-            message.payload.len(),
-            descriptor.direction,
-            "provider-rx",
-        );
+        let _charge =
+            super::telemetry::Charge::new(message.payload.len(), descriptor.direction, "provider");
         let headers = message
             .headers
             .as_ref()
@@ -311,7 +308,9 @@ impl TransferPeer {
         }
         self.guard
             .check_now()
-            .map_err(|e| error(format!("transfer authority: {e:?}")))
+            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        super::telemetry::frame(descriptor, &message.payload, "provider");
+        Ok(())
     }
 
     pub(crate) async fn verify_provider(
@@ -320,7 +319,7 @@ impl TransferPeer {
         descriptor: &TransferFrameDescriptor,
     ) -> Result<(), ServerError> {
         let _charge =
-            super::telemetry::Charge::new(message.payload.len(), descriptor.direction, "client-rx");
+            super::telemetry::Charge::new(message.payload.len(), descriptor.direction, "client");
         let headers = message
             .headers
             .as_ref()
@@ -360,7 +359,9 @@ impl TransferPeer {
         }
         self.guard
             .check_now()
-            .map_err(|e| error(format!("transfer authority: {e:?}")))
+            .map_err(|e| error(format!("transfer authority: {e:?}")))?;
+        super::telemetry::frame(descriptor, &message.payload, "client");
+        Ok(())
     }
 }
 
@@ -389,9 +390,12 @@ pub(crate) async fn publish_provider(
     headers.insert("authorization-context", digest.as_str());
     headers.insert("session-key", auth.session_key.as_str());
     headers.insert(TRANSFER_PROOF_HEADER, proof.as_str());
+    let counted = payload.clone();
     nats.publish_with_headers(subject.to_owned(), headers, payload)
         .await
-        .map_err(error)
+        .map_err(error)?;
+    super::telemetry::frame(descriptor, &counted, "provider");
+    Ok(())
 }
 
 pub(crate) async fn publish_signal(

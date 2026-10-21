@@ -162,11 +162,11 @@ test("L19/L20 prepared return never starts a provider source", async () => {
     try {
       await metricsCapture.flush();
       const beforeEnds = metricsCapture.total("trellis.live.ends", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "consumer",
       });
       const beforeActive = metricsCapture.total("trellis.live.sessions", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "consumer",
         "trellis.phase": "active",
       });
@@ -185,14 +185,14 @@ test("L19/L20 prepared return never starts a provider source", async () => {
       assert.deepEqual(cleanups, 0);
       assert.deepEqual(
         metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "consumer",
         }) - beforeEnds,
         1,
       );
       assert.deepEqual(
         metricsCapture.total("trellis.live.sessions", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "consumer",
           "trellis.phase": "active",
         }),
@@ -229,11 +229,11 @@ test("L24/L25 finite source delivers ordered values and one normal end", async (
     try {
       await metricsCapture.flush();
       const beforeConsumerEnds = metricsCapture.total("trellis.live.ends", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "consumer",
       });
       const beforeProviderEnds = metricsCapture.total("trellis.live.ends", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "provider",
       });
 
@@ -248,14 +248,14 @@ test("L24/L25 finite source delivers ordered values and one normal end", async (
       assert.deepEqual(cleanups, 1);
       assert.deepEqual(
         metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "consumer",
         }) - beforeConsumerEnds,
         1,
       );
       assert.deepEqual(
         metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "provider",
         }) - beforeProviderEnds,
         1,

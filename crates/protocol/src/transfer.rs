@@ -32,6 +32,11 @@ pub const TRANSFER_CREDIT_BYTE_STEP: u64 = 1_048_576;
 pub const TRANSFER_CREDIT_MAX_DELAY_MS: u64 = 25;
 /// NATS payload capacity reserved for proof and descriptor headers.
 pub const TRANSFER_HEADER_RESERVE: u64 = 4_096;
+/// Lifetime of an Operation upload grant. Its expiry ends the transfer, so it
+/// bounds activation and the whole upload in both SDKs.
+pub const TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS: u64 = 900;
+/// Largest object an Operation upload grant admits in both SDKs.
+pub const TRANSFER_OPERATION_UPLOAD_MAX_BYTES: u64 = 536_870_912;
 /// Maximum JSON control, signal or terminal descriptor size.
 pub const MAX_TRANSFER_CONTROL_BYTES: usize = 8_192;
 /// Header carrying the canonical DATA sequence.

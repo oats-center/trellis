@@ -1403,8 +1403,6 @@ export type RuntimeOperationDesc = {
   transfer?: {
     contentType?: `/${string}`;
     metadata?: `/${string}`;
-    expiresInMs?: number;
-    maxBytes?: number;
   };
   cancel?: boolean;
 };
@@ -4244,7 +4242,6 @@ export class Trellis<
               this.#auth,
               this.timeout,
               grant,
-              this.#inboxPrefix,
             );
             if (!(handle instanceof Object) || !("send" in handle)) {
               return err(
@@ -4276,7 +4273,6 @@ export class Trellis<
       this.#auth,
       this.timeout,
       grant,
-      this.#inboxPrefix,
     );
   }
 

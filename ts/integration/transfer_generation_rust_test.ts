@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { Readable } from "node:stream";
 import { TextDecoderStream } from "node:stream/web";
 import { test } from "node:test";
@@ -9,6 +10,7 @@ import {
   apps,
   participants,
 } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { decodeMetrics, type MetricPoint } from "./_support/otlp.ts";
 import { spawnTracked } from "./_support/process.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
@@ -36,12 +38,71 @@ test("Rust downloads survive growth and open after the original attachment close
         name: "rust-transfer-caller",
         contract: apps.Caller.request,
       });
+      // The Rust provider exports its own transfer counters over real OTLP.
+      let points: { name: string; point: MetricPoint }[] = [];
+      let telemetryError: unknown;
+      const collector = createServer(async (request, response) => {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const next = decodeMetrics(Buffer.concat(chunks))
+            .resourceMetrics.flatMap((resource) => resource.scopeMetrics)
+            .flatMap((scope) => scope.metrics)
+            .flatMap(
+              (metric) =>
+                metric.sum?.dataPoints.map((point) => ({
+                  name: metric.name,
+                  point,
+                })) ?? [],
+            );
+          if (next.length) points = next;
+          response.writeHead(200).end();
+        } catch (error) {
+          telemetryError = error;
+          response.writeHead(400).end();
+        }
+      });
+      await new Promise<void>((resolve) =>
+        collector.listen(0, "127.0.0.1", resolve),
+      );
+      collector.unref();
+      const address = collector.address();
+      assert(address && typeof address !== "string");
+      const rustTotal = (name: string, direction: string) => {
+        if (telemetryError) throw telemetryError;
+        return points
+          .filter(
+            ({ name: actual, point }) =>
+              actual === name &&
+              [
+                ["trellis.direction", direction],
+                ["trellis.side", "provider"],
+              ].every(([key, value]) =>
+                point.attributes.some(
+                  (attribute) =>
+                    attribute.key === key &&
+                    attribute.value?.stringValue === value,
+                ),
+              ),
+          )
+          .reduce(
+            (sum, { point }) => sum + Number(point.asInt ?? point.asDouble),
+            0,
+          );
+      };
       const argv = rustFixtureArgv("transfer_generation");
       const child = spawnTracked(argv[0], argv.slice(1), {
         env: {
-          ...process.env,
+          ...Object.fromEntries(
+            Object.entries(process.env).filter(
+              ([key]) => !key.startsWith("OTEL_"),
+            ),
+          ),
           TRELLIS_URL: runtime.oauthIssuer,
           TRELLIS_IDENTITY_SEED: instance.seed,
+          OTEL_METRICS_EXPORTER: "otlp",
+          OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
+          OTEL_METRIC_EXPORT_INTERVAL: "500",
         },
       });
       child.stderr.pipe(process.stderr);
@@ -155,6 +216,20 @@ test("Rust downloads survive growth and open after the original attachment close
           await caller.transfer(beforeGrant).bytes().orThrow(),
           bytes,
         );
+        // Rust labels its provider endpoint in the shared catalog vocabulary:
+        // it verified every uploaded DATA byte and sent the download's DATA.
+        await runtime.waitFor(
+          () =>
+            rustTotal("trellis.transfer.wire.bytes", "upload") ===
+              bytes.length &&
+            rustTotal("trellis.transfer.wire.bytes", "download") >=
+              bytes.length,
+          { timeoutMs: 30_000 },
+        );
+        for (const direction of ["upload", "download"]) {
+          assert(rustTotal("trellis.transfer.frames", direction) > 0);
+          assert(rustTotal("trellis.transfer.credit.controls", direction) > 0);
+        }
 
         // Stop public stream consumption after actual DATA, before growth.
         const ongoing = await caller.download({ value: "ongoing" }).orThrow();
@@ -293,6 +368,7 @@ test("Rust downloads survive growth and open after the original attachment close
         await outputTask;
         await target.stop();
         await targetExit;
+        await new Promise<void>((resolve) => collector.close(() => resolve()));
       }
     },
     {

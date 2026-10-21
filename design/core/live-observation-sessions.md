@@ -100,9 +100,8 @@ Ordinary identity-preserving authorization refresh retains and replaces covered
 authority evidence without replacing the physical transport, recreating the
 observation, resetting sequence/credit state, or restarting the source. Quiet
 sessions propagate fresh authority using existing signed controls and
-challenges. A real physical disconnect—including an application-requested
-transport refresh—is a real delivery interruption and follows ordinary
-observation-loss rules. Live does not add application-data replay, coordinated
+challenges. A real physical disconnect is a real delivery interruption and
+follows ordinary observation-loss rules. Live does not add application-data replay, coordinated
 pause/resume, or transparent subscription migration to hide that interruption. A
 changed runtime key, logical connection id, selected deployment, or removed
 route ends the session. Invalid or foreign frames are discarded without
@@ -195,7 +194,7 @@ both SDKs:
 - `trellis.live.cleanup.pending` counts owned cleanup that exceeded the grace
   until it truly settles.
 
-Each session reports its `trellis.kind` as `standalone` or `operation`. Labels
+Each session reports its `trellis.kind` as `live` or `operation_watch`. Labels
 are bounded; session and Operation ids, subjects, principals and arbitrary error
 text never become dimensions. No span is held open for the lifetime of a
 session, and no per-frame spans are emitted.

@@ -215,7 +215,7 @@ async fn activate(
                     let descriptor = TransferFrameDescriptor { transfer_id: coordinates.id.into(), direction: coordinates.direction, sequence: U64s::new(2), kind: TransferFrameKind::Control, terminal: None };
                     let headers = wire::caller_headers(client, &coordinates.action, coordinates.control, coordinates.signal, &descriptor, &payload).map_err(fail)?;
                     lease.nats().publish_with_reply_and_headers(coordinates.control.to_owned(), coordinates.signal.to_owned(), headers, payload.clone()).await.map_err(fail)?;
-                    transfer::telemetry::frame(&descriptor, &payload, "client-tx");
+                    transfer::telemetry::frame(&descriptor, &payload, "client");
                     cancelled_sent = true;
                     continue;
                 },
@@ -355,7 +355,7 @@ async fn publish_control(
         )
         .await
         .map_err(fail)?;
-    transfer::telemetry::frame(&descriptor, &payload, "client-tx");
+    transfer::telemetry::frame(&descriptor, &payload, "client");
     Ok(())
 }
 
@@ -441,7 +441,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                     hasher.update(&bytes);
                     let len = bytes.len() as u64;
                     active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, bytes.bytes.clone()).await.map_err(fail)?;
-                    transfer::telemetry::frame(&descriptor, &bytes, "client-tx");
+                    transfer::telemetry::frame(&descriptor, &bytes, "client");
                     window.commit_frame(seq, len).map_err(|e| fail(format!("upload sender window: {e:?}")))?;
                     transferred = next;
                     continue;
@@ -470,7 +470,7 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                 bytes = transfer::read_ready_frame(reader, active.max_frame as usize), if !source_done && staged.is_none() && !cancelled_sent => {
                     let bytes = bytes?;
                     if bytes.is_empty() { source_done = true; }
-                    else { staged = Some(transfer::telemetry::Payload::new(bytes, TransferDirection::Send, "client-tx")); }
+                    else { staged = Some(transfer::telemetry::Payload::new(bytes, TransferDirection::Send, "client")); }
                 },
                 message = active.signals.next() => {
                     let message = message.ok_or_else(|| fail("upload signal subscription closed"))?;
@@ -510,7 +510,11 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
         )
         .await;
     }
-    observation.finish(if outcome.is_ok() { "ok" } else { "error" });
+    observation.finish(match &outcome {
+        Ok(_) => "ok",
+        Err(TrellisClientError::TransferCancelled) => "cancelled",
+        Err(_) => "error",
+    });
     outcome
 }
 
@@ -682,7 +686,11 @@ pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + 
         )
         .await;
     }
-    observation.finish(if outcome.is_ok() { "ok" } else { "error" });
+    observation.finish(match &outcome {
+        Ok(_) => "ok",
+        Err(TrellisClientError::TransferCancelled) => "cancelled",
+        Err(_) => "error",
+    });
     outcome
 }
 
@@ -739,7 +747,7 @@ async fn admit_download(
                 transfer::telemetry::Payload::new(
                     message.payload,
                     TransferDirection::Receive,
-                    "client-rx",
+                    "client",
                 ),
             ));
         }

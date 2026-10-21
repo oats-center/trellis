@@ -478,8 +478,6 @@ type OperationShape = {
   transfer?: {
     contentType?: `/${string}`;
     metadata?: `/${string}`;
-    expiresInMs?: number;
-    maxBytes?: number;
   };
   cancel?: boolean;
 };

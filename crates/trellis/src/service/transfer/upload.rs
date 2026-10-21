@@ -123,7 +123,7 @@ impl UploadTransferSession {
                 bytes: super::telemetry::Payload::new(
                     bytes,
                     trellis_protocol::transfer::TransferDirection::Send,
-                    "provider-rx",
+                    "provider",
                 ),
             })
             .map_err(|e| ServerError::Nats(format!("upload ingress closed/full: {e}")))?;

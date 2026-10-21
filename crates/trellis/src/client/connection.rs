@@ -2219,32 +2219,13 @@ impl TrellisClient {
     where
         W: tokio::io::AsyncWrite + Unpin + Send + ?Sized,
     {
-        let observation = Observation::start(
-            DurationFamily::Transfer,
-            vec![KeyValue::new("trellis.direction", "download")],
-            "cancelled",
-        );
-        let result = crate::client::transfer::get_download_grant_into_with_cancel(
+        crate::client::transfer::get_download_grant_into_with_cancel(
             self,
             grant,
             writer,
             Some(cancellation),
         )
-        .await;
-        let outcome = match &result {
-            Ok(_) => "ok",
-            Err(TrellisClientError::TransferCancelled) => "cancelled",
-            Err(error) => Self::client_outcome(error),
-        };
-        observation.finish(outcome);
-        if let Ok(info) = &result {
-            crate::telemetry::instruments::add_counter(
-                CounterFamily::TransferWireBytes,
-                info.size,
-                &[KeyValue::new("trellis.direction", "download")],
-            );
-        }
-        result
+        .await
     }
 }
 

@@ -11,13 +11,27 @@
       "unit": "s",
       "attributes": {
         "trellis.surface": ["auth"],
-        "trellis.operation": ["context_refresh", "issue_bootstrap", "current_api_bindings", "resolve_api_bindings"],
-        "trellis.phase": ["total", "context_issue", "operation_store", "api_bindings", "binding_read", "deployment_read"],
+        "trellis.operation": [
+          "context_refresh",
+          "issue_bootstrap",
+          "current_api_bindings",
+          "resolve_api_bindings"
+        ],
+        "trellis.phase": [
+          "total",
+          "context_issue",
+          "operation_store",
+          "api_bindings",
+          "binding_read",
+          "deployment_read"
+        ],
         "trellis.outcome": ["ok", "error"]
       },
       "owner": "Rust Auth runtime",
       "observation": "Keep accepted per-operation phase combinations; never sum total with its child phases.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.auth.callout.duration",
@@ -26,12 +40,21 @@
       "attributes": {
         "trellis.surface": ["auth"],
         "trellis.operation": ["request", "authorize"],
-        "trellis.phase": ["total", "context", "presence", "permissions", "jwt", "post_commit"],
+        "trellis.phase": [
+          "total",
+          "context",
+          "presence",
+          "permissions",
+          "jwt",
+          "post_commit"
+        ],
         "trellis.outcome": ["ok", "error", "denied", "rate_limited"]
       },
       "owner": "Rust Auth Callout",
       "observation": "Keep accepted admission boundaries and outcomes.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.contract.analysis.duration",
@@ -40,12 +63,22 @@
       "attributes": {
         "trellis.surface": ["contract"],
         "trellis.operation": ["compile_evidence", "compare_selected"],
-        "trellis.phase": ["total", "job_queue", "evidence_load", "cpu_wait", "blocking_queue", "compile", "compare"],
+        "trellis.phase": [
+          "total",
+          "job_queue",
+          "evidence_load",
+          "cpu_wait",
+          "blocking_queue",
+          "compile",
+          "compare"
+        ],
         "trellis.outcome": ["ok", "error"]
       },
       "owner": "Runtime semantic cache",
       "observation": "Existing immutable-evidence computation and queue boundaries.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.contract.cache.requests",
@@ -69,31 +102,43 @@
       },
       "owner": "SDK connection owner",
       "observation": "One total for each public connect attempt through usable installation, not socket creation.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.auth.approval_resolution.duration",
       "instrument": "Histogram<f64>",
       "unit": "s",
-      "attributes": { "existing_contract": "retain existing static operation/phase/outcome keys; source ledger S02" },
+      "attributes": {
+        "existing_contract": "retain existing static operation/phase/outcome keys; source ledger S02"
+      },
       "owner": "TypeScript helper/reserved declaration",
       "observation": "Declared helper instrument with no production emitting call; reserved for an approval lifecycle that does not exist yet. Not a production SLI and no samples are fabricated for it.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.admin.workflow.duration",
       "instrument": "Histogram<f64>",
       "unit": "s",
-      "attributes": { "existing_contract": "retain existing static operation/phase/outcome keys; source ledger S02" },
+      "attributes": {
+        "existing_contract": "retain existing static operation/phase/outcome keys; source ledger S02"
+      },
       "owner": "TypeScript test-utility instrumentation",
       "observation": "Emitted only by trellis-testkit administration automation; production administrative requests use their actual request/CLI observation boundaries. Retained as helper coverage, not a production SLI.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.errors",
       "instrument": "Counter<u64>",
       "unit": "{error}",
-      "attributes": { "existing_contract": "retain existing bounded classification; do not add raw exception text or IDs" },
+      "attributes": {
+        "existing_contract": "retain existing bounded classification; do not add raw exception text or IDs"
+      },
       "owner": "Existing TS error adapter and matched Rust boundaries",
       "observation": "Diagnostic error occurrences, not the SLO request denominator. Do not count one exception at every rethrow."
     },
@@ -103,11 +148,23 @@
       "unit": "s",
       "attributes": {
         "trellis.route": "registered route token",
-        "trellis.outcome": ["ok", "declared_error", "invalid", "denied", "rate_limited", "timeout", "unavailable", "cancelled", "error"]
+        "trellis.outcome": [
+          "ok",
+          "declared_error",
+          "invalid",
+          "denied",
+          "rate_limited",
+          "timeout",
+          "unavailable",
+          "cancelled",
+          "error"
+        ]
       },
       "owner": "Rust/TS caller",
       "observation": "Exactly one logical RPC, including retries, serialization and final decode.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.rpc.client.attempts",
@@ -115,7 +172,17 @@
       "unit": "{attempt}",
       "attributes": {
         "trellis.route": "registered route token",
-        "trellis.outcome": ["ok", "declared_error", "invalid", "denied", "rate_limited", "timeout", "unavailable", "cancelled", "error"]
+        "trellis.outcome": [
+          "ok",
+          "declared_error",
+          "invalid",
+          "denied",
+          "rate_limited",
+          "timeout",
+          "unavailable",
+          "cancelled",
+          "error"
+        ]
       },
       "owner": "Rust/TS request transport",
       "observation": "One actual request transport attempt; no event for backoff alone."
@@ -126,11 +193,23 @@
       "unit": "s",
       "attributes": {
         "trellis.route": "registered route token",
-        "trellis.outcome": ["ok", "declared_error", "invalid", "denied", "rate_limited", "timeout", "unavailable", "cancelled", "error"]
+        "trellis.outcome": [
+          "ok",
+          "declared_error",
+          "invalid",
+          "denied",
+          "rate_limited",
+          "timeout",
+          "unavailable",
+          "cancelled",
+          "error"
+        ]
       },
       "owner": "Rust request loop / TS RPC dispatcher",
       "observation": "Receive through validation, handler and response handoff. Only unary RPC, not live/operation lifetime.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.rpc.server.inflight",
@@ -148,11 +227,23 @@
         "http.route": "registered template, _unmatched or _static",
         "http.request.method": ["GET", "POST", "OPTIONS", "OTHER"],
         "http.response.status_code": "100..599 (actual response only)",
-        "trellis.outcome": ["ok", "declared_error", "invalid", "denied", "rate_limited", "timeout", "unavailable", "cancelled", "error"]
+        "trellis.outcome": [
+          "ok",
+          "declared_error",
+          "invalid",
+          "denied",
+          "rate_limited",
+          "timeout",
+          "unavailable",
+          "cancelled",
+          "error"
+        ]
       },
       "owner": "Axum route middleware",
       "observation": "One HTTP response through response-header construction, not streaming asset-body completion.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.connection.count",
@@ -172,7 +263,15 @@
       "unit": "{transition}",
       "attributes": {
         "trellis.participant.kind": ["user", "service", "device"],
-        "trellis.reason": ["connected", "disconnect", "coverage_lost", "revoked", "resumed", "terminal", "closed"]
+        "trellis.reason": [
+          "connected",
+          "disconnect",
+          "coverage_lost",
+          "revoked",
+          "resumed",
+          "terminal",
+          "closed"
+        ]
       },
       "owner": "Existing connection lifecycle",
       "observation": "At completed state changes only. Never per poll or reconnect retry log."
@@ -183,7 +282,14 @@
       "unit": "{attempt}",
       "attributes": {
         "trellis.participant.kind": ["user", "service", "device"],
-        "trellis.outcome": ["ok", "pending", "terminal", "unavailable", "error", "cancelled"]
+        "trellis.outcome": [
+          "ok",
+          "pending",
+          "terminal",
+          "unavailable",
+          "error",
+          "cancelled"
+        ]
       },
       "owner": "SDK refresh owner",
       "observation": "One actual credential-bound HTTP refresh; coverage-only reconciliation is not a refresh."
@@ -194,11 +300,21 @@
       "unit": "s",
       "attributes": {
         "trellis.purpose": ["request", "event", "admission", "own_coverage"],
-        "trellis.outcome": ["ok", "denied", "revoked", "expired", "unavailable", "invalid", "error"]
+        "trellis.outcome": [
+          "ok",
+          "denied",
+          "revoked",
+          "expired",
+          "unavailable",
+          "invalid",
+          "error"
+        ]
       },
       "owner": "Existing Rust/TS authorization verifier",
       "observation": "One outer verification result; cache-only and cold requests both measured.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.auth.coverage.count",
@@ -216,10 +332,14 @@
       "name": "trellis.auth.post_commit.duration",
       "instrument": "Histogram<f64>",
       "unit": "s",
-      "attributes": { "trellis.outcome": ["ok", "retry", "error", "cancelled"] },
+      "attributes": {
+        "trellis.outcome": ["ok", "retry", "error", "cancelled"]
+      },
       "owner": "AuthPostCommitRuntime",
       "observation": "Claimed action execution through persisted acknowledge/failure result.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.auth.post_commit.pending",
@@ -245,11 +365,20 @@
       "unit": "s",
       "attributes": {
         "trellis.route": "registered job token",
-        "trellis.outcome": ["accepted", "coalesced", "replaced", "rejected", "error", "cancelled"]
+        "trellis.outcome": [
+          "accepted",
+          "coalesced",
+          "replaced",
+          "rejected",
+          "error",
+          "cancelled"
+        ]
       },
       "owner": "Rust/TS JobManager",
       "observation": "One logical submission through its real durable publication/admission outcome.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.job.attempt.duration",
@@ -257,11 +386,23 @@
       "unit": "s",
       "attributes": {
         "trellis.route": "registered job token",
-        "trellis.outcome": ["completed", "retry", "dead", "failed", "cancelled", "deferred", "lease_lost", "interrupted", "error"]
+        "trellis.outcome": [
+          "completed",
+          "retry",
+          "dead",
+          "failed",
+          "cancelled",
+          "deferred",
+          "lease_lost",
+          "interrupted",
+          "error"
+        ]
       },
       "owner": "Rust/TS worker manager",
       "observation": "One local attempt through lifecycle disposition. A stale completion is lease_lost, not completed.",
-      "boundaries": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600]
+      "boundaries": [
+        0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600
+      ]
     },
     {
       "name": "trellis.job.lease.events",
@@ -325,11 +466,20 @@
       "unit": "s",
       "attributes": {
         "trellis.route": "registered operation token",
-        "trellis.outcome": ["completed", "failed", "cancelled", "lease_lost", "interrupted", "error"]
+        "trellis.outcome": [
+          "completed",
+          "failed",
+          "cancelled",
+          "lease_lost",
+          "interrupted",
+          "error"
+        ]
       },
       "owner": "Rust/TS acquired execution owner",
       "observation": "One acquired execution lifetime; does not create a lifetime-long OTel span.",
-      "boundaries": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600]
+      "boundaries": [
+        0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600
+      ]
     },
     {
       "name": "trellis.operation.active",
@@ -361,7 +511,9 @@
       },
       "owner": "Rust/TS event publisher",
       "observation": "Durable ends at publish ACK; ephemeral ends at existing transport handoff.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.event.process.duration",
@@ -369,11 +521,21 @@
       "unit": "s",
       "attributes": {
         "trellis.route": "registered consumer/event token",
-        "trellis.outcome": ["ok", "retry", "exhausted", "invalid", "unavailable", "cancelled", "error"]
+        "trellis.outcome": [
+          "ok",
+          "retry",
+          "exhausted",
+          "invalid",
+          "unavailable",
+          "cancelled",
+          "error"
+        ]
       },
       "owner": "Rust/TS Consumer runner",
       "observation": "One handler-delivery attempt; includes its existing verification/disposition boundary.",
-      "boundaries": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600]
+      "boundaries": [
+        0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600
+      ]
     },
     {
       "name": "trellis.delivery.dispositions",
@@ -381,7 +543,13 @@
       "unit": "{delivery}",
       "attributes": {
         "trellis.family": ["event", "job"],
-        "trellis.action": ["ack", "nak", "term", "exhausted_report", "replay_report"],
+        "trellis.action": [
+          "ack",
+          "nak",
+          "term",
+          "exhausted_report",
+          "replay_report"
+        ],
         "trellis.outcome": ["ok", "error"]
       },
       "owner": "Existing final delivery disposition",
@@ -427,7 +595,9 @@
       "name": "trellis.dlq.entries",
       "instrument": "ObservableGauge<f64>",
       "unit": "{entry}",
-      "attributes": { "trellis.state": ["open", "replay_pending", "replaying"] },
+      "attributes": {
+        "trellis.state": ["open", "replay_pending", "replaying"]
+      },
       "owner": "Events DLQ SQL snapshot",
       "observation": "Current unresolved dead-letter states; replay history is not another live entry.",
       "aggregation": "sum"
@@ -437,7 +607,14 @@
       "instrument": "Counter<u64>",
       "unit": "{transition}",
       "attributes": {
-        "trellis.action": ["exhausted", "replay_requested", "replay_published", "replay_succeeded", "replay_failed", "dismissed"],
+        "trellis.action": [
+          "exhausted",
+          "replay_requested",
+          "replay_published",
+          "replay_succeeded",
+          "replay_failed",
+          "dismissed"
+        ],
         "trellis.outcome": ["ok", "error"]
       },
       "owner": "Authoritative DLQ journal/command owner",
@@ -453,13 +630,17 @@
       },
       "owner": "Each existing projector",
       "observation": "One projection apply/batch through SQL result and message disposition; annotate batch size on span only.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.projection.pending",
       "instrument": "ObservableGauge<f64>",
       "unit": "{message}",
-      "attributes": { "trellis.component": ["jobs", "events", "events_dlq", "health"] },
+      "attributes": {
+        "trellis.component": ["jobs", "events", "events_dlq", "health"]
+      },
       "owner": "Projection sampler",
       "observation": "Broker pending + ack-pending for that active projection consumer, not sequence subtraction.",
       "aggregation": "max per owned component"
@@ -468,7 +649,9 @@
       "name": "trellis.projection.progress.age",
       "instrument": "ObservableGauge<f64>",
       "unit": "s",
-      "attributes": { "trellis.component": ["jobs", "events", "events_dlq", "health"] },
+      "attributes": {
+        "trellis.component": ["jobs", "events", "events_dlq", "health"]
+      },
       "owner": "Same sampler",
       "observation": "Time since observed durable checkpoint/ack-floor advance while backlog exists; idle=0.",
       "aggregation": "max"
@@ -478,14 +661,38 @@
       "instrument": "Histogram<f64>",
       "unit": "s",
       "attributes": {
-        "trellis.backend": ["auth_sql", "jobs_sql", "events_sql", "health_sql", "state", "kv", "store"],
-        "trellis.operation": ["read", "write", "list", "cas", "delete", "watch_setup"],
+        "trellis.backend": [
+          "auth_sql",
+          "jobs_sql",
+          "events_sql",
+          "health_sql",
+          "state",
+          "kv",
+          "store"
+        ],
+        "trellis.operation": [
+          "read",
+          "write",
+          "list",
+          "cas",
+          "delete",
+          "watch_setup"
+        ],
         "trellis.phase": ["wait", "execute", "total"],
-        "trellis.outcome": ["ok", "not_found", "conflict", "unavailable", "error", "cancelled"]
+        "trellis.outcome": [
+          "ok",
+          "not_found",
+          "conflict",
+          "unavailable",
+          "error",
+          "cancelled"
+        ]
       },
       "owner": "Existing SQL/SDK resource boundary",
       "observation": "Only emitted phase combinations specified by the plan; do not count nested wrapper totals twice.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.transfer.duration",
@@ -493,33 +700,74 @@
       "unit": "s",
       "attributes": {
         "trellis.direction": ["upload", "download"],
-        "trellis.outcome": ["ok", "invalid", "cancelled", "unavailable", "error"]
+        "trellis.side": ["client", "provider"],
+        "trellis.outcome": ["ok", "cancelled", "error", "aborted"]
       },
       "owner": "Existing transfer session owner",
       "observation": "One transfer, through actual digest/commit completion; no per-chunk spans.",
-      "boundaries": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600]
+      "boundaries": [
+        0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600
+      ]
     },
     {
       "name": "trellis.transfer.wait.duration",
       "instrument": "Histogram<f64>",
       "unit": "s",
       "attributes": {
-        "trellis.direction": ["upload", "download", "send", "receive"],
+        "trellis.direction": ["upload", "download"],
         "trellis.side": ["client", "provider", "store"],
         "trellis.phase": ["credit", "storage_refill"],
         "trellis.outcome": ["ok", "aborted"]
       },
       "owner": "Transfer sender or streaming store reader",
       "observation": "Credit measures blocked capacity waits. Storage refill measures awaiting the next backend message, including buffered delivery and dispatch, not pure network RTT. No per-frame spans.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.transfer.wire.bytes",
       "instrument": "Counter<u64>",
       "unit": "By",
-      "attributes": { "trellis.direction": ["upload", "download"] },
+      "attributes": {
+        "trellis.direction": ["upload", "download"],
+        "trellis.side": ["client", "provider"]
+      },
       "owner": "Same transfer owner",
-      "observation": "Actual transmitted/received payload bytes, including retries; not business unique object size."
+      "observation": "DATA payload bytes each endpoint sent or verified on receipt, including retries; not business unique object size."
+    },
+    {
+      "name": "trellis.transfer.frames",
+      "instrument": "Counter<u64>",
+      "unit": "{frame}",
+      "attributes": {
+        "trellis.direction": ["upload", "download"],
+        "trellis.side": ["client", "provider"]
+      },
+      "owner": "Same transfer owner",
+      "observation": "DATA frames each endpoint sent or verified on receipt. Controls, signals and EOF are not frames."
+    },
+    {
+      "name": "trellis.transfer.credit.controls",
+      "instrument": "Counter<u64>",
+      "unit": "{control}",
+      "attributes": {
+        "trellis.direction": ["upload", "download"],
+        "trellis.side": ["client", "provider"]
+      },
+      "owner": "Same transfer owner",
+      "observation": "Cumulative credit messages each endpoint sent or verified on receipt; activation, end-ack and terminal signals are excluded."
+    },
+    {
+      "name": "trellis.transfer.buffered.bytes",
+      "instrument": "UpDownCounter<i64>",
+      "unit": "By",
+      "attributes": {
+        "trellis.direction": ["upload", "download"],
+        "trellis.side": ["client", "provider"]
+      },
+      "owner": "Endpoint retaining the raw payload",
+      "observation": "Raw DATA or source-prefetch bytes an endpoint currently retains, released on consumption or cleanup. Not total heap or RSS."
     },
     {
       "name": "trellis.live.sessions",
@@ -528,7 +776,13 @@
       "attributes": {
         "trellis.kind": ["live", "operation_watch"],
         "trellis.side": ["consumer", "provider"],
-        "trellis.phase": ["prepared", "activating", "active", "draining", "closing"]
+        "trellis.phase": [
+          "prepared",
+          "activating",
+          "active",
+          "draining",
+          "closing"
+        ]
       },
       "owner": "Live observation endpoint record (Rust and TypeScript)",
       "observation": "Move exactly one unit between phases; remove at actual local cleanup completion. Retained cleanup stays closing. Never export closed or tombstone series."
@@ -540,7 +794,21 @@
       "attributes": {
         "trellis.kind": ["live", "operation_watch"],
         "trellis.side": ["consumer", "provider"],
-        "trellis.reason": ["complete", "cancelled", "local_shutdown", "setup_timeout", "peer_lost", "disconnected", "authorization_lost", "binding_changed", "consumer_slow", "delivery_gap", "source_error", "protocol_error", "resource_exhausted"]
+        "trellis.reason": [
+          "complete",
+          "cancelled",
+          "local_shutdown",
+          "setup_timeout",
+          "peer_lost",
+          "disconnected",
+          "authorization_lost",
+          "binding_changed",
+          "consumer_slow",
+          "delivery_gap",
+          "source_error",
+          "protocol_error",
+          "resource_exhausted"
+        ]
       },
       "owner": "Same endpoint record",
       "observation": "Exactly once at the local terminal commit, including admitted prepared sessions that expire or are cancelled. A pending normal END is not yet a consumer terminal."
@@ -555,7 +823,9 @@
       },
       "owner": "Same endpoint record",
       "observation": "First activation initiation through committed ACTIVE or activation failure. Recorded once; retries do not restart it, and how long an unused prepared handle was held is not included.",
-      "boundaries": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600]
+      "boundaries": [
+        0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600
+      ]
     },
     {
       "name": "trellis.live.buffered.bytes",
@@ -588,7 +858,12 @@
       "attributes": {
         "trellis.kind": ["live", "operation_watch"],
         "trellis.side": ["consumer", "provider"],
-        "trellis.reason": ["invalid_signature", "foreign_identity", "invalid_protocol", "over_capacity"]
+        "trellis.reason": [
+          "invalid_signature",
+          "foreign_identity",
+          "invalid_protocol",
+          "over_capacity"
+        ]
       },
       "owner": "Same endpoint record",
       "observation": "Fixed rejection categories only. Unauthenticated and unsafe requests are dropped without reflection and without an arbitrary error-text dimension."
@@ -620,7 +895,9 @@
       "name": "trellis.runtime.component.ready",
       "instrument": "ObservableGauge<f64>",
       "unit": "1",
-      "attributes": { "trellis.component": ["platform", "jobs", "events", "health"] },
+      "attributes": {
+        "trellis.component": ["platform", "jobs", "events", "health"]
+      },
       "owner": "Runtime supervisor",
       "observation": "Existing component startup/owner/task health predicate; 0/1, no new liveness definition.",
       "aggregation": "max per cluster/component"
@@ -629,7 +906,9 @@
       "name": "trellis.runtime.component.observed.time",
       "instrument": "ObservableGauge<f64>",
       "unit": "s",
-      "attributes": { "trellis.component": ["platform", "jobs", "events", "health"] },
+      "attributes": {
+        "trellis.component": ["platform", "jobs", "events", "health"]
+      },
       "owner": "Same supervisor telemetry ticker",
       "observation": "Unix seconds of last successful current-state observation, not last request.",
       "aggregation": "max per cluster/component"
@@ -650,7 +929,9 @@
       "name": "trellis.snapshot.observed.time",
       "instrument": "ObservableGauge<f64>",
       "unit": "s",
-      "attributes": { "trellis.source": ["auth", "jobs", "events", "events_dlq", "health"] },
+      "attributes": {
+        "trellis.source": ["auth", "jobs", "events", "events_dlq", "health"]
+      },
       "owner": "Each asynchronous telemetry sampler",
       "observation": "Unix seconds for last successful whole snapshot; initial 0 means unknown, error does not advance."
     },
@@ -670,12 +951,37 @@
       "instrument": "Histogram<f64>",
       "unit": "s",
       "attributes": {
-        "trellis.command": ["add", "rm", "check", "update", "install", "generate", "publish", "login", "logout", "whoami", "identity", "participants", "issuers", "users", "portals", "svc", "dev", "resources", "events", "init", "keys", "upgrade"],
+        "trellis.command": [
+          "add",
+          "rm",
+          "check",
+          "update",
+          "install",
+          "generate",
+          "publish",
+          "login",
+          "logout",
+          "whoami",
+          "identity",
+          "participants",
+          "issuers",
+          "users",
+          "portals",
+          "svc",
+          "dev",
+          "resources",
+          "events",
+          "init",
+          "keys",
+          "upgrade"
+        ],
         "trellis.outcome": ["ok", "error", "cancelled"]
       },
       "owner": "CLI app::run dispatch",
       "observation": "One command; completion/version/help do not start exporters.",
-      "boundaries": [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600]
+      "boundaries": [
+        0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600
+      ]
     },
     {
       "name": "trellis.browser.navigation.duration",
@@ -688,7 +994,9 @@
       },
       "owner": "Built-in browser app hook",
       "observation": "Actual shell/authorized-ready milestones; no full URL and no comparison threshold.",
-      "boundaries": [0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+      "boundaries": [
+        0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10
+      ]
     },
     {
       "name": "trellis.browser.errors",
@@ -705,7 +1013,16 @@
       "name": "trellis.telemetry.route_overflow",
       "instrument": "Counter<u64>",
       "unit": "{registration}",
-      "attributes": { "trellis.family": ["rpc", "event", "consumer", "job", "operation", "http"] },
+      "attributes": {
+        "trellis.family": [
+          "rpc",
+          "event",
+          "consumer",
+          "job",
+          "operation",
+          "http"
+        ]
+      },
       "owner": "Route catalog",
       "observation": "Count registration mapped to _other beyond 128 per family, without echoing rejected label."
     }

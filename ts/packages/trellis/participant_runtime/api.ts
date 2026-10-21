@@ -216,8 +216,6 @@ export type OperationDesc<
     key?: `/${string}`;
     contentType?: `/${string}`;
     metadata?: `/${string}`;
-    expiresInMs?: number;
-    maxBytes?: number;
   };
   signals?: Record<string, { input: SchemaLike }>;
   callerCapabilities: readonly string[];

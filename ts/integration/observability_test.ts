@@ -1,4 +1,4 @@
-import { Result } from "@oatscenter/trellis";
+import { decodeTransferGrant, Result } from "@oatscenter/trellis";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { ensureTelemetryRuntime } from "@oatscenter/trellis/telemetry";
 import { metrics } from "@opentelemetry/api";
@@ -403,8 +403,27 @@ function startMetricCapture() {
     }
     return sum;
   };
+  // Histogram observations are counted, not summed.
+  const count = (name: string, subset: Record<string, string>): number => {
+    let observations = 0;
+    const scopes = exporter.getMetrics().at(-1)?.scopeMetrics ?? [];
+    for (const metric of scopes.flatMap((scope) => scope.metrics)) {
+      if (metric.descriptor.name !== name) continue;
+      for (const point of metric.dataPoints) {
+        if (
+          Object.entries(subset).every(
+            ([key, value]) => point.attributes[key] === value,
+          )
+        ) {
+          observations += (point.value as { count: number }).count;
+        }
+      }
+    }
+    return observations;
+  };
   return {
     total,
+    count,
     flush: () => provider.forceFlush(),
     // Providers stay installed for the process: shutting a previous global
     // provider down poisons later instruments in the same test run.
@@ -452,11 +471,11 @@ test("TS standalone live telemetry derives exact per-side deltas from one owner"
           await capture.flush();
           const before = {
             consumerEnds: capture.total("trellis.live.ends", {
-              "trellis.kind": "standalone",
+              "trellis.kind": "live",
               "trellis.side": "consumer",
             }),
             providerEnds: capture.total("trellis.live.ends", {
-              "trellis.kind": "standalone",
+              "trellis.kind": "live",
               "trellis.side": "provider",
             }),
           };
@@ -485,7 +504,7 @@ test("TS standalone live telemetry derives exact per-side deltas from one owner"
               await capture.flush();
               return (
                 capture.total("trellis.live.ends", {
-                  "trellis.kind": "standalone",
+                  "trellis.kind": "live",
                   "trellis.side": "consumer",
                 }) >=
                 before.consumerEnds + 3
@@ -498,14 +517,14 @@ test("TS standalone live telemetry derives exact per-side deltas from one owner"
           assert.deepEqual(sourceEnds, 2);
           assert.deepEqual(
             capture.total("trellis.live.ends", {
-              "trellis.kind": "standalone",
+              "trellis.kind": "live",
               "trellis.side": "consumer",
             }) - before.consumerEnds,
             3,
           );
           assert.deepEqual(
             capture.total("trellis.live.ends", {
-              "trellis.kind": "standalone",
+              "trellis.kind": "live",
               "trellis.side": "provider",
             }) - before.providerEnds,
             3,
@@ -523,4 +542,115 @@ test("TS standalone live telemetry derives exact per-side deltas from one owner"
   } finally {
     await capture.stop();
   }
+});
+
+test("TS transfer telemetry labels each endpoint by direction and side", async () => {
+  const capture = ensureCapture();
+  await withTrellisRuntime(
+    async (runtime) => {
+      const identity = await runtime.registerService({
+        name: "transfer-observability",
+        contract: participants.Provider.participant,
+      });
+      const service = await TrellisService.connect({
+        trellisUrl: runtime.oauthIssuer,
+        participant: participants.Provider.participant,
+        name: "transfer-observability",
+        seed: identity.seed,
+      }).orThrow();
+      const serviceExit = service.wait().catch((error: unknown) => error);
+      await service.handleUpload(async ({ input, transfer, op }) => {
+        assert(transfer);
+        const store = await service.store.files.open().orThrow();
+        await store
+          .put(input.value, await transfer.stream().orThrow())
+          .orThrow();
+        return await op.complete(input).orThrow();
+      });
+      await service.handleDownload(async ({ input, context }) => {
+        assert(context.caller.type === "verified");
+        const transfer = await service
+          .createTransfer({
+            direction: "receive",
+            store: "files",
+            key: input.value,
+            sessionKey: context.caller.sessionPublicKey,
+            connectionId: context.caller.runtimeId,
+            contextDigest: context.caller.authorityDigest,
+            permission: context.permission,
+            requiredCapabilities: context.requiredCapabilities,
+            inboxPrefix: context.inboxPrefix,
+          })
+          .orThrow();
+        return Result.ok({ ...input, transfer });
+      });
+      const client = await runtime.connectClient({
+        name: "transfer-observability-caller",
+        contract: apps.TransferCaller.request,
+      });
+      const endpoints = ["upload", "download"].flatMap((direction) =>
+        ["client", "provider"].map((side) => ({
+          "trellis.direction": direction,
+          "trellis.side": side,
+        })),
+      );
+      const measure = () =>
+        endpoints.map((labels) => ({
+          frames: capture.total("trellis.transfer.frames", labels),
+          bytes: capture.total("trellis.transfer.wire.bytes", labels),
+          credit: capture.total("trellis.transfer.credit.controls", labels),
+          completed: capture.count("trellis.transfer.duration", {
+            ...labels,
+            "trellis.outcome": "ok",
+          }),
+        }));
+      try {
+        // Several frames, so credit is exchanged in both directions.
+        const bytes = Uint8Array.from(
+          { length: 600 * 1024 },
+          (_, index) => index % 251,
+        );
+        await capture.flush();
+        const before = measure();
+        const uploaded = await client
+          .upload({ value: "observed" })
+          .transfer(bytes)
+          .start()
+          .orThrow();
+        await uploaded.wait().orThrow();
+        const download = await client.download({ value: "observed" }).orThrow();
+        const grant = decodeTransferGrant(download.transfer).orThrow();
+        assert(grant.direction === "receive");
+        assert.deepEqual(await client.transfer(grant).bytes().orThrow(), bytes);
+
+        // Each endpoint counts the object's DATA once under its own side,
+        // and records one successful duration, in the catalog vocabulary.
+        await runtime.waitFor(
+          async () => {
+            await capture.flush();
+            return measure().every(
+              (after, index) => after.completed > before[index]!.completed,
+            );
+          },
+          { timeoutMs: 30_000 },
+        );
+        const after = measure();
+        for (const [index, labels] of endpoints.entries()) {
+          const delta = after[index]!;
+          const base = before[index]!;
+          assert(delta.frames > base.frames, JSON.stringify(labels));
+          assert.equal(delta.bytes - base.bytes, bytes.length);
+          assert(delta.credit > base.credit, JSON.stringify(labels));
+          assert.equal(delta.completed - base.completed, 1);
+        }
+      } finally {
+        await client.connection.close();
+        await service.stop();
+        assert.deepEqual(await serviceExit, undefined);
+      }
+    },
+    {
+      trellis: { source: repoTrellisSource() },
+    },
+  );
 });

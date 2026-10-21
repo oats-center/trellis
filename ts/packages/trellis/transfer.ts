@@ -191,6 +191,7 @@ class ClientSession {
           throw new Error("invalid transfer credit");
         recordCatalogCounter("trellis.transfer.credit.controls", 1, {
           "trellis.direction": "upload",
+          "trellis.side": "client",
         });
         break;
       case "committed":
@@ -378,7 +379,6 @@ export class SendTransferHandle extends BaseTransferHandle {
     auth: TrellisAuth,
     timeoutMs: number,
     readonly grant: SendTransferGrant,
-    _inboxPrefix = "_INBOX",
   ) {
     super(transport, auth, timeoutMs);
   }
@@ -450,9 +450,11 @@ export class SendTransferHandle extends BaseTransferHandle {
             }
             recordCatalogCounter("trellis.transfer.frames", 1, {
               "trellis.direction": "upload",
+              "trellis.side": "client",
             });
             recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
               "trellis.direction": "upload",
+              "trellis.side": "client",
             });
             hasher.update(frame);
           }
@@ -487,14 +489,14 @@ export class SendTransferHandle extends BaseTransferHandle {
             info.digest?.replace(/=+$/, "") !== digest.replace(/=+$/, "")
           )
             throw new Error("transfer committed metadata mismatch");
-          observe("upload", started, true);
+          observe("upload", started, "ok");
           return Result.ok(info);
         } catch (cause) {
           // Cancellation has its own exchange budget and never substitutes for success.
           if (client && !client.session.abort.signal.aborted) {
             await client.cancel().catch(() => {});
           }
-          observe("upload", started, false);
+          observe("upload", started, "error");
           return Result.err(
             cause instanceof TransportError || cause instanceof TransferError
               ? cause
@@ -516,7 +518,6 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
     auth: TrellisAuth,
     timeoutMs: number,
     readonly grant: ReceiveTransferGrant,
-    _inboxPrefix = "_INBOX",
   ) {
     super(transport, auth, timeoutMs);
   }
@@ -527,6 +528,14 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
       (async (): Promise<
         ResultType<ReadableStream<Uint8Array>, TransferOperationError>
       > => {
+        const started = performance.now();
+        // One duration per stream, recorded at its first terminal outcome.
+        let observed = false;
+        const settle = (outcome: "ok" | "error" | "cancelled") => {
+          if (observed) return;
+          observed = true;
+          observe("download", started, outcome);
+        };
         let client: ClientSession | undefined;
         try {
           client = await this.open(this.grant);
@@ -576,6 +585,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             ingress.fail(session.abort.signal.reason);
             if (streamController && !streamTerminated) {
               streamTerminated = true;
+              settle("error");
               streamController.error(session.abort.signal.reason);
             }
           };
@@ -610,7 +620,10 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                   recordCatalogUpDown(
                     "trellis.transfer.buffered.bytes",
                     -msg.data.length,
-                    { "trellis.direction": "download" },
+                    {
+                      "trellis.direction": "download",
+                      "trellis.side": "client",
+                    },
                   );
                 };
                 lane = lane
@@ -674,11 +687,15 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                       ingress.push(seq, msg.data);
                       recordCatalogCounter("trellis.transfer.frames", 1, {
                         "trellis.direction": "download",
+                        "trellis.side": "client",
                       });
                       recordCatalogCounter(
                         "trellis.transfer.wire.bytes",
                         msg.data.length,
-                        { "trellis.direction": "download" },
+                        {
+                          "trellis.direction": "download",
+                          "trellis.side": "client",
+                        },
                       );
                     }
                   })
@@ -690,7 +707,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                 recordCatalogUpDown(
                   "trellis.transfer.buffered.bytes",
                   msg.data.length,
-                  { "trellis.direction": "download" },
+                  { "trellis.direction": "download", "trellis.side": "client" },
                 );
                 session.run(lane);
               },
@@ -730,12 +747,14 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                         abortStream,
                       );
                       controller.close();
+                      settle("ok");
                       session.finish();
                       await session.join();
                     } else if (!streamTerminated)
                       controller.enqueue(next.value);
                   } catch (cause) {
                     scheduler.close();
+                    settle("error");
                     session.fail(cause);
                     session.finish();
                     await session.join();
@@ -751,6 +770,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                 },
                 async cancel() {
                   streamTerminated = true;
+                  settle("cancelled");
                   session.abort.signal.removeEventListener(
                     "abort",
                     abortStream,
@@ -768,6 +788,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             ),
           );
         } catch (cause) {
+          settle("error");
           client?.session.finish();
           await client?.session.join();
           return Result.err(
@@ -784,7 +805,6 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
   bytes(): AsyncResult<Uint8Array, TransferOperationError> {
     return AsyncResult.from(
       (async (): Promise<ResultType<Uint8Array, TransferOperationError>> => {
-        const started = performance.now();
         const stream = (await this.stream()).take();
         if (isErr(stream)) return Result.err(stream.error);
         const reader = stream.getReader();
@@ -795,7 +815,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
           recordCatalogUpDown(
             "trellis.transfer.buffered.bytes",
             retainedBytes,
-            { "trellis.direction": "download" },
+            { "trellis.direction": "download", "trellis.side": "client" },
           );
           let offset = 0;
           while (true) {
@@ -804,11 +824,9 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             bytes.set(next.value, offset);
             offset += next.value.length;
           }
-          observe("download", started, true);
           return Result.ok(bytes);
         } catch (cause) {
           await reader.cancel().catch(() => {});
-          observe("download", started, false);
           return Result.err(
             cause instanceof TransferError || cause instanceof TransportError
               ? cause
@@ -818,7 +836,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
           recordCatalogUpDown(
             "trellis.transfer.buffered.bytes",
             -retainedBytes,
-            { "trellis.direction": "download" },
+            { "trellis.direction": "download", "trellis.side": "client" },
           );
           reader.releaseLock();
         }
@@ -835,7 +853,6 @@ export function createTransferHandle(
   auth: TrellisAuth,
   timeoutMs: number,
   grant: SendTransferGrant,
-  inboxPrefix?: string,
 ): SendTransferHandle;
 /** Create a helper for a runtime-issued download grant. */
 export function createTransferHandle(
@@ -843,7 +860,6 @@ export function createTransferHandle(
   auth: TrellisAuth,
   timeoutMs: number,
   grant: ReceiveTransferGrant,
-  inboxPrefix?: string,
 ): ReceiveTransferHandle;
 /** Create the direction-specific helper without moving an in-flight generation. */
 export function createTransferHandle(
@@ -851,28 +867,30 @@ export function createTransferHandle(
   auth: TrellisAuth,
   timeoutMs: number,
   grant: TransferGrant,
-  inboxPrefix?: string,
 ): TransferHandle;
 export function createTransferHandle(
   transport: TrellisTransportProvider,
   auth: TrellisAuth,
   timeoutMs: number,
   grant: TransferGrant,
-  inboxPrefix = "_INBOX",
 ): TransferHandle {
   return grant.direction === "send"
-    ? new SendTransferHandle(transport, auth, timeoutMs, grant, inboxPrefix)
-    : new ReceiveTransferHandle(transport, auth, timeoutMs, grant, inboxPrefix);
+    ? new SendTransferHandle(transport, auth, timeoutMs, grant)
+    : new ReceiveTransferHandle(transport, auth, timeoutMs, grant);
 }
 
 function observe(
   direction: "upload" | "download",
   started: number,
-  ok: boolean,
+  outcome: "ok" | "error" | "cancelled",
 ): void {
   recordCatalogDuration(
     "trellis.transfer.duration",
     performance.now() - started,
-    { "trellis.direction": direction, "trellis.outcome": ok ? "ok" : "error" },
+    {
+      "trellis.direction": direction,
+      "trellis.side": "client",
+      "trellis.outcome": outcome,
+    },
   );
 }

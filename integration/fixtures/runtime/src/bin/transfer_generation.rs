@@ -5,6 +5,7 @@ use runtime_trellis::participants::runtime_trellis_transfer_growth_provider::{
 use std::io::Write as _;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use trellis_rs::service::{generate_transfer_id, FileTransferInfo};
+use trellis_rs::telemetry::{init_from_env, TelemetryIdentity, TelemetryRole};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -13,6 +14,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .init();
+    let telemetry = init_from_env(TelemetryIdentity::new(
+        "runtime-rust-transfer-provider",
+        TelemetryRole::Service,
+        env!("CARGO_PKG_VERSION"),
+    ));
     let url = std::env::var("TRELLIS_URL")?;
     let seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
     let mut service =
@@ -120,5 +126,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     serving.abort();
     let _ = serving.await;
+    telemetry.shutdown().await;
     Ok(())
 }

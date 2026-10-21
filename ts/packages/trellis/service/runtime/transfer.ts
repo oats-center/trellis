@@ -343,7 +343,7 @@ export class ServiceTransfer {
                 recordCatalogUpDown(
                   "trellis.transfer.buffered.bytes",
                   -msg.data.length,
-                  { "trellis.direction": "upload" },
+                  { "trellis.direction": "upload", "trellis.side": "provider" },
                 );
               };
               dataLane = dataLane
@@ -356,7 +356,7 @@ export class ServiceTransfer {
               recordCatalogUpDown(
                 "trellis.transfer.buffered.bytes",
                 msg.data.length,
-                { "trellis.direction": "upload" },
+                { "trellis.direction": "upload", "trellis.side": "provider" },
               );
               wire!.run(dataLane);
             },
@@ -679,7 +679,10 @@ export class ServiceTransfer {
                     recordCatalogUpDown(
                       "trellis.transfer.buffered.bytes",
                       retainedBytes,
-                      { "trellis.direction": "upload" },
+                      {
+                        "trellis.direction": "upload",
+                        "trellis.side": "provider",
+                      },
                     );
                     let offset = 0;
                     while (true) {
@@ -697,7 +700,10 @@ export class ServiceTransfer {
                     recordCatalogUpDown(
                       "trellis.transfer.buffered.bytes",
                       -retainedBytes,
-                      { "trellis.direction": "upload" },
+                      {
+                        "trellis.direction": "upload",
+                        "trellis.side": "provider",
+                      },
                     );
                     await reader.cancel().catch(() => {});
                     reader.releaseLock();
@@ -970,6 +976,7 @@ export class ServiceTransfer {
         throw new Error("invalid transfer cumulative credit");
       recordCatalogCounter("trellis.transfer.credit.controls", 1, {
         "trellis.direction": "download",
+        "trellis.side": "provider",
       });
       if (control.action === "end-ack") {
         if (
@@ -1209,9 +1216,11 @@ export class ServiceTransfer {
     session.ingress.push(seq, msg.data);
     recordCatalogCounter("trellis.transfer.frames", 1, {
       "trellis.direction": "upload",
+      "trellis.side": "provider",
     });
     recordCatalogCounter("trellis.transfer.wire.bytes", msg.data.length, {
       "trellis.direction": "upload",
+      "trellis.side": "provider",
     });
   }
 
@@ -1289,9 +1298,11 @@ export class ServiceTransfer {
         session.hash.update(frame);
         recordCatalogCounter("trellis.transfer.frames", 1, {
           "trellis.direction": "download",
+          "trellis.side": "provider",
         });
         recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
           "trellis.direction": "download",
+          "trellis.side": "provider",
         });
       }
       const digest = `SHA-256=${base64urlEncode(session.hash.digest())}`;
@@ -1383,6 +1394,7 @@ export class ServiceTransfer {
         {
           "trellis.direction":
             session.wire.grant.direction === "send" ? "upload" : "download",
+          "trellis.side": "provider",
           "trellis.outcome":
             session.committed ||
             (session.wire.grant.direction === "receive" &&

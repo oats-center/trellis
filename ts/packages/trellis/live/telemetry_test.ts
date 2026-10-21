@@ -84,7 +84,7 @@ test("active Live moves the session to active", async () => {
 
 test("Operation sessions report the operation kind", async () => {
   const beforeLive = capture.total("trellis.live.sessions", {
-    "trellis.kind": "operation",
+    "trellis.kind": "operation_watch",
     "trellis.phase": "active",
   });
   const owner = new LiveTelemetryOwner("operation", "consumer");
@@ -94,7 +94,7 @@ test("Operation sessions report the operation kind", async () => {
   await capture.flush();
   assert.deepEqual(
     capture.total("trellis.live.sessions", {
-      "trellis.kind": "operation",
+      "trellis.kind": "operation_watch",
       "trellis.phase": "active",
     }) - beforeLive,
     1,

@@ -25,6 +25,7 @@ import {
   operationStartSubject,
 } from "../../operations.ts";
 import { base64urlEncode, utf8 } from "../../auth/utils.ts";
+import { transferConstants } from "../../auth/protocol_wasm.ts";
 
 import { encodeSchema, type JsonValue, parseSchema } from "../../codec.ts";
 import {
@@ -3979,10 +3980,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                 permission: ctx.permissions.invoke,
                 requiredCapabilities: ctx.callerCapabilities ?? [],
                 operationId: runtime.id,
-                expiresInMs: ctx.transfer.expiresInMs ?? 60_000,
-                ...(ctx.transfer.maxBytes !== undefined
-                  ? { maxBytes: ctx.transfer.maxBytes }
-                  : {}),
+                // Both SDKs share one Operation upload policy.
+                expiresInMs:
+                  transferConstants().operationUploadLifetimeSeconds * 1000,
+                maxBytes: transferConstants().operationUploadMaxBytes,
                 ...(contentType !== undefined ? { contentType } : {}),
                 ...(metadata !== undefined ? { metadata } : {}),
                 ...this.#operationUploadPersistence(
@@ -4447,10 +4448,10 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   permission: ctx.permissions.invoke,
                   requiredCapabilities: ctx.callerCapabilities ?? [],
                   operationId,
-                  expiresInMs: ctx.transfer.expiresInMs ?? 60_000,
-                  ...(ctx.transfer.maxBytes !== undefined
-                    ? { maxBytes: ctx.transfer.maxBytes }
-                    : {}),
+                  // Both SDKs share one Operation upload policy.
+                  expiresInMs:
+                    transferConstants().operationUploadLifetimeSeconds * 1000,
+                  maxBytes: transferConstants().operationUploadMaxBytes,
                   ...(contentType !== undefined ? { contentType } : {}),
                   ...(metadata !== undefined ? { metadata } : {}),
                   ...this.#operationUploadPersistence(

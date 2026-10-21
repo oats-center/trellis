@@ -128,7 +128,7 @@ async function closeConsumerA(
 ): Promise<void> {
   await metricsCapture.flush();
   const beforeEnds = metricsCapture.total("trellis.live.ends", {
-    "trellis.kind": "standalone",
+    "trellis.kind": "live",
     "trellis.side": "consumer",
   });
   abortA.abort();
@@ -139,7 +139,7 @@ async function closeConsumerA(
       await metricsCapture.flush();
       return (
         metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "consumer",
         }) -
           beforeEnds >=
@@ -151,7 +151,7 @@ async function closeConsumerA(
   await metricsCapture.flush();
   assert.deepEqual(
     metricsCapture.total("trellis.live.ends", {
-      "trellis.kind": "standalone",
+      "trellis.kind": "live",
       "trellis.side": "consumer",
     }) - beforeEnds,
     1,
