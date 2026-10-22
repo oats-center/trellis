@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -50,7 +51,8 @@ export function browserTrustEnvironment(): NodeJS.ProcessEnv {
   const inherited = process.env["TRELLIS_TEST_CA_CERTIFICATE"];
   if (inherited) cas.push(readFileSync(inherited, "utf8"));
   if (cas.length === 0) return { ...process.env };
-  const home = mkdtempSync(join(tmpdir(), "trellis-browser-trust-"));
+  removeAbandonedHomes();
+  const home = mkdtempSync(join(tmpdir(), `${HOME_PREFIX}${process.pid}-`));
   homes.add(home);
   const database = `sql:${join(home, ".pki", "nssdb")}`;
   mkdirSync(join(home, ".pki", "nssdb"), { recursive: true });
@@ -73,7 +75,30 @@ export function browserTrustEnvironment(): NodeJS.ProcessEnv {
   return { ...process.env, HOME: home };
 }
 
+const HOME_PREFIX = "trellis-browser-trust-";
 const homes = new Set<string>();
+let swept = false;
+
+/**
+ * Removes trust homes whose creating process no longer exists. Homes are
+ * removed at normal exit; this reclaims those stranded by a killed process.
+ */
+function removeAbandonedHomes(): void {
+  if (swept) return;
+  swept = true;
+  for (const entry of readdirSync(tmpdir())) {
+    const owner = Number(
+      new RegExp(`^${HOME_PREFIX}(\\d+)-`).exec(entry)?.[1] ?? Number.NaN,
+    );
+    if (!Number.isInteger(owner) || owner === process.pid) continue;
+    try {
+      process.kill(owner, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH")
+        rmSync(join(tmpdir(), entry), { recursive: true, force: true });
+    }
+  }
+}
 process.once("exit", () => {
   for (const home of homes) rmSync(home, { recursive: true, force: true });
 });

@@ -22,6 +22,9 @@ test(
   { timeout: 150_000 },
   async (context) => {
     const directory = await mkdtemp(join(tmpdir(), "native-enforcement-"));
+    // The bundle lives inside the temporary directory, so its generated CA
+    // directory (a sibling of the bundle) is removed with it.
+    const bundle = join(directory, "bundle");
     const cli = resolve(
       process.env.TRELLIS_TEST_CLI_BIN ?? "target/release/trellis",
     );
@@ -68,7 +71,7 @@ test(
         "init",
         "config",
         "--out",
-        directory,
+        bundle,
         "--trellis-port",
         String(http),
         "--nats-port",
@@ -85,8 +88,8 @@ test(
         `${directory}/jetstream`,
       ]);
       // The installation serves its generated TLS; this test trusts its CA.
-      trustInstallationCa(`${directory}/tls/ca.crt`);
-      const configPath = `${directory}/config.toml`;
+      trustInstallationCa(`${bundle}/tls/ca.crt`);
+      const configPath = `${bundle}/config.toml`;
       const config =
         (await readFile(configPath, "utf8")) +
         `\n[paths]\n${["data", "state", "cache", "runtime", "logs"].map((name) => `${name} = ${JSON.stringify(`${directory}/${name}`)}`).join("\n")}\n`;
@@ -100,7 +103,7 @@ test(
           'system_creds_path = "./nats/creds/trellis-auth.creds"',
         ),
       );
-      const natsConfig = `${directory}/nats/nats.conf`;
+      const natsConfig = `${bundle}/nats/nats.conf`;
       const username = "enforcement-admin";
       const password = "enforcement-fixture-password";
       await exec(serverBinary, [
