@@ -10,6 +10,17 @@ and this project adheres to
 
 ### Added
 
+- `stream;` Operations deliver caller bytes directly to a running handler,
+  with no staging. Callers use the existing transfer helpers. Handlers read the
+  live bytes once through TypeScript `transfer.stream()` or Rust
+  `OperationControl::take_upload_stream()`; the stream ends only after the
+  caller's size and digest are verified and the delivery is recorded. An
+  interrupted `stream` Operation fails with `OperationStreamInterrupted`
+  instead of resuming.
+- Receive grants can be served from any provider byte source whose size and
+  SHA-256 digest are declared up front: TypeScript
+  `createTransfer({ direction: "receive", stream, info })`, Rust
+  `plan_stream_download_transfer` with `spawn_stream_download_endpoint`.
 - `trellis.transfer.payload.bytes` counts DATA payload, and
   `trellis.transfer.control.bytes` counts every serialized non-DATA Transfer
   message, in both SDKs. Together with `trellis.transfer.wire.bytes` they give
@@ -22,6 +33,9 @@ and this project adheres to
 
 ### Changed
 
+- Rust `TransferDownloadGrantArgs::store` is optional, and
+  `run_download_transfer_endpoint` takes a `DownloadSource`, so downloads no
+  longer require a store binding.
 - The TypeScript SDK hashes Transfer and Object Store bytes with
   `node:crypto` where it is available (Node, Deno, Bun) and selects the NATS
   Object Store SDK's native SHA-256 backend, which is process-wide. Browsers

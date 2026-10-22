@@ -66,6 +66,44 @@ be coalesced: `transferredBytes` stays monotonic and its final persisted value i
 exact, while `chunkIndex`/`chunkBytes` describe the latest credited frame
 represented. Do not rely on one watch event per wire frame.
 
+For a `stream;` operation the handler starts immediately and nothing is staged.
+`transfer.stream()` returns the caller's live bytes exactly once; a second call
+fails. The stream ends only after Trellis verified the caller's final size and
+digest and recorded the delivery, and `transfer.completed()` then resolves with
+that metadata. A failed or cancelled transfer ends the stream with an error, so
+undo partial work when reading throws. Because the bytes cannot be replayed, an
+execution that loses its stream is not resumed: its Operation fails and the
+caller starts a new one.
+
+```ts
+await service.handleDocumentsIngest(async ({ op, transfer }) => {
+  const hash = createHash("sha256");
+  for await (const chunk of await transfer!.stream().orThrow()) {
+    hash.update(chunk); // process each chunk as it arrives
+  }
+  return await op.complete({ digest: hash.digest("hex") }).orThrow();
+});
+```
+
+To send bytes a service generates, return a receive grant from any byte source
+whose size and SHA-256 digest you declare up front:
+
+```ts
+const transfer = await service
+  .createTransfer({
+    direction: "receive",
+    stream: reportChunks(),
+    info: { key: "report.csv", size, digest, updatedAt, metadata: {} },
+    sessionKey: context.caller.sessionPublicKey,
+    connectionId: context.caller.runtimeId,
+    contextDigest: context.caller.authorityDigest,
+    permission: context.permission,
+    requiredCapabilities: context.requiredCapabilities,
+    inboxPrefix: context.inboxPrefix,
+  })
+  .orThrow();
+```
+
 On a generated service registration, `.control(operationId)` gives the **local
 owner** a typed, fenced operation handle with the declared progress, output,
 error, and update types. It fails on a replica without that owner's fence. To

@@ -101,14 +101,15 @@ Rules:
 When the caller sends bytes to the service, file bytes use an operation-native
 model:
 
-1. a contract-owned operation accepts JSON input and declares `upload` transfer
-   support
+1. a contract-owned operation accepts JSON input and declares `upload` (staged)
+   or `stream` (direct) transfer support
 2. the caller configures the operation input and sends bytes through the
    generated transfer-capable operation helper for that language
 3. callers do not start the same send-transfer operation first and attach bytes
    later
-4. the provider awaits the runtime's durable transfer completion signal and
-   continues with service-owned processing
+4. for `upload`, the provider awaits the runtime's durable transfer completion
+   signal and continues with service-owned processing; for `stream`, the
+   running handler reads the bytes as they arrive
 
 Example:
 
@@ -118,8 +119,10 @@ Rules:
 
 - send transfer is modeled as a capability of an operation; upload/file-ingest
   remains operation-native
-- the platform stages upload bytes independently of any participant-authored
-  Store mapping; typed operation input carries declared transfer metadata
+- for `upload`, the platform stages bytes independently of any
+  participant-authored Store mapping before the handler reads them; for
+  `stream`, nothing is staged and the handler decides where the bytes go
+- typed operation input carries declared transfer metadata
 - the actual byte movement still uses raw NATS chunk traffic rather than
   JSON/base64 RPC payloads
 - the transfer protocol is Trellis-owned runtime machinery, not a
@@ -174,7 +177,10 @@ rpc Documents.Files.Download {
 
 Rules:
 
-- `upload` marks an operation that accepts caller-sent bytes
+- `upload` marks an operation that accepts caller-sent bytes, durably staged
+  before its handler reads them
+- `stream` marks an operation that accepts caller-sent bytes delivered directly
+  to its running handler; it excludes `upload`
 - `download` marks an RPC whose response may carry a receive-transfer grant
 - upload staging is platform-owned and is not configured by mapping the
   participant-authored operation to a store alias
@@ -200,11 +206,18 @@ Rules:
 - all languages preserve the same consumed-byte progress semantics and
   Result-style expected failure model; durable Operation progress may be
   coalesced
-- providers that expose send-transfer operations MUST await the provider-side
+- providers that expose `upload` operations MUST await the provider-side
   durable transfer completion primitive before treating bytes as durably
   available; completion resolves only after the transfer endpoint has accepted
   EOF and durably staged the object, or fails with a transfer error if durable
   storage was not reached
+- providers that expose `stream` operations read the caller's bytes through a
+  backpressured stream handed to the running handler exactly once; bytes arrive
+  before the object is verified, so a handler must be able to abandon partial
+  work when its stream ends in an error
+- receive grants are served from a service store key or from any provider byte
+  source whose size and SHA-256 digest are declared up front; the grant binds
+  the declared metadata and a source that ends differently fails integrity
 
 ### Transfer v1 Session And Wire Behavior
 
@@ -285,16 +298,34 @@ received -> consumed/credited -> backend committed -> Operation committed
 ```
 
 Credit is bounded network backpressure, never evidence of durable persistence.
-Cancellation acknowledged before the durable commit handoff aborts storage
-ingress and cannot expose a committed staged upload. Once that handoff begins,
-settle the in-flight commit rather than acknowledge an uncommitted cancellation;
-cancellation after durable commit cannot undo it. A lost commit response is not
-proof of rollback: retain staged bytes until reconciliation confirms commit or a
-newer uncommitted revision fences the uncertain write. Interrupted uploads
-restart from byte zero, without partial replay or resumption.
 
-A download streams through the runtime's store boundary, splitting arbitrary
-backend chunks into bounded frames while credit is available. Signed EOF follows
+A `stream` upload has no staging boundary. After verifying the completion, the
+provider waits until the handler has consumed every frame, records the verified
+delivery in the Operation (fenced, like the staged commit), and only then ends
+the handler's stream and sends signed `committed`. The handler therefore never
+observes end of file for bytes whose delivery is unrecorded, and the caller's
+success means the handler received every verified byte, not that anything was
+persisted. A transfer failure, cancellation or ownership loss ends the
+handler's stream with an error. An execution that loses its stream cannot be
+replayed: recovery fails the Operation, and the caller starts a new one.
+
+| Boundary                                                                         | Meaning                                       | Observed by                                       |
+| -------------------------------------------------------------------------------- | --------------------------------------------- | ------------------------------------------------- |
+| delivered                                                                        | receiver accepted bytes through its stream    | provider handler (`stream`) or backend (`upload`) |
+| verified                                                                         | final sequence, size and digest checked       | both endpoints, via signed completion and EOF     |
+| application completed                                                            | handler finished, including any durable write | Operation output or RPC result                    |
+| Cancellation acknowledged before the durable commit handoff aborts storage       |
+| ingress and cannot expose a committed staged upload. Once that handoff begins,   |
+| settle the in-flight commit rather than acknowledge an uncommitted cancellation; |
+| cancellation after durable commit cannot undo it. A lost commit response is not  |
+| proof of rollback: retain staged bytes until reconciliation confirms commit or a |
+| newer uncommitted revision fences the uncertain write. Interrupted uploads       |
+| restart from byte zero, without partial replay or resumption.                    |
+
+A download streams through the runtime's store boundary or from a
+provider-supplied source, splitting arbitrary chunks into bounded frames while
+credit is available. A provider source is held to the size and digest its grant
+declared. Signed EOF follows
 all DATA on the same download subject. Both endpoints verify final logical
 size/digest, and the consumer sends final credit/end acknowledgement before
 releasing session ownership. No per-frame pull RPC remains.
@@ -366,10 +397,13 @@ For caller-visible file-processing workflows, the recommended pattern is:
 
 Rules:
 
-- transfer success means `bytes stored`, not `workflow finished`
-- a durable transfer completion signal means final sequence/size/digest were
+- for `upload`, transfer success means `bytes stored`, not `workflow finished`;
+  a durable transfer completion signal means final sequence/size/digest were
   verified, platform staging completed, and the Operation transfer state was
   durably committed; only then may the handler begin processing
+- for `stream`, transfer success means every verified byte reached the running
+  handler and the delivery was recorded; durability is whatever the handler
+  does with the bytes
 - durable transfer progress is monotonic and coalesced from backend-consumed
   bytes; `chunkIndex` and `chunkBytes` describe the latest credited frame
   represented, not a promise of one watch event per frame; final persisted

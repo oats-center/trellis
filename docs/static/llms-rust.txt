@@ -578,6 +578,15 @@ without waiting to fill a DATA frame. Backend uploads pipeline bounded writes
 but await required acknowledgements and metadata commit before success.
 Unchanged context reuse still verifies every frame's proof and current
 authority, expiry, revocation, coverage and provider requirements.
+A `stream;` Operation handler starts at once and takes the caller's live bytes
+with `operation.take_upload_stream()` (an `AsyncRead`, returned once). End of file
+means verified size/digest and recorded delivery, after which
+`operation.upload()` returns the metadata; a failed transfer is a read error.
+Nothing is staged, so an interrupted `stream` Operation fails instead of
+resuming. Serve generated downloads with
+`context.plan_stream_download_transfer(id, expires_at, info)` and
+`context.handle().spawn_stream_download_endpoint(plan, reader)`; `info` declares
+the exact size and digest, and different bytes fail the transfer.
 Across language boundaries, an upload transport error is not proof of rollback;
 resume the Operation to reconcile its durable result before retrying.
 Streaming grants contain logical session identities and runtime subjects only,
