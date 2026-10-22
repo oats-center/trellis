@@ -296,6 +296,33 @@ Every frame still verifies its signature/proof and checks current authority,
 expiry, revocation, coverage and issuer trust. A changed digest takes the full
 replacement path and commits only after successful frame authentication.
 
+### Proposed: One-Pass Frame Proofs (Not Implemented)
+
+Status: proposal for review; Transfer v1 currently binds each DATA proof to
+SHA-256 of that frame's payload.
+
+Every DATA byte is hashed twice at each endpoint: once for the compact frame
+digest its request or server proof signs, and once into the object's running
+SHA-256 that completion and EOF verify. On the measured host the frame digest
+(WASM in TypeScript) runs near 285 MiB/s against 1,530 MiB/s for native
+`node:crypto`, so it is now the slowest per-byte pass in a TypeScript
+transfer.
+
+Proposal: bind each frame's proof to the object's running digest after that
+frame instead of a separate payload hash. Both endpoints already maintain the
+running hash; finalizing a copy of its state costs one block, not a pass over
+the payload. Sequence validation already requires strictly ordered frames, so
+the receiver checks frame N against its own running state after N frames.
+
+- Integrity is unchanged: the final frame's proof covers the whole object, and
+  every earlier proof covers its exact prefix.
+- A frame cannot be verified out of order or in isolation; v1 already rejects
+  out-of-order DATA.
+- It changes the frame digest's definition, so it is a v1 wire change in both
+  SDKs and the WASM, gated on the same release decision as negotiated windows.
+- TypeScript needs a running-hash copy: `node:crypto` `Hash.copy()` provides
+  it; the portable fallback needs an equivalent incremental state copy.
+
 ### Flow Control Is Not Durability
 
 An upload's authenticated completion follows all DATA on the same upload data
