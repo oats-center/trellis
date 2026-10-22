@@ -216,14 +216,45 @@ difference as a regression.
 
 ## Interpretation and current limits
 
-HTTP is a **plaintext baseline: no TLS, no authentication, and no
+By default HTTP is a **plaintext baseline: no TLS, no authentication, and no
 authorization**. It is a lower bound, not a security-equivalent stack. Each
 comparison uses the same language on both ends (Node or Rust), loopback,
-identity encoding, and no caching. HTTP file storage and Trellis JetStream
-storage have different durability semantics. Transfer timings include complete
-integrity verification; first payload byte and setup are reported separately for
+identity encoding, and no caching. Transfer timings include complete integrity
+verification; first payload byte and setup are reported separately for
 downloads. Image-sized objects use binary payloads; image decoding and rendering
 are not measured.
+
+### HTTP transfer modes and matched security
+
+Both HTTP servers (Node `node:http`/`node:https` and Rust axum/hyper) serve
+three transfer modes, so each Trellis workload has an HTTP counterpart with the
+same outcome:
+
+| Mode     | Upload                                           | Download                       |
+| -------- | ------------------------------------------------ | ------------------------------ |
+| `raw`    | local file, closed but not fsynced, then re-read | local file                     |
+| `stream` | hashed inline and discarded                      | generated inline, no storage   |
+| `store`  | hashed inline into the provider's Object Store   | read from the provider's store |
+
+Store mode connects with the provider's own identity and uses the same `files`
+store through the ordinary service store API; it mounts no handlers. Uploads
+report two boundaries: **verified** (receiver checked size and digest) and
+**durable** (required write completed). Trellis `upload-staged` completes at
+the staged commit; `upload-persisted` additionally copies into the service
+store and re-reads it.
+
+`--http-chunk=<bytes>` (default 65536) sets one body chunk policy for both
+languages' clients and servers. `--http-tls` generates an ephemeral CA, server
+and client certificates, and an Ed25519 request-signing key before measuring.
+HTTP then requires mutual TLS and verifies a per-request signature over method,
+target, declared length, timestamp and single-use nonce. Integrity comes from
+TLS plus an end-to-end digest comparison. Trellis revocation, authority renewal
+and brokered per-frame proofs have no HTTP equivalent here.
+
+The Rust lane also runs the raw Core NATS lower bound, using the testkit's
+runtime credentials, so both languages report stream-to-stream, stream-to-store
+and complete-workflow rows. Reports add server CPU core-seconds per GiB and the
+protocol byte overhead from production Transfer counters.
 
 CPU counters have kernel-tick resolution: short windows can report zero despite
 real work. PSS/RSS describe whole processes, not bytes allocated per session.

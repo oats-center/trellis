@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { once } from "node:events";
 import { createWriteStream } from "node:fs";
-import { mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
@@ -27,6 +27,7 @@ import { snapshotResources } from "./resources.ts";
 import { TrellisTestRuntime } from "../../ts/packages/trellis-testkit/index.ts";
 import { apps, participants } from "./packages/performance-trellis/index.js";
 import { rawTransfer } from "./raw_transfer.ts";
+import { generateHttpTls } from "./http_security.ts";
 import { observeTransfer } from "./observe.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -52,8 +53,15 @@ const { values: args } = parseArgs({
     "contract-worker": { type: "string" },
     "keep-workdir": { type: "boolean", default: false },
     diagnostics: { type: "boolean", default: false },
+    "http-chunk": { type: "string", default: String(64 * 1024) },
+    "http-tls": { type: "boolean", default: false },
   },
 });
+const httpChunkBytes = z.coerce
+  .number()
+  .int()
+  .positive()
+  .parse(args["http-chunk"]);
 const positive = z.coerce.number().int().positive();
 const samples = positive.parse(args.samples);
 const calls = positive.parse(args.calls);
@@ -226,14 +234,16 @@ try {
         lane,
         providerCount,
         diagnostics: args.diagnostics,
-        topology:
-          "loopback; native NATS TCP; plaintext HTTP/1.1 keep-alive; no compression or HTTP caching",
+        httpChunkBytes,
+        httpTls: args["http-tls"],
+        topology: `loopback; native NATS TCP; ${args["http-tls"] ? "mutual-TLS" : "plaintext"} HTTP/1.1 keep-alive with ${httpChunkBytes}-byte body chunks; no compression or HTTP caching`,
         setup:
           "Contracts, resources and platform grants prepared before measurement; backend warm; fresh login includes ordinary login/consent and distinct OAuth custody. First-process connect includes lazy SDK initialization, not module parsing; OS caches are not cleared",
-        security:
-          "Trellis production auth; HTTP unauthenticated lower bound, NOT security equivalent",
+        security: args["http-tls"]
+          ? "Trellis production auth; HTTP mutual TLS plus per-request Ed25519 signatures. Channel identity and request authorization are matched; Trellis revocation, authority renewal and brokered per-frame proofs have no HTTP equivalent"
+          : "Trellis production auth; HTTP unauthenticated lower bound, NOT security equivalent",
         storage:
-          "Trellis JetStream object storage; HTTP filesystem. Persistence acknowledgement, NOT equivalent fsync guarantees",
+          "Trellis JetStream object storage. HTTP raw: local file, closed but not fsynced; HTTP store: the provider's NATS Object Store; HTTP stream: no storage",
         telemetry: {
           traces: process.env.OTEL_TRACES_SAMPLER ?? "SDK defaults",
           endpointConfigured: Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT),
@@ -326,6 +336,13 @@ try {
       throw new Error("Browser fixture requires TCP");
     }
     browserOrigin = `http://127.0.0.1:${address.port}`;
+  }
+  let httpTlsDir: string | undefined;
+  if (args["http-tls"]) {
+    // Ephemeral CA plus server/client identities for mutual TLS, and one
+    // Ed25519 request-signing key. Generated outside every measured window.
+    httpTlsDir = `${output}/tls`;
+    await generateHttpTls(httpTlsDir);
   }
   runtime = await TrellisTestRuntime.start({
     keepWorkdir: Boolean(args["keep-workdir"]),
@@ -421,6 +438,8 @@ try {
     idleSeconds,
     warmups,
     workload: lane === "transfer" || lane === "lifecycle" ? lane : "all",
+    httpChunkBytes,
+    httpTlsDir,
   };
   const providers: TrackedProcess[] = [];
   for (let providerIndex = 0; providerIndex < providerCount; providerIndex++) {
@@ -800,11 +819,30 @@ try {
   } else if (lane === "rust") {
     const before = await snapshotResources(output, cpuTicks, "coordinator");
     const started = performance.now();
+    // The raw Core NATS lower bound uses the same privileged runtime
+    // credentials as the TypeScript lane's `runtime.connectNats()` observer.
+    const creds = (
+      await readdir(runtime.workdir, { recursive: true, withFileTypes: true })
+    )
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          entry.name === "trellis-auth.creds" &&
+          entry.parentPath.endsWith("/nats/creds"),
+      )
+      .map((entry) => `${entry.parentPath}/${entry.name}`);
+    if (creds.length !== 1) {
+      throw new Error(
+        `Expected one runtime NATS credential, found ${creds.length}`,
+      );
+    }
     const child = await startWorker("rust", {
       ...options,
       role: "client",
       clientId: apps.Caller.request.id,
       httpUrl: z.url().parse(httpReady.httpUrl),
+      natsUrl: runtime.natsUrl,
+      natsCreds: creds[0],
     });
     const loginOutput = await runtime.waitFor(async () => {
       const stdout = await readFile(`${output}/client.stdout.log`, "utf8");
@@ -819,13 +857,21 @@ try {
     const nativeSamples = z.array(
       z.object({
         scenario: z.string(),
-        transport: z.enum(["trellis", "http", "store"]),
+        transport: z.enum(["trellis", "http", "store", "nats"]),
         startedUnixMs: z.number(),
         durationMs: z.number(),
         bytes: z.number().optional(),
         error: z.string().optional(),
         warmup: z.boolean().optional(),
         committedMs: z.number().optional(),
+        setupMs: z.number().optional(),
+        firstByteMs: z.number().optional(),
+        verifiedMs: z.number().optional(),
+        durableMs: z.number().optional(),
+        maxFrameBytes: z.number().optional(),
+        windowFrames: z.number().optional(),
+        windowBytes: z.number().optional(),
+        dataFrames: z.number().optional(),
       }),
     );
     const rows = nativeSamples.parse(

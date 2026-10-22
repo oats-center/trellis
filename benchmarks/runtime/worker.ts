@@ -1,10 +1,7 @@
 import { renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { get as httpGet } from "node:http";
 import { text } from "node:stream/consumers";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
-import { createWriteStream } from "node:fs";
 import { inspect } from "node:util";
 import { StoreError, decodeTransferGrant } from "@oatscenter/trellis";
 import {
@@ -14,7 +11,6 @@ import {
   MemoryNativeOAuthCustody,
   type NativeOAuthSession,
 } from "@oatscenter/trellis/native";
-import { sha256 } from "@noble/hashes/sha256";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { ensureTelemetryRuntime } from "@oatscenter/trellis/telemetry";
 import { err, isErr, ok } from "@oatscenter/result";
@@ -23,6 +19,7 @@ import { apps, participants } from "./packages/performance-trellis/index.js";
 import {
   deadline,
   digest,
+  HTTP_MODES,
   payload,
   payloadChunks,
   streamDigest,
@@ -30,6 +27,8 @@ import {
   summarize,
   WorkerOptions,
 } from "./model.ts";
+import { createHttpClient } from "./http_client.ts";
+import { loadHttpTls } from "./http_security.ts";
 import { snapshotResources } from "./resources.ts";
 import { captureMetrics } from "./metrics.ts";
 
@@ -83,15 +82,13 @@ if (options.role !== "client") {
             }
             const entry = await store.get(`diagnostic-${size}`).orThrow();
             const stream = await entry.stream().orThrow();
-            const hash = sha256.create();
+            const hash = createHash("sha256");
             let length = 0;
             for await (const chunk of stream) {
               length += chunk.length;
               hash.update(chunk);
             }
-            const actual = Array.from(hash.digest(), (byte) =>
-              byte.toString(16).padStart(2, "0"),
-            ).join("");
+            const actual = hash.digest("hex");
             if (length !== size || actual !== expected) {
               throw new Error("Corrupt backend diagnostic round trip");
             }
@@ -116,10 +113,6 @@ if (options.role !== "client") {
   }
   for (const size of options.sizes) {
     await store.put(String(size), payloadChunks(size)).orThrow();
-    await pipeline(
-      Readable.from(payloadChunks(size)),
-      createWriteStream(`${options.output}/body-${size}.bin`),
-    );
   }
   await service.handleEcho(({ input }) => ok(input));
   await service.handlePutRecord(async ({ input }) => {
@@ -164,6 +157,19 @@ if (options.role !== "client") {
       .complete({
         value: (await streamDigest(await stored.stream().orThrow())).digest,
       })
+      .orThrow();
+  });
+  // Stream-to-store: the staged commit is the only durable write; complete
+  // with the runtime-verified digest instead of copying and re-reading.
+  await service.handleUploadStaged(async ({ op, transfer }) => {
+    if (!transfer) {
+      throw new Error("Upload arrived without its supported transfer");
+    }
+    const info = await transfer.completed().orThrow();
+    const encoded = info.digest?.replace(/^SHA-256=/, "");
+    if (!encoded) throw new Error("Staged upload digest missing");
+    return await op
+      .complete({ value: Buffer.from(encoded, "base64url").toString("hex") })
       .orThrow();
   });
   await service.handleWork(async ({ input, op }) => {
@@ -272,6 +278,10 @@ if (options.role !== "client") {
   }
 } else {
   const samples: Sample[] = [];
+  const tls = options.httpTlsDir
+    ? await loadHttpTls(options.httpTlsDir)
+    : undefined;
+  const http = createHttpClient(options.httpUrl!, tls);
   const windows: Array<{
     scenario: string;
     transport: Sample["transport"];
@@ -409,19 +419,11 @@ if (options.role !== "client") {
     if (options.workload === "all") {
       for (let index = 0; index < options.samples; index++) {
         await measure("fresh-connection-first-get", "http", async () => {
-          const reply = await new Promise<import("node:http").IncomingMessage>(
-            (resolve, reject) => {
-              httpGet(
-                `${options.httpUrl}/echo?value=first-get`,
-                {
-                  agent: false,
-                  headers: { "accept-encoding": "identity" },
-                  signal: AbortSignal.timeout(30_000),
-                },
-                resolve,
-              ).once("error", reject);
-            },
-          );
+          const reply = await createHttpClient(
+            options.httpUrl!,
+            tls,
+            true,
+          ).send("GET", "/echo?value=first-get");
           if (
             reply.statusCode !== 200 ||
             JSON.parse(await text(reply)).value !== "first-get"
@@ -559,33 +561,22 @@ if (options.role !== "client") {
           }
         });
         await measure("live-start-first-frame", "http", async () => {
-          const response = await fetch(
-            `${options.httpUrl}/live?value=${value}`,
-            {
-              headers: { "accept-encoding": "identity" },
-              cache: "no-store",
-              signal: AbortSignal.timeout(30_000),
-            },
-          );
-          if (!response.ok || !response.body) {
+          const response = await http.send("GET", `/live?value=${value}`);
+          if (response.statusCode !== 200) {
+            response.resume();
             throw new Error("HTTP stream failed");
           }
-          const reader = response.body.getReader();
           let text = "";
           const decoder = new TextDecoder();
-          try {
-            while (!text.includes("\n")) {
-              const frame = await reader.read();
-              if (frame.done) {
-                throw new Error("HTTP stream ended before a frame");
-              }
-              text += decoder.decode(frame.value, { stream: true });
-            }
-            if (JSON.parse(text.split("\n")[0]).value !== value) {
-              throw new Error("HTTP stream returned incorrect data");
-            }
-          } finally {
-            await reader.cancel();
+          for await (const frame of response as AsyncIterable<Uint8Array>) {
+            text += decoder.decode(frame, { stream: true });
+            if (text.includes("\n")) break;
+          }
+          if (!text.includes("\n")) {
+            throw new Error("HTTP stream ended before a frame");
+          }
+          if (JSON.parse(text.split("\n")[0]).value !== value) {
+            throw new Error("HTTP stream returned incorrect data");
           }
         });
         const seen = Promise.withResolvers<void>();
@@ -659,13 +650,11 @@ if (options.role !== "client") {
               const response =
                 transport === "trellis"
                   ? await client.echo({ value }).orThrow()
-                  : await (
-                      await fetch(`${options.httpUrl}/echo?value=${value}`, {
-                        cache: "no-store",
-                        headers: { "accept-encoding": "identity" },
-                        signal: AbortSignal.timeout(30_000),
-                      })
-                    ).json();
+                  : JSON.parse(
+                      await text(
+                        await http.send("GET", `/echo?value=${value}`),
+                      ),
+                    );
               if (response.value !== value) {
                 throw new Error("Incorrect echo response");
               }
@@ -844,19 +833,35 @@ if (options.role !== "client") {
         });
       }
     }
+    const hashStream = async (
+      stream: AsyncIterable<Uint8Array>,
+      start: number,
+    ) => {
+      let firstByteMs: number | undefined;
+      const hash = createHash("sha256");
+      let length = 0;
+      for await (const chunk of stream) {
+        if (chunk.length && firstByteMs === undefined) {
+          firstByteMs = performance.now() - start;
+        }
+        length += chunk.length;
+        hash.update(chunk);
+      }
+      return { length, digest: hash.digest("hex"), firstByteMs };
+    };
     for (const size of options.sizes) {
       const expected = (await streamDigest(payloadChunks(size))).digest;
       for (let index = -options.warmups; index < options.samples; index++) {
+        // Alternate which transport goes first; HTTP modes keep a fixed order.
         for (const transport of index % 2
           ? (["http", "trellis"] as const)
           : (["trellis", "http"] as const)) {
-          await measure(
-            "download",
-            transport,
-            async () => {
-              const start = performance.now();
-              let stream: ReadableStream<Uint8Array>;
-              if (transport === "trellis") {
+          if (transport === "trellis") {
+            await measure(
+              "download",
+              "trellis",
+              async () => {
+                const start = performance.now();
                 const response = await client
                   .download({ value: String(size) })
                   .orThrow();
@@ -864,102 +869,154 @@ if (options.role !== "client") {
                 if (grant.direction !== "receive") {
                   throw new Error("Download returned a send grant");
                 }
-                stream = await client.transfer(grant).stream().orThrow();
-              } else {
-                const response = await fetch(
-                  `${options.httpUrl}/download?size=${size}`,
-                  {
-                    cache: "no-store",
-                    headers: { "accept-encoding": "identity" },
-                    signal: AbortSignal.timeout(30_000),
-                  },
-                );
-                if (!response.ok || !response.body) {
-                  throw new Error(`HTTP download ${response.status}`);
+                const stream = await client.transfer(grant).stream().orThrow();
+                const setupMs = performance.now() - start;
+                const received = await hashStream(stream, start);
+                if (received.length !== size || received.digest !== expected) {
+                  throw new Error("Corrupt download");
                 }
-                const encoding = response.headers.get("content-encoding");
+                return {
+                  setupMs,
+                  firstByteMs: received.firstByteMs,
+                  verifiedMs: performance.now() - start,
+                };
+              },
+              size,
+              undefined,
+              index < 0,
+            );
+            for (const scenario of [
+              "upload-persisted",
+              "upload-staged",
+            ] as const) {
+              await measure(
+                scenario,
+                "trellis",
+                async () => {
+                  const started = performance.now();
+                  let payloadSuppliedMs: number | undefined;
+                  const body = (async function* () {
+                    yield* payloadChunks(size);
+                    payloadSuppliedMs = performance.now() - started;
+                  })();
+                  const operation = await (
+                    scenario === "upload-staged"
+                      ? client.uploadStaged({ value: String(size) })
+                      : client.upload({ value: String(size) })
+                  )
+                    .transfer(body)
+                    .start()
+                    .orThrow();
+                  // Authenticated commit: verified and durably staged.
+                  const committedMs = performance.now() - started;
+                  const result = await operation.wait().orThrow();
+                  if (
+                    result.terminal.state !== "completed" ||
+                    result.transferred.size !== size ||
+                    result.terminal.output?.value !== expected
+                  ) {
+                    throw new Error("Corrupt persisted upload");
+                  }
+                  return {
+                    payloadSuppliedMs,
+                    committedMs,
+                    verifiedMs: committedMs,
+                    durableMs:
+                      scenario === "upload-staged"
+                        ? committedMs
+                        : performance.now() - started,
+                  };
+                },
+                size,
+                undefined,
+                index < 0,
+              );
+            }
+            continue;
+          }
+          for (const mode of HTTP_MODES) {
+            await measure(
+              `download-${mode}`,
+              "http",
+              async () => {
+                const start = performance.now();
+                const response = await http.send(
+                  "GET",
+                  `/download/${mode}?size=${size}`,
+                );
+                if (response.statusCode !== 200) {
+                  response.resume();
+                  throw new Error(`HTTP download ${response.statusCode}`);
+                }
+                const encoding = response.headers["content-encoding"];
                 if (encoding && encoding !== "identity") {
                   throw new Error(`Unexpected HTTP compression: ${encoding}`);
                 }
-                stream = response.body;
-              }
-              const setupMs = performance.now() - start;
-              let firstByteMs: number | undefined;
-              const hash = sha256.create();
-              let length = 0;
-              for await (const chunk of stream) {
-                if (chunk.length && firstByteMs === undefined) {
-                  firstByteMs = performance.now() - start;
-                }
-                length += chunk.length;
-                hash.update(chunk);
-              }
-              const actual = Buffer.from(hash.digest()).toString("hex");
-              if (length !== size || actual !== expected) {
-                throw new Error("Corrupt download");
-              }
-              return { setupMs, firstByteMs };
-            },
-            size,
-            undefined,
-            index < 0,
-          );
-          await measure(
-            "upload-persisted",
-            transport,
-            async () => {
-              const started = performance.now();
-              let payloadSuppliedMs: number | undefined;
-              const body = (async function* () {
-                yield* payloadChunks(size);
-                payloadSuppliedMs = performance.now() - started;
-              })();
-              if (transport === "trellis") {
-                const operation = await client
-                  .upload({ value: String(size) })
-                  .transfer(body)
-                  .start()
-                  .orThrow();
-                const committedMs = performance.now() - started;
-                const result = await operation.wait().orThrow();
+                const setupMs = performance.now() - start;
+                const received = await hashStream(
+                  response as AsyncIterable<Uint8Array>,
+                  start,
+                );
+                const declared = response.headers["x-bench-digest"];
                 if (
-                  result.terminal.state !== "completed" ||
-                  result.transferred.size !== size
-                )
-                  throw new Error("Upload not completed");
-                if (
-                  result.terminal.state !== "completed" ||
-                  result.terminal.output?.value !== expected
+                  received.length !== size ||
+                  received.digest !== expected ||
+                  (typeof declared === "string" &&
+                    declared !== "" &&
+                    Buffer.from(
+                      declared.replace(/^SHA-256=/, ""),
+                      "base64url",
+                    ).toString("hex") !== expected)
                 ) {
+                  throw new Error("Corrupt HTTP download");
+                }
+                return {
+                  setupMs,
+                  firstByteMs: received.firstByteMs,
+                  verifiedMs: performance.now() - start,
+                };
+              },
+              size,
+              undefined,
+              index < 0,
+            );
+            await measure(
+              `upload-${mode}`,
+              "http",
+              async () => {
+                const started = performance.now();
+                const startedWall = performance.timeOrigin + started;
+                let payloadSuppliedMs: number | undefined;
+                const chunks = (async function* () {
+                  yield* payloadChunks(size, options.httpChunkBytes);
+                  payloadSuppliedMs = performance.now() - started;
+                })();
+                const response = await http.send(
+                  "PUT",
+                  `/upload/${mode}?size=${size}`,
+                  { chunks, length: size },
+                );
+                const reply = await text(response);
+                if (response.statusCode !== 200) {
+                  throw new Error(
+                    `HTTP upload ${response.statusCode}: ${reply}`,
+                  );
+                }
+                const stored = JSON.parse(reply);
+                if (stored.size !== size || stored.digest !== expected) {
                   throw new Error("Corrupt persisted upload");
                 }
-                return { payloadSuppliedMs, committedMs };
-              }
-              const response = await fetch(
-                `${options.httpUrl}/upload?size=${size}`,
-                {
-                  method: "PUT",
-                  body: Readable.toWeb(
-                    Readable.from(body),
-                  ) as ReadableStream<Uint8Array>,
-                  ...{ duplex: "half" },
-                  headers: { "accept-encoding": "identity" },
-                  signal: AbortSignal.timeout(30_000),
-                },
-              );
-              if (!response.ok) {
-                throw new Error(`HTTP upload ${response.status}`);
-              }
-              const stored = await response.json();
-              if (stored.size !== size || stored.digest !== expected) {
-                throw new Error("Corrupt persisted upload");
-              }
-              return { payloadSuppliedMs };
-            },
-            size,
-            undefined,
-            index < 0,
-          );
+                return {
+                  payloadSuppliedMs,
+                  verifiedMs: stored.verifiedUnixMs - startedWall,
+                  durableMs: stored.durableUnixMs - startedWall,
+                };
+              },
+              size,
+              undefined,
+              index < 0,
+            );
+          }
         }
       }
     }
@@ -1045,17 +1102,14 @@ if (options.role !== "client") {
                 if (grant.direction !== "receive")
                   throw new Error("Download returned a send grant");
                 const stream = await client.transfer(grant).stream().orThrow();
-                const hash = sha256.create();
+                const hash = createHash("sha256");
                 let length = 0;
                 for await (const chunk of stream) {
                   if (chunk.length) downloadReady.resolve();
                   length += chunk.length;
                   hash.update(chunk);
                 }
-                if (
-                  length !== size ||
-                  Buffer.from(hash.digest()).toString("hex") !== expected
-                )
+                if (length !== size || hash.digest("hex") !== expected)
                   throw new Error("Corrupt concurrent download");
               } finally {
                 dataActive--;
@@ -1132,6 +1186,7 @@ if (options.role !== "client") {
     });
     throw error;
   } finally {
+    http.close();
     for (const client of held) await client.connection.close().catch(() => {});
     await phase("trellis/after-disconnect");
     await new Promise((resolve) =>
