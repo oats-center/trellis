@@ -84,7 +84,9 @@ Each contract project owns `trellis.toml`, commits `trellis.lock`, and consumes
 its private generated SDK through the configured TypeScript or Rust output.
 Generated implementations are ignored build artifacts, not committed source.
 `cargo xtask install` prepares the Rust SDK's built-in bindings before repository
-compilation. Published SDK archives include those generated sources; downstream
+compilation and rebuilds the TypeScript SDK's protocol WASM, which needs the
+`wasm32-unknown-unknown` Rust target. Pass `--skip-protocol-wasm` only where the
+WASM is built separately, as CI does. Published SDK archives include those generated sources; downstream
 Cargo builds need neither the Trellis CLI nor compiler/generator build dependencies.
 `cargo xtask build` installs the fixed repository project DAG before building
 the Rust workspace. Live client-library integration coverage is language-owned.

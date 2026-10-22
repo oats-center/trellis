@@ -14,6 +14,10 @@ enum XtaskCommand {
     Install {
         #[arg(long)]
         update: bool,
+        /// Skip rebuilding the protocol WASM, for callers that build it
+        /// separately (such as CI's parallel WASM job).
+        #[arg(long)]
+        skip_protocol_wasm: bool,
     },
     #[command(name = "protocol-wasm")]
     ProtocolWasm,
@@ -51,7 +55,10 @@ fn run() -> Result<()> {
         return Ok(());
     };
     match command {
-        XtaskCommand::Install { update } => run_install(update),
+        XtaskCommand::Install {
+            update,
+            skip_protocol_wasm,
+        } => run_install(update, !skip_protocol_wasm),
         XtaskCommand::ProtocolWasm => generate_protocol_wasm(),
         XtaskCommand::Build { args } => run_build(&args),
         XtaskCommand::Release { command } => release::run_release(&repo_root()?, command),
@@ -125,7 +132,9 @@ const TRELLIS_PROJECTS: &[&str] = &[
     "docs/examples/orders",
 ];
 
-fn run_install(update: bool) -> Result<()> {
+/// Installs contract dependencies and regenerates every generated artifact the
+/// SDKs consume, including the protocol WASM unless `protocol_wasm` is false.
+fn run_install(update: bool, protocol_wasm: bool) -> Result<()> {
     let root = repo_root()?;
     let runtime = tokio::runtime::Runtime::new().into_diagnostic()?;
     generate_builtin_package(&root).wrap_err("generating built-in package")?;
@@ -154,6 +163,9 @@ fn run_install(update: bool) -> Result<()> {
         root.join("ts/packages/trellis-testkit/src/nats-binaries.json"),
     )
     .into_diagnostic()?;
+    if protocol_wasm {
+        generate_protocol_wasm()?;
+    }
     Ok(())
 }
 
@@ -501,8 +513,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 fn run_build(args: &[String]) -> Result<()> {
-    run_install(false)?;
-    generate_protocol_wasm()?;
+    run_install(false, true)?;
     build_embedded_browser_apps()?;
     let workspace_root = repo_root()?;
     let mut spec = Command::new("cargo");
@@ -595,11 +606,23 @@ mod tests {
         let command = parse_command(["install".to_string()].into_iter())
             .expect("parse install")
             .expect("install command");
-        assert_eq!(command, XtaskCommand::Install { update: false });
+        assert_eq!(
+            command,
+            XtaskCommand::Install {
+                update: false,
+                skip_protocol_wasm: false
+            }
+        );
         let command = parse_command(["install", "--update"].into_iter().map(str::to_string))
             .expect("parse install update")
             .expect("install update command");
-        assert_eq!(command, XtaskCommand::Install { update: true });
+        assert_eq!(
+            command,
+            XtaskCommand::Install {
+                update: true,
+                skip_protocol_wasm: false
+            }
+        );
     }
 
     #[test]

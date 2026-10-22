@@ -27,7 +27,9 @@ git clone https://github.com/oats-center/trellis.git
 cd trellis
 ```
 
-Install API dependencies and generate contract artifacts from a clean checkout:
+Install API dependencies and generate contract artifacts, including the
+TypeScript SDK's protocol WASM, from a clean checkout. This needs the
+`wasm32-unknown-unknown` Rust target (`rustup target add wasm32-unknown-unknown`):
 
 ```sh
 cargo xtask install

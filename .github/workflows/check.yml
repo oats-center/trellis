@@ -91,7 +91,7 @@ jobs:
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-install-dev-locked-ci-linetables-v1-
 
       - name: Install generated artifacts
-        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install
+        run: rm -rf "$RUNNER_TEMP/trellis-cache" && TRELLIS_CACHE="$RUNNER_TEMP/trellis-cache" cargo xtask install --skip-protocol-wasm
 
       - name: Report installation cache input size
         if: always()

@@ -16,7 +16,7 @@
     "install:contracts": "cargo xtask install",
     "protocol:wasm": "cargo xtask protocol-wasm",
     "browser:embedded": "npm run build:embedded --workspace @trellis/oauth-portal && npm run build:embedded --workspace @trellis/console",
-    "build:runtime": "npm run install:contracts && npm run protocol:wasm && npm run browser:embedded",
+    "build:runtime": "npm run install:contracts && npm run browser:embedded",
     "build:packages": "npm run build --workspace @oatscenter/result && npm run build --workspace @oatscenter/trellis && npm run build --workspace @oatscenter/trellis-testkit && npm run build --workspace @oatscenter/trellis-svelte",
     "test:package-version": "node --test ts/tools/package_build/release_build_version_test.ts",
     "test:packages": "node ts/tools/run_unit_tests.ts ts/tools/package_build",
