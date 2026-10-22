@@ -182,6 +182,8 @@ pub trait OperationDescriptor {
     const CONTROL_CAPABILITIES: &'static [&'static str] = &[];
     const CANCELABLE: bool;
     const UPLOAD: bool = false;
+    /// Upload bytes stream directly to the running handler; not replayable.
+    const STREAM: bool = false;
     const ERRORS: &'static [&'static str] = &[];
     const INPUT_SCHEMA_JSON: &'static str;
     const PROGRESS_SCHEMA_JSON: Option<&'static str>;
@@ -214,6 +216,7 @@ where
     const CONTROL_CAPABILITIES: &'static [&'static str] = D::CONTROL_CAPABILITIES;
     const CANCELABLE: bool = D::CANCELABLE;
     const UPLOAD: bool = <D as crate::client::OperationDescriptor>::UPLOAD;
+    const STREAM: bool = <D as crate::client::OperationDescriptor>::STREAM;
     const ERRORS: &'static [&'static str] = D::ERRORS;
     const INPUT_SCHEMA_JSON: &'static str = D::INPUT_SCHEMA_JSON;
     const PROGRESS_SCHEMA_JSON: Option<&'static str> = D::PROGRESS_SCHEMA_JSON;

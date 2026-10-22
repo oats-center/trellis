@@ -997,7 +997,7 @@ fn render_action(
             type_path(input), type_path(event), format!("live.{name}"), api.subjects().lives[name],
             string_slice(capabilities(InteractionDirection::Subscribe)),
         )),
-        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload } => {
+        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload, stream } => {
             let signal_schemas = signals
                 .iter()
                 .map(|(name, ty)| {
@@ -1027,7 +1027,7 @@ fn render_action(
                 out.push_str(&format!("pub type {rust_name}{}SignalInput = {};\n", type_name(signal), type_path(ty)));
             }
             out.push_str(&format!(
-                "pub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = {:?}; pub const CALLER_CAPABILITIES: &'static [&'static str] = &{}; pub const ERRORS: &'static [&'static str] = &{}; pub const UPLOAD: bool = {upload}; }}\n",
+                "pub struct {rust_name};\nimpl {rust_name} {{ pub const API_ID: &'static str = super::API_ID; pub const DESCRIPTOR_NAME: &'static str = {:?}; pub const KEY: &'static str = {key:?}; pub const SUBJECT: &'static str = {:?}; pub const CALLER_CAPABILITIES: &'static [&'static str] = &{}; pub const ERRORS: &'static [&'static str] = &{}; pub const UPLOAD: bool = {upload}; pub const STREAM: bool = {stream}; }}\n",
                 format!("operation.{name}"), format!("operations.{version}.{}.{name}", api.name()),
                 string_slice(capabilities(InteractionDirection::Invoke)), qualified_errors(api, errors),
             ));
@@ -1072,7 +1072,7 @@ fn render_action(
                 format!("{rust_name}Error::decode(value)")
             };
             out.push_str(&format!(
-                "impl trellis_rs::generated::OperationDescriptor for {rust_name} {{ type Input = {rust_name}Input; type Output = {rust_name}Output; type Progress = {progress_type}; type Update = {update_type}; type UpdateEvidence = {update_evidence}; type Error = {error_type}; const API_ID: &'static str = super::API_ID; const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME; const SUBJECT: &'static str = Self::SUBJECT; const KEY: &'static str = Self::KEY; const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES; const ERRORS: &'static [&'static str] = &{}; const SIGNALS: &'static [&'static str] = &{}; const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = {signal_schemas:?}; const UPLOAD: bool = Self::UPLOAD; const HAS_PROGRESS: bool = {}; const UPDATE_SCHEMA_JSON: Option<&'static str> = {update_schema}; fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {{ {decode_error} }} }}\n",
+                "impl trellis_rs::generated::OperationDescriptor for {rust_name} {{ type Input = {rust_name}Input; type Output = {rust_name}Output; type Progress = {progress_type}; type Update = {update_type}; type UpdateEvidence = {update_evidence}; type Error = {error_type}; const API_ID: &'static str = super::API_ID; const DESCRIPTOR_NAME: &'static str = Self::DESCRIPTOR_NAME; const SUBJECT: &'static str = Self::SUBJECT; const KEY: &'static str = Self::KEY; const CALLER_CAPABILITIES: &'static [&'static str] = Self::CALLER_CAPABILITIES; const ERRORS: &'static [&'static str] = &{}; const SIGNALS: &'static [&'static str] = &{}; const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = {signal_schemas:?}; const UPLOAD: bool = Self::UPLOAD; const STREAM: bool = Self::STREAM; const HAS_PROGRESS: bool = {}; const UPDATE_SCHEMA_JSON: Option<&'static str> = {update_schema}; fn decode_error(value: serde_json::Value) -> Result<Option<Self::Error>, serde_json::Error> {{ {decode_error} }} }}\n",
                 qualified_errors(api, errors),
                 string_slice(signals.keys().map(String::as_str)),
                 progress.is_some(),

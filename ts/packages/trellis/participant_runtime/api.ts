@@ -210,7 +210,8 @@ export type OperationDesc<
   errors?: E;
   runtimeErrors?: TRuntimeErrors;
   declaredErrorTypes?: readonly string[];
-  transfer?: { direction: "send" };
+  /** Caller-sent bytes; `stream` delivers them to the running handler. */
+  transfer?: { direction: "send"; stream?: boolean };
   signals?: Record<string, { input: SchemaLike }>;
   callerCapabilities: readonly string[];
   observeCapabilities: readonly string[];

@@ -240,6 +240,9 @@ pub trait OperationDescriptor {
     const CANCELABLE: bool;
     /// Whether the operation requires a runtime-owned upload before handler execution.
     const UPLOAD: bool = false;
+    /// Whether the upload streams directly to a concurrently running handler
+    /// instead of being durably staged first. Implies [`Self::UPLOAD`].
+    const STREAM: bool = false;
     const ERRORS: &'static [&'static str] = &[];
 
     const INPUT_SCHEMA_JSON: &'static str;

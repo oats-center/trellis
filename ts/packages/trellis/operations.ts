@@ -475,7 +475,8 @@ type OperationShape = {
   progress?: unknown;
   update?: unknown;
   output?: unknown;
-  transfer?: { direction: "send" };
+  /** Caller-sent bytes; `stream` delivers them to the running handler. */
+  transfer?: { direction: "send"; stream?: boolean };
   cancel?: boolean;
 };
 

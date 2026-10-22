@@ -424,7 +424,9 @@ function validateAction(name: string, action: Record<string, unknown>): void {
         !Array.isArray(action.errors) ||
         !isRecord(action.signals) ||
         Object.values(action.signals).some((value) => !isCodec(value)) ||
-        typeof action.upload !== "boolean"
+        typeof action.upload !== "boolean" ||
+        typeof action.stream !== "boolean" ||
+        (action.stream && !action.upload)
       )
         fail("generated operation descriptor");
       break;

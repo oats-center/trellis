@@ -546,6 +546,9 @@ pub trait OperationDescriptor: Send + Sync + 'static {
     const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
     /// Whether the Operation accepts an upload transfer.
     const UPLOAD: bool;
+    /// Whether the upload streams directly to the handler instead of being
+    /// durably staged first. Implies [`Self::UPLOAD`].
+    const STREAM: bool = false;
     /// Whether a typed progress payload is declared.
     const HAS_PROGRESS: bool;
     /// JSON Schema for live-only updates when declared.
@@ -602,6 +605,7 @@ where
     const CONTROL_CAPABILITIES: &'static [&'static str] = D::CALLER_CAPABILITIES;
     const CANCELABLE: bool = true;
     const UPLOAD: bool = D::UPLOAD;
+    const STREAM: bool = D::STREAM;
     const UPDATE_SCHEMA_JSON: Option<&'static str> = D::UPDATE_SCHEMA_JSON;
     const ERRORS: &'static [&'static str] = D::ERRORS;
     const INPUT_SCHEMA_JSON: &'static str = "{}";

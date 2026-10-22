@@ -97,6 +97,16 @@ Inputs, outputs, progress, events, and error payloads reference top-level types.
 There is no `rpc internal`, `EventClass`, per-action version, general transfer
 block, participant-local schema, or API State.
 
+Transfers are member flags, not a block. An RPC's `download;` lets its response
+carry a receive grant. An Operation's `upload;` accepts caller bytes that the
+runtime durably stages before the handler reads them, so a recovered execution
+can read them again. An Operation's `stream;` accepts caller bytes that go
+directly to its running handler: nothing is staged, and the bytes cannot be
+replayed, so an interrupted `stream` Operation fails and its caller starts a
+new one. `upload` and `stream` are mutually exclusive; both use the same caller
+helpers and wire protocol. See
+[Files Transfer Patterns](../core/files-transfer-patterns.md).
+
 Deployable participants are `service` and `device`. The `app` and `agent`
 declarations describe browser/native application requests, not installable
 principals. A device may contain one named `app` or `agent` companion request.

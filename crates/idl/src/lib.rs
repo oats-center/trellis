@@ -108,6 +108,60 @@ mod tests {
         let round_trip = compile(&canonical).unwrap();
         assert_eq!(round_trip.root_digest(), graph.root_digest());
     }
+
+    fn transfer_contract(member: &str) -> String {
+        format!(
+            r#"
+            model Value {{ value: string; }}
+            api files@v1 {{
+              title "Files";
+              description "Transfer fixture.";
+              operation Ingest {{ input Value; output Value; {member} }}
+              capabilities {{
+                capability write {{ consent_revision 1; title "Write"; description "Send bytes."; consequence "Stores bytes."; allows {{ operation Ingest; }} }}
+              }}
+            }}
+            "#
+        )
+    }
+
+    #[test]
+    fn stream_operations_accept_caller_bytes_with_their_own_digest() {
+        let graph = compile(transfer_contract("stream;")).unwrap();
+        let action = graph
+            .root_package()
+            .apis()
+            .values()
+            .next()
+            .unwrap()
+            .actions()
+            .values()
+            .next()
+            .unwrap();
+        assert!(matches!(
+            action,
+            ActionDefinition::Operation {
+                upload: true,
+                stream: true,
+                ..
+            }
+        ));
+        let canonical =
+            canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
+        assert!(canonical.contains("stream;") && !canonical.contains("upload;"));
+        assert_eq!(
+            compile(&canonical).unwrap().root_digest(),
+            graph.root_digest()
+        );
+        let staged = compile(transfer_contract("upload;")).unwrap();
+        assert_ne!(staged.root_digest(), graph.root_digest());
+    }
+
+    #[test]
+    fn operations_cannot_declare_both_upload_and_stream() {
+        let error = compile(transfer_contract("upload; stream;")).unwrap_err();
+        assert!(error.to_string().contains("both 'upload' and 'stream'"));
+    }
 }
 
 use project::{Dependency, GenerateConfig, PackageManifest, PackageMetadata};

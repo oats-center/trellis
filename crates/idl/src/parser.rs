@@ -316,7 +316,7 @@ impl<'a> Parser<'a> {
                 }
                 "errors" => MemberValue::Names(self.name_list_statement()?),
                 "params" => MemberValue::Paths(self.path_list_statement()?),
-                "upload" | "download" => {
+                "upload" | "download" | "stream" => {
                     self.token(TokenKind::Semi)?;
                     MemberValue::Flag
                 }

@@ -1378,7 +1378,8 @@ export type RuntimeOperationDesc = {
   signals?: Record<string, { input: unknown }>;
   cancelCapabilities?: readonly string[];
   controlCapabilities?: readonly string[];
-  transfer?: { direction: "send" };
+  /** Caller-sent bytes; `stream` delivers them to the running handler. */
+  transfer?: { direction: "send"; stream?: boolean };
   cancel?: boolean;
 };
 

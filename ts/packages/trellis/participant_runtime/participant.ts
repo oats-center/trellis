@@ -39,6 +39,8 @@ export type GeneratedActionDescriptor = Readonly<{
   signals?: Readonly<Record<string, GeneratedCodec>>;
   parameters?: readonly (readonly string[])[];
   upload?: boolean;
+  /** Upload bytes stream directly to the running handler; implies `upload`. */
+  stream?: boolean;
   download?: boolean;
   pagination?: "cursor";
 }>;
@@ -142,7 +144,7 @@ type GeneratedDescriptorRuntime<T> = T extends {
         (T extends { errors: infer E } ? { runtimeErrors: E } : unknown) &
         (T extends { upload: true }
           ? {
-              transfer: { direction: "send" };
+              transfer: { direction: "send"; stream?: boolean };
             }
           : unknown)
     : T extends { kind: "event"; payload: infer E }
@@ -353,7 +355,14 @@ function runtimeDescriptor(
         observeCapabilities: [],
         cancelCapabilities: [],
         controlCapabilities: [],
-        ...(descriptor.upload ? { transfer: { direction: "send" } } : {}),
+        ...(descriptor.upload
+          ? {
+              transfer: {
+                direction: "send",
+                ...(descriptor.stream ? { stream: true } : {}),
+              },
+            }
+          : {}),
         ...(errors ? { errors, declaredErrorTypes: errors } : {}),
         ...(declaredErrors ? { runtimeErrors: declaredErrors } : {}),
       };
