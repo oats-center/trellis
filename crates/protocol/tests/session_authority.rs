@@ -472,6 +472,15 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
     };
     let payload = b"actual provider result";
     let proof = sign_session_response(&response, payload, &provider_key).unwrap();
+    // Callers authenticate a certificate once, when they fetch it.
+    let authenticated_certificate =
+        trellis_protocol::AuthenticatedProviderCertificate::authenticate(
+            certificate.clone(),
+            &pinned,
+            &provider.authority().trellis_instance_id,
+            &provider.authority().audience_nats_account,
+        )
+        .unwrap();
     // Even an authentic provider cannot claim another deployment as the owner
     // of a returned durable handle: signing the payload is not sufficient.
     let forged_owner = "01JY0000000000000000000011";
@@ -486,7 +495,7 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
         sign_session_response(&response, &forged_reference, &provider_key).unwrap();
     assert!(verify_session_response(SessionResponseVerificationInput {
         provider: &provider,
-        certificate: &certificate,
+        certificate: &authenticated_certificate,
         certificate_issuer: &pinned,
         pending_request: &request,
         pending_request_digest: &pending_digest,
@@ -503,7 +512,7 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
     let verify = |response, bytes, opening_digest, subject, expected_action, revoked| {
         verify_session_response(SessionResponseVerificationInput {
             provider: &provider,
-            certificate: &certificate,
+            certificate: &authenticated_certificate,
             certificate_issuer: &pinned,
             pending_request: &request,
             pending_request_digest: opening_digest,
@@ -642,7 +651,7 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
     assert_eq!(
         verify_session_response(SessionResponseVerificationInput {
             provider: &provider,
-            certificate: &certificate,
+            certificate: &authenticated_certificate,
             certificate_issuer: &pinned,
             pending_request: &request,
             pending_request_digest: &pending_digest,

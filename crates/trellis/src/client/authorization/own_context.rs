@@ -235,7 +235,7 @@ impl AuthorizationContextCache {
                 return Err(unavailable());
             };
             let issuer = self.owner.issuer(transport, &catalog.issuer_key_id).await?;
-            catalog.verify(
+            catalog.check(
                 &issuer,
                 &authority.authority().trellis_instance_id,
                 &authority.authority().audience_nats_account,

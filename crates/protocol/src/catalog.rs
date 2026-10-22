@@ -380,6 +380,29 @@ impl SignedProviderCertificate {
             &body.audience_nats_account,
             at,
         )?;
+        self.event_publication_matches(
+            authority,
+            catalog,
+            &catalog.digest()?,
+            &self.digest()?,
+            action,
+        )
+    }
+
+    /// Exact binding checks for an already authenticated, currently valid
+    /// certificate and catalog, given both content addresses.
+    fn event_publication_matches(
+        &self,
+        authority: &SignedSessionAuthority,
+        catalog: &SignedCatalogSnapshot,
+        catalog_digest: &str,
+        certificate_digest: &str,
+        action: &CatalogActionIdentity,
+    ) -> Result<bool, ProtocolError> {
+        if action.kind != ApiSurfaceKind::Event || action.direction != PermissionAction::Publish {
+            return Ok(false);
+        }
+        let body = &authority.unsigned;
         let coordinates = match &body.binding {
             crate::SessionBinding::Service {
                 deployment_id,
@@ -413,14 +436,14 @@ impl SignedProviderCertificate {
         Ok(coordinates
             && self.principal_id == body.principal_id
             && self.session_public_key == body.session_public_key
-            && binding.provider_certificate_digest == self.digest()?
+            && binding.provider_certificate_digest == certificate_digest
             && binding.deployment_id == self.deployment_id
             && binding.implementation_digest == self.implementation_digest
             && binding.generation == self.generation
             && api.generation == self.generation
             && catalog.api_id == self.api_id
             && catalog.generation == self.generation
-            && api.catalog_snapshot_digest == catalog.digest()?
+            && api.catalog_snapshot_digest == catalog_digest
             && api.accepted_revision <= catalog.accepted_revision
             && api.accepted_revision >= entry.introduced_revision
             && self.implemented_actions.contains(action))
@@ -537,5 +560,175 @@ impl SignedIssuerRotation {
             return Err(metadata_error());
         }
         Ok(next)
+    }
+}
+
+/// A signed record verified once against its issuer and trust scope.
+///
+/// Signature and structural validity depend only on the record, its signing
+/// domain and the issuer's public key, so they are established once, when the
+/// record is fetched. [`Authenticated::check`] repeats only the facts that can
+/// change between uses: the issuer key that signed it is still the one
+/// presented and is not revoked, and the trust scope is unchanged.
+#[derive(Clone, Debug)]
+pub struct Authenticated<T> {
+    record: T,
+    digest: String,
+    issuer_key_id: String,
+    issuer_public_key: String,
+    instance: String,
+    account: String,
+}
+
+/// A catalog snapshot authenticated once, with its content address.
+pub type AuthenticatedCatalog = Authenticated<SignedCatalogSnapshot>;
+
+/// A provider certificate authenticated once, with its content address.
+pub type AuthenticatedProviderCertificate = Authenticated<SignedProviderCertificate>;
+
+impl<T> Authenticated<T> {
+    /// The authenticated record.
+    pub fn record(&self) -> &T {
+        &self.record
+    }
+
+    /// Content address of the complete signed record.
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+
+    /// Recheck the per-use facts against the currently presented issuer.
+    ///
+    /// # Errors
+    ///
+    /// Fails when a different key or scope is presented, or the issuer was revoked.
+    pub fn check(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+    ) -> Result<(), ProtocolError> {
+        if issuer.key_id != self.issuer_key_id
+            || issuer.public_key != self.issuer_public_key
+            || issuer.state == AuthorityIssuerState::Revoked
+            || instance != self.instance
+            || account != self.account
+        {
+            return Err(metadata_error());
+        }
+        Ok(())
+    }
+
+    fn new(
+        record: T,
+        digest: String,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+    ) -> Self {
+        Self {
+            record,
+            digest,
+            issuer_key_id: issuer.key_id.clone(),
+            issuer_public_key: issuer.public_key.clone(),
+            instance: instance.to_owned(),
+            account: account.to_owned(),
+        }
+    }
+}
+
+impl<T> std::ops::Deref for Authenticated<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.record
+    }
+}
+
+impl AuthenticatedCatalog {
+    /// Verify a catalog's signature, structure and scope once.
+    ///
+    /// # Errors
+    ///
+    /// Fails exactly when [`SignedCatalogSnapshot::verify`] fails.
+    pub fn authenticate(
+        record: SignedCatalogSnapshot,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+    ) -> Result<Self, ProtocolError> {
+        record.verify(issuer, instance, account)?;
+        let digest = record.digest()?;
+        Ok(Self::new(record, digest, issuer, instance, account))
+    }
+}
+
+impl AuthenticatedProviderCertificate {
+    /// Verify a certificate's signature, structure and scope once.
+    ///
+    /// # Errors
+    ///
+    /// Fails exactly when [`SignedProviderCertificate::verify_authenticity`] fails.
+    pub fn authenticate(
+        record: SignedProviderCertificate,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+    ) -> Result<Self, ProtocolError> {
+        record.verify_authenticity(issuer, instance, account)?;
+        let digest = record.digest()?;
+        Ok(Self::new(record, digest, issuer, instance, account))
+    }
+
+    /// [`Authenticated::check`] plus the certificate's validity window at `now`.
+    ///
+    /// # Errors
+    ///
+    /// Fails like [`Authenticated::check`], or when `now` is outside the window.
+    pub fn check_at(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        instance: &str,
+        account: &str,
+        now: i64,
+    ) -> Result<(), ProtocolError> {
+        self.check(issuer, instance, account)?;
+        if now < self.record.not_before || now >= self.record.expires_at {
+            return Err(metadata_error());
+        }
+        Ok(())
+    }
+
+    /// [`SignedProviderCertificate::authorizes_event_publication`] for
+    /// material authenticated once.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the certificate is not currently eligible at `at`.
+    pub fn authorizes_event_publication(
+        &self,
+        issuer: &AuthorityIssuerKey,
+        authority: &SignedSessionAuthority,
+        catalog: &AuthenticatedCatalog,
+        action: &CatalogActionIdentity,
+        at: i64,
+    ) -> Result<bool, ProtocolError> {
+        if action.kind != ApiSurfaceKind::Event || action.direction != PermissionAction::Publish {
+            return Ok(false);
+        }
+        let body = &authority.unsigned;
+        self.check_at(
+            issuer,
+            &body.trellis_instance_id,
+            &body.audience_nats_account,
+            at,
+        )?;
+        self.record.event_publication_matches(
+            authority,
+            catalog.record(),
+            catalog.digest(),
+            &self.digest,
+            action,
+        )
     }
 }

@@ -12,7 +12,12 @@ import {
   verifyAdmissionContextWasm,
   type AdmissionGet,
   type AdmissionContext,
+  authenticateCatalogWasm,
+  authenticateProviderCertificateWasm,
   authorizeCatalogActionWasm,
+  authorizeProviderEventPublicationWasm,
+  type CatalogHandle,
+  type ProviderCertificateHandle,
   createSessionAuthorityHandleWasm,
   type AuthorityIssuerKey,
   type AuthenticatedCaller,
@@ -49,11 +54,15 @@ type CachedAuthority = {
   retired: boolean;
   byteLength: number;
 };
-type VerifiedMaterial = {
+type VerifiedMaterial<H = undefined> = {
   bytes: Uint8Array;
   digest: string;
   record: RecordObject;
+  /** Shared-protocol handle authenticated once at fetch, for per-use checks. */
+  handle: H;
 };
+type CatalogMaterial = VerifiedMaterial<CatalogHandle>;
+type ProviderMaterial = VerifiedMaterial<ProviderCertificateHandle>;
 
 /** Signed bootstrap registry locations. These are runtime internals, never app authoring input. */
 export type AuthorityRegistryBinding = {
@@ -194,9 +203,12 @@ export class SessionAuthorityOwner {
   readonly account: string;
   readonly #keys = new Map<string, AuthorityIssuerKey>();
   readonly #peers = new Map<string, CachedAuthority>();
-  readonly #materials = new Map<string, VerifiedMaterial>();
+  readonly #materials = new Map<string, CatalogMaterial | ProviderMaterial>();
   readonly #pending = new Map<string, Promise<CachedAuthority>>();
-  readonly #coldMaterials = new Map<string, Promise<VerifiedMaterial>>();
+  readonly #coldMaterials = new Map<
+    string,
+    Promise<CatalogMaterial | ProviderMaterial>
+  >();
   readonly #revocations = new Map<
     string,
     { cutoff: number; expiresAt: number }
@@ -850,7 +862,7 @@ export class SessionAuthorityOwner {
         response,
         payload,
         proof,
-        certificate: certificate.record,
+        certificate: certificate.handle,
         certificateIssuer: issuer,
         pendingRequest: pending.request,
         pendingRequestDigest: pending.proofDigest,
@@ -1109,7 +1121,7 @@ export class SessionAuthorityOwner {
     const issuer = await this.#issuer(String(catalog.record.issuerKeyId));
     let allowed = await authorizeCatalogActionWasm(
       entry.handle,
-      catalog.bytes,
+      catalog.handle,
       this.#metadataPolicy(issuer),
       action,
     );
@@ -1131,19 +1143,19 @@ export class SessionAuthorityOwner {
         const providerIssuer = await this.#issuer(
           String(certificate.record.issuerKeyId),
         );
-        allowed = await authorizeCatalogActionWasm(
+        allowed = await authorizeProviderEventPublicationWasm(
           entry.handle,
-          catalog.bytes,
+          catalog.handle,
+          certificate.handle,
           {
-            ...this.#metadataPolicy(issuer),
-            providerPublication: {
-              certificate: certificate.record,
-              issuer: providerIssuer,
-              at,
-              ...(publication?.publishedAt !== undefined
-                ? { publishedAt: publication.publishedAt }
-                : {}),
-            },
+            catalogIssuer: issuer,
+            certificateIssuer: providerIssuer,
+            trellisInstanceId: this.instanceId,
+            audienceNatsAccount: this.account,
+            at,
+            ...(publication?.publishedAt !== undefined
+              ? { publishedAt: publication.publishedAt }
+              : {}),
           },
           action,
         );
@@ -1543,7 +1555,7 @@ export class SessionAuthorityOwner {
   }
 
   async #verifyMetadata(
-    kind: "catalog" | "provider" | "revocation",
+    kind: "revocation",
     bytes: Uint8Array,
     at?: number,
   ): Promise<VerifiedMaterial> {
@@ -1559,14 +1571,46 @@ export class SessionAuthorityOwner {
       bytes: bytes.slice(),
       digest: verified.digest,
       record: verified.record,
+      handle: undefined,
     };
   }
 
+  /** Authenticate fetched catalog or certificate bytes once into a handle. */
+  async #authenticateMaterial(
+    kind: "catalog" | "provider",
+    bytes: Uint8Array,
+    at?: number,
+  ): Promise<CatalogMaterial | ProviderMaterial> {
+    const hints = this.#hints(bytes);
+    if (typeof hints.issuerKeyId !== "string")
+      throw new Error("missing issuer lookup identity");
+    const issuer = await this.#issuer(hints.issuerKeyId);
+    const policy = {
+      ...this.#metadataPolicy(issuer),
+      ...(at !== undefined ? { nowUnixSeconds: at } : {}),
+    };
+    const authenticated =
+      kind === "catalog"
+        ? await authenticateCatalogWasm(bytes, policy)
+        : await authenticateProviderCertificateWasm(bytes, policy);
+    return { bytes: bytes.slice(), ...authenticated };
+  }
+
+  async #metadata(
+    kind: "catalog",
+    digest: string,
+    at?: number,
+  ): Promise<CatalogMaterial>;
+  async #metadata(
+    kind: "provider",
+    digest: string,
+    at?: number,
+  ): Promise<ProviderMaterial>;
   async #metadata(
     kind: "catalog" | "provider",
     digest: string,
     at?: number,
-  ): Promise<VerifiedMaterial> {
+  ): Promise<CatalogMaterial | ProviderMaterial> {
     const key = `${kind}.${digest}`;
     const cached = this.#materials.get(key);
     if (cached) {
@@ -1579,7 +1623,7 @@ export class SessionAuthorityOwner {
       if (this.#coldMaterials.size >= 32)
         throw new Error("metadata resolution budget exceeded");
       pending = (async () => {
-        const verified = await this.#verifyMetadata(
+        const verified = await this.#authenticateMaterial(
           kind,
           await this.#read(kind, digest),
           at,

@@ -30,7 +30,6 @@ use trellis_protocol::{
 use trellis_protocol::{
     verify_session_response as verify_session_response_protocol, CatalogActionIdentity,
     SessionResponse, SessionResponseProof, SessionResponseVerificationInput,
-    SignedProviderCertificate,
 };
 use wasm_bindgen::prelude::*;
 
@@ -153,19 +152,107 @@ struct WireAuthorityMetadataVerification {
     audience_nats_account: String,
     now_unix_seconds: i64,
     installed_sequence: Option<trellis_protocol::U64s>,
-    provider_publication: Option<WireProviderPublication>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WireProviderPublication {
-    certificate: trellis_protocol::SignedProviderCertificate,
-    issuer: AuthorityIssuerKey,
+    catalog_issuer: AuthorityIssuerKey,
+    certificate_issuer: AuthorityIssuerKey,
+    trellis_instance_id: String,
+    audience_nats_account: String,
     at: i64,
     published_at: Option<i64>,
 }
 
-/// Authenticate one canonical public record; decoding alone never establishes trust.
+/// A catalog snapshot authenticated once against its issuer and trust scope.
+///
+/// Each authorization rechecks only the issuer's key and revocation state
+/// and the trust scope, never the signature or structure again.
+#[wasm_bindgen]
+pub struct AuthenticatedCatalogHandle {
+    inner: trellis_protocol::AuthenticatedCatalog,
+}
+
+/// A provider certificate authenticated once against its issuer and scope.
+///
+/// Each use rechecks the issuer, scope and the certificate's validity time.
+#[wasm_bindgen]
+pub struct AuthenticatedProviderCertificateHandle {
+    inner: trellis_protocol::AuthenticatedProviderCertificate,
+}
+
+#[wasm_bindgen]
+impl AuthenticatedCatalogHandle {
+    /// Content address and immutable authenticated record as JSON.
+    pub fn projection(&self) -> String {
+        json!({"digest": self.inner.digest(), "record": self.inner.record()}).to_string()
+    }
+}
+
+#[wasm_bindgen]
+impl AuthenticatedProviderCertificateHandle {
+    /// Content address and immutable authenticated record as JSON.
+    pub fn projection(&self) -> String {
+        json!({"digest": self.inner.digest(), "record": self.inner.record()}).to_string()
+    }
+}
+
+/// Authenticate a canonical catalog snapshot once.
+#[wasm_bindgen]
+pub fn create_catalog_handle(
+    bytes: &[u8],
+    verification_json: &str,
+) -> Result<AuthenticatedCatalogHandle, JsError> {
+    if bytes.len() > 2 * 1024 * 1024 || verification_json.len() > 16_384 {
+        return Err(JsError::new("catalog byte budget exceeded"));
+    }
+    let input: WireAuthorityMetadataVerification = serde_json::from_str(verification_json)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let record = serde_json::from_slice(bytes).map_err(|error| JsError::new(&error.to_string()))?;
+    let inner = trellis_protocol::AuthenticatedCatalog::authenticate(
+        record,
+        &input.issuer,
+        &input.trellis_instance_id,
+        &input.audience_nats_account,
+    )
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    Ok(AuthenticatedCatalogHandle { inner })
+}
+
+/// Authenticate a canonical provider certificate once, valid at `nowUnixSeconds`.
+#[wasm_bindgen]
+pub fn create_provider_certificate_handle(
+    bytes: &[u8],
+    verification_json: &str,
+) -> Result<AuthenticatedProviderCertificateHandle, JsError> {
+    if bytes.len() > 2 * 1024 * 1024 || verification_json.len() > 16_384 {
+        return Err(JsError::new("certificate byte budget exceeded"));
+    }
+    let input: WireAuthorityMetadataVerification = serde_json::from_str(verification_json)
+        .map_err(|error| JsError::new(&error.to_string()))?;
+    let record = serde_json::from_slice(bytes).map_err(|error| JsError::new(&error.to_string()))?;
+    let inner = trellis_protocol::AuthenticatedProviderCertificate::authenticate(
+        record,
+        &input.issuer,
+        &input.trellis_instance_id,
+        &input.audience_nats_account,
+    )
+    .and_then(|inner| {
+        inner.check_at(
+            &input.issuer,
+            &input.trellis_instance_id,
+            &input.audience_nats_account,
+            input.now_unix_seconds,
+        )?;
+        Ok(inner)
+    })
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    Ok(AuthenticatedProviderCertificateHandle { inner })
+}
+
+/// Authenticate one canonical revocation or issuer rotation; decoding alone never
+/// establishes trust. Catalogs and certificates become handles instead.
 #[wasm_bindgen]
 pub fn verify_authority_metadata(
     kind: &str,
@@ -182,18 +269,6 @@ pub fn verify_authority_metadata(
         let instance = &input.trellis_instance_id;
         let account = &input.audience_nats_account;
         match kind {
-            "catalog" => {
-                let record: trellis_protocol::SignedCatalogSnapshot =
-                    serde_json::from_slice(bytes)?;
-                record.verify(issuer, instance, account)?;
-                Ok(json!({"ok": true, "digest": record.digest()?, "record": record}))
-            }
-            "provider" => {
-                let record: trellis_protocol::SignedProviderCertificate =
-                    serde_json::from_slice(bytes)?;
-                record.verify(issuer, instance, account, input.now_unix_seconds)?;
-                Ok(json!({"ok": true, "digest": record.digest()?, "record": record}))
-            }
             "revocation" => {
                 let record: trellis_protocol::SignedSessionRevocation =
                     serde_json::from_slice(bytes)?;
@@ -225,57 +300,75 @@ pub fn verify_authority_metadata(
 #[wasm_bindgen]
 pub fn authorize_catalog_action(
     authority: &VerifiedSessionAuthorityHandle,
-    bytes: &[u8],
+    catalog: &AuthenticatedCatalogHandle,
     verification_json: &str,
     action_json: &str,
 ) -> Result<String, JsError> {
-    if bytes.len() > 2 * 1024 * 1024
-        || verification_json.len() > 2 * 1024 * 1024
-        || action_json.len() > 4096
-    {
+    if verification_json.len() > 16_384 || action_json.len() > 4096 {
         return Err(JsError::new("catalog byte budget exceeded"));
     }
     let input: WireAuthorityMetadataVerification = serde_json::from_str(verification_json)
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let record: trellis_protocol::SignedCatalogSnapshot =
-        serde_json::from_slice(bytes).map_err(|error| JsError::new(&error.to_string()))?;
     let action =
         serde_json::from_str(action_json).map_err(|error| JsError::new(&error.to_string()))?;
-    record
-        .verify(
+    catalog
+        .inner
+        .check(
             &input.issuer,
             &input.trellis_instance_id,
             &input.audience_nats_account,
         )
         .map_err(|error| JsError::new(&error.to_string()))?;
-    let mut authorized = record.authorizes(authority.authority.signed(), &action);
-    if !authorized {
-        if let Some(provider) = input.provider_publication {
-            authorized = provider
-                .certificate
-                .authorizes_event_publication(
-                    &provider.issuer,
-                    authority.authority.signed(),
-                    &record,
-                    &action,
-                    provider.at,
-                )
-                .map_err(|error| JsError::new(&error.to_string()))?;
-            if let Some(published) = provider.published_at {
-                authorized &= provider
-                    .certificate
-                    .authorizes_event_publication(
-                        &provider.issuer,
-                        authority.authority.signed(),
-                        &record,
-                        &action,
-                        published,
-                    )
-                    .map_err(|error| JsError::new(&error.to_string()))?;
-            }
-        }
-    }
+    let authorized = catalog
+        .inner
+        .authorizes(authority.authority.signed(), &action);
     Ok(json!({"ok": true, "authorized": authorized}).to_string())
+}
+
+/// Authorize a provider's own event publication by its certified implementation,
+/// at the authenticated event time and, when retained, its publication time.
+#[wasm_bindgen]
+pub fn authorize_provider_event_publication(
+    authority: &VerifiedSessionAuthorityHandle,
+    catalog: &AuthenticatedCatalogHandle,
+    certificate: &AuthenticatedProviderCertificateHandle,
+    publication_json: &str,
+    action_json: &str,
+) -> Result<String, JsError> {
+    if publication_json.len() > 16_384 || action_json.len() > 4096 {
+        return Err(JsError::new("publication byte budget exceeded"));
+    }
+    let input: WireProviderPublication =
+        serde_json::from_str(publication_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let action =
+        serde_json::from_str(action_json).map_err(|error| JsError::new(&error.to_string()))?;
+    let result = (|| -> Result<bool, trellis_protocol::ProtocolError> {
+        catalog.inner.check(
+            &input.catalog_issuer,
+            &input.trellis_instance_id,
+            &input.audience_nats_account,
+        )?;
+        let signed = authority.authority.signed();
+        let mut authorized = certificate.inner.authorizes_event_publication(
+            &input.certificate_issuer,
+            signed,
+            &catalog.inner,
+            &action,
+            input.at,
+        )?;
+        if let Some(published) = input.published_at {
+            authorized &= certificate.inner.authorizes_event_publication(
+                &input.certificate_issuer,
+                signed,
+                &catalog.inner,
+                &action,
+                published,
+            )?;
+        }
+        Ok(authorized)
+    })()
+    .map_err(|error| JsError::new(&error.to_string()))?;
+    Ok(json!({"ok": true, "authorized": result}).to_string())
 }
 
 /// Generate a high-entropy canonical Transfer v1 session ID.
@@ -668,7 +761,6 @@ struct WireSessionEvent {
 struct WireSessionResponse {
     response: SessionResponse,
     proof: SessionResponseProof,
-    certificate: SignedProviderCertificate,
     certificate_issuer: AuthorityIssuerKey,
     pending_request: SessionRequest,
     pending_request_digest: String,
@@ -683,6 +775,7 @@ struct WireSessionResponse {
 #[wasm_bindgen]
 pub fn verify_session_response(
     provider: &VerifiedSessionAuthorityHandle,
+    certificate: &AuthenticatedProviderCertificateHandle,
     response_json: &str,
     raw_payload: &[u8],
 ) -> String {
@@ -711,7 +804,7 @@ pub fn verify_session_response(
     };
     match verify_session_response_protocol(SessionResponseVerificationInput {
         provider: &provider.authority,
-        certificate: &input.certificate,
+        certificate: &certificate.inner,
         certificate_issuer: &input.certificate_issuer,
         pending_request: &input.pending_request,
         pending_request_digest: &digest,

@@ -4,9 +4,9 @@
 use async_nats::jetstream;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use trellis_protocol::{
-    parse_session_authority, SignedCatalogSnapshot, SignedIssuerRotation,
-    SignedProviderCertificate, SignedSessionAuthority, MAX_ADMISSION_RESPONSE_BYTES,
-    MAX_SESSION_AUTHORITY_BYTES,
+    parse_session_authority, AuthenticatedCatalog, AuthenticatedProviderCertificate,
+    SignedCatalogSnapshot, SignedIssuerRotation, SignedProviderCertificate, SignedSessionAuthority,
+    MAX_ADMISSION_RESPONSE_BYTES, MAX_SESSION_AUTHORITY_BYTES,
 };
 
 use super::super::TrellisClientError;
@@ -23,13 +23,22 @@ pub(crate) enum MaterialKind {
 
 /// Immutable bytes decoded and content-address checked, but not issuer-trusted.
 #[derive(Clone, Debug)]
-pub(crate) enum RegistryMaterial {
+pub(crate) enum UnverifiedMaterial {
     Authority(SignedSessionAuthority),
     Catalog(SignedCatalogSnapshot),
     Provider(SignedProviderCertificate),
 }
 
-impl RegistryMaterial {
+/// Material the authority owner authenticated once against its issuer; each
+/// use rechecks only issuer revocation, trust scope and validity time.
+#[derive(Clone, Debug)]
+pub(crate) enum RegistryMaterial {
+    Authority(Box<SignedSessionAuthority>),
+    Catalog(std::sync::Arc<AuthenticatedCatalog>),
+    Provider(std::sync::Arc<AuthenticatedProviderCertificate>),
+}
+
+impl UnverifiedMaterial {
     pub(crate) fn issuer_key_id(&self) -> &str {
         match self {
             Self::Authority(authority) => &authority.unsigned.issuer_key_id,
@@ -49,7 +58,7 @@ impl AuthorizationRegistryReader {
         client: &async_nats::Client,
         kind: MaterialKind,
         digest: &str,
-    ) -> Result<RegistryMaterial, TrellisClientError> {
+    ) -> Result<UnverifiedMaterial, TrellisClientError> {
         let decoded = URL_SAFE_NO_PAD.decode(digest).map_err(|_| {
             TrellisClientError::AuthorizationUnavailable("invalid material digest".into())
         })?;
@@ -75,15 +84,15 @@ impl AuthorizationRegistryReader {
         })?;
         let material = match kind {
             MaterialKind::Authority => {
-                RegistryMaterial::Authority(parse_session_authority(&bytes, maximum_bytes)?)
+                UnverifiedMaterial::Authority(parse_session_authority(&bytes, maximum_bytes)?)
             }
-            MaterialKind::Catalog => RegistryMaterial::Catalog(serde_json::from_slice(&bytes)?),
-            MaterialKind::Provider => RegistryMaterial::Provider(serde_json::from_slice(&bytes)?),
+            MaterialKind::Catalog => UnverifiedMaterial::Catalog(serde_json::from_slice(&bytes)?),
+            MaterialKind::Provider => UnverifiedMaterial::Provider(serde_json::from_slice(&bytes)?),
         };
         let actual = match &material {
-            RegistryMaterial::Authority(authority) => authority.digest()?,
-            RegistryMaterial::Catalog(catalog) => catalog.digest()?,
-            RegistryMaterial::Provider(certificate) => certificate.digest()?,
+            UnverifiedMaterial::Authority(authority) => authority.digest()?,
+            UnverifiedMaterial::Catalog(catalog) => catalog.digest()?,
+            UnverifiedMaterial::Provider(certificate) => certificate.digest()?,
         };
         if actual != digest {
             return Err(TrellisClientError::AuthorizationUnavailable(

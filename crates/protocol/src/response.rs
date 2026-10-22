@@ -5,9 +5,9 @@ use crate::authorization::{
     validate_text,
 };
 use crate::{
-    AuthorityIssuerKey, AuthorizationErrorCode, CatalogActionIdentity, ProtocolError,
-    SessionAuthorityVerificationPolicy, SessionBinding, SessionRequest, SignedProviderCertificate,
-    U64s, VerifiedSessionAuthority, MESSAGE_RESPONSE_DOMAIN_V1,
+    AuthenticatedProviderCertificate, AuthorityIssuerKey, AuthorizationErrorCode,
+    CatalogActionIdentity, ProtocolError, SessionAuthorityVerificationPolicy, SessionBinding,
+    SessionRequest, U64s, VerifiedSessionAuthority, MESSAGE_RESPONSE_DOMAIN_V1,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey};
@@ -148,7 +148,7 @@ pub struct SessionResponseVerificationInput<'a> {
     /// Previously issuer-verified provider authority.
     pub provider: &'a VerifiedSessionAuthority,
     /// Provider action certificate resolved by its authenticated digest.
-    pub certificate: &'a SignedProviderCertificate,
+    pub certificate: &'a AuthenticatedProviderCertificate,
     /// Pinned issuer for that certificate.
     pub certificate_issuer: &'a AuthorityIssuerKey,
     /// Actual retained opening request, not response assertions.
@@ -211,13 +211,13 @@ pub fn verify_session_response(
     let response = input.response;
     let request = input.pending_request;
     let certificate = input.certificate;
-    certificate.verify(
+    certificate.check_at(
         input.certificate_issuer,
         &provider.trellis_instance_id,
         &provider.audience_nats_account,
         input.policy.now_unix_seconds,
     )?;
-    let certificate_digest = certificate.digest()?;
+    let certificate_digest = certificate.digest();
     let deployment_matches = match &provider.binding {
         SessionBinding::Service {
             deployment_id,
