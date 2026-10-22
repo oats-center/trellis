@@ -96,7 +96,7 @@ import {
   createTrellisInternal,
 } from "../../session.ts";
 import type { TrellisServiceRuntimeDeps } from "./runtime.ts";
-import { ServiceTransfer } from "./transfer.ts";
+import { type DownloadSource, ServiceTransfer } from "./transfer.ts";
 import { logger as noopLogger, type LoggerLike } from "../../globals.ts";
 import {
   createProviderRuntime,
@@ -3695,23 +3695,28 @@ export class TrellisServiceSession<
 
   /**
    * Creates a short-lived receive transfer grant for a caller session.
+   *
+   * Bytes come from `store` and `key`, or from any `stream` whose `info`
+   * declares its size and SHA-256 digest up front. The grant binds that
+   * metadata; bytes that end differently fail the transfer.
    */
-  createTransfer(args: {
-    direction: "receive";
-    store: string;
-    key: string;
-    sessionKey: string;
-    connectionId: string;
-    contextDigest: string;
-    permission: PermissionAtom;
-    requiredCapabilities?: readonly string[];
-    inboxPrefix: string;
-    expiresInMs?: number;
-  }): AsyncResult<ReceiveTransferGrant, TransferError> {
+  createTransfer(
+    args: {
+      direction: "receive";
+      sessionKey: string;
+      connectionId: string;
+      contextDigest: string;
+      permission: PermissionAtom;
+      requiredCapabilities?: readonly string[];
+      inboxPrefix: string;
+      expiresInMs?: number;
+    } & DownloadSource,
+  ): AsyncResult<ReceiveTransferGrant, TransferError> {
     return AsyncResult.from(
       this.#operationTransfer.initiateDownload({
-        store: args.store,
-        key: args.key,
+        ...(args.stream
+          ? { stream: args.stream, info: args.info }
+          : { store: args.store, key: args.key }),
         sessionKey: args.sessionKey,
         connectionId: args.connectionId,
         contextDigest: args.contextDigest,

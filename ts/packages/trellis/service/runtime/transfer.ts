@@ -113,10 +113,22 @@ export type InitiateDownloadArgs = {
   permission: PermissionAtom;
   requiredCapabilities?: readonly string[];
   inboxPrefix: string;
-  store: string;
-  key: string;
   expiresInMs: number;
-};
+} & DownloadSource;
+/**
+ * Where download bytes come from: a key in a service-owned store, or any
+ * byte stream whose size and SHA-256 digest are declared up front. Declared
+ * metadata binds the grant; a stream that ends with different bytes fails
+ * the transfer's integrity check instead of completing.
+ */
+export type DownloadSource =
+  | { store: string; key: string; stream?: never; info?: never }
+  | {
+      stream: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>;
+      info: FileInfo & { digest: string };
+      store?: never;
+      key?: never;
+    };
 type ServiceTransferOpts = {
   log?: LoggerLike;
   name: string;
@@ -166,6 +178,8 @@ type ProviderSession = {
   store?: TypedStore;
   /** Handler-facing stream of a `stream` upload, ended after commit. */
   live?: ReadableStream<Uint8Array>;
+  /** Provided download bytes, instead of a store entry. */
+  source?: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>;
   /** Resolves when every received frame was consumed by the handler. */
   drained?: ReturnType<typeof deferred<void>>;
   /** The ingress a `stream` upload's handler reads, available at activation. */
@@ -862,6 +876,28 @@ export class ServiceTransfer {
     args: InitiateDownloadArgs,
   ): Promise<ResultType<ReceiveTransferGrant, TransferError>> {
     try {
+      if (args.stream) {
+        if (
+          !Number.isSafeInteger(args.info.size) ||
+          args.info.size < 0 ||
+          !/^SHA-256=[A-Za-z0-9_-]{43}$/.test(args.info.digest)
+        )
+          throw new Error("declared download metadata is invalid");
+        const grant: ReceiveTransferGrant = {
+          ...this.#grant("receive", args),
+          direction: "receive",
+          info: structuredClone(args.info),
+        };
+        const session = await this.#prepare(
+          grant,
+          { ...args, requiredCapabilities: args.requiredCapabilities ?? [] },
+          undefined,
+          args.info.key,
+          args.info.key,
+        );
+        session.source = args.stream;
+        return Result.ok(grant);
+      }
       const handle = this.opts.stores[args.store];
       if (!handle) throw new Error("unknown transfer store");
       const store = (await handle.open()).take();
@@ -1426,19 +1462,43 @@ export class ServiceTransfer {
       throw new Error("invalid download session");
     }
     const window = session.window;
-    const store = session.store;
-    if (!store) throw new Error("download store missing");
-    const entry = (await store.get(session.storageKey)).take();
-    if (isErr(entry)) throw entry.error;
-    const info = fileInfoFromStoreInfo(entry.info);
-    if (
-      info.size !== grant.info.size ||
-      info.digest !== grant.info.digest ||
-      info.key !== grant.info.key
-    )
-      throw new Error("download source metadata changed");
-    const stream = (await entry.stream()).take();
-    if (isErr(stream)) throw stream.error;
+    let stream: ReadableStream<Uint8Array>;
+    if (session.source) {
+      const provided = session.source;
+      if (provided instanceof ReadableStream) {
+        stream = provided;
+      } else {
+        const iterator = provided[Symbol.asyncIterator]();
+        stream = new ReadableStream<Uint8Array>(
+          {
+            async pull(controller) {
+              const next = await iterator.next();
+              if (next.done) controller.close();
+              else controller.enqueue(next.value);
+            },
+            async cancel(reason) {
+              await iterator.return?.(reason);
+            },
+          },
+          { highWaterMark: 0 },
+        );
+      }
+    } else {
+      const store = session.store;
+      if (!store) throw new Error("download store missing");
+      const entry = (await store.get(session.storageKey)).take();
+      if (isErr(entry)) throw entry.error;
+      const info = fileInfoFromStoreInfo(entry.info);
+      if (
+        info.size !== grant.info.size ||
+        info.digest !== grant.info.digest ||
+        info.key !== grant.info.key
+      )
+        throw new Error("download source metadata changed");
+      const opened = (await entry.stream()).take();
+      if (isErr(opened)) throw opened.error;
+      stream = opened;
+    }
     const reader = stream.getReader();
     session.reader = reader;
     try {

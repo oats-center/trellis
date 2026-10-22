@@ -13,13 +13,22 @@ use sha2::{Digest as _, Sha256};
 use std::sync::{atomic::Ordering, Arc};
 use trellis_protocol::transfer::*;
 
+/// Bytes behind one download.
+pub enum DownloadSource<C> {
+    /// Read the grant's logical key from a service-owned store.
+    Store(C),
+    /// Read a provider-supplied byte source; the grant's declared size and
+    /// digest are authoritative and checked at end of file.
+    Reader(Box<dyn tokio::io::AsyncRead + Unpin + Send>),
+}
+
 /// Stream a storage-neutral push download on its exact pinned attachment.
 pub async fn run_download_transfer_endpoint<C>(
     client: Arc<TrellisClient>,
     lease: TransportLease,
     mut control: async_nats::Subscriber,
     plan: DownloadTransferGrantPlan,
-    store: C,
+    source: DownloadSource<C>,
 ) -> Result<(), ServerError>
 where
     C: StoreResourceClient,
@@ -63,7 +72,8 @@ where
     let mut local_changes = local.guard.subscribe_changes();
     let expiry = tokio::time::sleep(super::transfer_expiry_delay(&grant.expires_at)?);
     tokio::pin!(expiry);
-    let mut store = Some(store);
+    let from_store = matches!(source, DownloadSource::Store(_));
+    let mut source = Some(source);
     let mut backend: Option<
         futures_util::future::BoxFuture<
             'static,
@@ -137,10 +147,15 @@ where
                             publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
                             if !activated {
                                 let (mut writer, pipe) = super::telemetry::pipe(max_frame_bytes as usize, TransferDirection::Receive, "provider");
-                                let store = store.take().ok_or_else(|| error("download backend already started"))?;
                                 let key = grant.info.key.clone();
                                 reader = Some(pipe);
-                                backend = Some(Box::pin(async move { store.read_into(&key, &mut writer).await }));
+                                backend = Some(match source.take().ok_or_else(|| error("download backend already started"))? {
+                                    DownloadSource::Store(store) => Box::pin(async move { store.read_into(&key, &mut writer).await }),
+                                    DownloadSource::Reader(mut bytes) => Box::pin(async move {
+                                        tokio::io::copy(&mut bytes, &mut writer).await.map_err(error)?;
+                                        Ok(None)
+                                    }),
+                                });
                                 activated = true;
                             }
                         },
@@ -163,18 +178,24 @@ where
                 },
                 result = async { backend.as_mut().ok_or_else(|| error("download backend missing"))?.await }, if backend.is_some() => {
                     backend.take();
-                    backend_result = Some(result?.ok_or_else(|| error("download object missing"))?);
+                    backend_result = Some(result?);
                 },
                 bytes = async { super::read_ready_frame(reader.as_mut().ok_or_else(|| error("download reader missing"))?, max_frame_bytes as usize).await.map_err(error) }, if activated && !eof && staged.is_none() => {
                     let bytes = bytes?;
                     if !bytes.is_empty() { staged = Some(super::telemetry::Payload::new(bytes, TransferDirection::Receive, "provider")); continue; }
                     let info = match backend_result.take() {
                         Some(info) => info,
-                        None => backend.as_mut().ok_or_else(|| error("download backend missing"))?.await?.ok_or_else(|| error("download object missing"))?,
+                        None => backend.as_mut().ok_or_else(|| error("download backend missing"))?.await?,
                     };
                     backend.take();
                     let digest = format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize()));
-                    if info.key != grant.info.key || info.size != transferred || transferred != grant.info.size || !super::transfer_digests_match(&grant.info.digest, &digest) || !info.digest.as_deref().is_some_and(|value| super::transfer_digests_match(value, &digest)) { return Err(error("download backend metadata/digest mismatch")); }
+                    // A store must report matching metadata; a provider reader
+                    // is held to the grant's declared size and digest alone.
+                    if from_store {
+                        let info = info.ok_or_else(|| error("download object missing"))?;
+                        if info.key != grant.info.key || info.size != transferred || !info.digest.as_deref().is_some_and(|value| super::transfer_digests_match(value, &digest)) { return Err(error("download backend metadata/digest mismatch")); }
+                    }
+                    if transferred != grant.info.size || !super::transfer_digests_match(&grant.info.digest, &digest) { return Err(error("download source size/digest does not match its grant")); }
                     let final_seq = U64s::new(window.highest_sent.load(Ordering::Acquire));
                     wire::publish_provider(lease.nats(), client.auth(), &local.guard, &grant.data_subject, &TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Receive, sequence: final_seq, kind: TransferFrameKind::Eof, terminal: Some(TransferTerminal { final_seq, size: transferred, digest: grant.info.digest.clone() }) }, Bytes::new()).await?;
                     eof = true;

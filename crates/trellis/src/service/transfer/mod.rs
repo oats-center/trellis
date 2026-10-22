@@ -18,7 +18,7 @@ use base64::{
     Engine as _,
 };
 use bytes::{Bytes, BytesMut};
-pub use download::run_download_transfer_endpoint;
+pub use download::{run_download_transfer_endpoint, DownloadSource};
 use futures_util::{FutureExt, StreamExt};
 pub use protocol::*;
 use std::{
@@ -499,7 +499,41 @@ where
         .map_err(error)?;
     lease.nats().flush().await.map_err(error)?;
     Ok(tokio::spawn(run_download_transfer_endpoint(
-        client, lease, control, plan, store,
+        client,
+        lease,
+        control,
+        plan,
+        DownloadSource::Store(store),
+    )))
+}
+
+/// Start one owned push download whose bytes come from a provider reader.
+///
+/// The plan's declared size and SHA-256 digest bind the grant; a reader that
+/// ends with different bytes fails the transfer instead of completing it.
+pub async fn spawn_stream_download_endpoint<R>(
+    client: Arc<TrellisClient>,
+    plan: DownloadTransferGrantPlan,
+    reader: R,
+    lease: TransportLease,
+) -> Result<tokio::task::JoinHandle<Result<(), ServerError>>, ServerError>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let control = lease
+        .nats()
+        .subscribe(plan.grant.control_subject.clone())
+        .await
+        .map_err(error)?;
+    lease.nats().flush().await.map_err(error)?;
+    Ok(tokio::spawn(run_download_transfer_endpoint::<
+        super::resources::backend::BoundStoreResourceClient,
+    >(
+        client,
+        lease,
+        control,
+        plan,
+        DownloadSource::Reader(Box::new(reader)),
     )))
 }
 
@@ -567,9 +601,13 @@ pub fn plan_upload_transfer_grant(
 pub fn plan_download_transfer_grant(
     mut args: TransferDownloadGrantArgs<'_>,
 ) -> Result<DownloadTransferGrantPlan, ServerError> {
-    let store = store_binding(args.service_name, args.resources, args.store)?;
+    let store = args
+        .store
+        .map(|alias| store_binding(args.service_name, args.resources, alias))
+        .transpose()?;
     let max_object_bytes = store
-        .max_object_bytes
+        .as_ref()
+        .and_then(|store| store.max_object_bytes)
         .and_then(|value| u64::try_from(value).ok());
     if max_object_bytes.is_some_and(|max| args.info.size > max) {
         return Err(error("download exceeds store object limit"));
@@ -603,8 +641,8 @@ pub fn plan_download_transfer_grant(
     transfer_expiry_delay(args.expires_at)?;
     Ok(DownloadTransferGrantPlan {
         admission: args.admission.clone(),
-        store_alias: args.store.into(),
-        store: store.name.clone(),
+        store_alias: args.store.unwrap_or_default().into(),
+        store: store.map(|store| store.name.clone()).unwrap_or_default(),
         max_object_bytes,
         grant: DownloadTransferGrant {
             format: TRANSFER_VERSION.into(),

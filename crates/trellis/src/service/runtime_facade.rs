@@ -802,6 +802,37 @@ impl ServiceHandle {
         self.transfer_tasks.own(task).await?;
         Ok(())
     }
+
+    /// Run a download whose bytes come from `reader`, on the request's
+    /// accepting generation, retaining it until completion, cancellation, or
+    /// expiry. Plan it with
+    /// [`ServiceHandlerContext::plan_stream_download_transfer`].
+    pub async fn spawn_stream_download_endpoint<R>(
+        &self,
+        plan: DownloadTransferGrantPlan,
+        reader: R,
+    ) -> Result<(), ServerError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    {
+        let lease = match self.transport.lease() {
+            Some(lease) => lease.clone(),
+            None => self
+                .client()
+                .acquire_transport(&[], &[], self.client().transport_deadline())
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?,
+        };
+        let task = super::transfer::spawn_stream_download_endpoint(
+            Arc::clone(&self.client),
+            plan,
+            reader,
+            lease,
+        )
+        .await?;
+        self.transfer_tasks.own(task).await?;
+        Ok(())
+    }
 }
 
 /// High-level context for one verified live Live handler invocation.
@@ -850,6 +881,30 @@ impl ServiceHandlerContext {
     pub fn plan_download_transfer(
         &self,
         store: &str,
+        transfer_id: &str,
+        expires_at: &str,
+        info: super::FileTransferInfo,
+    ) -> Result<DownloadTransferGrantPlan, ServerError> {
+        self.plan_download(Some(store), transfer_id, expires_at, info)
+    }
+
+    /// Plan a download whose bytes come from a provider reader, not a store.
+    ///
+    /// `info` must declare the exact size and SHA-256 digest the reader will
+    /// produce; the grant binds them, and different bytes fail the transfer.
+    /// Serve the plan with [`ServiceHandle::spawn_stream_download_endpoint`].
+    pub fn plan_stream_download_transfer(
+        &self,
+        transfer_id: &str,
+        expires_at: &str,
+        info: super::FileTransferInfo,
+    ) -> Result<DownloadTransferGrantPlan, ServerError> {
+        self.plan_download(None, transfer_id, expires_at, info)
+    }
+
+    fn plan_download(
+        &self,
+        store: Option<&str>,
         transfer_id: &str,
         expires_at: &str,
         info: super::FileTransferInfo,
