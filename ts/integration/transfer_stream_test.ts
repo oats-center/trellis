@@ -18,6 +18,9 @@ const sha256 = (bytes: Uint8Array) =>
   `SHA-256=${createHash("sha256").update(bytes).digest("base64url")}`;
 
 type Event = Record<string, unknown>;
+// Released by the test once the caller observed the commit; a `late-end`
+// handler waits for it before reading end of file.
+let lateEnd = Promise.withResolvers<void>();
 
 for (const language of ["rust", "node"] as const) {
   test(
@@ -73,9 +76,17 @@ for (const language of ["rust", "node"] as const) {
             );
             const hash = createHash("sha256");
             let size = 0;
+            const late = input.value.startsWith("late-end:")
+              ? Number(input.value.slice("late-end:".length))
+              : undefined;
             try {
               for await (const chunk of stream) {
                 hash.update(chunk);
+                if (late !== undefined && size + chunk.length === late) {
+                  // Every byte is read; end of file is read only after the
+                  // provider committed and released the transfer.
+                  await lateEnd.promise;
+                }
                 if (size === 0) {
                   // The caller is still sending: bytes reach the handler
                   // before the upload completes.
@@ -179,6 +190,25 @@ for (const language of ["rust", "node"] as const) {
             .open(`trellis_operation_staging_${identity.deploymentId}`)
             .catch(() => undefined);
           if (staging) assert.deepEqual(await staging.list(), []);
+
+          if (language === "node") {
+            // A handler still busy with its last bytes when the provider
+            // commits and releases the transfer still reads end of file.
+            lateEnd = Promise.withResolvers<void>();
+            const late = pattern(3 * 1024 * 1024 + 5);
+            const committed = await client
+              .ingest({ value: `late-end:${late.length}` })
+              .transfer(late)
+              .start()
+              .orThrow();
+            lateEnd.resolve();
+            const finished = await committed.wait().orThrow();
+            assert.equal(finished.terminal.state, "completed");
+            assert.equal(
+              finished.terminal.output?.value,
+              `node:${late.length}:${sha256(late)}`,
+            );
+          }
 
           // A handler that fails mid-stream fails the Operation and the upload.
           let failedRef: Parameters<typeof client.ingest.resume>[0] | undefined;
