@@ -704,6 +704,15 @@ identify itself by an HTTPS CIMD document; it does not require administrator
 registration. This public metadata policy does not apply to private Portal or
 client-bound token endpoints.
 
+The SDK's shared protocol verifier is a WebAssembly module, fetched as a
+separate asset next to the SDK module when a client connects; bundlers that
+resolve `new URL(path, import.meta.url)` assets, such as Vite and webpack 5,
+need no configuration. In browsers, synchronous protocol helpers such as
+`decodeTransferGrant` need a connected client. Services and devices load a
+larger provider build automatically through `@oatscenter/trellis/service` and
+`@oatscenter/trellis/device`; import that entrypoint before using any other
+Trellis API in the process.
+
 The SDK owns PKCE, DPoP, IndexedDB custody, exact callback validation, authority
 renewal, and transport maintenance. `onAuthRequired` receives `loginUrl` and
 `mode: "browser"`; caller-owned navigation may return `{ status: "handled" }`.

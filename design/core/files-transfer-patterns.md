@@ -303,10 +303,9 @@ SHA-256 of that frame's payload.
 
 Every DATA byte is hashed twice at each endpoint: once for the compact frame
 digest its request or server proof signs, and once into the object's running
-SHA-256 that completion and EOF verify. On the measured host the frame digest
-(WASM in TypeScript) runs near 285 MiB/s against 1,530 MiB/s for native
-`node:crypto`, so it is now the slowest per-byte pass in a TypeScript
-transfer.
+SHA-256 that completion and EOF verify. Both SDKs now hash DATA natively, so
+the second pass is pure duplicate work: it roughly doubles per-byte hashing at
+each endpoint.
 
 Proposal: bind each frame's proof to the object's running digest after that
 frame instead of a separate payload hash. Both endpoints already maintain the
@@ -319,7 +318,7 @@ the receiver checks frame N against its own running state after N frames.
 - A frame cannot be verified out of order or in isolation; v1 already rejects
   out-of-order DATA.
 - It changes the frame digest's definition, so it is a v1 wire change in both
-  SDKs and the WASM, gated on the same release decision as negotiated windows.
+  SDKs and the pinned message-digest vectors.
 - TypeScript needs a running-hash copy: `node:crypto` `Hash.copy()` provides
   it; the portable fallback needs an equivalent incremental state copy.
 

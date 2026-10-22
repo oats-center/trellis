@@ -39,6 +39,28 @@ and this project adheres to
 
 ### Changed
 
+- The TypeScript SDK ships two protocol WASM builds. Callers load a client
+  build; services and devices load a provider build with the request-serving
+  verifiers, selected automatically by the `/service` and `/device`
+  entrypoints. Both are size-optimized with `wasm-opt`: the client build is
+  495 KB gzipped, down from 780 KB. Bundles no longer embed a base64 copy; the
+  module is fetched as a separate asset when connecting, and server runtimes
+  read it from disk.
+- The TypeScript SDK computes per-message proof digests natively: Transfer
+  DATA frame and provider proof digests, Live server proof digests, and
+  request, event and response signing digests. Signature verification and
+  authorization policy stay in the shared Rust protocol. Pinned vectors in
+  `integration/fixtures/protocol/message-digests` keep both implementations
+  byte-identical.
+- Signed catalogs and provider certificates are authenticated once when
+  fetched, in both SDKs. Each use rechecks only the issuer key and its
+  revocation state, the trust scope and the certificate's validity time,
+  instead of re-canonicalizing and re-verifying the record on every request,
+  Transfer frame and credit message. TypeScript also reuses transport
+  permission coverage between unchanged policies. In the Rust protocol crate,
+  `AuthenticatedCatalog` and `AuthenticatedProviderCertificate` carry that
+  authentication, and `SessionResponseVerificationInput::certificate` takes an
+  `AuthenticatedProviderCertificate`.
 - Transfer windows default to 64 frames and 16 MiB instead of 16 frames and
   4 MiB, and TypeScript fills ready frames up to the negotiated 1 MiB limit
   instead of capping them at 256 KiB, as Rust already did. Measured on
