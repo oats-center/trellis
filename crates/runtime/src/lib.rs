@@ -11,12 +11,15 @@
 
 /// Runtime configuration loading, defaults, and validation.
 pub mod config;
+mod listener;
 /// Runtime mode parsing and subsystem selection.
 pub mod mode;
 /// Minimal HTTP readiness and version server.
 pub mod server;
 /// Cooperative runtime shutdown primitives.
 pub mod shutdown;
+/// Installation TLS certificate inspection.
+pub mod tls;
 
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 /// Built-in Events subsystem.
@@ -49,11 +52,11 @@ mod telemetry;
 
 pub use config::{
     AuthConfig, AuthorizationConfig, AvatarConfig, ClientConfig, ConfigError, HttpConfig,
-    LeasesConfig, LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig,
-    NatsConfig, NatsRuntimeConfig, OAuthConfig, OAuthListenerConfig, OAuthProviderConfig,
-    OAuthTransport, ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig,
-    RuntimeConfig, RuntimePathDefaults, RuntimePathsConfig, SqliteStorageConfig, StorageBackend,
-    StorageConfig, SubsystemConfig,
+    LeasesConfig, ListenerTransport, LiveProviderSeedFilesConfig, LocalIdentityConfig,
+    NatsAuthCalloutConfig, NatsConfig, NatsRuntimeConfig, OAuthConfig, OAuthListenerConfig,
+    OAuthProviderConfig, ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig,
+    ResolvedRuntimeNatsConfig, RuntimeConfig, RuntimePathDefaults, RuntimePathsConfig,
+    SqliteStorageConfig, StorageBackend, StorageConfig, SubsystemConfig, TlsConfig,
 };
 pub use mode::{RuntimeMode, RuntimeModeParseError, SubsystemName};
 pub use server::{

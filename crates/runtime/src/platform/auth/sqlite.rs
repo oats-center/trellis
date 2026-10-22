@@ -349,6 +349,7 @@ impl SqliteAuthorizationStore {
             account: self.settings.account.clone(),
             issuer,
             rotation_sequence,
+            root_certificates: Vec::new(),
         })
     }
 

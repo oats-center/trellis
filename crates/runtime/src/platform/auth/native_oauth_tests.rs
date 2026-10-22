@@ -223,6 +223,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         account: f.store.settings.account.clone(),
         rotation_sequence: 0,
         issuer: f.store.issuer().unwrap(),
+        root_certificates: Vec::new(),
     };
     let scope = NativeCredentialScope {
         issuer: origin.clone(),

@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use trellis_runtime::{OAuthListenerConfig, OAuthProviderConfig, OAuthTransport};
+use trellis_runtime::OAuthProviderConfig;
 
 use crate::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
-    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OPERATOR_NAME,
-    DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME,
-    DEFAULT_TRELLIS_PORT,
+    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OAUTH_ORIGIN,
+    DEFAULT_OAUTH_PORT, DEFAULT_OPERATOR_NAME, DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT,
+    DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
 };
 
 /// Shared NATS bootstrap names.
@@ -100,8 +100,18 @@ impl NatsBootstrapOptions {
 pub struct TrellisRuntimeBootstrapConfig {
     /// Installation ULID generated once for this bootstrap bundle.
     pub instance_id: String,
-    /// Dedicated authorization listener, distinct from the application origin.
-    pub oauth: OAuthListenerConfig,
+    /// Public origin of the dedicated authorization listener, distinct from the application origin.
+    pub oauth_origin: String,
+    /// Dedicated authorization listener port.
+    pub oauth_port: u16,
+    /// Certificate source for every TLS listener in the bundle.
+    pub tls: BootstrapTls,
+    /// Reverse-proxy networks; non-empty serves Console and OAuth as plaintext
+    /// behind an HTTPS-terminating proxy at those addresses.
+    pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// Serve browser WebSockets as plaintext behind an HTTPS-terminating proxy.
+    /// Native NATS always terminates its own TLS.
+    pub nats_websocket_behind_proxy: bool,
     /// Human-readable Trellis name written to runtime config.
     pub name: String,
     /// Trellis HTTP port written to `config.toml`.
@@ -112,10 +122,7 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub nats_websocket_url: String,
     /// Public HTTP origin for OAuth redirects.
     pub public_origin: String,
-    /// Additional origins accepted by the runtime, for callers served elsewhere.
-    ///
-    /// Every entry is added to both the accepted request origins and the insecure-origin
-    /// allow-list, so a browser app on its own development origin can complete a portal login.
+    /// Additional browser origins accepted by the runtime, for callers served elsewhere.
     pub extra_origins: Vec<String>,
     /// Optional HTTP listener address; omission retains the production default.
     pub bind_address: Option<IpAddr>,
@@ -129,13 +136,11 @@ impl Default for TrellisRuntimeBootstrapConfig {
     fn default() -> Self {
         Self {
             instance_id: ulid::Ulid::new().to_string(),
-            oauth: OAuthListenerConfig {
-                origin: "http://localhost:3001".into(),
-                bind_address: std::net::Ipv4Addr::LOCALHOST.into(),
-                port: 3001,
-                transport: OAuthTransport::LoopbackDevelopment,
-                trusted_proxies: Vec::new(),
-            },
+            oauth_origin: DEFAULT_OAUTH_ORIGIN.to_string(),
+            oauth_port: DEFAULT_OAUTH_PORT,
+            tls: BootstrapTls::Generated { ca_directory: None },
+            trusted_proxies: Vec::new(),
+            nats_websocket_behind_proxy: false,
             name: DEFAULT_TRELLIS_NAME.to_string(),
             trellis_port: DEFAULT_TRELLIS_PORT,
             nats_server_url: DEFAULT_NATS_SERVER_URL.to_string(),
@@ -147,6 +152,38 @@ impl Default for TrellisRuntimeBootstrapConfig {
             oauth_providers: BTreeMap::new(),
         }
     }
+}
+
+/// Certificate source for a bundle's TLS listeners.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BootstrapTls {
+    /// Generate an installation CA and short-lived leaf certificates.
+    ///
+    /// `ca_directory` receives the CA private key and must stay outside every
+    /// role's mount; `None` selects `<out>-tls-ca` beside the bundle.
+    Generated {
+        /// Directory for the CA private key.
+        ca_directory: Option<PathBuf>,
+    },
+    /// Copy operator-supplied PEM files into the bundle.
+    Supplied(SuppliedTls),
+    /// Plaintext restricted to loopback origins and listeners.
+    LoopbackDevelopment,
+}
+
+/// Operator-supplied PEM certificate files.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuppliedTls {
+    /// Certificate chain naming the Console and OAuth hosts.
+    pub certificate_chain: PathBuf,
+    /// Private key for `certificate_chain`.
+    pub private_key: PathBuf,
+    /// Certificate chain naming the native NATS and WebSocket hosts.
+    pub nats_certificate_chain: PathBuf,
+    /// Private key for `nats_certificate_chain`.
+    pub nats_private_key: PathBuf,
+    /// Private CA the runtime trusts for NATS; omit for publicly trusted certificates.
+    pub ca_certificate: Option<PathBuf>,
 }
 
 /// Bootstrap-owned authorization timing policy; secret paths remain generated.

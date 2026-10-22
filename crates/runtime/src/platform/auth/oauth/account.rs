@@ -473,7 +473,7 @@ pub(super) async fn page(
             ),
         }
     };
-    let response = html(title, &body);
+    let response = html(&engine, title, &body);
     match guest {
         Some(guest) => cookie_response(&guest.cookie, Some(&guest.csrf), 300, response),
         None => response,
@@ -523,6 +523,7 @@ pub(super) async fn submit(
         return match reviewed {
             Ok(token) => {
                 let mut response = html(
+                    &engine,
                     "Continue to identity provider",
                     &format!(
                         r#"<p>Your account-link request has been reviewed. Continue to sign in with the identity provider.</p><a href="/account/continue?token={token}" rel="noreferrer">Continue to identity provider</a>"#
@@ -544,8 +545,10 @@ pub(super) async fn submit(
     let csrf = csrf.clone();
     let password = password.clone();
     if kind == "reset" {
+        let reset_engine = engine.clone();
         let result =
             tokio::task::spawn_blocking(move || {
+                let engine = reset_engine;
                 engine
                     .server
                     .store()
@@ -560,6 +563,7 @@ pub(super) async fn submit(
             .await;
         return match result {
             Ok(Ok(())) => html(
+                &engine,
                 "Password reset",
                 "<p>Your password was changed. Existing sessions have been signed out.</p>",
             ),
@@ -610,8 +614,26 @@ pub(super) async fn submit(
     error(ErrorCode::InvalidRequest)
 }
 
-pub(super) fn html(title: &str, body: &str) -> Response {
-    let mut response = Html(format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title></head><body><main><h1>{title}</h1>{body}</main></body></html>")).into_response();
+pub(super) fn html(engine: &OAuthEngine, title: &str, body: &str) -> Response {
+    // Every account page tells the user when this installation serves its own
+    // private CA, with the fingerprint to verify out of band.
+    let notice = engine.generated_tls_notice();
+    let notice = if notice.is_null() {
+        String::new()
+    } else {
+        let fingerprint = notice["caSha256Fingerprint"].as_str().map_or_else(
+            || "Its certificates could not be read; contact your operator.".to_owned(),
+            |fingerprint| {
+                format!("Trust it only if this SHA-256 fingerprint matches the one your operator published: <code>{fingerprint}</code>.")
+            },
+        );
+        let expiry = notice["leafNotAfter"]
+            .as_str()
+            .map(|expiry| format!(" The server certificate expires {expiry}."))
+            .unwrap_or_default();
+        format!("<p role=\"status\">This Trellis uses a private certificate authority generated at installation. {fingerprint}{expiry}</p>")
+    };
+    let mut response = Html(format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title></head><body>{notice}<main><h1>{title}</h1>{body}</main></body></html>")).into_response();
     use axum::http::{header, HeaderValue};
     response
         .headers_mut()

@@ -169,7 +169,9 @@ impl SqliteAuthorizationStore {
                 if uri.origin().ascii_serialization()==self.settings.oauth_origin {return Err(AuthError::Invalid("reserved_oauth_origin".into()));}
                 if uri.host_str().is_none() || uri.fragment().is_some() || !uri.username().is_empty() || uri.password().is_some()
                     || (uri.scheme()!="https" && !(uri.scheme()=="http" && loopback && (registration.development || registration.kind=="native")))
-                    || (registration.kind=="browser" && loopback && !registration.development) {return Err(AuthError::Invalid("unsafe redirect".into()));}
+                    // A plaintext loopback browser callback is development-only;
+                    // HTTPS authenticates a loopback callback like any other host.
+                    || (registration.kind=="browser" && loopback && uri.scheme()=="http" && !registration.development) {return Err(AuthError::Invalid("unsafe redirect".into()));}
                 super::warn_oauth_cookie_isolation(&url::Url::parse(&self.settings.oauth_origin).map_err(|_|AuthError::Denied)?, &uri);
             }
             // Eligibility is assigned explicitly by a privilege manager; a

@@ -1679,7 +1679,9 @@ mod tests {
             .register_service::<Participant>("event-proof-health")
             .await
             .unwrap();
-        let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+        let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
         let publisher =
             TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
                 nats_servers: server.nats_servers.clone(),

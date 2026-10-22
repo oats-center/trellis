@@ -42,6 +42,8 @@ pub(crate) struct OAuthEngine {
     documents: super::ClientDocuments,
     pub(super) avatars: super::super::avatars::Avatars,
     nonces: Mutex<super::nonce::DpopNonces>,
+    /// Installation TLS this listener serves, for the always-on user notice.
+    generated_tls: std::sync::OnceLock<(crate::RuntimeConfig, crate::ListenerTransport)>,
 }
 
 /// Host nonce challenges are distinct from the library's protocol failures.
@@ -289,6 +291,25 @@ fn now_seconds() -> Result<i64, ErrorResponse> {
 }
 
 impl OAuthEngine {
+    /// Records the configuration and transport this OAuth listener serves, so
+    /// every Portal page can show the generated-CA notice.
+    pub(crate) fn serve_generated_tls_notice(
+        &self,
+        config: crate::RuntimeConfig,
+        transport: crate::ListenerTransport,
+    ) {
+        let _ = self.generated_tls.set((config, transport));
+    }
+
+    /// The generated-CA notice for this listener, or `null` when it serves none.
+    pub(crate) fn generated_tls_notice(&self) -> serde_json::Value {
+        self.generated_tls
+            .get()
+            .map_or(serde_json::Value::Null, |(config, transport)| {
+                crate::tls::GeneratedTlsNotice::browser_json(config, transport)
+            })
+    }
+
     pub(crate) fn new(storage: OAuthStorage) -> Result<Self, AuthError> {
         let origin = url::Url::parse(&storage.authority.settings.oauth_origin)
             .map_err(|_| AuthError::Denied)?;
@@ -351,6 +372,7 @@ impl OAuthEngine {
             avatars,
             upstream_http,
             device_entries: FixedWindowRateLimiter::new(),
+            generated_tls: std::sync::OnceLock::new(),
             nonces: Mutex::new(
                 super::nonce::DpopNonces::new(Instant::now())
                     .map_err(|_| AuthError::Unavailable)?,

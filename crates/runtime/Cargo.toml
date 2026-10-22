@@ -47,6 +47,7 @@ tempfile = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true, features = ["backup"] }
 refinery = { workspace = true, optional = true }
 reqwest.workspace = true
+x509-parser.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
@@ -65,6 +66,7 @@ ulid.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 trellis-local-bootstrap = { path = "../local-bootstrap" }
 reqwest = { workspace = true, features = ["http2", "cookies"] }
 scraper = "0.25.0"

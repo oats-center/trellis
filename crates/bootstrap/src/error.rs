@@ -30,6 +30,9 @@ pub enum BootstrapError {
     /// NATS NKEY generation failed.
     #[error(transparent)]
     Nkey(#[from] nkeys::error::Error),
+    /// TLS options, certificate files, or generated TLS material are unusable.
+    #[error("invalid bootstrap TLS configuration: {0}")]
+    InvalidTls(String),
     /// Authorization trust generation failed.
     #[error("failed to generate authorization trust: {0}")]
     AuthorizationTrust(String),

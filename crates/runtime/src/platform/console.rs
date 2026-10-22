@@ -16,17 +16,23 @@ pub(super) fn router(config: &RuntimeConfig) -> Result<Router, RuntimeError> {
     let oauth = config
         .resolve_oauth_listener()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let value = serde_json::json!({"authUrl":oauth.origin,"clientId":super::auth::CONSOLE_CLIENT_ID,
-        "callbackUri":registration.redirect_uris[0],"loopbackDevelopment":matches!(oauth.transport,crate::config::OAuthTransport::LoopbackDevelopment)});
-    let script = format!(
-        "globalThis.__TRELLIS_RUNTIME_CONFIG__ = {};\n",
-        serde_json::to_string(&value).map_err(|error| RuntimeError::Platform(error.to_string()))?
-    );
+    let base = serde_json::json!({"authUrl":oauth.origin,"clientId":super::auth::CONSOLE_CLIENT_ID,
+        "callbackUri":registration.redirect_uris[0],"loopbackDevelopment":matches!(oauth.transport,crate::config::ListenerTransport::LoopbackDevelopment)});
+    // Fail startup on unreadable certificates, then re-read per request so
+    // the expiry shown to users follows automatic certificate reloads.
+    crate::tls::GeneratedTlsNotice::from_config(config, config.http_transport())
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let config = config.clone();
     Ok(Router::new()
         .route(
             "/assets/web/runtime-config.js",
             get(move || {
-                let script = script.clone();
+                let mut value = base.clone();
+                // Every Console user is told when the installation serves its
+                // own private CA, with the fingerprint to verify.
+                value["generatedTls"] =
+                    crate::tls::GeneratedTlsNotice::browser_json(&config, config.http_transport());
+                let script = format!("globalThis.__TRELLIS_RUNTIME_CONFIG__ = {value};\n");
                 async move {
                     (
                         [

@@ -57,13 +57,17 @@ mod tests {
             .await
             .unwrap();
         let root = runtime.workdir().to_owned();
-        let readiness: serde_json::Value =
-            reqwest::get(format!("{}/readyz", runtime.trellis_url()))
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
+        let readiness: serde_json::Value = runtime
+            .https_client_builder()
+            .build()
+            .unwrap()
+            .get(format!("{}/readyz", runtime.trellis_url()))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         let pid = i32::try_from(readiness["processId"].as_u64().unwrap()).unwrap();
         assert!(pid > 0, "readiness must identify an individual process");
         // SAFETY: readiness identifies this test's owned production server.

@@ -47,6 +47,7 @@ fn wire<T: serde::de::DeserializeOwned>(value: impl Serialize) -> Result<T, Trel
 /// are injected into the runtime.
 pub(crate) async fn login_client(
     oauth_origin: &str,
+    trust_roots: &[std::path::PathBuf],
     custody: &Path,
     client_id: &str,
     details: &Value,
@@ -54,7 +55,7 @@ pub(crate) async fn login_client(
     password: &str,
 ) -> Result<(NativeOAuthSession, Vec<String>), TrellisTestError> {
     let stage = TrellisTestStage::ClientLogin;
-    let server = discover_native_oauth(oauth_origin)
+    let server = discover_native_oauth(oauth_origin, trust_roots)
         .await
         .map_err(|error| failure(stage, format!("discovering native OAuth: {error}")))?;
     let native = NativeOAuthClient::open(
@@ -76,6 +77,7 @@ pub(crate) async fn login_client(
         .map_err(|error| failure(stage, format!("starting native Device Code: {error}")))?;
     approve_device(
         oauth_origin,
+        trust_roots,
         client_id,
         device.user_code(),
         username,
@@ -91,13 +93,15 @@ pub(crate) async fn login_client(
 
 pub(crate) async fn approve_device(
     oauth_origin: &str,
+    trust_roots: &[std::path::PathBuf],
     client_id: &str,
     user_code: &str,
     username: &str,
     password: &str,
 ) -> Result<(), TrellisTestError> {
     let stage = TrellisTestStage::ClientLogin;
-    let http = reqwest::Client::builder()
+    let http = crate::runtime::https_client_builder(trust_roots)
+        .map_err(|error| failure(stage, error))?
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()
         .timeout(std::time::Duration::from_secs(30))
@@ -265,11 +269,12 @@ pub(crate) struct AdminSession {
 impl AdminSession {
     pub(crate) async fn connect(
         oauth_origin: &str,
+        trust_roots: &[std::path::PathBuf],
         custody: &Path,
         username: &str,
         password: &str,
     ) -> Result<Self, TrellisTestError> {
-        let (session, nats_servers) = login_client(oauth_origin, custody, "trellis.cli", &json!([
+        let (session, nats_servers) = login_client(oauth_origin, trust_roots, custody, "trellis.cli", &json!([
             {"type":"trellis_capabilities","required":[],"optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES},
             {"type":"trellis_platform_privileges","required":["principals.manage","roles.manage","apis.accept","apis.forceReplace","clients.manage","privileges.manage"]}
         ]), username, password).await?;

@@ -14,6 +14,7 @@ async fn typescript_job_history_uses_the_successor_transport() {
             runtime.admin_username(),
             runtime.admin_password(),
         ])
+        .env("NODE_EXTRA_CA_CERTS", &runtime.trust_roots()[0])
         .arg(runtime.workdir().join("history-recovery"))
         .kill_on_drop(true);
     let output = tokio::time::timeout(std::time::Duration::from_secs(90), command.output())

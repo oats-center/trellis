@@ -164,7 +164,13 @@ pub async fn check(
             return Ok(report);
         }
     };
-    let trellis_nats = match check_nats_connection(&nats.servers, &nats.trellis_creds_path).await {
+    let trellis_nats = match check_nats_connection(
+        &nats.servers,
+        nats.ca_certificate.as_deref(),
+        &nats.trellis_creds_path,
+    )
+    .await
+    {
         Ok(client) => {
             report.push(
                 "nats.trellis",
@@ -330,7 +336,9 @@ pub async fn check(
             ("nats.auth", &nats.auth_creds_path),
             ("nats.system", &nats.system_creds_path),
         ] {
-            match check_nats_connection(&nats.servers, credentials).await {
+            match check_nats_connection(&nats.servers, nats.ca_certificate.as_deref(), credentials)
+                .await
+            {
                 Ok(client) => {
                     let _ = client.drain().await;
                     report.push(
@@ -352,12 +360,16 @@ pub async fn check(
 
 async fn check_nats_connection(
     servers: &str,
+    ca_certificate: Option<&std::path::Path>,
     credentials: &std::path::Path,
 ) -> Result<async_nats::Client, RuntimeError> {
-    let options = async_nats::ConnectOptions::new()
+    let mut options = async_nats::ConnectOptions::new()
         .credentials_file(credentials)
         .await
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+    if let Some(ca) = ca_certificate {
+        options = options.add_root_certificates(ca.to_path_buf());
+    }
     let client = tokio::time::timeout(Duration::from_secs(10), options.connect(servers))
         .await
         .map_err(|_| RuntimeError::Nats("connection timed out".to_owned()))?
@@ -637,6 +649,12 @@ pub async fn run_with_stop(
     let _ = rustls::crypto::ring::default_provider().install_default();
     let config = options.config;
     config.validate_for_mode(options.mode)?;
+    if let Some(notice) =
+        crate::tls::GeneratedTlsNotice::from_config(&config, config.http_transport())
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?
+    {
+        notice.warn();
+    }
     let nats = config.resolve_nats_runtime_with(
         options
             .nats_override
@@ -644,10 +662,14 @@ pub async fn run_with_stop(
             .map(|o| o.runtime_servers.as_str()),
     )?;
     let leases = config.resolve_leases()?;
-    let trellis_nats = async_nats::ConnectOptions::new()
+    let mut trellis_options = async_nats::ConnectOptions::new()
         .credentials_file(&nats.trellis_creds_path)
         .await
-        .map_err(|error| RuntimeError::Nats(error.to_string()))?
+        .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+    if let Some(ca) = &nats.ca_certificate {
+        trellis_options = trellis_options.add_root_certificates(ca.clone());
+    }
+    let trellis_nats = trellis_options
         .connect(&nats.servers)
         .await
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
@@ -820,8 +842,25 @@ async fn supervise_owned(
             return Err(RuntimeError::from(error));
         }
     };
+    let transport = context.config.http_transport().clone();
+    let origin = match url::Url::parse(&context.config.public_origin()) {
+        Ok(origin) => origin,
+        Err(error) => {
+            root_stop.stop();
+            if let Err(cleanup) = stop_subsystems(handles).await {
+                tracing::error!(error = %cleanup, "runtime startup cleanup also failed");
+            }
+            return Err(RuntimeError::Config(
+                crate::ConfigError::InvalidPublicOrigin {
+                    origin: format!("{}: {error}", context.config.public_origin()),
+                },
+            ));
+        }
+    };
     let mut server = Box::pin(crate::serve_http_listener(
         listener,
+        &origin,
+        &transport,
         context.mode,
         http_router,
         std::sync::Arc::clone(&http_ready),
@@ -938,7 +977,10 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let store = context.authorization_store.get();
-    let trust = match store {
+    // The configured broker CA also anchors the Auth origin in a split
+    // deployment; the installation's generated CA issues both certificates.
+    let root_certificates: Vec<_> = nats.ca_certificate.iter().cloned().collect();
+    let mut trust = match store {
         Some(store) => store
             .runtime_authorization_trust()
             .map_err(|error| RuntimeError::Platform(error.to_string()))?,
@@ -954,7 +996,7 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
                         "the selected Auth origin is required for split roles".into(),
                     )
                 })?;
-            trellis_rs::auth::discover_native_oauth(origin)
+            trellis_rs::auth::discover_native_oauth(origin, &root_certificates)
                 .await
                 .map_err(|error| {
                     RuntimeError::Platform(format!("discover configured Auth origin: {error}"))
@@ -962,6 +1004,7 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
                 .trust
         }
     };
+    trust.root_certificates = root_certificates;
     for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
         let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
         let deployment = if let Some(store) = store {
@@ -1257,37 +1300,34 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn refuses_plaintext_non_loopback_public_origin_without_authorization() {
-        let config = RuntimeConfig::from_toml_str(
-            r#"
-[http]
-public_origin = "http://trellis-demo.lan:3000"
-allow_insecure_origins = []
-"#,
-        )
-        .expect("parse config");
-
-        let error = run_with_stop(
-            RuntimeOptions {
-                mode: RuntimeMode::All,
-                config,
-                reset_admin: false,
-                nats_override: None,
-            },
-            None,
-        )
-        .await
-        .expect_err("startup must refuse an unauthorized plaintext public origin");
-
-        match error {
-            RuntimeError::Config(error) => {
-                assert!(error.to_string().contains("allow_insecure_origins"));
-                assert!(matches!(
+    async fn refuses_plaintext_for_a_remote_public_origin() {
+        // A remote origin may be served as plaintext only behind a trusted
+        // HTTPS proxy; there is no insecure-origin escape hatch.
+        for http in [
+            "public_origin = \"http://trellis-demo.lan:3000\"",
+            "public_origin = \"http://trellis-demo.lan:3000\"\n[http.transport]\nmode = \"proxy\"\ntrusted_proxies = [\"10.0.0.0/8\"]",
+            "public_origin = \"http://localhost:3000\"\nbind_address = \"0.0.0.0\"",
+        ] {
+            let config = RuntimeConfig::from_toml_str(&format!("[http]\n{http}\n"))
+                .expect("parse config");
+            let error = run_with_stop(
+                RuntimeOptions {
+                    mode: RuntimeMode::All,
+                    config,
+                    reset_admin: false,
+                    nats_override: None,
+                },
+                None,
+            )
+            .await
+            .expect_err("startup must refuse plaintext the transport cannot protect");
+            assert!(
+                matches!(
                     error,
-                    crate::ConfigError::InsecurePublicOrigin { .. }
-                ));
-            }
-            other => panic!("unexpected startup error: {other}"),
+                    RuntimeError::Config(crate::ConfigError::InvalidHttpTransport { .. })
+                ),
+                "unexpected startup error for {http}: {error}"
+            );
         }
     }
 

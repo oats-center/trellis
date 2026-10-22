@@ -14,6 +14,7 @@ async fn completed_typescript_activation_does_not_create_another_review() {
             runtime.admin_username(),
             runtime.admin_password(),
         ])
+        .env("NODE_EXTRA_CA_CERTS", &runtime.trust_roots()[0])
         .arg(runtime.workdir().join("activation-recheck"))
         .kill_on_drop(true);
     let output = tokio::time::timeout(std::time::Duration::from_secs(60), command.output())

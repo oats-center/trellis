@@ -17,9 +17,10 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         .unwrap();
     let publisher_identity = runtime.register_service::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>("projector publisher").await.unwrap();
     let receiver_identity = runtime.register_service::<trellis_runtime_apis::participants::trellis_events_runtime::Participant>("projector receiver").await.unwrap();
-    let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
-        .await
-        .unwrap();
+    let server =
+        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
     let publisher =
         TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
             nats_servers: server.nats_servers.clone(),
@@ -59,6 +60,7 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         async_nats::ConnectOptions::with_credentials_file(&credentials.trellis_creds_path)
             .await
             .unwrap()
+            .add_root_certificates(runtime.trust_roots()[0].clone())
             .connect(runtime.nats_url())
             .await
             .unwrap();
@@ -318,9 +320,10 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     // Retire the real publisher session through a separately approved native
     // administrator, then compare retained broker chronology with a new publish
     // of exactly the same previously signed bytes.
-    let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
-        .await
-        .unwrap();
+    let server =
+        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
     let native = trellis_rs::auth::NativeOAuthClient::open(
         runtime.workdir().join("historical-admin"),
         trellis_rs::auth::NativeCredentialScope {

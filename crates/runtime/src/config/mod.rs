@@ -29,6 +29,9 @@ pub struct RuntimeConfig {
     /// HTTP listener configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub http: Option<HttpConfig>,
+    /// Installation TLS metadata shared by every runtime listener.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsConfig>,
     /// NATS server and runtime identity configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nats: Option<NatsConfig>,
@@ -110,7 +113,7 @@ impl RuntimeConfig {
     ///
     pub fn validate_for_mode(&self, mode: RuntimeMode) -> Result<(), ConfigError> {
         self.validate_distinct_sqlite_paths()?;
-        self.validate_http_public_origin()?;
+        self.validate_http_listener()?;
         self.validate_oauth_provider_secrets()?;
         self.resolve_nats_runtime()?;
         self.resolve_leases()?;
@@ -190,33 +193,8 @@ impl RuntimeConfig {
         {
             return Err(invalid_authorization("oauth", "requires a nonzero listener port and an origin without credentials, path, query, or fragment"));
         }
-        match &oauth.transport {
-            OAuthTransport::Tls {
-                certificate_chain,
-                private_key,
-            } => {
-                if origin.scheme() != "https"
-                    || certificate_chain.as_os_str().is_empty()
-                    || private_key.as_os_str().is_empty()
-                {
-                    return Err(invalid_authorization(
-                        "oauth.transport",
-                        "TLS requires an HTTPS origin and certificate/key paths",
-                    ));
-                }
-            }
-            OAuthTransport::LoopbackDevelopment => {
-                let local = match origin.host() {
-                    Some(Host::Ipv4(ip)) => ip.is_loopback(),
-                    Some(Host::Ipv6(ip)) => ip.is_loopback(),
-                    Some(Host::Domain(host)) => host == "localhost",
-                    None => false,
-                };
-                if origin.scheme() != "http" || !local || !oauth.bind_address.is_loopback() {
-                    return Err(invalid_authorization("oauth.transport", "plaintext OAuth requires explicit loopback development mode and a loopback origin/listener"));
-                }
-            }
-        }
+        validate_listener_transport(&origin, oauth.bind_address, &oauth.transport)
+            .map_err(|reason| invalid_authorization("oauth.transport", reason))?;
         let console_origin = self.public_origin();
         for other in std::iter::once(&console_origin).chain(
             self.http
@@ -258,7 +236,7 @@ impl RuntimeConfig {
                     || endpoint.query().is_some()
                     || endpoint.fragment().is_some()
                     || !(matches!(endpoint.scheme(), "tls" | "wss")
-                        || (matches!(oauth.transport, OAuthTransport::LoopbackDevelopment)
+                        || (matches!(oauth.transport, ListenerTransport::LoopbackDevelopment)
                             && loopback
                             && matches!(endpoint.scheme(), "nats" | "ws")))
                 {
@@ -367,13 +345,28 @@ impl RuntimeConfig {
             .unwrap_or(3000)
     }
 
-    /// Returns the configured HTTP bind address, or the unspecified IPv4 default.
+    /// Returns the configured HTTP bind address.
+    ///
+    /// An omitted address binds loopback for plaintext development and the
+    /// unspecified IPv4 address for TLS or proxy transport.
     #[must_use]
     pub fn http_bind_address(&self) -> IpAddr {
         self.http
             .as_ref()
             .and_then(|http| http.bind_address)
-            .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
+            .unwrap_or(match self.http_transport() {
+                ListenerTransport::LoopbackDevelopment => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                _ => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            })
+    }
+
+    /// Returns the application listener transport; omission selects loopback development.
+    #[must_use]
+    pub fn http_transport(&self) -> &ListenerTransport {
+        self.http
+            .as_ref()
+            .and_then(|http| http.transport.as_ref())
+            .unwrap_or(&ListenerTransport::LoopbackDevelopment)
     }
 
     /// Resolves the canonical public browser origin, defaulting to loopback HTTP.
@@ -388,33 +381,32 @@ impl RuntimeConfig {
             .unwrap_or_else(|| format!("http://localhost:{}", self.http_port()))
     }
 
-    /// Rejects a non-loopback plaintext public origin unless the operator authorized it.
-    fn validate_http_public_origin(&self) -> Result<(), ConfigError> {
-        let Some(http) = self.http.as_ref() else {
-            return Ok(());
-        };
+    /// Validates that the application and OAuth listener transports can protect
+    /// their public origins and that broker endpoints use TLS outside loopback
+    /// development, without reading any referenced file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] naming the listener or endpoint that is unsafe.
+    pub fn validate_listeners(&self) -> Result<(), ConfigError> {
+        self.validate_http_listener()?;
+        self.resolve_oauth_listener().map(|_| ())
+    }
+
+    /// Rejects an application listener whose transport cannot protect its public origin.
+    fn validate_http_listener(&self) -> Result<(), ConfigError> {
         let public_origin = self.public_origin();
-        let Some(origin) = CanonicalOrigin::parse(&public_origin) else {
-            return Err(ConfigError::InvalidPublicOrigin {
+        let origin = Url::parse(&public_origin)
+            .ok()
+            .filter(|url| CanonicalOrigin::parse(url.as_str()).is_some())
+            .ok_or_else(|| ConfigError::InvalidPublicOrigin {
+                origin: public_origin.clone(),
+            })?;
+        validate_listener_transport(&origin, self.http_bind_address(), self.http_transport())
+            .map_err(|reason| ConfigError::InvalidHttpTransport {
                 origin: public_origin,
-            });
-        };
-        if let Some(entries) = http.allow_insecure_origins.as_ref() {
-            for entry in entries {
-                if CanonicalOrigin::parse(entry).is_none() {
-                    return Err(ConfigError::InvalidInsecureOrigin {
-                        origin: entry.clone(),
-                    });
-                }
-            }
-        }
-        if origin.is_loopback() || origin.is_https() || http.allows_insecure_origin(&public_origin)
-        {
-            return Ok(());
-        }
-        Err(ConfigError::InsecurePublicOrigin {
-            origin: origin.to_string(),
-        })
+                reason,
+            })
     }
 
     /// Resolves validated storage for the platform subsystem.
@@ -561,7 +553,11 @@ impl RuntimeConfig {
             resolve_path(base_dir, &mut seeds.jobs);
             resolve_path(base_dir, &mut seeds.events);
         }
+        if let Some(tls) = &mut self.tls {
+            resolve_path(base_dir, &mut tls.generated_ca_certificate);
+        }
         if let Some(nats) = &mut self.nats {
+            resolve_path(base_dir, &mut nats.ca_certificate);
             if let Some(runtime) = &mut nats.runtime {
                 resolve_path(base_dir, &mut runtime.auth_creds_path);
                 resolve_path(base_dir, &mut runtime.trellis_creds_path);
@@ -573,6 +569,14 @@ impl RuntimeConfig {
                 resolve_path(base_dir, &mut auth_callout.target_signing_seed_file);
                 resolve_path(base_dir, &mut auth_callout.xkey_seed_file);
             }
+        }
+        if let Some(ListenerTransport::Tls {
+            certificate_chain,
+            private_key,
+        }) = self.http.as_mut().and_then(|http| http.transport.as_mut())
+        {
+            resolve_required_path(base_dir, certificate_chain);
+            resolve_required_path(base_dir, private_key);
         }
         for storage in [
             self.platform
@@ -603,7 +607,7 @@ impl RuntimeConfig {
             resolve_path(base_dir, &mut auth.oauth_storage_key_file);
             if let Some(OAuthListenerConfig {
                 transport:
-                    OAuthTransport::Tls {
+                    ListenerTransport::Tls {
                         certificate_chain,
                         private_key,
                     },
@@ -799,75 +803,25 @@ pub struct HttpConfig {
     /// Allowed browser origins.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origins: Option<Vec<String>>,
-    /// Insecure origins allowed for local development.
+    /// Listener transport. Absent selects loopback-only plaintext development.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allow_insecure_origins: Option<Vec<String>>,
-}
-
-impl HttpConfig {
-    /// Returns true when `origin` is explicitly allow-listed as an insecure origin.
-    pub(crate) fn allows_insecure_origin(&self, origin: &str) -> bool {
-        let Some(candidate) = CanonicalOrigin::parse(origin) else {
-            return false;
-        };
-        self.allow_insecure_origins.as_ref().is_some_and(|origins| {
-            origins
-                .iter()
-                .any(|allowed| CanonicalOrigin::parse(allowed).as_ref() == Some(&candidate))
-        })
-    }
+    pub transport: Option<ListenerTransport>,
 }
 
 /// A canonical `scheme://host[:port]` browser origin.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CanonicalOrigin {
-    serialized: String,
-    loopback: bool,
-    https: bool,
-}
+struct CanonicalOrigin;
 
 impl CanonicalOrigin {
-    /// Parses and canonicalizes an HTTP(S) origin.
-    ///
-    /// Credentials, query, fragment, non-HTTP(S) schemes, and missing hosts are
-    /// rejected so an allow-list entry can only ever name an origin.
+    /// Accepts only an HTTP(S) origin without credentials, query, or fragment.
     fn parse(value: &str) -> Option<Self> {
         let url = Url::parse(value.trim()).ok()?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return None;
-        }
-        if !url.username().is_empty() || url.password().is_some() {
-            return None;
-        }
-        if url.query().is_some() || url.fragment().is_some() {
-            return None;
-        }
-        let loopback = match url.host()? {
-            Host::Domain(host) => host.eq_ignore_ascii_case("localhost"),
-            Host::Ipv4(address) => address.is_loopback(),
-            Host::Ipv6(address) => address.is_loopback(),
-        };
-        Some(Self {
-            serialized: url.origin().ascii_serialization(),
-            loopback,
-            https: url.scheme() == "https",
-        })
-    }
-
-    /// Whether this origin names a loopback host.
-    fn is_loopback(&self) -> bool {
-        self.loopback
-    }
-
-    /// Whether this origin uses HTTPS.
-    fn is_https(&self) -> bool {
-        self.https
-    }
-}
-
-impl std::fmt::Display for CanonicalOrigin {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.serialized)
+        (matches!(url.scheme(), "http" | "https")
+            && url.host().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none())
+        .then_some(Self)
     }
 }
 
@@ -877,6 +831,12 @@ pub struct NatsConfig {
     /// NATS server URL or comma-separated URLs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub servers: Option<String>,
+    /// Additional PEM CA trusted for runtime NATS TLS connections.
+    ///
+    /// Required when the broker certificate chains to a private CA, including the
+    /// Trellis-generated installation CA. Publicly trusted brokers omit it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_certificate: Option<PathBuf>,
     /// Generated runtime credential paths.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<NatsRuntimeConfig>,
@@ -924,6 +884,7 @@ impl NatsConfig {
 
         Ok(ResolvedRuntimeNatsConfig {
             servers: require_string("nats", "servers", self.servers.as_deref())?,
+            ca_certificate: self.ca_certificate.clone(),
             auth_creds_path: require_path(
                 "nats.runtime",
                 "auth_creds_path",
@@ -983,6 +944,8 @@ impl NatsConfig {
 pub struct ResolvedRuntimeNatsConfig {
     /// NATS server URL or comma-separated URLs.
     pub servers: String,
+    /// Additional PEM CA trusted for NATS TLS connections.
+    pub ca_certificate: Option<PathBuf>,
     /// Auth-account runtime user creds path.
     pub auth_creds_path: PathBuf,
     /// Trellis-account runtime user creds path.
@@ -1128,28 +1091,95 @@ pub struct OAuthListenerConfig {
     pub bind_address: IpAddr,
     /// Dedicated listener port.
     pub port: u16,
-    /// TLS or explicitly insecure loopback-only development transport.
-    pub transport: OAuthTransport,
+    /// TLS, reverse-proxy, or explicitly insecure loopback-only development transport.
+    pub transport: ListenerTransport,
     /// Reverse-proxy addresses or CIDR ranges whose `X-Forwarded-For` header
     /// identifies the client for request admission. Forwarding headers from
     /// any other peer are ignored. Empty means the listener faces clients.
+    ///
+    /// A `proxy` transport already serves only its own trusted proxies and
+    /// presents the forwarded client; this list is for a proxy in front of a
+    /// TLS listener, such as one that re-encrypts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trusted_proxies: Vec<ipnet::IpNet>,
 }
 
-/// Transport for the dedicated OAuth listener; failed TLS never becomes plaintext.
+/// Transport for a runtime HTTP listener; failed TLS never becomes plaintext.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
-pub enum OAuthTransport {
-    /// HTTPS using operator-provided PEM certificate and key files.
+pub enum ListenerTransport {
+    /// HTTPS using PEM certificate and key files, generated or operator-supplied.
+    ///
+    /// The runtime reloads replaced files without restarting.
     Tls {
         /// PEM leaf certificate followed by intermediates.
         certificate_chain: PathBuf,
         /// PEM private key matching the certificate.
         private_key: PathBuf,
     },
+    /// Plaintext behind an HTTPS-terminating reverse proxy.
+    ///
+    /// The public origin remains HTTPS. Only peers inside `trusted_proxies` are
+    /// served, and only their `X-Forwarded-For` entries identify the client.
+    Proxy {
+        /// Networks of the reverse proxies allowed to connect.
+        trusted_proxies: Vec<ipnet::IpNet>,
+    },
     /// Explicitly insecure development mode restricted to loopback.
     LoopbackDevelopment,
+}
+
+/// Checks that `transport` can protect `origin` when bound at `bind_address`.
+pub(crate) fn validate_listener_transport(
+    origin: &Url,
+    bind_address: IpAddr,
+    transport: &ListenerTransport,
+) -> Result<(), &'static str> {
+    match transport {
+        ListenerTransport::Tls {
+            certificate_chain,
+            private_key,
+        } => {
+            if origin.scheme() != "https"
+                || certificate_chain.as_os_str().is_empty()
+                || private_key.as_os_str().is_empty()
+            {
+                return Err("tls requires an HTTPS origin and certificate/key paths");
+            }
+        }
+        ListenerTransport::Proxy { trusted_proxies } => {
+            if origin.scheme() != "https" || trusted_proxies.is_empty() {
+                return Err(
+                    "proxy requires an HTTPS public origin and at least one trusted proxy network",
+                );
+            }
+        }
+        ListenerTransport::LoopbackDevelopment => {
+            let local = match origin.host() {
+                Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                Some(Host::Domain(host)) => host == "localhost",
+                None => false,
+            };
+            if origin.scheme() != "http" || !local || !bind_address.is_loopback() {
+                return Err("plaintext is restricted to loopback development: use an HTTP loopback origin and a loopback bind address, or select tls or proxy transport");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Installation TLS metadata.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsConfig {
+    /// Certificate of the Trellis-generated installation CA.
+    ///
+    /// Present only when Trellis generated the serving certificates. The runtime
+    /// then warns operators and every Console user, and reports the CA
+    /// fingerprint and leaf expiry so trust can be verified out of band.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_ca_certificate: Option<PathBuf>,
 }
 
 /// Native identity seed files for built-in live providers.
@@ -1547,17 +1577,13 @@ pub enum ConfigError {
         /// Offending public origin value.
         origin: String,
     },
-    /// An `[http] allow_insecure_origins` entry is not a valid HTTP(S) origin.
-    #[error("invalid runtime config [http] allow_insecure_origins entry '{origin}': must be an absolute HTTP(S) origin without credentials, query, or fragment")]
-    InvalidInsecureOrigin {
-        /// Offending allow-list entry.
+    /// The application listener transport cannot protect its public origin.
+    #[error("invalid runtime config [http] transport for public origin '{origin}': {reason}")]
+    InvalidHttpTransport {
+        /// Configured public origin.
         origin: String,
-    },
-    /// The public origin serves plaintext HTTP from a non-loopback host without explicit authorization.
-    #[error("runtime refuses to serve plaintext HTTP from non-loopback public origin '{origin}'; add it to [http] allow_insecure_origins to permit plaintext operation")]
-    InsecurePublicOrigin {
-        /// Rejected public origin.
-        origin: String,
+        /// Why the transport was rejected.
+        reason: &'static str,
     },
 }
 

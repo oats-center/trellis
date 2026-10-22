@@ -346,6 +346,7 @@ pub(super) async fn callback(
             now,
         ) {
             Ok(()) => super::account::html(
+                &engine,
                 "Identity linked",
                 "<p>You can now sign in using this identity provider.</p>",
             ),

@@ -10,7 +10,9 @@ use trellis_testkit::TrellisTestRuntime;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delegation_revocation_is_atomic_idempotent_and_grant_scoped() {
     let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let mut sessions = Vec::new();
     for name in ["manager", "target", "sibling"] {
         let native = NativeOAuthClient::open(

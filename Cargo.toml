@@ -103,6 +103,9 @@ toml = "1.1.2"
 toml_edit = { version = "0.25.15", features = ["serde"] }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
 rustls-platform-verifier = "0.7.0"
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+x509-parser = "0.18.1"
+ipnet = { version = "2.12.0", features = ["serde"] }
 rand = "0.10.0"
 tempfile = "3.27.0"
 tokio-util = { version = "0.7.18", features = ["rt"] }

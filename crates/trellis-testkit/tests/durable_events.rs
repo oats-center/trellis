@@ -20,7 +20,9 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
     for sdk in ["rust", "typescript"] {
         let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
         let identity = runtime.register_service::<runtime_trellis::participants::runtime_trellis_event_service::Participant>("durable events").await.unwrap();
-        let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+        let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
         let native = NativeOAuthClient::open(
             runtime.workdir().join("events-admin"),
             NativeCredentialScope {
@@ -95,7 +97,9 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             trellis_runtime_apis::apis::trellis_events_v1::Client::from_generated(generated);
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let plain_identity=runtime.register_service::<runtime_trellis::participants::runtime_trellis_echo_provider::Participant>("service without Consumers").await.unwrap();
-        let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+        let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
         let plain =
             runtime_trellis::participants::runtime_trellis_echo_provider::Participant::connect(
                 trellis_rs::service::ServiceConnectOptions::new(
@@ -138,6 +142,10 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
         command
             .current_dir(&root)
             .env("TRELLIS_URL", runtime.oauth_origin())
+            // Each SDK trusts the installation CA through its ordinary
+            // configuration, never through system trust.
+            .env("TRELLIS_CA_CERTIFICATE", &runtime.trust_roots()[0])
+            .env("NODE_EXTRA_CA_CERTS", &runtime.trust_roots()[0])
             .env("TRELLIS_IDENTITY_SEED", identity.seed())
             .env("REVERSE", "false")
             .env("OTEL_SDK_DISABLED", "true")
@@ -164,7 +172,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             // A second deployment of the same participant has the runtime capability
             // but cannot inspect or report this Consumer's delivery.
             let other_identity=runtime.register_service::<runtime_trellis::participants::runtime_trellis_event_service::Participant>("other Consumer owner").await.unwrap();
-            let server=discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+            let server=discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots()).await.unwrap();
             let other=runtime_trellis::participants::runtime_trellis_event_service::Participant::connect(trellis_rs::service::ServiceConnectOptions::new(server.nats_servers.clone(),server.trust.clone(),other_identity.seed())).await.unwrap();
             let other_events=trellis_runtime_apis::apis::trellis_events_v1::Client::from_generated(other.generated_client());
             let denied=other_events.dead_letters_inspect(&inspect).await.unwrap_err();
@@ -247,6 +255,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 .env("REVERSE", "false")
                 .env("CRASH", "false")
                 .env("OTEL_SDK_DISABLED", "true")
+                .env("NODE_EXTRA_CA_CERTS", &runtime.trust_roots()[0])
                 .kill_on_drop(true)
                 .spawn()
                 .unwrap();
@@ -304,7 +313,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             let deployment=auth.deployments_create(&serde_json::from_value(serde_json::json!({"title":"Consumer lifecycle","kind":"service","participantId":P::ID,"packageEvidence":omitted_evidence,"idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap().deployment;
             let (seed, key) = trellis_rs::auth::generate_session_keypair();
             auth.service_instances_provision(&serde_json::from_value(serde_json::json!({"deploymentId":deployment.deployment_id,"title":"consumer lifecycle instance","identityPublicKey":key,"idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap();
-            let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+            let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots()).await.unwrap();
             let service = P::connect(trellis_rs::service::ServiceConnectOptions::new(
                 server.nats_servers,
                 server.trust,
@@ -325,7 +334,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             let probe=serde_json::from_value(serde_json::json!({"resourceId":added_consumer.resource_id,"deadLetterId":"absent-event"})).unwrap();
             let denied = scoped.dead_letters_inspect(&probe).await.unwrap_err();
             assert!(!denied.to_string().contains("not found"),"old pre-Apply authority must not gain access: {denied}");
-            let server=discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+            let server=discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots()).await.unwrap();
             let renewed=P::connect(trellis_rs::service::ServiceConnectOptions::new(server.nats_servers,server.trust,&current_seed)).await.unwrap();
             let scoped=trellis_runtime_apis::apis::trellis_events_v1::Client::from_generated(renewed.generated_client());
             let denied=scoped.dead_letters_inspect(&probe).await.unwrap_err();
@@ -342,7 +351,7 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             );
             let (omitted_seed,omitted_key)=trellis_rs::auth::generate_session_keypair();
             auth.service_instances_provision(&serde_json::from_value(serde_json::json!({"deploymentId":deployment.deployment_id,"title":"current implementation without Consumer","identityPublicKey":omitted_key,"idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap();
-            let server=discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+            let server=discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots()).await.unwrap();
             let omitted=P::connect(trellis_rs::service::ServiceConnectOptions::new(server.nats_servers,server.trust,&omitted_seed)).await.unwrap();
             let omitted_events=trellis_runtime_apis::apis::trellis_events_v1::Client::from_generated(omitted.generated_client());
             let denied=omitted_events.dead_letters_inspect(&probe).await.unwrap_err();

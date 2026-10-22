@@ -2,7 +2,9 @@ use crate::cli::*;
 use crate::output;
 use miette::{miette, IntoDiagnostic};
 use serde_json::json;
-use trellis_bootstrap::{generate_trellis_bootstrap, BootstrapError, TrellisBootstrapOptions};
+use trellis_bootstrap::{
+    generate_trellis_bootstrap, BootstrapError, BootstrapTls, SuppliedTls, TrellisBootstrapOptions,
+};
 
 pub(super) async fn init(format: OutputFormat, command: InitCommand) -> miette::Result<()> {
     match command.command {
@@ -55,18 +57,50 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     options.force = args.force;
     options.runtime.name = args.name.clone();
     options.runtime.trellis_port = args.trellis_port;
+    let loopback = args.tls == InitTlsMode::LoopbackDevelopment;
+    let (http, native, websocket) = if loopback {
+        ("http", "nats", "ws")
+    } else {
+        ("https", "tls", "wss")
+    };
     options.runtime.nats_server_url = args
         .nats_server_url
         .clone()
-        .unwrap_or_else(|| format!("nats://127.0.0.1:{}", args.nats_port));
+        .unwrap_or_else(|| format!("{native}://localhost:{}", args.nats_port));
     options.runtime.nats_websocket_url = args
         .nats_websocket_url
         .clone()
-        .unwrap_or_else(|| format!("ws://localhost:{}", args.nats_ws_port));
+        .unwrap_or_else(|| format!("{websocket}://localhost:{}", args.nats_ws_port));
     options.runtime.public_origin = args
         .public_origin
         .clone()
-        .unwrap_or_else(|| format!("http://localhost:{}", args.trellis_port));
+        .unwrap_or_else(|| format!("{http}://localhost:{}", args.trellis_port));
+    options.runtime.oauth_origin = args
+        .oauth_origin
+        .clone()
+        .unwrap_or_else(|| format!("{http}://localhost:{}", args.oauth_port));
+    options.runtime.oauth_port = args.oauth_port;
+    options.runtime.tls = match args.tls {
+        InitTlsMode::Generated => BootstrapTls::Generated {
+            ca_directory: args.tls_ca_dir.clone(),
+        },
+        InitTlsMode::Supplied => BootstrapTls::Supplied(SuppliedTls {
+            certificate_chain: required_path(
+                &args.tls_certificate_chain,
+                "--tls-certificate-chain",
+            )?,
+            private_key: required_path(&args.tls_private_key, "--tls-private-key")?,
+            nats_certificate_chain: required_path(
+                &args.nats_tls_certificate_chain,
+                "--nats-tls-certificate-chain",
+            )?,
+            nats_private_key: required_path(&args.nats_tls_private_key, "--nats-tls-private-key")?,
+            ca_certificate: args.tls_ca_certificate.clone(),
+        }),
+        InitTlsMode::LoopbackDevelopment => BootstrapTls::LoopbackDevelopment,
+    };
+    options.runtime.trusted_proxies = args.trusted_proxy.clone();
+    options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
     options.runtime.extra_origins = args.extra_origin.clone();
     options.runtime.bind_address = args.bind_address;
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
@@ -107,7 +141,7 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     {
         return Err(miette!("--nats-data-dir must be absolute"));
     }
-    generate_trellis_bootstrap(&options).map_err(bootstrap_report)?;
+    let generated = generate_trellis_bootstrap(&options).map_err(bootstrap_report)?;
     if let Some(data) = &args.nats_data_dir {
         let nats = args.out.join("nats");
         std::fs::create_dir_all(data.join("jwt")).into_diagnostic()?;
@@ -129,6 +163,13 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
                 args.nats_port,
                 args.nats_ws_port,
                 args.nats_monitor_port,
+                (!loopback)
+                    .then(|| trellis_bootstrap::NatsTlsFiles {
+                        certificate: nats.join("tls/nats.crt").display().to_string(),
+                        private_key: nats.join("tls/nats.key").display().to_string(),
+                        websocket_behind_proxy: args.nats_websocket_behind_proxy,
+                    })
+                    .as_ref(),
             ),
         )
         .into_diagnostic()?;
@@ -145,6 +186,12 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
             "publicOrigin": options.runtime.public_origin,
             "natsServer": options.runtime.nats_server_url,
             "natsWebsocket": options.runtime.nats_websocket_url,
+            "oauthOrigin": options.runtime.oauth_origin,
+            "generatedTls": generated.as_ref().map(|tls| json!({
+                "caCertificate": tls.ca_certificate.display().to_string(),
+                "caSha256Fingerprint": tls.ca_sha256_fingerprint,
+                "leafNotAfter": rfc3339(tls.leaf_not_after),
+            })),
         }))?;
         return Ok(());
     }
@@ -159,7 +206,122 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         "natsWebsocket={}",
         options.runtime.nats_websocket_url
     ));
+    output::print_info(&format!("oauthOrigin={}", options.runtime.oauth_origin));
+    if let Some(tls) = &generated {
+        warn_generated_tls(
+            &tls.ca_certificate,
+            &tls.ca_sha256_fingerprint,
+            tls.leaf_not_after,
+        );
+    }
     Ok(())
+}
+
+fn required_path(
+    value: &Option<std::path::PathBuf>,
+    flag: &str,
+) -> miette::Result<std::path::PathBuf> {
+    value
+        .clone()
+        .ok_or_else(|| miette!("{flag} is required with --tls supplied"))
+}
+
+fn rfc3339(value: time::OffsetDateTime) -> String {
+    value
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| value.to_string())
+}
+
+/// Always-on warning for installations serving their generated CA.
+fn warn_generated_tls(
+    ca: &std::path::Path,
+    fingerprint: &str,
+    leaf_not_after: time::OffsetDateTime,
+) {
+    output::print_warning(&format!(
+        "this installation uses Trellis-generated TLS from its own private CA.\n  \
+         Browsers and native clients must trust {} explicitly.\n  \
+         Verify this SHA-256 fingerprint out of band before trusting it:\n  {fingerprint}\n  \
+         Leaf certificates expire {}; renew them with `trellis tls renew`.",
+        ca.display(),
+        rfc3339(leaf_not_after),
+    ));
+}
+
+pub(super) fn tls(format: OutputFormat, command: TlsCommand) -> miette::Result<()> {
+    match command.command {
+        TlsSubcommand::Renew(args) => {
+            let ca_dir = args.ca_dir.clone().unwrap_or_else(|| {
+                let mut name = args
+                    .bundle
+                    .file_name()
+                    .map(std::ffi::OsStr::to_os_string)
+                    .unwrap_or_else(|| "trellis".into());
+                name.push("-tls-ca");
+                args.bundle.with_file_name(name)
+            });
+            let renewed = trellis_bootstrap::renew_generated_certificates(&args.bundle, &ca_dir)
+                .map_err(bootstrap_report)?;
+            if output::is_json(format) {
+                output::print_json(&json!({
+                    "renewed": renewed.iter().map(|certificate| json!({
+                        "certificate": certificate.certificate.display().to_string(),
+                        "notAfter": rfc3339(certificate.not_after),
+                    })).collect::<Vec<_>>(),
+                }))?;
+                return Ok(());
+            }
+            for certificate in &renewed {
+                output::print_success(&format!(
+                    "renewed {} (expires {})",
+                    certificate.certificate.display(),
+                    rfc3339(certificate.not_after)
+                ));
+            }
+            output::print_info(
+                "the runtime reloads replaced certificates automatically; reload NATS (`nats-server --signal reload` or restart its unit) to serve its replacement",
+            );
+            Ok(())
+        }
+        TlsSubcommand::Status(args) => {
+            let config =
+                trellis_runtime::RuntimeConfig::load_from_path(&args.config).into_diagnostic()?;
+            let notice = trellis_runtime::tls::GeneratedTlsNotice::from_config(
+                &config,
+                config.http_transport(),
+            )
+            .into_diagnostic()?;
+            if output::is_json(format) {
+                output::print_json(&json!({
+                    "generatedTls": notice.as_ref().map(|notice| json!({
+                        "caSha256Fingerprint": notice.ca.sha256_fingerprint,
+                        "caNotAfter": rfc3339(notice.ca.not_after),
+                        "leafNotAfter": notice.leaf.as_ref().map(|leaf| rfc3339(leaf.not_after)),
+                    })),
+                }))?;
+                return Ok(());
+            }
+            match notice {
+                Some(notice) => {
+                    let ca = config
+                        .tls
+                        .as_ref()
+                        .and_then(|tls| tls.generated_ca_certificate.clone())
+                        .unwrap_or_default();
+                    warn_generated_tls(
+                        &ca,
+                        &notice.ca.sha256_fingerprint,
+                        notice
+                            .leaf
+                            .as_ref()
+                            .map_or(notice.ca.not_after, |leaf| leaf.not_after),
+                    );
+                }
+                None => output::print_info("this installation does not use Trellis-generated TLS"),
+            }
+            Ok(())
+        }
+    }
 }
 
 fn bootstrap_report(error: BootstrapError) -> miette::Report {
@@ -205,11 +367,14 @@ mod tests {
             ],
         );
         let http = config.http.as_ref().expect("http");
-        assert_eq!(http.public_origin.as_deref(), Some("http://localhost:3444"));
+        assert_eq!(
+            http.public_origin.as_deref(),
+            Some("https://localhost:3444")
+        );
         assert_eq!(http.bind_address, Some("127.0.0.1".parse().unwrap()));
         assert_eq!(
             config.resolve_nats_runtime().unwrap().servers,
-            "nats://127.0.0.1:4333"
+            "tls://localhost:4333"
         );
         assert_eq!(
             (listeners.native, listeners.monitor, listeners.websocket),
@@ -223,7 +388,7 @@ mod tests {
                 .ws_nats_servers
                 .as_ref()
                 .unwrap(),
-            &["ws://localhost:8183"]
+            &["wss://localhost:8183"]
         );
         let auth = config.resolve_authorization().unwrap();
         assert_eq!(
@@ -248,7 +413,7 @@ mod tests {
                 "--nats-port",
                 "4333",
                 "--nats-server-url",
-                "nats://nats.example.test:4999",
+                "tls://nats.example.test:4999",
                 "--nats-websocket-url",
                 "wss://nats.example.test/ws",
                 "--public-origin",
@@ -257,7 +422,7 @@ mod tests {
         );
         assert_eq!(
             config.resolve_nats_runtime().unwrap().servers,
-            "nats://nats.example.test:4999"
+            "tls://nats.example.test:4999"
         );
         assert_eq!(
             config
@@ -285,11 +450,6 @@ mod tests {
         let http = config.http.unwrap();
         assert!(http
             .origins
-            .unwrap()
-            .iter()
-            .any(|origin| origin == "http://localhost:5174"));
-        assert!(http
-            .allow_insecure_origins
             .unwrap()
             .iter()
             .any(|origin| origin == "http://localhost:5174"));

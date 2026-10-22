@@ -59,6 +59,11 @@ pub struct LoginArgs {
     /// Write the login URL to this path once it is available.
     #[arg(long = "login-url-file", value_name = "PATH")]
     pub login_url_file: Option<PathBuf>,
+
+    /// Trust only this PEM CA for the deployment's OAuth and NATS TLS, such as
+    /// a Trellis-generated installation CA. Verify its fingerprint out of band.
+    #[arg(long, value_name = "PATH")]
+    pub ca_certificate: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

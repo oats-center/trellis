@@ -72,6 +72,8 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
             &ports[4].to_string(),
             "--public-origin",
             &origin,
+            "--tls",
+            "loopback-development",
             "--bind-address",
             "127.0.0.1",
         ])
@@ -133,7 +135,7 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
     .await
     .unwrap();
     let (mut stop, mut runtime) = start_runtime(&config, &origin).await;
-    let discovered = discover_native_oauth(&oauth_origin)
+    let discovered = discover_native_oauth(&oauth_origin, &[])
         .await
         .unwrap_or_else(|error| panic!("native discovery at {oauth_origin} failed: {error:?}"));
     let initial_trust = discovered.trust.clone();

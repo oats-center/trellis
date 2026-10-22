@@ -54,8 +54,14 @@ struct DiscoveryTrellis {
 /// (HTTP is permitted solely for literal loopback hosts). Redirects are rejected,
 /// including same-origin redirects; neither broker metadata nor token responses
 /// can establish or replace this pin.
+///
+/// `root_certificates` names PEM CA files that become the only trust anchors
+/// for the OAuth origin and the broker, as when the installation serves
+/// certificates from its generated CA. Pass an empty slice to use the platform
+/// trust store. The roots travel with the returned trust pin.
 pub async fn discover_native_oauth(
     selected_origin: &str,
+    root_certificates: &[PathBuf],
 ) -> Result<NativeOAuthServer, NativeOAuthError> {
     let origin = url::Url::parse(selected_origin).map_err(|_| NativeOAuthError::InvalidResponse)?;
     let loopback = match origin.host() {
@@ -74,12 +80,7 @@ pub async fn discover_native_oauth(
         return Err(NativeOAuthError::InvalidResponse);
     }
     let issuer = origin.origin().ascii_serialization();
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    let http = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|_| NativeOAuthError::Unavailable)?;
+    let http = oauth_http_client(root_certificates)?;
     let mut response = http
         .get(format!("{issuer}/.well-known/oauth-authorization-server"))
         .send()
@@ -166,8 +167,29 @@ pub async fn discover_native_oauth(
             account: metadata.audience_nats_account,
             issuer: current.ok_or(NativeOAuthError::InvalidResponse)?,
             rotation_sequence: metadata.rotation_sequence.get(),
+            root_certificates: root_certificates.to_vec(),
         },
     })
+}
+
+/// Builds the non-redirecting OAuth HTTP client, trusting only `root_certificates` when given.
+fn oauth_http_client(root_certificates: &[PathBuf]) -> Result<reqwest::Client, NativeOAuthError> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let mut builder = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30));
+    if !root_certificates.is_empty() {
+        let mut certificates = Vec::new();
+        for path in root_certificates {
+            let pem = std::fs::read(path).map_err(NativeOAuthError::Custody)?;
+            certificates.extend(
+                reqwest::Certificate::from_pem_bundle(&pem)
+                    .map_err(|_| NativeOAuthError::InvalidResponse)?,
+            );
+        }
+        builder = builder.tls_certs_only(certificates);
+    }
+    builder.build().map_err(|_| NativeOAuthError::Unavailable)
 }
 
 /// Expected native OAuth failures. HTTP response bodies and credentials are never
@@ -342,12 +364,7 @@ impl NativeOAuthClient {
         let auth =
             SessionAuth::from_seed_base64url(&URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>()))
                 .map_err(|_| NativeOAuthError::Unavailable)?;
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|_| NativeOAuthError::Unavailable)?;
+        let http = oauth_http_client(&trust.root_certificates)?;
         Ok(Self {
             lease: Arc::new(Mutex::new(lease)),
             http,
@@ -426,7 +443,7 @@ impl NativeOAuthClient {
             .map_err(|_| NativeOAuthError::RecoveryRequired)?
             .scope()
             .clone();
-        let target = discover_native_oauth(&scope.issuer)
+        let target = discover_native_oauth(&scope.issuer, &self.trust.root_certificates)
             .await
             .map_err(|_| NativeOAuthError::TrustUnavailable)?
             .trust;

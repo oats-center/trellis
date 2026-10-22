@@ -19,7 +19,9 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
         .start()
         .await
         .unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let native = NativeOAuthClient::open(
         runtime.workdir().join("state-admin"),
         NativeCredentialScope {
@@ -72,6 +74,10 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .arg("ts/browser/state.browser_driver.ts")
         .env("TRELLIS_TEST_OAUTH_ORIGIN", runtime.oauth_origin())
+        // The browser trusts the installation CA through a private NSS store
+        // and Node through its standard extra-CA setting.
+        .env("TRELLIS_TEST_CA_CERTIFICATE", &runtime.trust_roots()[0])
+        .env("NODE_EXTRA_CA_CERTS", &runtime.trust_roots()[0])
         .env("TRELLIS_TEST_ADMIN_USERNAME", runtime.admin_username())
         .env("TRELLIS_TEST_ADMIN_PASSWORD", runtime.admin_password())
         .env(

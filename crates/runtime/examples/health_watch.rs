@@ -1,6 +1,7 @@
 //! Open built-in Health.Watch through native OAuth Device Authorization.
 //!
-//! Set TRELLIS_URL to the selected OAuth issuer origin. The registered native CLI
+//! Set TRELLIS_URL to the selected OAuth issuer origin, and TRELLIS_CA_CERTIFICATE
+//! to the installation CA when it uses Trellis-generated TLS. The registered native CLI
 //! app and consenting user must allow the Health `observe` capability. Custody is
 //! temporary for this example; each run asks for fresh authorization.
 use futures_util::StreamExt;
@@ -15,7 +16,11 @@ use trellis_runtime_apis::types::HealthWatchRequest;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = std::env::var("TRELLIS_URL")?;
-    let server = discover_native_oauth(&url).await?;
+    let roots: Vec<std::path::PathBuf> = std::env::var_os("TRELLIS_CA_CERTIFICATE")
+        .map(Into::into)
+        .into_iter()
+        .collect();
+    let server = discover_native_oauth(&url, &roots).await?;
     let custody = tempfile::tempdir()?;
     let oauth = NativeOAuthClient::open(
         custody.path().join("oauth"),

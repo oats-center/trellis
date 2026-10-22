@@ -5,27 +5,72 @@ use std::path::Path;
 use crate::error::NatsConfigError;
 use crate::types::{GeneratedMetadata, NatsBootstrapNames, NatsListeners};
 
-/// Render the local development NATS server config.
+/// Broker TLS files, as paths the NATS process can open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NatsTlsFiles {
+    /// PEM certificate chain.
+    pub certificate: String,
+    /// PEM private key.
+    pub private_key: String,
+    /// Serve WebSockets as plaintext behind an HTTPS-terminating proxy.
+    pub websocket_behind_proxy: bool,
+}
+
+/// Renders the native `tls` block and the WebSocket TLS setting.
+///
+/// Without TLS files everything stays plaintext, which the caller restricts to
+/// loopback listeners.
+fn render_tls_blocks(tls: Option<&NatsTlsFiles>) -> (String, String) {
+    match tls {
+        None => (String::new(), "  no_tls: true".to_owned()),
+        Some(files) => {
+            let block = format!(
+                "  cert_file: {}\n  key_file: {}",
+                quote_nats_path(&files.certificate),
+                quote_nats_path(&files.private_key)
+            );
+            let websocket = if files.websocket_behind_proxy {
+                "  no_tls: true".to_owned()
+            } else {
+                format!("  tls {{\n  {}\n  }}", block.replace('\n', "\n  "))
+            };
+            (format!("tls {{\n{block}\n}}\n\n"), websocket)
+        }
+    }
+}
+
+/// Render the container-facing NATS server config for a bundle.
+///
+/// With `tls`, native clients always use TLS and listeners bind every
+/// interface so the container can publish them; without it, the broker is
+/// loopback-only plaintext for development.
 #[must_use]
 pub fn render_nats_config(
     server_name: &str,
     nats_port: u16,
     monitor_port: u16,
     websocket_port: u16,
+    tls: Option<&NatsTlsFiles>,
 ) -> String {
+    let bind = if tls.is_some() {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
+    let (native_tls, websocket_tls) = render_tls_blocks(tls);
     format!(
         r#"server_name: {server_name}
 
-listen: 0.0.0.0:{nats_port}
-http: 0.0.0.0:{monitor_port}
+listen: {bind}:{nats_port}
+http: {bind}:{monitor_port}
 
-authorization {{
+{native_tls}authorization {{
   timeout: "30s"
 }}
 
 websocket {{
-  listen: 0.0.0.0:{websocket_port}
-  no_tls: true
+  listen: {bind}:{websocket_port}
+{websocket_tls}
 }}
 
 jetstream {{
@@ -382,10 +427,11 @@ fn quote_nats_path(value: &str) -> String {
     quoted
 }
 
-/// Render the local development NATS server config with host-path JetStream store and JWT config.
+/// Render a host-run NATS server config with host-path JetStream store and JWT config.
 ///
-/// All listeners bind to loopback only; the container-facing [`render_nats_config`] keeps
-/// `0.0.0.0` for quadlet deployments.
+/// Monitoring always binds loopback. With `tls`, native and TLS WebSocket
+/// listeners bind every interface; a WebSocket behind a proxy, and every
+/// listener without TLS, binds loopback only.
 #[must_use]
 pub fn render_local_nats_config(
     server_name: &str,
@@ -394,22 +440,34 @@ pub fn render_local_nats_config(
     nats_port: u16,
     websocket_port: u16,
     monitor_port: u16,
+    tls: Option<&NatsTlsFiles>,
 ) -> String {
     let store_dir = quote_nats_path(store_dir);
     let jwt_config_path = quote_nats_path(jwt_config_path);
+    let native_bind = if tls.is_some() {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
+    let websocket_bind = if tls.is_some_and(|files| !files.websocket_behind_proxy) {
+        "0.0.0.0"
+    } else {
+        "127.0.0.1"
+    };
+    let (native_tls, websocket_tls) = render_tls_blocks(tls);
     format!(
         r#"server_name: {server_name}
 
-listen: 127.0.0.1:{nats_port}
+listen: {native_bind}:{nats_port}
 http: 127.0.0.1:{monitor_port}
 
-authorization {{
+{native_tls}authorization {{
   timeout: "30s"
 }}
 
 websocket {{
-  listen: 127.0.0.1:{websocket_port}
-  no_tls: true
+  listen: {websocket_bind}:{websocket_port}
+{websocket_tls}
 }}
 
 jetstream {{

@@ -87,6 +87,9 @@ pub enum TopLevelCommand {
     /// Run one-time initialization workflows.
     #[cfg(feature = "runtime")]
     Init(InitCommand),
+    /// Manage Trellis-generated TLS certificates.
+    #[cfg(feature = "runtime")]
+    Tls(TlsCommand),
     /// Generate or derive Trellis keys.
     Keys(KeysCommand),
     /// Check for or install CLI updates.
@@ -123,6 +126,8 @@ impl TopLevelCommand {
             Self::Events(_) => "events",
             #[cfg(feature = "runtime")]
             Self::Init(_) => "init",
+            #[cfg(feature = "runtime")]
+            Self::Tls(_) => "tls",
             Self::Keys(_) => "keys",
             Self::Upgrade(_) => "upgrade",
             Self::Version | Self::Completion { .. } => return None,

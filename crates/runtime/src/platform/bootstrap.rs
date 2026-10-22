@@ -44,11 +44,13 @@ pub(crate) async fn connect_platform_provider(
     oauth: Arc<super::auth::OAuthEngine>,
     operational: async_nats::Client,
     nats_servers: Vec<String>,
+    root_certificates: Vec<std::path::PathBuf>,
     identity_seed: &str,
 ) -> Result<ConnectedServiceRuntime<Participant>, RuntimeError> {
-    let trust = store
+    let mut trust = store
         .runtime_authorization_trust()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    trust.root_certificates = root_certificates;
     let mut provider = ConnectedServiceRuntime::<Participant>::connect(ServiceConnectOptions::new(
         nats_servers,
         trust,

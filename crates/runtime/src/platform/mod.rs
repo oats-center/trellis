@@ -97,10 +97,26 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let (native, websocket) =
         advertised_endpoints(&context.config, &nats, context.nats_override.as_ref());
+    // Every Login Portal page shows the generated-CA notice for the
+    // certificate this OAuth listener serves.
+    engine.serve_generated_tls_notice(context.config.clone(), oauth.transport.clone());
+    let notice_engine = engine.clone();
     let router = auth::oauth_router(
         engine.clone(),
         native.into_iter().chain(websocket).collect(),
         oauth.trusted_proxies.clone(),
+    )
+    .route(
+        "/portal/tls",
+        axum::routing::get(move || {
+            let notice = notice_engine.generated_tls_notice();
+            async move {
+                (
+                    [(axum::http::header::CACHE_CONTROL, "no-store")],
+                    axum::Json(notice),
+                )
+            }
+        }),
     );
     let jetstream = async_nats::jetstream::new(context.trellis_nats.clone());
     let mut buckets = Vec::new();
@@ -147,8 +163,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     }
     let revocations = buckets.pop().expect("two Auth registries");
     let material = buckets.pop().expect("two Auth registries");
-    let auth_nats = connect_nats(&nats.servers, &nats.auth_creds_path).await?;
-    let system = connect_nats(&nats.servers, &nats.system_creds_path).await?;
+    let auth_nats = connect_nats(&nats, &nats.auth_creds_path).await?;
+    let system = connect_nats(&nats, &nats.system_creds_path).await?;
     let provider_seed = live_provider::load_live_provider_seed(
         &context.config,
         live_provider::LiveProviderRole::Platform,
@@ -184,6 +200,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     let task_stop = stop.clone();
     let provider_store = store.clone();
     let provider_operational = context.trellis_nats.clone();
+    let provider_roots: Vec<_> = nats.ca_certificate.iter().cloned().collect();
     let provider_servers = nats
         .servers
         .split(',')
@@ -244,7 +261,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             let provider = tokio::select! {
                 () = provider_stop.stopped() => return Ok(()),
                 result = bootstrap::connect_platform_provider(
-                    provider_store, provider_oauth, provider_operational, provider_servers, &provider_seed,
+                    provider_store, provider_oauth, provider_operational, provider_servers,
+                    provider_roots, &provider_seed,
                 ) => result?,
             };
             let owner = provider.runtime_native_owner();
@@ -354,13 +372,17 @@ pub(crate) fn callout_keys(
 }
 
 async fn connect_nats(
-    servers: &str,
+    nats: &ResolvedRuntimeNatsConfig,
     credentials: &Path,
 ) -> Result<async_nats::Client, RuntimeError> {
-    async_nats::ConnectOptions::with_credentials_file(credentials)
+    let mut options = async_nats::ConnectOptions::with_credentials_file(credentials)
         .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?
-        .connect(servers)
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    if let Some(ca) = &nats.ca_certificate {
+        options = options.add_root_certificates(ca.clone());
+    }
+    options
+        .connect(&nats.servers)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))
 }

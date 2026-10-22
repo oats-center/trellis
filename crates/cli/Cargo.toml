@@ -13,6 +13,7 @@ runtime = ["dep:trellis-bootstrap", "dep:trellis-runtime", "dep:trellis-rs", "de
 
 [dependencies]
 clap.workspace = true
+ipnet.workspace = true
 clap_complete.workspace = true
 comfy-table.workspace = true
 owo-colors.workspace = true

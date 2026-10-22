@@ -1,12 +1,14 @@
 use std::path::PathBuf;
 
 use trellis_runtime::{
-    AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig,
+    AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig, ListenerTransport,
     LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthConfig, RuntimeConfig, StorageConfig, SubsystemConfig,
+    NatsRuntimeConfig, OAuthConfig, OAuthListenerConfig, RuntimeConfig, StorageConfig,
+    SubsystemConfig, TlsConfig,
 };
 
-use crate::types::TrellisBootstrapOptions;
+use crate::tls::{BUNDLE_CA_CERTIFICATE, RUNTIME_CERTIFICATE, RUNTIME_PRIVATE_KEY};
+use crate::types::{BootstrapTls, TrellisBootstrapOptions};
 
 /// Render the Trellis runtime TOML config for a full bootstrap bundle.
 ///
@@ -26,6 +28,41 @@ pub fn render_trellis_config(options: &TrellisBootstrapOptions) -> String {
 /// Build the shared Rust runtime config value for a bootstrap bundle.
 #[must_use]
 pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfig {
+    let bundle_path = |path: &str| PathBuf::from(format!("./{path}"));
+    let transport = if !options.runtime.trusted_proxies.is_empty() {
+        ListenerTransport::Proxy {
+            trusted_proxies: options.runtime.trusted_proxies.clone(),
+        }
+    } else if options.runtime.tls == BootstrapTls::LoopbackDevelopment {
+        ListenerTransport::LoopbackDevelopment
+    } else {
+        ListenerTransport::Tls {
+            certificate_chain: bundle_path(RUNTIME_CERTIFICATE),
+            private_key: bundle_path(RUNTIME_PRIVATE_KEY),
+        }
+    };
+    let ca_certificate = match &options.runtime.tls {
+        BootstrapTls::Generated { .. } => Some(bundle_path(BUNDLE_CA_CERTIFICATE)),
+        BootstrapTls::Supplied(supplied) => supplied
+            .ca_certificate
+            .as_ref()
+            .map(|_| bundle_path(BUNDLE_CA_CERTIFICATE)),
+        BootstrapTls::LoopbackDevelopment => None,
+    };
+    let oauth = OAuthListenerConfig {
+        origin: options.runtime.oauth_origin.clone(),
+        bind_address: options.runtime.bind_address.unwrap_or(
+            if transport == ListenerTransport::LoopbackDevelopment {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv4Addr::UNSPECIFIED.into()
+            },
+        ),
+        port: options.runtime.oauth_port,
+        transport: transport.clone(),
+        // A proxy transport already presents the forwarded client.
+        trusted_proxies: Vec::new(),
+    };
     RuntimeConfig {
         instance_name: Some(options.runtime.name.clone()),
         event_session_seed_file: Some(PathBuf::from("./session.seed")),
@@ -37,6 +74,9 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             events: Some(PathBuf::from("./live-providers/events.seed")),
         }),
         paths: None,
+        tls: matches!(options.runtime.tls, BootstrapTls::Generated { .. }).then(|| TlsConfig {
+            generated_ca_certificate: Some(bundle_path(BUNDLE_CA_CERTIFICATE)),
+        }),
         http: Some(HttpConfig {
             port: Some(options.runtime.trellis_port),
             bind_address: options.runtime.bind_address,
@@ -46,14 +86,11 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 origins.extend(options.runtime.extra_origins.iter().cloned());
                 origins
             }),
-            allow_insecure_origins: Some({
-                let mut origins = vec![options.runtime.public_origin.clone()];
-                origins.extend(options.runtime.extra_origins.iter().cloned());
-                origins
-            }),
+            transport: (transport != ListenerTransport::LoopbackDevelopment).then_some(transport),
         }),
         nats: Some(NatsConfig {
             servers: Some(options.runtime.nats_server_url.clone()),
+            ca_certificate,
             runtime: Some(NatsRuntimeConfig {
                 auth_creds_path: Some(PathBuf::from("./nats/creds/auth-auth.creds")),
                 trellis_creds_path: Some(PathBuf::from("./nats/creds/trellis-auth.creds")),
@@ -83,7 +120,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         auth: Some(AuthConfig {
             avatar: None,
             instance_id: Some(options.runtime.instance_id.clone()),
-            oauth: Some(options.runtime.oauth.clone()),
+            oauth: Some(oauth),
             oauth_storage_key_file: Some(PathBuf::from("./auth/oauth-storage.key")),
             local_identity: Some(LocalIdentityConfig {
                 enabled: Some(true),

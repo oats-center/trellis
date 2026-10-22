@@ -110,7 +110,7 @@ impl TrellisTestRuntimeBuilder {
         self.timeouts_explicit = true;
         self
     }
-    /// Replaces the additional allowed HTTP origins and insecure-origin allow-list.
+    /// Replaces the additional allowed browser origins.
     #[must_use]
     pub fn extra_origins(mut self, origins: Vec<String>) -> Self {
         self.extra_origins = origins;
@@ -290,10 +290,12 @@ async fn start_once(
         let distribution = crate::distribution::resolve(native, &source).await?;
         let lease = PortLease::reserve()?;
         let ports = lease.ports()?;
-        let public_origin = format!("http://127.0.0.1:{}", ports.http);
-        let oauth_origin = format!("http://127.0.0.1:{}", ports.oauth);
-        let nats_url = format!("nats://127.0.0.1:{}", ports.nats);
-        let websocket_url = format!("ws://127.0.0.1:{}", ports.websocket);
+        // Live tests run on the generated installation TLS that ordinary
+        // initialization produces; clients trust only this runtime's CA.
+        let public_origin = format!("https://127.0.0.1:{}", ports.http);
+        let oauth_origin = format!("https://127.0.0.1:{}", ports.oauth);
+        let nats_url = format!("tls://127.0.0.1:{}", ports.nats);
+        let websocket_url = format!("wss://127.0.0.1:{}", ports.websocket);
         let config_dir = infrastructure
             .sandbox
             .as_ref()
@@ -320,6 +322,10 @@ async fn start_once(
                 &websocket_url,
                 "--public-origin",
                 &public_origin,
+                "--oauth-origin",
+                &oauth_origin,
+                "--oauth-port",
+                &ports.oauth.to_string(),
                 "--bind-address",
                 "127.0.0.1",
                 "--nats-data-dir",
@@ -343,8 +349,6 @@ async fn start_once(
                     error.to_string(),
                 )
             })?;
-        config["auth"]["oauth"]["origin"] = oauth_origin.clone().into();
-        config["auth"]["oauth"]["port"] = i64::from(ports.oauth).into();
         let mut paths = toml::map::Map::new();
         for name in ["data", "state", "cache", "runtime", "logs"] {
             let path = workdir.join(name);
@@ -438,9 +442,11 @@ async fn start_once(
                 .stdin(Stdio::null()),
             &workdir.join("logs/trellis-server.log"),
         )?);
-        wait_for_readyz(&public_origin, &mut infrastructure).await?;
+        let trust_roots = vec![config_dir.join("tls/ca.crt")];
+        wait_for_readyz(&public_origin, &trust_roots, &mut infrastructure).await?;
         let admin = AdminSession::connect(
             &oauth_origin,
+            &trust_roots,
             &workdir.join("credentials/admin"),
             username,
             password,
@@ -453,6 +459,7 @@ async fn start_once(
             config_path,
             public_origin,
             oauth_origin,
+            trust_roots,
             nats_url,
             websocket_url,
             ports.monitor,
@@ -468,6 +475,7 @@ async fn start_once(
             config,
             trellis_url,
             oauth_origin,
+            trust_roots,
             nats_url,
             websocket_url,
             monitor,
@@ -481,6 +489,7 @@ async fn start_once(
                 workdir,
                 trellis_url,
                 oauth_origin,
+                trust_roots,
                 nats_url,
                 websocket_url,
                 monitor_url: format!("http://127.0.0.1:{monitor}"),
@@ -507,11 +516,37 @@ async fn start_once(
     }
 }
 
+/// Builds an HTTP client that trusts only `trust_roots` when any are given.
+pub(crate) fn https_client_builder(
+    trust_roots: &[PathBuf],
+) -> Result<reqwest::ClientBuilder, std::io::Error> {
+    let builder = reqwest::Client::builder();
+    if trust_roots.is_empty() {
+        return Ok(builder);
+    }
+    let mut certificates = Vec::new();
+    for root in trust_roots {
+        certificates.extend(
+            reqwest::Certificate::from_pem_bundle(&std::fs::read(root)?)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
+        );
+    }
+    Ok(builder.tls_certs_only(certificates))
+}
+
 async fn wait_for_readyz(
     origin: &str,
+    trust_roots: &[PathBuf],
     infrastructure: &mut Infrastructure,
 ) -> Result<(), TrellisTestError> {
-    let client = reqwest::Client::builder()
+    let client = https_client_builder(trust_roots)
+        .map_err(|error| {
+            TrellisTestError::new(
+                TrellisTestErrorKind::Runtime,
+                TrellisTestStage::RuntimeStart,
+                error.to_string(),
+            )
+        })?
         .timeout(Duration::from_secs(1))
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
@@ -566,6 +601,7 @@ pub struct TrellisTestRuntime {
     workdir: PathBuf,
     trellis_url: String,
     oauth_origin: String,
+    trust_roots: Vec<PathBuf>,
     nats_url: String,
     websocket_url: String,
     monitor_url: String,
@@ -610,13 +646,18 @@ impl TrellisTestRuntime {
         )?);
         tokio::time::timeout(
             self.timeouts.startup,
-            wait_for_readyz(&self.trellis_url, &mut self.infrastructure),
+            wait_for_readyz(
+                &self.trellis_url,
+                &self.trust_roots,
+                &mut self.infrastructure,
+            ),
         )
         .await
         .map_err(|_| request_timeout("runtime restart", TrellisTestStage::RuntimeStart))??;
         self.admin = Some(
             AdminSession::connect(
                 &self.oauth_origin,
+                &self.trust_roots,
                 &self.workdir.join("credentials/admin"),
                 &self.username,
                 &self.password,
@@ -648,6 +689,23 @@ impl TrellisTestRuntime {
     pub fn oauth_origin(&self) -> &str {
         &self.oauth_origin
     }
+    /// PEM files of this runtime's generated installation CA.
+    ///
+    /// Clients of this runtime must trust them explicitly, exactly as a real
+    /// deployment's users do; they are never installed into system trust.
+    #[must_use]
+    pub fn trust_roots(&self) -> Vec<PathBuf> {
+        self.trust_roots.clone()
+    }
+
+    /// HTTP client builder trusting only this runtime's installation CA.
+    ///
+    /// # Panics
+    /// Panics when the generated CA certificate cannot be read.
+    pub fn https_client_builder(&self) -> reqwest::ClientBuilder {
+        https_client_builder(&self.trust_roots).expect("read generated installation CA")
+    }
+
     /// Native URL of the real managed NATS server.
     #[must_use]
     pub fn nats_url(&self) -> &str {
@@ -692,6 +750,7 @@ impl TrellisTestRuntime {
             self.timeouts.request,
             crate::admin::approve_device(
                 &self.oauth_origin,
+                &self.trust_roots,
                 client_id,
                 user_code,
                 &self.username,
@@ -999,6 +1058,7 @@ impl TrellisTestRuntime {
         }
         let (session, nats_servers) = tokio::time::timeout(self.timeouts.request, crate::admin::login_client(
             &self.oauth_origin,
+            &self.trust_roots,
             &self.workdir.join("credentials").join(&app.client_id).join(ulid::Ulid::new().to_string()),
             &app.client_id,
             &serde_json::json!([{"type":"trellis_capabilities","required":P::REQUIRED_CAPABILITIES,"optional":P::OPTIONAL_CAPABILITIES}]),

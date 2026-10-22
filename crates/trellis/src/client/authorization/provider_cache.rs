@@ -267,6 +267,7 @@ mod tests {
                 account: catalog.audience_nats_account.clone(),
                 issuer: issuer.clone(),
                 rotation_sequence: 0,
+                root_certificates: Vec::new(),
             },
             authority.unsigned.runtime_id.clone(),
             certificate.session_public_key.clone(),
@@ -533,6 +534,7 @@ mod tests {
                 account: body.audience_nats_account.clone(),
                 issuer: issuer.clone(),
                 rotation_sequence: 0,
+                root_certificates: Vec::new(),
             },
             body.runtime_id.clone(),
             body.session_public_key.clone(),
@@ -753,6 +755,13 @@ pub struct RuntimeAuthorizationTrust {
     pub issuer: AuthorityIssuerKey,
     /// Authenticated position at which this issuer was pinned.
     pub rotation_sequence: u64,
+    /// PEM CA files that are the only trust anchors for this installation's
+    /// broker and OAuth TLS endpoints. Empty uses the platform trust store.
+    ///
+    /// Set it from provisioning or explicit operator configuration when the
+    /// installation uses a private CA, such as the Trellis-generated
+    /// installation CA. A broker or metadata response can never supply it.
+    pub root_certificates: Vec<std::path::PathBuf>,
 }
 
 /// Retained-event evidence. Current consumer read authority is checked separately.

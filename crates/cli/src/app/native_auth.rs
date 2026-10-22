@@ -15,6 +15,9 @@ pub(super) struct Selection {
     pub nats_servers: Vec<String>,
     pub issuer_key: trellis_protocol::AuthorityIssuerKey,
     pub rotation_sequence: u64,
+    /// Explicitly trusted installation CA files selected at login.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub root_certificates: Vec<PathBuf>,
 }
 
 fn directory() -> miette::Result<PathBuf> {
@@ -42,6 +45,7 @@ impl Selection {
                 account: self.scope.account.clone(),
                 issuer: self.issuer_key.clone(),
                 rotation_sequence: self.rotation_sequence,
+                root_certificates: self.root_certificates.clone(),
             },
         )
         .await

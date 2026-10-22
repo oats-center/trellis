@@ -10,26 +10,29 @@ mod nats_material;
 mod oauth;
 mod output;
 mod runtime_config;
+mod tls;
 mod types;
 mod validate;
 
 pub use constants::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
-    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OPERATOR_NAME,
-    DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT, DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME,
-    DEFAULT_TRELLIS_PORT,
+    DEFAULT_NATS_WEBSOCKET_PORT, DEFAULT_NATS_WEBSOCKET_URL, DEFAULT_OAUTH_ORIGIN,
+    DEFAULT_OAUTH_PORT, DEFAULT_OPERATOR_NAME, DEFAULT_PUBLIC_ORIGIN, DEFAULT_SYSTEM_ACCOUNT,
+    DEFAULT_TRELLIS_ACCOUNT, DEFAULT_TRELLIS_NAME, DEFAULT_TRELLIS_PORT,
 };
 pub use error::{BootstrapError, NatsConfigError};
 pub use generation::{generate_nats_bootstrap, generate_trellis_bootstrap};
 pub use nats_config::{
     read_nats_listen_ports, render_auth_callout_env, render_local_jwt_config,
-    render_local_nats_config, render_nats_config, slug_from_name,
+    render_local_nats_config, render_nats_config, slug_from_name, NatsTlsFiles,
 };
 pub use oauth::{read_oauth_providers, BootstrapOAuthProvider};
 pub use runtime_config::{render_trellis_config, trellis_runtime_config};
+pub use tls::{renew_generated_certificates, GeneratedTlsSummary, RenewedCertificate};
 pub use types::{
-    BootstrapAuthorizationPolicy, GeneratedMetadata, NatsBootstrapConfig, NatsBootstrapNames,
-    NatsBootstrapOptions, NatsListeners, TrellisBootstrapOptions, TrellisRuntimeBootstrapConfig,
+    BootstrapAuthorizationPolicy, BootstrapTls, GeneratedMetadata, NatsBootstrapConfig,
+    NatsBootstrapNames, NatsBootstrapOptions, NatsListeners, SuppliedTls, TrellisBootstrapOptions,
+    TrellisRuntimeBootstrapConfig,
 };
 pub use validate::validate_output_dir;
 

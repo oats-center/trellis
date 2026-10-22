@@ -22,7 +22,7 @@ mod upstream_http;
 pub(super) mod oauth_engine_tests;
 
 #[cfg(test)]
-pub(super) use crate::config::OAuthTransport;
+pub(super) use crate::config::ListenerTransport as OAuthTransport;
 pub(super) use binding::TokenBinding;
 pub(super) use cimd::{ClientDocument, ClientDocuments};
 pub(super) use details::RequestedAuthority;

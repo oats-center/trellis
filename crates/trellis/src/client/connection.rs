@@ -479,7 +479,21 @@ pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDesc
     request["proof"] = serde_json::to_value(identity_auth.sign_session_proof(&input)?)?;
     request["sessionProof"] =
         serde_json::to_value(session_auth.sign_session_proof(&session_input)?)?;
-    let response = super::http_client_builder()?
+    let mut builder = super::http_client_builder()?;
+    if !opts.trust.root_certificates.is_empty() {
+        let mut certificates = Vec::new();
+        for path in &opts.trust.root_certificates {
+            let pem = std::fs::read(path).map_err(|error| {
+                TrellisClientError::Bootstrap(format!("read CA '{}': {error}", path.display()))
+            })?;
+            certificates.extend(
+                reqwest::Certificate::from_pem_bundle(&pem)
+                    .map_err(|error| TrellisClientError::Bootstrap(error.to_string()))?,
+            );
+        }
+        builder = reqwest::Client::builder().tls_certs_only(certificates);
+    }
+    let response = builder
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_millis(opts.timeout_ms))
         .build()
@@ -1218,7 +1232,10 @@ impl TrellisClient {
             runtime_id,
             inbox_prefix: trellis_protocol::admission_inbox_prefix(&auth.session_key)?,
             transports: crate::client::AuthorizationRuntimeTransports {
-                native: Some(crate::client::AuthorizationNativeTransport { nats_servers }),
+                native: Some(crate::client::AuthorizationNativeTransport {
+                    nats_servers,
+                    root_certificates: trust.root_certificates.clone(),
+                }),
                 websocket: None,
             },
         };
@@ -1383,6 +1400,7 @@ impl TrellisClient {
             transports: crate::client::AuthorizationRuntimeTransports {
                 native: Some(crate::client::AuthorizationNativeTransport {
                     nats_servers: opts.nats_servers,
+                    root_certificates: session.trust.root_certificates.clone(),
                 }),
                 websocket: None,
             },

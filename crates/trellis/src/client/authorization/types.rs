@@ -9,6 +9,9 @@ use trellis_protocol::{SignedSessionAuthority, VerifiedSessionAuthority};
 pub struct AuthorizationNativeTransport {
     /// Native NATS endpoints.
     pub nats_servers: Vec<String>,
+    /// Local PEM CA files trusted for these endpoints; never serialized.
+    #[serde(skip)]
+    pub root_certificates: Vec<std::path::PathBuf>,
 }
 
 /// Available physical transports for one logical runtime.

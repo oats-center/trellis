@@ -54,8 +54,10 @@ fn runtime_config() -> RuntimeConfig {
         live_provider_seed_files: None,
         paths: None,
         http: None,
+        tls: None,
         nats: Some(crate::NatsConfig {
             servers: Some("nats://127.0.0.1:4222".to_owned()),
+            ca_certificate: None,
             runtime: Some(crate::NatsRuntimeConfig {
                 auth_creds_path: Some(PathBuf::from("auth.creds")),
                 trellis_creds_path: Some(PathBuf::from("trellis.creds")),

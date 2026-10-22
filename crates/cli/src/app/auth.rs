@@ -351,7 +351,22 @@ fn write_login_url_file(path: &std::path::Path, login_url: &str) -> miette::Resu
 }
 
 async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result<()> {
-    let server = authlib::discover_native_oauth(&args.trellis_url)
+    let root_certificates = match &args.ca_certificate {
+        Some(path) => {
+            let path = path.canonicalize().into_diagnostic()?;
+            let ca = trellis_runtime::tls::inspect_certificate(&path).into_diagnostic()?;
+            if !output::is_json(format) {
+                output::print_warning(&format!(
+                    "trusting only the CA {} for this deployment; confirm its SHA-256 fingerprint matches the one its operator published:\n  {}",
+                    path.display(),
+                    ca.sha256_fingerprint
+                ));
+            }
+            vec![path]
+        }
+        None => Vec::new(),
+    };
+    let server = authlib::discover_native_oauth(&args.trellis_url, &root_certificates)
         .await
         .into_diagnostic()?;
     let selection = super::native_auth::Selection {
@@ -365,6 +380,7 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
         nats_servers: server.nats_servers,
         issuer_key: server.trust.issuer,
         rotation_sequence: server.trust.rotation_sequence,
+        root_certificates,
     };
     type Request = trellis_runtime_apis::apps::trellis_cli::Request;
     let challenge = selection
