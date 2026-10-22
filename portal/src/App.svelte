@@ -59,6 +59,8 @@
       .find((cookie) => cookie.startsWith("__Host-trellis-portal-csrf="))
       ?.slice("__Host-trellis-portal-csrf=".length) ?? "";
   let view = $state.raw<Consent | null>(null);
+  let selectedCapabilities = $state<string[]>([]);
+  let selectedPrivileges = $state<string[]>([]);
   let error = $state("");
   let providers = $state.raw<Provider[]>([]);
   let providerError = $state("");
@@ -127,7 +129,15 @@
       .then(async (response) => {
         if (!response.ok) throw new Error("authorization_unavailable");
         const result: Consent = await response.json();
-        if (!controller.signal.aborted) view = result;
+        if (!controller.signal.aborted) {
+          selectedCapabilities = result.capabilities
+            .filter((item) => item.available)
+            .map((item) => item.capabilityId);
+          selectedPrivileges = result.platformPrivileges
+            .filter((item) => item.available)
+            .map((item) => item.privilege);
+          view = result;
+        }
       })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -321,6 +331,32 @@
           ></label
         >
       {/if}
+      <div class="actions" aria-label="Access selection">
+        <button
+          type="button"
+          onclick={() => {
+            if (!view) return;
+            selectedCapabilities = view.capabilities
+              .filter((item) => item.available)
+              .map((item) => item.capabilityId);
+            selectedPrivileges = view.platformPrivileges
+              .filter((item) => item.available)
+              .map((item) => item.privilege);
+          }}>Select all</button
+        >
+        <button
+          type="button"
+          onclick={() => {
+            if (!view) return;
+            selectedCapabilities = view.capabilities
+              .filter((item) => item.required && item.available)
+              .map((item) => item.capabilityId);
+            selectedPrivileges = view.platformPrivileges
+              .filter((item) => item.required && item.available)
+              .map((item) => item.privilege);
+          }}>Unselect all</button
+        >
+      </div>
       <fieldset>
         <legend>Application capabilities</legend>
         <p class="muted">
@@ -334,7 +370,14 @@
               type="checkbox"
               name="approved"
               value={capability.capabilityId}
-              checked={capability.selected}
+              checked={selectedCapabilities.includes(capability.capabilityId)}
+              onchange={(event) => {
+                selectedCapabilities = event.currentTarget.checked
+                  ? [...selectedCapabilities, capability.capabilityId]
+                  : selectedCapabilities.filter(
+                      (id) => id !== capability.capabilityId,
+                    );
+              }}
               disabled={capability.required || !capability.available}
             />
             <div>
@@ -377,7 +420,14 @@
                 type="checkbox"
                 name="privilege"
                 value={privilege.privilege}
-                checked={privilege.required}
+                checked={selectedPrivileges.includes(privilege.privilege)}
+                onchange={(event) => {
+                  selectedPrivileges = event.currentTarget.checked
+                    ? [...selectedPrivileges, privilege.privilege]
+                    : selectedPrivileges.filter(
+                        (id) => id !== privilege.privilege,
+                      );
+                }}
                 disabled={privilege.required || !privilege.available}
               />
               <div>

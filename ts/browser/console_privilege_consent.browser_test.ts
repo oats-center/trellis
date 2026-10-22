@@ -67,6 +67,27 @@ for (const selected of [undefined, "principals.manage"] as const) {
           .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
           .waitFor();
 
+        const access = page.locator(
+          'input[name="approved"][type="checkbox"], input[name="privilege"][type="checkbox"]',
+        );
+        for (const choice of await access.all()) {
+          if (await choice.isEnabled())
+            strictEqual(await choice.isChecked(), true);
+        }
+        await page
+          .getByRole("button", { name: "Unselect all", exact: true })
+          .click();
+        for (const choice of await access.all()) {
+          if (await choice.isEnabled())
+            strictEqual(await choice.isChecked(), false);
+        }
+        await page
+          .getByRole("button", { name: "Select all", exact: true })
+          .click();
+        for (const choice of await access.all()) {
+          if (await choice.isEnabled())
+            strictEqual(await choice.isChecked(), true);
+        }
         // Accept ordinary capabilities but decline the separate administrative choices.
         for (const choice of await page.getByRole("checkbox").all())
           if (await choice.isEnabled()) await choice.check();

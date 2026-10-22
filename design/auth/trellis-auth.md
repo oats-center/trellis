@@ -231,6 +231,13 @@ a localhost redirect establishes trust. CIMD and unregistered clients remain
 ineligible for platform privileges, and OAuth/application origin isolation is
 unchanged.
 
+Interactive OAuth approval initially selects all available requested capabilities
+and platform privileges. Select all and Unselect all operate on optional access;
+required access stays selected and unavailable access stays disabled. These are
+presentation defaults, not authorization: the user must still submit approval,
+and the server rechecks the submitted selection against current authority.
+Bulk access selection never checks the separate Device Code confirmation.
+
 Registered-client implied capability consent is browser-only and limited to the
 configured subset, the requested selection and the user's current entitlement.
 It never substitutes for native approval; Device Code flows additionally require
