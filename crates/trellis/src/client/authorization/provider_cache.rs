@@ -12,7 +12,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use futures_util::StreamExt as _;
 use tokio::sync::{broadcast, watch, Mutex, OnceCell, Semaphore};
 use trellis_protocol::{
-    verify_issuer_metadata, verify_session_authority, verify_session_response, AuthorityIssuerKey,
+    verify_issuer_metadata, verify_session_authority, verify_session_response,
+    AuthenticatedCatalog, AuthenticatedProviderCertificate, AuthorityIssuerKey,
     AuthorityIssuerState, CatalogActionIdentity, IssuerMetadataQuery, IssuerMetadataRequest,
     IssuerMetadataResult, OriginalEventPublication, SessionAuthorityPurpose,
     SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy, SessionEvent,
@@ -28,7 +29,8 @@ use super::core::{
 };
 
 use super::registry::{
-    AuthorizationRegistryReader, MaterialKind, RegistryMaterial, REVOCATION_BUCKET,
+    AuthorizationRegistryReader, MaterialKind, RegistryMaterial, UnverifiedMaterial,
+    REVOCATION_BUCKET,
 };
 use crate::client::{proof::now_iat_seconds, TrellisClientError};
 
@@ -1263,7 +1265,7 @@ impl AuthorizationOwner {
         authority: &VerifiedSessionAuthority,
         api_id: &str,
         action: &CatalogActionIdentity,
-    ) -> Result<Arc<trellis_protocol::SignedCatalogSnapshot>, TrellisClientError> {
+    ) -> Result<Arc<AuthenticatedCatalog>, TrellisClientError> {
         let reference = authority
             .authority()
             .apis
@@ -1323,7 +1325,7 @@ impl AuthorizationOwner {
                     "revocation capacity reached".into(),
                 ));
             }
-            catalog.verify(&issuer, &self.trust.instance_id, &self.trust.account)?;
+            catalog.check(&issuer, &self.trust.instance_id, &self.trust.account)?;
             if catalog.api_id != api_id {
                 return Err(super::core::AuthorizationVerificationError::PermissionDenied.into());
             }
@@ -1355,7 +1357,7 @@ impl AuthorizationOwner {
             }
             self.assert_current(authority)?;
         }
-        Ok(Arc::new(catalog.clone()))
+        Ok(Arc::clone(catalog))
     }
 
     /// Resolve certified implementation rights; caller capability membership grants no provider rights.
@@ -1365,7 +1367,7 @@ impl AuthorizationOwner {
         authority: &VerifiedSessionAuthority,
         api_id: &str,
         action: &CatalogActionIdentity,
-    ) -> Result<Arc<trellis_protocol::SignedProviderCertificate>, TrellisClientError> {
+    ) -> Result<Arc<AuthenticatedProviderCertificate>, TrellisClientError> {
         let certificate = self
             .provider_certificate(transport, authority, api_id)
             .await?;
@@ -1381,7 +1383,7 @@ impl AuthorizationOwner {
         transport: &async_nats::Client,
         authority: &VerifiedSessionAuthority,
         api_id: &str,
-    ) -> Result<Arc<trellis_protocol::SignedProviderCertificate>, TrellisClientError> {
+    ) -> Result<Arc<AuthenticatedProviderCertificate>, TrellisClientError> {
         let binding = authority
             .authority()
             .provider_bindings
@@ -1443,7 +1445,7 @@ impl AuthorizationOwner {
                 "certificate issuer retired".into(),
             ));
         }
-        certificate.verify(
+        certificate.check_at(
             &issuer,
             &self.trust.instance_id,
             &self.trust.account,
@@ -1479,7 +1481,7 @@ impl AuthorizationOwner {
         {
             return Err(super::core::AuthorizationVerificationError::PermissionDenied.into());
         }
-        Ok(Arc::new(certificate.clone()))
+        Ok(Arc::clone(certificate))
     }
 
     /// Verify a replacement privately. Promotion happens only after its transport is admitted.
@@ -1732,7 +1734,7 @@ impl AuthorizationOwner {
                             "provider material issuer retired".into(),
                         ));
                     }
-                    certificate.verify(
+                    certificate.check_at(
                         &certificate_issuer,
                         &self.trust.instance_id,
                         &self.trust.account,
@@ -2183,7 +2185,9 @@ impl AuthorizationOwner {
                     })?,
                 action: input.action,
                 original_publication: Some(input.original_publication),
-                provider: provider.zip(provider_issuer.as_ref()),
+                provider: provider
+                    .map(|certificate| &**certificate)
+                    .zip(provider_issuer.as_ref()),
             })?,
         )
     }
@@ -2252,6 +2256,7 @@ impl AuthorizationOwner {
                 "response certificate issuer retired".into(),
             ));
         }
+        let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(payload).into();
         verify_session_response(SessionResponseVerificationInput {
             provider: &provider,
             certificate,
@@ -2262,7 +2267,7 @@ impl AuthorizationOwner {
             expected_deployment_id,
             received_subject,
             response,
-            raw_payload: payload,
+            payload_sha256,
             proof,
             policy: &policy,
             known_revoked,
@@ -2368,24 +2373,33 @@ impl AuthorizationOwner {
                     let material =
                         AuthorizationRegistryReader::material(transport, kind, digest).await?;
                     let issuer = self.issuer(transport, material.issuer_key_id()).await?;
-                    match &material {
-                        RegistryMaterial::Authority(authority) => {
+                    // Authenticate once; each use rechecks only what can change.
+                    let material = match material {
+                        UnverifiedMaterial::Authority(authority) => {
                             self.verify_authority(
-                                authority,
+                                &authority,
                                 &issuer,
                                 SessionAuthorityPurpose::HistoricalEvent,
                             )?;
+                            RegistryMaterial::Authority(Box::new(authority))
                         }
-                        RegistryMaterial::Catalog(catalog) => {
-                            catalog.verify(&issuer, &self.trust.instance_id, &self.trust.account)?
-                        }
-                        RegistryMaterial::Provider(certificate) => certificate
-                            .verify_authenticity(
+                        UnverifiedMaterial::Catalog(catalog) => {
+                            RegistryMaterial::Catalog(Arc::new(AuthenticatedCatalog::authenticate(
+                                catalog,
                                 &issuer,
                                 &self.trust.instance_id,
                                 &self.trust.account,
-                            )?,
-                    }
+                            )?))
+                        }
+                        UnverifiedMaterial::Provider(certificate) => RegistryMaterial::Provider(
+                            Arc::new(AuthenticatedProviderCertificate::authenticate(
+                                certificate,
+                                &issuer,
+                                &self.trust.instance_id,
+                                &self.trust.account,
+                            )?),
+                        ),
+                    };
                     Ok::<_, TrellisClientError>(Arc::new(material))
                 })
                 .await

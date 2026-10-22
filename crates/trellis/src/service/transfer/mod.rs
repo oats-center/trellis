@@ -18,7 +18,7 @@ use base64::{
     Engine as _,
 };
 use bytes::{Bytes, BytesMut};
-pub use download::run_download_transfer_endpoint;
+pub use download::{run_download_transfer_endpoint, DownloadSource};
 use futures_util::{FutureExt, StreamExt};
 pub use protocol::*;
 use std::{
@@ -31,7 +31,7 @@ use tokio::{
     sync::oneshot,
 };
 use trellis_protocol::transfer::*;
-pub use upload::UploadTransferSession;
+pub use upload::{OperationUploadStream, UploadTransferSession};
 use wire::{error, publish_signal, TransferPeer};
 
 pub(crate) fn credit_scheduler() -> CreditScheduler {
@@ -147,6 +147,10 @@ where
     C: StoreResourceClient,
     F: Fn(OperationTransferProgress) + Send + Sync + 'static,
 {
+    // The provider receives the upload: admit its granted window first.
+    let reservation = crate::data_plane::budget::ReceiveBudget::process()
+        .reserve(session.plan.grant.window_bytes)
+        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
     let data = lease
         .nats()
         .subscribe(session.plan.grant.data_subject.clone())
@@ -166,16 +170,76 @@ where
         data,
         control,
         session,
-        store,
+        Some(store),
         on_progress,
         sender,
         cancelled,
+        reservation,
     ));
     Ok(UploadTransferCompletion {
         cancellation: Some(cancel),
         receiver,
         task: Some(task),
     })
+}
+
+/// Subscribe exact upload subjects and route verified bytes to a handler-owned
+/// reader instead of a store write.
+///
+/// The returned stream yields bytes as the caller sends them. Its completion
+/// resolves once every frame is consumed and verified; end of file reaches the
+/// reader only after the completion's barrier, so the delivery is durably
+/// recorded before the handler can observe it.
+pub async fn spawn_stream_upload_endpoint<F>(
+    client: Arc<TrellisClient>,
+    mut session: UploadTransferSession,
+    lease: TransportLease,
+    on_progress: F,
+) -> Result<(UploadTransferCompletion, OperationUploadStream), ServerError>
+where
+    F: Fn(OperationTransferProgress) + Send + Sync + 'static,
+{
+    // The provider receives the upload: admit its granted window first.
+    let reservation = crate::data_plane::budget::ReceiveBudget::process()
+        .reserve(session.plan.grant.window_bytes)
+        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
+    let data = lease
+        .nats()
+        .subscribe(session.plan.grant.data_subject.clone())
+        .await
+        .map_err(error)?;
+    let control = lease
+        .nats()
+        .subscribe(session.plan.grant.control_subject.clone())
+        .await
+        .map_err(error)?;
+    lease.nats().flush().await.map_err(error)?;
+    let stream = session.open_stream();
+    let (sender, receiver) = oneshot::channel();
+    let (cancel, cancelled) = oneshot::channel();
+    let task = tokio::spawn(run_upload::<
+        super::resources::backend::BoundStoreResourceClient,
+        F,
+    >(
+        client,
+        lease,
+        data,
+        control,
+        session,
+        None,
+        on_progress,
+        sender,
+        cancelled,
+        reservation,
+    ));
+    Ok((
+        UploadTransferCompletion {
+            cancellation: Some(cancel),
+            receiver,
+            task: Some(task),
+        },
+        stream,
+    ))
 }
 
 /// Prepare an owned upload endpoint without transient progress callbacks.
@@ -208,10 +272,12 @@ async fn run_upload<C, F>(
     mut data: async_nats::Subscriber,
     mut control: async_nats::Subscriber,
     mut session: UploadTransferSession,
-    store: C,
+    store: Option<C>,
     on_progress: F,
     sender: oneshot::Sender<protocol::UploadTransferCompletionResult>,
     mut cancelled: oneshot::Receiver<()>,
+    // Held for the endpoint's whole life and released on every exit path.
+    _reservation: crate::data_plane::budget::ReceiveReservation,
 ) -> Result<(), ServerError>
 where
     C: StoreResourceClient,
@@ -258,7 +324,8 @@ where
     let mut local_changes = local.guard.subscribe_changes();
     let expiry = tokio::time::sleep(transfer_expiry_delay(&grant.expires_at)?);
     tokio::pin!(expiry);
-    let mut store = Some(store);
+    let mut store = store;
+    let stream = session.is_stream();
     let mut activated = false;
     let mut activate_body: Option<Bytes> = None;
     let mut sender = Some(sender);
@@ -276,7 +343,7 @@ where
                 failure = wire::authority_failure(&local, &peer) => return Err(failure),
                 _ = changes.recv() => { peer.guard.check_now().map_err(|e| error(format!("upload authority lost: {e:?}")))?; },
                 _ = local_changes.recv() => { local.guard.reconcile().await.map_err(|e| error(format!("upload local authority lost: {e:?}")))?; },
-                backend = async { session.upload_future.as_mut().ok_or_else(|| error("upload backend missing"))?.await }, if activated => {
+                backend = async { session.upload_future.as_mut().ok_or_else(|| error("upload backend missing"))?.await }, if activated && !stream => {
                     session.upload_future.take();
                     let failure = match backend { Err(failure) => failure, Ok(_) => error("upload backend returned before validated completion") };
                     if let Some(sender) = sender.take() { let _ = sender.send((Err(failure), None)); }
@@ -316,11 +383,17 @@ where
                     } else if seq != control_seq + 1 { return Err(error("upload control gap")); }
                     control_seq = seq; control_body = Some(message.payload.clone());
                     match body {
-                        TransferControl::Activate { receive_max_frame_bytes, .. } => {
+                        TransferControl::Activate { receive_max_frame_bytes, receive_window_frames, .. } => {
+                            // The provider receives an upload; its grant is the window.
+                            if receive_window_frames.is_some() { return Err(error("upload activation must not declare a receive window")); }
                             if activated && activate_body.as_ref() != Some(&message.payload) { return Err(error("upload activation conflict")); }
                             if !activated {
                                 session.plan.grant.max_frame_bytes = session.plan.grant.max_frame_bytes.min(receive_max_frame_bytes);
-                                session.start(store.take().ok_or_else(|| error("upload store already started"))?)?;
+                                if let Some(store) = store.take() {
+                                    session.start(store)?;
+                                } else if !stream {
+                                    return Err(error("upload store already started"));
+                                }
                                 activated = true; activate_body = Some(message.payload.clone());
                             }
                             publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes: session.plan.grant.max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
@@ -346,7 +419,13 @@ where
                             let commit_key = session.plan.key.clone();
                             let indeterminate = |message: &str| ServerError::StoreCommitIndeterminate { key: commit_key.clone(), message: message.into() };
                             let result = {
-                                let finish = session.finish(complete.final_seq.get(), complete.size, &complete.digest);
+                                let finish = async {
+                                    if stream {
+                                        session.finish_stream(complete.final_seq.get(), complete.size, &complete.digest).await
+                                    } else {
+                                        session.finish(complete.final_seq.get(), complete.size, &complete.digest).await
+                                    }
+                                };
                                 tokio::pin!(finish);
                                 loop {
                                     tokio::select! {
@@ -381,6 +460,9 @@ where
                                 _ = &mut expiry => return Err(error("upload expired during Operation commit")),
                                 failure = wire::authority_failure(&local, &peer) => return Err(failure),
                             }
+                            // A stream handler sees end of file only now, after
+                            // its delivery is durably recorded.
+                            if stream { session.release_eof().await?; }
                             publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Committed { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), final_seq: complete.final_seq, info }).await?;
                             return Ok(());
                         },
@@ -431,7 +513,41 @@ where
         .map_err(error)?;
     lease.nats().flush().await.map_err(error)?;
     Ok(tokio::spawn(run_download_transfer_endpoint(
-        client, lease, control, plan, store,
+        client,
+        lease,
+        control,
+        plan,
+        DownloadSource::Store(store),
+    )))
+}
+
+/// Start one owned push download whose bytes come from a provider reader.
+///
+/// The plan's declared size and SHA-256 digest bind the grant; a reader that
+/// ends with different bytes fails the transfer instead of completing it.
+pub async fn spawn_stream_download_endpoint<R>(
+    client: Arc<TrellisClient>,
+    plan: DownloadTransferGrantPlan,
+    reader: R,
+    lease: TransportLease,
+) -> Result<tokio::task::JoinHandle<Result<(), ServerError>>, ServerError>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    let control = lease
+        .nats()
+        .subscribe(plan.grant.control_subject.clone())
+        .await
+        .map_err(error)?;
+    lease.nats().flush().await.map_err(error)?;
+    Ok(tokio::spawn(run_download_transfer_endpoint::<
+        super::resources::backend::BoundStoreResourceClient,
+    >(
+        client,
+        lease,
+        control,
+        plan,
+        DownloadSource::Reader(Box::new(reader)),
     )))
 }
 
@@ -442,6 +558,10 @@ pub fn plan_upload_transfer_grant(
     let store = store_binding(args.service_name, args.resources, args.store)?;
     let max_frame_bytes =
         negotiate_transfer_max_frame_bytes(args.max_payload, args.max_payload).map_err(error)?;
+    // The provider receives the upload: offer what the process can admit.
+    let (window_frames, window_bytes) = crate::data_plane::budget::ReceiveBudget::process()
+        .offer(max_frame_bytes)
+        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
     let store_max = store
         .max_object_bytes
         .and_then(|value| u64::try_from(value).ok());
@@ -486,8 +606,8 @@ pub fn plan_upload_transfer_grant(
             control_subject: subject(TransferSubjectKind::Control)?,
             signal_subject: subject(TransferSubjectKind::Signal)?,
             max_frame_bytes,
-            window_frames: TRANSFER_WINDOW_FRAMES,
-            window_bytes: TRANSFER_WINDOW_BYTES,
+            window_frames,
+            window_bytes,
             max_bytes,
             content_type: args.content_type.map(Into::into),
             metadata: args.metadata,
@@ -499,9 +619,13 @@ pub fn plan_upload_transfer_grant(
 pub fn plan_download_transfer_grant(
     mut args: TransferDownloadGrantArgs<'_>,
 ) -> Result<DownloadTransferGrantPlan, ServerError> {
-    let store = store_binding(args.service_name, args.resources, args.store)?;
+    let store = args
+        .store
+        .map(|alias| store_binding(args.service_name, args.resources, alias))
+        .transpose()?;
     let max_object_bytes = store
-        .max_object_bytes
+        .as_ref()
+        .and_then(|store| store.max_object_bytes)
         .and_then(|value| u64::try_from(value).ok());
     if max_object_bytes.is_some_and(|max| args.info.size > max) {
         return Err(error("download exceeds store object limit"));
@@ -535,8 +659,8 @@ pub fn plan_download_transfer_grant(
     transfer_expiry_delay(args.expires_at)?;
     Ok(DownloadTransferGrantPlan {
         admission: args.admission.clone(),
-        store_alias: args.store.into(),
-        store: store.name.clone(),
+        store_alias: args.store.unwrap_or_default().into(),
+        store: store.map(|store| store.name.clone()).unwrap_or_default(),
         max_object_bytes,
         grant: DownloadTransferGrant {
             format: TRANSFER_VERSION.into(),

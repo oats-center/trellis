@@ -89,6 +89,7 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
   #bytes = 0;
   #received = 0n;
   #closed = false;
+  #ended = false;
   #error: unknown;
   #wake: (() => void) | undefined;
 
@@ -135,11 +136,15 @@ export class TransferIngress implements AsyncIterable<Uint8Array> {
   close(finalSeq: bigint): void {
     if (finalSeq !== this.#received) throw new Error("transfer completion gap");
     this.#closed = true;
+    this.#ended = true;
     this.#wake?.();
   }
 
   /** Abort queued and pending backend reads; aborted bytes never earn credit. */
   fail(error: unknown): void {
+    // Every frame of a completed transfer was already consumed: its end of
+    // file stands, so releasing the transfer cannot turn it into an error.
+    if (this.#ended && this.#values.length === 0) return;
     this.#error = error;
     this.#closed = true;
     this.#values = [];

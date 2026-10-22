@@ -221,8 +221,13 @@ pub enum CounterFamily {
     LiveFrames,
     /// Rejected live session messages by fixed reason category.
     LiveRejections,
-    /// Actual transmitted/received transfer payload bytes.
+    /// Transmitted/verified transfer DATA payload bytes.
+    TransferPayloadBytes,
+    /// Serialized transfer DATA messages: NATS header block plus payload.
     TransferWireBytes,
+    /// Serialized non-DATA transfer messages: controls, signals, EOF,
+    /// activation, completion and cancellation.
+    TransferControlBytes,
     /// Successfully transmitted or verified incoming transfer DATA frames.
     TransferFrames,
     /// Authenticated cumulative transfer-credit controls.
@@ -249,7 +254,9 @@ impl CounterFamily {
             Self::LiveEnds => "trellis.live.ends",
             Self::LiveFrames => "trellis.live.frames",
             Self::LiveRejections => "trellis.live.rejections",
+            Self::TransferPayloadBytes => "trellis.transfer.payload.bytes",
             Self::TransferWireBytes => "trellis.transfer.wire.bytes",
+            Self::TransferControlBytes => "trellis.transfer.control.bytes",
             Self::TransferFrames => "trellis.transfer.frames",
             Self::TransferCreditControls => "trellis.transfer.credit.controls",
             Self::RuntimeLeaseEvents => "trellis.runtime.lease.events",
@@ -269,7 +276,9 @@ impl CounterFamily {
             Self::LiveEnds => "{session}",
             Self::LiveFrames => "{frame}",
             Self::LiveRejections => "{message}",
-            Self::TransferWireBytes => "By",
+            Self::TransferPayloadBytes | Self::TransferWireBytes | Self::TransferControlBytes => {
+                "By"
+            }
             Self::TransferFrames => "{frame}",
             Self::TransferCreditControls => "{control}",
             Self::RpcClientAttempts => "{attempt}",

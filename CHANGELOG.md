@@ -10,6 +10,27 @@ and this project adheres to
 
 ### Added
 
+- Transfer receivers choose their outstanding window, up to 1,024 frames and
+  64 MiB, and admit it from one process-wide receive budget, released when the
+  transfer ends. A download consumer declares its window at activation; the
+  provider sends within the smaller of it and the grant. A transfer that does
+  not fit is refused with `transfer receive capacity exhausted`.
+
+- `stream;` Operations deliver caller bytes directly to a running handler,
+  with no staging. Callers use the existing transfer helpers. Handlers read the
+  live bytes once through TypeScript `transfer.stream()` or Rust
+  `OperationControl::take_upload_stream()`; the stream ends only after the
+  caller's size and digest are verified and the delivery is recorded. An
+  interrupted `stream` Operation fails with `OperationStreamInterrupted`
+  instead of resuming.
+- Receive grants can be served from any provider byte source whose size and
+  SHA-256 digest are declared up front: TypeScript
+  `createTransfer({ direction: "receive", stream, info })`, Rust
+  `plan_stream_download_transfer` with `spawn_stream_download_endpoint`.
+- `trellis.transfer.payload.bytes` counts DATA payload, and
+  `trellis.transfer.control.bytes` counts every serialized non-DATA Transfer
+  message, in both SDKs. Together with `trellis.transfer.wire.bytes` they give
+  the protocol's byte overhead.
 - `auth.oauth.trusted_proxies` lists reverse-proxy CIDR ranges whose
   `X-Forwarded-For` identifies the client for OAuth request admission.
   Forwarding headers from any other peer remain ignored.
@@ -41,6 +62,49 @@ and this project adheres to
 
 ### Changed
 
+- The TypeScript SDK ships two protocol WASM builds. Callers load a client
+  build; services and devices load a provider build with the request-serving
+  verifiers, selected automatically by the `/service` and `/device`
+  entrypoints. Both are size-optimized with `wasm-opt`: the client build is
+  495 KB gzipped, down from 780 KB. Bundles no longer embed a base64 copy; the
+  module is fetched as a separate asset when connecting, and server runtimes
+  read it from disk.
+- The TypeScript SDK computes per-message proof digests natively: Transfer
+  DATA frame and provider proof digests, Live server proof digests, and
+  request, event and response signing digests. Signature verification and
+  authorization policy stay in the shared Rust protocol. Pinned vectors in
+  `integration/fixtures/protocol/message-digests` keep both implementations
+  byte-identical.
+- Request, event and response verification take the payload's SHA-256
+  instead of the payload, so TypeScript hashes natively and only 32 bytes
+  cross into WASM. In the Rust protocol crate, the session verification inputs
+  replace `raw_payload` with `payload_sha256: [u8; 32]`, and the verified
+  request, event and response types no longer return the payload; callers
+  keep the bytes they verified.
+- Signed catalogs and provider certificates are authenticated once when
+  fetched, in both SDKs. Each use rechecks only the issuer key and its
+  revocation state, the trust scope and the certificate's validity time,
+  instead of re-canonicalizing and re-verifying the record on every request,
+  Transfer frame and credit message. TypeScript also reuses transport
+  permission coverage between unchanged policies. In the Rust protocol crate,
+  `AuthenticatedCatalog` and `AuthenticatedProviderCertificate` carry that
+  authentication, and `SessionResponseVerificationInput::certificate` takes an
+  `AuthenticatedProviderCertificate`.
+- Transfer windows default to 64 frames and 16 MiB instead of 16 frames and
+  4 MiB, and TypeScript fills ready frames up to the negotiated 1 MiB limit
+  instead of capping them at 256 KiB, as Rust already did. Measured on
+  loopback, Rust streaming roughly doubles and TypeScript bulk transfers gain
+  about 30%, with loaded Live and RPC p95 within 25% of before.
+- Rust `TransferDownloadGrantArgs::store` is optional, and
+  `run_download_transfer_endpoint` takes a `DownloadSource`, so downloads no
+  longer require a store binding.
+- The TypeScript SDK hashes Transfer and Object Store bytes with
+  `node:crypto` where it is available (Node, Deno, Bun) and selects the NATS
+  Object Store SDK's native SHA-256 backend, which is process-wide. Browsers
+  keep the portable implementation. Digests are unchanged.
+- `trellis.transfer.wire.bytes` now counts serialized DATA messages, NATS
+  headers included, instead of payload alone. Use
+  `trellis.transfer.payload.bytes` for the previous meaning.
 - Operation upload grants follow one shared policy in both SDKs: a 15-minute
   lifetime that bounds the whole upload and a 512 MiB size limit. TypeScript
   providers previously expired uploads after 60 seconds with no size limit.

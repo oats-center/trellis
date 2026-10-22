@@ -911,8 +911,8 @@ fn render_action(
             errors.iter().map(|error| error.to_owned()).collect::<Vec<_>>().join(", "),
             if pagination.is_some() { "\"cursor\"" } else { "undefined" }
         ),
-        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload } => format!(
-            "{{ kind: \"operation\", descriptorName: {descriptor}, subject: {subject}, input: {}, output: {}, progress: {}, update: {}, errors: [{}], signals: {{ {} }}, upload: {upload} }}",
+        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload, stream } => format!(
+            "{{ kind: \"operation\", descriptorName: {descriptor}, subject: {subject}, input: {}, output: {}, progress: {}, update: {}, errors: [{}], signals: {{ {} }}, upload: {upload}, stream: {stream} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
             progress.as_ref().map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
@@ -964,8 +964,8 @@ fn render_action_type(
             errors.iter().map(|error| format!("typeof {error}")).collect::<Vec<_>>().join(", "),
             if pagination.is_some() { "\"cursor\"" } else { "undefined" }
         ),
-        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload } => format!(
-            "{{ {common}; readonly input: typeof {}; readonly output: typeof {}; readonly progress: {}; readonly update: {}; readonly errors: readonly [{}]; readonly signals: {{ {} }}; readonly upload: {upload} }}",
+        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload, stream } => format!(
+            "{{ {common}; readonly input: typeof {}; readonly output: typeof {}; readonly progress: {}; readonly update: {}; readonly errors: readonly [{}]; readonly signals: {{ {} }}; readonly upload: {upload}; readonly stream: {stream} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
             progress.as_ref().map(|value| format!("typeof {}", type_codec(value, package, modules))).unwrap_or_else(|| "undefined".into()),

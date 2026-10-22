@@ -1,13 +1,9 @@
 //! Same-language native SDK and HTTP performance workloads.
+mod http;
 mod metrics;
-use axum::{
-    body::Body,
-    extract::{Path, Query, State},
-    routing::{get, post},
-    Json, Router,
-};
-use futures_util::StreamExt;
-use performance_trellis::apis::performance_trellis_performance_v1::{operations, rpc};
+mod raw;
+use performance_trellis::apis::performance_trellis_performance_v1::{lives, operations, rpc};
+use performance_trellis::apps::performance_trellis_caller::performance_trellis_performance_v1::Client as PerformanceApi;
 use performance_trellis::{
     apps::performance_trellis_caller::{Client, Request},
     participants::performance_trellis_provider::{Participant, Provider},
@@ -20,11 +16,11 @@ use std::{
     io::Write as _,
     path::PathBuf,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
-use tokio_util::io::ReaderStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use trellis_rs::{
     auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient},
     client::{OperationState, UserConnectOptions},
@@ -32,7 +28,7 @@ use trellis_rs::{
     service::{generate_transfer_id, FileTransferInfo, ServerError, ServiceConnectOptions},
 };
 
-type Error = Box<dyn std::error::Error + Send + Sync>;
+pub(crate) type Error = Box<dyn std::error::Error + Send + Sync>;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Options {
@@ -51,36 +47,137 @@ struct Options {
     warmups: usize,
     #[serde(default)]
     provider_index: usize,
+    /// One declared HTTP body chunk policy for clients and servers.
+    #[serde(default = "default_http_chunk")]
+    http_chunk_bytes: usize,
+    /// Mutual-TLS and request-signing material; absent means plaintext.
+    http_tls_dir: Option<PathBuf>,
+    /// Broker URL and credentials for the raw Core NATS lower bound.
+    nats_url: Option<String>,
+    nats_creds: Option<PathBuf>,
 }
-#[derive(Serialize)]
+fn default_http_chunk() -> usize {
+    64 * 1024
+}
+#[derive(Serialize, Default)]
 #[serde(rename_all = "camelCase")]
-struct Sample {
-    scenario: String,
-    transport: &'static str,
-    started_unix_ms: u128,
-    duration_ms: f64,
+pub(crate) struct Sample {
+    pub(crate) scenario: String,
+    pub(crate) transport: &'static str,
+    pub(crate) started_unix_ms: u128,
+    pub(crate) duration_ms: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    bytes: Option<usize>,
+    pub(crate) bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub(crate) error: Option<String>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    warmup: bool,
+    pub(crate) warmup: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    committed_ms: Option<f64>,
+    pub(crate) committed_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) setup_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) first_byte_ms: Option<f64>,
+    /// Milliseconds from start until the receiver verified size and digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) verified_ms: Option<f64>,
+    /// Milliseconds from start until the required durable write completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) durable_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) max_frame_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) window_frames: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) window_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) data_frames: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) scheduler_delay_ms: Option<f64>,
 }
-fn now() -> u128 {
+
+/// Responsiveness probe: 30 Live first frames or Echo round trips offered at
+/// 50 ms intervals, stopping early when `active` reaches zero. Durations start
+/// at the offered time, so scheduler delay is included and also recorded.
+async fn probe(
+    api: &PerformanceApi,
+    scenario: &str,
+    rpc_probe: bool,
+    active: Option<&std::sync::atomic::AtomicUsize>,
+) -> Vec<Sample> {
+    use futures_util::StreamExt;
+    let offered = Instant::now();
+    let mut rows = Vec::new();
+    for index in 0..30u64 {
+        let at = offered + std::time::Duration::from_millis(50 * index);
+        tokio::time::sleep_until(at.into()).await;
+        if active.is_some_and(|active| active.load(std::sync::atomic::Ordering::Acquire) == 0) {
+            break;
+        }
+        let started = Instant::now();
+        let started_unix_ms = now();
+        let value = format!("{scenario}-{index}");
+        let result: Result<(), Error> = async {
+            if rpc_probe {
+                let reply = api
+                    .echo(&rpc::EchoInput {
+                        value: value.clone(),
+                        extra: Default::default(),
+                    })
+                    .await?;
+                if reply.value != value {
+                    return Err("RPC probe lost data".into());
+                }
+                return Ok(());
+            }
+            let mut feed = api
+                .watch(&lives::WatchInput {
+                    value: value.clone(),
+                    extra: Default::default(),
+                })
+                .await?;
+            let first = tokio::time::timeout(std::time::Duration::from_secs(30), feed.next())
+                .await?
+                .ok_or("Live probe ended before its first frame")??;
+            if first.value != value {
+                return Err("Live probe lost its first frame".into());
+            }
+            Ok(())
+        }
+        .await;
+        rows.push(Sample {
+            scenario: format!("rust/{scenario}"),
+            transport: "trellis",
+            started_unix_ms,
+            duration_ms: at.elapsed().as_secs_f64() * 1000.0,
+            error: result.err().map(|error| error.to_string()),
+            scheduler_delay_ms: Some(started.duration_since(at).as_secs_f64() * 1000.0),
+            ..Sample::default()
+        });
+    }
+    rows
+}
+pub(crate) fn now() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock before Unix epoch")
         .as_millis()
 }
-struct Payload {
+/// Wall clock in fractional milliseconds, comparable across local processes.
+pub(crate) fn wall_ms() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before Unix epoch")
+        .as_secs_f64()
+        * 1000.0
+}
+pub(crate) struct Payload {
     offset: usize,
     size: usize,
     pattern: Vec<u8>,
 }
 impl Payload {
-    fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         Self {
             offset: 0,
             size,
@@ -107,13 +204,23 @@ impl AsyncRead for Payload {
     }
 }
 #[derive(Default)]
-struct Hasher {
+pub(crate) struct Hasher {
     hash: Sha256,
-    size: u64,
+    pub(crate) size: u64,
 }
 impl Hasher {
-    fn digest(&self) -> String {
+    pub(crate) fn digest(&self) -> String {
         format!("{:x}", self.hash.clone().finalize())
+    }
+    pub(crate) fn base64url(&self) -> String {
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            self.hash.clone().finalize(),
+        )
+    }
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
+        self.hash.update(bytes);
+        self.size += bytes.len() as u64;
     }
 }
 impl AsyncWrite for Hasher {
@@ -122,8 +229,7 @@ impl AsyncWrite for Hasher {
         _: &mut Context<'_>,
         bytes: &[u8],
     ) -> Poll<std::io::Result<usize>> {
-        self.hash.update(bytes);
-        self.size += bytes.len() as u64;
+        self.update(bytes);
         Poll::Ready(Ok(bytes.len()))
     }
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
@@ -230,9 +336,8 @@ async fn main() -> Result<(), Error> {
                                     started.elapsed().as_secs_f64() * 1000.0
                                 },
                                 bytes: Some(*size),
-                                error: None,
                                 warmup: index < options.warmups,
-                                committed_ms: None,
+                                ..Sample::default()
                             });
                         }
                     }
@@ -254,6 +359,10 @@ async fn main() -> Result<(), Error> {
             Provider::new(&mut service)
                 .performance_trellis_performance_v1()
                 .register_echo(|_, input| async move { Ok(input) });
+            // Live probes: one first frame echoing the input, as in TypeScript.
+            Provider::new(&mut service)
+                .performance_trellis_performance_v1()
+                .register_watch(|_, input| futures_util::stream::once(async move { Ok(input) }));
             let downloads = files.clone();
             Provider::new(&mut service)
                 .performance_trellis_performance_v1()
@@ -325,6 +434,112 @@ async fn main() -> Result<(), Error> {
                         Ok(())
                     }
                 });
+            // Stream uploads read the caller's bytes as they arrive: `<size>`
+            // hashes and discards them; `store:<size>` writes them once.
+            let stream_files = Provider::new(&mut service)
+                .files()
+                .cloned()
+                .ok_or("store unavailable")?;
+            Provider::new(&mut service)
+                .performance_trellis_performance_v1()
+                .register_upload_stream(move |_, input, op| {
+                    let files = stream_files.clone();
+                    async move {
+                        let mut stream = op
+                            .take_upload_stream()
+                            .ok_or_else(|| ServerError::Nats("stream upload missing".into()))?;
+                        let mut hashed = Hasher::default();
+                        if let Some(size) = input.value.strip_prefix("store:") {
+                            let mut tee = http::HashingReader::new(&mut stream);
+                            files
+                                .write_from(&format!("upload-stream-{size}"), &mut tee, None)
+                                .await?;
+                            hashed = tee.into_hasher();
+                        } else {
+                            tokio::io::copy(&mut stream, &mut hashed)
+                                .await
+                                .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        }
+                        op.complete(operations::UploadStreamOutput {
+                            value: hashed.digest(),
+                            extra: Default::default(),
+                        })
+                        .await?;
+                        Ok(())
+                    }
+                });
+            // Stream downloads serve generated bytes with declared metadata.
+            let mut declared = HashMap::new();
+            for size in &options.sizes {
+                let mut hashed = Hasher::default();
+                tokio::io::copy(&mut Payload::new(*size), &mut hashed).await?;
+                declared.insert(*size, hashed.base64url());
+            }
+            let declared = Arc::new(declared);
+            Provider::new(&mut service)
+                .performance_trellis_performance_v1()
+                .register_download_stream(move |context, input| {
+                    let declared = Arc::clone(&declared);
+                    async move {
+                        let size: usize = input
+                            .value
+                            .parse()
+                            .map_err(|_| ServerError::Nats("invalid size".into()))?;
+                        let digest = declared
+                            .get(&size)
+                            .ok_or_else(|| ServerError::Nats("unknown generated size".into()))?;
+                        let format = &time::format_description::well_known::Rfc3339;
+                        let now = time::OffsetDateTime::now_utc();
+                        let plan = context.plan_stream_download_transfer(
+                            &generate_transfer_id()
+                                .map_err(|error| ServerError::Nats(error.to_string()))?,
+                            &(now + time::Duration::minutes(2))
+                                .format(format)
+                                .map_err(|e| ServerError::Nats(e.to_string()))?,
+                            FileTransferInfo {
+                                key: format!("generated-{size}"),
+                                size: size as u64,
+                                updated_at: now
+                                    .format(format)
+                                    .map_err(|e| ServerError::Nats(e.to_string()))?,
+                                digest: format!("SHA-256={digest}"),
+                                content_type: None,
+                                metadata: Default::default(),
+                            },
+                        )?;
+                        let transfer = plan.grant.clone();
+                        context
+                            .handle()
+                            .spawn_stream_download_endpoint(plan, Payload::new(size))
+                            .await?;
+                        Ok(rpc::DownloadStreamOutput {
+                            response: input,
+                            transfer: Some(transfer),
+                        })
+                    }
+                });
+            // Stream-to-store: the staged commit is the only durable write;
+            // complete with the runtime-verified digest, no copy or re-read.
+            Provider::new(&mut service)
+                .performance_trellis_performance_v1()
+                .register_upload_staged(move |_, _, op| async move {
+                    let info = op
+                        .upload()
+                        .await?
+                        .ok_or_else(|| ServerError::Nats("staged upload missing".into()))?;
+                    let encoded = info.digest.trim_start_matches("SHA-256=");
+                    let digest = base64::Engine::decode(
+                        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                        encoded.trim_end_matches('='),
+                    )
+                    .map_err(|e| ServerError::Nats(e.to_string()))?;
+                    op.complete(operations::UploadStagedOutput {
+                        value: digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+                        extra: Default::default(),
+                    })
+                    .await?;
+                    Ok(())
+                });
             tokio::fs::write(
                 options
                     .output
@@ -337,68 +552,33 @@ async fn main() -> Result<(), Error> {
             tokio::select! { result = service.run() => result?, _ = stop.recv() => {} }
         }
         "http" => {
-            for size in &options.sizes {
-                let mut file =
-                    tokio::fs::File::create(options.output.join(format!("http-body-{size}")))
-                        .await?;
-                tokio::io::copy(&mut Payload::new(*size), &mut file).await?;
-                file.flush().await?;
-            }
-            let router =
-                Router::new()
-                    .route(
-                        "/echo",
-                        get(|Query(values): Query<HashMap<String, String>>| async move {
-                            Json(json!({ "value": values.get("value") }))
-                        }),
-                    )
-                    .route(
-                        "/download/{size}",
-                        get(
-                            |State(output): State<PathBuf>, Path(size): Path<usize>| async move {
-                                tokio::fs::File::open(output.join(format!("http-body-{size}")))
-                                    .await
-                                    .map(|file| Body::from_stream(ReaderStream::new(file)))
-                                    .map_err(|e| {
-                                        (
-                                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                            e.to_string(),
-                                        )
-                                    })
-                            },
-                        ),
-                    )
-                    .route(
-                        "/upload/{key}",
-                        post(
-                            |State(output): State<PathBuf>,
-                             Path(key): Path<String>,
-                             body: Body| async move {
-                                 let path = output.join(format!("http-upload-{key}"));
-                                 let work: Result<_, Error> = async {
-                                     let mut file = tokio::fs::File::create(&path).await?;
-                                     let mut stream = body.into_data_stream();
-                                     while let Some(chunk) = stream.next().await { file.write_all(&chunk?).await?; }
-                                     file.flush().await?;
-                                     drop(file);
-                                     let mut stored = Hasher::default();
-                                     tokio::io::copy(&mut tokio::fs::File::open(path).await?, &mut stored).await?;
-                                     Ok(Json(json!({ "value": stored.digest() })))
-                                 }.await;
-                                 work.map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
-                            },
-                        ),
-                    )
-                    .with_state(options.output.clone());
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-            tokio::fs::write(
-                options.output.join("http.json"),
-                serde_json::to_vec(
-                    &json!({ "httpUrl": format!("http://{}", listener.local_addr()?) }),
-                )?,
-            )
+            // Store mode uses the provider's own `files` store through the same
+            // identity; no handlers are registered, so no Trellis traffic lands here.
+            let server = discover_native_oauth(&options.trellis_url).await?;
+            let mut service = Participant::connect(ServiceConnectOptions::new(
+                server.nats_servers,
+                server.trust,
+                options
+                    .service_seed
+                    .as_deref()
+                    .ok_or("service seed missing")?,
+            ))
             .await?;
-            axum::serve(listener, router).await?;
+            let files = Provider::new(&mut service)
+                .files()
+                .cloned()
+                .ok_or("store unavailable")?;
+            let tls = match &options.http_tls_dir {
+                Some(dir) => Some(http::TlsMaterial::load(dir).await?),
+                None => None,
+            };
+            let mut stop =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            tokio::select! {
+                result = http::serve(options.output.clone(), options.sizes.clone(), options.http_chunk_bytes, files, tls) => result?,
+                _ = stop.recv() => {}
+            }
+            drop(service);
         }
         "client" | "resume" => {
             let mut samples = Vec::new();
@@ -465,10 +645,7 @@ async fn main() -> Result<(), Error> {
                 transport: "trellis",
                 started_unix_ms: unix,
                 duration_ms: started.elapsed().as_secs_f64() * 1000.0,
-                bytes: None,
-                error: None,
-                warmup: false,
-                committed_ms: None,
+                ..Sample::default()
             });
             if options.role == "resume" {
                 tokio::fs::write(
@@ -478,10 +655,33 @@ async fn main() -> Result<(), Error> {
                 .await?;
                 return Ok(());
             }
-            let http = reqwest::Client::builder()
+            let tls = match &options.http_tls_dir {
+                Some(dir) => Some(http::TlsMaterial::load(dir).await?),
+                None => None,
+            };
+            let mut builder = reqwest::Client::builder()
                 .http1_only()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?;
+                .timeout(std::time::Duration::from_secs(30));
+            if let Some(tls) = &tls {
+                builder = builder
+                    .tls_certs_only([reqwest::Certificate::from_pem(&tls.ca)?])
+                    .identity(reqwest::Identity::from_pem(&tls.client_identity())?);
+            }
+            let http = builder.build()?;
+            let http_url = options.http_url.clone().ok_or("HTTP URL missing")?;
+            // Every HTTP request carries the same proof headers when TLS is on.
+            let signed = |method: reqwest::Method, target: String, length: Option<usize>| {
+                let mut request = http.request(method.clone(), format!("{http_url}{target}"));
+                if let Some(tls) = &tls {
+                    for (name, value) in tls.sign(method.as_str(), &target, length) {
+                        request = request.header(name, value);
+                    }
+                }
+                if let Some(length) = length {
+                    request = request.header("content-length", length.to_string());
+                }
+                request
+            };
             for transport in ["trellis", "http"] {
                 tokio::fs::write(
                     options.output.join("phase.txt"),
@@ -501,16 +701,12 @@ async fn main() -> Result<(), Error> {
                             .await?
                             .value
                         } else {
-                            http.get(format!(
-                                "{}/echo",
-                                options.http_url.as_deref().ok_or("HTTP URL missing")?
-                            ))
-                            .query(&[("value", &value)])
-                            .send()
-                            .await?
-                            .error_for_status()?
-                            .json::<Value>()
-                            .await?["value"]
+                            signed(reqwest::Method::GET, format!("/echo?value={value}"), None)
+                                .send()
+                                .await?
+                                .error_for_status()?
+                                .json::<Value>()
+                                .await?["value"]
                                 .as_str()
                                 .ok_or("HTTP value missing")?
                                 .to_owned()
@@ -526,142 +722,344 @@ async fn main() -> Result<(), Error> {
                         transport,
                         started_unix_ms: unix,
                         duration_ms: started.elapsed().as_secs_f64() * 1000.0,
-                        bytes: None,
                         error: result.err().map(|e| e.to_string()),
-                        warmup: false,
-                        committed_ms: None,
+                        ..Sample::default()
                     });
                 }
+            }
+            let chunk = options.http_chunk_bytes;
+            let mut cases: Vec<(&'static str, String)> = vec![
+                ("trellis", "download".into()),
+                ("trellis", "download-stream".into()),
+                ("trellis", "upload-persisted".into()),
+                ("trellis", "upload-staged".into()),
+                ("trellis", "upload-stream".into()),
+                ("trellis", "upload-stream-store".into()),
+            ];
+            for mode in ["raw", "stream", "store"] {
+                cases.push(("http", format!("download-{mode}")));
+                cases.push(("http", format!("upload-{mode}")));
             }
             for size in &options.sizes {
                 let mut expected_hash = Hasher::default();
                 tokio::io::copy(&mut Payload::new(*size), &mut expected_hash).await?;
                 let expected = expected_hash.digest();
                 for index in 0..(options.samples + options.warmups) {
-                    for transport in ["trellis", "http"] {
-                        for upload in [false, true] {
-                            let scenario = if upload {
-                                "rust/upload-persisted-verified"
-                            } else {
-                                "rust/download-verified"
-                            };
-                            tokio::fs::write(
-                                options.output.join("phase.txt"),
-                                format!("{transport}/{scenario}/{size}"),
-                            )
-                            .await?;
-                            let before = snapshot_resources(&options).await?;
-                            let started = Instant::now();
-                            let unix = now();
-                            let mut committed_ms = None;
-                            let result: Result<(), Error> = async {
-                                let actual = if upload {
-                                    let key = format!("{size}-{index}");
-                                    if transport == "trellis" {
-                                        let handle = api
-                                            .upload()
-                                            .start(&operations::UploadInput {
-                                                value: key,
-                                                extra: Default::default(),
-                                            })
-                                            .await?;
-                                        handle.upload_from(&mut Payload::new(*size)).await?;
-                                        committed_ms =
-                                            Some(started.elapsed().as_secs_f64() * 1000.0);
-                                        let completed = handle.wait().await?;
-                                        if completed.state != OperationState::Completed {
-                                            return Err("upload not completed".into());
-                                        }
-                                        completed.output.ok_or("upload result missing")?.value
-                                    } else {
-                                        http.post(format!(
-                                            "{}/upload/{key}",
-                                            options
-                                                .http_url
-                                                .as_deref()
-                                                .ok_or("HTTP URL missing")?
-                                        ))
-                                        .body(reqwest::Body::wrap_stream(ReaderStream::new(
-                                            Payload::new(*size),
-                                        )))
-                                        .send()
-                                        .await?
-                                        .error_for_status()?
-                                        .json::<Value>()
-                                        .await?["value"]
-                                            .as_str()
-                                            .ok_or("HTTP digest missing")?
-                                            .to_owned()
-                                    }
-                                } else if transport == "trellis" {
-                                    let reply = api
-                                        .download(&rpc::DownloadInput {
+                    // Alternate which transport goes first, as the TypeScript lane does.
+                    let mut ordered: Vec<_> = cases.iter().collect();
+                    if index % 2 == 1 {
+                        ordered.sort_by_key(|(transport, _)| *transport != "http");
+                    }
+                    for (transport, scenario) in ordered {
+                        let transport = *transport;
+                        let scenario_name = format!("rust/{scenario}");
+                        tokio::fs::write(
+                            options.output.join("phase.txt"),
+                            format!("{transport}/{scenario_name}/{size}"),
+                        )
+                        .await?;
+                        let before = snapshot_resources(&options).await?;
+                        let started = Instant::now();
+                        let started_wall = wall_ms();
+                        let unix = now();
+                        let mut sample = Sample {
+                            scenario: scenario_name.clone(),
+                            transport,
+                            started_unix_ms: unix,
+                            bytes: Some(*size),
+                            warmup: index < options.warmups,
+                            ..Sample::default()
+                        };
+                        let elapsed = |started: Instant| started.elapsed().as_secs_f64() * 1000.0;
+                        let result: Result<(), Error> = async {
+                            let actual = match (transport, scenario.as_str()) {
+                                ("trellis", "download" | "download-stream") => {
+                                    let transfer = if scenario == "download" {
+                                        api.download(&rpc::DownloadInput {
                                             value: size.to_string(),
                                             extra: Default::default(),
                                         })
-                                        .await?;
+                                        .await?
+                                        .transfer
+                                    } else {
+                                        api.download_stream(&rpc::DownloadStreamInput {
+                                            value: size.to_string(),
+                                            extra: Default::default(),
+                                        })
+                                        .await?
+                                        .transfer
+                                    };
+                                    sample.setup_ms = Some(elapsed(started));
                                     let mut received = Hasher::default();
                                     streaming_client
                                         .download_transfer_into(
-                                            &reply.transfer.ok_or("download grant missing")?,
+                                            &transfer.ok_or("download grant missing")?,
                                             &mut received,
                                         )
                                         .await?;
                                     if received.size != *size as u64 {
                                         return Err("download length mismatch".into());
                                     }
+                                    sample.verified_ms = Some(elapsed(started));
                                     received.digest()
-                                } else {
-                                    let mut response = http
-                                        .get(format!(
-                                            "{}/download/{size}",
-                                            options
-                                                .http_url
-                                                .as_deref()
-                                                .ok_or("HTTP URL missing")?
-                                        ))
+                                }
+                                ("trellis", "upload-persisted") => {
+                                    let handle = api
+                                        .upload()
+                                        .start(&operations::UploadInput {
+                                            value: format!("{size}-{index}"),
+                                            extra: Default::default(),
+                                        })
+                                        .await?;
+                                    handle.upload_from(&mut Payload::new(*size)).await?;
+                                    sample.committed_ms = Some(elapsed(started));
+                                    sample.verified_ms = sample.committed_ms;
+                                    let completed = handle.wait().await?;
+                                    if completed.state != OperationState::Completed {
+                                        return Err("upload not completed".into());
+                                    }
+                                    sample.durable_ms = Some(elapsed(started));
+                                    completed.output.ok_or("upload result missing")?.value
+                                }
+                                ("trellis", "upload-staged") => {
+                                    let handle = api
+                                        .upload_staged()
+                                        .start(&operations::UploadStagedInput {
+                                            value: format!("{size}-{index}"),
+                                            extra: Default::default(),
+                                        })
+                                        .await?;
+                                    handle.upload_from(&mut Payload::new(*size)).await?;
+                                    sample.committed_ms = Some(elapsed(started));
+                                    sample.verified_ms = sample.committed_ms;
+                                    sample.durable_ms = sample.committed_ms;
+                                    let completed = handle.wait().await?;
+                                    if completed.state != OperationState::Completed {
+                                        return Err("upload not completed".into());
+                                    }
+                                    completed.output.ok_or("upload result missing")?.value
+                                }
+                                ("trellis", "upload-stream" | "upload-stream-store") => {
+                                    let value = if scenario == "upload-stream" {
+                                        size.to_string()
+                                    } else {
+                                        format!("store:{size}")
+                                    };
+                                    let handle = api
+                                        .upload_stream()
+                                        .start(&operations::UploadStreamInput {
+                                            value,
+                                            extra: Default::default(),
+                                        })
+                                        .await?;
+                                    handle.upload_from(&mut Payload::new(*size)).await?;
+                                    // Commit is verified delivery to the handler.
+                                    sample.committed_ms = Some(elapsed(started));
+                                    sample.verified_ms = sample.committed_ms;
+                                    let completed = handle.wait().await?;
+                                    if completed.state != OperationState::Completed {
+                                        return Err("upload not completed".into());
+                                    }
+                                    if scenario == "upload-stream-store" {
+                                        sample.durable_ms = Some(elapsed(started));
+                                    }
+                                    completed.output.ok_or("upload result missing")?.value
+                                }
+                                ("http", name) => {
+                                    let (direction, mode) =
+                                        name.split_once('-').ok_or("invalid HTTP case")?;
+                                    if direction == "download" {
+                                        let response = signed(
+                                            reqwest::Method::GET,
+                                            format!("/download/{mode}?size={size}"),
+                                            None,
+                                        )
                                         .send()
                                         .await?
                                         .error_for_status()?;
-                                    let mut received = Hasher::default();
-                                    while let Some(chunk) = response.chunk().await? {
-                                        received.write_all(&chunk).await?;
+                                        sample.setup_ms = Some(elapsed(started));
+                                        let declared = response
+                                            .headers()
+                                            .get("x-bench-digest")
+                                            .and_then(|value| value.to_str().ok())
+                                            .map(str::to_owned);
+                                        let (received, first) =
+                                            http::hash_body(response, started).await?;
+                                        sample.first_byte_ms = first;
+                                        if received.size != *size as u64 {
+                                            return Err("HTTP download length mismatch".into());
+                                        }
+                                        if let Some(declared) = declared {
+                                            let decoded = base64::Engine::decode(
+                                                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                                                declared
+                                                    .trim_start_matches("SHA-256=")
+                                                    .trim_end_matches('='),
+                                            )?;
+                                            let hex: String = decoded
+                                                .iter()
+                                                .map(|byte| format!("{byte:02x}"))
+                                                .collect();
+                                            if hex != received.digest() {
+                                                return Err("HTTP declared digest mismatch".into());
+                                            }
+                                        }
+                                        sample.verified_ms = Some(elapsed(started));
+                                        received.digest()
+                                    } else {
+                                        let reply = signed(
+                                            reqwest::Method::PUT,
+                                            format!("/upload/{mode}?size={size}"),
+                                            Some(*size),
+                                        )
+                                        .body(reqwest::Body::wrap_stream(
+                                            tokio_util::io::ReaderStream::with_capacity(
+                                                Payload::new(*size),
+                                                chunk,
+                                            ),
+                                        ))
+                                        .send()
+                                        .await?
+                                        .error_for_status()?
+                                        .json::<Value>()
+                                        .await?;
+                                        if reply["size"].as_u64() != Some(*size as u64) {
+                                            return Err("HTTP upload length mismatch".into());
+                                        }
+                                        sample.verified_ms = reply["verifiedUnixMs"]
+                                            .as_f64()
+                                            .map(|at| at - started_wall);
+                                        sample.durable_ms = reply["durableUnixMs"]
+                                            .as_f64()
+                                            .map(|at| at - started_wall);
+                                        reply["digest"]
+                                            .as_str()
+                                            .ok_or("HTTP digest missing")?
+                                            .to_owned()
                                     }
-                                    if received.size != *size as u64 {
-                                        return Err("HTTP download length mismatch".into());
-                                    }
-                                    received.digest()
-                                };
-                                if actual != expected {
-                                    return Err("transfer digest mismatch".into());
                                 }
-                                Ok(())
+                                _ => return Err("unknown transfer case".into()),
+                            };
+                            if actual != expected {
+                                return Err("transfer digest mismatch".into());
                             }
-                            .await;
-                            samples.push(Sample {
-                                scenario: scenario.into(),
-                                transport,
-                                started_unix_ms: unix,
-                                duration_ms: started.elapsed().as_secs_f64() * 1000.0,
-                                bytes: Some(*size),
-                                error: result.err().map(|e| e.to_string()),
-                                warmup: index < options.warmups,
-                                committed_ms,
-                            });
-                            let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
-                            let after = snapshot_resources(&options).await?;
-                            if index >= options.warmups {
-                                windows.push(json!({ "scenario": scenario, "transport": transport, "calls": 1, "bytes": size, "durationMs": duration_ms, "before": before, "after": after }));
-                            }
-                            // Checkpoint raw failures even if a later workload or process fails.
-                            tokio::fs::write(
-                                options.output.join("native-samples.json"),
-                                serde_json::to_vec_pretty(&samples)?,
-                            )
-                            .await?;
+                            Ok(())
                         }
+                        .await;
+                        let duration_ms = elapsed(started);
+                        sample.duration_ms = duration_ms;
+                        sample.error = result.err().map(|e| e.to_string());
+                        samples.push(sample);
+                        let after = snapshot_resources(&options).await?;
+                        if index >= options.warmups {
+                            windows.push(json!({ "scenario": scenario_name, "transport": transport, "calls": 1, "bytes": size, "durationMs": duration_ms, "before": before, "after": after }));
+                        }
+                        // Checkpoint raw failures even if a later workload or process fails.
+                        tokio::fs::write(
+                            options.output.join("native-samples.json"),
+                            serde_json::to_vec_pretty(&samples)?,
+                        )
+                        .await?;
                     }
                 }
+            }
+            // Responsiveness idle and during one concurrent upload and download
+            // of the largest object, like the TypeScript transfer lane.
+            let size = options.sizes.iter().copied().max().unwrap_or(0);
+            let mut expected_hash = Hasher::default();
+            tokio::io::copy(&mut Payload::new(size), &mut expected_hash).await?;
+            let expected = expected_hash.digest();
+            samples.extend(probe(&api, "live-first-frame-idle", false, None).await);
+            samples.extend(probe(&api, "rpc-echo-idle", true, None).await);
+            tokio::fs::write(
+                options.output.join("phase.txt"),
+                "trellis/rust/mixed-upload-download",
+            )
+            .await?;
+            let active = std::sync::atomic::AtomicUsize::new(2);
+            let started = Instant::now();
+            let started_unix_ms = now();
+            let upload = async {
+                let result: Result<(), Error> = async {
+                    let handle = api
+                        .upload_staged()
+                        .start(&operations::UploadStagedInput {
+                            value: "mixed".into(),
+                            extra: Default::default(),
+                        })
+                        .await?;
+                    handle.upload_from(&mut Payload::new(size)).await?;
+                    active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    let completed = handle.wait().await?;
+                    if completed.output.ok_or("mixed upload result missing")?.value != expected {
+                        return Err("corrupt concurrent upload".into());
+                    }
+                    Ok(())
+                }
+                .await;
+                if result.is_err() {
+                    active.store(0, std::sync::atomic::Ordering::Release);
+                }
+                result
+            };
+            let download = async {
+                let result: Result<(), Error> = async {
+                    let reply = api
+                        .download(&rpc::DownloadInput {
+                            value: size.to_string(),
+                            extra: Default::default(),
+                        })
+                        .await?;
+                    let mut received = Hasher::default();
+                    streaming_client
+                        .download_transfer_into(
+                            &reply.transfer.ok_or("download grant missing")?,
+                            &mut received,
+                        )
+                        .await?;
+                    if received.digest() != expected {
+                        return Err("corrupt concurrent download".into());
+                    }
+                    Ok(())
+                }
+                .await;
+                active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                result
+            };
+            let probes = async {
+                // Probe only while both directions are moving DATA.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let (live, rpc_rows) = tokio::join!(
+                    probe(
+                        &api,
+                        "live-first-frame-under-transfer",
+                        false,
+                        Some(&active)
+                    ),
+                    probe(&api, "rpc-echo-under-transfer", true, Some(&active)),
+                );
+                live.into_iter().chain(rpc_rows).collect::<Vec<_>>()
+            };
+            let (uploaded, downloaded, probed) = tokio::join!(upload, download, probes);
+            samples.extend(probed);
+            samples.push(Sample {
+                scenario: "rust/mixed-upload-download".into(),
+                transport: "trellis",
+                started_unix_ms,
+                duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                bytes: Some(2 * size),
+                error: uploaded
+                    .and(downloaded)
+                    .err()
+                    .map(|error| error.to_string()),
+                ..Sample::default()
+            });
+            if let (Some(url), Some(creds)) = (&options.nats_url, &options.nats_creds) {
+                tokio::fs::write(options.output.join("phase.txt"), "raw-core-nats-diagnostic")
+                    .await?;
+                samples.extend(
+                    raw::run(url, creds, &options.sizes, options.samples, options.warmups).await?,
+                );
             }
             tokio::fs::write(
                 options.output.join("native-samples.json"),

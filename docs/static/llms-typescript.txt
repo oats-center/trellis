@@ -493,6 +493,17 @@ check `grant.direction === "receive"`, and pass the decoded grant to
 `client.transfer(grant)`. Decoding uses the shared Rust/WASM wire validator;
 the transfer runtime still verifies provider identity and session authority.
 
+For `stream;` Operations, callers use the same `.transfer(body).start()`. The
+handler starts immediately; `transfer.stream()` returns the caller's live bytes
+exactly once (a second call fails) with read-paced backpressure. The stream ends
+only after verified size/digest and recorded delivery, then
+`transfer.completed()` resolves; transfer failure or cancellation errors the
+stream. Nothing is staged, so an execution that loses its stream is not resumed:
+the Operation fails and the caller starts a new one. Serve generated downloads
+with `service.createTransfer({ direction: "receive", stream, info, ...caller })`
+where `info` declares the exact size and `SHA-256=` digest; a source that ends
+differently fails integrity.
+
 For upload Operations, use the generated `.transfer(body).start()` workflow.
 The provider consumes runtime-staged bytes with `transfer.stream()` or
 `transfer.bytes()`, and starts processing only after backend and durable Operation
@@ -705,6 +716,15 @@ from a previously unknown app origin before client preparation. A new app may
 identify itself by an HTTPS CIMD document; it does not require administrator
 registration. This public metadata policy does not apply to private Portal or
 client-bound token endpoints.
+
+The SDK's shared protocol verifier is a WebAssembly module, fetched as a
+separate asset next to the SDK module when a client connects; bundlers that
+resolve `new URL(path, import.meta.url)` assets, such as Vite and webpack 5,
+need no configuration. In browsers, synchronous protocol helpers such as
+`decodeTransferGrant` need a connected client. Services and devices load a
+larger provider build automatically through `@oatscenter/trellis/service` and
+`@oatscenter/trellis/device`; import that entrypoint before using any other
+Trellis API in the process.
 
 The SDK owns PKCE, DPoP, IndexedDB custody, exact callback validation, authority
 renewal, and transport maintenance. `onAuthRequired` receives `loginUrl` and

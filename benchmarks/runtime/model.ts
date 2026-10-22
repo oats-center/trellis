@@ -28,7 +28,20 @@ export const WorkerOptions = z.object({
   providerIndex: z.number().int().nonnegative().default(0),
   workload: z.enum(["all", "transfer", "lifecycle"]).default("all"),
   warmups: z.number().int().nonnegative().default(0),
+  /** One declared HTTP body chunk policy shared by both languages' clients and servers. */
+  httpChunkBytes: z
+    .number()
+    .int()
+    .positive()
+    .default(64 * 1024),
+  /** Directory of generated CA, mutual-TLS and request-signing material; absent means plaintext. */
+  httpTlsDir: z.string().optional(),
 });
+
+/** HTTP transfer server behaviours, matched to the Trellis workload categories. */
+export const HTTP_MODES = ["raw", "stream", "store"] as const;
+/** One HTTP transfer server behaviour. */
+export type HttpMode = (typeof HTTP_MODES)[number];
 
 /** One observable operation, including failures rather than success-only timing. */
 export type Sample = {
@@ -58,6 +71,10 @@ export type Sample = {
   documentTtfbMs?: number;
   navigationReadyMs?: number;
   transferredBytes?: number;
+  /** Wall-clock milliseconds from start until the receiver verified size and digest. */
+  verifiedMs?: number;
+  /** Wall-clock milliseconds from start until the required durable write completed. */
+  durableMs?: number;
 };
 
 /** Deterministic binary fixture; generation is outside timed transfer work. */
@@ -167,6 +184,8 @@ export function summarize(samples: Sample[]) {
             "documentTtfbMs",
             "navigationReadyMs",
             "transferredBytes",
+            "verifiedMs",
+            "durableMs",
           ] as const
         ).map((key) => {
           const values = rows

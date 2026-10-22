@@ -309,7 +309,12 @@ impl TransferPeer {
         self.guard
             .check_now()
             .map_err(|e| error(format!("transfer authority: {e:?}")))?;
-        super::telemetry::frame(descriptor, &message.payload, "provider");
+        super::telemetry::frame(
+            descriptor,
+            super::telemetry::header_bytes(headers),
+            &message.payload,
+            "provider",
+        );
         Ok(())
     }
 
@@ -360,7 +365,12 @@ impl TransferPeer {
         self.guard
             .check_now()
             .map_err(|e| error(format!("transfer authority: {e:?}")))?;
-        super::telemetry::frame(descriptor, &message.payload, "client");
+        super::telemetry::frame(
+            descriptor,
+            super::telemetry::header_bytes(headers),
+            &message.payload,
+            "client",
+        );
         Ok(())
     }
 }
@@ -391,10 +401,11 @@ pub(crate) async fn publish_provider(
     headers.insert("session-key", auth.session_key.as_str());
     headers.insert(TRANSFER_PROOF_HEADER, proof.as_str());
     let counted = payload.clone();
+    let header_bytes = super::telemetry::header_bytes(&headers);
     nats.publish_with_headers(subject.to_owned(), headers, payload)
         .await
         .map_err(error)?;
-    super::telemetry::frame(descriptor, &counted, "provider");
+    super::telemetry::frame(descriptor, header_bytes, &counted, "provider");
     Ok(())
 }
 

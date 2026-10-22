@@ -1,21 +1,18 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import "../../../ts/packages/trellis/auth/protocol_wasm_provider.ts";
+import { initializeProtocolWasmSync } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
 import { readFile } from "node:fs/promises";
 import { createEventProof } from "../../../ts/packages/trellis/auth/proof.ts";
 import { trellisCrypto } from "../../../ts/packages/trellis/auth/crypto.ts";
 import { createAuth } from "../../../ts/packages/trellis/auth/session_auth.ts";
 import {
   create_session_authority_handle,
-  initSync,
   verify_session_event,
   verify_session_request,
-} from "../../../ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm.js";
-import { PROTOCOL_WASM_BASE64 } from "../../../ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bytes.ts";
+} from "../../../ts/packages/trellis/auth/protocol_wasm/provider/trellis_protocol_wasm.js";
 
-initSync({
-  module: Uint8Array.from(atob(PROTOCOL_WASM_BASE64), (character) =>
-    character.charCodeAt(0),
-  ),
-});
+initializeProtocolWasmSync();
 
 const fixture = JSON.parse(await readFile(process.argv[2], "utf8"));
 const signer = await (
@@ -57,7 +54,7 @@ try {
           policy: fixture.verification.policy,
           knownRevoked: false,
         }),
-        new TextEncoder().encode(payload),
+        createHash("sha256").update(payload).digest(),
       ),
     );
   const result = verify(fixture.request, fixture.payload);
@@ -107,7 +104,7 @@ try {
           originalPublication,
           knownRevoked: true,
         }),
-        new TextEncoder().encode(payload),
+        createHash("sha256").update(payload).digest(),
       ),
     );
   const retained = verify(fixture.event, fixture.originalPublication);

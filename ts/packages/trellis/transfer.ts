@@ -6,19 +6,21 @@ import {
 } from "@oatscenter/result";
 import Type, { type Static } from "typebox";
 import { Value } from "typebox/value";
-import { sha256 } from "@noble/hashes/sha256";
 import { type Msg, NoRespondersError } from "@nats-io/nats-core";
 import { base64urlEncode } from "./auth/utils.ts";
 import type { TrellisAuth } from "./session.ts";
 import { TransferError } from "./errors/TransferError.ts";
 import { TransportError } from "./errors/TransportError.ts";
 import type { TrellisTransportProvider } from "./transport/generations.ts";
+import { processReceiveBudget } from "./data_plane/budget.ts";
 import { SenderWindow } from "./data_plane/flow.ts";
 import {
+  recordTransferMessage,
   TransferCredit,
   TransferSession,
   transferWait,
 } from "./transfer/session.ts";
+import { createSha256 } from "./sha256.ts";
 import { TransferIngress } from "./service/runtime/transfer/queue.ts";
 import {
   transferConstants,
@@ -91,6 +93,13 @@ class ClientSession {
   #cancelled = false;
   #activationRequestId: string | undefined;
   #offeredMaxFrameBytes = 0;
+  /** Largest window activation may confirm: the grant, or what we admitted. */
+  #limitFrames = 0;
+  #limitBytes = 0;
+  /** Effective outstanding frames and bytes confirmed by activation. */
+  windowFrames = 0;
+  windowBytes = 0;
+  #receiveWindow: [number, number] | undefined;
 
   constructor(
     readonly session: TransferSession,
@@ -168,11 +177,13 @@ class ClientSession {
           signal.requestId !== this.#activationRequestId ||
           signal.maxFrameBytes > this.session.grant.maxFrameBytes ||
           signal.maxFrameBytes > this.#offeredMaxFrameBytes ||
-          signal.windowFrames !== this.session.grant.windowFrames ||
-          signal.windowBytes !== this.session.grant.windowBytes
+          signal.windowFrames > this.#limitFrames ||
+          signal.windowBytes > this.#limitBytes
         ) {
           throw new Error("invalid negotiated frame size");
         }
+        this.windowFrames = signal.windowFrames;
+        this.windowBytes = signal.windowBytes;
         this.#active = true;
         this.activated.resolve(signal.maxFrameBytes);
         break;
@@ -222,6 +233,7 @@ class ClientSession {
     consumedSeq = 0n,
     receiveMaxFrameBytes?: number,
     consumedBytes = 0,
+    receiveWindow?: [number, number],
   ): Promise<void> {
     this.#controlLane = this.#controlLane.then(async () => {
       const session = this.session;
@@ -235,7 +247,15 @@ class ClientSession {
           receivedSeq: receivedSeq.toString(),
           consumedSeq: consumedSeq.toString(),
           ...(action === "activate"
-            ? { receiveMaxFrameBytes }
+            ? {
+                receiveMaxFrameBytes,
+                ...(receiveWindow
+                  ? {
+                      receiveWindowFrames: receiveWindow[0],
+                      receiveWindowBytes: receiveWindow[1],
+                    }
+                  : {}),
+              }
             : { consumedBytes: String(consumedBytes) }),
           ...(action === "end-ack" ? { finalSeq: consumedSeq.toString() } : {}),
         }),
@@ -254,6 +274,13 @@ class ClientSession {
         headers,
         reply: session.grant.signalSubject,
       });
+      recordTransferMessage(
+        session.grant.direction,
+        "client",
+        "control",
+        headers,
+        payload.length,
+      );
       if (action === "end-ack") {
         try {
           await transferWait(session.lease.nc.flush(), session.abort.signal);
@@ -271,6 +298,42 @@ class ClientSession {
     return this.#controlLane;
   }
 
+  /** Largest raw DATA frame both this connection and the grant can carry. */
+  #maxFrameBytes(): number {
+    const maxFrameBytes = Math.min(
+      this.session.grant.maxFrameBytes,
+      (this.session.lease.nc.info?.max_payload ?? 0) -
+        transferConstants().headerReserve,
+    );
+    if (maxFrameBytes < 1) {
+      throw new Error("NATS payload limit cannot carry transfer frames");
+    }
+    return maxFrameBytes;
+  }
+
+  /**
+   * Admit and fix a receiving consumer's window `[frames, bytes]` before its
+   * data subscription exists; activation declares it to the provider, which
+   * sends within the smaller of it and the grant. Released when the session
+   * ends, on every path.
+   */
+  admitReceiveWindow(): [number, number] {
+    if (this.#receiveWindow) return this.#receiveWindow;
+    const session = this.session;
+    const budget = processReceiveBudget();
+    const offered = budget.offer(this.#maxFrameBytes());
+    if (!offered) throw new Error("transfer receive capacity exhausted");
+    const window: [number, number] = [
+      Math.min(offered[0], session.grant.windowFrames),
+      Math.min(offered[1], session.grant.windowBytes),
+    ];
+    const release = budget.reserve(window[1]);
+    if (!release) throw new Error("transfer receive capacity exhausted");
+    session.abort.signal.addEventListener("abort", release, { once: true });
+    this.#receiveWindow = window;
+    return window;
+  }
+
   async activate(): Promise<number> {
     const session = this.session;
     const timer = setTimeout(
@@ -286,18 +349,19 @@ class ClientSession {
     );
     try {
       await session.retainLocal();
-      const maxFrameBytes = Math.min(
-        session.grant.maxFrameBytes,
-        (session.lease.nc.info?.max_payload ?? 0) -
-          transferConstants().headerReserve,
-      );
-      if (maxFrameBytes < 1) {
-        throw new Error("NATS payload limit cannot carry transfer frames");
-      }
+      const maxFrameBytes = this.#maxFrameBytes();
       this.#offeredMaxFrameBytes = maxFrameBytes;
+      const receiveWindow =
+        session.grant.direction === "receive"
+          ? this.admitReceiveWindow()
+          : undefined;
+      [this.#limitFrames, this.#limitBytes] = receiveWindow ?? [
+        session.grant.windowFrames,
+        session.grant.windowBytes,
+      ];
       await transferWait(session.lease.nc.flush(), session.abort.signal);
       await transferWait(
-        this.control("activate", 0n, 0n, maxFrameBytes),
+        this.control("activate", 0n, 0n, maxFrameBytes, 0, receiveWindow),
         session.abort.signal,
       );
       return await transferWait(this.activated.promise, session.abort.signal);
@@ -395,10 +459,10 @@ export class SendTransferHandle extends BaseTransferHandle {
           const maxFrameBytes = await client.activate();
           const window = (client.window = new SenderWindow({
             maxFrameBytes,
-            windowFrames: this.grant.windowFrames,
-            windowBytes: this.grant.windowBytes,
+            windowFrames: client.windowFrames,
+            windowBytes: client.windowBytes,
           }));
-          const hasher = sha256.create();
+          const hasher = createSha256();
           let size = 0;
           for await (const frame of frames(
             body,
@@ -448,14 +512,13 @@ export class SendTransferHandle extends BaseTransferHandle {
             if (window.commitFrame(seq, frame.length)) {
               throw new Error("transfer frame accounting failed");
             }
-            recordCatalogCounter("trellis.transfer.frames", 1, {
-              "trellis.direction": "upload",
-              "trellis.side": "client",
-            });
-            recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
-              "trellis.direction": "upload",
-              "trellis.side": "client",
-            });
+            recordTransferMessage(
+              "send",
+              "client",
+              "data",
+              headers,
+              frame.length,
+            );
             hasher.update(frame);
           }
           const digest = `SHA-256=${base64urlEncode(hasher.digest())}`;
@@ -480,6 +543,13 @@ export class SendTransferHandle extends BaseTransferHandle {
             headers: completionHeaders,
             reply: this.grant.signalSubject,
           });
+          recordTransferMessage(
+            "send",
+            "client",
+            "complete",
+            completionHeaders,
+            completion.length,
+          );
           const info = await transferWait(
             client.committed.promise,
             session.abort.signal,
@@ -564,10 +634,12 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                 consumedBytes,
               ),
           );
+          // The provider sends within the window this consumer admits.
+          const [receiveFrames, receiveBytes] = client.admitReceiveWindow();
           const ingress = new TransferIngress(
             this.grant.maxFrameBytes,
-            this.grant.windowFrames,
-            this.grant.windowBytes,
+            receiveFrames,
+            receiveBytes,
             (seq, bytes) => {
               consumed = seq;
               consumedBytes += bytes;
@@ -576,7 +648,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             "download",
           );
           client.ingress = ingress;
-          const hash = sha256.create();
+          const hash = createSha256();
           let streamController:
             ReadableStreamDefaultController<Uint8Array> | undefined;
           let streamTerminated = false;
@@ -601,12 +673,12 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                 }
                 if (
                   ++pendingFrames + ingress.bufferedFrames >
-                    this.grant.windowFrames +
+                    receiveFrames +
                       (msg.headers?.get("trellis-transfer-control") === "eof"
                         ? 1
                         : 0) ||
                   (pendingBytes += msg.data.length) + ingress.bufferedBytes >
-                    this.grant.windowBytes
+                    receiveBytes
                 ) {
                   session.fail(
                     new Error("transfer receive verification window exceeded"),
@@ -685,18 +757,6 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                       hash.update(msg.data);
                       handoff();
                       ingress.push(seq, msg.data);
-                      recordCatalogCounter("trellis.transfer.frames", 1, {
-                        "trellis.direction": "download",
-                        "trellis.side": "client",
-                      });
-                      recordCatalogCounter(
-                        "trellis.transfer.wire.bytes",
-                        msg.data.length,
-                        {
-                          "trellis.direction": "download",
-                          "trellis.side": "client",
-                        },
-                      );
                     }
                   })
                   .finally(() => {

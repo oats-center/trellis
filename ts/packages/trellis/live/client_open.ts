@@ -463,7 +463,7 @@ async function verifyOffer(
       "offer omitted or duplicated proof headers",
     );
   }
-  liveVerifyServerProof(
+  await liveVerifyServerProof(
     proof,
     contextDigest,
     response.subject,
@@ -1192,7 +1192,7 @@ async function verifyProviderFrame(
   if (sessionKey !== providerGuard.identity.sessionPublicKey) return false;
   if (sessionId !== offer.sessionId) return false;
   try {
-    liveVerifyServerProof(
+    await liveVerifyServerProof(
       proof,
       contextDigest,
       msg.subject,
@@ -1278,7 +1278,7 @@ async function controlAttempt(
       return failed("reply_provider_identity_mismatch");
     }
     try {
-      liveVerifyServerProof(
+      await liveVerifyServerProof(
         proofHeader,
         contextDigest,
         received.subject,

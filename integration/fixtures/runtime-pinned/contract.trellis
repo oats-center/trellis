@@ -18,13 +18,15 @@ api runtime@v1 {
   rpc Download { input Value; output Value; download; }
   operation Work { input Value; progress Update; output Value; signals { Continue Value; } }
   operation Upload { input Value; output Value; signals { Continue Value; } upload; }
+  operation Ingest { input Value; output Value; stream; }
+  rpc Generate { input Value; output Value; download; }
   event Changed { payload Value; }
   live Watch { input Empty; event Value; }
   capabilities {
-    capability transport { title "Transport"; description "Exercise the runtime transport surfaces."; consequence "The caller may invoke and observe the fixture transports."; consent_revision 1; allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } }
+    capability transport { title "Transport"; description "Exercise the runtime transport surfaces."; consequence "The caller may invoke and observe the fixture transports."; consent_revision 1; allows { rpc Echo; operation Work; operation Upload; operation Ingest; publish event Changed; subscribe event Changed; live Watch; } }
     capability echo { title "Echo"; description "Invoke the echo RPC."; consequence "The caller may echo values."; consent_revision 1; allows { rpc Echo; } }
     capability work { title "Work"; description "Execute the work operation."; consequence "The caller may execute and control work."; consent_revision 1; allows { operation Work; } }
-    capability download { title "Download"; description "Download a fixture value."; consequence "The caller may download values."; consent_revision 1; allows { rpc Download; } }
+    capability download { title "Download"; description "Download a fixture value."; consequence "The caller may download values."; consent_revision 1; allows { rpc Download; rpc Generate; } }
   }
 }
 

@@ -44,6 +44,16 @@ trellis-rs = { path = "crates/trellis" }
 trellis-protocol = { path = "crates/protocol" }
 trellis-models = { path = "crates/models" }
 
+# Browser and service protocol WASM: shipped to every TypeScript caller, so
+# size-optimized. Hashing-heavy work runs in native host crypto instead.
+[profile.protocol-wasm]
+inherits = "release"
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
 [workspace.package]
 version = "0.100.0-rc.3"
 edition = "2021"

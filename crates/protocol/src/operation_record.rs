@@ -146,16 +146,18 @@ impl DurableOperationRecord {
         }
         if let Some(value) = &self.transfer {
             let upload: OperationUpload = serde_json::from_value(value.clone())?;
-            if upload.staging_key.is_empty()
-                || !matches!(
-                    upload.state.as_str(),
-                    "pending" | "uploading" | "committed" | "invalid"
-                )
-            {
+            // Staged attempts own a staging object; stream attempts deliver
+            // bytes straight to the running handler and stage nothing.
+            let valid = match upload.state.as_str() {
+                "pending" | "uploading" | "committed" | "invalid" => !upload.staging_key.is_empty(),
+                "streaming" | "streamed" => upload.staging_key.is_empty(),
+                _ => false,
+            };
+            if !valid {
                 return Err(invalid("invalid upload attempt"));
             }
             crate::transfer::parse_transfer_grant(&serde_json::to_vec(&upload.grant)?)?;
-            if upload.state == "committed" {
+            if matches!(upload.state.as_str(), "committed" | "streamed") {
                 let info: crate::transfer::TransferFileInfo =
                     serde_json::from_value(upload.file_info.ok_or_else(|| {
                         invalid("committed upload is missing logical file metadata")
@@ -342,9 +344,10 @@ pub struct DurableOperationSignal {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationUpload<G = Value> {
-    /// Exact object-store locator for this attempt.
+    /// Exact object-store locator for a staged attempt; empty for a stream.
     pub staging_key: String,
-    /// Pending, uploading, committed, or invalid.
+    /// Staged: pending, uploading, committed, or invalid. Stream: streaming
+    /// until verified delivery, then streamed.
     pub state: String,
     /// Existing send grant.
     pub grant: G,

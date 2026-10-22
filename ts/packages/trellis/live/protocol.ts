@@ -19,8 +19,10 @@ export {
   liveParseFrame,
   liveParseOffer,
   liveParseU64s,
-  liveServerProofDigest,
   liveValidateSubject,
-  liveVerifyServerProof,
   type LiveWireTerminal,
 } from "../auth/protocol_wasm.ts";
+export {
+  liveServerProofDigest,
+  liveVerifyServerProof,
+} from "../auth/message_digests.ts";

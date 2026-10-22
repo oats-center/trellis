@@ -67,14 +67,16 @@ await cp("internal_sdk/generated", "npm/internal_sdk/generated", {
   recursive: true,
 });
 
-await mkdir("npm/auth/protocol_wasm", { recursive: true });
-for (const file of [
-  "trellis_protocol_wasm.js",
-  "trellis_protocol_wasm.d.ts",
-  "trellis_protocol_wasm_bg.wasm",
-]) {
-  await copyFile(
-    `auth/protocol_wasm/${file}`,
-    `npm/auth/protocol_wasm/${file}`,
-  );
+for (const variant of ["client", "provider"]) {
+  await mkdir(`npm/auth/protocol_wasm/${variant}`, { recursive: true });
+  for (const file of [
+    "trellis_protocol_wasm.js",
+    "trellis_protocol_wasm.d.ts",
+    "trellis_protocol_wasm_bg.wasm",
+  ]) {
+    await copyFile(
+      `auth/protocol_wasm/${variant}/${file}`,
+      `npm/auth/protocol_wasm/${variant}/${file}`,
+    );
+  }
 }

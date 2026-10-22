@@ -1,4 +1,9 @@
 import {
+  sessionRequestSigningDigest,
+  sessionEventSigningDigest,
+  sessionResponseSigningDigest,
+} from "./auth/message_digests.ts";
+import {
   type ConsumerMessages,
   jetstream,
   type JetStreamClient,
@@ -36,11 +41,7 @@ import { LiveStreamError } from "./live/types.ts";
 import type { ParticipantKvMetadata } from "./participant_runtime/metadata.ts";
 import type { EventConsumerResourceBinding } from "./participant_runtime/schemas.ts";
 import type { StaticDecode } from "typebox";
-import {
-  sessionRequestSigningDigestWasm,
-  sessionEventSigningDigestWasm,
-  sessionResponseSigningDigestWasm,
-} from "./auth/protocol_wasm.ts";
+import {} from "./auth/protocol_wasm.ts";
 import { trellisCrypto } from "./auth/crypto.ts";
 import type {
   SessionAuthorityOwner,
@@ -1159,12 +1160,31 @@ export type AcceptedOperation<
     output?: TOutput;
   };
 };
+/**
+ * A provider's view of an Operation's caller-sent bytes.
+ *
+ * For an `upload` Operation the bytes are durably staged before the handler
+ * reads them, and can be read again. For a `stream` Operation the handler
+ * reads the caller's bytes as they arrive, exactly once: the stream ends only
+ * after the caller's final size and SHA-256 digest were verified and the
+ * delivery was durably recorded, and errors if the transfer fails. A stream
+ * cannot be replayed, so an interrupted `stream` Operation fails and the
+ * caller must start a new one.
+ */
 export type OperationTransferHandle = {
+  /** Consumed-byte progress while the transfer runs. */
   updates(): AsyncIterable<RuntimeOperationTransferProgress>;
+  /** Resolves with the verified object metadata once the bytes are committed. */
   completed(): AsyncResult<FileInfo, TransferOperationError>;
-  /** Waits for successful staging, then opens the staged upload object. */
+  /**
+   * `upload`: waits for staging, then opens the staged object.
+   * `stream`: returns the live stream once; a second call fails.
+   */
   stream(): AsyncResult<ReadableStream<Uint8Array>, TransferOperationError>;
-  /** Waits for successful staging, then reads the staged upload bytes. */
+  /**
+   * `upload`: waits for staging, then reads the staged bytes.
+   * `stream`: reads the live stream to its end, retaining every byte.
+   */
   bytes(): AsyncResult<Uint8Array, TransferError>;
 };
 /** Decoded current State value and its opaque storage revision. */
@@ -1378,7 +1398,8 @@ export type RuntimeOperationDesc = {
   signals?: Record<string, { input: unknown }>;
   cancelCapabilities?: readonly string[];
   controlCapabilities?: readonly string[];
-  transfer?: { direction: "send" };
+  /** Caller-sent bytes; `stream` delivers them to the running handler. */
+  transfer?: { direction: "send"; stream?: boolean };
   cancel?: boolean;
 };
 
@@ -5131,7 +5152,7 @@ export class Trellis<
     this.#replyRequests.set(msg, {
       request,
       digest: base64urlEncode(
-        await sessionRequestSigningDigestWasm(request, msg.data),
+        await sessionRequestSigningDigest(request, msg.data),
       ),
     });
   }
@@ -5180,7 +5201,7 @@ export class Trellis<
           };
           const proof = base64urlEncode(
             await this.#auth.sign(
-              await sessionResponseSigningDigestWasm(
+              await sessionResponseSigningDigest(
                 response,
                 new TextEncoder().encode(payload),
               ),
@@ -6665,10 +6686,7 @@ export class Trellis<
         issuedAt: iat,
         requestId,
       };
-      const digest = await sessionRequestSigningDigestWasm(
-        request,
-        payloadBytes,
-      );
+      const digest = await sessionRequestSigningDigest(request, payloadBytes);
       const sigBytes = await this.#auth.sign(digest);
       own.assertCurrent();
       return {
@@ -6711,7 +6729,7 @@ export class Trellis<
         eventId: event.header.id,
         eventTime: event.header.time,
       };
-      const digest = await sessionEventSigningDigestWasm(
+      const digest = await sessionEventSigningDigest(
         signedEvent,
         new TextEncoder().encode(event.encodedPayload),
       );

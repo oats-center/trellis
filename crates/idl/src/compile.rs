@@ -963,7 +963,7 @@ fn resolve_action(
     let allowed: &[&str] = match raw.kind.as_str() {
         "rpc" => &["input", "output", "errors", "download", "pagination"],
         "operation" => &[
-            "input", "output", "progress", "update", "errors", "signals", "upload",
+            "input", "output", "progress", "update", "errors", "signals", "upload", "stream",
         ],
         "event" => &["payload", "params"],
         "live" => &["input", "event"],
@@ -1022,6 +1022,12 @@ fn resolve_action(
             },
         },
         "operation" => {
+            let stream = raw.members.contains_key("stream");
+            if stream && raw.members.contains_key("upload") {
+                return Err(miette!(
+                    "operation declares both 'upload' and 'stream'; 'stream' already accepts caller bytes"
+                ));
+            }
             let signals = match raw.members.get("signals") {
                 Some(MemberValue::Signals(values)) => values
                     .iter()
@@ -1037,7 +1043,8 @@ fn resolve_action(
                 update: optional_type("update")?,
                 errors: domain_errors,
                 signals,
-                upload: raw.members.contains_key("upload"),
+                upload: stream || raw.members.contains_key("upload"),
+                stream,
             }
         }
         "event" => {

@@ -130,6 +130,7 @@ pub(crate) fn selected_surface_digest_cached(
                 errors,
                 signals,
                 upload,
+                stream,
             } => {
                 append_schema(&mut output, graph, input, schemas)?;
                 append_schema(&mut output, graph, result, schemas)?;
@@ -147,7 +148,15 @@ pub(crate) fn selected_surface_digest_cached(
                     append_digest_field(&mut output, name);
                     append_schema(&mut output, graph, signal, schemas)?;
                 }
-                append_digest_field(&mut output, if *upload { "upload" } else { "" });
+                // One field keeps existing staged and non-upload digests stable.
+                append_digest_field(
+                    &mut output,
+                    match (*upload, *stream) {
+                        (_, true) => "stream",
+                        (true, false) => "upload",
+                        (false, false) => "",
+                    },
+                );
                 append_errors(&mut output, graph, api, errors, schemas)?;
             }
             ActionDefinition::Event {
@@ -587,6 +596,7 @@ fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, i
             errors,
             signals,
             upload,
+            stream,
         } => {
             writeln!(output, "    input {};", imports.ty(input)).unwrap();
             writeln!(output, "    output {};", imports.ty(result)).unwrap();
@@ -604,7 +614,9 @@ fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, i
                 }
                 output.push_str("    }\n");
             }
-            if *upload {
+            if *stream {
+                output.push_str("    stream;\n");
+            } else if *upload {
                 output.push_str("    upload;\n");
             }
         }

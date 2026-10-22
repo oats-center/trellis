@@ -5,9 +5,9 @@ use crate::authorization::{
     validate_text,
 };
 use crate::{
-    AuthorityIssuerKey, AuthorizationErrorCode, CatalogActionIdentity, ProtocolError,
-    SessionAuthorityVerificationPolicy, SessionBinding, SessionRequest, SignedProviderCertificate,
-    U64s, VerifiedSessionAuthority, MESSAGE_RESPONSE_DOMAIN_V1,
+    AuthenticatedProviderCertificate, AuthorityIssuerKey, AuthorizationErrorCode,
+    CatalogActionIdentity, ProtocolError, SessionAuthorityVerificationPolicy, SessionBinding,
+    SessionRequest, U64s, VerifiedSessionAuthority, MESSAGE_RESPONSE_DOMAIN_V1,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signature, Signer, SigningKey};
@@ -80,6 +80,14 @@ pub fn session_response_signing_digest(
     response: &SessionResponse,
     raw_payload: &[u8],
 ) -> Result<[u8; 32], ProtocolError> {
+    response_signing_digest_sha256(response, &Sha256::digest(raw_payload).into())
+}
+
+/// The response digest over an already computed SHA-256 of the exact payload bytes.
+pub(crate) fn response_signing_digest_sha256(
+    response: &SessionResponse,
+    payload_sha256: &[u8; 32],
+) -> Result<[u8; 32], ProtocolError> {
     validate_text(&response.trellis_instance_id, &["trellisInstanceId"])?;
     validate_text(&response.audience_nats_account, &["audienceNatsAccount"])?;
     crate::validate_api_id(&response.api_id)?;
@@ -99,7 +107,7 @@ pub fn session_response_signing_digest(
     let request = decode_base64url::<32>(&response.request_proof_digest)?;
     let generation = response.api_generation.get().to_be_bytes();
     let issued_at = response.issued_at.to_be_bytes();
-    let payload_hash: [u8; 32] = Sha256::digest(raw_payload).into();
+    let payload_hash = *payload_sha256;
     let kind = match response.kind {
         SessionResponseKind::Success => "success",
         SessionResponseKind::Error => "error",
@@ -148,7 +156,7 @@ pub struct SessionResponseVerificationInput<'a> {
     /// Previously issuer-verified provider authority.
     pub provider: &'a VerifiedSessionAuthority,
     /// Provider action certificate resolved by its authenticated digest.
-    pub certificate: &'a SignedProviderCertificate,
+    pub certificate: &'a AuthenticatedProviderCertificate,
     /// Pinned issuer for that certificate.
     pub certificate_issuer: &'a AuthorityIssuerKey,
     /// Actual retained opening request, not response assertions.
@@ -163,8 +171,8 @@ pub struct SessionResponseVerificationInput<'a> {
     pub received_subject: &'a str,
     /// Received signed response identity.
     pub response: &'a SessionResponse,
-    /// Exact received bytes preserved for the application codec.
-    pub raw_payload: &'a [u8],
+    /// SHA-256 of the exact received payload bytes, which the caller retains.
+    pub payload_sha256: [u8; 32],
     /// Received provider signature.
     pub proof: &'a SessionResponseProof,
     /// Current time and verification limits after any metadata resolution.
@@ -178,7 +186,6 @@ pub struct SessionResponseVerificationInput<'a> {
 pub struct VerifiedSessionResponse<'a> {
     provider: &'a VerifiedSessionAuthority,
     response: &'a SessionResponse,
-    raw_payload: &'a [u8],
 }
 
 impl<'a> VerifiedSessionResponse<'a> {
@@ -189,10 +196,6 @@ impl<'a> VerifiedSessionResponse<'a> {
     /// Authenticated response classification and request binding.
     pub fn response(&self) -> &'a SessionResponse {
         self.response
-    }
-    /// Exact authenticated payload for decoding without reconstruction.
-    pub fn raw_payload(&self) -> &'a [u8] {
-        self.raw_payload
     }
 }
 
@@ -211,13 +214,13 @@ pub fn verify_session_response(
     let response = input.response;
     let request = input.pending_request;
     let certificate = input.certificate;
-    certificate.verify(
+    certificate.check_at(
         input.certificate_issuer,
         &provider.trellis_instance_id,
         &provider.audience_nats_account,
         input.policy.now_unix_seconds,
     )?;
-    let certificate_digest = certificate.digest()?;
+    let certificate_digest = certificate.digest();
     let deployment_matches = match &provider.binding {
         SessionBinding::Service {
             deployment_id,
@@ -285,7 +288,7 @@ pub fn verify_session_response(
             "response issue time is outside provider authority",
         ));
     }
-    let digest = session_response_signing_digest(response, input.raw_payload)?;
+    let digest = response_signing_digest_sha256(response, &input.payload_sha256)?;
     let key = ed25519_dalek::VerifyingKey::from_bytes(&decode_base64url::<32>(
         &provider.session_public_key,
     )?)
@@ -310,6 +313,5 @@ pub fn verify_session_response(
     Ok(VerifiedSessionResponse {
         provider: input.provider,
         response,
-        raw_payload: input.raw_payload,
     })
 }

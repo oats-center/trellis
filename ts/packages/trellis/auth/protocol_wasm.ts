@@ -1,20 +1,68 @@
-import init, {
-  initSync,
-  type VerifiedSessionAuthorityHandle as WasmSessionAuthorityHandle,
-} from "./protocol_wasm/trellis_protocol_wasm.js";
-import * as protocolWasmModule from "./protocol_wasm/trellis_protocol_wasm.js";
-import { PROTOCOL_WASM_BASE64 } from "./protocol_wasm/trellis_protocol_wasm_bytes.ts";
+import type {
+  AuthenticatedCatalogHandle as WasmCatalogHandle,
+  AuthenticatedProviderCertificateHandle as WasmProviderCertificateHandle,
+  VerifiedSessionAuthorityHandle as WasmSessionAuthorityHandle,
+} from "./protocol_wasm/client/trellis_protocol_wasm.js";
+import * as clientProtocolWasm from "./protocol_wasm/client/trellis_protocol_wasm.js";
+import type * as ProviderProtocolWasm from "./protocol_wasm/provider/trellis_protocol_wasm.js";
 import { base64urlDecode, type JsonValue } from "./utils.ts";
 
 type JsonObject = { [key: string]: JsonValue };
 
-const protocolWasm = protocolWasmModule;
+/** Generated bindings of the request-serving protocol build. */
+export type ProviderProtocolWasmModule = typeof ProviderProtocolWasm;
+
+// Callers use the client build. Services and devices select the provider build,
+// a superset, before first use; one process runs exactly one instance.
+let protocolWasm: typeof clientProtocolWasm = clientProtocolWasm;
+let providerProtocolWasm: ProviderProtocolWasmModule | undefined;
+let protocolWasmUrl = new URL(
+  "./protocol_wasm/client/trellis_protocol_wasm_bg.wasm",
+  import.meta.url,
+);
+
+/**
+ * Select the provider protocol build for a request-serving process.
+ *
+ * Called once by the service and device entrypoints at import, before any
+ * protocol use. Selecting after the client build was loaded fails, because
+ * values created by one instance are invalid in another.
+ */
+export function selectProviderProtocolWasm(
+  bindings: ProviderProtocolWasmModule,
+  url: URL,
+): void {
+  if (providerProtocolWasm) return;
+  if (initialized || initializedSync) {
+    throw new Error(
+      "Trellis loaded its client protocol build before the service or device entrypoint; import that entrypoint first",
+    );
+  }
+  providerProtocolWasm = bindings;
+  protocolWasm = bindings;
+  protocolWasmUrl = url;
+}
+
+function providerProtocol(): ProviderProtocolWasmModule {
+  if (!providerProtocolWasm) {
+    throw new Error(
+      "this protocol operation serves requests; import @oatscenter/trellis/service or /device",
+    );
+  }
+  return providerProtocolWasm;
+}
+
+/** Bindings of the selected protocol build, initialized for synchronous use. */
+export function protocolBindings(): typeof clientProtocolWasm {
+  initializeProtocolWasmSync();
+  return protocolWasm;
+}
 
 /** Validate framework-private Operation state through the shared native codec. */
 export function normalizeOperationRecordWasm(value: unknown): unknown {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.normalize_operation_record(JSON.stringify(value)),
+    providerProtocol().normalize_operation_record(JSON.stringify(value)),
   );
 }
 
@@ -245,7 +293,8 @@ export type VerifySessionRequestResult =
 export type VerifySessionRequestArgs = {
   authorityHandle: SessionAuthorityHandle;
   request: SessionRequest;
-  payload: Uint8Array;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
   proof: string;
   policy: SessionAuthorityVerificationPolicy;
   knownRevoked: boolean;
@@ -272,10 +321,11 @@ export type SessionResponse = {
 export type VerifySessionResponseArgs = {
   providerHandle: SessionAuthorityHandle;
   response: SessionResponse;
-  payload: Uint8Array;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
   proof: string;
-  /** Untrusted certificate bytes are authenticated by Rust, not merely decoded. */
-  certificate: JsonObject;
+  /** The provider's certificate, authenticated once when it was fetched. */
+  certificate: ProviderCertificateHandle;
   certificateIssuer: AuthorityIssuerKey;
   pendingRequest: SessionRequest;
   pendingRequestDigest: string;
@@ -406,7 +456,7 @@ export async function signProvisionedAdmissionWasm(
   seed: Uint8Array,
 ): Promise<string> {
   await initializeProtocolWasm();
-  return protocolWasm.sign_provisioned_admission(
+  return providerProtocol().sign_provisioned_admission(
     JSON.stringify(credential),
     seed,
   );
@@ -537,7 +587,7 @@ export type MetadataVerification = {
 
 /** Authenticate one bounded cold-path record in the canonical protocol implementation. */
 export async function verifyAuthorityMetadataWasm(
-  kind: "catalog" | "provider" | "rotation" | "revocation",
+  kind: "rotation" | "revocation",
   bytes: Uint8Array,
   verification: MetadataVerification,
 ): Promise<{
@@ -555,18 +605,11 @@ export async function verifyAuthorityMetadataWasm(
   );
 }
 
-/** Authenticate the catalog and exact delegated or certified provider-event publication rights. */
+/** Check whole-capability membership against a catalog authenticated once. */
 export async function authorizeCatalogActionWasm(
   authority: SessionAuthorityHandle,
-  catalog: Uint8Array,
-  verification: MetadataVerification & {
-    providerPublication?: {
-      certificate: JsonObject;
-      issuer: AuthorityIssuerKey;
-      at: number;
-      publishedAt?: number;
-    };
-  },
+  catalog: CatalogHandle,
+  verification: MetadataVerification,
   action: CatalogActionIdentity,
 ): Promise<boolean> {
   await initializeProtocolWasm();
@@ -580,6 +623,86 @@ export async function authorizeCatalogActionWasm(
   ).authorized;
 }
 
+/** Issuers, scope and authenticated times for a provider's own event publication. */
+export type ProviderEventPublication = {
+  catalogIssuer: AuthorityIssuerKey;
+  certificateIssuer: AuthorityIssuerKey;
+  trellisInstanceId: string;
+  audienceNatsAccount: string;
+  at: number;
+  publishedAt?: number;
+};
+
+/** Authorize a provider's own event publication by its certified implementation. */
+export async function authorizeProviderEventPublicationWasm(
+  authority: SessionAuthorityHandle,
+  catalog: CatalogHandle,
+  certificate: ProviderCertificateHandle,
+  publication: ProviderEventPublication,
+  action: CatalogActionIdentity,
+): Promise<boolean> {
+  await initializeProtocolWasm();
+  return parseWasmResult<{ authorized: boolean }>(
+    protocolWasm.authorize_provider_event_publication(
+      authority,
+      catalog,
+      certificate,
+      JSON.stringify(publication),
+      JSON.stringify(action),
+    ),
+  ).authorized;
+}
+
+/** A catalog snapshot authenticated once by the shared protocol. */
+export type CatalogHandle = WasmCatalogHandle;
+
+/** A provider certificate authenticated once by the shared protocol. */
+export type ProviderCertificateHandle = WasmProviderCertificateHandle;
+
+/**
+ * Authenticate a catalog snapshot once. Later authorizations recheck only
+ * the issuer and trust scope against the returned handle.
+ */
+export async function authenticateCatalogWasm(
+  bytes: Uint8Array,
+  verification: MetadataVerification,
+): Promise<{ handle: CatalogHandle; digest: string; record: JsonObject }> {
+  await initializeProtocolWasm();
+  const handle = protocolWasm.create_catalog_handle(
+    bytes,
+    JSON.stringify(verification),
+  );
+  const { digest, record } = JSON.parse(handle.projection()) as {
+    digest: string;
+    record: JsonObject;
+  };
+  return { handle, digest, record };
+}
+
+/**
+ * Authenticate a provider certificate once, valid at
+ * `verification.nowUnixSeconds`. Later uses recheck issuer, scope and time.
+ */
+export async function authenticateProviderCertificateWasm(
+  bytes: Uint8Array,
+  verification: MetadataVerification,
+): Promise<{
+  handle: ProviderCertificateHandle;
+  digest: string;
+  record: JsonObject;
+}> {
+  await initializeProtocolWasm();
+  const handle = protocolWasm.create_provider_certificate_handle(
+    bytes,
+    JSON.stringify(verification),
+  );
+  const { digest, record } = JSON.parse(handle.projection()) as {
+    digest: string;
+    record: JsonObject;
+  };
+  return { handle, digest, record };
+}
+
 /** Original broker provenance; never synthesized from a publisher's header. */
 export type OriginalEventPublication = {
   publishedAt: string;
@@ -590,7 +713,8 @@ export type OriginalEventPublication = {
 export async function verifySessionEventWasm(args: {
   authorityHandle: SessionAuthorityHandle;
   event: SessionEvent;
-  payload: Uint8Array;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
   proof: string;
   policy: SessionAuthorityVerificationPolicy;
   originalPublication: OriginalEventPublication | null;
@@ -600,12 +724,12 @@ export async function verifySessionEventWasm(args: {
   | { ok: false; error: AuthorizationVerificationError }
 > {
   await initializeProtocolWasm();
-  const { authorityHandle, payload, ...verification } = args;
+  const { authorityHandle, payloadSha256, ...verification } = args;
   return JSON.parse(
     protocolWasm.verify_session_event(
       authorityHandle,
       JSON.stringify(verification),
-      payload,
+      payloadSha256,
     ),
   );
 }
@@ -616,80 +740,43 @@ export type SessionAuthorityHandle = WasmSessionAuthorityHandle;
 let initialized: Promise<void> | undefined;
 let initializedSync = false;
 
-async function wasmBytes(): Promise<Uint8Array> {
-  const url = new URL(
-    "./protocol_wasm/trellis_protocol_wasm_bg.wasm",
-    import.meta.url,
-  );
-  if (url.protocol === "file:") {
-    const { readFile } = await import("node:fs/promises");
-    return new Uint8Array(await readFile(url));
-  }
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(
-      `authorization protocol WASM returned HTTP ${response.status}`,
-    );
-  }
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-/** Initialize the shared Rust protocol implementation before asynchronous use. */
+/** Initialize the selected protocol build before asynchronous use. */
 export async function initializeProtocolWasm(): Promise<void> {
   if (initializedSync) return;
   initialized ??= (async () => {
-    await init({ module_or_path: await wasmBytes() });
+    const bindings = protocolWasm;
+    const url = protocolWasmUrl;
+    if (url.protocol === "file:") {
+      const { readFile } = await import("node:fs/promises");
+      await bindings.default({ module_or_path: await readFile(url) });
+      return;
+    }
+    // Browsers fetch the module as a separate cacheable asset.
+    await bindings.default({ module_or_path: fetch(url) });
   })();
   await initialized;
   initializedSync = true;
 }
 
-/** Initialize the shared Rust protocol implementation before synchronous use. */
+/**
+ * Initialize the selected protocol build for synchronous use.
+ *
+ * Server runtimes read the module from disk. Browsers cannot load it
+ * synchronously; connecting initializes it first.
+ */
 export function initializeProtocolWasmSync(): void {
   if (initializedSync) return;
-  const binary = atob(PROTOCOL_WASM_BASE64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  const fs =
+    protocolWasmUrl.protocol === "file:"
+      ? globalThis.process?.getBuiltinModule?.("node:fs")
+      : undefined;
+  if (!fs) {
+    throw new Error(
+      "Trellis protocol is not initialized; connect, or await initializeProtocolWasm(), first",
+    );
   }
-  initSync({ module: bytes });
+  protocolWasm.initSync({ module: fs.readFileSync(protocolWasmUrl) });
   initializedSync = true;
-}
-
-/** Hash the exact request publication buffer through the native shared transcript. */
-export async function sessionRequestSigningDigestWasm(
-  request: SessionRequest,
-  payload: Uint8Array,
-): Promise<Uint8Array> {
-  await initializeProtocolWasm();
-  return protocolWasm.session_request_signing_digest(
-    JSON.stringify(request),
-    payload,
-  );
-}
-
-/** Hash the original publication bytes and event identity in the shared protocol. */
-export async function sessionEventSigningDigestWasm(
-  event: SessionEvent,
-  payload: Uint8Array,
-): Promise<Uint8Array> {
-  await initializeProtocolWasm();
-  return protocolWasm.session_event_signing_digest(
-    JSON.stringify(event),
-    payload,
-  );
-}
-
-/** Hash exact provider result bytes through the shared response transcript. */
-export async function sessionResponseSigningDigestWasm(
-  response: SessionResponse,
-  payload: Uint8Array,
-): Promise<Uint8Array> {
-  await initializeProtocolWasm();
-  return protocolWasm.session_response_signing_digest(
-    JSON.stringify(response),
-    payload,
-  );
 }
 
 /** Verify before decoding a provider result or completing its pending request. */
@@ -697,12 +784,13 @@ export async function verifySessionResponseWasm(
   args: VerifySessionResponseArgs,
 ): Promise<VerifySessionResponseResult> {
   await initializeProtocolWasm();
-  const { providerHandle, payload, ...verification } = args;
+  const { providerHandle, certificate, payloadSha256, ...verification } = args;
   return JSON.parse(
     protocolWasm.verify_session_response(
       providerHandle,
+      certificate,
       JSON.stringify(verification),
-      payload,
+      payloadSha256,
     ),
   ) as VerifySessionResponseResult;
 }
@@ -805,27 +893,51 @@ export async function classifyTransportAuthorizationWasm(
   allowed: TransportAuthorizationV1,
   nowUnixSeconds: number,
 ): Promise<TransportPolicyClass> {
+  if (!Number.isFinite(nowUnixSeconds)) {
+    throw new Error("now must be a finite number");
+  }
+  // Time enters only through the admitted policy's hard deadline; subject
+  // coverage between two immutable policies never changes, so it is computed
+  // once (at time 0, before every valid deadline) and reused.
+  if (
+    admitted.hardExpiresAt !== null &&
+    admitted.hardExpiresAt <= nowUnixSeconds
+  ) {
+    await initializeProtocolWasm();
+    return JSON.parse(
+      protocolWasm.classify_transport_authorization(
+        JSON.stringify(admitted),
+        JSON.stringify(allowed),
+        nowUnixSeconds,
+      ),
+    ) as TransportPolicyClass;
+  }
+  const admittedJson = JSON.stringify(admitted);
+  const allowedJson = JSON.stringify(allowed);
+  const key = `${admittedJson}\u0000${allowedJson}`;
+  const cached = transportClassCache.get(key);
+  if (cached) return cached;
   await initializeProtocolWasm();
-  return JSON.parse(
-    protocolWasm.classify_transport_authorization(
-      JSON.stringify(admitted),
-      JSON.stringify(allowed),
-      nowUnixSeconds,
-    ),
+  const relation = JSON.parse(
+    protocolWasm.classify_transport_authorization(admittedJson, allowedJson, 0),
   ) as TransportPolicyClass;
+  if (transportClassCache.size >= 256) transportClassCache.clear();
+  transportClassCache.set(key, relation);
+  return relation;
 }
+const transportClassCache = new Map<string, TransportPolicyClass>();
 
 /** Authenticate exact request bytes and captured API identity through Rust/WASM. */
 export async function verifySessionRequestWasm(
   args: VerifySessionRequestArgs,
 ): Promise<VerifySessionRequestResult> {
   await initializeProtocolWasm();
-  const { authorityHandle, payload, ...input } = args;
+  const { authorityHandle, payloadSha256, ...input } = args;
   return JSON.parse(
-    protocolWasm.verify_session_request(
+    providerProtocol().verify_session_request(
       authorityHandle,
       JSON.stringify(input),
-      payload,
+      payloadSha256,
     ),
   ) as VerifySessionRequestResult;
 }
@@ -1137,37 +1249,7 @@ export function liveLogicalOpenHash(identity: object): string {
 /** Compute the canonical logical-control hash through the shared protocol. */
 export function liveLogicalControlHash(raw: Uint8Array): string {
   initializeProtocolWasmSync();
-  return protocolWasm.live_logical_control_hash(raw);
-}
-
-/** Build the provider server-message proof digest over exact transmitted bytes. */
-export function liveServerProofDigest(
-  contextDigest: string,
-  subject: string,
-  rawBody: Uint8Array,
-): Uint8Array {
-  initializeProtocolWasmSync();
-  return base64urlDecode(
-    protocolWasm.live_server_proof_digest(contextDigest, subject, rawBody),
-  );
-}
-
-/** Verify one provider server-message proof against the pinned provider key. */
-export function liveVerifyServerProof(
-  proof: string,
-  contextDigest: string,
-  subject: string,
-  rawBody: Uint8Array,
-  providerKey: string,
-): void {
-  initializeProtocolWasmSync();
-  protocolWasm.live_verify_server_proof(
-    proof,
-    contextDigest,
-    subject,
-    rawBody,
-    providerKey,
-  );
+  return providerProtocol().live_logical_control_hash(raw);
 }
 
 /** Canonical Transfer session subject family. */
@@ -1203,7 +1285,13 @@ type TransferControlBase = {
 /** Strict v2 caller controls, parsed and validated by canonical Rust/WASM. */
 export type TransferControlWire = TransferControlBase &
   (
-    | { action: "activate"; receiveMaxFrameBytes: number }
+    | {
+        action: "activate";
+        receiveMaxFrameBytes: number;
+        /** A receiving consumer's admitted window; downloads only. */
+        receiveWindowFrames?: number;
+        receiveWindowBytes?: number;
+      }
     | { action: "credit" | "cancel"; consumedBytes: string }
     | { action: "end-ack"; consumedBytes: string; finalSeq: string }
   );
@@ -1317,6 +1405,9 @@ export type TransferConstants = {
   maxFrameBytes: number;
   windowFrames: number;
   windowBytes: number;
+  maxWindowFrames: number;
+  maxWindowBytes: number;
+  processReceiveBytes: number;
   creditFrameStep: number;
   creditByteStep: number;
   creditMaxDelayMs: number;
@@ -1332,22 +1423,24 @@ export type TransferConstants = {
 
 /** Read canonical Transfer constants, initializing WASM only on first access. */
 export function transferConstants(): TransferConstants {
-  let constants: TransferConstants | undefined;
-  return new Proxy({} as TransferConstants, {
-    get(_target, property) {
-      initializeProtocolWasmSync();
-      constants ??= JSON.parse(
-        protocolWasm.transfer_constants(),
-      ) as TransferConstants;
-      return constants[property as keyof TransferConstants];
-    },
-  });
+  return transferConstantsProxy;
 }
+let transferConstantsValue: TransferConstants | undefined;
+// Read lazily, once: importing a module never loads the protocol build.
+const transferConstantsProxy = new Proxy({} as TransferConstants, {
+  get(_target, property) {
+    initializeProtocolWasmSync();
+    transferConstantsValue ??= JSON.parse(
+      protocolWasm.transfer_constants(),
+    ) as TransferConstants;
+    return transferConstantsValue[property as keyof TransferConstants];
+  },
+});
 
 /** Generate a canonical random transfer ID. */
 export function transferGenerateId(): string {
   initializeProtocolWasmSync();
-  return protocolWasm.transfer_generate_id();
+  return providerProtocol().transfer_generate_id();
 }
 
 /** Derive an exact session subject from both logical endpoint identities. */
@@ -1358,7 +1451,12 @@ export function transferSubject(
   transferId: string,
 ): string {
   initializeProtocolWasmSync();
-  return protocolWasm.transfer_subject(kind, provider, consumer, transferId);
+  return providerProtocol().transfer_subject(
+    kind,
+    provider,
+    consumer,
+    transferId,
+  );
 }
 
 /** Validate an exact subject and return its canonical family. */
@@ -1384,6 +1482,38 @@ export function transferNegotiateMaxFrameBytes(
   return protocolWasm.transfer_negotiate_max_frame_bytes(consumer, provider);
 }
 
+/**
+ * Receive window `[frames, bytes]` to offer from `available` admission bytes,
+ * or `undefined` when less than one frame fits. Shared with the Rust SDK.
+ */
+export function transferReceiveWindow(
+  available: number,
+  maxFrameBytes: number,
+): [number, number] | undefined {
+  initializeProtocolWasmSync();
+  const window: unknown = JSON.parse(
+    protocolWasm.transfer_receive_window(available, maxFrameBytes),
+  );
+  if (window === null) return undefined;
+  if (
+    !Array.isArray(window) ||
+    window.length !== 2 ||
+    !window.every((value) => Number.isSafeInteger(value))
+  )
+    throw new Error("invalid transfer receive window");
+  return [window[0], window[1]];
+}
+
+/** Verify a provider's Ed25519 proof over a natively computed 32-byte digest. */
+export function verifyProofDigest(
+  proof: string,
+  digest: Uint8Array,
+  providerKey: string,
+): void {
+  initializeProtocolWasmSync();
+  protocolWasm.verify_proof_digest(proof, digest, providerKey);
+}
+
 /** Validate a direction-specific public grant before any transport acquisition. */
 export function transferParseGrant(raw: Uint8Array): TransferGrantWire {
   initializeProtocolWasmSync();
@@ -1396,7 +1526,7 @@ export function transferParseGrant(raw: Uint8Array): TransferGrantWire {
 export function transferParseControl(raw: Uint8Array): TransferControlWire {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.transfer_parse_control(raw),
+    providerProtocol().transfer_parse_control(raw),
   ) as TransferControlWire;
 }
 
@@ -1412,7 +1542,7 @@ export function transferParseSignal(raw: Uint8Array): TransferSignalWire {
 export function transferParseComplete(raw: Uint8Array): TransferCompleteWire {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.transfer_parse_complete(raw),
+    providerProtocol().transfer_parse_complete(raw),
   ) as TransferCompleteWire;
 }
 

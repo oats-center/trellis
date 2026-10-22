@@ -104,6 +104,43 @@ async fn rust_upload_to_typescript_reads_persisted_bytes() {
     )
     .unwrap();
     assert_eq!(base.download_transfer(&grant).await.unwrap(), bytes);
+    // A `stream` Operation delivers the bytes to the running TypeScript
+    // handler; the caller's success is the verified, recorded delivery.
+    let operation = caller
+        .ingest()
+        .start(&wire(json!({"value":"complete"})))
+        .await
+        .unwrap();
+    let delivered = operation.upload(&bytes).await.unwrap();
+    assert_eq!(delivered.size, bytes.len() as u64);
+    assert_eq!(
+        operation.wait().await.unwrap().output.unwrap().value,
+        format!(
+            "node:{}:{}",
+            bytes.len(),
+            delivered.digest.trim_end_matches('=')
+        )
+    );
+    // Generated downloads stream from the provider's own source and are held
+    // to the size and digest it declared.
+    let generated = (0..1_048_579)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    for (value, expected) in [("1048579", Some(generated)), ("lie", None)] {
+        let response = caller
+            .generate(&wire(json!({ "value": value })))
+            .await
+            .unwrap();
+        let grant = trellis_rs::client::download_transfer_grant_from_value(
+            serde_json::to_value(response.transfer.unwrap()).unwrap(),
+        )
+        .unwrap();
+        let received = base.download_transfer(&grant).await;
+        match expected {
+            Some(expected) => assert_eq!(received.unwrap(), expected),
+            None => assert!(received.is_err(), "declared digest mismatch must fail"),
+        }
+    }
     input.write_all(b"stop\n").await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(15), provider.wait())

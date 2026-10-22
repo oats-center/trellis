@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Objm } from "@nats-io/obj";
+import { createHash } from "node:crypto";
+import { getSha256Backend, Objm } from "@nats-io/obj";
 import {
   type ConsumerInfo,
   jetstream,
@@ -24,6 +25,14 @@ test("Store verifies demand-driven reads, cancellation, corruption and wait budg
 
     const payload = new TextEncoder().encode("stored generation bytes");
     await store.put("k", payload).orThrow();
+    // Trellis selects the Object Store SDK's native hash backend on Node,
+    // and the stored digest is the ordinary SHA-256 of the bytes.
+    assert.equal(getSha256Backend(), "native");
+    assert.equal(
+      (await new Objm(nc).open("store_test").then((os) => os.info("k")))
+        ?.digest,
+      `SHA-256=${createHash("sha256").update(payload).digest("base64url")}=`,
+    );
 
     const entry = (await store.get("k")).orThrow();
     assert.deepEqual(

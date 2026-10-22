@@ -540,6 +540,9 @@ pub enum ActionDefinition {
         signals: BTreeMap<String, TypeRef>,
         /// Whether invocation accepts an upload grant.
         upload: bool,
+        /// Whether uploaded bytes stream directly to the handler instead of
+        /// being durably staged first. Implies `upload`; not replayable.
+        stream: bool,
     },
     /// Event definition.
     Event {

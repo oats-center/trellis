@@ -9,8 +9,13 @@ publish = false
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Exports only participants that serve requests (services, devices) need.
+provider = []
+
 [dependencies]
 base64.workspace = true
+ed25519-dalek.workspace = true
 getrandom = { workspace = true, features = ["wasm_js"] }
 serde.workspace = true
 serde_json.workspace = true

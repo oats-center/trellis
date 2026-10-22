@@ -522,6 +522,15 @@ OIDC login; email equality never links identities. Optional matching-sub UserInf
 enriches presentation only, with bounded HTTPS and no impact on valid login.
 Names and email are not unique identity keys or application authorization.
 
+Declare `stream;` instead of `upload;` on an Operation to deliver caller bytes
+directly to its running handler with no staging. The handler reads them once
+(TypeScript `transfer.stream()`, Rust `take_upload_stream()`); the stream ends
+only after verified, recorded delivery and errors if the transfer fails. Streams
+cannot be replayed: an interrupted `stream` Operation fails and the caller starts
+a new one. Use `upload` when work must survive a provider crash. Receive grants
+can also come from any provider byte source whose size and SHA-256 digest are
+declared up front; mismatched bytes fail the transfer.
+
 Durable transfer progress is monotonic and may be coalesced; interrupted uploads
 restart from byte zero.
 An upload transport error is not proof that durable commit failed. Resume its

@@ -4,7 +4,7 @@ use crate::client::AuthorizationOwner;
 use std::sync::{Arc, RwLock};
 use trellis_protocol::{
     CatalogActionIdentity, LiveErrorCode, SessionBinding, SessionRequest, SessionRequestProof,
-    SignedCatalogSnapshot, SignedProviderCertificate, VerifiedSessionAuthority,
+    VerifiedSessionAuthority,
 };
 
 /// Immutable runtime identity pinned for a Live session's lifetime.
@@ -95,8 +95,8 @@ pub(crate) enum LiveGuardRequirement {
 }
 struct RetainedAuthority {
     authority: Arc<VerifiedSessionAuthority>,
-    catalog: Option<Arc<SignedCatalogSnapshot>>,
-    certificate: Option<Arc<SignedProviderCertificate>>,
+    catalog: Option<Arc<trellis_protocol::AuthenticatedCatalog>>,
+    certificate: Option<Arc<trellis_protocol::AuthenticatedProviderCertificate>>,
 }
 pub(crate) struct LiveAuthorityCandidate {
     retained: RetainedAuthority,

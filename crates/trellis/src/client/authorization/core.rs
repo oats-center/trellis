@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use trellis_protocol::{
-    verify_session_event, verify_session_request, AuthenticatedCaller, AuthorityIssuerKey,
-    CatalogActionIdentity, OriginalEventPublication, ProtocolError,
+    verify_session_event, verify_session_request, AuthenticatedCaller, AuthenticatedCatalog,
+    AuthorityIssuerKey, CatalogActionIdentity, OriginalEventPublication, ProtocolError,
     SessionAuthorityVerificationPolicy, SessionEvent, SessionEventProof,
     SessionEventVerificationInput, SessionRequest, SessionRequestProof,
-    SessionRequestVerificationInput, SignedCatalogSnapshot, VerifiedSessionAuthority,
+    SessionRequestVerificationInput, VerifiedSessionAuthority,
 };
 
 /// Failure to authenticate a message or authorize its exact registered action.
@@ -130,8 +130,8 @@ pub struct RequestVerificationInput<'a> {
     pub policy: &'a SessionAuthorityVerificationPolicy,
     /// Sticky logical-session retirement state from the runtime owner.
     pub known_revoked: bool,
-    /// Current accepted catalog obtained from the bounded authenticated material source.
-    pub catalog: &'a SignedCatalogSnapshot,
+    /// Current accepted catalog, authenticated once when its material was fetched.
+    pub catalog: &'a AuthenticatedCatalog,
     /// Catalog signer authenticated through the pinned issuer rotation chain.
     pub catalog_issuer: &'a AuthorityIssuerKey,
     /// Exact action registered by the generated provider descriptor.
@@ -154,7 +154,7 @@ pub struct EventVerificationInput<'a> {
     /// Sticky retirement state; historical verification also requires a verified cutoff.
     pub known_revoked: bool,
     /// Authenticated catalog containing the exact publish action.
-    pub catalog: &'a SignedCatalogSnapshot,
+    pub catalog: &'a AuthenticatedCatalog,
     /// Catalog signer authenticated through pinned issuer trust.
     pub catalog_issuer: &'a AuthorityIssuerKey,
     /// Registered event publish action.
@@ -163,7 +163,7 @@ pub struct EventVerificationInput<'a> {
     pub original_publication: Option<&'a OriginalEventPublication>,
     /// Exact issuer-signed implementation evidence, when the publisher is a provider.
     pub provider: Option<(
-        &'a trellis_protocol::SignedProviderCertificate,
+        &'a trellis_protocol::AuthenticatedProviderCertificate,
         &'a AuthorityIssuerKey,
     )>,
 }
@@ -185,10 +185,11 @@ impl AuthorizationVerificationCore {
         policy: &SessionAuthorityVerificationPolicy,
         known_revoked: bool,
     ) -> Result<VerifiedAuthorizationRequest, AuthorizationVerificationError> {
+        let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(payload).into();
         let verified = verify_session_request(SessionRequestVerificationInput {
             authority: &authority,
             request,
-            raw_payload: payload,
+            payload_sha256,
             proof,
             policy,
             known_revoked,
@@ -219,7 +220,7 @@ impl AuthorizationVerificationCore {
             input.known_revoked,
         )?;
         let body = input.authority.authority();
-        input.catalog.verify(
+        input.catalog.check(
             input.catalog_issuer,
             &body.trellis_instance_id,
             &body.audience_nats_account,
@@ -242,17 +243,18 @@ impl AuthorizationVerificationCore {
         &self,
         input: EventVerificationInput<'_>,
     ) -> Result<VerifiedAuthorizationEvent, AuthorizationVerificationError> {
+        let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(input.payload).into();
         verify_session_event(SessionEventVerificationInput {
             authority: &input.authority,
             event: input.event,
-            raw_payload: input.payload,
+            payload_sha256,
             proof: input.proof,
             policy: input.policy,
             original_publication: input.original_publication,
             known_revoked: input.known_revoked,
         })?;
         let body = input.authority.authority();
-        input.catalog.verify(
+        input.catalog.check(
             input.catalog_issuer,
             &body.trellis_instance_id,
             &body.audience_nats_account,

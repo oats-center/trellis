@@ -52,10 +52,11 @@ pub use authorization::{
 };
 pub use canonical::{canonicalize_json, digest_json, sha256_base64url};
 pub use catalog::{
-    CatalogAction, CatalogActionIdentity, CatalogCapability, CatalogCapabilityMembership,
-    SignedCatalogSnapshot, SignedIssuerRotation, SignedProviderCertificate,
-    SignedSessionRevocation, CATALOG_SNAPSHOT_FORMAT_V1, ISSUER_ROTATION_FORMAT_V1,
-    PROVIDER_CERTIFICATE_FORMAT_V1, SESSION_REVOCATION_FORMAT_V1,
+    Authenticated, AuthenticatedCatalog, AuthenticatedProviderCertificate, CatalogAction,
+    CatalogActionIdentity, CatalogCapability, CatalogCapabilityMembership, SignedCatalogSnapshot,
+    SignedIssuerRotation, SignedProviderCertificate, SignedSessionRevocation,
+    CATALOG_SNAPSHOT_FORMAT_V1, ISSUER_ROTATION_FORMAT_V1, PROVIDER_CERTIFICATE_FORMAT_V1,
+    SESSION_REVOCATION_FORMAT_V1,
 };
 pub use error::{AuthorizationErrorCode, ProtocolError, SessionProofErrorCode};
 pub use identifiers::validate_api_id;

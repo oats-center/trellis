@@ -848,6 +848,18 @@ confirming remote cleanup. Watch transfer progress is monotonic and may be coale
 event per frame. Final persisted `transferredBytes` is exact. Interrupted uploads
 restart from byte zero; partial replay/resumption is not supported.
 
+`stream;` Operations deliver caller bytes directly to the running handler with
+no staging: TypeScript `transfer.stream()` and Rust `take_upload_stream()` return
+the live bytes once, backpressured by handler reads. The stream ends only after
+the caller's final size and SHA-256 digest are verified and the delivery is
+recorded in the Operation; transfer failure, cancellation or ownership loss
+ends it with an error. Streams cannot be replayed, so an interrupted `stream`
+Operation fails and the caller starts a new one; choose `upload` when work must
+survive a provider crash. Receive grants may come from a store key or from any
+provider byte source with declared size and digest (TypeScript
+`createTransfer({ stream, info })`, Rust `plan_stream_download_transfer` plus
+`spawn_stream_download_endpoint`); bytes that end differently fail integrity.
+
 Store and file metadata listing is key-sorted keyset pagination. The limit
 defaults to 100 and must be at most 500. Cursors are opaque and bound to the
 query, including its prefix; changing the query invalidates the cursor. Only

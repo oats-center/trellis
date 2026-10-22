@@ -18,13 +18,62 @@ import { recordCatalogCounter } from "../telemetry/mod.ts";
 import {
   transferConstants,
   type TransferFrameDescriptor,
-  transferFrameDigest,
-  transferServerProofDigest,
   type TransferTerminalWire,
-  transferVerifyServerProof,
-  sessionRequestSigningDigestWasm,
   type SessionRequest,
 } from "../auth/protocol_wasm.ts";
+import {
+  sessionRequestSigningDigest,
+  transferFrameDigest,
+  transferServerProofDigest,
+  transferVerifyServerProof,
+} from "../auth/message_digests.ts";
+
+/**
+ * Count one sent or verified received Transfer message at the endpoint that
+ * owns it, with the same families as the Rust SDK. DATA charges its payload to
+ * `payload.bytes` and its serialized message (NATS header block plus payload)
+ * to `wire.bytes`; every other message charges its serialized size to
+ * `control.bytes`. @internal
+ */
+export function recordTransferMessage(
+  direction: TransferGrant["direction"],
+  side: "client" | "provider",
+  kind: string,
+  messageHeaders: MsgHdrs | undefined,
+  payloadBytes: number,
+): void {
+  const labels = {
+    "trellis.direction": direction === "send" ? "upload" : "download",
+    "trellis.side": side,
+  } as const;
+  let headerBytes = 0;
+  if (messageHeaders) {
+    // `NATS/1.0\r\n`, one `name: value\r\n` per value, then a blank line.
+    headerBytes = 12;
+    for (const [name, values] of messageHeaders) {
+      for (const value of values) headerBytes += name.length + value.length + 4;
+    }
+  }
+  if (kind === "data") {
+    recordCatalogCounter("trellis.transfer.frames", 1, labels);
+    recordCatalogCounter(
+      "trellis.transfer.payload.bytes",
+      payloadBytes,
+      labels,
+    );
+    recordCatalogCounter(
+      "trellis.transfer.wire.bytes",
+      headerBytes + payloadBytes,
+      labels,
+    );
+    return;
+  }
+  recordCatalogCounter(
+    "trellis.transfer.control.bytes",
+    headerBytes + payloadBytes,
+    labels,
+  );
+}
 
 /** Owned transport/authority lifetime for a single pinned transfer. @internal */
 export class TransferSession {
@@ -185,7 +234,7 @@ export class TransferSession {
     const proofPayload =
       seq === undefined
         ? payload
-        : transferFrameDigest(
+        : await transferFrameDigest(
             {
               transferId: this.grant.transferId,
               direction: this.grant.direction,
@@ -212,7 +261,7 @@ export class TransferSession {
       issuedAt: iat,
     };
     const proof = await this.auth.sign(
-      await sessionRequestSigningDigestWasm(request, proofPayload),
+      await sessionRequestSigningDigest(request, proofPayload),
     );
     await this.contextDigest();
     const result = headers();
@@ -248,7 +297,7 @@ export class TransferSession {
         ? local.contextDigest
         : await this.contextDigest();
     const proof = await this.auth.sign(
-      transferServerProofDigest(
+      await transferServerProofDigest(
         contextDigest,
         subject,
         {
@@ -298,7 +347,7 @@ export class TransferSession {
       (!terminal && msg.headers?.values(C.terminalHeader)?.length)
     )
       throw new Error("transfer provider frame descriptor mismatch");
-    transferVerifyServerProof(
+    await transferVerifyServerProof(
       single(C.proofHeader),
       contextDigest,
       msg.subject,
@@ -311,6 +360,13 @@ export class TransferSession {
       },
       msg.data,
       sessionKey,
+    );
+    recordTransferMessage(
+      this.grant.direction,
+      "client",
+      control,
+      msg.headers,
+      msg.data.length,
     );
     const cache = this.auth.authorityOwner;
     if (!cache) throw new Error("transfer authorization cache unavailable");

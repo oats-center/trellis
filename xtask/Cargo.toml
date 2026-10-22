@@ -18,4 +18,5 @@ trellis-builtin-contracts = { path = "../crates/builtin-contracts" }
 trellis-idl = { path = "../crates/idl" }
 trellis-protocol = { path = "../crates/protocol" }
 wasm-bindgen-cli-support = "=0.2.125"
+wasm-opt = "=0.116.1"
 tempfile.workspace = true

@@ -1,8 +1,10 @@
+import {
+  sessionRequestSigningDigest,
+  sessionEventSigningDigest,
+  sessionResponseSigningDigest,
+} from "./message_digests.ts";
 import type { Ed25519Signer } from "./crypto.ts";
 import {
-  sessionRequestSigningDigestWasm,
-  sessionResponseSigningDigestWasm,
-  sessionEventSigningDigestWasm,
   type SessionEvent,
   type SessionRequest,
   type SessionResponse,
@@ -21,7 +23,7 @@ export async function createProof(
   request: SessionRequest,
   payload: Uint8Array,
 ): Promise<RequestSignature> {
-  const requestProofDigest = await sessionRequestSigningDigestWasm(
+  const requestProofDigest = await sessionRequestSigningDigest(
     request,
     payload,
   );
@@ -38,7 +40,7 @@ export async function createEventProof(
   payload: Uint8Array,
 ): Promise<string> {
   return base64urlEncode(
-    await signer.sign(await sessionEventSigningDigestWasm(event, payload)),
+    await signer.sign(await sessionEventSigningDigest(event, payload)),
   );
 }
 
@@ -49,8 +51,6 @@ export async function createResponseProof(
   payload: Uint8Array,
 ): Promise<string> {
   return base64urlEncode(
-    await signer.sign(
-      await sessionResponseSigningDigestWasm(response, payload),
-    ),
+    await signer.sign(await sessionResponseSigningDigest(response, payload)),
   );
 }

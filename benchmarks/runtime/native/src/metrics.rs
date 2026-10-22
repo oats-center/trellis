@@ -16,14 +16,27 @@ impl PushMetricExporter for Exporter {
         let mut rows = Vec::new();
         for scope in metrics.scope_metrics() {
             for metric in scope.metrics() {
-                if let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = metric.data() {
-                    for point in histogram.data_points() {
-                        let attributes: serde_json::Map<String, serde_json::Value> = point
-                            .attributes()
-                            .map(|kv| (kv.key.to_string(), json!(kv.value.to_string())))
-                            .collect();
-                        rows.push(json!({ "name": metric.name(), "attributes": attributes, "count": point.count(), "sum": point.sum(), "max": point.max(), "bounds": point.bounds().collect::<Vec<_>>(), "buckets": point.bucket_counts().collect::<Vec<_>>() }));
+                match metric.data() {
+                    AggregatedMetrics::F64(MetricData::Histogram(histogram)) => {
+                        for point in histogram.data_points() {
+                            let attributes: serde_json::Map<String, serde_json::Value> = point
+                                .attributes()
+                                .map(|kv| (kv.key.to_string(), json!(kv.value.to_string())))
+                                .collect();
+                            rows.push(json!({ "name": metric.name(), "attributes": attributes, "count": point.count(), "sum": point.sum(), "max": point.max(), "bounds": point.bounds().collect::<Vec<_>>(), "buckets": point.bucket_counts().collect::<Vec<_>>() }));
+                        }
                     }
+                    // Cumulative counters, e.g. Transfer payload/wire/control bytes.
+                    AggregatedMetrics::U64(MetricData::Sum(sum)) => {
+                        for point in sum.data_points() {
+                            let attributes: serde_json::Map<String, serde_json::Value> = point
+                                .attributes()
+                                .map(|kv| (kv.key.to_string(), json!(kv.value.to_string())))
+                                .collect();
+                            rows.push(json!({ "name": metric.name(), "attributes": attributes, "value": point.value() }));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import "../../../ts/packages/trellis/auth/protocol_wasm_provider.ts";
+import { initializeProtocolWasmSync } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
 import { readFile } from "node:fs/promises";
 import { createResponseProof } from "../../../ts/packages/trellis/auth/proof.ts";
+import { sessionResponseSigningDigest } from "../../../ts/packages/trellis/auth/message_digests.ts";
 import { trellisCrypto } from "../../../ts/packages/trellis/auth/crypto.ts";
-import { verifySessionResponseWasm } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
 import {
-  create_session_authority_handle,
-  initSync,
-  session_response_signing_digest,
-} from "../../../ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm.js";
-import { PROTOCOL_WASM_BASE64 } from "../../../ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bytes.ts";
+  authenticateProviderCertificateWasm,
+  verifySessionResponseWasm,
+} from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
+import { create_session_authority_handle } from "../../../ts/packages/trellis/auth/protocol_wasm/provider/trellis_protocol_wasm.js";
 
-initSync({
-  module: Uint8Array.from(atob(PROTOCOL_WASM_BASE64), (c) => c.charCodeAt(0)),
-});
+initializeProtocolWasmSync();
 const fixture = JSON.parse(await readFile(process.argv[2], "utf8"));
 const encoder = new TextEncoder();
 const signer = await (
@@ -32,20 +32,31 @@ const handle = create_session_authority_handle(
   JSON.stringify(fixture.authorityVerification),
   encoder.encode(JSON.stringify(fixture.authority)),
 );
+// Callers authenticate the provider certificate once, when they fetch it.
+const certificate = await authenticateProviderCertificateWasm(
+  encoder.encode(JSON.stringify(fixture.verification.certificate)),
+  {
+    issuer: fixture.verification.certificateIssuer,
+    trellisInstanceId: fixture.authorityVerification.trellisInstanceId,
+    audienceNatsAccount: fixture.authorityVerification.audienceNatsAccount,
+    nowUnixSeconds: fixture.verification.policy.nowUnixSeconds,
+  },
+);
 try {
   const verify = (input = fixture.verification, payload = fixture.payload) =>
     verifySessionResponseWasm({
       ...input,
+      certificate: certificate.handle,
       providerHandle: handle,
-      payload: encoder.encode(payload),
+      payloadSha256: createHash("sha256").update(payload).digest(),
     });
   const accepted = await verify();
   assert.equal(accepted.ok, true);
   assert.deepEqual(accepted.response, fixture.verification.response);
   assert.equal(
     Buffer.from(
-      session_response_signing_digest(
-        JSON.stringify(fixture.verification.response),
+      await sessionResponseSigningDigest(
+        fixture.verification.response,
         encoder.encode(fixture.payload),
       ),
     ).toString("base64url"),

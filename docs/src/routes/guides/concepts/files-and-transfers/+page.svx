@@ -67,6 +67,30 @@ Upload staging is platform-owned, never a participant Store declaration. The
 operation behaves identically whether the service declares zero, one, or several
 stores, and the domain service chooses its permanent destination explicitly.
 
+### Streaming straight to the handler
+
+Declare `stream;` instead of `upload;` when the handler should process bytes as
+they arrive, persist them somewhere other than staging, or not keep them at all:
+
+```trellis
+operation Documents.Ingest {
+  input IngestRequest;
+  output IngestResult;
+  stream;
+}
+```
+
+Callers use the same `.transfer(body).start()` helper. The handler starts
+immediately and reads the caller's bytes once, through `transfer.stream()` in
+TypeScript or `operation.take_upload_stream()` in Rust. Reads are backpressured,
+so a slow handler slows the caller instead of buffering the object. The stream
+ends only after Trellis verified the caller's final size and SHA-256 digest and
+recorded the delivery; any transfer failure ends it with an error instead.
+
+Choose `upload` when the work must survive a provider crash. A `stream`
+Operation stages nothing, so its bytes cannot be replayed: an interrupted
+attempt fails, and the caller starts a new Operation to resend.
+
 ## Receive transfers
 
 When a service sends bytes to a caller, the service returns a receive grant from
@@ -82,6 +106,10 @@ Use `stream()` for large downloads and `bytes()` when collecting the whole body
 in memory is appropriate. Trellis verifies the received size and SHA-256 digest
 against the grant.
 
+A provider can serve a receive grant from a store key or from any byte source,
+such as a report it generates while sending. A source grant declares the exact
+size and digest up front; bytes that end differently fail the transfer.
+
 ## Streaming and durable completion
 
 Transfer v1 keeps multiple raw-byte NATS frames in flight within bounded frame
@@ -89,9 +117,11 @@ and byte windows. Downstream consumption releases cumulative network credit;
 there is no blocking request/reply for every chunk. The backend controls upload
 drain rate, and the caller's stream consumption controls download drain rate.
 
-Network credit is **not** durable persistence. An upload succeeds only after
+Network credit is **not** durable persistence. An `upload` succeeds only after
 Trellis verifies its complete size/digest, awaits the backend write, and commits
-the Operation's durable transfer state. The handler starts after that commit.
+the Operation's durable transfer state. The handler starts after that commit. A
+`stream` succeeds once the running handler has consumed every verified byte and
+Trellis recorded the delivery; durability is whatever the handler does next.
 Durable transfer progress is monotonic and may be coalesced; do not assume a
 watch event for each frame. Final persisted progress is exact.
 

@@ -2,8 +2,16 @@
 
 Revision 7 is an unreleased clean cutover. The Rust protocol crate owns canonical
 encoding and cryptographic verification; the Rust SDK consumes it directly and
-TypeScript consumes its WASM build. Native IDL owns cross-service contracts.
-This document describes boundaries and invariants, not a second schema source.
+TypeScript consumes its WASM build. The one exception is the
+[per-message proof digests](#per-message-proof-digests), which TypeScript
+computes natively against pinned vectors. Native IDL owns cross-service
+contracts. This document describes boundaries and invariants, not a second
+schema source.
+
+TypeScript ships two WASM builds. Callers load the client build. Services and
+devices load the provider build, a superset that adds request verification,
+Operation record validation, provisioned admission and provider-side Transfer
+and Live helpers. One process runs exactly one build.
 
 ## Selected installation and public verification metadata
 
@@ -93,6 +101,50 @@ Never automatically retransmit potentially executed application requests.
 Events retain signed authority by digest. Historical verification uses original
 JetStream publication time/sequence and the signed revocation cutoff, not replay
 time. Preserve immutable issued authority and authenticated trust history.
+
+## Authenticated verification material
+
+Catalog snapshots and provider certificates are signed and content-addressed.
+A participant authenticates each one once, when it is fetched: issuer
+signature, record structure, and installation/account scope. It retains the
+issuer key that authenticated it. Every later use rechecks only what can change:
+the presented issuer key is that same key and is not revoked, the scope is the
+same, and a certificate is within its validity window at the use time (live
+time, or authenticated publication time for retained events). Issuer
+revocation, retirement and session revocation are never cached as authorized.
+
+## Per-message proof digests
+
+Each request, response, event, Transfer frame and Live server message is signed
+with Ed25519 over a 32-byte digest, and verified with strict verification. A
+digest is SHA-256 over its components, each encoded as a 4-byte big-endian
+length followed by its bytes. Text is UTF-8, counters are 8-byte big-endian
+unsigned integers, times are 8-byte big-endian signed Unix seconds, and
+digests are the raw 32 bytes of their canonical unpadded base64url form.
+`H(x)` is SHA-256 of the exact received or sent bytes.
+
+| Message                 | Components, in order                                                                                                                                                                                                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Request                 | `trellis.message.request.v1`, authority digest, API id, API generation, accepted revision, action, subject, reply subject (empty when none), request id, issued-at, `H(payload)`                                                                                         |
+| Event                   | `trellis.message.event.v1`, authority digest, API id, API generation, accepted revision, action, subject, event id, event time, `H(payload)`                                                                                                                             |
+| Response                | `trellis.message.response.v1`, installation id, NATS account, provider authority digest, provider certificate digest, API id, API generation, action, request authority digest, request id, request proof digest, subject, `success` or `error`, `H(payload)`, issued-at |
+| Transfer frame          | `trellis.transfer-frame.v1`, canonical JSON of the frame descriptor, `H(payload)`                                                                                                                                                                                        |
+| Transfer provider proof | `trellis.transfer-server-proof.v1`, context digest, subject, Transfer frame digest                                                                                                                                                                                       |
+| Live provider proof     | `trellis.live-server-proof.v1`, context digest, subject, `H(body)`                                                                                                                                                                                                       |
+
+A frame descriptor holds `transferId`, `direction`, `sequence` as a decimal
+string, `kind`, and `terminal` for EOF only. A caller's Transfer request proof
+signs the request digest whose payload is the 32-byte frame digest.
+
+The Rust protocol crate is the reference implementation. TypeScript computes
+these digests natively because they run on every message; the vectors in
+`integration/fixtures/protocol/message-digests` are checked by both. Field
+validation and every authorization decision stay in the shared verifier: a
+signer only signs its own messages, and the verifier recomputes the digest.
+Verifiers take the payload's SHA-256 rather than the payload: each SDK hashes
+the bytes it already holds, natively, and payload bytes never cross into WASM.
+TypeScript computes DATA-frame digests natively and the few completion, EOF,
+control and signal frames through the shared protocol.
 
 ## Live, Transfer, Operations, and Jobs
 

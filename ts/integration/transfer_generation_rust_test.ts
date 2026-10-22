@@ -221,14 +221,19 @@ test("Rust downloads survive growth and open after the original attachment close
         // it verified every uploaded DATA byte and sent the download's DATA.
         await runtime.waitFor(
           () =>
-            rustTotal("trellis.transfer.wire.bytes", "upload") ===
+            rustTotal("trellis.transfer.payload.bytes", "upload") ===
               bytes.length &&
-            rustTotal("trellis.transfer.wire.bytes", "download") >=
+            rustTotal("trellis.transfer.payload.bytes", "download") >=
               bytes.length,
           { timeoutMs: 30_000 },
         );
         for (const direction of ["upload", "download"]) {
           assert(rustTotal("trellis.transfer.frames", direction) > 0);
+          assert(
+            rustTotal("trellis.transfer.wire.bytes", direction) >
+              rustTotal("trellis.transfer.payload.bytes", direction),
+          );
+          assert(rustTotal("trellis.transfer.control.bytes", direction) > 0);
           assert(rustTotal("trellis.transfer.credit.controls", direction) > 0);
         }
 

@@ -155,8 +155,9 @@ pub struct TransferDownloadGrantArgs<'a> {
     pub max_payload: u64,
     /// Resolved private storage bindings.
     pub resources: &'a ServiceResourceBindings,
-    /// Contract-local store alias.
-    pub store: &'a str,
+    /// Contract-local store alias, or `None` when the provider streams bytes
+    /// from its own source with declared metadata.
+    pub store: Option<&'a str>,
     /// Runtime-generated transfer id.
     pub transfer_id: &'a str,
     /// RFC3339 expiry.
@@ -187,9 +188,10 @@ pub struct DownloadTransferGrantPlan {
     pub admission: super::super::RequestContext,
     /// Prepared grant.
     pub grant: DownloadTransferGrant,
-    /// Contract-local alias.
+    /// Contract-local alias; empty for a provider-supplied stream source.
     pub store_alias: String,
-    /// Physical storage identifier, never serialized to the caller.
+    /// Physical storage identifier, never serialized to the caller; empty for
+    /// a provider-supplied stream source.
     pub store: String,
     /// Installed backend object limit.
     pub max_object_bytes: Option<u64>,

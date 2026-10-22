@@ -109,7 +109,6 @@ import {
   verifyLocalAuthorization,
 } from "../../session.ts";
 import { LiveAuthorityGuard } from "../../live/authority.ts";
-import type { StoredTransfer } from "./transfer.ts";
 import type { ProviderAuthorityPort } from "../../live/provider.ts";
 import {
   fixedTransportProvider,
@@ -167,6 +166,8 @@ type RuntimeOperationTransferSession = {
   grant: SendTransferGrant;
   storageKey: string;
   transfer: OperationTransferHandle;
+  /** Ends a `stream` upload its finished handler never completed reading. */
+  release?: () => void;
 };
 
 type RuntimeOperationTransferSupport = {
@@ -179,8 +180,10 @@ type RuntimeOperationTransferSupport = {
     operationId: string;
     expiresInMs: number;
     maxBytes?: number;
+    /** Deliver bytes to the running handler instead of staging them. */
+    stream?: boolean;
     commit?: (
-      stored: StoredTransfer,
+      stored: { info: FileInfo; storageKey: string },
       progress: NonNullable<RuntimeOperationSnapshot["transfer"]>,
     ) => Promise<void>;
     onError?: (error: TransferError) => Promise<void>;
@@ -1221,7 +1224,22 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             runtime.signalSequence = durable.signalSequence;
             runtime.signals = durable.signals;
             runtime.uploadState = durable.uploadState;
-            if (opts.uploadCommit) {
+            if (
+              opts.uploadCommit &&
+              durable.uploadState?.state === "streaming"
+            ) {
+              // A verified stream records its delivery; nothing is staged, so
+              // the grant carries no committed object for recovery to open.
+              runtime.uploadState = {
+                stagingKey: "",
+                state: "streamed",
+                fileInfo: opts.uploadCommit.info,
+                size: opts.uploadCommit.info.size,
+                digest: opts.uploadCommit.info.digest,
+                updatedAt: opts.uploadCommit.info.updatedAt,
+                contentType: opts.uploadCommit.info.contentType,
+              };
+            } else if (opts.uploadCommit) {
               if (!durable.transferGrant) {
                 throw new Error("operation upload grant is missing");
               }
@@ -1299,6 +1317,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   #operationUploadPersistence(
     getRuntime: () => RuntimeOperationRecord,
     getFence: () => RuntimeOperationFence,
+    stream = false,
   ) {
     type Progress = NonNullable<RuntimeOperationSnapshot["transfer"]>;
     let latest: Progress | undefined;
@@ -1403,7 +1422,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         drain();
       },
       commit: async (
-        stored: StoredTransfer,
+        stored: { info: FileInfo; storageKey: string },
         progress: NonNullable<RuntimeOperationSnapshot["transfer"]>,
       ) => {
         stop();
@@ -1434,6 +1453,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         await worker;
         const runtime = getRuntime();
         runtime.cancellation.signal.removeEventListener("abort", stop);
+        // A stream's handler is already running and sees the failure as a
+        // stream error; it, not lease expiry, decides the outcome.
+        if (stream) return;
         await this.#queueOperationFrame(runtime, async () => {
           const durable = await this.loadOperationRecord(runtime.id);
           if (
@@ -3439,7 +3461,14 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           operationContext: { requestId?: string; traceId?: string } = {},
           resuming = false,
         ) => {
-          if (transferSession && !runtime.cancellation.signal.aborted) {
+          // A `stream` handler runs while the bytes arrive; staged uploads
+          // start only after their durable commit.
+          const streamUpload = ctx.transfer?.stream === true;
+          if (
+            transferSession &&
+            !streamUpload &&
+            !runtime.cancellation.signal.aborted
+          ) {
             let interrupted: (() => void) | undefined;
             const cancelled = new Promise<undefined>((resolve) => {
               interrupted = () => resolve(undefined);
@@ -3466,6 +3495,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           }
           if (
             transferSession &&
+            !streamUpload &&
             runtime.cancellation.signal.aborted &&
             !runtime.cancelRequestedAt
           )
@@ -3479,11 +3509,13 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             admitted.snapshot.state === "cancelled" ||
             (transferSession &&
               !admitted.cancelRequestedAt &&
-              (!admitted.transferGrant ||
-                !Value.Check(
-                  FileInfoSchema,
-                  Reflect.get(admitted.transferGrant, "committed"),
-                ))) ||
+              (streamUpload
+                ? admitted.uploadState?.state !== "streaming"
+                : !admitted.transferGrant ||
+                  !Value.Check(
+                    FileInfoSchema,
+                    Reflect.get(admitted.transferGrant, "committed"),
+                  ))) ||
             !this.#matchesOperationRoute(
               admitted,
               String(operation),
@@ -3684,6 +3716,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           } finally {
             startSpan?.end();
             this.#runningOperationHandlers.delete(runtime.id);
+            // An unread stream must not hold the caller until grant expiry.
+            transferSession?.release?.();
             if (cleanupSucceeded && !deferred) {
               try {
                 await this.#finalizeOperationCancellation(runtime, fence);
@@ -3873,6 +3907,27 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
           // Recovered execution pins the current generation so its support
           // traffic does not resurrect the seed socket or outlive its carrier.
           await this.#pinRecoveredOperation(runtime.id);
+          if (
+            runtime.transferGrant &&
+            !runtime.cancelRequestedAt &&
+            ctx.transfer?.stream
+          ) {
+            // A stream's bytes went to the lost execution and nothing was
+            // staged, so it cannot resume; the caller starts a new Operation.
+            await this.#applyOperationUpdate(runtime, fence, "failed", {
+              patch: {
+                error: {
+                  type: "OperationStreamInterrupted",
+                  message:
+                    "the stream upload was interrupted; start a new Operation to resend it",
+                },
+                completedAt: now(),
+              },
+              event: { type: "failed" },
+            });
+            this.#releaseOperationFence(runtime.id, fence);
+            return;
+          }
           if (runtime.transferGrant && !runtime.cancelRequestedAt) {
             const committed = Reflect.get(runtime.transferGrant, "committed");
             if (Value.Check(FileInfoSchema, committed)) {
@@ -4314,7 +4369,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                       operation: existing.operation,
                     },
                     snapshot: existing.snapshot,
-                    ...(existing.transferGrant
+                    // A delivered stream cannot be sent again.
+                    ...(existing.transferGrant &&
+                    existing.uploadState?.state !== "streamed"
                       ? { transfer: existing.transferGrant }
                       : {}),
                   } satisfies RuntimeOperationAcceptedEnvelope),
@@ -4353,9 +4410,11 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                   expiresInMs:
                     transferConstants().operationUploadLifetimeSeconds * 1000,
                   maxBytes: transferConstants().operationUploadMaxBytes,
+                  ...(ctx.transfer.stream ? { stream: true } : {}),
                   ...this.#operationUploadPersistence(
                     () => runtime,
                     () => transferFence,
+                    ctx.transfer.stream === true,
                   ),
                 })
                 .take();
@@ -4410,7 +4469,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
                     transferGrant: transferSession.grant,
                     uploadState: {
                       stagingKey: transferSession.storageKey,
-                      state: "pending",
+                      state: ctx.transfer?.stream ? "streaming" : "pending",
                     },
                   }
                 : {}),

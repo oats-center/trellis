@@ -10,7 +10,10 @@ import {
   type BrowserOAuthAdmission,
 } from "./auth/browser/oauth.ts";
 import { connectAdmitted } from "./auth/connection.ts";
-import { verifyOAuthAdmissionWasm } from "./auth/protocol_wasm.ts";
+import {
+  initializeProtocolWasm,
+  verifyOAuthAdmissionWasm,
+} from "./auth/protocol_wasm.ts";
 import { utf8 } from "./auth/utils.ts";
 import type { RuntimeTransport } from "./runtime_transport.ts";
 import {
@@ -95,6 +98,7 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
       try {
         if (args.request.kind !== "browser")
           throw new AuthError({ reason: "InvalidCredential" });
+        await initializeProtocolWasm();
         const opened = (
           await BrowserOAuthClient.open({
             issuer: args.trellisUrl,
