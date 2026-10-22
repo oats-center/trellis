@@ -3,6 +3,7 @@ import {
   type ObjectStore,
   type ObjectStoreStatus,
   Objm,
+  setSha256Backend,
 } from "@nats-io/obj";
 import type { NatsConnection } from "@nats-io/nats-core/internal";
 import {
@@ -21,6 +22,7 @@ import {
   encodePaginationCursor,
   paginationQueryDigest,
 } from "./auth/protocol_wasm.ts";
+import { nativeSha256 } from "./sha256.ts";
 import { TypedStoreEntry } from "./store_entry.ts";
 import { boundedObjectStream } from "./store_reader.ts";
 export { TypedStoreEntry } from "./store_entry.ts";
@@ -284,6 +286,10 @@ async function openStore(
   name: string,
   options: StoreOpenOptions,
 ): Promise<ObjectStore> {
+  // Trellis owns its NATS connections and Object Store usage, so it selects
+  // the SDK's process-wide hash backend: native `node:crypto` where available
+  // (Node, Deno, Bun), the portable default in browsers. Digests are identical.
+  if (nativeSha256) setSha256Backend("native");
   const objm = new Objm(nats);
   const store = options.bindOnly
     ? await objm.open(name)

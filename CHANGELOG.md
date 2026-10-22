@@ -22,6 +22,10 @@ and this project adheres to
 
 ### Changed
 
+- The TypeScript SDK hashes Transfer and Object Store bytes with
+  `node:crypto` where it is available (Node, Deno, Bun) and selects the NATS
+  Object Store SDK's native SHA-256 backend, which is process-wide. Browsers
+  keep the portable implementation. Digests are unchanged.
 - `trellis.transfer.wire.bytes` now counts serialized DATA messages, NATS
   headers included, instead of payload alone. Use
   `trellis.transfer.payload.bytes` for the previous meaning.
