@@ -149,9 +149,10 @@ async fn private_jobs_execute_and_history_is_deployment_scoped() {
         .history(&input)
         .await
         .is_err());
-    let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
-        .await
-        .unwrap();
+    let server =
+        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
     let raw = TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
         nats_servers: server.nats_servers,
         trust: server.trust,

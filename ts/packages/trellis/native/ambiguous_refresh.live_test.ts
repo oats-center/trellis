@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { createServer, request } from "node:http";
+import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { request } from "node:https";
+import { join } from "node:path";
+import { TLSSocket } from "node:tls";
 import { test } from "node:test";
 import { createInterface } from "node:readline";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
@@ -17,7 +21,7 @@ test(
       const forwarding = createServer((incoming, outgoing) => {
         const target = new URL(
           incoming.url ?? "/",
-          `http://${targets.get(incoming.socket)}`,
+          `https://${targets.get(incoming.socket)}`,
         );
         if (target.pathname === "/token") tokens++;
         const upstream = request(
@@ -45,11 +49,22 @@ test(
       proxy.on("request", (incoming, outgoing) =>
         forwarding.emit("request", incoming, outgoing),
       );
+      // The loss happens inside the OAuth origin's TLS, so the proxy holds the
+      // runtime's own certificate and re-encrypts to the real origin.
+      const tls = join(runtime.workdir, "config", "trellis", "tls");
+      const certificate = readFileSync(join(tls, "runtime.crt"));
+      const privateKey = readFileSync(join(tls, "runtime.key"));
       proxy.on("connect", (incoming, socket, head) => {
-        targets.set(socket, incoming.url ?? "");
         socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length) socket.unshift(head);
-        forwarding.emit("connection", socket);
+        const secure = new TLSSocket(socket, {
+          isServer: true,
+          cert: certificate,
+          key: privateKey,
+        });
+        secure.on("error", () => secure.destroy());
+        targets.set(secure, incoming.url ?? "");
+        forwarding.emit("connection", secure);
       });
       proxy.listen(0, "127.0.0.1");
       await once(proxy, "listening");
@@ -94,6 +109,7 @@ test(
             TRELLIS_NATIVE_TEST_ISSUER: runtime.oauthIssuer,
             TRELLIS_NATIVE_TEST_USERNAME: runtime.adminUsername,
             TRELLIS_NATIVE_TEST_PASSWORD: runtime.adminPassword,
+            NODE_EXTRA_CA_CERTS: runtime.caCertificate,
             NODE_USE_ENV_PROXY: "1",
             HTTP_PROXY: `http://127.0.0.1:${address.port}`,
             HTTPS_PROXY: `http://127.0.0.1:${address.port}`,

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { z } from "zod";
 
 const application = z.url().parse(process.env.TRELLIS_TEST_AVATAR_APPLICATION);
 const avatarOrigin = z.url().parse(process.env.TRELLIS_TEST_AVATAR_ORIGIN);
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  env: browserTrustEnvironment(),
+});
 try {
   const page = await browser.newPage();
   const requests: string[] = [];

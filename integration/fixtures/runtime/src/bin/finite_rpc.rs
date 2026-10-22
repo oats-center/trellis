@@ -17,7 +17,11 @@ fn emit(line: &str) {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let server = trellis_rs::auth::discover_native_oauth(&std::env::var("TRELLIS_URL")?).await?;
+    let server = trellis_rs::auth::discover_native_oauth(
+        &std::env::var("TRELLIS_URL")?,
+        &trellis_runtime_acceptance::trust_roots(),
+    )
+    .await?;
     let seed = std::env::var("TRELLIS_IDENTITY_SEED")?;
     let client = Arc::new(
         TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {

@@ -11,13 +11,22 @@ use trellis_rs::{
     service::ServiceConnectOptions,
 };
 
+/// The installation CA named by `TRELLIS_CA_CERTIFICATE`, trusted explicitly
+/// for OAuth and broker TLS; absent means the platform trust store.
+pub fn trust_roots() -> Vec<PathBuf> {
+    std::env::var_os("TRELLIS_CA_CERTIFICATE")
+        .map(PathBuf::from)
+        .into_iter()
+        .collect()
+}
+
 /// Resolve initial trust from the selected OAuth origin; an explicit broker endpoint
 /// lets independently routed consumers retain that same installation trust.
 pub async fn service_options<'a>(
     selected_origin: &str,
     identity_seed: &'a str,
 ) -> Result<ServiceConnectOptions<'a>, Box<dyn std::error::Error>> {
-    let server = discover_native_oauth(selected_origin).await?;
+    let server = discover_native_oauth(selected_origin, &trust_roots()).await?;
     let servers = match std::env::var("TRELLIS_NATS_URL") {
         Ok(server) => vec![server],
         Err(std::env::VarError::NotPresent) => server.nats_servers,
@@ -52,7 +61,7 @@ pub async fn authorize_user<R: AppRequestDescriptor>(
     (NativeOAuthSession, NativeOAuthServer, NativeCredentialScope),
     Box<dyn std::error::Error>,
 > {
-    let server = discover_native_oauth(&std::env::var("TRELLIS_URL")?).await?;
+    let server = discover_native_oauth(&std::env::var("TRELLIS_URL")?, &trust_roots()).await?;
     let scope = NativeCredentialScope {
         issuer: server.issuer.clone(),
         instance_id: server.trust.instance_id.clone(),

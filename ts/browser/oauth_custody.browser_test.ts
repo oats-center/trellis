@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
 import { build } from "vite";
 
@@ -70,7 +71,7 @@ test("browser OAuth custody survives Chromium restart without exporting private 
   };
   let browser = await chromium.launchPersistentContext(
     join(directory, "profile"),
-    { headless: true },
+    { headless: true, env: browserTrustEnvironment() },
   );
   try {
     const page = await browser.newPage();
@@ -121,7 +122,7 @@ test("browser OAuth custody survives Chromium restart without exporting private 
     await browser.close();
     browser = await chromium.launchPersistentContext(
       join(directory, "profile"),
-      { headless: true },
+      { headless: true, env: browserTrustEnvironment() },
     );
     const restored = await browser.newPage();
     await restored.goto(origin);

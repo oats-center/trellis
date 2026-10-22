@@ -330,6 +330,7 @@ test("a Rust provider live session renews its authorization in place without int
         env: {
           ...env,
           TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
             new URL("../../target", import.meta.url),
@@ -529,6 +530,7 @@ test("a real native NATS outage recovers after authorization refresh and resumes
       env: {
         ...env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         // Keep a refresh/reconnect alive across the deliberately unavailable
         // transport instead of cycling through the 5s production default.

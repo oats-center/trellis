@@ -97,6 +97,25 @@ async function startSplitRole(
       { mode: 0o600 },
     );
     transport.trellis_creds_path = creds;
+    // The copied configuration still names the installation's TLS files;
+    // resolve them against the original bundle.
+    const bundlePath = (value: unknown): string => {
+      assert.equal(typeof value, "string");
+      return join(configDir, String(value));
+    };
+    nats.ca_certificate = bundlePath(nats.ca_certificate);
+    const tls = config.tls;
+    assert(tls && typeof tls === "object" && "generated_ca_certificate" in tls);
+    tls.generated_ca_certificate = bundlePath(tls.generated_ca_certificate);
+    assert("transport" in http);
+    const oauthListener = (config.auth as Record<string, unknown> | undefined)
+      ?.oauth as Record<string, unknown> | undefined;
+    for (const listener of [http.transport, oauthListener?.transport]) {
+      assert(listener && typeof listener === "object");
+      const files = listener as Record<string, unknown>;
+      files.certificate_chain = bundlePath(files.certificate_chain);
+      files.private_key = bundlePath(files.private_key);
+    }
     config.paths = {
       data: join(root, "data"),
       state: join(root, "state"),
@@ -146,7 +165,7 @@ async function startSplitRole(
         runtime.waitFor(
           async () => {
             try {
-              return (await fetch(`http://127.0.0.1:${port}/readyz`)).ok;
+              return (await fetch(`https://localhost:${port}/readyz`)).ok;
             } catch {
               return false;
             }

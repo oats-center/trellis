@@ -57,7 +57,14 @@ test("CLI login authorizes independent runtime keys through one durable login", 
 
     const child = spawnTracked(
       cliBinary(),
-      ["--format", "json", "login", runtime.oauthIssuer],
+      [
+        "--format",
+        "json",
+        "login",
+        runtime.oauthIssuer,
+        "--ca-certificate",
+        runtime.caCertificate,
+      ],
       { env: { ...process.env, XDG_CONFIG_HOME: configHome } },
     );
     const stdout = text(child.stdout);

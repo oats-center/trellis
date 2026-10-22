@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { ulid } from "ulid";
 import { type BrowserContext, chromium, type Page } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { join } from "node:path";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-testkit";
@@ -44,7 +45,7 @@ export async function launchProfile(
 ): Promise<BrowserContext> {
   return await chromium.launchPersistentContext(
     join(runtime.workdir, "browser-profile"),
-    { headless: true },
+    { headless: true, env: browserTrustEnvironment() },
   );
 }
 

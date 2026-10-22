@@ -54,6 +54,7 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
         env: {
           ...process.env,
           TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           RUST_LOG: "trellis_rs=info",
         },

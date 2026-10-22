@@ -41,7 +41,9 @@ async fn login(
     password: &str,
     approved: Option<&[&str]>,
 ) -> UserConnectOptions<'static> {
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let oauth = NativeOAuthClient::open(
         runtime
             .workdir()
@@ -602,7 +604,9 @@ async fn generated_kv_is_usable_after_readiness_and_reconnection_preserves_data(
     admin.deployments_apply(&wire(json!({"deploymentId":identity.deployment_id(),"expectedRevision":deployment.revision,"packageEvidence":Participant::package_evidence(),"idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
     let (seed, public_key) = trellis_rs::auth::generate_session_keypair();
     admin.service_instances_provision(&wire(json!({"deploymentId":identity.deployment_id(),"identityPublicKey":public_key,"title":"replacement incarnation","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let mut replacement = Participant::connect(trellis_rs::service::ServiceConnectOptions::new(
         server.nats_servers,
         server.trust,

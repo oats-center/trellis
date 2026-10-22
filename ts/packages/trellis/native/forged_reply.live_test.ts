@@ -6,6 +6,7 @@ import {
   type Server,
   type Socket,
 } from "node:net";
+import { once } from "node:events";
 import { test } from "node:test";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { ulid } from "ulid";
@@ -16,6 +17,10 @@ import {
 } from "../../../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
 import { generateSessionSeed } from "../../trellis-testkit/src/auth/random.ts";
+import {
+  type NativeProxyTls,
+  upgradeNatsTls,
+} from "../../trellis-testkit/src/runtime.ts";
 import {
   NatsFrameParser,
   type NatsOp,
@@ -45,21 +50,30 @@ class CertifiedReplyProxy {
     resolve: () => void;
   };
 
-  private constructor(server: Server, target: URL) {
+  readonly #broker: NativeProxyTls;
+
+  private constructor(server: Server, target: URL, broker: NativeProxyTls) {
     this.#server = server;
+    this.#broker = broker;
     const address = server.address();
     if (!address || typeof address === "string") {
       throw new Error("proxy did not bind a TCP port");
     }
-    this.url = `nats://127.0.0.1:${address.port}`;
-    server.on("connection", (client) => this.#forward(client, target));
+    this.url = `tls://127.0.0.1:${address.port}`;
+    server.on("connection", (client) => {
+      void this.#forward(client, target).catch(() => client.destroy());
+    });
   }
 
-  static async start(targetUrl: string): Promise<CertifiedReplyProxy> {
+  /**
+   * The attacker holds the broker's certificate, modelling a broken transport,
+   * so the test proves certified replies resist tampering on their own.
+   */
+  static async start(
+    targetUrl: string,
+    broker: NativeProxyTls,
+  ): Promise<CertifiedReplyProxy> {
     const target = new URL(targetUrl);
-    if (target.protocol !== "nats:") {
-      throw new Error("forged reply test requires a plain NATS endpoint");
-    }
     const server = createServer();
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -68,7 +82,7 @@ class CertifiedReplyProxy {
         resolve();
       });
     });
-    return new CertifiedReplyProxy(server, target);
+    return new CertifiedReplyProxy(server, target, broker);
   }
 
   arm(value: string, mutate: ReplyMutation): Promise<void> {
@@ -87,19 +101,29 @@ class CertifiedReplyProxy {
     await new Promise<void>((resolve) => this.#server.close(() => resolve()));
   }
 
-  #forward(client: Socket, target: URL): void {
-    const upstream = connectTcp({
+  async #forward(client: Socket, target: URL): Promise<void> {
+    const plainUpstream = connectTcp({
       host: target.hostname,
       port: Number(target.port || 4222),
     });
-    this.#sockets.add(client).add(upstream);
+    this.#sockets.add(client).add(plainUpstream);
+    plainUpstream.on("error", () => plainUpstream.destroy());
+    client.on("error", () => client.destroy());
+    await once(plainUpstream, "connect");
+    const [secureClient, upstream] = await upgradeNatsTls(
+      client,
+      plainUpstream,
+      target.hostname,
+      this.#broker,
+      new AbortController().signal,
+    );
     const close = () => {
-      client.destroy();
-      upstream.destroy();
-      this.#sockets.delete(client);
-      this.#sockets.delete(upstream);
+      for (const socket of [secureClient, upstream, client, plainUpstream]) {
+        socket.destroy();
+        this.#sockets.delete(socket);
+      }
     };
-    client.on("error", close).on("close", close).pipe(upstream);
+    secureClient.on("error", close).on("close", close).pipe(upstream);
     upstream.on("error", close).on("close", close);
     const parser = new NatsFrameParser();
     let forwarding = Promise.resolve();
@@ -129,14 +153,14 @@ class CertifiedReplyProxy {
                 mutation.replacement.copy(raw, index);
                 this.#armed = undefined;
                 armed.resolve();
-                client.write(raw);
+                secureClient.write(raw);
                 return;
               }
             }
-            client.write(frame.raw);
+            secureClient.write(frame.raw);
           })
           .catch((error: unknown) => {
-            client.destroy(
+            secureClient.destroy(
               error instanceof Error ? error : new Error(String(error)),
             );
           });
@@ -284,10 +308,13 @@ test(
         );
         assert.ok(login, "native Device Code authorization must complete");
         const target = login.servers.find((server) =>
-          server.startsWith("nats://"),
+          server.startsWith("tls://"),
         );
         assert.ok(target, "runtime must advertise a native NATS endpoint");
-        const proxy = await CertifiedReplyProxy.start(target);
+        const proxy = await CertifiedReplyProxy.start(
+          target,
+          runtime.brokerTls(),
+        );
         close.push(() => proxy.close());
         const caller = await connectNativeClient({
           ...login,

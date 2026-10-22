@@ -942,6 +942,8 @@ jobs:
           - users_sessions
           - observability
           - navigation_permissions
+          - privilege_consent
+          - resources
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

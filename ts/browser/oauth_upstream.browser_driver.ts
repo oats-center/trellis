@@ -1,6 +1,7 @@
 import { strictEqual } from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 
 test("company sign-in navigates through Dex and returns to Trellis consent under CSP", async () => {
   const authorization = process.env.TRELLIS_TEST_OAUTH_AUTHORIZATION_URI;
@@ -11,7 +12,10 @@ test("company sign-in navigates through Dex and returns to Trellis consent under
       "the upstream runner must supply its live OAuth and Dex endpoints",
     );
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    env: browserTrustEnvironment(),
+  });
   try {
     // The fixture uses isolated loopback TLS listeners with a disposable CA.
     const page = await browser.newPage({ ignoreHTTPSErrors: true });

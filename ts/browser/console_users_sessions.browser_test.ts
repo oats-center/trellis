@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { join } from "node:path";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
 import { codecs } from "@oatscenter/trellis/generated";
 
@@ -636,7 +637,7 @@ test("N03 switching targets during A confirmation revokes only B", async () => {
     const contextA = await launchProfile(runtime);
     const contextB = await chromium.launchPersistentContext(
       join(runtime.workdir, "browser-profile-b"),
-      { headless: true },
+      { headless: true, env: browserTrustEnvironment() },
     );
     try {
       const pageA = await contextA.newPage();
@@ -782,7 +783,7 @@ test("B33 kicking a connection leaves the session valid", async () => {
     const contextA = await launchProfile(runtime);
     const contextB = await chromium.launchPersistentContext(
       join(runtime.workdir, "browser-profile-b"),
-      { headless: true },
+      { headless: true, env: browserTrustEnvironment() },
     );
     try {
       const pageA = await contextA.newPage();

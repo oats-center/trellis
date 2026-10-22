@@ -1,6 +1,11 @@
 export { TrellisTestRuntime } from "./src/runtime.ts";
 export { sqliteMemoryUrl, tempSqlitePath } from "./src/temp.ts";
 export { waitFor } from "./src/wait.ts";
+export {
+  browserTrustEnvironment,
+  trustedInstallationCas,
+  trustInstallationCa,
+} from "./src/tls_trust.ts";
 export type {
   TrellisControlPlaneAuthorization,
   TrellisControlPlaneOAuthProvider,

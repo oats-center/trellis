@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
 
 test("Console reload, simultaneous tabs, Chromium restart and account switching preserve account ownership", async () => {
@@ -16,6 +17,7 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
   const directory = await mkdtemp(join(tmpdir(), "trellis-browser-accounts-"));
   let context = await chromium.launchPersistentContext(directory, {
     headless: true,
+    env: browserTrustEnvironment(),
   });
   let page = await context.newPage();
   try {
@@ -54,6 +56,7 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
     await context.close();
     context = await chromium.launchPersistentContext(directory, {
       headless: true,
+      env: browserTrustEnvironment(),
     });
     page = await context.newPage();
     page.setDefaultTimeout(15000);

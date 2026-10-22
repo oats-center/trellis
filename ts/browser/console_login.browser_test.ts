@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { X509Certificate } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { ulid } from "ulid";
 import type { WebSocketRoute } from "playwright";
@@ -130,9 +132,28 @@ test("browser admin bootstrap reaches the authorized console and survives reload
           });
         }
         const page = await context.newPage();
+        // The first administrator sees which generated CA they trusted, by the
+        // fingerprint the operator publishes, on the setup page, the sign-in
+        // page, and Console.
+        const fingerprint = new X509Certificate(
+          await readFile(runtime.caCertificate),
+        ).fingerprint256;
+        const notice = () =>
+          page
+            .getByRole("status")
+            .filter({ hasText: fingerprint })
+            .first()
+            .waitFor({ state: "visible", timeout: 15_000 });
+        await page.goto(await runtime.bootstrapUrl(), {
+          waitUntil: "domcontentloaded",
+        });
+        await notice();
         await completeAdminBootstrapInBrowser(page, runtime, BROWSER_ADMIN);
+        await page.waitForURL((url) => url.origin === runtime.oauthIssuer);
+        await notice();
         await completeConsoleEntry(page, BROWSER_ADMIN);
         await waitForConsoleReady(page);
+        await notice();
 
         await page.reload({ waitUntil: "domcontentloaded" });
         await waitForConsoleReady(page);

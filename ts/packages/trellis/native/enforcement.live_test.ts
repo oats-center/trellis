@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import { ulid } from "ulid";
 
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
+import { trustInstallationCa } from "../../trellis-testkit/src/tls_trust.ts";
 import { apps, types } from "../../trellis-testkit/trellis/index.js";
 import { connectNativeClient } from "../native.ts";
 
@@ -39,7 +40,7 @@ test(
       await new Promise<void>((done) => listener.close(() => done()));
     }
     const [http, broker, monitor, websocket, oauth] = ports;
-    const issuer = `http://127.0.0.1:${oauth}`;
+    const issuer = `https://127.0.0.1:${oauth}`;
     const children: ChildProcess[] = [];
     const connections: Array<() => Promise<unknown>> = [];
     let serverLog = "";
@@ -76,12 +77,18 @@ test(
         String(monitor),
         "--nats-ws-port",
         String(websocket),
+        "--oauth-origin",
+        issuer,
+        "--oauth-port",
+        String(oauth),
+        "--nats-data-dir",
+        `${directory}/jetstream`,
       ]);
+      // The installation serves its generated TLS; this test trusts its CA.
+      trustInstallationCa(`${directory}/tls/ca.crt`);
       const configPath = `${directory}/config.toml`;
       const config =
-        (await readFile(configPath, "utf8"))
-          .replace("http://localhost:3001", issuer)
-          .replace("port = 3001", `port = ${oauth}`) +
+        (await readFile(configPath, "utf8")) +
         `\n[paths]\n${["data", "state", "cache", "runtime", "logs"].map((name) => `${name} = ${JSON.stringify(`${directory}/${name}`)}`).join("\n")}\n`;
       // The broker accepts this operational credential, but it has no access to
       // the system-account connection-management responders. This is an ordinary
@@ -94,21 +101,6 @@ test(
         ),
       );
       const natsConfig = `${directory}/nats/nats.conf`;
-      await writeFile(
-        natsConfig,
-        (await readFile(natsConfig, "utf8")).replace(
-          "store_dir: /data",
-          `store_dir: ${directory}/jetstream`,
-        ),
-      );
-      const jwtConfig = `${directory}/nats/jwt.conf`;
-      await writeFile(
-        jwtConfig,
-        (await readFile(jwtConfig, "utf8")).replace(
-          "/data/jwt",
-          `${directory}/jwt`,
-        ),
-      );
       const username = "enforcement-admin";
       const password = "enforcement-fixture-password";
       await exec(serverBinary, [
@@ -143,7 +135,7 @@ test(
         serverLog += chunk;
       });
       await waitFor("runtime readiness", async () =>
-        fetch(`http://localhost:${http}/readyz`).then(
+        fetch(`https://localhost:${http}/readyz`).then(
           (r) => r.ok,
           () => false,
         ),
@@ -234,7 +226,7 @@ test(
       await waitFor(
         "restarted runtime readiness",
         async () =>
-          fetch(`http://localhost:${http}/readyz`).then(
+          fetch(`https://localhost:${http}/readyz`).then(
             (r) => r.ok,
             () => false,
           ),

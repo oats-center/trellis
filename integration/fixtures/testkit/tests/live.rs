@@ -247,9 +247,10 @@ async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
         .register_service::<ProviderParticipant>("event-auth-provider")
         .await
         .unwrap();
-    let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
-        .await
-        .unwrap();
+    let server =
+        trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
     let provider =
         TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
             nats_servers: server.nats_servers,
@@ -350,9 +351,12 @@ async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
         .register_service::<ProviderParticipant>("foreign-event-provider")
         .await
         .unwrap();
-    let foreign_server = trellis_rs::auth::discover_native_oauth(foreign_runtime.oauth_origin())
-        .await
-        .unwrap();
+    let foreign_server = trellis_rs::auth::discover_native_oauth(
+        foreign_runtime.oauth_origin(),
+        &foreign_runtime.trust_roots(),
+    )
+    .await
+    .unwrap();
     let foreign_provider =
         TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
             nats_servers: foreign_server.nats_servers,
@@ -1783,9 +1787,10 @@ async fn cancelled_upload_recovers_after_provider_replacement() {
     // Dropping this provider's own runtime stops its spawned recovery and
     // execution tasks too, rather than leaving a survivor in the caller runtime.
     let first_provider = {
-        let server = trellis_rs::auth::discover_native_oauth(runtime.oauth_origin())
-            .await
-            .expect("selected installation trust");
+        let server =
+            trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+                .await
+                .expect("selected installation trust");
         let seed = identity.seed().to_owned();
         let name = identity.name().to_owned();
         let entered = entered.clone();

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { chromium, type Page } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { build } from "vite";
 
 test(
@@ -51,9 +52,12 @@ test(
     );
     let context = await chromium.launchPersistentContext(
       join(directory, "profile"),
-      { headless: true },
+      { headless: true, env: browserTrustEnvironment() },
     );
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({
+      headless: true,
+      env: browserTrustEnvironment(),
+    });
     const registrations: unknown[] = [];
     let lostReplies = 0;
     const dropReplies = new Set<string>();
@@ -246,7 +250,7 @@ test(
       process.stdin.pause();
       context = await chromium.launchPersistentContext(
         join(directory, "profile"),
-        { headless: true },
+        { headless: true, env: browserTrustEnvironment() },
       );
       first = await context.newPage();
       await open(

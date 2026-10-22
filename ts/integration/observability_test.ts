@@ -294,6 +294,7 @@ for (const scenario of [
                 env: {
                   ...process.env,
                   TRELLIS_URL: runtime.oauthIssuer,
+                  TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                   XDG_CONFIG_HOME: join(
                     runtime.workdir,
                     "rust-observability-caller",

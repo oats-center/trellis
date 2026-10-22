@@ -106,6 +106,7 @@ async function withTransportGrowthLeg(
       env: {
         ...process.env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: seed,
         TRELLIS_NATIVE_OWNER_SCOPE: nativeOwnerScope ? "1" : "0",
         TRELLIS_NATIVE_NATS_URL: natsUrl,
@@ -483,7 +484,7 @@ for (const outcome of ["recover", "root-revoked", "shutdown"] as const) {
       const ctx = await prepareSubjects(runtime);
       // Isolate this caller's real TCP path; administration and the provider
       // must remain connected while its ordered revocation coverage is lost.
-      const native = await TcpProxy.start(runtime.natsUrl, { scheme: "nats" });
+      const native = await TcpProxy.start(runtime.natsUrl, { scheme: "tls" });
       try {
         await withTransportGrowthLeg(
           runtime,

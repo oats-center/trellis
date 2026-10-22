@@ -389,6 +389,7 @@ test("Rust durable events match registrations and retain unhandled messages", as
           env: {
             ...env,
             TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: identity.seed,
             REVERSE: String(reverse),
           },
@@ -630,6 +631,7 @@ for (const sdk of ["rust", "typescript"] as const) {
             env: {
               ...env,
               TRELLIS_URL: runtime.oauthIssuer,
+              TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
               TRELLIS_IDENTITY_SEED: identity.seed,
               REVERSE: "false",
               CRASH: String(crash),
@@ -651,7 +653,11 @@ for (const sdk of ["rust", "typescript"] as const) {
             identity.seed,
           ],
           {
-            env: { ...env, CRASH: String(crash) },
+            env: {
+              ...env,
+              CRASH: String(crash),
+              NODE_EXTRA_CA_CERTS: runtime.caCertificate,
+            },
             stdio: "inherit",
           },
         );
@@ -958,6 +964,7 @@ test("Rust consumer-only service rejects explicit ephemeral at the runtime bound
       env: {
         ...env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CONSUMER_ONLY: "true",
         EPHEMERAL: "true",

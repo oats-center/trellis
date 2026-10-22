@@ -170,6 +170,7 @@ test("generated TypeScript caller reaches Rust provider", async () => {
           env: {
             ...process.env,
             TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: identity.seed,
             // Only the caller traverses the interruptible path in this journey.
             TRELLIS_NATS_URL: runtime.natsUrl,
@@ -449,6 +450,7 @@ test("generated TypeScript caller reaches Rust provider", async () => {
           env: {
             ...process.env,
             TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             XDG_CONFIG_HOME: join(runtime.workdir, "rust-caller-config"),
           },
         });
@@ -550,6 +552,7 @@ test("generated Rust resources use live NATS", async () => {
       env: {
         ...process.env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
       },
     });
@@ -595,6 +598,7 @@ test("generated Rust resources use live NATS", async () => {
       env: {
         ...process.env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_STATE_ACCEPTANCE: "1",
         XDG_CONFIG_HOME: join(runtime.workdir, "rust-state-config"),
       },

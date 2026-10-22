@@ -21,7 +21,11 @@ import {
 test("managed Jobs slot recovers a real missed-heartbeat receive and stops during recovery", async () => {
   const nats = await startTrellisRuntime();
   const gate = new NativeTransportGate();
-  const proxy = await TcpProxy.start(nats.natsUrl, { scheme: "nats", gate });
+  const proxy = await TcpProxy.start(nats.natsUrl, {
+    scheme: "tls",
+    gate,
+    tls: () => nats.brokerTls(),
+  });
   const nc = await nats.connectNats({
     servers: proxy.url,
   });

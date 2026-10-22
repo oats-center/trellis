@@ -1,6 +1,7 @@
 import { ok, strictEqual } from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 
 test("account linking crosses Dex through a reviewed navigation under CSP", async () => {
   const link = process.env.TRELLIS_TEST_ACCOUNT_LINK_URI;
@@ -11,7 +12,10 @@ test("account linking crosses Dex through a reviewed navigation under CSP", asyn
     throw new Error(
       "the account runner must supply real portal and Dex endpoints",
     );
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    env: browserTrustEnvironment(),
+  });
   try {
     const context = await browser.newContext({ ignoreHTTPSErrors: true });
     const page = await context.newPage();

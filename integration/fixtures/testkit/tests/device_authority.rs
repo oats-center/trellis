@@ -14,7 +14,9 @@ async fn oauth(
     runtime: &mut TrellisTestRuntime,
     admin: bool,
 ) -> (UserConnectOptions<'static>, String) {
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let native = NativeOAuthClient::open(
         runtime
             .workdir()
@@ -207,7 +209,9 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
             .unwrap(),
         }],
     };
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let details = json!([{"type":"trellis_capabilities","required":Child::REQUIRED_CAPABILITIES,"optional":[]}]);
     for remove in [false, true] {
         let deployment = admin.deployments_create(&serde_json::from_value(json!({"title":"Retiring companion","kind":"device","participantId":Required::ID,"packageEvidence":Required::package_evidence(),"idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap().deployment;
@@ -359,7 +363,9 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
     use trellis_rs::auth::{
         check_device_activation, DeviceActivationOptions, DeviceActivationStatus,
     };
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let deployment = match deployment { Some(id) => id, None => admin.deployments_create(&serde_json::from_value(json!({"title":"Companion enrollment","kind":"device","participantId":P::ID,"packageEvidence":P::package_evidence(),"idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap().deployment.deployment_id.to_string() };
     let provisioned = admin.devices_provision(&serde_json::from_value(json!({"deploymentId":deployment,"title":"Enrolled parent","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap()).await.unwrap();
     let secret = provisioned.provisioning_secret.unwrap();
@@ -633,7 +639,9 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
         .await
         .unwrap()
         .instance;
-    let server = discover_native_oauth(runtime.oauth_origin()).await.unwrap();
+    let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+        .await
+        .unwrap();
     let device = Client::connect_device(DeviceConnectOptions::<Device>::new(
         runtime.oauth_origin(),
         &seed,

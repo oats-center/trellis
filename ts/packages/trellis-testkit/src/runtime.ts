@@ -21,11 +21,13 @@ import {
   type Socket,
   createConnection,
   createServer,
+  isIP,
 } from "node:net";
+import { connect as tlsConnect, TLSSocket } from "node:tls";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import { ulid } from "ulid";
 import { z } from "zod";
 
@@ -36,6 +38,7 @@ import {
   loginNativeTestClient,
 } from "./admin/native_auth.ts";
 import { TrellisTestAdminAutomation } from "./admin_client.ts";
+import { trustInstallationCa } from "./tls_trust.ts";
 import {
   removeStaleMarkedDirectories,
   writeTrellisTestOwnerMarker,
@@ -169,6 +172,84 @@ class SerializedWriter implements SerialWriter {
   }
 }
 
+/** PEM certificate and key a gated native proxy presents to clients. @internal */
+export type NativeProxyTls = { certificate: string; privateKey: string };
+
+/** Reads the bundle's broker certificate and key for a gated native proxy. */
+function readBrokerTls(workdir: string): NativeProxyTls {
+  const directory = join(workdir, "config", "trellis", "nats", "tls");
+  return {
+    certificate: readFileSync(join(directory, "nats.crt"), "utf8"),
+    privateKey: readFileSync(join(directory, "nats.key"), "utf8"),
+  };
+}
+
+/**
+ * Terminates a NATS connection's TLS in a test proxy so it can read frames.
+ *
+ * NATS sends `INFO` in plaintext and both sides then upgrade the same socket.
+ * The proxy forwards that `INFO`, presents the broker's own certificate to the
+ * client, and opens TLS to the broker verified against the process's trusted
+ * CAs. Interrupting `signal` or closing either peer abandons the upgrade.
+ * @internal
+ */
+export async function upgradeNatsTls(
+  client: Socket,
+  upstream: Socket,
+  host: string,
+  broker: NativeProxyTls,
+  interrupted: AbortSignal,
+): Promise<[TLSSocket, TLSSocket]> {
+  const upgrade = new AbortController();
+  const abort = () => upgrade.abort();
+  interrupted.addEventListener("abort", abort, { once: true });
+  client.once("close", abort);
+  upstream.once("close", abort);
+  const signal = upgrade.signal;
+  client.write(await readProtocolLine(upstream, signal));
+  const secureClient = new TLSSocket(client, {
+    isServer: true,
+    cert: broker.certificate,
+    key: broker.privateKey,
+  });
+  const secureUpstream = tlsConnect({
+    socket: upstream,
+    host,
+    ...(isIP(host) ? {} : { servername: host }),
+  });
+  for (const socket of [secureClient, secureUpstream])
+    socket.on("error", () => socket.destroy());
+  await Promise.all([
+    once(secureClient, "secure", { signal }),
+    once(secureUpstream, "secureConnect", { signal }),
+  ]);
+  return [secureClient, secureUpstream];
+}
+
+/** Reads one CRLF-terminated protocol line without consuming later bytes. */
+async function readProtocolLine(
+  socket: Socket,
+  signal: AbortSignal,
+): Promise<Buffer> {
+  let buffered = Buffer.alloc(0);
+  for (;;) {
+    const end = buffered.indexOf("\r\n");
+    if (end >= 0) {
+      const rest = buffered.subarray(end + 2);
+      if (rest.length > 0) socket.unshift(rest);
+      return buffered.subarray(0, end + 2);
+    }
+    const chunk: Buffer | null = socket.read();
+    if (chunk !== null) {
+      buffered = Buffer.concat([buffered, chunk]);
+      continue;
+    }
+    if (socket.readableEnded || socket.destroyed)
+      throw new Error("broker closed before sending INFO");
+    await once(socket, "readable", { signal });
+  }
+}
+
 /** Transparent TCP proxy used to interrupt and observe the native path. @internal */
 export class TcpProxy {
   readonly url: string;
@@ -177,6 +258,7 @@ export class TcpProxy {
   readonly #connections = new Set<Socket>();
   readonly #forwarding = new Set<Promise<void>>();
   readonly #gate: NativeTransportGate | undefined;
+  readonly #tls: (() => NativeProxyTls) | undefined;
   #interrupted = false;
   #outage = new AbortController();
   #stopping: Promise<void> | undefined;
@@ -187,10 +269,12 @@ export class TcpProxy {
     advertisedHost: string,
     scheme: string,
     gate?: NativeTransportGate,
+    tls?: () => NativeProxyTls,
   ) {
     this.#listener = listener;
     this.#target = target;
     this.#gate = gate;
+    this.#tls = tls;
     const address = listener.address();
     if (!address || typeof address === "string")
       throw new Error("TCP proxy has no address");
@@ -212,17 +296,32 @@ export class TcpProxy {
   static async start(
     targetUrl: string,
     options: {
-      bindHostname?: string;
-      advertisedHost?: string;
       scheme?: string;
       gate?: NativeTransportGate;
+      /**
+       * Broker certificate the gated proxy presents. NATS upgrades to TLS after
+       * a plaintext INFO, so observing frames requires terminating TLS here and
+       * re-encrypting to the broker, which is verified against trusted CAs.
+       */
+      tls?: () => NativeProxyTls;
     } = {},
   ): Promise<TcpProxy> {
     const target = new URL(targetUrl);
+    if (
+      options.gate !== undefined &&
+      options.tls === undefined &&
+      target.protocol === "tls:"
+    ) {
+      // NATS upgrades to TLS after INFO; a gate cannot read encrypted frames
+      // and would wait forever for a frame boundary.
+      throw new Error(
+        "a gated proxy to a TLS broker needs the broker certificate (tls)",
+      );
+    }
     const listener = createServer();
     await new Promise<void>((resolve, reject) => {
       listener.once("error", reject);
-      listener.listen(0, options.bindHostname ?? "127.0.0.1", () => {
+      listener.listen(0, "127.0.0.1", () => {
         listener.removeListener("error", reject);
         resolve();
       });
@@ -233,9 +332,10 @@ export class TcpProxy {
         host: target.hostname,
         port: Number(target.port),
       },
-      options.advertisedHost ?? "127.0.0.1",
-      options.scheme ?? "ws",
+      "127.0.0.1",
+      options.scheme ?? "wss",
       options.gate,
+      options.tls,
     );
   }
 
@@ -282,8 +382,22 @@ export class TcpProxy {
       this.#connections.add(upstream);
       await once(upstream, "connect");
       if (this.#interrupted) return;
-      const toClient = new SerializedWriter(client);
-      const toUpstream = new SerializedWriter(upstream);
+      let clientStream: Socket = client;
+      let upstreamStream: Socket = upstream;
+      if (this.#gate !== undefined && this.#tls !== undefined) {
+        const upgraded = await upgradeNatsTls(
+          client,
+          upstream,
+          this.#target.host,
+          this.#tls(),
+          this.#outage.signal,
+        );
+        for (const socket of upgraded) this.#connections.add(socket);
+        if (this.#interrupted) return;
+        [clientStream, upstreamStream] = upgraded;
+      }
+      const toClient = new SerializedWriter(clientStream);
+      const toUpstream = new SerializedWriter(upstreamStream);
       connectionId = this.#gate?.connectionOpened(toClient);
       // Only the gate-enabled path needs protocol framing; without a gate the
       // pump forwards raw bytes so binary payloads are never held or reframed.
@@ -292,8 +406,8 @@ export class TcpProxy {
           ? { gate: this.#gate, connectionId }
           : undefined;
       pumps.push(
-        this.#pump(client, toUpstream, "c2s", gating),
-        this.#pump(upstream, toClient, "s2c", gating),
+        this.#pump(clientStream, toUpstream, "c2s", gating),
+        this.#pump(upstreamStream, toClient, "s2c", gating),
       );
       await Promise.race(pumps);
     } finally {
@@ -363,11 +477,13 @@ export class TrellisTestRuntime implements AsyncDisposable {
   readonly trellisUrl: string;
   /** Dedicated authorization server origin for real browser and native OAuth. */
   readonly oauthIssuer: string;
-  /** Public browser origin; loopback unless a non-loopback browser host was requested. */
+  /** Public HTTPS browser origin of the Console listener. */
   readonly publicOrigin: string;
   readonly natsUrl: string;
   /** NATS WebSocket endpoint for exercising the same broker with browser clients. */
   readonly natsWebsocketUrl: string;
+  /** PEM certificate of this runtime's generated installation CA. */
+  readonly caCertificate: string;
   readonly workdir: string;
   /** Local test-admin username used by the harness bootstrap. */
   readonly adminUsername = ADMIN_USERNAME;
@@ -442,6 +558,14 @@ export class TrellisTestRuntime implements AsyncDisposable {
   #users = new Map<string, { user: TrellisTestUser; password: string }>();
   #stopped = false;
 
+  /**
+   * Broker certificate and key, for a gated {@link TcpProxy} that must
+   * terminate the broker's TLS to observe NATS frames. @internal
+   */
+  brokerTls(): NativeProxyTls {
+    return readBrokerTls(this.workdir);
+  }
+
   /** Returns the one-time first-administrator bootstrap URL for this runtime. */
   async bootstrapUrl(): Promise<string> {
     return await this.#getBootstrapUrl();
@@ -467,6 +591,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     trellisUrl: string;
     oauthIssuer: string;
     publicOrigin: string;
+    caCertificate: string;
     workdir: string;
     deployment: string;
     keepWorkdir: boolean;
@@ -487,6 +612,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
     this.trellisUrl = args.trellisUrl;
     this.oauthIssuer = args.oauthIssuer;
     this.publicOrigin = args.publicOrigin;
+    this.caCertificate = args.caCertificate;
     this.natsUrl = args.natsUrl;
     this.natsWebsocketUrl = args.websocketProxy?.url ?? args.websocketUrl;
     this.workdir = args.workdir;
@@ -619,28 +745,24 @@ export class TrellisTestRuntime implements AsyncDisposable {
       }
       const [port, nativePort, monitorPort, websocketPort, oauthPort] =
         portLeases.map((lease) => lease.port);
-      const natsUrl = `nats://127.0.0.1:${nativePort}`;
-      const websocketUrl = `ws://127.0.0.1:${websocketPort}`;
-      const browserHost = options.browserHost;
-      if (options.rotatableWebsocketProxy || browserHost) {
-        websocketProxy = await TcpProxy.start(websocketUrl, {
-          ...(browserHost
-            ? { bindHostname: "0.0.0.0", advertisedHost: browserHost }
-            : {}),
-        });
+      // Runtimes serve the default generated installation TLS; this process
+      // trusts each runtime's CA explicitly once it is generated.
+      const natsUrl = `tls://127.0.0.1:${nativePort}`;
+      const websocketUrl = `wss://127.0.0.1:${websocketPort}`;
+      if (options.rotatableWebsocketProxy) {
+        websocketProxy = await TcpProxy.start(websocketUrl);
       }
       if (options.interruptibleNativeProxy) {
         nativeGate = new NativeTransportGate();
         nativeProxy = await TcpProxy.start(natsUrl, {
-          scheme: "nats",
+          scheme: "tls",
           gate: nativeGate,
+          tls: () => readBrokerTls(workdir),
         });
       }
-      const trellisUrl = browserHost
-        ? `http://${browserHost}:${port}`
-        : `http://localhost:${port}`;
+      const trellisUrl = `https://localhost:${port}`;
       const publicOrigin = trellisUrl;
-      const oauthIssuer = `http://localhost:${oauthPort}`;
+      const oauthIssuer = `https://localhost:${oauthPort}`;
       const initArgs = [
         "--format",
         "json",
@@ -662,8 +784,12 @@ export class TrellisTestRuntime implements AsyncDisposable {
         websocketUrl,
         "--public-origin",
         publicOrigin,
+        "--oauth-origin",
+        oauthIssuer,
+        "--oauth-port",
+        String(oauthPort),
         "--bind-address",
-        browserHost ? "0.0.0.0" : "127.0.0.1",
+        "127.0.0.1",
       ];
       for (const origin of options.webOrigins ?? []) {
         initArgs.push("--extra-origin", origin);
@@ -718,18 +844,12 @@ export class TrellisTestRuntime implements AsyncDisposable {
         })
         .parse(JSON.parse(new TextDecoder().decode(output)));
       environment.TRELLIS_CONFIG = bootstrap.trellisConfig;
-      const config = z
-        .looseObject({
-          auth: z.looseObject({
-            oauth: z.looseObject({ origin: z.string(), port: z.number() }),
-          }),
-        })
-        .parse(parseToml(await readFile(bootstrap.trellisConfig, "utf8")));
-      config.auth.oauth.origin = oauthIssuer;
-      config.auth.oauth.port = oauthPort;
-      await writeFile(bootstrap.trellisConfig, stringifyToml(config), {
-        mode: 0o600,
-      });
+      const caCertificate = join(
+        dirname(bootstrap.trellisConfig),
+        "tls",
+        "ca.crt",
+      );
+      trustInstallationCa(caCertificate);
       const adminPassword =
         options.adminPassword ?? `trellis-testkit-${crypto.randomUUID()}`;
       const seeded = (options.firstAdmin ?? "seeded") === "seeded";
@@ -800,6 +920,7 @@ export class TrellisTestRuntime implements AsyncDisposable {
         oauthIssuer,
         trellisUrl: startedControlPlane.trellisUrl,
         publicOrigin,
+        caCertificate,
         workdir,
         deployment,
         keepWorkdir: options.keepWorkdir ?? false,

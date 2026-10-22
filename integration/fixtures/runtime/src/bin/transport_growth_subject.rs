@@ -380,7 +380,9 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
 /// service facade hiding its client. Keep both real references after scope end.
 async fn run_native_owner_scope(url: &str, seed: &str) -> Result<(), Box<dyn std::error::Error>> {
     use trellis_rs::generated::ParticipantDescriptor as _;
-    let server = trellis_rs::auth::discover_native_oauth(url).await?;
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
     let client = std::sync::Arc::new(
         trellis_rs::client::TrellisClient::connect_service_with_contract(
             trellis_rs::client::ServiceConnectWithContractOptions {

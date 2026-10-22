@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { chromium, type Page } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { build } from "vite";
 import { z } from "zod";
 import { AuthIssuerChainResponseCodec } from "../packages/trellis-testkit/trellis/types/index.js";
@@ -341,7 +342,10 @@ async function browser() {
   });
   app.listen(Number(new URL(appOrigin).port), new URL(appOrigin).hostname);
   await once(app, "listening");
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    env: browserTrustEnvironment(),
+  });
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);

@@ -106,6 +106,7 @@ test("native Rust worker starts on a provisioned queue and retries cleanup beyon
       env: {
         ...process.env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
       },
     });
@@ -291,6 +292,7 @@ test("native worker killed after key persistence but before Started recovers exp
           env: {
             ...process.env,
             TRELLIS_URL: runtime.oauthIssuer,
+            TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
             TRELLIS_IDENTITY_SEED: identity.seed,
             TRELLIS_PRE_STARTED_WORK: "1",
           },
@@ -466,6 +468,7 @@ test("native failed retry and dead-letter replay execute again while historical 
       env: {
         ...process.env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         TRELLIS_REPLAY_WORK: "1",
       },
@@ -592,7 +595,11 @@ for (const ordering of [
         const finishB = Promise.withResolvers<{ key: string }>();
         const gate = new NativeTransportGate();
         const proxy = lateCompletion
-          ? await TcpProxy.start(runtime.natsUrl, { gate, scheme: "nats" })
+          ? await TcpProxy.start(runtime.natsUrl, {
+              gate,
+              scheme: "tls",
+              tls: () => runtime.brokerTls(),
+            })
           : undefined;
         const recoveryNc = proxy
           ? await connect({

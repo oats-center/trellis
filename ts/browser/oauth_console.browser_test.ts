@@ -2,6 +2,7 @@ import { strictEqual } from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
@@ -11,7 +12,10 @@ test("registered Console delegates administrative authority through consent and 
     const username = runtime.adminUsername;
     const password = runtime.adminPassword;
     const origin = new URL(application).origin;
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({
+      headless: true,
+      env: browserTrustEnvironment(),
+    });
     const page = await browser.newPage();
     const diagnostics: string[] = [];
     page.on("console", (message) =>

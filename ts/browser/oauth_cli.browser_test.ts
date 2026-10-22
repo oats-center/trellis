@@ -8,6 +8,7 @@ import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
 import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
@@ -28,13 +29,27 @@ test(
       );
       const directory = await mkdtemp(join(tmpdir(), "cli-management-"));
       const env = { ...process.env, XDG_CONFIG_HOME: directory };
-      const browser = await chromium.launch({ headless: true });
+      const browser = await chromium.launch({
+        headless: true,
+        env: browserTrustEnvironment(),
+      });
       const page = await browser.newPage();
       page.setDefaultTimeout(10_000);
-      const login = spawn(binary, ["--format", "json", "login", issuer], {
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const login = spawn(
+        binary,
+        [
+          "--format",
+          "json",
+          "login",
+          issuer,
+          "--ca-certificate",
+          runtime.caCertificate,
+        ],
+        {
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
       const exited = once(login, "exit");
       const progress = createInterface({ input: login.stderr });
       try {

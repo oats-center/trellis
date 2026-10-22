@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { type Browser, chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { ulid } from "ulid";
 import { build } from "vite";
 
@@ -62,7 +63,8 @@ test("browser consent renewal and incompatible API recovery retain the authentic
     const address = server.address();
     assert(address && typeof address !== "string");
     const origin = `http://127.0.0.1:${address.port}`;
-    const browser = await chromium.launch({ headless: true });
+    // Launch inside the runtime so the browser trusts its generated CA.
+    let browser: Browser | undefined;
     try {
       await withTrellisRuntime(async (runtime) => {
         const identity = await runtime.registerService({
@@ -79,6 +81,10 @@ test("browser consent renewal and incompatible API recovery retain the authentic
         await service.handleExtra(({ input }) => Result.ok(input));
         let replacement: { stop(): Promise<void> } | undefined;
         let replacementExit: Promise<unknown> | undefined;
+        browser = await chromium.launch({
+          headless: true,
+          env: browserTrustEnvironment(),
+        });
         const page = await browser.newPage();
         const clientId = ulid();
         try {
@@ -325,7 +331,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
         }
       }, browserRuntimeOptions());
     } finally {
-      await browser.close();
+      await browser?.close();
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );

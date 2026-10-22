@@ -87,11 +87,6 @@ export type TrellisTestRuntimeStartOptions = {
    * can drop and restore the real physical path for native clients.
    */
   interruptibleNativeProxy?: boolean;
-  /**
-   * Non-loopback host used as the browser public origin and advertised WebSocket
-   * host, so the document is an ordinary insecure browser context.
-   */
-  browserHost?: string;
   /** Authorization-context lifetime overrides for the isolated test control plane. */
   authorization?: Partial<TrellisControlPlaneAuthorization>;
   timeouts?: {

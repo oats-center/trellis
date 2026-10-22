@@ -35,7 +35,7 @@ type KeyState = {
 
 type ProviderRuntime = Pick<
   TrellisTestRuntime,
-  "oauthIssuer" | "registerService"
+  "oauthIssuer" | "caCertificate" | "registerService"
 >;
 
 function delay(ms: number): Promise<void> {
@@ -313,6 +313,7 @@ test("V3 TypeScript caller drives Rust liveprobe provider", async () => {
       env: {
         ...env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         CARGO_TARGET_DIR: fileURLToPath(
           new URL("../../target", import.meta.url),
@@ -384,6 +385,7 @@ async function runRustLiveProbeCaller(
     env: {
       ...process.env,
       TRELLIS_URL: runtime.oauthIssuer,
+      TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
       XDG_CONFIG_HOME: join(runtime.workdir, configDir),
       CARGO_TARGET_DIR: fileURLToPath(new URL("../../target", import.meta.url)),
     },
@@ -450,6 +452,7 @@ function startRustProvider(runtime: ProviderRuntime): {
         env: {
           ...env,
           TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: identity.seed,
           CARGO_TARGET_DIR: fileURLToPath(
             new URL("../../target", import.meta.url),

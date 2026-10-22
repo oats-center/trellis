@@ -29,6 +29,7 @@ for (const pendingControl of [false, true]) {
               env: {
                 ...process.env,
                 TRELLIS_URL: runtime.oauthIssuer,
+                TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
                 TRELLIS_IDENTITY_SEED: identity.seed,
               },
             },

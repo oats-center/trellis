@@ -1,6 +1,7 @@
 import { strictEqual } from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 
 test("real OAuth portal signs in and approves the requesting device", async () => {
   const verification = process.env.TRELLIS_TEST_OAUTH_VERIFICATION_URI;
@@ -9,7 +10,10 @@ test("real OAuth portal signs in and approves the requesting device", async () =
     throw new Error(
       "the OAuth component runner must supply its live verification URI",
     );
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+    env: browserTrustEnvironment(),
+  });
   try {
     const page = await browser.newPage();
     page.setDefaultTimeout(5000);

@@ -45,7 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("CONSUMER_ONLY").as_deref() == Ok("true") {
         return run_consumer_only(&url, &identity).await;
     }
-    let server = trellis_rs::auth::discover_native_oauth(&url).await?;
+    let server =
+        trellis_rs::auth::discover_native_oauth(&url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
     let mut service = Participant::connect(ServiceConnectOptions::new(
         server.nats_servers,
         server.trust,
@@ -173,7 +175,9 @@ async fn run_public_backlog(url: &str, identity: &str) -> Result<(), Box<dyn std
     use runtime_trellis::participants::runtime_trellis_event_service_both::{Client, Participant};
     use tokio::io::{AsyncBufReadExt as _, BufReader};
 
-    let server = trellis_rs::auth::discover_native_oauth(url).await?;
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
     let service = Participant::connect(ServiceConnectOptions::new(
         server.nats_servers,
         server.trust,
@@ -219,7 +223,9 @@ async fn run_public_backlog(url: &str, identity: &str) -> Result<(), Box<dyn std
 /// Event Subscribe authority, so explicit ephemeral must fail fast.
 async fn run_consumer_only(url: &str, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     use runtime_trellis::participants::runtime_trellis_event_service_consumer_only::Participant as ConsumerOnly;
-    let server = trellis_rs::auth::discover_native_oauth(url).await?;
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
     let service = ConsumerOnly::connect(ServiceConnectOptions::new(
         server.nats_servers,
         server.trust,

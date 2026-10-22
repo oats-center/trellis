@@ -57,7 +57,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(10_000);
 
     let identity = derive_device_identity(&root_secret)?;
-    let mut server = discover_native_oauth(&url).await?;
+    let mut server =
+        discover_native_oauth(&url, &trellis_runtime_acceptance::trust_roots()).await?;
     let options = DeviceConnectOptions::<DeviceParticipant>::new(
         &url,
         &identity.identity_seed_base64url,

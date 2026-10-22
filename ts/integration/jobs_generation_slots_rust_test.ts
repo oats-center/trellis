@@ -42,6 +42,7 @@ async function withLeg(
       env: {
         ...process.env,
         TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: seed,
         TRELLIS_JOB_CONCURRENCY: concurrency,
       },

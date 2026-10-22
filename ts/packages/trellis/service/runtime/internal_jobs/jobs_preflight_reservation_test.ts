@@ -25,7 +25,12 @@ test("Jobs reserves the initial delivery during a slow lifecycle query", async (
     nats = await startTrellisRuntime();
     const observer = await nats.connectNats();
     const gate = new NativeTransportGate();
-    proxy = await TcpProxy.start(nats.natsUrl, { scheme: "nats", gate });
+    const brokerTls = nats.brokerTls();
+    proxy = await TcpProxy.start(nats.natsUrl, {
+      scheme: "tls",
+      gate,
+      tls: () => brokerTls,
+    });
     nc = await nats.connectNats({
       servers: proxy.url,
     });

@@ -6,7 +6,6 @@
   "exclude": [
     "../ts/packages/trellis/service/runtime/**/*.ts",
     "../ts/services/**/*.ts",
-    "**/*.test.ts",
-    "./tests/**/*.ts"
+    "**/*.test.ts"
   ]
 }

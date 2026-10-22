@@ -97,6 +97,7 @@ test(
         env: {
           ...process.env,
           TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: secondIdentity.seed,
         },
       });
@@ -240,6 +241,7 @@ test(
         env: {
           ...process.env,
           TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_NATIVE_CLIENT_ID: v1Apps.LiveV1Caller.request.id,
           XDG_CONFIG_HOME: join(runtime.workdir, "live-version-caller"),
         },

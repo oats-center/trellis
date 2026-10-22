@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
+import { type Browser, chromium } from "playwright";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { build } from "vite";
 
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
@@ -47,9 +48,14 @@ test("first-contact browser discovery does not require a registered application 
     const address = server.address();
     assert(address && typeof address !== "string");
     const origin = `http://127.0.0.1:${address.port}`;
-    const browser = await chromium.launch({ headless: true });
+    // Launch inside the runtime so the browser trusts its generated CA.
+    let browser: Browser | undefined;
     try {
       await withTrellisRuntime(async (runtime) => {
+        browser = await chromium.launch({
+          headless: true,
+          env: browserTrustEnvironment(),
+        });
         const page = await browser.newPage();
         await page.goto(origin);
         const result = await page.evaluate(
@@ -126,7 +132,7 @@ test("first-contact browser discovery does not require a registered application 
         await page.close();
       }, browserRuntimeOptions());
     } finally {
-      await browser.close();
+      await browser?.close();
       await new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       );

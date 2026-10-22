@@ -99,6 +99,7 @@ test("Rust downloads survive growth and open after the original attachment close
             ),
           ),
           TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
           TRELLIS_IDENTITY_SEED: instance.seed,
           OTEL_METRICS_EXPORTER: "otlp",
           OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${address.port}`,
