@@ -994,7 +994,16 @@ if (options.role !== "client") {
                     result.transferred.size !== size ||
                     result.terminal.output?.value !== expected
                   ) {
-                    throw new Error("Corrupt persisted upload");
+                    throw new Error(
+                      `Upload did not complete with the sent bytes: ${JSON.stringify(
+                        {
+                          state: result.terminal.state,
+                          size: result.transferred.size,
+                          output: result.terminal.output?.value,
+                          error: result.terminal.error,
+                        },
+                      )}`,
+                    );
                   }
                   // A stream's commit is verified delivery to the handler; its
                   // durable write, when it has one, completes with the handler.
