@@ -214,8 +214,9 @@ async fn activate(
                     let payload = Bytes::from(serde_json::to_vec(&body)?);
                     let descriptor = TransferFrameDescriptor { transfer_id: coordinates.id.into(), direction: coordinates.direction, sequence: U64s::new(2), kind: TransferFrameKind::Control, terminal: None };
                     let headers = wire::caller_headers(client, &coordinates.action, coordinates.control, coordinates.signal, &descriptor, &payload).map_err(fail)?;
+                    let header_bytes = transfer::telemetry::header_bytes(&headers);
                     lease.nats().publish_with_reply_and_headers(coordinates.control.to_owned(), coordinates.signal.to_owned(), headers, payload.clone()).await.map_err(fail)?;
-                    transfer::telemetry::frame(&descriptor, &payload, "client");
+                    transfer::telemetry::frame(&descriptor, header_bytes, &payload, "client");
                     cancelled_sent = true;
                     continue;
                 },
@@ -344,6 +345,7 @@ async fn publish_control(
         &payload,
     )
     .map_err(fail)?;
+    let header_bytes = transfer::telemetry::header_bytes(&headers);
     active
         .lease
         .nats()
@@ -355,7 +357,7 @@ async fn publish_control(
         )
         .await
         .map_err(fail)?;
-    transfer::telemetry::frame(&descriptor, &payload, "client");
+    transfer::telemetry::frame(&descriptor, header_bytes, &payload, "client");
     Ok(())
 }
 
@@ -440,8 +442,9 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                     let headers = wire::caller_headers(client, &coordinates.action, &grant.data_subject, &grant.signal_subject, &descriptor, &bytes).map_err(fail)?;
                     hasher.update(&bytes);
                     let len = bytes.len() as u64;
+                    let header_bytes = transfer::telemetry::header_bytes(&headers);
                     active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, bytes.bytes.clone()).await.map_err(fail)?;
-                    transfer::telemetry::frame(&descriptor, &bytes, "client");
+                    transfer::telemetry::frame(&descriptor, header_bytes, &bytes, "client");
                     window.commit_frame(seq, len).map_err(|e| fail(format!("upload sender window: {e:?}")))?;
                     transferred = next;
                     continue;

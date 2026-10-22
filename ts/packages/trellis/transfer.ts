@@ -15,6 +15,7 @@ import { TransportError } from "./errors/TransportError.ts";
 import type { TrellisTransportProvider } from "./transport/generations.ts";
 import { SenderWindow } from "./data_plane/flow.ts";
 import {
+  recordTransferMessage,
   TransferCredit,
   TransferSession,
   transferWait,
@@ -254,6 +255,13 @@ class ClientSession {
         headers,
         reply: session.grant.signalSubject,
       });
+      recordTransferMessage(
+        session.grant.direction,
+        "client",
+        "control",
+        headers,
+        payload.length,
+      );
       if (action === "end-ack") {
         try {
           await transferWait(session.lease.nc.flush(), session.abort.signal);
@@ -448,14 +456,13 @@ export class SendTransferHandle extends BaseTransferHandle {
             if (window.commitFrame(seq, frame.length)) {
               throw new Error("transfer frame accounting failed");
             }
-            recordCatalogCounter("trellis.transfer.frames", 1, {
-              "trellis.direction": "upload",
-              "trellis.side": "client",
-            });
-            recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
-              "trellis.direction": "upload",
-              "trellis.side": "client",
-            });
+            recordTransferMessage(
+              "send",
+              "client",
+              "data",
+              headers,
+              frame.length,
+            );
             hasher.update(frame);
           }
           const digest = `SHA-256=${base64urlEncode(hasher.digest())}`;
@@ -480,6 +487,13 @@ export class SendTransferHandle extends BaseTransferHandle {
             headers: completionHeaders,
             reply: this.grant.signalSubject,
           });
+          recordTransferMessage(
+            "send",
+            "client",
+            "complete",
+            completionHeaders,
+            completion.length,
+          );
           const info = await transferWait(
             client.committed.promise,
             session.abort.signal,
@@ -685,18 +699,6 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
                       hash.update(msg.data);
                       handoff();
                       ingress.push(seq, msg.data);
-                      recordCatalogCounter("trellis.transfer.frames", 1, {
-                        "trellis.direction": "download",
-                        "trellis.side": "client",
-                      });
-                      recordCatalogCounter(
-                        "trellis.transfer.wire.bytes",
-                        msg.data.length,
-                        {
-                          "trellis.direction": "download",
-                          "trellis.side": "client",
-                        },
-                      );
                     }
                   })
                   .finally(() => {

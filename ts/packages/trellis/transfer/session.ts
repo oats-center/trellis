@@ -26,6 +26,53 @@ import {
   type SessionRequest,
 } from "../auth/protocol_wasm.ts";
 
+/**
+ * Count one sent or verified received Transfer message at the endpoint that
+ * owns it, with the same families as the Rust SDK. DATA charges its payload to
+ * `payload.bytes` and its serialized message (NATS header block plus payload)
+ * to `wire.bytes`; every other message charges its serialized size to
+ * `control.bytes`. @internal
+ */
+export function recordTransferMessage(
+  direction: TransferGrant["direction"],
+  side: "client" | "provider",
+  kind: string,
+  messageHeaders: MsgHdrs | undefined,
+  payloadBytes: number,
+): void {
+  const labels = {
+    "trellis.direction": direction === "send" ? "upload" : "download",
+    "trellis.side": side,
+  } as const;
+  let headerBytes = 0;
+  if (messageHeaders) {
+    // `NATS/1.0\r\n`, one `name: value\r\n` per value, then a blank line.
+    headerBytes = 12;
+    for (const [name, values] of messageHeaders) {
+      for (const value of values) headerBytes += name.length + value.length + 4;
+    }
+  }
+  if (kind === "data") {
+    recordCatalogCounter("trellis.transfer.frames", 1, labels);
+    recordCatalogCounter(
+      "trellis.transfer.payload.bytes",
+      payloadBytes,
+      labels,
+    );
+    recordCatalogCounter(
+      "trellis.transfer.wire.bytes",
+      headerBytes + payloadBytes,
+      labels,
+    );
+    return;
+  }
+  recordCatalogCounter(
+    "trellis.transfer.control.bytes",
+    headerBytes + payloadBytes,
+    labels,
+  );
+}
+
 /** Owned transport/authority lifetime for a single pinned transfer. @internal */
 export class TransferSession {
   readonly abort = new AbortController();
@@ -311,6 +358,13 @@ export class TransferSession {
       },
       msg.data,
       sessionKey,
+    );
+    recordTransferMessage(
+      this.grant.direction,
+      "client",
+      control,
+      msg.headers,
+      msg.data.length,
     );
     const cache = this.auth.authorityOwner;
     if (!cache) throw new Error("transfer authorization cache unavailable");

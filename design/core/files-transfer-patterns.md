@@ -397,9 +397,19 @@ Rules:
 Both runtimes record the same transfer metrics with the same labels:
 `trellis.direction` is `upload` or `download` and `trellis.side` is `client` or
 `provider` (`store` for storage refill waits). Each endpoint records one
-`trellis.transfer.duration` per transfer, and counts `trellis.transfer.frames`,
-`trellis.transfer.wire.bytes`, and `trellis.transfer.credit.controls` for the
-DATA frames and credit messages it sends or verifies on receipt.
+`trellis.transfer.duration` per transfer and counts what it sends or verifies
+on receipt:
+
+- `trellis.transfer.frames` and `trellis.transfer.payload.bytes` for DATA
+  frames and their raw payload;
+- `trellis.transfer.wire.bytes` for serialized DATA messages, the NATS header
+  block (descriptor, proof and authority headers) plus payload;
+- `trellis.transfer.control.bytes` for every other serialized Transfer message:
+  controls, signals, EOF, activation, completion and cancellation;
+- `trellis.transfer.credit.controls` for cumulative credit messages.
+
+Protocol byte overhead is `(wire + control - payload) / payload`. Broker
+protocol lines and TCP framing are outside these counters.
 `trellis.transfer.buffered.bytes` follows retained raw payload ownership and is
 released on consumption or cleanup. Labels never include transfer ids,
 subjects, principals, object keys, or arbitrary errors. There are no per-frame

@@ -580,7 +580,9 @@ test("TS transfer telemetry labels each endpoint by direction and side", async (
       const measure = () =>
         endpoints.map((labels) => ({
           frames: capture.total("trellis.transfer.frames", labels),
-          bytes: capture.total("trellis.transfer.wire.bytes", labels),
+          bytes: capture.total("trellis.transfer.payload.bytes", labels),
+          wire: capture.total("trellis.transfer.wire.bytes", labels),
+          control: capture.total("trellis.transfer.control.bytes", labels),
           credit: capture.total("trellis.transfer.credit.controls", labels),
           completed: capture.count("trellis.transfer.duration", {
             ...labels,
@@ -623,6 +625,10 @@ test("TS transfer telemetry labels each endpoint by direction and side", async (
           const base = before[index]!;
           assert(delta.frames > base.frames, JSON.stringify(labels));
           assert.equal(delta.bytes - base.bytes, bytes.length);
+          // Serialized DATA carries its proof headers on top of the payload,
+          // and every endpoint sends or verifies non-DATA protocol messages.
+          assert(delta.wire - base.wire > bytes.length, JSON.stringify(labels));
+          assert(delta.control > base.control, JSON.stringify(labels));
           assert(delta.credit > base.credit, JSON.stringify(labels));
           assert.equal(delta.completed - base.completed, 1);
         }

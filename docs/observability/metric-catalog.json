@@ -726,7 +726,7 @@
       ]
     },
     {
-      "name": "trellis.transfer.wire.bytes",
+      "name": "trellis.transfer.payload.bytes",
       "instrument": "Counter<u64>",
       "unit": "By",
       "attributes": {
@@ -735,6 +735,28 @@
       },
       "owner": "Same transfer owner",
       "observation": "DATA payload bytes each endpoint sent or verified on receipt, including retries; not business unique object size."
+    },
+    {
+      "name": "trellis.transfer.wire.bytes",
+      "instrument": "Counter<u64>",
+      "unit": "By",
+      "attributes": {
+        "trellis.direction": ["upload", "download"],
+        "trellis.side": ["client", "provider"]
+      },
+      "owner": "Same transfer owner",
+      "observation": "Serialized DATA messages each endpoint sent or verified on receipt: the NATS header block (descriptor, proof and authority headers) plus payload. Broker protocol lines and TCP framing are excluded."
+    },
+    {
+      "name": "trellis.transfer.control.bytes",
+      "instrument": "Counter<u64>",
+      "unit": "By",
+      "attributes": {
+        "trellis.direction": ["upload", "download"],
+        "trellis.side": ["client", "provider"]
+      },
+      "owner": "Same transfer owner",
+      "observation": "Serialized non-DATA Transfer messages each endpoint sent or verified on receipt: controls, signals, EOF, activation, completion and cancellation, headers included."
     },
     {
       "name": "trellis.transfer.frames",

@@ -39,6 +39,7 @@ import {
   transferSubject,
 } from "../../auth/protocol_wasm.ts";
 import {
+  recordTransferMessage,
   TransferCredit,
   TransferSession,
   transferWait,
@@ -815,6 +816,13 @@ export class ServiceTransfer {
     if (session.callerGuard.checkNow()) {
       throw new Error("transfer caller authority lost");
     }
+    recordTransferMessage(
+      wire.grant.direction,
+      "provider",
+      msg.headers?.get(transferConstants().controlHeader) ?? "",
+      msg.headers,
+      msg.data.length,
+    );
     wire.refreshDeadline();
     wire.throwIfAborted();
   }
@@ -861,6 +869,13 @@ export class ServiceTransfer {
         "Transfer publishing signed signal",
       );
       session.wire.lease.nc.publish(subject, payload, { headers });
+      recordTransferMessage(
+        session.wire.grant.direction,
+        "provider",
+        "signal",
+        headers,
+        payload.length,
+      );
       if (
         value.type === "error" ||
         value.type === "cancelled" ||
@@ -1207,14 +1222,6 @@ export class ServiceTransfer {
     session.hash.update(msg.data);
     handoff();
     session.ingress.push(seq, msg.data);
-    recordCatalogCounter("trellis.transfer.frames", 1, {
-      "trellis.direction": "upload",
-      "trellis.side": "provider",
-    });
-    recordCatalogCounter("trellis.transfer.wire.bytes", msg.data.length, {
-      "trellis.direction": "upload",
-      "trellis.side": "provider",
-    });
   }
 
   async #download(session: ProviderSession): Promise<void> {
@@ -1281,6 +1288,13 @@ export class ServiceTransfer {
         session.wire.lease.nc.publish(grant.dataSubject, frame, {
           headers,
         });
+        recordTransferMessage(
+          "receive",
+          "provider",
+          "data",
+          headers,
+          frame.length,
+        );
         if (window.commitFrame(seq, frame.length)) {
           throw new Error("download frame handoff failed");
         }
@@ -1289,14 +1303,6 @@ export class ServiceTransfer {
           throw new Error("download source size exceeded");
         }
         session.hash.update(frame);
-        recordCatalogCounter("trellis.transfer.frames", 1, {
-          "trellis.direction": "download",
-          "trellis.side": "provider",
-        });
-        recordCatalogCounter("trellis.transfer.wire.bytes", frame.length, {
-          "trellis.direction": "download",
-          "trellis.side": "provider",
-        });
       }
       const digest = `SHA-256=${base64urlEncode(session.hash.digest())}`;
       if (
@@ -1319,6 +1325,7 @@ export class ServiceTransfer {
       session.completing = true;
       session.wire.throwIfAborted();
       session.wire.lease.nc.publish(grant.dataSubject, payload, { headers });
+      recordTransferMessage("receive", "provider", "eof", headers, 0);
     } finally {
       await reader.cancel().catch(() => {});
       reader.releaseLock();

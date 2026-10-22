@@ -44,17 +44,48 @@ pub(crate) fn wait(
     )
 }
 
+/// Serialized NATS header block size: `NATS/1.0\r\n`, one `name: value\r\n`
+/// line per value, and the terminating blank line.
+pub(crate) fn header_bytes(headers: &async_nats::HeaderMap) -> usize {
+    let lines: usize = headers
+        .iter()
+        .map(|(name, values)| {
+            let name: &str = name.as_ref();
+            values
+                .iter()
+                .map(|value| name.len() + 2 + value.as_str().len() + 2)
+                .sum::<usize>()
+        })
+        .sum();
+    10 + lines + 2
+}
+
 /// Count one sent or verified received message at the endpoint that owns it.
-pub(crate) fn frame(descriptor: &TransferFrameDescriptor, payload: &[u8], side: &'static str) {
+///
+/// DATA charges its payload to `payload.bytes` and its serialized message
+/// (headers plus payload) to `wire.bytes`. Every other Transfer message
+/// (controls, signals, EOF, activation, completion and cancellation) charges
+/// its serialized message to `control.bytes`.
+pub(crate) fn frame(
+    descriptor: &TransferFrameDescriptor,
+    header_bytes: usize,
+    payload: &[u8],
+    side: &'static str,
+) {
     let attrs = attributes(descriptor.direction, side);
+    let serialized = (header_bytes + payload.len()) as u64;
     if descriptor.kind == TransferFrameKind::Data {
         add_counter(CounterFamily::TransferFrames, 1, &attrs);
         add_counter(
-            CounterFamily::TransferWireBytes,
+            CounterFamily::TransferPayloadBytes,
             payload.len() as u64,
             &attrs,
         );
-    } else if (descriptor.kind == TransferFrameKind::Control
+        add_counter(CounterFamily::TransferWireBytes, serialized, &attrs);
+        return;
+    }
+    add_counter(CounterFamily::TransferControlBytes, serialized, &attrs);
+    if (descriptor.kind == TransferFrameKind::Control
         && matches!(
             parse_transfer_control(payload),
             Ok(TransferControl::Credit { .. })

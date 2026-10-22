@@ -10,6 +10,10 @@ and this project adheres to
 
 ### Added
 
+- `trellis.transfer.payload.bytes` counts DATA payload, and
+  `trellis.transfer.control.bytes` counts every serialized non-DATA Transfer
+  message, in both SDKs. Together with `trellis.transfer.wire.bytes` they give
+  the protocol's byte overhead.
 - `auth.oauth.trusted_proxies` lists reverse-proxy CIDR ranges whose
   `X-Forwarded-For` identifies the client for OAuth request admission.
   Forwarding headers from any other peer remain ignored.
@@ -18,6 +22,9 @@ and this project adheres to
 
 ### Changed
 
+- `trellis.transfer.wire.bytes` now counts serialized DATA messages, NATS
+  headers included, instead of payload alone. Use
+  `trellis.transfer.payload.bytes` for the previous meaning.
 - Operation upload grants follow one shared policy in both SDKs: a 15-minute
   lifetime that bounds the whole upload and a 512 MiB size limit. TypeScript
   providers previously expired uploads after 60 seconds with no size limit.
