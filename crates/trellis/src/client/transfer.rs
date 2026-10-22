@@ -164,6 +164,8 @@ async fn activate(
         received_seq: U64s::new(0),
         consumed_seq: U64s::new(0),
         receive_max_frame_bytes: max_frame,
+        receive_window_frames: None,
+        receive_window_bytes: None,
     };
     let payload = Bytes::from(serde_json::to_vec(&body)?);
     let descriptor = TransferFrameDescriptor {

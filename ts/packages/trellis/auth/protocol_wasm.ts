@@ -1203,7 +1203,13 @@ type TransferControlBase = {
 /** Strict v2 caller controls, parsed and validated by canonical Rust/WASM. */
 export type TransferControlWire = TransferControlBase &
   (
-    | { action: "activate"; receiveMaxFrameBytes: number }
+    | {
+        action: "activate";
+        receiveMaxFrameBytes: number;
+        /** A receiving consumer's admitted window; downloads only. */
+        receiveWindowFrames?: number;
+        receiveWindowBytes?: number;
+      }
     | { action: "credit" | "cancel"; consumedBytes: string }
     | { action: "end-ack"; consumedBytes: string; finalSeq: string }
   );
@@ -1317,6 +1323,9 @@ export type TransferConstants = {
   maxFrameBytes: number;
   windowFrames: number;
   windowBytes: number;
+  maxWindowFrames: number;
+  maxWindowBytes: number;
+  processReceiveBytes: number;
   creditFrameStep: number;
   creditByteStep: number;
   creditMaxDelayMs: number;
@@ -1382,6 +1391,28 @@ export function transferNegotiateMaxFrameBytes(
 ): number {
   initializeProtocolWasmSync();
   return protocolWasm.transfer_negotiate_max_frame_bytes(consumer, provider);
+}
+
+/**
+ * Receive window `[frames, bytes]` to offer from `available` admission bytes,
+ * or `undefined` when less than one frame fits. Shared with the Rust SDK.
+ */
+export function transferReceiveWindow(
+  available: number,
+  maxFrameBytes: number,
+): [number, number] | undefined {
+  initializeProtocolWasmSync();
+  const window: unknown = JSON.parse(
+    protocolWasm.transfer_receive_window(available, maxFrameBytes),
+  );
+  if (window === null) return undefined;
+  if (
+    !Array.isArray(window) ||
+    window.length !== 2 ||
+    !window.every((value) => Number.isSafeInteger(value))
+  )
+    throw new Error("invalid transfer receive window");
+  return [window[0], window[1]];
 }
 
 /** Validate a direction-specific public grant before any transport acquisition. */

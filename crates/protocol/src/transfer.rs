@@ -20,10 +20,16 @@ pub const TRANSFER_FRAME_DOMAIN_V1: &str = "trellis.transfer-frame.v1";
 pub const TRANSFER_SERVER_PROOF_DOMAIN_V1: &str = "trellis.transfer-server-proof.v1";
 /// Maximum raw DATA body size.
 pub const MAX_TRANSFER_FRAME_BYTES: u64 = 1_048_576;
-/// Maximum outstanding DATA frames.
+/// Outstanding DATA frames a receiver offers one transfer by default.
 pub const TRANSFER_WINDOW_FRAMES: u64 = 16;
-/// Maximum outstanding raw DATA bytes.
+/// Outstanding raw DATA bytes a receiver offers one transfer by default.
 pub const TRANSFER_WINDOW_BYTES: u64 = 4_194_304;
+/// Largest outstanding-frame window any grant or activation may declare.
+pub const TRANSFER_MAX_WINDOW_FRAMES: u64 = 1_024;
+/// Largest outstanding-byte window any grant or activation may declare.
+pub const TRANSFER_MAX_WINDOW_BYTES: u64 = 67_108_864;
+/// Receive capacity one process admits across all of its active transfers.
+pub const TRANSFER_PROCESS_RECEIVE_BYTES: u64 = 268_435_456;
 /// Coalesce credit until this many frames have been consumed.
 pub const TRANSFER_CREDIT_FRAME_STEP: u64 = 8;
 /// Coalesce credit until this many bytes have been consumed.
@@ -303,6 +309,34 @@ pub fn validate_transfer_subject(subject: &str) -> Result<TransferSubjectKind, P
     ))
 }
 
+/// Receive window to offer when `available` admission bytes remain.
+///
+/// Offers the default window, shrunk to what is left with proportionally
+/// fewer frames, or `None` when less than one `max_frame_bytes` frame fits.
+/// Both SDKs use this one policy; it never overcommits `available`.
+pub fn transfer_receive_window(available: u64, max_frame_bytes: u64) -> Option<(u64, u64)> {
+    let bytes = TRANSFER_WINDOW_BYTES.min(available);
+    if bytes == 0 || bytes < max_frame_bytes.min(TRANSFER_WINDOW_BYTES) {
+        return None;
+    }
+    let frames = (TRANSFER_WINDOW_FRAMES * bytes)
+        .div_ceil(TRANSFER_WINDOW_BYTES)
+        .max(1);
+    Some((frames, bytes))
+}
+
+fn validate_window(frames: u64, bytes: u64, frame: u64) -> Result<(), ProtocolError> {
+    if frames == 0
+        || bytes == 0
+        || frames > TRANSFER_MAX_WINDOW_FRAMES
+        || bytes > TRANSFER_MAX_WINDOW_BYTES
+        || frame > bytes
+    {
+        return Err(invalid("window", "window outside protocol bounds"));
+    }
+    Ok(())
+}
+
 /// Negotiate raw DATA capacity from both peers' actual NATS payload limits.
 pub fn negotiate_transfer_max_frame_bytes(
     consumer: u64,
@@ -363,6 +397,12 @@ pub enum TransferControl {
         consumed_seq: U64s,
         /// Consumer's usable raw frame capacity.
         receive_max_frame_bytes: u64,
+        /// Outstanding frames a receiving consumer admits; downloads only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receive_window_frames: Option<u64>,
+        /// Outstanding bytes a receiving consumer admits; downloads only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receive_window_bytes: Option<u64>,
     },
     /// Cumulative download consumption credit.
     Credit {
@@ -453,6 +493,8 @@ impl TransferControl {
                 received_seq,
                 consumed_seq,
                 receive_max_frame_bytes,
+                receive_window_frames,
+                receive_window_bytes,
                 ..
             } => {
                 if control_seq.get() != 1 || received_seq.get() != 0 || consumed_seq.get() != 0 {
@@ -462,6 +504,18 @@ impl TransferControl {
                     ));
                 }
                 validate_frame_limit(*receive_max_frame_bytes)?;
+                match (receive_window_frames, receive_window_bytes) {
+                    (None, None) => {}
+                    (Some(frames), Some(bytes)) => {
+                        validate_window(*frames, *bytes, (*receive_max_frame_bytes).min(*bytes))?
+                    }
+                    _ => {
+                        return Err(invalid(
+                            "activate",
+                            "a receive window declares both frames and bytes",
+                        ))
+                    }
+                }
             }
             Self::Credit {
                 received_seq,
@@ -883,12 +937,7 @@ impl TransferGrant {
                 .map_err(|_| invalid("sessionKey", "invalid Ed25519 public key"))?;
         }
         validate_frame_limit(frame)?;
-        if frames != TRANSFER_WINDOW_FRAMES || bytes != TRANSFER_WINDOW_BYTES || frame > bytes {
-            return Err(invalid(
-                "window",
-                "grant must use the protocol frame and byte windows",
-            ));
-        }
+        validate_window(frames, bytes, frame)?;
         for (kind, actual) in [
             (data_kind, data),
             (TransferSubjectKind::Control, control),
@@ -1034,10 +1083,7 @@ impl TransferSignal {
                 validate_frame_limit(*max_frame_bytes)?;
                 if control_seq.get() != 1
                     || request_id.is_empty()
-                    || *window_frames == 0
-                    || *window_frames > TRANSFER_WINDOW_FRAMES
-                    || *window_bytes < *max_frame_bytes
-                    || *window_bytes > TRANSFER_WINDOW_BYTES
+                    || validate_window(*window_frames, *window_bytes, *max_frame_bytes).is_err()
                 {
                     return Err(invalid(
                         "activated",
@@ -1449,7 +1495,8 @@ mod tests {
             ("transferId", json!("not-a-random-session-id")),
             ("maxFrameBytes", json!(MAX_TRANSFER_FRAME_BYTES + 1)),
             ("windowFrames", json!(0)),
-            ("windowBytes", json!(TRANSFER_WINDOW_BYTES + 1)),
+            ("windowBytes", json!(TRANSFER_MAX_WINDOW_BYTES + 1)),
+            ("windowFrames", json!(TRANSFER_MAX_WINDOW_FRAMES + 1)),
             ("expiresAt", json!("invalid timestamp")),
             ("maxBytes", json!(9_007_199_254_740_992u64)),
             ("maxBytes", serde_json::Value::Null),
@@ -1698,10 +1745,47 @@ mod tests {
         assert!(parse_transfer_control(duplicate.as_bytes()).is_err());
         let activate = json!({"action":"activate","type":"control","format":TRANSFER_VERSION,"transferId":id(),"controlSeq":"1","receivedSeq":"0","consumedSeq":"0","receiveMaxFrameBytes":1024});
         parse_transfer_control(&serde_json::to_vec(&activate).unwrap()).unwrap();
-        let mut bad = activate;
+        let mut bad = activate.clone();
         bad["receivedSeq"] = json!("1");
         assert!(parse_transfer_control(&serde_json::to_vec(&bad).unwrap()).is_err());
+        // A receiving consumer declares both window bounds, within maxima.
+        let mut receiving = activate.clone();
+        receiving["receiveWindowFrames"] = json!(64);
+        receiving["receiveWindowBytes"] = json!(16 * 1024 * 1024);
+        parse_transfer_control(&serde_json::to_vec(&receiving).unwrap()).unwrap();
+        for (frames, bytes) in [
+            (json!(64), serde_json::Value::Null),
+            (json!(0), json!(1024)),
+            (json!(TRANSFER_MAX_WINDOW_FRAMES + 1), json!(1024)),
+            (json!(1), json!(TRANSFER_MAX_WINDOW_BYTES + 1)),
+            (json!(1), json!(0)),
+        ] {
+            let mut bad = activate.clone();
+            bad["receiveWindowFrames"] = frames;
+            if !bytes.is_null() {
+                bad["receiveWindowBytes"] = bytes;
+            }
+            assert!(parse_transfer_control(&serde_json::to_vec(&bad).unwrap()).is_err());
+        }
         assert!(parse_transfer_control(&vec![b' '; MAX_TRANSFER_CONTROL_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn receive_windows_shrink_with_admission_and_never_overcommit() {
+        let frame = 256 * 1024;
+        assert_eq!(
+            transfer_receive_window(u64::MAX, frame),
+            Some((TRANSFER_WINDOW_FRAMES, TRANSFER_WINDOW_BYTES))
+        );
+        let (frames, bytes) = transfer_receive_window(TRANSFER_WINDOW_BYTES / 4, frame).unwrap();
+        assert_eq!(bytes, TRANSFER_WINDOW_BYTES / 4);
+        assert!((1..=TRANSFER_WINDOW_FRAMES).contains(&frames));
+        assert_eq!(transfer_receive_window(frame - 1, frame), None);
+        assert_eq!(transfer_receive_window(0, frame), None);
+        for available in [frame, frame * 3, TRANSFER_WINDOW_BYTES - 1] {
+            let (_, bytes) = transfer_receive_window(available, frame).unwrap();
+            assert!(bytes <= available);
+        }
     }
 
     #[test]

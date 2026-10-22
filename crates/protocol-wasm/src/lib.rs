@@ -323,6 +323,23 @@ pub fn transfer_negotiate_max_frame_bytes(consumer: f64, provider: f64) -> Resul
         .map_err(|error| JsError::new(&error.to_string()))
 }
 
+/// Receive window `[frames, bytes]` to offer from `available` admission bytes,
+/// or `null` when less than one frame fits. The one policy both SDKs share.
+#[wasm_bindgen]
+pub fn transfer_receive_window(available: f64, max_frame_bytes: f64) -> Result<String, JsError> {
+    let available = u64::try_from(safe_integer(available, "available")?)
+        .map_err(|_| JsError::new("negative admission bytes"))?;
+    let max_frame_bytes = u64::try_from(safe_integer(max_frame_bytes, "maxFrameBytes")?)
+        .map_err(|_| JsError::new("negative frame limit"))?;
+    Ok(
+        match trellis_protocol::transfer::transfer_receive_window(available, max_frame_bytes) {
+            Some((frames, bytes)) => json!([frames, bytes]),
+            None => serde_json::Value::Null,
+        }
+        .to_string(),
+    )
+}
+
 /// Return canonical Transfer limits and protocol header names as JSON.
 #[wasm_bindgen]
 pub fn transfer_constants() -> String {
@@ -332,6 +349,9 @@ pub fn transfer_constants() -> String {
         "maxFrameBytes": MAX_TRANSFER_FRAME_BYTES,
         "windowFrames": TRANSFER_WINDOW_FRAMES,
         "windowBytes": TRANSFER_WINDOW_BYTES,
+        "maxWindowFrames": TRANSFER_MAX_WINDOW_FRAMES,
+        "maxWindowBytes": TRANSFER_MAX_WINDOW_BYTES,
+        "processReceiveBytes": TRANSFER_PROCESS_RECEIVE_BYTES,
         "creditFrameStep": TRANSFER_CREDIT_FRAME_STEP,
         "creditByteStep": TRANSFER_CREDIT_BYTE_STEP,
         "creditMaxDelayMs": TRANSFER_CREDIT_MAX_DELAY_MS,
