@@ -568,6 +568,7 @@ where
         next_update_sequence: Arc<AtomicU64>,
         schemas: Arc<super::schema_validation::PreparedOperationSchemas>,
         claimed: super::RevisionedOperationRecord,
+        upload_stream: Option<super::transfer::OperationUploadStream>,
     ) -> Result<(), ServerError>
     where
         D::Input: DeserializeOwned,
@@ -645,6 +646,7 @@ where
                 cancellation: OperationCancellation {
                     receiver: cancel_receiver,
                 },
+                upload_stream: std::sync::Mutex::new(upload_stream),
                 _descriptor: PhantomData,
             };
             // One acquired execution observation; it ends with the attempt's
@@ -933,6 +935,15 @@ where
                             record_ownership_event("claim", claim.is_ok());
                             if let Ok(claimed) = claim {
                                 let reconciled = async {
+                                    if D::STREAM && !claimed.record.cancellation_requested {
+                                        // Its bytes went to the lost execution.
+                                        let fence = OwnerFence::from(&claimed.record)?;
+                                        fail_interrupted_stream::<D>(
+                                            &repository, &fence, &mutation_gate, &operation_id,
+                                        )
+                                        .await?;
+                                        return Ok(None);
+                                    }
                                     if !D::UPLOAD || claimed.record.transfer.is_none() {
                                         return Ok(Some(claimed));
                                     }
@@ -1001,6 +1012,7 @@ where
                                     next_update_sequence,
                                     schemas,
                                     claimed,
+                                    None,
                                 )
                                 .await
                                 {
@@ -1107,8 +1119,13 @@ where
             let timestamp = now_timestamp();
             let upload = if D::UPLOAD && !cancellation_requested {
                 Some(DurableOperationUpload {
-                    staging_key: format!("operation-{invocation_id}"),
-                    state: "pending".to_owned(),
+                    // A stream stages nothing; its bytes go to the handler.
+                    staging_key: if D::STREAM {
+                        String::new()
+                    } else {
+                        format!("operation-{invocation_id}")
+                    },
+                    state: if D::STREAM { "streaming" } else { "pending" }.to_owned(),
                     file_info: None,
                     grant: operation_upload_grant::<D>(
                         &service,
@@ -1202,7 +1219,8 @@ where
                     .map(serde_json::from_value::<DurableOperationUpload>)
                     .transpose()?
                     .filter(|upload| {
-                        upload.state != "committed" && !created.record.cancellation_requested
+                        !matches!(upload.state.as_str(), "committed" | "streamed")
+                            && !created.record.cancellation_requested
                     })
                     .map(|upload| upload.grant);
                 return Ok(AcceptedOperation {
@@ -1245,7 +1263,7 @@ where
                             .map(serde_json::from_value::<DurableOperationUpload>)
                             .transpose()?
                             .filter(|upload| {
-                                upload.state != "committed"
+                                !matches!(upload.state.as_str(), "committed" | "streamed")
                                     && !current.record.cancellation_requested
                             })
                             .map(|upload| upload.grant);
@@ -1265,6 +1283,192 @@ where
                 }
             };
             let fence = OwnerFence::from(&claimed.record)?;
+            if D::STREAM && !claimed.record.cancellation_requested {
+                let upload: DurableOperationUpload =
+                    serde_json::from_value(claimed.record.transfer.clone().ok_or_else(|| {
+                        ServerError::Nats("operation stream state is missing".to_owned())
+                    })?)?;
+                let operation_ref = OperationRefData {
+                    id: invocation_id.clone(),
+                    deployment_id: claimed.record.deployment_id.clone(),
+                    service: service.clone(),
+                    operation: D::KEY.to_owned(),
+                };
+                // A stream's bytes went to the execution that accepted it; a
+                // reclaimed execution has nothing to replay, so it fails and
+                // the caller starts a new Operation.
+                if claimed.record.owner_epoch > 1 || upload.state != "streaming" {
+                    let snapshot = fail_interrupted_stream::<D>(
+                        &repository,
+                        &fence,
+                        &mutation_gate,
+                        &invocation_id,
+                    )
+                    .await?;
+                    return Ok(AcceptedOperation {
+                        kind: "accepted".to_owned(),
+                        operation_ref,
+                        snapshot,
+                        transfer: None,
+                    });
+                }
+                durable_snapshot_update::<D>(
+                    &repository,
+                    &fence,
+                    &mutation_gate,
+                    &invocation_id,
+                    SnapshotUpdate {
+                        state: OperationState::Running,
+                        progress: None,
+                        output: None,
+                        error: None,
+                        cancellation_requested: false,
+                    },
+                    None,
+                )
+                .await?;
+                let grant = upload.grant.clone();
+                let plan = UploadTransferGrantPlan {
+                    admission: context.clone(),
+                    grant: grant.clone(),
+                    store_alias: "__stream".to_owned(),
+                    store: String::new(),
+                    key: format!("operation-{invocation_id}"),
+                };
+                let (progress_sender, progress_receiver) = watch::channel(None);
+                let checkpoint_bytes = Arc::new(AtomicU64::new(0));
+                let (stop_progress, stop_receiver) = oneshot::channel();
+                let progress_worker = coalesce_operation_upload_progress(
+                    repository.clone(),
+                    fence.clone(),
+                    Arc::clone(&mutation_gate),
+                    invocation_id.clone(),
+                    progress_receiver,
+                    stop_receiver,
+                    Arc::clone(&checkpoint_bytes),
+                );
+                let (mut completion, stream) = super::transfer::spawn_stream_upload_endpoint(
+                    publisher.clone().ok_or_else(|| {
+                        ServerError::Nats(
+                            "operation stream is missing its signing client".to_owned(),
+                        )
+                    })?,
+                    UploadTransferSession::new(plan, now_timestamp()),
+                    support.lease.clone().ok_or_else(|| {
+                        ServerError::Nats(
+                            "operation stream is missing its accepting generation".to_owned(),
+                        )
+                    })?,
+                    move |progress| {
+                        progress_sender.send_if_modified(|latest| {
+                            if latest.as_ref().is_some_and(
+                                |previous: &(OperationTransferProgress, tokio::time::Instant)| {
+                                    previous.0.transferred_bytes >= progress.transferred_bytes
+                                },
+                            ) {
+                                return false;
+                            }
+                            let pending_since = latest
+                                .as_ref()
+                                .filter(|previous| {
+                                    previous.0.transferred_bytes
+                                        > checkpoint_bytes.load(Ordering::Relaxed)
+                                })
+                                .map_or_else(tokio::time::Instant::now, |previous| previous.1);
+                            *latest = Some((progress, pending_since));
+                            true
+                        });
+                    },
+                )
+                .await?;
+                let cancellation = completion
+                    .cancellation
+                    .take()
+                    .expect("stream cancellation owner");
+                let mut cancellation_updates = repository.watch(&invocation_id).await?;
+                let persist_repository = repository.clone();
+                let persist_fence = fence.clone();
+                let persist_gate = Arc::clone(&mutation_gate);
+                let persist_id = invocation_id.clone();
+                let monitor_fence = fence.clone();
+                let task_id = invocation_id.clone();
+                tokio::spawn(async move {
+                    let (final_progress_sender, final_progress_receiver) = oneshot::channel();
+                    let completion = completion.completed_after(move |info| async move {
+                        let _ = stop_progress.send(());
+                        let progress = final_progress_receiver
+                            .await
+                            .map_err(|error| ServerError::Nats(error.to_string()))??;
+                        persist_operation_upload(
+                            persist_repository,
+                            persist_fence,
+                            persist_gate,
+                            persist_id,
+                            info,
+                            progress,
+                        )
+                        .await
+                    });
+                    let monitor = async move {
+                        while let Some(update) = cancellation_updates.next().await {
+                            if update.as_ref().map_or(true, |update| {
+                                update.record.cancellation_requested
+                                    || update.record.snapshot.state.is_terminal()
+                                    || !monitor_fence.matches(&update.record)
+                            }) {
+                                let _ = cancellation.send(());
+                                return;
+                            }
+                        }
+                        let _ = cancellation.send(());
+                    };
+                    let completed = async move {
+                        let (result, ()) = tokio::join!(completion, async move {
+                            let _ = final_progress_sender.send(progress_worker.await);
+                        });
+                        result
+                    };
+                    tokio::pin!(completed);
+                    let result = tokio::select! {
+                        result = &mut completed => result,
+                        () = monitor => completed.await,
+                    };
+                    // The handler observes a failed stream as a read error.
+                    if let Err(error) = result {
+                        tracing::warn!(%error, operation_id = %task_id, "operation stream endpoint failed");
+                    }
+                });
+                let claimed = repository.get(&invocation_id).await?.ok_or_else(|| {
+                    ServerError::OperationNotFound {
+                        operation_id: invocation_id.clone(),
+                    }
+                })?;
+                let accepted = AcceptedOperation {
+                    kind: "accepted".to_owned(),
+                    operation_ref,
+                    snapshot: typed_snapshot(claimed.record.snapshot.clone())?,
+                    transfer: Some(grant),
+                };
+                // The handler starts now and consumes bytes as they arrive.
+                Self::resume(
+                    service,
+                    deployment_id,
+                    fence,
+                    repository,
+                    mutation_gate,
+                    handler,
+                    support,
+                    staging,
+                    publisher,
+                    update_subject,
+                    next_update_sequence,
+                    schemas,
+                    claimed,
+                    Some(stream),
+                )
+                .await?;
+                return Ok(accepted);
+            }
             if D::UPLOAD && !claimed.record.cancellation_requested {
                 let mut upload: DurableOperationUpload =
                     serde_json::from_value(claimed.record.transfer.clone().ok_or_else(|| {
@@ -1316,6 +1520,7 @@ where
                         Arc::clone(&next_update_sequence),
                         Arc::clone(&schemas),
                         claimed,
+                        None,
                     )
                     .await?;
                     return Ok(accepted);
@@ -1547,6 +1752,7 @@ where
                                 Arc::clone(&next_update_sequence),
                                 Arc::clone(&schemas),
                                 claimed,
+                                None,
                             )
                             .await;
                             if let Err(error) = resumed {
@@ -1661,6 +1867,7 @@ where
                 next_update_sequence,
                 schemas,
                 claimed,
+                None,
             )
             .await?;
             Ok(accepted)
@@ -2215,6 +2422,8 @@ where
     next_update_sequence: Arc<AtomicU64>,
     schemas: Arc<super::schema_validation::PreparedOperationSchemas>,
     cancellation: OperationCancellation,
+    /// Live upload of a `stream` Operation, taken once by its handler.
+    upload_stream: std::sync::Mutex<Option<super::transfer::OperationUploadStream>>,
     _descriptor: PhantomData<fn() -> D>,
 }
 
@@ -2603,7 +2812,12 @@ async fn persist_operation_upload(
         serde_json::from_value(record.transfer.clone().ok_or_else(|| {
             ServerError::Nats("operation upload staging state is missing".to_owned())
         })?)?;
-    upload.state = "committed".to_owned();
+    upload.state = if upload.state == "streaming" {
+        "streamed"
+    } else {
+        "committed"
+    }
+    .to_owned();
     upload.file_info = Some(serde_json::to_value(&info)?);
     upload.size = Some(info.size);
     upload.digest = Some(info.digest);
@@ -2636,6 +2850,41 @@ async fn persist_operation_upload(
     Ok(())
 }
 
+/// Fail a `stream` Operation whose bytes went to an execution that no longer
+/// owns it. Nothing was staged, so there is nothing to replay.
+async fn fail_interrupted_stream<D>(
+    repository: &KvOperationRepository,
+    fence: &OwnerFence,
+    gate: &Arc<Mutex<()>>,
+    operation_id: &str,
+) -> Result<OperationSnapshot<D::Progress, D::Output>, ServerError>
+where
+    D: OperationDescriptor,
+    D::Progress: DeserializeOwned,
+    D::Output: DeserializeOwned,
+{
+    durable_snapshot_update::<D>(
+        repository,
+        fence,
+        gate,
+        operation_id,
+        SnapshotUpdate {
+            state: OperationState::Failed,
+            progress: None,
+            output: None,
+            error: Some(OperationError {
+                error_type: "OperationStreamInterrupted".to_owned(),
+                message: "the stream upload was interrupted; start a new Operation to resend it"
+                    .to_owned(),
+                fields: Box::default(),
+            }),
+            cancellation_requested: false,
+        },
+        None,
+    )
+    .await
+}
+
 impl<D> OperationControl<D>
 where
     D: OperationDescriptor,
@@ -2666,7 +2915,7 @@ where
             return Ok(None);
         };
         let upload: DurableOperationUpload = serde_json::from_value(upload)?;
-        if upload.state != "committed" {
+        if !matches!(upload.state.as_str(), "committed" | "streamed") {
             return Err(ServerError::Nats(
                 "operation upload is not committed".to_owned(),
             ));
@@ -2677,7 +2926,26 @@ where
         Ok(Some((info, upload.staging_key)))
     }
 
+    /// Take the live upload of a `stream` Operation as a backpressured reader.
+    ///
+    /// Returns `None` for an Operation without a stream upload, or after the
+    /// reader was already taken. Bytes arrive as the caller sends them, before
+    /// the object is verified; end of file means the caller's final sequence,
+    /// size and SHA-256 digest were verified and the delivery was durably
+    /// recorded. Read errors mean the transfer failed. Read to end of file
+    /// before completing: a stream cannot be replayed, so an interrupted
+    /// Operation fails and its caller must start a new one.
+    pub fn take_upload_stream(&self) -> Option<super::transfer::OperationUploadStream> {
+        self.upload_stream
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+    }
+
     /// Return logical metadata for the runtime-owned committed upload.
+    ///
+    /// For a `stream` Operation this is available once its stream reached end
+    /// of file.
     pub async fn upload(&self) -> Result<Option<FileTransferInfo>, ServerError> {
         Ok(self.committed_upload().await?.map(|(info, _)| info))
     }
@@ -2689,6 +2957,11 @@ where
     pub async fn open_staged_upload(
         &self,
     ) -> Result<Option<impl tokio::io::AsyncRead + Unpin + Send>, ServerError> {
+        if D::STREAM {
+            return Err(ServerError::Nats(
+                "stream Operations stage no upload; use take_upload_stream".to_owned(),
+            ));
+        }
         let Some((upload, staging_key)) = self.committed_upload().await? else {
             return Ok(None);
         };

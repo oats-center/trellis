@@ -31,7 +31,7 @@ use tokio::{
     sync::oneshot,
 };
 use trellis_protocol::transfer::*;
-pub use upload::UploadTransferSession;
+pub use upload::{OperationUploadStream, UploadTransferSession};
 use wire::{error, publish_signal, TransferPeer};
 
 pub(crate) fn credit_scheduler() -> CreditScheduler {
@@ -166,7 +166,7 @@ where
         data,
         control,
         session,
-        store,
+        Some(store),
         on_progress,
         sender,
         cancelled,
@@ -176,6 +176,60 @@ where
         receiver,
         task: Some(task),
     })
+}
+
+/// Subscribe exact upload subjects and route verified bytes to a handler-owned
+/// reader instead of a store write.
+///
+/// The returned stream yields bytes as the caller sends them. Its completion
+/// resolves once every frame is consumed and verified; end of file reaches the
+/// reader only after the completion's barrier, so the delivery is durably
+/// recorded before the handler can observe it.
+pub async fn spawn_stream_upload_endpoint<F>(
+    client: Arc<TrellisClient>,
+    mut session: UploadTransferSession,
+    lease: TransportLease,
+    on_progress: F,
+) -> Result<(UploadTransferCompletion, OperationUploadStream), ServerError>
+where
+    F: Fn(OperationTransferProgress) + Send + Sync + 'static,
+{
+    let data = lease
+        .nats()
+        .subscribe(session.plan.grant.data_subject.clone())
+        .await
+        .map_err(error)?;
+    let control = lease
+        .nats()
+        .subscribe(session.plan.grant.control_subject.clone())
+        .await
+        .map_err(error)?;
+    lease.nats().flush().await.map_err(error)?;
+    let stream = session.open_stream();
+    let (sender, receiver) = oneshot::channel();
+    let (cancel, cancelled) = oneshot::channel();
+    let task = tokio::spawn(run_upload::<
+        super::resources::backend::BoundStoreResourceClient,
+        F,
+    >(
+        client,
+        lease,
+        data,
+        control,
+        session,
+        None,
+        on_progress,
+        sender,
+        cancelled,
+    ));
+    Ok((
+        UploadTransferCompletion {
+            cancellation: Some(cancel),
+            receiver,
+            task: Some(task),
+        },
+        stream,
+    ))
 }
 
 /// Prepare an owned upload endpoint without transient progress callbacks.
@@ -208,7 +262,7 @@ async fn run_upload<C, F>(
     mut data: async_nats::Subscriber,
     mut control: async_nats::Subscriber,
     mut session: UploadTransferSession,
-    store: C,
+    store: Option<C>,
     on_progress: F,
     sender: oneshot::Sender<protocol::UploadTransferCompletionResult>,
     mut cancelled: oneshot::Receiver<()>,
@@ -258,7 +312,8 @@ where
     let mut local_changes = local.guard.subscribe_changes();
     let expiry = tokio::time::sleep(transfer_expiry_delay(&grant.expires_at)?);
     tokio::pin!(expiry);
-    let mut store = Some(store);
+    let mut store = store;
+    let stream = session.is_stream();
     let mut activated = false;
     let mut activate_body: Option<Bytes> = None;
     let mut sender = Some(sender);
@@ -276,7 +331,7 @@ where
                 failure = wire::authority_failure(&local, &peer) => return Err(failure),
                 _ = changes.recv() => { peer.guard.check_now().map_err(|e| error(format!("upload authority lost: {e:?}")))?; },
                 _ = local_changes.recv() => { local.guard.reconcile().await.map_err(|e| error(format!("upload local authority lost: {e:?}")))?; },
-                backend = async { session.upload_future.as_mut().ok_or_else(|| error("upload backend missing"))?.await }, if activated => {
+                backend = async { session.upload_future.as_mut().ok_or_else(|| error("upload backend missing"))?.await }, if activated && !stream => {
                     session.upload_future.take();
                     let failure = match backend { Err(failure) => failure, Ok(_) => error("upload backend returned before validated completion") };
                     if let Some(sender) = sender.take() { let _ = sender.send((Err(failure), None)); }
@@ -320,7 +375,11 @@ where
                             if activated && activate_body.as_ref() != Some(&message.payload) { return Err(error("upload activation conflict")); }
                             if !activated {
                                 session.plan.grant.max_frame_bytes = session.plan.grant.max_frame_bytes.min(receive_max_frame_bytes);
-                                session.start(store.take().ok_or_else(|| error("upload store already started"))?)?;
+                                if let Some(store) = store.take() {
+                                    session.start(store)?;
+                                } else if !stream {
+                                    return Err(error("upload store already started"));
+                                }
                                 activated = true; activate_body = Some(message.payload.clone());
                             }
                             publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes: session.plan.grant.max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
@@ -346,7 +405,13 @@ where
                             let commit_key = session.plan.key.clone();
                             let indeterminate = |message: &str| ServerError::StoreCommitIndeterminate { key: commit_key.clone(), message: message.into() };
                             let result = {
-                                let finish = session.finish(complete.final_seq.get(), complete.size, &complete.digest);
+                                let finish = async {
+                                    if stream {
+                                        session.finish_stream(complete.final_seq.get(), complete.size, &complete.digest).await
+                                    } else {
+                                        session.finish(complete.final_seq.get(), complete.size, &complete.digest).await
+                                    }
+                                };
                                 tokio::pin!(finish);
                                 loop {
                                     tokio::select! {
@@ -381,6 +446,9 @@ where
                                 _ = &mut expiry => return Err(error("upload expired during Operation commit")),
                                 failure = wire::authority_failure(&local, &peer) => return Err(failure),
                             }
+                            // A stream handler sees end of file only now, after
+                            // its delivery is durably recorded.
+                            if stream { session.release_eof().await?; }
                             publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Committed { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), final_seq: complete.final_seq, info }).await?;
                             return Ok(());
                         },

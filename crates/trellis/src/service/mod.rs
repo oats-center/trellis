@@ -97,8 +97,8 @@ pub(crate) use service_host::bootstrap_service_host;
 pub(crate) use service_host::ServiceHost;
 pub use transfer::{
     plan_download_transfer_grant, plan_upload_transfer_grant, DownloadTransferGrant,
-    DownloadTransferGrantPlan, FileTransferInfo, TransferDownloadGrantArgs, TransferIdentity,
-    TransferUploadGrantArgs, UploadTransferCompletion, UploadTransferGrant,
+    DownloadTransferGrantPlan, FileTransferInfo, OperationUploadStream, TransferDownloadGrantArgs,
+    TransferIdentity, TransferUploadGrantArgs, UploadTransferCompletion, UploadTransferGrant,
     UploadTransferGrantPlan, UploadTransferSession,
 };
 pub use trellis_protocol::transfer::generate_transfer_id;
