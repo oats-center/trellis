@@ -270,11 +270,14 @@ try {
       void (async () => {
         const url = new URL(request.url ?? "/", "http://127.0.0.1");
         response.setHeader("cache-control", "no-store");
-        if (url.pathname === "/protocol_wasm/trellis_protocol_wasm_bg.wasm") {
+        // Browsers are callers: the bundle loads only the client protocol build.
+        if (
+          url.pathname === "/protocol_wasm/client/trellis_protocol_wasm_bg.wasm"
+        ) {
           response.setHeader("content-type", "application/wasm");
           response.end(
             await readFile(
-              `${root}/ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bg.wasm`,
+              `${root}/ts/packages/trellis/auth/protocol_wasm/client/trellis_protocol_wasm_bg.wasm`,
             ),
           );
           return;
