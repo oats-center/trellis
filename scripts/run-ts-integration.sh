@@ -62,6 +62,7 @@ fixture_bins=(
   transport_growth_subject
   transport_growth_operation
   transfer_generation
+  stream_transfer
   jobs
 )
 
