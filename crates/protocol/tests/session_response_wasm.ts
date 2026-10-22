@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import "../../../ts/packages/trellis/auth/protocol_wasm_provider.ts";
 import { initializeProtocolWasmSync } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
 import { readFile } from "node:fs/promises";
@@ -47,7 +48,7 @@ try {
       ...input,
       certificate: certificate.handle,
       providerHandle: handle,
-      payload: encoder.encode(payload),
+      payloadSha256: createHash("sha256").update(payload).digest(),
     });
   const accepted = await verify();
   assert.equal(accepted.ok, true);

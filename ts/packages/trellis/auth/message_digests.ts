@@ -270,6 +270,11 @@ export async function transferVerifyServerProof(
   );
 }
 
+/** SHA-256 of exact payload bytes, for the shared verifiers. */
+export async function payloadSha256(payload: Uint8Array): Promise<Uint8Array> {
+  return await sha256([payload]);
+}
+
 /** Digest a caller signs for one request publication. */
 export async function sessionRequestSigningDigest(
   request: SessionRequest,

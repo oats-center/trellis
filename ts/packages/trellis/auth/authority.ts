@@ -37,6 +37,7 @@ import {
   type IssuerMetadataQuery,
   type IssuerMetadataResponse,
 } from "./protocol_wasm.ts";
+import { payloadSha256 } from "./message_digests.ts";
 import { type JsonValue } from "./utils.ts";
 import { AuthAuthorityStatusResponseCodec } from "../internal_sdk/generated/types/_internal/p0.js";
 import { requestIssuerMetadata } from "./issuer_metadata.ts";
@@ -823,7 +824,7 @@ export class SessionAuthorityOwner {
       const verified = await verifySessionRequestWasm({
         authorityHandle: entry.handle,
         request,
-        payload,
+        payloadSha256: await payloadSha256(payload),
         proof,
         policy: this.policy(),
         knownRevoked: this.#revocations.has(
@@ -860,7 +861,7 @@ export class SessionAuthorityOwner {
       const verified = await verifySessionResponseWasm({
         providerHandle: provider.entry(authorityLeaseToken).handle,
         response,
-        payload,
+        payloadSha256: await payloadSha256(payload),
         proof,
         certificate: certificate.handle,
         certificateIssuer: issuer,
@@ -986,7 +987,7 @@ export class SessionAuthorityOwner {
       const verified = await verifySessionEventWasm({
         authorityHandle: entry.handle,
         event,
-        payload,
+        payloadSha256: await payloadSha256(payload),
         proof,
         policy: this.policy(),
         originalPublication,

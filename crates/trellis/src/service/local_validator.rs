@@ -221,11 +221,12 @@ impl LocalAuthVerifier {
                     }
                     _ => EventVerificationFailure::rejected(error.to_string()),
                 })?;
+            let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(payload).into();
             trellis_protocol::verify_session_event(
                 trellis_protocol::SessionEventVerificationInput {
                     authority: &authority,
                     event: &event,
-                    raw_payload: payload,
+                    payload_sha256,
                     proof: &proof,
                     policy: &self.owner.policy(),
                     original_publication: None,

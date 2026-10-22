@@ -998,6 +998,14 @@ pub fn session_request_signing_digest(
     request: &SessionRequest,
     raw_payload: &[u8],
 ) -> Result<[u8; 32], ProtocolError> {
+    request_signing_digest_sha256(request, &Sha256::digest(raw_payload).into())
+}
+
+/// The request digest over an already computed SHA-256 of the exact payload bytes.
+pub(crate) fn request_signing_digest_sha256(
+    request: &SessionRequest,
+    payload_sha256: &[u8; 32],
+) -> Result<[u8; 32], ProtocolError> {
     crate::validate_api_id(&request.api_id)?;
     validate_text(&request.action, &["action"])?;
     validate_subject(&request.subject)?;
@@ -1016,7 +1024,7 @@ pub fn session_request_signing_digest(
         ));
     }
     let authority_digest = decode_base64url::<32>(&request.authority_digest)?;
-    let payload_hash: [u8; 32] = Sha256::digest(raw_payload).into();
+    let payload_hash = *payload_sha256;
     let generation = request.api_generation.get().to_be_bytes();
     let revision = request.accepted_revision.get().to_be_bytes();
     let time = request.issued_at.to_be_bytes();
@@ -1058,8 +1066,8 @@ pub struct SessionRequestVerificationInput<'a> {
     pub authority: &'a VerifiedSessionAuthority,
     /// Actual route/header identity to authenticate.
     pub request: &'a SessionRequest,
-    /// Exact received bytes retained for codec dispatch.
-    pub raw_payload: &'a [u8],
+    /// SHA-256 of the exact received payload bytes, which the caller retains.
+    pub payload_sha256: [u8; 32],
     /// Received proof.
     pub proof: &'a SessionRequestProof,
     /// Current bounded policy.
@@ -1073,7 +1081,6 @@ pub struct SessionRequestVerificationInput<'a> {
 pub struct VerifiedSessionRequest<'a> {
     authority: &'a VerifiedSessionAuthority,
     request: &'a SessionRequest,
-    raw_payload: &'a [u8],
     digest: [u8; 32],
 }
 
@@ -1105,10 +1112,6 @@ impl<'a> VerifiedSessionRequest<'a> {
     /// Exact opening request identity for response binding.
     pub fn request(&self) -> &'a SessionRequest {
         self.request
-    }
-    /// Exact verified payload, not a reconstructed JSON value.
-    pub fn raw_payload(&self) -> &'a [u8] {
-        self.raw_payload
     }
     /// Canonical opening transcript digest for a provider response.
     pub fn digest(&self) -> &[u8; 32] {
@@ -1181,7 +1184,7 @@ pub fn verify_session_request(
             ));
         }
     }
-    let digest = session_request_signing_digest(request, input.raw_payload)?;
+    let digest = request_signing_digest_sha256(request, &input.payload_sha256)?;
     let signature = Signature::from_bytes(&decode_base64url(input.proof.as_str())?);
     input
         .authority
@@ -1197,7 +1200,6 @@ pub fn verify_session_request(
     Ok(VerifiedSessionRequest {
         authority: input.authority,
         request,
-        raw_payload: input.raw_payload,
         digest,
     })
 }
@@ -1261,6 +1263,14 @@ pub fn session_event_signing_digest(
     event: &SessionEvent,
     raw_payload: &[u8],
 ) -> Result<[u8; 32], ProtocolError> {
+    event_signing_digest_sha256(event, &Sha256::digest(raw_payload).into())
+}
+
+/// The event digest over an already computed SHA-256 of the exact payload bytes.
+pub(crate) fn event_signing_digest_sha256(
+    event: &SessionEvent,
+    payload_sha256: &[u8; 32],
+) -> Result<[u8; 32], ProtocolError> {
     crate::validate_api_id(&event.api_id)?;
     validate_text(&event.action, &["action"])?;
     validate_subject(&event.subject)?;
@@ -1274,7 +1284,7 @@ pub fn session_event_signing_digest(
         ));
     }
     let authority_digest = decode_base64url::<32>(&event.authority_digest)?;
-    let payload_hash: [u8; 32] = Sha256::digest(raw_payload).into();
+    let payload_hash = *payload_sha256;
     let generation = event.api_generation.get().to_be_bytes();
     let revision = event.accepted_revision.get().to_be_bytes();
     let mut bytes = Vec::new();
@@ -1314,8 +1324,8 @@ pub struct SessionEventVerificationInput<'a> {
     pub authority: &'a VerifiedSessionAuthority,
     /// Actual descriptor, subject, and signed event identity.
     pub event: &'a SessionEvent,
-    /// Exact received payload bytes.
-    pub raw_payload: &'a [u8],
+    /// SHA-256 of the exact received payload bytes, which the caller retains.
+    pub payload_sha256: [u8; 32],
     /// Received event proof.
     pub proof: &'a SessionEventProof,
     /// Current verification clock and limits.
@@ -1331,7 +1341,6 @@ pub struct SessionEventVerificationInput<'a> {
 pub struct VerifiedSessionEvent<'a> {
     authority: &'a VerifiedSessionAuthority,
     event: &'a SessionEvent,
-    raw_payload: &'a [u8],
     original_publication: Option<&'a OriginalEventPublication>,
     digest: [u8; 32],
 }
@@ -1344,10 +1353,6 @@ impl<'a> VerifiedSessionEvent<'a> {
     /// Verified event identity.
     pub fn event(&self) -> &'a SessionEvent {
         self.event
-    }
-    /// Exact authenticated payload bytes.
-    pub fn raw_payload(&self) -> &'a [u8] {
-        self.raw_payload
     }
     /// Trusted original publication evidence used for historical eligibility.
     pub fn original_publication(&self) -> Option<&'a OriginalEventPublication> {
@@ -1432,7 +1437,7 @@ pub fn verify_session_event(
             return Err(reject());
         }
     }
-    let digest = session_event_signing_digest(event, input.raw_payload)?;
+    let digest = event_signing_digest_sha256(event, &input.payload_sha256)?;
     let signature = Signature::from_bytes(&decode_base64url(input.proof.as_str())?);
     input
         .authority
@@ -1442,7 +1447,6 @@ pub fn verify_session_event(
     Ok(VerifiedSessionEvent {
         authority: input.authority,
         event,
-        raw_payload: input.raw_payload,
         original_publication: input.original_publication,
         digest,
     })

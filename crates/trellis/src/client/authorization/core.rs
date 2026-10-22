@@ -185,10 +185,11 @@ impl AuthorizationVerificationCore {
         policy: &SessionAuthorityVerificationPolicy,
         known_revoked: bool,
     ) -> Result<VerifiedAuthorizationRequest, AuthorizationVerificationError> {
+        let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(payload).into();
         let verified = verify_session_request(SessionRequestVerificationInput {
             authority: &authority,
             request,
-            raw_payload: payload,
+            payload_sha256,
             proof,
             policy,
             known_revoked,
@@ -242,10 +243,11 @@ impl AuthorizationVerificationCore {
         &self,
         input: EventVerificationInput<'_>,
     ) -> Result<VerifiedAuthorizationEvent, AuthorizationVerificationError> {
+        let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(input.payload).into();
         verify_session_event(SessionEventVerificationInput {
             authority: &input.authority,
             event: input.event,
-            raw_payload: input.payload,
+            payload_sha256,
             proof: input.proof,
             policy: input.policy,
             original_publication: input.original_publication,

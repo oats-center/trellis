@@ -2247,6 +2247,7 @@ impl AuthorizationOwner {
                 "response certificate issuer retired".into(),
             ));
         }
+        let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(payload).into();
         verify_session_response(SessionResponseVerificationInput {
             provider: &provider,
             certificate,
@@ -2257,7 +2258,7 @@ impl AuthorizationOwner {
             expected_deployment_id,
             received_subject,
             response,
-            raw_payload: payload,
+            payload_sha256,
             proof,
             policy: &policy,
             known_revoked,

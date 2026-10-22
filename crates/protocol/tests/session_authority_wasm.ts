@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import "../../../ts/packages/trellis/auth/protocol_wasm_provider.ts";
 import { initializeProtocolWasmSync } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
 import { readFile } from "node:fs/promises";
@@ -53,7 +54,7 @@ try {
           policy: fixture.verification.policy,
           knownRevoked: false,
         }),
-        new TextEncoder().encode(payload),
+        createHash("sha256").update(payload).digest(),
       ),
     );
   const result = verify(fixture.request, fixture.payload);
@@ -103,7 +104,7 @@ try {
           originalPublication,
           knownRevoked: true,
         }),
-        new TextEncoder().encode(payload),
+        createHash("sha256").update(payload).digest(),
       ),
     );
   const retained = verify(fixture.event, fixture.originalPublication);

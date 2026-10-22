@@ -52,6 +52,12 @@ and this project adheres to
   authorization policy stay in the shared Rust protocol. Pinned vectors in
   `integration/fixtures/protocol/message-digests` keep both implementations
   byte-identical.
+- Request, event and response verification take the payload's SHA-256
+  instead of the payload, so TypeScript hashes natively and only 32 bytes
+  cross into WASM. In the Rust protocol crate, the session verification inputs
+  replace `raw_payload` with `payload_sha256: [u8; 32]`, and the verified
+  request, event and response types no longer return the payload; callers
+  keep the bytes they verified.
 - Signed catalogs and provider certificates are authenticated once when
   fetched, in both SDKs. Each use rechecks only the issuer key and its
   revocation state, the trust scope and the certificate's validity time,

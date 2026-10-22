@@ -293,7 +293,8 @@ export type VerifySessionRequestResult =
 export type VerifySessionRequestArgs = {
   authorityHandle: SessionAuthorityHandle;
   request: SessionRequest;
-  payload: Uint8Array;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
   proof: string;
   policy: SessionAuthorityVerificationPolicy;
   knownRevoked: boolean;
@@ -320,7 +321,8 @@ export type SessionResponse = {
 export type VerifySessionResponseArgs = {
   providerHandle: SessionAuthorityHandle;
   response: SessionResponse;
-  payload: Uint8Array;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
   proof: string;
   /** The provider's certificate, authenticated once when it was fetched. */
   certificate: ProviderCertificateHandle;
@@ -711,7 +713,8 @@ export type OriginalEventPublication = {
 export async function verifySessionEventWasm(args: {
   authorityHandle: SessionAuthorityHandle;
   event: SessionEvent;
-  payload: Uint8Array;
+  /** SHA-256 of the exact received payload bytes. */
+  payloadSha256: Uint8Array;
   proof: string;
   policy: SessionAuthorityVerificationPolicy;
   originalPublication: OriginalEventPublication | null;
@@ -721,12 +724,12 @@ export async function verifySessionEventWasm(args: {
   | { ok: false; error: AuthorizationVerificationError }
 > {
   await initializeProtocolWasm();
-  const { authorityHandle, payload, ...verification } = args;
+  const { authorityHandle, payloadSha256, ...verification } = args;
   return JSON.parse(
     protocolWasm.verify_session_event(
       authorityHandle,
       JSON.stringify(verification),
-      payload,
+      payloadSha256,
     ),
   );
 }
@@ -781,13 +784,13 @@ export async function verifySessionResponseWasm(
   args: VerifySessionResponseArgs,
 ): Promise<VerifySessionResponseResult> {
   await initializeProtocolWasm();
-  const { providerHandle, certificate, payload, ...verification } = args;
+  const { providerHandle, certificate, payloadSha256, ...verification } = args;
   return JSON.parse(
     protocolWasm.verify_session_response(
       providerHandle,
       certificate,
       JSON.stringify(verification),
-      payload,
+      payloadSha256,
     ),
   ) as VerifySessionResponseResult;
 }
@@ -929,12 +932,12 @@ export async function verifySessionRequestWasm(
   args: VerifySessionRequestArgs,
 ): Promise<VerifySessionRequestResult> {
   await initializeProtocolWasm();
-  const { authorityHandle, payload, ...input } = args;
+  const { authorityHandle, payloadSha256, ...input } = args;
   return JSON.parse(
     providerProtocol().verify_session_request(
       authorityHandle,
       JSON.stringify(input),
-      payload,
+      payloadSha256,
     ),
   ) as VerifySessionRequestResult;
 }

@@ -777,8 +777,11 @@ pub fn verify_session_response(
     provider: &VerifiedSessionAuthorityHandle,
     certificate: &AuthenticatedProviderCertificateHandle,
     response_json: &str,
-    raw_payload: &[u8],
+    payload_sha256: &[u8],
 ) -> String {
+    let Ok(payload_sha256) = <[u8; 32]>::try_from(payload_sha256) else {
+        return input_error_result("payloadSha256");
+    };
     use base64::Engine as _;
     if response_json.len() > 1_048_576 {
         return input_error_result("response");
@@ -812,7 +815,7 @@ pub fn verify_session_response(
         expected_deployment_id: input.expected_deployment_id.as_deref(),
         received_subject: &input.received_subject,
         response: &input.response,
-        raw_payload,
+        payload_sha256,
         proof: &input.proof,
         policy: &input.policy,
         known_revoked: input.known_revoked,
@@ -1240,11 +1243,15 @@ fn json_result(value: Value) -> String {
 pub fn verify_session_request(
     authority: &VerifiedSessionAuthorityHandle,
     request_json: &str,
-    payload: &[u8],
+    payload_sha256: &[u8],
 ) -> String {
     if request_json.len() > 16_384 {
         return input_error_result("");
     }
+    let Ok(payload_sha256) = <[u8; 32]>::try_from(payload_sha256) else {
+        return input_error_result("payloadSha256");
+    };
+
     let input: WireSessionRequest = match serde_json::from_str(request_json) {
         Ok(input) => input,
         Err(_) => return input_error_result(""),
@@ -1252,7 +1259,7 @@ pub fn verify_session_request(
     let result = verify_session_request_protocol(SessionRequestVerificationInput {
         authority: &authority.authority,
         request: &input.request,
-        raw_payload: payload,
+        payload_sha256,
         proof: &input.proof,
         policy: &input.policy,
         known_revoked: input.known_revoked,
@@ -1276,8 +1283,11 @@ pub fn verify_session_request(
 pub fn verify_session_event(
     authority: &VerifiedSessionAuthorityHandle,
     event_json: &str,
-    payload: &[u8],
+    payload_sha256: &[u8],
 ) -> String {
+    let Ok(payload_sha256) = <[u8; 32]>::try_from(payload_sha256) else {
+        return input_error_result("payloadSha256");
+    };
     if event_json.len() > 16_384 {
         return input_error_result("");
     }
@@ -1288,7 +1298,7 @@ pub fn verify_session_event(
     let result = verify_session_event_protocol(SessionEventVerificationInput {
         authority: &authority.authority,
         event: &input.event,
-        raw_payload: payload,
+        payload_sha256,
         proof: &input.proof,
         policy: &input.policy,
         original_publication: input.original_publication.as_ref(),

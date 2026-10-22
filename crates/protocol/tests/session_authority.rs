@@ -503,7 +503,7 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
         expected_deployment_id: Some(forged_owner),
         received_subject: &response.subject,
         response: &response,
-        raw_payload: &forged_reference,
+        payload_sha256: sha256(&forged_reference),
         proof: &forged_reference_proof,
         policy: &policy,
         known_revoked: false,
@@ -520,12 +520,12 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
             expected_deployment_id: Some(&certificate.deployment_id),
             received_subject: subject,
             response,
-            raw_payload: bytes,
+            payload_sha256: sha256(bytes),
             proof: &proof,
             policy: &policy,
             known_revoked: revoked,
         })
-        .map(|verified| verified.raw_payload().to_vec())
+        .map(|_| bytes.to_vec())
     };
     assert_eq!(
         verify(
@@ -659,7 +659,7 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
             expected_deployment_id: None,
             received_subject: &signed_error.subject,
             response: &signed_error,
-            raw_payload: error_bytes,
+            payload_sha256: sha256(error_bytes),
             proof: &error_proof,
             policy: &policy,
             known_revoked: false,
@@ -706,7 +706,7 @@ fn historical_event_requires_original_publication_before_expiry_and_revocation()
             verify_session_event(SessionEventVerificationInput {
                 authority: &verified,
                 event: &event,
-                raw_payload: payload,
+                payload_sha256: sha256(payload),
                 proof: &proof,
                 policy: &policy,
                 original_publication,
@@ -729,7 +729,7 @@ fn historical_event_requires_original_publication_before_expiry_and_revocation()
                     verify_session_event(SessionEventVerificationInput {
                         authority: &verified,
                         event: &event,
-                        raw_payload: payload,
+                        payload_sha256: sha256(payload),
                         proof: &proof,
                         policy: &policy,
                         original_publication: Some(&publication),
@@ -741,7 +741,6 @@ fn historical_event_requires_original_publication_before_expiry_and_revocation()
                 );
             }
         }
-        assert_eq!(retained.raw_payload(), payload);
         assert_eq!(
             retained.original_publication().unwrap().stream_sequence,
             U64s::new(17)
@@ -794,7 +793,7 @@ fn event_proof_binds_descriptor_subject_payload_and_api_stamp() {
         verify_session_event(SessionEventVerificationInput {
             authority: &verified,
             event,
-            raw_payload,
+            payload_sha256: sha256(raw_payload),
             proof: &proof,
             policy: &policy,
             original_publication: None,
@@ -851,7 +850,7 @@ fn signed_authority_and_exact_request_survive_serialization_but_reject_transplan
         verify_session_request(SessionRequestVerificationInput {
             authority: &authority,
             request,
-            raw_payload: bytes,
+            payload_sha256: sha256(bytes),
             proof: &proof,
             policy: &policy,
             known_revoked: false,
@@ -884,7 +883,7 @@ fn signed_authority_and_exact_request_survive_serialization_but_reject_transplan
             verify_session_request(SessionRequestVerificationInput {
                 authority: &authority,
                 request: &transfer_request,
-                raw_payload: payload,
+                payload_sha256: sha256(payload),
                 proof: &proof,
                 policy: &policy,
                 known_revoked: false,
@@ -1342,7 +1341,7 @@ fn native_signed_request_verifies_in_packaged_wasm() {
     let caller = verify_session_request(SessionRequestVerificationInput {
         authority: &verified_authority,
         request: &request,
-        raw_payload: payload.as_bytes(),
+        payload_sha256: sha256(payload.as_bytes()),
         proof: &proof,
         policy: &policy,
         known_revoked: false,
@@ -1379,7 +1378,7 @@ fn native_signed_request_verifies_in_packaged_wasm() {
     let verified_event = verify_session_event(SessionEventVerificationInput {
         authority: &historical_authority,
         event: &event,
-        raw_payload: payload.as_bytes(),
+        payload_sha256: sha256(payload.as_bytes()),
         proof: &event_proof,
         policy: &historical_policy,
         original_publication: Some(&publication),
@@ -1451,4 +1450,9 @@ fn native_signed_request_verifies_in_packaged_wasm() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).into()
 }

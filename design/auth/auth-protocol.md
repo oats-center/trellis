@@ -141,6 +141,8 @@ these digests natively because they run on every message; the vectors in
 `integration/fixtures/protocol/message-digests` are checked by both. Field
 validation and every authorization decision stay in the shared verifier: a
 signer only signs its own messages, and the verifier recomputes the digest.
+Verifiers take the payload's SHA-256 rather than the payload: each SDK hashes
+the bytes it already holds, natively, and payload bytes never cross into WASM.
 TypeScript computes DATA-frame digests natively and the few completion, EOF,
 control and signal frames through the shared protocol.
 
