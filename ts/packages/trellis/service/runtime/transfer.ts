@@ -20,6 +20,7 @@ import {
 import type { StoreError } from "../../errors/StoreError.ts";
 import { TransferError } from "../../errors/TransferError.ts";
 import { TypedStore, TypedStoreEntry } from "../../store.ts";
+import { transferFrameDigest } from "../../auth/message_digests.ts";
 import type {
   FileInfo,
   ReceiveTransferGrant,
@@ -28,7 +29,6 @@ import type {
 } from "../../transfer.ts";
 import {
   transferConstants,
-  transferFrameDigest,
   transferGenerateId,
   transferParseComplete,
   transferParseControl,
@@ -1097,7 +1097,7 @@ export class ServiceTransfer {
     await this.#verify(
       session,
       msg,
-      transferFrameDigest(
+      await transferFrameDigest(
         {
           transferId: session.wire.grant.transferId,
           direction: session.wire.grant.direction,
@@ -1367,7 +1367,7 @@ export class ServiceTransfer {
     await this.#verify(
       session,
       msg,
-      transferFrameDigest(
+      await transferFrameDigest(
         {
           transferId: session.wire.grant.transferId,
           direction: "send",

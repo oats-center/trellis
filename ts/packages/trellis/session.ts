@@ -1,4 +1,9 @@
 import {
+  sessionRequestSigningDigest,
+  sessionEventSigningDigest,
+  sessionResponseSigningDigest,
+} from "./auth/message_digests.ts";
+import {
   type ConsumerMessages,
   jetstream,
   type JetStreamClient,
@@ -36,11 +41,7 @@ import { LiveStreamError } from "./live/types.ts";
 import type { ParticipantKvMetadata } from "./participant_runtime/metadata.ts";
 import type { EventConsumerResourceBinding } from "./participant_runtime/schemas.ts";
 import type { StaticDecode } from "typebox";
-import {
-  sessionRequestSigningDigestWasm,
-  sessionEventSigningDigestWasm,
-  sessionResponseSigningDigestWasm,
-} from "./auth/protocol_wasm.ts";
+import {} from "./auth/protocol_wasm.ts";
 import { trellisCrypto } from "./auth/crypto.ts";
 import type {
   SessionAuthorityOwner,
@@ -5151,7 +5152,7 @@ export class Trellis<
     this.#replyRequests.set(msg, {
       request,
       digest: base64urlEncode(
-        await sessionRequestSigningDigestWasm(request, msg.data),
+        await sessionRequestSigningDigest(request, msg.data),
       ),
     });
   }
@@ -5200,7 +5201,7 @@ export class Trellis<
           };
           const proof = base64urlEncode(
             await this.#auth.sign(
-              await sessionResponseSigningDigestWasm(
+              await sessionResponseSigningDigest(
                 response,
                 new TextEncoder().encode(payload),
               ),
@@ -6685,10 +6686,7 @@ export class Trellis<
         issuedAt: iat,
         requestId,
       };
-      const digest = await sessionRequestSigningDigestWasm(
-        request,
-        payloadBytes,
-      );
+      const digest = await sessionRequestSigningDigest(request, payloadBytes);
       const sigBytes = await this.#auth.sign(digest);
       own.assertCurrent();
       return {
@@ -6731,7 +6729,7 @@ export class Trellis<
         eventId: event.header.id,
         eventTime: event.header.time,
       };
-      const digest = await sessionEventSigningDigestWasm(
+      const digest = await sessionEventSigningDigest(
         signedEvent,
         new TextEncoder().encode(event.encodedPayload),
       );

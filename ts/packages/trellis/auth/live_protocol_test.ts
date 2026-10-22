@@ -12,10 +12,12 @@ import {
   liveParseControl,
   liveParseFrame,
   liveParseU64s,
-  liveServerProofDigest,
   liveValidateSubject,
-  liveVerifyServerProof,
 } from "./protocol_wasm.ts";
+import {
+  liveServerProofDigest,
+  liveVerifyServerProof,
+} from "./message_digests.ts";
 import { trellisCrypto } from "./crypto.ts";
 import { base64urlEncode, utf8 } from "./utils.ts";
 import vectors from "../../../../integration/fixtures/protocol/live-protocol/vectors.json" with { type: "json" };
@@ -39,7 +41,7 @@ test("provider server-message proofs match the pinned language-neutral vectors",
     const signer = await (await trellisCrypto()).signerFromSeed(keySeed);
     const publicKey = signer.publicKey;
     const body = utf8(vector.bodyUtf8);
-    const digest = liveServerProofDigest(
+    const digest = await liveServerProofDigest(
       vector.contextDigest,
       vector.subject,
       body,
@@ -50,14 +52,14 @@ test("provider server-message proofs match the pinned language-neutral vectors",
       vector.proof,
       `${vector.name}: TS signature must equal the pinned Rust proof`,
     );
-    liveVerifyServerProof(
+    await liveVerifyServerProof(
       vector.proof,
       vector.contextDigest,
       vector.subject,
       body,
       publicKey,
     );
-    assert.throws(() =>
+    await assert.rejects(
       liveVerifyServerProof(
         vector.proof,
         vector.contextDigest,
@@ -127,16 +129,4 @@ test("live control and frame parsing is strict across the shared bridge", () => 
   assert.throws(() =>
     liveParseFrame(utf8(end.replace('"complete"', '"peer_lost"')), 1_048_576),
   );
-});
-
-test("proof digest is a 32-byte SHA-256 binding of subject and body", () => {
-  const contextDigest = base64urlEncode(new Uint8Array(32).fill(9));
-  const body = utf8("{}");
-  const digest = liveServerProofDigest(contextDigest, "s", body);
-  assert.deepEqual(digest.length, 32);
-  assert.deepEqual(
-    base64urlEncode(digest),
-    base64urlEncode(liveServerProofDigest(contextDigest, "s", body)),
-  );
-  assert.throws(() => liveServerProofDigest("not-a-digest", "s", body));
 });

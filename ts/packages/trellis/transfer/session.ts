@@ -18,13 +18,15 @@ import { recordCatalogCounter } from "../telemetry/mod.ts";
 import {
   transferConstants,
   type TransferFrameDescriptor,
-  transferFrameDigest,
-  transferServerProofDigest,
   type TransferTerminalWire,
-  transferVerifyServerProof,
-  sessionRequestSigningDigestWasm,
   type SessionRequest,
 } from "../auth/protocol_wasm.ts";
+import {
+  sessionRequestSigningDigest,
+  transferFrameDigest,
+  transferServerProofDigest,
+  transferVerifyServerProof,
+} from "../auth/message_digests.ts";
 
 /**
  * Count one sent or verified received Transfer message at the endpoint that
@@ -232,7 +234,7 @@ export class TransferSession {
     const proofPayload =
       seq === undefined
         ? payload
-        : transferFrameDigest(
+        : await transferFrameDigest(
             {
               transferId: this.grant.transferId,
               direction: this.grant.direction,
@@ -259,7 +261,7 @@ export class TransferSession {
       issuedAt: iat,
     };
     const proof = await this.auth.sign(
-      await sessionRequestSigningDigestWasm(request, proofPayload),
+      await sessionRequestSigningDigest(request, proofPayload),
     );
     await this.contextDigest();
     const result = headers();
@@ -295,7 +297,7 @@ export class TransferSession {
         ? local.contextDigest
         : await this.contextDigest();
     const proof = await this.auth.sign(
-      transferServerProofDigest(
+      await transferServerProofDigest(
         contextDigest,
         subject,
         {
@@ -345,7 +347,7 @@ export class TransferSession {
       (!terminal && msg.headers?.values(C.terminalHeader)?.length)
     )
       throw new Error("transfer provider frame descriptor mismatch");
-    transferVerifyServerProof(
+    await transferVerifyServerProof(
       single(C.proofHeader),
       contextDigest,
       msg.subject,

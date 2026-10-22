@@ -1193,7 +1193,7 @@ export class LiveProvider {
       );
     }
     const proof = base64urlEncode(
-      await this.#host.sign(liveServerProofDigest(digest, subject, body)),
+      await this.#host.sign(await liveServerProofDigest(digest, subject, body)),
     );
     const headers = natsHeaders();
     headers.set("authorization-context", digest);

@@ -4,11 +4,10 @@ import { ulid } from "ulid";
 import { trellisCrypto } from "./crypto.ts";
 import { createProof, createResponseProof } from "./proof.ts";
 import {
-  sessionRequestSigningDigestWasm,
-  sessionResponseSigningDigestWasm,
-  type SessionRequest,
-  type SessionResponse,
-} from "./protocol_wasm.ts";
+  sessionRequestSigningDigest,
+  sessionResponseSigningDigest,
+} from "./message_digests.ts";
+import { type SessionRequest, type SessionResponse } from "./protocol_wasm.ts";
 import { base64urlDecode, base64urlEncode, toArrayBuffer } from "./utils.ts";
 
 test("TypeScript signatures bind Rust/WASM request bytes and provider error correlation", async () => {
@@ -47,14 +46,14 @@ test("TypeScript signatures bind Rust/WASM request bytes and provider error corr
   assert.deepEqual(
     await verify(
       signed.proof,
-      await sessionRequestSigningDigestWasm(request, bytes),
+      await sessionRequestSigningDigest(request, bytes),
     ),
     true,
   );
   assert.deepEqual(
     await verify(
       signed.proof,
-      await sessionRequestSigningDigestWasm(
+      await sessionRequestSigningDigest(
         request,
         new TextEncoder().encode('{"amount":5,"extension":"changed"}'),
       ),
@@ -64,7 +63,7 @@ test("TypeScript signatures bind Rust/WASM request bytes and provider error corr
   assert.deepEqual(
     await verify(
       signed.proof,
-      await sessionRequestSigningDigestWasm(
+      await sessionRequestSigningDigest(
         { ...request, acceptedRevision: "3" },
         bytes,
       ),
@@ -94,14 +93,14 @@ test("TypeScript signatures bind Rust/WASM request bytes and provider error corr
   assert.deepEqual(
     await verify(
       proof,
-      await sessionResponseSigningDigestWasm(response, errorBytes),
+      await sessionResponseSigningDigest(response, errorBytes),
     ),
     true,
   );
   assert.deepEqual(
     await verify(
       proof,
-      await sessionResponseSigningDigestWasm(
+      await sessionResponseSigningDigest(
         { ...response, requestId: ulid() },
         errorBytes,
       ),
@@ -111,7 +110,7 @@ test("TypeScript signatures bind Rust/WASM request bytes and provider error corr
   assert.deepEqual(
     await verify(
       proof,
-      await sessionResponseSigningDigestWasm(
+      await sessionResponseSigningDigest(
         { ...response, kind: "success" },
         errorBytes,
       ),

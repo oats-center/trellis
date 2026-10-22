@@ -348,6 +348,35 @@ pub fn transfer_receive_window(available: f64, max_frame_bytes: f64) -> Result<S
     )
 }
 
+/// Verify a provider's Ed25519 proof over a 32-byte domain-separated digest.
+///
+/// Transfer DATA and Live server proofs are digested natively by the caller;
+/// signature verification keeps the shared strict rules.
+#[wasm_bindgen]
+pub fn verify_proof_digest(proof: &str, digest: &[u8], public_key: &str) -> Result<(), JsError> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    let decode = |value: &str, length: usize, field: &str| {
+        URL_SAFE_NO_PAD
+            .decode(value)
+            .ok()
+            .filter(|bytes| bytes.len() == length && URL_SAFE_NO_PAD.encode(bytes) == value)
+            .ok_or_else(|| JsError::new(&format!("{field} must be canonical base64url")))
+    };
+    let digest: [u8; 32] = digest
+        .try_into()
+        .map_err(|_| JsError::new("proof digest must be 32 bytes"))?;
+    let key: [u8; 32] = decode(public_key, 32, "public key")?
+        .try_into()
+        .map_err(|_| JsError::new("public key must be 32 bytes"))?;
+    let signature: [u8; 64] = decode(proof, 64, "proof")?
+        .try_into()
+        .map_err(|_| JsError::new("proof must be 64 bytes"))?;
+    ed25519_dalek::VerifyingKey::from_bytes(&key)
+        .map_err(|_| JsError::new("invalid Ed25519 public key"))?
+        .verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
+        .map_err(|_| JsError::new("provider signature verification failed"))
+}
+
 /// Return canonical Transfer limits and protocol header names as JSON.
 #[wasm_bindgen]
 pub fn transfer_constants() -> String {
@@ -648,54 +677,6 @@ struct WireSessionResponse {
     received_subject: String,
     policy: SessionAuthorityVerificationPolicy,
     known_revoked: bool,
-}
-
-/// Shared request transcript digest over the exact publication buffer.
-#[wasm_bindgen]
-pub fn session_request_signing_digest(
-    request_json: &str,
-    raw_payload: &[u8],
-) -> Result<Vec<u8>, JsError> {
-    if request_json.len() > 16_384 {
-        return Err(JsError::new("request identity exceeds byte budget"));
-    }
-    let request: SessionRequest =
-        serde_json::from_str(request_json).map_err(|error| JsError::new(&error.to_string()))?;
-    trellis_protocol::session_request_signing_digest(&request, raw_payload)
-        .map(|digest| digest.to_vec())
-        .map_err(|error| JsError::new(&error.to_string()))
-}
-
-/// Shared event transcript digest over exact publication bytes.
-#[wasm_bindgen]
-pub fn session_event_signing_digest(
-    event_json: &str,
-    raw_payload: &[u8],
-) -> Result<Vec<u8>, JsError> {
-    if event_json.len() > 16_384 {
-        return Err(JsError::new("event identity exceeds byte budget"));
-    }
-    let event: SessionEvent =
-        serde_json::from_str(event_json).map_err(|error| JsError::new(&error.to_string()))?;
-    trellis_protocol::session_event_signing_digest(&event, raw_payload)
-        .map(|digest| digest.to_vec())
-        .map_err(|error| JsError::new(&error.to_string()))
-}
-
-/// Shared provider response transcript digest over exact result bytes.
-#[wasm_bindgen]
-pub fn session_response_signing_digest(
-    response_json: &str,
-    raw_payload: &[u8],
-) -> Result<Vec<u8>, JsError> {
-    if response_json.len() > 16_384 {
-        return Err(JsError::new("response identity exceeds byte budget"));
-    }
-    let response: SessionResponse =
-        serde_json::from_str(response_json).map_err(|error| JsError::new(&error.to_string()))?;
-    trellis_protocol::session_response_signing_digest(&response, raw_payload)
-        .map(|digest| digest.to_vec())
-        .map_err(|error| JsError::new(&error.to_string()))
 }
 
 /// Verify a provider response against a retained opening request and certified action.
@@ -1105,39 +1086,6 @@ pub fn live_logical_control_hash(raw: &[u8]) -> Result<String, JsError> {
         .map_err(|error| JsError::new(&error.to_string()))?;
     trellis_protocol::logical_control_hash(&control)
         .map_err(|error| JsError::new(&error.to_string()))
-}
-
-/// Build the canonical provider server-message proof digest for exact bytes.
-#[cfg(feature = "provider")]
-#[wasm_bindgen]
-pub fn live_server_proof_digest(
-    context_digest: &str,
-    subject: &str,
-    raw_body: &[u8],
-) -> Result<String, JsError> {
-    trellis_protocol::live_server_proof_digest(context_digest, subject, raw_body)
-        .map_err(|error| JsError::new(&error.to_string()))
-}
-
-/// Verify one provider server-message proof against the pinned provider key.
-#[wasm_bindgen]
-pub fn live_verify_server_proof(
-    proof: &str,
-    context_digest: &str,
-    subject: &str,
-    raw_body: &[u8],
-    provider_key: &str,
-) -> Result<(), JsError> {
-    let proof = trellis_protocol::LiveServerProof::parse(proof)
-        .map_err(|error| JsError::new(&error.to_string()))?;
-    trellis_protocol::verify_live_server_proof_encoded(
-        &proof,
-        context_digest,
-        subject,
-        raw_body,
-        provider_key,
-    )
-    .map_err(|error| JsError::new(&error.to_string()))
 }
 
 #[derive(Deserialize)]

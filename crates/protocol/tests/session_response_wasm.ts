@@ -3,12 +3,10 @@ import "../../../ts/packages/trellis/auth/protocol_wasm_provider.ts";
 import { initializeProtocolWasmSync } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
 import { readFile } from "node:fs/promises";
 import { createResponseProof } from "../../../ts/packages/trellis/auth/proof.ts";
+import { sessionResponseSigningDigest } from "../../../ts/packages/trellis/auth/message_digests.ts";
 import { trellisCrypto } from "../../../ts/packages/trellis/auth/crypto.ts";
 import { verifySessionResponseWasm } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
-import {
-  create_session_authority_handle,
-  session_response_signing_digest,
-} from "../../../ts/packages/trellis/auth/protocol_wasm/provider/trellis_protocol_wasm.js";
+import { create_session_authority_handle } from "../../../ts/packages/trellis/auth/protocol_wasm/provider/trellis_protocol_wasm.js";
 
 initializeProtocolWasmSync();
 const fixture = JSON.parse(await readFile(process.argv[2], "utf8"));
@@ -42,8 +40,8 @@ try {
   assert.deepEqual(accepted.response, fixture.verification.response);
   assert.equal(
     Buffer.from(
-      session_response_signing_digest(
-        JSON.stringify(fixture.verification.response),
+      await sessionResponseSigningDigest(
+        fixture.verification.response,
         encoder.encode(fixture.payload),
       ),
     ).toString("base64url"),

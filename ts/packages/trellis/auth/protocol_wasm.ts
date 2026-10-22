@@ -699,42 +699,6 @@ export function initializeProtocolWasmSync(): void {
   initializedSync = true;
 }
 
-/** Hash the exact request publication buffer through the native shared transcript. */
-export async function sessionRequestSigningDigestWasm(
-  request: SessionRequest,
-  payload: Uint8Array,
-): Promise<Uint8Array> {
-  await initializeProtocolWasm();
-  return protocolWasm.session_request_signing_digest(
-    JSON.stringify(request),
-    payload,
-  );
-}
-
-/** Hash the original publication bytes and event identity in the shared protocol. */
-export async function sessionEventSigningDigestWasm(
-  event: SessionEvent,
-  payload: Uint8Array,
-): Promise<Uint8Array> {
-  await initializeProtocolWasm();
-  return protocolWasm.session_event_signing_digest(
-    JSON.stringify(event),
-    payload,
-  );
-}
-
-/** Hash exact provider result bytes through the shared response transcript. */
-export async function sessionResponseSigningDigestWasm(
-  response: SessionResponse,
-  payload: Uint8Array,
-): Promise<Uint8Array> {
-  await initializeProtocolWasm();
-  return protocolWasm.session_response_signing_digest(
-    JSON.stringify(response),
-    payload,
-  );
-}
-
 /** Verify before decoding a provider result or completing its pending request. */
 export async function verifySessionResponseWasm(
   args: VerifySessionResponseArgs,
@@ -1183,40 +1147,6 @@ export function liveLogicalControlHash(raw: Uint8Array): string {
   return providerProtocol().live_logical_control_hash(raw);
 }
 
-/** Build the provider server-message proof digest over exact transmitted bytes. */
-export function liveServerProofDigest(
-  contextDigest: string,
-  subject: string,
-  rawBody: Uint8Array,
-): Uint8Array {
-  initializeProtocolWasmSync();
-  return base64urlDecode(
-    providerProtocol().live_server_proof_digest(
-      contextDigest,
-      subject,
-      rawBody,
-    ),
-  );
-}
-
-/** Verify one provider server-message proof against the pinned provider key. */
-export function liveVerifyServerProof(
-  proof: string,
-  contextDigest: string,
-  subject: string,
-  rawBody: Uint8Array,
-  providerKey: string,
-): void {
-  initializeProtocolWasmSync();
-  protocolWasm.live_verify_server_proof(
-    proof,
-    contextDigest,
-    subject,
-    rawBody,
-    providerKey,
-  );
-}
-
 /** Canonical Transfer session subject family. */
 export type TransferSubjectKind =
   "upload-data" | "download-data" | "control" | "signal";
@@ -1467,6 +1397,16 @@ export function transferReceiveWindow(
   )
     throw new Error("invalid transfer receive window");
   return [window[0], window[1]];
+}
+
+/** Verify a provider's Ed25519 proof over a natively computed 32-byte digest. */
+export function verifyProofDigest(
+  proof: string,
+  digest: Uint8Array,
+  providerKey: string,
+): void {
+  initializeProtocolWasmSync();
+  protocolWasm.verify_proof_digest(proof, digest, providerKey);
 }
 
 /** Validate a direction-specific public grant before any transport acquisition. */

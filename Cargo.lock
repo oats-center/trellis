@@ -5957,6 +5957,7 @@ name = "trellis-protocol-wasm"
 version = "0.100.0-rc.3"
 dependencies = [
  "base64 0.22.1",
+ "ed25519-dalek",
  "getrandom 0.3.4",
  "serde",
  "serde_json",
