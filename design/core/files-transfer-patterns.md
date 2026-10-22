@@ -269,10 +269,22 @@ Rules:
 - credit is cumulative and coalesced, not a blocking exchange per frame; a
   verified sequence gap, impossible credit, or exceeded window ends the transfer
 
-The initial protocol policy caps frames at 1 MiB, outstanding frames at `16`,
-and outstanding bytes at 4 MiB. Effective frame size also accounts for both
-peers' NATS payload limits and a 4 KiB header reserve. The consumer reports its
-receive limit at activation. Credit is sent after eight newly consumed frames, 1
+Frames are capped at 1 MiB; effective frame size also accounts for both peers'
+NATS payload limits and a 4 KiB header reserve. Outstanding windows are chosen
+by the receiver, up to protocol maxima of 1,024 frames and 64 MiB:
+
+- the receiver admits its window from one process-wide receive budget before
+  any frame can arrive, and releases it when the transfer ends on any path;
+  admission shrinks an offer to what remains and refuses a transfer when less
+  than one frame fits, so a process never overcommits its budget
+- for an upload the provider receives: its grant carries the admitted window
+- for a download the consumer receives: its activation declares the admitted
+  window, and the provider sends within the smaller of it and the grant
+- `activated` echoes the effective window, never larger than the grant; the
+  sender obeys it
+- both SDKs share one offer policy, compiled from the protocol crate
+
+The consumer also reports its receive frame limit at activation. Credit is sent after eight newly consumed frames, 1
 MiB of newly consumed bytes, or 25 ms of pending consumption, with final credit
 during terminal handling. These are runtime protocol limits, not application
 knobs.

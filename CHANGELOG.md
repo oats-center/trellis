@@ -10,6 +10,12 @@ and this project adheres to
 
 ### Added
 
+- Transfer receivers choose their outstanding window, up to 1,024 frames and
+  64 MiB, and admit it from one process-wide receive budget, released when the
+  transfer ends. A download consumer declares its window at activation; the
+  provider sends within the smaller of it and the grant. A transfer that does
+  not fit is refused with `transfer receive capacity exhausted`.
+
 - `stream;` Operations deliver caller bytes directly to a running handler,
   with no staging. Callers use the existing transfer helpers. Handlers read the
   live bytes once through TypeScript `transfer.stream()` or Rust
