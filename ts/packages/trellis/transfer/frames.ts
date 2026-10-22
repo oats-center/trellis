@@ -22,9 +22,10 @@ export async function* frames(
   signal: AbortSignal,
   direction: "upload" | "download",
 ): AsyncGenerator<Uint8Array> {
-  // A 256 KiB ready-frame target still fills the 4 MiB / 16-frame window.
-  // Larger ready frames measured faster in bulk but delayed concurrent Live opens.
-  maxBytes = Math.min(maxBytes, 256 * 1024);
+  // Ready frames fill up to the negotiated limit, as in Rust. With native
+  // hashing, 1 MiB frames kept loaded Live and RPC p95 within 25% of 256 KiB
+  // frames while raising bulk throughput by about 30%
+  // (benchmarks/runtime/TRANSFER_PERFORMANCE.md).
   const reader = body instanceof ReadableStream ? body.getReader() : undefined;
   const owned = !(body instanceof ArrayBuffer || body instanceof Uint8Array);
   const source: AsyncIterable<Uint8Array> =

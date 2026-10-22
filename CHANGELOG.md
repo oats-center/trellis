@@ -39,6 +39,11 @@ and this project adheres to
 
 ### Changed
 
+- Transfer windows default to 64 frames and 16 MiB instead of 16 frames and
+  4 MiB, and TypeScript fills ready frames up to the negotiated 1 MiB limit
+  instead of capping them at 256 KiB, as Rust already did. Measured on
+  loopback, Rust streaming roughly doubles and TypeScript bulk transfers gain
+  about 30%, with loaded Live and RPC p95 within 25% of before.
 - Rust `TransferDownloadGrantArgs::store` is optional, and
   `run_download_transfer_endpoint` takes a `DownloadSource`, so downloads no
   longer require a store binding.

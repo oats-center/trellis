@@ -349,9 +349,7 @@ available prefix is sent rather than waiting for a full frame or EOF, so slow
 producers still make progress, and source reads stay cancellation-safe inside
 the session. Source prefetch is bounded to about one formed frame. Streaming
 source blocks are snapshotted before advancing an iterator that may reuse its
-scratch buffer. TypeScript may form ready frames below the negotiated limit to
-bound each frame's synchronous work so concurrent Live traffic stays
-responsive. Exact buffer and frame-formation sizes are private implementation
+scratch buffer. Both SDKs fill ready frames up to the negotiated limit. Exact buffer and frame-formation sizes are private implementation
 policy, documented in source, not public tuning fields. Store-reader
 cancellation and teardown remain session-owned; an application's
 uninterruptible iterator cannot pin SDK cleanup. Producer-provided backing
