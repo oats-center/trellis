@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { z } from "zod";
 
@@ -62,6 +62,8 @@ const metadataSchema = z.object({
   security: z.string(),
   storage: z.string(),
   telemetry: z.object({ traces: z.string(), endpointConfigured: z.boolean() }),
+  httpChunkBytes: z.number().optional(),
+  httpTls: z.boolean().default(false),
 });
 const results = resultsSchema.parse(
   JSON.parse(await readFile(`${input}/samples.json`, "utf8")),
@@ -70,10 +72,21 @@ const metadata = metadataSchema.parse(
   JSON.parse(await readFile(`${input}/metadata.json`, "utf8")),
 );
 const bencher: Record<string, Record<string, { value: number }>> = {};
+/** Processes whose CPU is charged to each transport's server side. */
+const serverRoles: Record<string, string[]> = {
+  trellis: ["provider", "nats", "trellis-server"],
+  http: ["http-provider", "nats"],
+};
 const lines = [
   `# Trellis performance — ${metadata.revision}`,
   "",
-  "**Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a lower bound, not a security-equivalent comparison. Transfer storage differs: Trellis uses JetStream; HTTP uses filesystem storage.",
+  metadata.httpTls
+    ? `**HTTP: mutual TLS plus per-request Ed25519 signatures.** ${metadata.security}.`
+    : "**Baseline: plaintext HTTP, no TLS, no authentication, and no authorization.** This is a lower bound, not a security-equivalent comparison.",
+  `Storage: ${metadata.storage}.`,
+  metadata.httpChunkBytes
+    ? `HTTP body chunk policy: **${metadata.httpChunkBytes} bytes** in both clients and servers.`
+    : "",
   `Lane: **${metadata.lane}**; provider replicas: **${metadata.providerCount}**.`,
   `Warmup rounds: **${metadata.warmups}**, retained in raw samples but excluded from percentiles.`,
   metadata.diagnostics
@@ -90,11 +103,11 @@ const lines = [
         ? "Rust uses generated SDK endpoints, Axum and reqwest. Login is prepared outside measurement; first-process timing measures Rust session resume. Only Echo and transfer handlers are hosted, unlike the broader TypeScript fixture."
         : "",
   "",
-  "## Trellis vs HTTP — matched workloads",
+  "## Trellis vs HTTP — same-named workloads",
   "",
-  "**HTTP baseline: plaintext, no TLS, no authentication, no authorization.** Ratios compare the same application workload and byte count within this language and case, not equivalent security or durability. The complete attempts and failures remain below.",
+  "Ratios compare the same application workload within this language. Transfers are compared in the workload matrix below. The complete attempts and failures remain below.",
   "",
-  "| Workload | Trellis median ms | Plain HTTP (no auth) median ms | Trellis / HTTP | Trellis p95 ms | Plain HTTP (no auth) p95 ms |",
+  "| Workload | Trellis median ms | HTTP median ms | Trellis / HTTP | Trellis p95 ms | HTTP p95 ms |",
   "|---|---:|---:|---:|---:|---:|",
 ];
 for (const row of results.summary) {
@@ -121,17 +134,199 @@ lines.push(
   "",
   "## Streaming throughput and completion boundaries",
   "",
-  "Upload total includes staging, the second service store write, read-back verification and durable Operation completion. Committed is the caller's authenticated Transfer success; source exhausted is NOT delivery or durability. Download total includes EOF and digest verification. HTTP has no Transfer/Operation commit and does not fsync.",
+  "`upload-persisted` includes staging, the handler's second store write, read-back verification and durable Operation completion. `upload-staged` completes with the runtime-verified staged digest. Committed is the caller's authenticated Transfer success; source exhausted is NOT delivery or durability. Verified is when the receiver checked size and digest; durable is when the required durable write completed. HTTP raw closes its file without fsync.",
   "",
-  "| Workload | MiB | Total MiB/s | Source exhausted ms | Transfer committed ms | Total ms |",
-  "|---|---:|---:|---:|---:|---:|",
+  "| Workload | MiB | Total MiB/s | Source exhausted ms | Transfer committed ms | Verified ms | Durable ms | Total ms |",
+  "|---|---:|---:|---:|---:|---:|---:|---:|",
 );
 for (const row of results.summary) {
   const bytes = Number(row.name.split("/").at(-2));
   if (!bytes || row.medianMs === null) continue;
   lines.push(
-    `| ${row.name} | ${(bytes / 1048576).toFixed(2)} | ${(bytes / 1048576 / (row.medianMs / 1000)).toFixed(2)} | ${row.phases.payloadSuppliedMs?.toFixed(3) ?? "—"} | ${row.phases.committedMs?.toFixed(3) ?? "—"} | ${row.medianMs.toFixed(3)} |`,
+    `| ${row.name} | ${(bytes / 1048576).toFixed(2)} | ${(bytes / 1048576 / (row.medianMs / 1000)).toFixed(2)} | ${row.phases.payloadSuppliedMs?.toFixed(3) ?? "—"} | ${row.phases.committedMs?.toFixed(3) ?? "—"} | ${row.phases.verifiedMs?.toFixed(3) ?? "—"} | ${row.phases.durableMs?.toFixed(3) ?? "—"} | ${row.medianMs.toFixed(3)} |`,
   );
+}
+// Server CPU per GiB moved, from exact per-attempt resource windows.
+const cpuPerGiB = new Map<string, number>();
+for (const [name, group] of Map.groupBy(
+  results.windows.filter((window) => window.bytes),
+  (window) =>
+    `${window.transport}/${window.scenario}/${window.bytes ?? 0}/${window.sessions ?? 1}`,
+)) {
+  let cpuMs = 0;
+  let bytes = 0;
+  for (const window of group) {
+    bytes += window.bytes! * window.calls;
+    for (const after of window.after) {
+      if (!serverRoles[window.transport]?.includes(after.role)) continue;
+      const before = window.before.find(
+        (entry) =>
+          entry.pid === after.pid && entry.startTicks === after.startTicks,
+      );
+      if (!before) continue;
+      cpuMs +=
+        1000 *
+        (after.userCpuSeconds -
+          before.userCpuSeconds +
+          (after.systemCpuSeconds - before.systemCpuSeconds));
+    }
+  }
+  if (bytes) cpuPerGiB.set(name, cpuMs / 1000 / (bytes / 2 ** 30));
+}
+const categories = [
+  {
+    title: "Stream → stream",
+    note: "No storage. Trellis rows appear once direct streaming exists; raw NATS is an unsigned transport lower bound.",
+    scenarios: ["download-stream", "upload-stream"],
+    raw: true,
+  },
+  {
+    title: "Stream → store",
+    note: "One durable NATS Object Store write or read. Trellis download reads the provider store; `upload-staged` completes at the staged commit; backend rows are direct Object Store calls.",
+    scenarios: [
+      "download",
+      "upload-staged",
+      "download-store",
+      "upload-store",
+      "backend-write",
+      "backend-read",
+    ],
+    raw: false,
+  },
+  {
+    title: "Complete application workflow",
+    note: "Persist, then read back and verify. Trellis also stages before the handler's own store write; HTTP raw uses a local file without fsync.",
+    scenarios: ["upload-persisted", "upload-raw", "download-raw"],
+    raw: false,
+  },
+];
+const parsed = results.summary.flatMap((row) => {
+  const parts = row.name.split("/");
+  const bytes = Number(parts.at(-2));
+  if (!bytes || row.medianMs === null || row.errors) return [];
+  return [
+    {
+      row,
+      transport: parts[0],
+      scenario: parts
+        .slice(1, -2)
+        .join("/")
+        .replace(/^rust\//, ""),
+      bytes,
+      rate: bytes / 1048576 / (row.medianMs / 1000),
+    },
+  ];
+});
+lines.push(
+  "",
+  "## Workload matrix",
+  "",
+  "Rates use median elapsed time. CPU is server-side core-seconds per GiB from exact attempt windows. `× raw NATS` divides the fastest raw Core NATS stream rate at the same size by this row's rate.",
+);
+for (const category of categories) {
+  lines.push(
+    "",
+    `### ${category.title}`,
+    "",
+    category.note,
+    "",
+    "| Workload | MiB | MiB/s | Verified ms | Durable ms | Server CPU s/GiB | × raw NATS |",
+    "|---|---:|---:|---:|---:|---:|---:|",
+  );
+  for (const entry of parsed) {
+    const inCategory =
+      category.scenarios.includes(entry.scenario) ||
+      (category.raw && entry.transport === "nats");
+    if (!inCategory) continue;
+    const raw = Math.max(
+      0,
+      ...parsed
+        .filter(
+          (candidate) =>
+            candidate.transport === "nats" && candidate.bytes === entry.bytes,
+        )
+        .map((candidate) => candidate.rate),
+    );
+    lines.push(
+      `| ${entry.row.name} | ${(entry.bytes / 1048576).toFixed(2)} | ${entry.rate.toFixed(2)} | ${entry.row.phases.verifiedMs?.toFixed(1) ?? "—"} | ${entry.row.phases.durableMs?.toFixed(1) ?? "—"} | ${cpuPerGiB.get(entry.row.name)?.toFixed(2) ?? "—"} | ${raw ? (raw / entry.rate).toFixed(2) + "×" : "—"} |`,
+    );
+  }
+}
+// Protocol byte overhead from production counters, cumulative over the run.
+const counterRow = z.object({
+  name: z.string(),
+  attributes: z.record(z.string(), z.unknown()),
+  value: z.number(),
+});
+const counters = new Map<string, number>();
+for (const file of (await readdir(input)).filter((name) =>
+  /^metrics-(provider|client)(-\d+)?\.json$/.test(name),
+)) {
+  const json: unknown = JSON.parse(await readFile(`${input}/${file}`, "utf8"));
+  const rows = Array.isArray(json) ? json : [];
+  const flattened = rows.flatMap((entry: unknown) => {
+    // Rust rows are flat; TypeScript rows are OpenTelemetry scope metrics.
+    const rust = counterRow.safeParse(entry);
+    if (rust.success) return [rust.data];
+    const scope = z
+      .object({
+        metrics: z.array(
+          z.object({
+            descriptor: z.object({ name: z.string() }),
+            dataPoints: z.array(
+              z.object({
+                attributes: z.record(z.string(), z.unknown()),
+                value: z.unknown(),
+              }),
+            ),
+          }),
+        ),
+      })
+      .safeParse(entry);
+    if (!scope.success) return [];
+    return scope.data.metrics.flatMap((metric) =>
+      metric.dataPoints.flatMap((point) =>
+        typeof point.value === "number"
+          ? [
+              {
+                name: metric.descriptor.name,
+                attributes: point.attributes,
+                value: point.value,
+              },
+            ]
+          : [],
+      ),
+    );
+  });
+  for (const point of flattened) {
+    if (!point.name.startsWith("trellis.transfer.")) continue;
+    const key = `${point.attributes["trellis.side"]}/${point.attributes["trellis.direction"]}/${point.name}`;
+    counters.set(key, (counters.get(key) ?? 0) + point.value);
+  }
+}
+if (counters.size) {
+  lines.push(
+    "",
+    "## Transfer protocol byte overhead",
+    "",
+    "Cumulative production counters over the whole run, warmups included. Wire is serialized DATA (NATS header block plus payload); control is every other Transfer message. Overhead = (wire + control − payload) / payload. Broker protocol lines and TCP framing are excluded.",
+    "",
+    "| Endpoint / direction | Payload MiB | Wire MiB | Control KiB | Frames | Overhead |",
+    "|---|---:|---:|---:|---:|---:|",
+  );
+  for (const side of ["client", "provider"]) {
+    for (const direction of ["upload", "download"]) {
+      const get = (name: string) =>
+        counters.get(`${side}/${direction}/trellis.transfer.${name}`) ?? 0;
+      const payload = get("payload.bytes");
+      if (!payload) continue;
+      const wire = get("wire.bytes");
+      const control = get("control.bytes");
+      lines.push(
+        `| ${side} / ${direction} | ${(payload / 1048576).toFixed(2)} | ${(wire / 1048576).toFixed(2)} | ${(control / 1024).toFixed(1)} | ${get("frames")} | ${((100 * (wire + control - payload)) / payload).toFixed(3)}% |`,
+      );
+    }
+  }
 }
 lines.push(
   "",
@@ -212,7 +407,7 @@ lines.push(
   "",
   "## Exact workload CPU windows",
   "",
-  "CPU is per **attempt**, with failure counts above. Quantization is up to two CPU ticks per process/window; short windows are noisy. Server totals include provider + NATS + Trellis for Trellis, and HTTP provider for HTTP.",
+  "CPU is per **attempt**, with failure counts above. Quantization is up to two CPU ticks per process/window; short windows are noisy. Server totals include provider + NATS + Trellis for Trellis, and HTTP provider + NATS for HTTP (store mode writes through NATS).",
   "",
   "| Workload / process | Attempts | CPU ms / attempt | CPU % of one core | Peak endpoint PSS MiB |",
   "|---|---:|---:|---:|---:|",
@@ -270,11 +465,7 @@ for (const [name, group] of windows) {
       current.cpuMs += cpuMs;
       current.pssKiB = Math.max(current.pssKiB, before.pssKiB, after.pssKiB);
       roles.set(after.role, current);
-      if (
-        (window.transport === "http" && after.role === "http-provider") ||
-        (window.transport === "trellis" &&
-          ["provider", "nats", "trellis-server"].includes(after.role))
-      ) {
+      if (serverRoles[window.transport]?.includes(after.role)) {
         combined.cpuMs += cpuMs;
         combined.beforePssKiB += before.pssKiB;
         combined.afterPssKiB += after.pssKiB;
