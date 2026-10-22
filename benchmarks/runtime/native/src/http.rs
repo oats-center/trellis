@@ -189,13 +189,27 @@ fn failed(error: impl std::fmt::Display) -> Response {
 }
 
 /// AsyncRead that hashes and counts bytes, recording when EOF was observed.
-struct Hashing<R> {
+pub(crate) struct HashingReader<R> {
     inner: R,
     hasher: Hasher,
-    eof_ms: Arc<Mutex<f64>>,
+    eof_ms: f64,
 }
 
-impl<R: AsyncRead + Unpin> AsyncRead for Hashing<R> {
+impl<R> HashingReader<R> {
+    pub(crate) fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Hasher::default(),
+            eof_ms: 0.0,
+        }
+    }
+
+    pub(crate) fn into_hasher(self) -> Hasher {
+        self.hasher
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for HashingReader<R> {
     fn poll_read(
         self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -207,9 +221,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for Hashing<R> {
         if let Poll::Ready(Ok(())) = polled {
             let read = &buffer.filled()[before..];
             if read.is_empty() {
-                if let Ok(mut at) = this.eof_ms.lock() {
-                    *at = wall_ms();
-                }
+                this.eof_ms = wall_ms();
             } else {
                 this.hasher.update(read);
             }
@@ -248,18 +260,13 @@ async fn upload(
                 Ok(json!({ "size": hasher.size, "digest": hasher.digest(), "verifiedUnixMs": at, "durableUnixMs": at }))
             }
             "store" => {
-                let eof_ms = Arc::new(Mutex::new(0.0));
-                let mut hashing = Hashing {
-                    inner: reader,
-                    hasher: Hasher::default(),
-                    eof_ms: eof_ms.clone(),
-                };
+                let mut hashing = HashingReader::new(reader);
                 state
                     .files
                     .write_from(&format!("http-upload-{}", query.size), &mut hashing, None)
                     .await?;
                 let durable = wall_ms();
-                let verified = *eof_ms.lock().map_err(|_| "EOF clock poisoned")?;
+                let verified = hashing.eof_ms;
                 Ok(json!({ "size": hashing.hasher.size, "digest": hashing.hasher.digest(), "verifiedUnixMs": verified, "durableUnixMs": durable }))
             }
             "raw" => {

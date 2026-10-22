@@ -13,6 +13,8 @@ api performance@v1 {
   rpc Download { input Value; output Value; download; }
   operation Upload { input Value; output Value; upload; }
   operation UploadStaged { input Value; output Value; upload; }
+  operation UploadStream { input Value; output Value; stream; }
+  rpc DownloadStream { input Value; output Value; download; }
   operation Work { input Value; progress Value; output Value; }
   operation QueueWork { input Value; output Value; }
   operation AwaitCancellation { input Value; progress Value; output Value; }
@@ -22,7 +24,7 @@ api performance@v1 {
   event Changed { payload Value; }
   event Delivered { payload Value; }
   capabilities {
-    capability workloads { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; consequence "The caller may run the benchmark workloads and observe their results."; consent_revision 1; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation UploadStaged; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
+    capability workloads { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; consequence "The caller may run the benchmark workloads and observe their results."; consent_revision 1; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; rpc DownloadStream; operation Upload; operation UploadStaged; operation UploadStream; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
     capability publishDelivered { title "Publish delivery results"; description "Report a completed durable delivery."; consequence "The provider may publish Delivered events."; consent_revision 1; allows { publish event Delivered; } }
   }
 }
