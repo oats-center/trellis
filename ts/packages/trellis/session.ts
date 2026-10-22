@@ -1159,12 +1159,31 @@ export type AcceptedOperation<
     output?: TOutput;
   };
 };
+/**
+ * A provider's view of an Operation's caller-sent bytes.
+ *
+ * For an `upload` Operation the bytes are durably staged before the handler
+ * reads them, and can be read again. For a `stream` Operation the handler
+ * reads the caller's bytes as they arrive, exactly once: the stream ends only
+ * after the caller's final size and SHA-256 digest were verified and the
+ * delivery was durably recorded, and errors if the transfer fails. A stream
+ * cannot be replayed, so an interrupted `stream` Operation fails and the
+ * caller must start a new one.
+ */
 export type OperationTransferHandle = {
+  /** Consumed-byte progress while the transfer runs. */
   updates(): AsyncIterable<RuntimeOperationTransferProgress>;
+  /** Resolves with the verified object metadata once the bytes are committed. */
   completed(): AsyncResult<FileInfo, TransferOperationError>;
-  /** Waits for successful staging, then opens the staged upload object. */
+  /**
+   * `upload`: waits for staging, then opens the staged object.
+   * `stream`: returns the live stream once; a second call fails.
+   */
   stream(): AsyncResult<ReadableStream<Uint8Array>, TransferOperationError>;
-  /** Waits for successful staging, then reads the staged upload bytes. */
+  /**
+   * `upload`: waits for staging, then reads the staged bytes.
+   * `stream`: reads the live stream to its end, retaining every byte.
+   */
   bytes(): AsyncResult<Uint8Array, TransferError>;
 };
 /** Decoded current State value and its opaque storage revision. */

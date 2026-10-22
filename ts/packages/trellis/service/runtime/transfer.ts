@@ -72,12 +72,17 @@ export type InitiateUploadArgs = {
   operationId: string;
   expiresInMs: number;
   maxBytes?: number;
+  /**
+   * Deliver bytes to the running handler instead of staging them. The
+   * handler's stream ends only after verification and `commit`.
+   */
+  stream?: boolean;
   onProgress?: (
     progress: RuntimeOperationTransferProgress,
   ) => Promise<void> | void;
   /** Durable Operation final-progress/fence/state barrier, before client success. */
   commit?: (
-    stored: StoredTransfer,
+    stored: { info: FileInfo; storageKey: string },
     progress: RuntimeOperationTransferProgress,
   ) => Promise<void>;
   onComplete?: (info: FileInfo) => Promise<void> | void;
@@ -88,9 +93,13 @@ export type InitiateUploadArgs = {
   ) => Promise<boolean | undefined>;
   onError?: (error: TransferError) => Promise<void> | void;
   onStored?: (stored: StoredTransfer) => Promise<void> | void;
+  /** A `stream` upload was verified, consumed and committed. */
+  onStreamed?: (info: FileInfo) => Promise<void> | void;
 };
 /** Runtime-issued grant plus the provider's durable staged-upload handle. */
 export type OperationUploadTransfer = {
+  /** Ends a `stream` upload whose handler finished before it completed. */
+  release?: () => void;
   grant: SendTransferGrant;
   /** Actual private staging identity allocated for this attempt. */
   storageKey: string;
@@ -153,7 +162,14 @@ type ProviderSession = {
   reader?: ReadableStreamDefaultReader<Uint8Array>;
   barrier?: Promise<void>;
   upload?: InitiateUploadArgs;
-  store: TypedStore;
+  /** Staging or download store; absent for a stream upload. */
+  store?: TypedStore;
+  /** Handler-facing stream of a `stream` upload, ended after commit. */
+  live?: ReadableStream<Uint8Array>;
+  /** Resolves when every received frame was consumed by the handler. */
+  drained?: ReturnType<typeof deferred<void>>;
+  /** The ingress a `stream` upload's handler reads, available at activation. */
+  ingressReady?: PromiseWithResolvers<TransferIngress>;
   storageKey: string;
   logicalKey: string;
   committed: boolean;
@@ -198,7 +214,7 @@ export class ServiceTransfer {
       requiredCapabilities: readonly string[];
       contextDigest: string;
     },
-    store: TypedStore,
+    store: TypedStore | undefined,
     storageKey: string,
     logicalKey: string,
   ): Promise<ProviderSession> {
@@ -274,6 +290,7 @@ export class ServiceTransfer {
         "abort",
         () => {
           session.credit?.close();
+          session.ingressReady?.reject(wire!.abort.signal.reason);
           session.ingress?.fail(wire!.abort.signal.reason);
           session.window?.wakeCredit();
           void session.reader
@@ -440,21 +457,28 @@ export class ServiceTransfer {
   }
 
   /** Prepare exact provider subscriptions before returning an upload grant. */
-  async initiateUpload(
-    args: InitiateUploadArgs,
-  ): Promise<
-    ResultType<{ grant: SendTransferGrant; storageKey: string }, TransferError>
+  async initiateUpload(args: InitiateUploadArgs): Promise<
+    ResultType<
+      {
+        grant: SendTransferGrant;
+        storageKey: string;
+        live?: ReadableStream<Uint8Array>;
+        release?: () => void;
+      },
+      TransferError
+    >
   > {
     try {
-      const store = await this.#staging();
-      const status = (await store.status()).take();
-      if (isErr(status)) throw status.error;
+      const store = args.stream ? undefined : await this.#staging();
+      const status = store ? (await store.status()).take() : undefined;
+      if (status && isErr(status)) throw status.error;
+      const maxObjectBytes = status?.maxObjectBytes;
       const maxBytes =
         args.maxBytes === undefined
-          ? status.maxObjectBytes
-          : status.maxObjectBytes === undefined
+          ? maxObjectBytes
+          : maxObjectBytes === undefined
             ? args.maxBytes
-            : Math.min(args.maxBytes, status.maxObjectBytes);
+            : Math.min(args.maxBytes, maxObjectBytes);
       const grant: SendTransferGrant = {
         ...this.#grant("send", args),
         direction: "send",
@@ -464,16 +488,71 @@ export class ServiceTransfer {
         grant,
         args,
         store,
-        `_trellis-transfer-v1-${grant.transferId}`,
+        args.stream ? "" : `_trellis-transfer-v1-${grant.transferId}`,
         args.operationId,
       );
       session.upload = args;
-      return Result.ok({ grant, storageKey: session.storageKey });
+      if (args.stream) this.#openLive(session);
+      return Result.ok({
+        grant,
+        storageKey: session.storageKey,
+        ...(session.live
+          ? {
+              live: session.live,
+              release: () => {
+                if (!session.committed) {
+                  session.wire.fail(
+                    new TransferError({
+                      operation: "stream",
+                      cause: new Error(
+                        "stream Operation handler finished before its upload completed",
+                      ),
+                    }),
+                  );
+                }
+              },
+            }
+          : {}),
+      });
     } catch (cause) {
       return Result.err(
         new TransferError({ operation: "initiateUpload", cause }),
       );
     }
+  }
+
+  /**
+   * Expose a stream upload to its handler before activation; frames flow once
+   * the caller activates. The stream reads one frame per pull, so handler
+   * reads, not network arrival, earn credit. Cancelling it fails the transfer.
+   */
+  #openLive(session: ProviderSession): void {
+    const ready = Promise.withResolvers<TransferIngress>();
+    // A failure before activation must not surface as an unhandled rejection.
+    ready.promise.catch(() => {});
+    session.ingressReady = ready;
+    session.drained = deferred<void>();
+    let iterator: AsyncIterator<Uint8Array> | undefined;
+    session.live = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          iterator ??= (await ready.promise)[Symbol.asyncIterator]();
+          const next = await iterator.next();
+          if (next.done) controller.close();
+          else controller.enqueue(next.value);
+        },
+        cancel(reason) {
+          session.wire.fail(
+            new TransferError({
+              operation: "stream",
+              cause:
+                reason ?? new Error("upload stream cancelled by its handler"),
+            }),
+          );
+        },
+      },
+      { highWaterMark: 0 },
+    );
   }
 
   /** Create the provider's staged-upload helper while keeping public authoring stable. */
@@ -504,6 +583,11 @@ export class ServiceTransfer {
               completed.resolve(Result.ok(value.info));
               updates.close();
             },
+            onStreamed: async (info) => {
+              await args.onStreamed?.(info);
+              completed.resolve(Result.ok(info));
+              updates.close();
+            },
             onError: async (error) => {
               stored.resolve(Result.err(error));
               completed.resolve(Result.err(error));
@@ -513,7 +597,63 @@ export class ServiceTransfer {
           })
         ).take();
         if (isErr(prepared)) return Result.err(prepared.error);
-        const { grant, storageKey } = prepared;
+        const { grant, storageKey, live, release } = prepared;
+        if (live) {
+          // A stream upload has no staged object: its handler reads the
+          // caller's bytes as they arrive, exactly once.
+          let taken = false;
+          const take = (): ResultType<
+            ReadableStream<Uint8Array>,
+            TransferError
+          > => {
+            if (taken) {
+              return Result.err(
+                new TransferError({
+                  operation: "stream",
+                  cause: new Error("stream upload was already read"),
+                }),
+              );
+            }
+            taken = true;
+            return Result.ok(live);
+          };
+          return Result.ok({
+            grant,
+            storageKey,
+            ...(release ? { release } : {}),
+            transfer: {
+              updates: () => updates.subscribe(),
+              completed: () => AsyncResult.from(completed.promise),
+              stream: () => AsyncResult.from(Promise.resolve(take())),
+              bytes: () =>
+                AsyncResult.from(
+                  (async () => {
+                    const source = take().take();
+                    if (isErr(source)) return Result.err(source.error);
+                    const chunks: Uint8Array[] = [];
+                    let size = 0;
+                    try {
+                      for await (const chunk of source) {
+                        chunks.push(chunk);
+                        size += chunk.length;
+                      }
+                    } catch (cause) {
+                      return Result.err(
+                        new TransferError({ operation: "bytes", cause }),
+                      );
+                    }
+                    const bytes = new Uint8Array(size);
+                    let offset = 0;
+                    for (const chunk of chunks) {
+                      bytes.set(chunk, offset);
+                      offset += chunk.length;
+                    }
+                    return Result.ok(bytes);
+                  })(),
+                ),
+            },
+          });
+        }
         return Result.ok({
           grant,
           storageKey,
@@ -1090,14 +1230,23 @@ export class ServiceTransfer {
           transferredBytes: session.consumedBytes,
         };
         session.credit!.note(session.received, seq, session.consumedBytes);
+        if (session.completing && session.consumed === session.received) {
+          session.drained?.resolve();
+        }
         // Observation submission never blocks storage consumption or network credit.
         session.progressPending = true;
         submitProgress();
       },
     );
+    if (args.stream) {
+      session.ingressReady?.resolve(session.ingress);
+      return;
+    }
+    const store = session.store;
+    if (!store) throw new Error("staged upload store missing");
     session.backend = (async () => {
       const result = (
-        await session.store.put(session.storageKey, session.ingress!)
+        await store.put(session.storageKey, session.ingress!)
       ).take();
       if (isErr(result)) {
         this.opts.log?.debug(
@@ -1164,10 +1313,57 @@ export class ServiceTransfer {
       )
         throw new Error("upload completion mismatch");
       session.completing = true;
+      if (session.upload?.stream) {
+        // Wait until the handler consumed every frame, record the delivery,
+        // and only then end the handler's stream and confirm the caller.
+        if (session.consumed !== session.received) {
+          await transferWait(
+            session.drained!.promise,
+            session.wire.abort.signal,
+          );
+        }
+        session.wire.throwIfAborted();
+        await session.credit!.flush();
+        const grant = session.wire.grant;
+        const info: FileInfo & { digest: string } = {
+          key: session.logicalKey,
+          size: session.bytes,
+          updatedAt: new Date().toISOString(),
+          digest,
+          ...(grant.direction === "send" && grant.contentType
+            ? { contentType: grant.contentType }
+            : {}),
+          metadata:
+            (grant.direction === "send" ? grant.metadata : undefined) ?? {},
+        };
+        if (session.cancelling) {
+          throw new Error("transfer cancelled before commit");
+        }
+        session.barrier = (async () => {
+          await session.upload?.commit?.(
+            { info, storageKey: session.storageKey },
+            session.progress,
+          );
+          await session.upload?.onComplete?.(info);
+          session.committed = true;
+          await session.upload?.onStreamed?.(info);
+        })();
+        await session.barrier;
+        session.ingress.close(session.received);
+        await this.#signal(session, {
+          type: "committed",
+          finalSeq: session.received.toString(),
+          info,
+        });
+        await this.#settle(session);
+        return;
+      }
+      const store = session.store;
+      if (!store) throw new Error("staged upload store missing");
       session.ingress.close(session.received);
       await transferWait(session.backend!, session.wire.abort.signal);
       session.wire.throwIfAborted();
-      const entry = (await session.store.get(session.storageKey)).take();
+      const entry = (await store.get(session.storageKey)).take();
       if (isErr(entry)) throw entry.error;
       const info = fileInfoFromStoreInfo(entry.info);
       if (
@@ -1180,7 +1376,7 @@ export class ServiceTransfer {
       const stored: StoredTransfer = {
         transferId: session.wire.grant.transferId,
         sessionKey: session.wire.grant.consumer.sessionKey,
-        store: session.store,
+        store,
         entry,
         storageKey: session.storageKey,
         info: { ...info, key: session.logicalKey, digest },
@@ -1230,7 +1426,9 @@ export class ServiceTransfer {
       throw new Error("invalid download session");
     }
     const window = session.window;
-    const entry = (await session.store.get(session.storageKey)).take();
+    const store = session.store;
+    if (!store) throw new Error("download store missing");
+    const entry = (await store.get(session.storageKey)).take();
     if (isErr(entry)) throw entry.error;
     const info = fileInfoFromStoreInfo(entry.info);
     if (
@@ -1372,16 +1570,17 @@ export class ServiceTransfer {
         log?.debug("Transfer upload backend joined");
         // A lost CAS response is not evidence that the durable write failed.
         // Unknown authoritative state retains this attempt for reconciliation.
-        const committed = session.upload?.reconcileCommit
-          ? await session.upload
-              .reconcileCommit(
-                session.storageKey,
-                session.wire.grant.transferId,
-              )
-              .catch(() => undefined)
-          : false;
+        const committed =
+          session.upload?.reconcileCommit && !session.upload.stream
+            ? await session.upload
+                .reconcileCommit(
+                  session.storageKey,
+                  session.wire.grant.transferId,
+                )
+                .catch(() => undefined)
+            : false;
         if (committed === true) session.committed = true;
-        if (committed === false && session.completing) {
+        if (committed === false && session.completing && session.store) {
           await session.store.delete(session.storageKey);
         }
         await session.upload?.onError?.(error);
