@@ -318,6 +318,14 @@ let mut service = connect(
 ).await?;
 ```
 
+When the installation serves a private CA, such as the Trellis-generated
+installation CA, set `runtime_trust.root_certificates = vec![ca_path]` from
+provisioning. Native OAuth discovery takes the same roots:
+`discover_native_oauth(origin, &[ca_path])`, and the returned trust carries them
+into the broker connection. Non-empty roots replace the platform trust store for
+that installation; an empty list uses the platform store. Never disable
+certificate verification.
+
 Trellis resolves deployment/instance assignment, installed package/participant
 evidence, exact authority, resources, signed context, and broker permissions
 server-side. The CONNECT proof contains no caller-selected deployment or API.

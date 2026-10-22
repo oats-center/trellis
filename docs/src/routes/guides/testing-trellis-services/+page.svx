@@ -11,8 +11,8 @@ authority, transport, and generated caller/provider boundaries.
 
 ## Prerequisites
 
-Install Node 24 and `@oatscenter/trellis-testkit` in the example's npm
-project. The testkit resolves matching native CLI/server executables. The
+Install Node 24.5 or later and `@oatscenter/trellis-testkit` in the example's
+npm project. The testkit resolves matching native CLI/server executables. The
 helper downloads pinned NATS binaries on first use, which requires network
 access. Use the committed generated package, or run `trellis generate` after
 authoring changes. The ordinary live test does not need the Trellis CLI or API
@@ -128,6 +128,15 @@ each test has private state and a seeded administrator. For prebuilt local artif
 pass `trellis: { source: { kind: "path", cli, server } }` with both exact-version
 executables. `restart()` retains data and identity while restarting the full host
 and broker; `firstAdmin: "browser-flow"` opts into the first-admin browser flow.
+
+Each test runtime serves Trellis-generated TLS, as a default installation does.
+The testkit trusts that runtime's CA (`runtime.caCertificate`) explicitly for the
+test process, so SDK clients connect without extra options. For a spawned Node
+process, set `NODE_EXTRA_CA_CERTS` to `runtime.caCertificate`. For Playwright,
+launch Chromium with `env: browserTrustEnvironment()` from the testkit. It
+creates a private NSS trust store holding the runtime CA, just as a user would
+import it, and requires NSS `certutil` (`nss-tools` on Fedora, `libnss3-tools`
+on Debian and Ubuntu). Never use `ignoreHTTPSErrors`.
 In the checked-in or copied Orders example:
 
 ```sh

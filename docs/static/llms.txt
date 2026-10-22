@@ -308,6 +308,17 @@ installed release.
 
 ## Essential Workflow
 
+Trellis listeners use TLS by default. `trellis init config` generates a
+name-constrained installation CA and short-lived certificates unless
+certificates are supplied (`--tls supplied`); plaintext exists only in explicit
+loopback development (`--tls loopback-development`). Clients trust a generated
+or other private CA only explicitly, after verifying its SHA-256 fingerprint
+(`trellis tls status`) out of band: never disable certificate verification and
+never accept a CA from broker or metadata responses. Generated leaves expire
+after 90 days; `trellis tls renew --bundle <dir>` replaces them without changing
+client trust. Console and OAuth may run behind an HTTPS-terminating proxy with
+`--trusted-proxy`; native NATS always terminates its own TLS.
+
 Services and devices are deployable principals. Apps and agents author application
 request descriptors, not installable principals. Select whole capabilities in
 native IDL: `required capability read;` is required and `capability export;` is

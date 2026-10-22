@@ -39,7 +39,7 @@ type AppClient = TrellisClientFor<typeof participant>;
 
 export const trellisApp = createTrellisApp({
   participant,
-  trellisUrl: "http://localhost:3000",
+  trellisUrl: "https://localhost:3000",
 });
 ```
 

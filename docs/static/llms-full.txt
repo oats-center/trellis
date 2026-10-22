@@ -487,6 +487,24 @@ and `/` as `~1`, including missing required fields.
 
 ## Connect And Authorize
 
+Trellis listeners use TLS by default. `trellis init config` generates a
+name-constrained installation CA and short-lived certificates unless
+certificates are supplied (`--tls supplied`); plaintext exists only in explicit
+loopback development (`--tls loopback-development`). Clients trust a generated
+or other private CA only explicitly, after verifying its SHA-256 fingerprint
+(`trellis tls status`) out of band: never disable certificate verification and
+never accept a CA from broker or metadata responses. Generated leaves expire
+after 90 days; `trellis tls renew --bundle <dir>` replaces them without changing
+client trust. Console and OAuth may run behind an HTTPS-terminating proxy with
+`--trusted-proxy`; native NATS always terminates its own TLS.
+
+Rust participants put a private CA in `RuntimeAuthorizationTrust.root_certificates`
+or pass it to `discover_native_oauth(origin, &[ca_path])`; non-empty roots are the
+only trust anchors for that installation's OAuth and broker TLS. TypeScript
+participants start Node with `NODE_EXTRA_CA_CERTS=<ca path>`. The CLI uses
+`trellis login <oauth-origin> --ca-certificate <ca path>`. Browsers trust the CA
+through the operating system or browser trust store.
+
 Services and devices present a signed provisioned admission in NATS CONNECT;
 there is no HTTP bootstrap. Browser and native apps obtain a DPoP-bound OAuth
 token whose signed Trellis admission authorizes CONNECT for a fresh runtime key.
@@ -885,7 +903,10 @@ Choose application testing tools independently. For a test that needs real
 Trellis transport, authority, or restart behavior, the npm package
 `@oatscenter/trellis-testkit` provides `TrellisTestRuntime`. The published Rust
 crate `trellis-testkit` provides the equivalent `TrellisTestRuntime` for Rust
-test crates: it owns production server/broker processes, selects loopback ports
+test crates. Both serve generated installation TLS and trust each runtime's CA
+explicitly (Rust `trust_roots()` and `https_client_builder()`, Node
+`runtime.caCertificate` and `browserTrustEnvironment()` for Playwright); never
+disable verification. The Rust crate it owns production server/broker processes, selects loopback ports
 automatically, and returns
 normal SDK connection options for generated participants. Both harnesses run
 real NATS child processes. Rust acquires exact-version SHA-256-pinned CLI/server

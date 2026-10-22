@@ -27,10 +27,26 @@ with the installation configuration and database across restarts and all key
 rotations; startup requires it rather than inventing a new identity.
 
 `auth.oauth` explicitly configures the dedicated listener's `origin`,
-`bind_address`, `port`, and `transport`. TLS mode requires `certificate_chain`
-and `private_key` PEM paths resolved relative to the runtime configuration.
-`loopback_development` is an explicit plaintext mode restricted to loopback
-origins and addresses, never a TLS fallback. The OAuth origin must differ from
+`bind_address`, `port`, and `transport`; `[http] transport` configures the
+application (Console) listener the same way. Each transport is one of:
+
+- `tls`: HTTPS with `certificate_chain` and `private_key` PEM paths resolved
+  relative to the runtime configuration. The origin must be HTTPS. Startup
+  refuses an expired certificate or one whose SANs do not name the origin host,
+  and the listener reloads replaced files without a restart; a replacement that
+  fails to load keeps the previous certificate serving.
+- `proxy`: plaintext behind an HTTPS-terminating reverse proxy. The public
+  origin must be HTTPS and `trusted_proxies` lists the proxy networks. Peers
+  outside those networks receive `403`. The client address used for per-client
+  limits is the first untrusted `X-Forwarded-For` entry read right to left, so
+  a client cannot spoof it past a trusted proxy. The proxy must preserve `Host`.
+- `loopback_development`: explicit plaintext restricted to an HTTP loopback
+  origin and a loopback bind address. An omitted application transport selects
+  it and binds loopback by default. It is never a TLS fallback.
+
+There is no insecure-origin allow-list: a remote origin is served only over TLS
+or behind a trusted HTTPS proxy, because OAuth's `__Host-` `Secure` cookies and
+browser credential custody require a secure context. The OAuth origin must differ from
 all configured application origins. A shared hostname is allowed but requires a
 prominent cookie-scope warning, because cookies are not port-scoped. Console
 assets and application routers are never mounted on the OAuth listener.
@@ -40,12 +56,47 @@ Request admission budgets each client address, and additionally each browser
 clients, navigations, asset loads) share no common budget. Forwarding headers
 are ignored unless the TCP peer falls inside `auth.oauth.trusted_proxies`, a
 list of CIDR ranges (`/32` or `/128` for one address). For a trusted peer, the
-client is the right-most `X-Forwarded-For` hop outside those ranges.
+client is the right-most `X-Forwarded-For` hop outside those ranges. Use it for
+a proxy in front of a TLS listener, such as one that re-encrypts; a `proxy`
+transport already admits only its own trusted proxies and presents the
+forwarded client.
 
 Remote deployments use native TLS NATS and WSS in addition to the dedicated
-HTTPS OAuth listener. Runtime startup selects its rustls provider before opening
-NATS; deployment trust roots must include the configured broker and OAuth
-certificates. Observable configured origin conflicts fail before binding a
+HTTPS OAuth listener. Native NATS always terminates its own TLS, because its
+protocol upgrades to TLS after a plaintext `INFO` and an ordinary TLS proxy
+cannot terminate it; only the WebSocket listener may sit behind an
+HTTPS-terminating proxy. Runtime startup selects its rustls provider before
+opening NATS. `[nats] ca_certificate` names a private CA the runtime trusts for
+its own broker connections, built-in providers, and split-role Auth discovery;
+publicly trusted brokers omit it.
+
+### Installation TLS
+
+Initialization generates TLS material unless the operator supplies certificates
+or selects loopback development. Generation creates an installation CA whose
+name constraints permit only the configured Console, OAuth, NATS, and WebSocket
+hosts (plus loopback names for the co-located broker), and issues short-lived
+serverAuth leaves for the runtime and broker. Leaves carry their names only in
+SANs. The CA private key is written beside the bundle (`<out>-tls-ca/` by
+default), never inside it, so no runtime or broker role that mounts the bundle
+can mint certificates. `trellis tls renew` reissues leaves with the same names
+and fresh keys from that CA; clients that trust the CA need no change. The
+runtime reloads its leaf automatically; the broker reloads on its ordinary
+reload signal.
+
+`[tls] generated_ca_certificate` marks an installation serving its generated
+CA. The runtime then always warns operators at startup, and every user through
+the bundled Console and the Login Portal (`GET /portal/tls` on the OAuth
+listener), with the CA's SHA-256 fingerprint and the expiry of that listener's
+leaf, so trust is verified out of band rather than accepted blindly.
+Trellis never installs system trust and never disables verification.
+
+Clients trust a private installation CA only through explicit configuration:
+`RuntimeAuthorizationTrust.root_certificates` in Rust (supplied by provisioning,
+`discover_native_oauth`'s roots, or `trellis login --ca-certificate`), and the
+Node runtime's `NODE_EXTRA_CA_CERTS` for TypeScript participants. Non-empty Rust
+roots are the only trust anchors for that installation's OAuth and broker TLS.
+A broker or metadata response can never supply them. Observable configured origin conflicts fail before binding a
 listener. Operators must also keep external reverse-proxy routes and aliases
 separate: the runtime cannot inspect an unconfigured proxy's routing table or
 discover that two public hostnames are mapped onto one origin.
@@ -110,7 +161,8 @@ It replaces prior flow metadata while retaining unrelated registration metadata.
 Adding/removing native callbacks enables/disables Authorization Code. Kind remains
 immutable because it fixes credential binding semantics; switching kind requires
 a new client ID. Native HTTP loopback callbacks need no development flag, while
-browser loopback callbacks require it and retain exact port/origin matching.
+browser plaintext loopback callbacks require it and retain exact port/origin
+matching. HTTPS loopback callbacks are authenticated by TLS like any other host.
 
 Both local/container and native fresh-bootstrap generators provision the four
 built-in provider identity files under the existing `live-providers/` custody

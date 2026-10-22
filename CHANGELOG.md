@@ -15,6 +15,29 @@ and this project adheres to
   Forwarding headers from any other peer remain ignored.
 - `trellis.transfer.wait.duration` separates blocked sender credit waits from
   streaming storage refill waits in both SDKs.
+- Automatic installation TLS. `trellis init config` generates a
+  name-constrained installation CA and short-lived certificates for Console,
+  OAuth, native NATS, and NATS WebSockets unless certificates are supplied
+  (`--tls supplied`) or plaintext loopback development is selected
+  (`--tls loopback-development`). The CA private key is written beside the
+  bundle, never inside it.
+- `trellis tls renew` reissues generated leaf certificates without changing
+  client trust, and `trellis tls status` reports the CA fingerprint and expiry.
+  Running listeners reload replaced certificates without a restart.
+- Installations serving their generated CA always warn: at initialization, at
+  runtime startup, in `trellis tls status`, and in Console and Login Portal
+  banners shown to every user with the CA fingerprint to verify.
+- The Rust and Node test kits run on generated TLS and trust each runtime's CA
+  explicitly; `browserTrustEnvironment()` gives Playwright a private NSS trust
+  store holding it.
+- Trusted reverse-proxy transport (`proxy` mode, `--trusted-proxy`) serves
+  Console and OAuth as plaintext only to listed proxy networks and keys
+  per-client limits on the forwarded client address; NATS WebSockets can also
+  sit behind a proxy (`--nats-websocket-behind-proxy`).
+- Explicit private-CA trust for clients: Rust
+  `RuntimeAuthorizationTrust.root_certificates`, a roots argument to
+  `discover_native_oauth`, `trellis login --ca-certificate`, and
+  `[nats] ca_certificate` for the runtime's own broker connections.
 
 ### Changed
 
@@ -31,6 +54,12 @@ and this project adheres to
   frame is still verified, store readers fetch on demand, and the Rust Object
   Store writer fills 128 KiB chunks and pipelines up to eight chunk
   acknowledgements.
+- **Breaking:** fresh bundles default to HTTPS, `tls://`, and `wss://`
+  endpoints. `--oauth-origin` and `--oauth-port` configure the OAuth listener.
+- **Breaking:** `[auth.oauth.transport]` and the new `[http.transport]` share
+  one listener transport (`tls`, `proxy`, or `loopback_development`). An omitted
+  application transport is loopback development and binds loopback by default.
+- **Breaking:** `discover_native_oauth` takes the trusted root certificates.
 
 ### Removed
 
@@ -46,6 +75,8 @@ and this project adheres to
 - Unused public API: `createTransferHandle`'s inbox prefix argument, the
   testkit's always-empty `TrellisTestError::server_code()`, and the testkit
   `webSource`, `portalSource`, and `consoleSource` runtime options.
+- **Breaking:** `[http] allow_insecure_origins`. A remote origin is served only
+  over TLS or behind a trusted HTTPS proxy.
 
 ### Fixed
 

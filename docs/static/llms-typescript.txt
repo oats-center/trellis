@@ -134,6 +134,13 @@ OAuth portal requires a distinct origin from Console and consuming apps.
 Shared hostnames are permitted with a cookie-scope security warning, not treated
 as cookie isolation.
 
+
+When the installation serves a private CA, such as the Trellis-generated
+installation CA, start Node services, devices, and native apps with
+`NODE_EXTRA_CA_CERTS=<path to ca.crt>`. Node then verifies OAuth HTTPS and
+native NATS TLS against that CA; never disable certificate verification.
+Browser apps rely on the CA being installed in the operating system or browser.
+
 Node native applications import `@oatscenter/trellis/native`, not browser custody.
 Use `discoverNativeOAuth`, `NativeOAuthClient.open`, Device Code or `resume`, and
 `connectNativeClient` with a generated native request. The entrypoint is
@@ -677,7 +684,13 @@ sandbox with seeded admin. Network is needed on first use;
 `TRELLIS_TEST_CACHE_DIR` reuses verified binaries only. Use
 `trellis: { source: { kind: "path", cli, server } }` for an exact-version
 prebuilt pair, with no fallback. `restart()` retains data/identity and restarts
-the full host and broker. Stop first requests graceful host shutdown; on timeout
+the full host and broker. Test runtimes serve generated installation TLS; the
+kit adds each runtime's CA (`runtime.caCertificate`) to the test process's Node
+trust, so SDK clients need no TLS options. Launch Playwright browsers with
+`env: browserTrustEnvironment()` from the kit, which builds a private NSS trust
+store holding those CAs (requires NSS `certutil`); never use
+`ignoreHTTPSErrors`. Pass `NODE_EXTRA_CA_CERTS=runtime.caCertificate` to spawned
+Node processes and `--ca-certificate` to `trellis login`. Stop first requests graceful host shutdown; on timeout
 or host exit, isolated process-group cleanup reclaims remaining owned children
 before sandbox removal. Startup requires `/readyz` metadata's `processId` to
 match the spawned native host, not another runtime at the selected port.

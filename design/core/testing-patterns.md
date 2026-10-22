@@ -29,6 +29,15 @@ belong to one runtime, expose no password, and never borrow seeded administrator
 authority. One registered application can have independent logins for multiple
 users. Explicit-user login never adds or restores grants.
 
+Both live runtime helpers serve the default generated installation TLS, and
+every client trusts that runtime's CA explicitly: the Rust kit through
+`trust_roots` and `https_client_builder`, the Node kit by adding the CA to the
+test process's Node trust, spawned Node processes through
+`NODE_EXTRA_CA_CERTS`, the CLI through `--ca-certificate`, and Playwright
+browsers through `browserTrustEnvironment()`, a private NSS trust store that
+reproduces a user importing the CA (NSS `certutil` is a test prerequisite).
+Never use `ignoreHTTPSErrors` or disabled verification to reach a TLS runtime.
+
 Trellis behavior is distributed runtime behavior. Tests that prove Trellis
 runtime behavior must use a live Trellis control plane and real TypeScript and
 Rust client/service paths.
