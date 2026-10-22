@@ -2,7 +2,8 @@
 mod http;
 mod metrics;
 mod raw;
-use performance_trellis::apis::performance_trellis_performance_v1::{operations, rpc};
+use performance_trellis::apis::performance_trellis_performance_v1::{lives, operations, rpc};
+use performance_trellis::apps::performance_trellis_caller::performance_trellis_performance_v1::Client as PerformanceApi;
 use performance_trellis::{
     apps::performance_trellis_caller::{Client, Request},
     participants::performance_trellis_provider::{Participant, Provider},
@@ -91,6 +92,70 @@ pub(crate) struct Sample {
     pub(crate) window_bytes: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) data_frames: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) scheduler_delay_ms: Option<f64>,
+}
+
+/// Responsiveness probe: 30 Live first frames or Echo round trips offered at
+/// 50 ms intervals, stopping early when `active` reaches zero. Durations start
+/// at the offered time, so scheduler delay is included and also recorded.
+async fn probe(
+    api: &PerformanceApi,
+    scenario: &str,
+    rpc_probe: bool,
+    active: Option<&std::sync::atomic::AtomicUsize>,
+) -> Vec<Sample> {
+    use futures_util::StreamExt;
+    let offered = Instant::now();
+    let mut rows = Vec::new();
+    for index in 0..30u64 {
+        let at = offered + std::time::Duration::from_millis(50 * index);
+        tokio::time::sleep_until(at.into()).await;
+        if active.is_some_and(|active| active.load(std::sync::atomic::Ordering::Acquire) == 0) {
+            break;
+        }
+        let started = Instant::now();
+        let started_unix_ms = now();
+        let value = format!("{scenario}-{index}");
+        let result: Result<(), Error> = async {
+            if rpc_probe {
+                let reply = api
+                    .echo(&rpc::EchoInput {
+                        value: value.clone(),
+                        extra: Default::default(),
+                    })
+                    .await?;
+                if reply.value != value {
+                    return Err("RPC probe lost data".into());
+                }
+                return Ok(());
+            }
+            let mut feed = api
+                .watch(&lives::WatchInput {
+                    value: value.clone(),
+                    extra: Default::default(),
+                })
+                .await?;
+            let first = tokio::time::timeout(std::time::Duration::from_secs(30), feed.next())
+                .await?
+                .ok_or("Live probe ended before its first frame")??;
+            if first.value != value {
+                return Err("Live probe lost its first frame".into());
+            }
+            Ok(())
+        }
+        .await;
+        rows.push(Sample {
+            scenario: format!("rust/{scenario}"),
+            transport: "trellis",
+            started_unix_ms,
+            duration_ms: at.elapsed().as_secs_f64() * 1000.0,
+            error: result.err().map(|error| error.to_string()),
+            scheduler_delay_ms: Some(started.duration_since(at).as_secs_f64() * 1000.0),
+            ..Sample::default()
+        });
+    }
+    rows
 }
 pub(crate) fn now() -> u128 {
     SystemTime::now()
@@ -294,6 +359,10 @@ async fn main() -> Result<(), Error> {
             Provider::new(&mut service)
                 .performance_trellis_performance_v1()
                 .register_echo(|_, input| async move { Ok(input) });
+            // Live probes: one first frame echoing the input, as in TypeScript.
+            Provider::new(&mut service)
+                .performance_trellis_performance_v1()
+                .register_watch(|_, input| futures_util::stream::once(async move { Ok(input) }));
             let downloads = files.clone();
             Provider::new(&mut service)
                 .performance_trellis_performance_v1()
@@ -894,6 +963,97 @@ async fn main() -> Result<(), Error> {
                     }
                 }
             }
+            // Responsiveness idle and during one concurrent upload and download
+            // of the largest object, like the TypeScript transfer lane.
+            let size = options.sizes.iter().copied().max().unwrap_or(0);
+            let mut expected_hash = Hasher::default();
+            tokio::io::copy(&mut Payload::new(size), &mut expected_hash).await?;
+            let expected = expected_hash.digest();
+            samples.extend(probe(&api, "live-first-frame-idle", false, None).await);
+            samples.extend(probe(&api, "rpc-echo-idle", true, None).await);
+            tokio::fs::write(
+                options.output.join("phase.txt"),
+                "trellis/rust/mixed-upload-download",
+            )
+            .await?;
+            let active = std::sync::atomic::AtomicUsize::new(2);
+            let started = Instant::now();
+            let started_unix_ms = now();
+            let upload = async {
+                let result: Result<(), Error> = async {
+                    let handle = api
+                        .upload_staged()
+                        .start(&operations::UploadStagedInput {
+                            value: "mixed".into(),
+                            extra: Default::default(),
+                        })
+                        .await?;
+                    handle.upload_from(&mut Payload::new(size)).await?;
+                    active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    let completed = handle.wait().await?;
+                    if completed.output.ok_or("mixed upload result missing")?.value != expected {
+                        return Err("corrupt concurrent upload".into());
+                    }
+                    Ok(())
+                }
+                .await;
+                if result.is_err() {
+                    active.store(0, std::sync::atomic::Ordering::Release);
+                }
+                result
+            };
+            let download = async {
+                let result: Result<(), Error> = async {
+                    let reply = api
+                        .download(&rpc::DownloadInput {
+                            value: size.to_string(),
+                            extra: Default::default(),
+                        })
+                        .await?;
+                    let mut received = Hasher::default();
+                    streaming_client
+                        .download_transfer_into(
+                            &reply.transfer.ok_or("download grant missing")?,
+                            &mut received,
+                        )
+                        .await?;
+                    if received.digest() != expected {
+                        return Err("corrupt concurrent download".into());
+                    }
+                    Ok(())
+                }
+                .await;
+                active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                result
+            };
+            let probes = async {
+                // Probe only while both directions are moving DATA.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let (live, rpc_rows) = tokio::join!(
+                    probe(
+                        &api,
+                        "live-first-frame-under-transfer",
+                        false,
+                        Some(&active)
+                    ),
+                    probe(&api, "rpc-echo-under-transfer", true, Some(&active)),
+                );
+                live.into_iter().chain(rpc_rows).collect::<Vec<_>>()
+            };
+            let (uploaded, downloaded, probed) = tokio::join!(upload, download, probes);
+            samples.extend(probed);
+            samples.push(Sample {
+                scenario: "rust/mixed-upload-download".into(),
+                transport: "trellis",
+                started_unix_ms,
+                duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                bytes: Some(2 * size),
+                error: uploaded
+                    .and(downloaded)
+                    .err()
+                    .map(|error| error.to_string()),
+                ..Sample::default()
+            });
             if let (Some(url), Some(creds)) = (&options.nats_url, &options.nats_creds) {
                 tokio::fs::write(options.output.join("phase.txt"), "raw-core-nats-diagnostic")
                     .await?;

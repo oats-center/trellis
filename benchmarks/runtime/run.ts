@@ -872,6 +872,7 @@ try {
         windowFrames: z.number().optional(),
         windowBytes: z.number().optional(),
         dataFrames: z.number().optional(),
+        schedulerDelayMs: z.number().optional(),
       }),
     );
     const rows = nativeSamples.parse(

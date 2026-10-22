@@ -1127,8 +1127,13 @@ if (options.role !== "client") {
       }
     }
     if (options.workload === "transfer" && options.sizes.length) {
-      const probeLive = async (scenario: string, active?: () => boolean) => {
-        await phase(`trellis/${scenario}`);
+      // Responsiveness probes: Live first frame, or an Echo RPC round trip.
+      const probeLive = async (
+        scenario: string,
+        active?: () => boolean,
+        kind: "live" | "rpc" = "live",
+      ) => {
+        if (kind === "live") await phase(`trellis/${scenario}`);
         const offered = performance.now();
         for (let index = 0; index < 30; index++) {
           const offeredAt = offered + index * 50;
@@ -1150,6 +1155,11 @@ if (options.role !== "client") {
           const abort = new AbortController();
           try {
             const value = `${scenario}-${index}`;
+            if (kind === "rpc") {
+              const reply = await deadline(client.echo({ value }).orThrow());
+              if (reply.value !== value) throw new Error("RPC probe lost data");
+              continue;
+            }
             const feed = await client
               .performanceWatch({ value }, { signal: abort.signal })
               .orThrow();
@@ -1168,6 +1178,7 @@ if (options.role !== "client") {
         }
       };
       await probeLive("live-first-frame-idle");
+      await probeLive("rpc-echo-idle", undefined, "rpc");
       const size = Math.max(...options.sizes);
       const expected = (await streamDigest(payloadChunks(size))).digest;
       await measure(
@@ -1240,10 +1251,13 @@ if (options.role !== "client") {
                 }),
               ]),
             );
-            await probeLive(
-              "live-first-frame-under-transfer",
-              () => dataActive > 0,
-            );
+            await Promise.all([
+              probeLive(
+                "live-first-frame-under-transfer",
+                () => dataActive > 0,
+              ),
+              probeLive("rpc-echo-under-transfer", () => dataActive > 0, "rpc"),
+            ]);
             await phase("trellis/mixed-upload-download");
           } finally {
             results = await finished;
