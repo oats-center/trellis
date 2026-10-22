@@ -6,7 +6,6 @@ import {
 } from "@oatscenter/result";
 import Type, { type Static } from "typebox";
 import { Value } from "typebox/value";
-import { sha256 } from "@noble/hashes/sha256";
 import { type Msg, NoRespondersError } from "@nats-io/nats-core";
 import { base64urlEncode } from "./auth/utils.ts";
 import type { TrellisAuth } from "./session.ts";
@@ -20,6 +19,7 @@ import {
   TransferSession,
   transferWait,
 } from "./transfer/session.ts";
+import { createSha256 } from "./sha256.ts";
 import { TransferIngress } from "./service/runtime/transfer/queue.ts";
 import {
   transferConstants,
@@ -406,7 +406,7 @@ export class SendTransferHandle extends BaseTransferHandle {
             windowFrames: this.grant.windowFrames,
             windowBytes: this.grant.windowBytes,
           }));
-          const hasher = sha256.create();
+          const hasher = createSha256();
           let size = 0;
           for await (const frame of frames(
             body,
@@ -590,7 +590,7 @@ export class ReceiveTransferHandle extends BaseTransferHandle {
             "download",
           );
           client.ingress = ingress;
-          const hash = sha256.create();
+          const hash = createSha256();
           let streamController:
             ReadableStreamDefaultController<Uint8Array> | undefined;
           let streamTerminated = false;

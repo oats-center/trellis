@@ -6,7 +6,6 @@ import {
 } from "@oatscenter/result";
 import type { Msg } from "@nats-io/nats-core";
 import type { LoggerLike } from "../../globals.ts";
-import { sha256 } from "@noble/hashes/sha256";
 import { base64urlEncode } from "../../auth/utils.ts";
 import { frames } from "../../transfer/frames.ts";
 import type { TrellisTransportProvider } from "../../transport/generations.ts";
@@ -44,6 +43,7 @@ import {
   TransferSession,
   transferWait,
 } from "../../transfer/session.ts";
+import { createSha256, type IncrementalSha256 } from "../../sha256.ts";
 import { SenderWindow } from "../../data_plane/flow.ts";
 import { LiveAuthorityGuard } from "../../live/authority.ts";
 import {
@@ -144,7 +144,7 @@ type ProviderSession = {
   consumed: bigint;
   consumedBytes: number;
   bytes: number;
-  hash: ReturnType<typeof sha256.create>;
+  hash: IncrementalSha256;
   window?: SenderWindow;
   credit?: TransferCredit;
   ingress?: TransferIngress;
@@ -258,7 +258,7 @@ export class ServiceTransfer {
         consumed: 0n,
         consumedBytes: 0,
         bytes: 0,
-        hash: sha256.create(),
+        hash: createSha256(),
         store,
         storageKey,
         logicalKey,
@@ -603,7 +603,7 @@ export class ServiceTransfer {
                   }
                   const source = (await entry.stream()).take();
                   if (isErr(source)) throw source.error;
-                  const hash = sha256.create();
+                  const hash = createSha256();
                   let size = 0;
                   return Result.ok(
                     source.pipeThrough(

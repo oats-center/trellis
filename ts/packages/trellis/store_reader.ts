@@ -18,9 +18,9 @@ import {
   type JsMsg,
 } from "@nats-io/jetstream";
 import { JetStreamStatusError } from "@nats-io/jetstream/internal";
-import { sha256 } from "@noble/hashes/sha256";
 import { base64urlDecode, base64urlEncode } from "./auth/utils.ts";
 import { StoreError } from "./errors/StoreError.ts";
+import { createSha256 } from "./sha256.ts";
 import { recordCatalogDuration } from "./telemetry/metrics.ts";
 
 /** Internal ObjectStore chunk reader: one finite batch, pulled only on demand. */
@@ -52,14 +52,10 @@ export function boundedObjectStream(
   ) {
     throw new Error("invalid ObjectStore SHA-256 digest");
   }
-  const hash = sha256.create();
+  const hash = createSha256();
   if (info.size === 0) {
-    try {
-      if (base64urlEncode(hash.digest()) !== base64urlEncode(expected)) {
-        throw new Error("empty ObjectStore digest mismatch");
-      }
-    } finally {
-      hash.destroy();
+    if (base64urlEncode(hash.digest()) !== base64urlEncode(expected)) {
+      throw new Error("empty ObjectStore digest mismatch");
     }
     release();
     return new ReadableStream<Uint8Array>({
@@ -72,7 +68,6 @@ export function boundedObjectStream(
   const subject = `$O.${bucket}.C.${info.nuid}`;
   const maxPayload = nc.info?.max_payload;
   if (!Number.isSafeInteger(maxPayload) || !maxPayload || maxPayload < 1) {
-    hash.destroy();
     throw new Error("NATS maximum payload is unavailable");
   }
   // Msg.size() includes subject and ACK reply as well as payload/headers.
@@ -84,12 +79,10 @@ export function boundedObjectStream(
     1024;
   const consumerName = `TRELLIS_STORE_${nuid.next()}`;
   if (nc.isClosed()) {
-    hash.destroy();
     throw new Error("ObjectStore read connection closed");
   }
   const statuses = nc.status();
   if (!(statuses instanceof QueuedIteratorImpl)) {
-    hash.destroy();
     throw new Error(
       "ObjectStore reads require stoppable native NATS status ownership",
     );
@@ -177,7 +170,6 @@ export function boundedObjectStream(
         try {
           await statusTask;
         } finally {
-          hash.destroy();
           release();
         }
       }
