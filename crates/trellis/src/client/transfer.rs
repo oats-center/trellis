@@ -113,6 +113,11 @@ struct Active {
     peer: TransferPeer,
     local: TransferPeer,
     max_frame: u64,
+    /// Effective outstanding frames and bytes, at most the grant's.
+    window_frames: u64,
+    window_bytes: u64,
+    /// A receiving consumer's admitted capacity, held until the transfer ends.
+    _reservation: Option<crate::data_plane::budget::ReceiveReservation>,
 }
 
 async fn activate(
@@ -156,6 +161,23 @@ async fn activate(
         )
         .map_err(fail)?,
     );
+    // A receiving consumer admits its own window from the process budget and
+    // declares it; the provider sends within the smaller of it and the grant.
+    let (limit_frames, limit_bytes, reservation) =
+        if coordinates.direction == TransferDirection::Receive {
+            let budget = crate::data_plane::budget::ReceiveBudget::process();
+            let (frames, bytes) = budget
+                .offer(max_frame)
+                .ok_or_else(|| fail("transfer receive capacity exhausted"))?;
+            let frames = frames.min(coordinates.frames);
+            let bytes = bytes.min(coordinates.bytes);
+            let reservation = budget
+                .reserve(bytes)
+                .ok_or_else(|| fail("transfer receive capacity exhausted"))?;
+            (frames, bytes, Some(reservation))
+        } else {
+            (coordinates.frames, coordinates.bytes, None)
+        };
     let body = TransferControl::Activate {
         format: TransferFormat::V1,
         kind: TransferControlKind::Control,
@@ -164,8 +186,8 @@ async fn activate(
         received_seq: U64s::new(0),
         consumed_seq: U64s::new(0),
         receive_max_frame_bytes: max_frame,
-        receive_window_frames: None,
-        receive_window_bytes: None,
+        receive_window_frames: reservation.as_ref().map(|_| limit_frames),
+        receive_window_bytes: reservation.as_ref().map(|_| limit_bytes),
     };
     let payload = Bytes::from(serde_json::to_vec(&body)?);
     let descriptor = TransferFrameDescriptor {
@@ -266,10 +288,10 @@ async fn activate(
                     && received_request == request_id
                     && control_seq.get() == 1
                     && max_frame_bytes <= max_frame
-                    && window_frames == coordinates.frames
-                    && window_bytes == coordinates.bytes =>
+                    && window_frames <= limit_frames
+                    && window_bytes <= limit_bytes =>
                 {
-                    return Ok((peer, max_frame_bytes))
+                    return Ok((peer, max_frame_bytes, window_frames, window_bytes))
                 }
                 TransferSignal::Error { code, .. } => {
                     return Err(fail(format!("transfer activation failed: {code:?}")))
@@ -281,7 +303,7 @@ async fn activate(
             }
         }
     };
-    let (peer, max_frame) = tokio::select! {
+    let (peer, max_frame, window_frames, window_bytes) = tokio::select! {
         _ = lease.wait_lost() => return Err(fail("transfer pinned transport lost during activation")),
         result = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), wait) => result.map_err(|_| TrellisClientError::Timeout)??,
     };
@@ -292,6 +314,9 @@ async fn activate(
         peer,
         local,
         max_frame,
+        window_frames,
+        window_bytes,
+        _reservation: reservation,
     })
 }
 
@@ -412,8 +437,8 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
     let mut active = activate(client, &coordinates, cancellation).await?;
     let window = SenderWindow::new(FlowLimits {
         max_frame_bytes: active.max_frame,
-        window_frames: grant.window_frames,
-        window_bytes: grant.window_bytes,
+        window_frames: active.window_frames,
+        window_bytes: active.window_bytes,
     });
     let mut changes = active.peer.guard.subscribe_changes();
     let mut local_changes = active.local.guard.subscribe_changes();
@@ -578,8 +603,8 @@ pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + 
         .ok_or_else(|| fail("download data subscription missing"))?;
     let received = SenderWindow::new(FlowLimits {
         max_frame_bytes: active.max_frame,
-        window_frames: grant.window_frames,
-        window_bytes: grant.window_bytes,
+        window_frames: active.window_frames,
+        window_bytes: active.window_bytes,
     });
     let observation = transfer::telemetry::observation(TransferDirection::Receive, "client");
     let mut queue = VecDeque::<(u64, transfer::telemetry::Payload)>::new();

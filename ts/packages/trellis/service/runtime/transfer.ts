@@ -44,6 +44,7 @@ import {
   transferWait,
 } from "../../transfer/session.ts";
 import { createSha256, type IncrementalSha256 } from "../../sha256.ts";
+import { processReceiveBudget } from "../../data_plane/budget.ts";
 import { SenderWindow } from "../../data_plane/flow.ts";
 import { LiveAuthorityGuard } from "../../live/authority.ts";
 import {
@@ -267,6 +268,13 @@ export class ServiceTransfer {
         { deadlineMs: Date.parse(grant.expiresAt) },
       );
       wire = new TransferSession(grant, lease, this.opts.auth, true);
+      if (grant.direction === "send") {
+        // Admit the granted receive window before any frame can arrive; the
+        // session's end releases it on every path.
+        const release = processReceiveBudget().reserve(grant.windowBytes);
+        if (!release) throw new Error("transfer receive capacity exhausted");
+        wire.abort.signal.addEventListener("abort", release, { once: true });
+      }
       await wire.retainLocal();
       wire.peerGuard = callerGuard;
       wire.guards.push(callerGuard);
@@ -444,6 +452,14 @@ export class ServiceTransfer {
     if (maxFrameBytes <= 0) {
       throw new Error("NATS payload limit cannot carry transfer frames");
     }
+    // A provider receives uploads: offer what this process can admit. As a
+    // download sender it offers the default ceiling; the consumer declares
+    // its own receive window at activation.
+    const window =
+      direction === "send"
+        ? processReceiveBudget().offer(maxFrameBytes)
+        : ([C.windowFrames, C.windowBytes] satisfies [number, number]);
+    if (!window) throw new Error("transfer receive capacity exhausted");
     return {
       format: "trellis.transfer.v1",
       type: "TransferGrant",
@@ -465,8 +481,8 @@ export class ServiceTransfer {
       ...subjects,
       expiresAt: new Date(Date.now() + args.expiresInMs).toISOString(),
       maxFrameBytes,
-      windowFrames: C.windowFrames,
-      windowBytes: C.windowBytes,
+      windowFrames: window[0],
+      windowBytes: window[1],
     };
   }
 
@@ -1118,13 +1134,37 @@ export class ServiceTransfer {
       if (session.maxFrameBytes < 1) {
         throw new Error("invalid transfer frame negotiation");
       }
+      // An upload's grant is the provider's receive window; a download
+      // sends within the smaller of the grant and the consumer's declared one.
+      const grant = session.wire.grant;
+      const declared =
+        control.receiveWindowFrames !== undefined &&
+        control.receiveWindowBytes !== undefined
+          ? [control.receiveWindowFrames, control.receiveWindowBytes]
+          : undefined;
+      if ((grant.direction === "send") !== (declared === undefined)) {
+        throw new Error(
+          grant.direction === "send"
+            ? "upload activation must not declare a receive window"
+            : "download activation must declare its receive window",
+        );
+      }
+      const windowFrames = Math.min(
+        grant.windowFrames,
+        declared?.[0] ?? grant.windowFrames,
+      );
+      const windowBytes = Math.min(
+        grant.windowBytes,
+        declared?.[1] ?? grant.windowBytes,
+      );
+      session.maxFrameBytes = Math.min(session.maxFrameBytes, windowBytes);
       session.active = true;
-      if (session.wire.grant.direction === "send") this.#startUpload(session);
+      if (grant.direction === "send") this.#startUpload(session);
       else {
         session.window = new SenderWindow({
           maxFrameBytes: session.maxFrameBytes,
-          windowFrames: session.wire.grant.windowFrames,
-          windowBytes: session.wire.grant.windowBytes,
+          windowFrames,
+          windowBytes,
         });
       }
       await this.#signal(session, {
@@ -1132,8 +1172,8 @@ export class ServiceTransfer {
         controlSeq: control.controlSeq,
         requestId: msg.headers?.get("request-id") ?? "",
         maxFrameBytes: session.maxFrameBytes,
-        windowFrames: session.wire.grant.windowFrames,
-        windowBytes: session.wire.grant.windowBytes,
+        windowFrames,
+        windowBytes,
       });
       if (session.wire.grant.direction === "receive") {
         session.download = this.#download(session);

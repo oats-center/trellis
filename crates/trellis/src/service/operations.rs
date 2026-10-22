@@ -2558,8 +2558,7 @@ fn operation_upload_grant<D: OperationDescriptor>(
     use trellis_protocol::transfer::{
         derive_transfer_subject, generate_transfer_id, negotiate_transfer_max_frame_bytes,
         TransferSubjectKind, TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS,
-        TRANSFER_OPERATION_UPLOAD_MAX_BYTES, TRANSFER_VERSION, TRANSFER_WINDOW_BYTES,
-        TRANSFER_WINDOW_FRAMES,
+        TRANSFER_OPERATION_UPLOAD_MAX_BYTES, TRANSFER_VERSION,
     };
     let transfer_id =
         generate_transfer_id().map_err(|error| ServerError::Nats(error.to_string()))?;
@@ -2567,6 +2566,12 @@ fn operation_upload_grant<D: OperationDescriptor>(
         derive_transfer_subject(kind, connection_id, &caller.runtime_id, &transfer_id)
             .map_err(|error| ServerError::Nats(error.to_string()))
     };
+    let max_frame_bytes = negotiate_transfer_max_frame_bytes(max_payload, max_payload)
+        .map_err(|error| ServerError::Nats(error.to_string()))?;
+    // The provider receives the upload: offer what the process can admit.
+    let (window_frames, window_bytes) = crate::data_plane::budget::ReceiveBudget::process()
+        .offer(max_frame_bytes)
+        .ok_or_else(|| ServerError::Nats("transfer receive capacity exhausted".to_owned()))?;
     Ok(UploadTransferGrant {
         origin: trellis_protocol::transfer::TransferOrigin {
             api_id: D::API_ID.to_owned(),
@@ -2599,10 +2604,9 @@ fn operation_upload_grant<D: OperationDescriptor>(
             + time::Duration::seconds(TRANSFER_OPERATION_UPLOAD_LIFETIME_SECONDS as i64))
         .format(&Rfc3339)
         .map_err(|error| ServerError::Nats(error.to_string()))?,
-        max_frame_bytes: negotiate_transfer_max_frame_bytes(max_payload, max_payload)
-            .map_err(|error| ServerError::Nats(error.to_string()))?,
-        window_frames: TRANSFER_WINDOW_FRAMES,
-        window_bytes: TRANSFER_WINDOW_BYTES,
+        max_frame_bytes,
+        window_frames,
+        window_bytes,
         transfer_id,
         max_bytes: Some(TRANSFER_OPERATION_UPLOAD_MAX_BYTES),
         content_type,

@@ -84,10 +84,11 @@ where
     let mut reader: Option<super::telemetry::Pipe> = None;
     let mut activated = false;
     let mut max_frame_bytes = grant.max_frame_bytes;
+    let mut effective = (grant.window_frames, grant.window_bytes);
     let mut window = SenderWindow::new(FlowLimits {
         max_frame_bytes,
-        window_frames: grant.window_frames,
-        window_bytes: grant.window_bytes,
+        window_frames: effective.0,
+        window_bytes: effective.1,
     });
     let mut staged: Option<super::telemetry::Payload> = None;
     let mut transferred = 0u64;
@@ -138,13 +139,20 @@ where
                     } else if seq != control_seq + 1 { return Err(error("download control gap")); }
                     if !repeated_activate { control_seq = seq; control_body = Some(message.payload.clone()); }
                     match body {
-                        TransferControl::Activate { receive_max_frame_bytes, .. } => {
+                        TransferControl::Activate { receive_max_frame_bytes, receive_window_frames, receive_window_bytes, .. } => {
+                            // The receiving consumer declares what it admitted;
+                            // send within the smaller of that and the grant.
+                            let (Some(declared_frames), Some(declared_bytes)) = (receive_window_frames, receive_window_bytes) else {
+                                return Err(error("download activation must declare its receive window"));
+                            };
                              if !activated {
                                  activate_body = Some(message.payload.clone());
                                 max_frame_bytes = max_frame_bytes.min(receive_max_frame_bytes);
-                                window = SenderWindow::new(FlowLimits { max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes });
+                                effective = (grant.window_frames.min(declared_frames), grant.window_bytes.min(declared_bytes));
+                                max_frame_bytes = max_frame_bytes.min(effective.1);
+                                window = SenderWindow::new(FlowLimits { max_frame_bytes, window_frames: effective.0, window_bytes: effective.1 });
                             }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
+                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Receive, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes, window_frames: effective.0, window_bytes: effective.1 }).await?;
                             if !activated {
                                 let (mut writer, pipe) = super::telemetry::pipe(max_frame_bytes as usize, TransferDirection::Receive, "provider");
                                 let key = grant.info.key.clone();

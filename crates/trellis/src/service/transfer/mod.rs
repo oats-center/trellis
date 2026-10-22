@@ -147,6 +147,10 @@ where
     C: StoreResourceClient,
     F: Fn(OperationTransferProgress) + Send + Sync + 'static,
 {
+    // The provider receives the upload: admit its granted window first.
+    let reservation = crate::data_plane::budget::ReceiveBudget::process()
+        .reserve(session.plan.grant.window_bytes)
+        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
     let data = lease
         .nats()
         .subscribe(session.plan.grant.data_subject.clone())
@@ -170,6 +174,7 @@ where
         on_progress,
         sender,
         cancelled,
+        reservation,
     ));
     Ok(UploadTransferCompletion {
         cancellation: Some(cancel),
@@ -194,6 +199,10 @@ pub async fn spawn_stream_upload_endpoint<F>(
 where
     F: Fn(OperationTransferProgress) + Send + Sync + 'static,
 {
+    // The provider receives the upload: admit its granted window first.
+    let reservation = crate::data_plane::budget::ReceiveBudget::process()
+        .reserve(session.plan.grant.window_bytes)
+        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
     let data = lease
         .nats()
         .subscribe(session.plan.grant.data_subject.clone())
@@ -221,6 +230,7 @@ where
         on_progress,
         sender,
         cancelled,
+        reservation,
     ));
     Ok((
         UploadTransferCompletion {
@@ -266,6 +276,8 @@ async fn run_upload<C, F>(
     on_progress: F,
     sender: oneshot::Sender<protocol::UploadTransferCompletionResult>,
     mut cancelled: oneshot::Receiver<()>,
+    // Held for the endpoint's whole life and released on every exit path.
+    _reservation: crate::data_plane::budget::ReceiveReservation,
 ) -> Result<(), ServerError>
 where
     C: StoreResourceClient,
@@ -371,7 +383,9 @@ where
                     } else if seq != control_seq + 1 { return Err(error("upload control gap")); }
                     control_seq = seq; control_body = Some(message.payload.clone());
                     match body {
-                        TransferControl::Activate { receive_max_frame_bytes, .. } => {
+                        TransferControl::Activate { receive_max_frame_bytes, receive_window_frames, .. } => {
+                            // The provider receives an upload; its grant is the window.
+                            if receive_window_frames.is_some() { return Err(error("upload activation must not declare a receive window")); }
                             if activated && activate_body.as_ref() != Some(&message.payload) { return Err(error("upload activation conflict")); }
                             if !activated {
                                 session.plan.grant.max_frame_bytes = session.plan.grant.max_frame_bytes.min(receive_max_frame_bytes);
@@ -544,6 +558,10 @@ pub fn plan_upload_transfer_grant(
     let store = store_binding(args.service_name, args.resources, args.store)?;
     let max_frame_bytes =
         negotiate_transfer_max_frame_bytes(args.max_payload, args.max_payload).map_err(error)?;
+    // The provider receives the upload: offer what the process can admit.
+    let (window_frames, window_bytes) = crate::data_plane::budget::ReceiveBudget::process()
+        .offer(max_frame_bytes)
+        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
     let store_max = store
         .max_object_bytes
         .and_then(|value| u64::try_from(value).ok());
@@ -588,8 +606,8 @@ pub fn plan_upload_transfer_grant(
             control_subject: subject(TransferSubjectKind::Control)?,
             signal_subject: subject(TransferSubjectKind::Signal)?,
             max_frame_bytes,
-            window_frames: TRANSFER_WINDOW_FRAMES,
-            window_bytes: TRANSFER_WINDOW_BYTES,
+            window_frames,
+            window_bytes,
             max_bytes,
             content_type: args.content_type.map(Into::into),
             metadata: args.metadata,
