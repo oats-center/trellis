@@ -145,8 +145,9 @@ jobs:
 
           ensure_protocol_wasm() {
             local repo_root="$1"
-            local output="${repo_root}/ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm.js"
-            if [ -s "${output}" ]; then
+            local output="${repo_root}/ts/packages/trellis/auth/protocol_wasm"
+            # Release checkouts may predate the client/provider split.
+            if [ -s "${output}/client/trellis_protocol_wasm.js" ] || [ -s "${output}/trellis_protocol_wasm.js" ]; then
               return 0
             fi
             cargo run --manifest-path "${repo_root}/xtask/Cargo.toml" -- protocol-wasm

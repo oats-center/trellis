@@ -1,3 +1,6 @@
+// Every service serves requests: select the provider protocol build before
+// anything uses the protocol.
+import "../../auth/protocol_wasm_provider.ts";
 import { jetstream } from "@nats-io/jetstream";
 import {
   headers as natsHeaders,

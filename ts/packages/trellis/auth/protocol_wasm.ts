@@ -1,20 +1,64 @@
-import init, {
-  initSync,
-  type VerifiedSessionAuthorityHandle as WasmSessionAuthorityHandle,
-} from "./protocol_wasm/trellis_protocol_wasm.js";
-import * as protocolWasmModule from "./protocol_wasm/trellis_protocol_wasm.js";
-import { PROTOCOL_WASM_BASE64 } from "./protocol_wasm/trellis_protocol_wasm_bytes.ts";
+import type { VerifiedSessionAuthorityHandle as WasmSessionAuthorityHandle } from "./protocol_wasm/client/trellis_protocol_wasm.js";
+import * as clientProtocolWasm from "./protocol_wasm/client/trellis_protocol_wasm.js";
+import type * as ProviderProtocolWasm from "./protocol_wasm/provider/trellis_protocol_wasm.js";
 import { base64urlDecode, type JsonValue } from "./utils.ts";
 
 type JsonObject = { [key: string]: JsonValue };
 
-const protocolWasm = protocolWasmModule;
+/** Generated bindings of the request-serving protocol build. */
+export type ProviderProtocolWasmModule = typeof ProviderProtocolWasm;
+
+// Callers use the client build. Services and devices select the provider build,
+// a superset, before first use; one process runs exactly one instance.
+let protocolWasm: typeof clientProtocolWasm = clientProtocolWasm;
+let providerProtocolWasm: ProviderProtocolWasmModule | undefined;
+let protocolWasmUrl = new URL(
+  "./protocol_wasm/client/trellis_protocol_wasm_bg.wasm",
+  import.meta.url,
+);
+
+/**
+ * Select the provider protocol build for a request-serving process.
+ *
+ * Called once by the service and device entrypoints at import, before any
+ * protocol use. Selecting after the client build was loaded fails, because
+ * values created by one instance are invalid in another.
+ */
+export function selectProviderProtocolWasm(
+  bindings: ProviderProtocolWasmModule,
+  url: URL,
+): void {
+  if (providerProtocolWasm) return;
+  if (initialized || initializedSync) {
+    throw new Error(
+      "Trellis loaded its client protocol build before the service or device entrypoint; import that entrypoint first",
+    );
+  }
+  providerProtocolWasm = bindings;
+  protocolWasm = bindings;
+  protocolWasmUrl = url;
+}
+
+function providerProtocol(): ProviderProtocolWasmModule {
+  if (!providerProtocolWasm) {
+    throw new Error(
+      "this protocol operation serves requests; import @oatscenter/trellis/service or /device",
+    );
+  }
+  return providerProtocolWasm;
+}
+
+/** Bindings of the selected protocol build, initialized for synchronous use. */
+export function protocolBindings(): typeof clientProtocolWasm {
+  initializeProtocolWasmSync();
+  return protocolWasm;
+}
 
 /** Validate framework-private Operation state through the shared native codec. */
 export function normalizeOperationRecordWasm(value: unknown): unknown {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.normalize_operation_record(JSON.stringify(value)),
+    providerProtocol().normalize_operation_record(JSON.stringify(value)),
   );
 }
 
@@ -406,7 +450,7 @@ export async function signProvisionedAdmissionWasm(
   seed: Uint8Array,
 ): Promise<string> {
   await initializeProtocolWasm();
-  return protocolWasm.sign_provisioned_admission(
+  return providerProtocol().sign_provisioned_admission(
     JSON.stringify(credential),
     seed,
   );
@@ -616,43 +660,42 @@ export type SessionAuthorityHandle = WasmSessionAuthorityHandle;
 let initialized: Promise<void> | undefined;
 let initializedSync = false;
 
-async function wasmBytes(): Promise<Uint8Array> {
-  const url = new URL(
-    "./protocol_wasm/trellis_protocol_wasm_bg.wasm",
-    import.meta.url,
-  );
-  if (url.protocol === "file:") {
-    const { readFile } = await import("node:fs/promises");
-    return new Uint8Array(await readFile(url));
-  }
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(
-      `authorization protocol WASM returned HTTP ${response.status}`,
-    );
-  }
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-/** Initialize the shared Rust protocol implementation before asynchronous use. */
+/** Initialize the selected protocol build before asynchronous use. */
 export async function initializeProtocolWasm(): Promise<void> {
   if (initializedSync) return;
   initialized ??= (async () => {
-    await init({ module_or_path: await wasmBytes() });
+    const bindings = protocolWasm;
+    const url = protocolWasmUrl;
+    if (url.protocol === "file:") {
+      const { readFile } = await import("node:fs/promises");
+      await bindings.default({ module_or_path: await readFile(url) });
+      return;
+    }
+    // Browsers fetch the module as a separate cacheable asset.
+    await bindings.default({ module_or_path: fetch(url) });
   })();
   await initialized;
   initializedSync = true;
 }
 
-/** Initialize the shared Rust protocol implementation before synchronous use. */
+/**
+ * Initialize the selected protocol build for synchronous use.
+ *
+ * Server runtimes read the module from disk. Browsers cannot load it
+ * synchronously; connecting initializes it first.
+ */
 export function initializeProtocolWasmSync(): void {
   if (initializedSync) return;
-  const binary = atob(PROTOCOL_WASM_BASE64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  const fs =
+    protocolWasmUrl.protocol === "file:"
+      ? globalThis.process?.getBuiltinModule?.("node:fs")
+      : undefined;
+  if (!fs) {
+    throw new Error(
+      "Trellis protocol is not initialized; connect, or await initializeProtocolWasm(), first",
+    );
   }
-  initSync({ module: bytes });
+  protocolWasm.initSync({ module: fs.readFileSync(protocolWasmUrl) });
   initializedSync = true;
 }
 
@@ -822,7 +865,7 @@ export async function verifySessionRequestWasm(
   await initializeProtocolWasm();
   const { authorityHandle, payload, ...input } = args;
   return JSON.parse(
-    protocolWasm.verify_session_request(
+    providerProtocol().verify_session_request(
       authorityHandle,
       JSON.stringify(input),
       payload,
@@ -1137,7 +1180,7 @@ export function liveLogicalOpenHash(identity: object): string {
 /** Compute the canonical logical-control hash through the shared protocol. */
 export function liveLogicalControlHash(raw: Uint8Array): string {
   initializeProtocolWasmSync();
-  return protocolWasm.live_logical_control_hash(raw);
+  return providerProtocol().live_logical_control_hash(raw);
 }
 
 /** Build the provider server-message proof digest over exact transmitted bytes. */
@@ -1148,7 +1191,11 @@ export function liveServerProofDigest(
 ): Uint8Array {
   initializeProtocolWasmSync();
   return base64urlDecode(
-    protocolWasm.live_server_proof_digest(contextDigest, subject, rawBody),
+    providerProtocol().live_server_proof_digest(
+      contextDigest,
+      subject,
+      rawBody,
+    ),
   );
 }
 
@@ -1341,22 +1388,24 @@ export type TransferConstants = {
 
 /** Read canonical Transfer constants, initializing WASM only on first access. */
 export function transferConstants(): TransferConstants {
-  let constants: TransferConstants | undefined;
-  return new Proxy({} as TransferConstants, {
-    get(_target, property) {
-      initializeProtocolWasmSync();
-      constants ??= JSON.parse(
-        protocolWasm.transfer_constants(),
-      ) as TransferConstants;
-      return constants[property as keyof TransferConstants];
-    },
-  });
+  return transferConstantsProxy;
 }
+let transferConstantsValue: TransferConstants | undefined;
+// Read lazily, once: importing a module never loads the protocol build.
+const transferConstantsProxy = new Proxy({} as TransferConstants, {
+  get(_target, property) {
+    initializeProtocolWasmSync();
+    transferConstantsValue ??= JSON.parse(
+      protocolWasm.transfer_constants(),
+    ) as TransferConstants;
+    return transferConstantsValue[property as keyof TransferConstants];
+  },
+});
 
 /** Generate a canonical random transfer ID. */
 export function transferGenerateId(): string {
   initializeProtocolWasmSync();
-  return protocolWasm.transfer_generate_id();
+  return providerProtocol().transfer_generate_id();
 }
 
 /** Derive an exact session subject from both logical endpoint identities. */
@@ -1367,7 +1416,12 @@ export function transferSubject(
   transferId: string,
 ): string {
   initializeProtocolWasmSync();
-  return protocolWasm.transfer_subject(kind, provider, consumer, transferId);
+  return providerProtocol().transfer_subject(
+    kind,
+    provider,
+    consumer,
+    transferId,
+  );
 }
 
 /** Validate an exact subject and return its canonical family. */
@@ -1427,7 +1481,7 @@ export function transferParseGrant(raw: Uint8Array): TransferGrantWire {
 export function transferParseControl(raw: Uint8Array): TransferControlWire {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.transfer_parse_control(raw),
+    providerProtocol().transfer_parse_control(raw),
   ) as TransferControlWire;
 }
 
@@ -1443,7 +1497,7 @@ export function transferParseSignal(raw: Uint8Array): TransferSignalWire {
 export function transferParseComplete(raw: Uint8Array): TransferCompleteWire {
   initializeProtocolWasmSync();
   return JSON.parse(
-    protocolWasm.transfer_parse_complete(raw),
+    providerProtocol().transfer_parse_complete(raw),
   ) as TransferCompleteWire;
 }
 

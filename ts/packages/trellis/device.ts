@@ -1,3 +1,5 @@
+// Request-serving participants load the provider protocol build.
+import "./auth/protocol_wasm_provider.ts";
 import type { NatsConnection } from "@nats-io/nats-core";
 export { checkDeviceActivation } from "./device/activation.ts";
 export type {

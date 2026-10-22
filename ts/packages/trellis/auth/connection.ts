@@ -7,6 +7,7 @@ import { TransportError } from "../errors/TransportError.ts";
 import { createAuth, type TrellisAuth } from "./session_auth.ts";
 import { base64urlDecode, base64urlEncode, sha256, utf8 } from "./utils.ts";
 import {
+  initializeProtocolWasm,
   signProvisionedAdmissionWasm,
   verifyOAuthAdmissionWasm,
   createSessionAuthorityHandleWasm,
@@ -79,6 +80,7 @@ export async function connectProvisioned(
   } = {},
   transport?: RuntimeTransport,
 ) {
+  await initializeProtocolWasm();
   const runtimeId = base64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
   let owner: SessionAuthorityOwner | undefined;
   const auth = await createAuth({
@@ -139,6 +141,8 @@ export async function connectAdmitted(options: {
     onDrain?(generation: TransportGeneration): void;
   };
 }) {
+  // Browsers cannot load the protocol build synchronously: load it once here.
+  await initializeProtocolWasm();
   const owner = new SessionAuthorityOwner({
     instanceId: options.trellisInstanceId,
     account: options.audienceNatsAccount,

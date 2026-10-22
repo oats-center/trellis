@@ -12,16 +12,20 @@ use trellis_protocol::{
     session_proof_request_digest as session_proof_request_digest_protocol,
     session_proof_signing_digest as session_proof_signing_digest_protocol,
     verify_session_authority as verify_session_authority_protocol,
-    verify_session_proof as verify_session_proof_protocol,
-    verify_session_request as verify_session_request_protocol, AuthorityIssuerKey,
+    verify_session_proof as verify_session_proof_protocol, AuthorityIssuerKey,
     DeviceEnrollmentSessionProofInput, ProtocolError, SessionAuthorityPurpose,
     SessionAuthorityVerificationInput, SessionAuthorityVerificationPolicy, SessionProof,
-    SessionProofInput, SessionProofPolicy, SessionRequest, SessionRequestProof,
-    SessionRequestVerificationInput, TransportAuthorizationV1, VerifiedSessionAuthority,
+    SessionProofInput, SessionProofPolicy, SessionRequest, TransportAuthorizationV1,
+    VerifiedSessionAuthority,
 };
 use trellis_protocol::{
     verify_session_event as verify_session_event_protocol, OriginalEventPublication, SessionEvent,
     SessionEventProof, SessionEventVerificationInput,
+};
+#[cfg(feature = "provider")]
+use trellis_protocol::{
+    verify_session_request as verify_session_request_protocol, SessionRequestProof,
+    SessionRequestVerificationInput,
 };
 use trellis_protocol::{
     verify_session_response as verify_session_response_protocol, CatalogActionIdentity,
@@ -31,6 +35,7 @@ use trellis_protocol::{
 use wasm_bindgen::prelude::*;
 
 /// Validate and normalize framework-private Operation state with the native codec.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn normalize_operation_record(record_json: &str) -> Result<String, JsError> {
     use trellis_protocol::operation_record::{encode_operation_record, DurableOperationRecord};
@@ -60,6 +65,7 @@ pub fn sign_admission_get(
 }
 
 /// Sign a provisioned CONNECT credential without client-asserted deployment claims.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn sign_provisioned_admission(credential_json: &str, seed: &[u8]) -> Result<String, JsError> {
     let seed: [u8; 32] = seed
@@ -273,6 +279,7 @@ pub fn authorize_catalog_action(
 }
 
 /// Generate a high-entropy canonical Transfer v1 session ID.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn transfer_generate_id() -> Result<String, JsError> {
     trellis_protocol::transfer::generate_transfer_id()
@@ -281,6 +288,7 @@ pub fn transfer_generate_id() -> Result<String, JsError> {
 
 /// Derive an exact Transfer v1 subject from logical endpoint identities.
 /// `kind` is upload-data, download-data, control or signal.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn transfer_subject(
     kind: &str,
@@ -376,6 +384,7 @@ pub fn transfer_parse_grant(raw: &[u8]) -> Result<String, JsError> {
 }
 
 /// Parse a strict Transfer caller control and return its normalized JSON.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn transfer_parse_control(raw: &[u8]) -> Result<String, JsError> {
     let value = trellis_protocol::transfer::parse_transfer_control(raw)
@@ -392,6 +401,7 @@ pub fn transfer_parse_signal(raw: &[u8]) -> Result<String, JsError> {
 }
 
 /// Parse ordered upload completion and return its normalized JSON.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn transfer_parse_complete(raw: &[u8]) -> Result<String, JsError> {
     let value = trellis_protocol::transfer::parse_transfer_complete(raw)
@@ -604,6 +614,7 @@ struct WireSessionAuthorityVerification {
     revocation_cutoff: Option<i64>,
 }
 
+#[cfg(feature = "provider")]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WireSessionRequest {
@@ -1087,6 +1098,7 @@ pub fn live_logical_open_hash(identity_json: &str) -> Result<String, JsError> {
 }
 
 /// Compute the canonical logical-control hash from its raw JSON body.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn live_logical_control_hash(raw: &[u8]) -> Result<String, JsError> {
     let control = trellis_protocol::parse_live_control(raw)
@@ -1096,6 +1108,7 @@ pub fn live_logical_control_hash(raw: &[u8]) -> Result<String, JsError> {
 }
 
 /// Build the canonical provider server-message proof digest for exact bytes.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn live_server_proof_digest(
     context_digest: &str,
@@ -1181,6 +1194,7 @@ fn json_result(value: Value) -> String {
 ///
 /// This authenticates bytes and API stamps; dispatch subsequently requires the
 /// verified catalog's whole-capability/action authorization.
+#[cfg(feature = "provider")]
 #[wasm_bindgen]
 pub fn verify_session_request(
     authority: &VerifiedSessionAuthorityHandle,

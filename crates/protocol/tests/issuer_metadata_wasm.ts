@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
+import "../../../ts/packages/trellis/auth/protocol_wasm_provider.ts";
+import { initializeProtocolWasmSync } from "../../../ts/packages/trellis/auth/protocol_wasm.ts";
 import { readFile } from "node:fs/promises";
-import {
-  initSync,
-  verify_issuer_metadata,
-} from "../../../ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm.js";
-import { PROTOCOL_WASM_BASE64 } from "../../../ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bytes.ts";
+import { verify_issuer_metadata } from "../../../ts/packages/trellis/auth/protocol_wasm/provider/trellis_protocol_wasm.js";
 
-initSync({
-  module: Uint8Array.from(atob(PROTOCOL_WASM_BASE64), (c) => c.charCodeAt(0)),
-});
+initializeProtocolWasmSync();
 const fixture = JSON.parse(await readFile(process.argv[2], "utf8"));
 const verify = (signed = fixture.signed, verification = fixture.verification) =>
   JSON.parse(

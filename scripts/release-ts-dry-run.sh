@@ -13,6 +13,7 @@ do
   npm publish --dry-run --access public --tag "$npm_tag" "$package"
 done
 
-test -s ts/packages/trellis/auth/protocol_wasm/trellis_protocol_wasm_bg.wasm
+test -s ts/packages/trellis/auth/protocol_wasm/client/trellis_protocol_wasm_bg.wasm
+test -s ts/packages/trellis/auth/protocol_wasm/provider/trellis_protocol_wasm_bg.wasm
 
 # Release stages testkit's verified native archive pins before publication.

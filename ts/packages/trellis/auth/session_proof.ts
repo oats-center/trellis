@@ -1,8 +1,4 @@
-import {
-  initializeProtocolWasm,
-  initializeProtocolWasmSync,
-} from "./protocol_wasm.ts";
-import * as protocol from "./protocol_wasm/trellis_protocol_wasm.js";
+import { initializeProtocolWasm, protocolBindings } from "./protocol_wasm.ts";
 import type { Ed25519Signer } from "./crypto.ts";
 import { base64urlDecode, base64urlEncode } from "./utils.ts";
 
@@ -33,9 +29,8 @@ export type SessionProofPolicy = {
 
 /** Parse and validate one signature envelope through Rust. */
 export function parseSessionProof(value: unknown): SessionProof {
-  initializeProtocolWasmSync();
   return JSON.parse(
-    protocol.parse_session_proof(JSON.stringify(value)),
+    protocolBindings().parse_session_proof(JSON.stringify(value)),
   ) as SessionProof;
 }
 
@@ -44,7 +39,9 @@ export async function sessionProofRequestDigest(
   request: Record<string, unknown>,
 ): Promise<string> {
   await initializeProtocolWasm();
-  return protocol.session_proof_request_digest(JSON.stringify(request));
+  return protocolBindings().session_proof_request_digest(
+    JSON.stringify(request),
+  );
 }
 
 /** Return the protocol-owned signing digest without implementing its framing in JS. */
@@ -52,7 +49,7 @@ export async function sessionProofSigningDigest(
   input: SessionProofInput,
 ): Promise<string> {
   await initializeProtocolWasm();
-  return protocol.session_proof_signing_digest(JSON.stringify(input));
+  return protocolBindings().session_proof_signing_digest(JSON.stringify(input));
 }
 
 /** Sign the Rust-produced digest, then verify the declared key and signature in Rust. */
@@ -89,7 +86,7 @@ export async function verifySessionProof(
   },
 ): Promise<void> {
   await initializeProtocolWasm();
-  protocol.verify_session_proof(
+  protocolBindings().verify_session_proof(
     JSON.stringify(input),
     JSON.stringify(proof),
     signerPublicKey,

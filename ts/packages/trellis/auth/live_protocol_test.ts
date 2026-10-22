@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+// Live control hashing serves requests: load the provider protocol build.
+import "./protocol_wasm_provider.ts";
 
 import {
   liveDataSubject,
