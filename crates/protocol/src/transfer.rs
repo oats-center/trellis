@@ -21,9 +21,9 @@ pub const TRANSFER_SERVER_PROOF_DOMAIN_V1: &str = "trellis.transfer-server-proof
 /// Maximum raw DATA body size.
 pub const MAX_TRANSFER_FRAME_BYTES: u64 = 1_048_576;
 /// Outstanding DATA frames a receiver offers one transfer by default.
-pub const TRANSFER_WINDOW_FRAMES: u64 = 16;
+pub const TRANSFER_WINDOW_FRAMES: u64 = 64;
 /// Outstanding raw DATA bytes a receiver offers one transfer by default.
-pub const TRANSFER_WINDOW_BYTES: u64 = 4_194_304;
+pub const TRANSFER_WINDOW_BYTES: u64 = 16_777_216;
 /// Largest outstanding-frame window any grant or activation may declare.
 pub const TRANSFER_MAX_WINDOW_FRAMES: u64 = 1_024;
 /// Largest outstanding-byte window any grant or activation may declare.

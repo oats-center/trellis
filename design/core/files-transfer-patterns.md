@@ -271,7 +271,8 @@ Rules:
 
 Frames are capped at 1 MiB; effective frame size also accounts for both peers'
 NATS payload limits and a 4 KiB header reserve. Outstanding windows are chosen
-by the receiver, up to protocol maxima of 1,024 frames and 64 MiB:
+by the receiver, up to protocol maxima of 1,024 frames and 64 MiB. The default
+offer is 64 frames and 16 MiB, from a 256 MiB process budget:
 
 - the receiver admits its window from one process-wide receive budget before
   any frame can arrive, and releases it when the transfer ends on any path;
