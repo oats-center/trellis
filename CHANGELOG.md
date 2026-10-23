@@ -73,6 +73,23 @@ and this project adheres to
 
 ### Changed
 
+- Native admission is about 2.8 times faster (6.5 ms to 2.3 ms per connection
+  in a release build), and its first ContextGet 2.6 times (6.4 ms to 2.4 ms).
+  Auth caches its prepared SQL statements, evaluates each admission once, signs
+  nothing just to measure a reply, and derives each accepted action's broker
+  route when the API is accepted instead of compiling IDL on every connection.
+- Auth's SQLite work no longer runs on async workers. OAuth storage, the portal,
+  consent, device and upstream-sign-in handlers, the token endpoint, and the
+  enforcement workers use the blocking pool. In WAL mode, read-only lookups use
+  a separate read-only connection, and CORS origins for `/token`, `/revoke`, and
+  `/device_authorization` are answered from memory.
+- Revocations take effect without waiting for the next one-second tick:
+  committing enforcement or effect work wakes the workers. Work naming one
+  session, grant, login, identity, principal, or deployment runs before broad
+  scans.
+- `trellis_idl::compile_evidence` returns `Arc<PackageGraph>`, sharing cached
+  compilations instead of cloning them.
+
 - The TypeScript SDK ships two protocol WASM builds. Callers load a client
   build; services and devices load a provider build with the request-serving
   verifiers, selected automatically by the `/service` and `/device`
@@ -174,6 +191,10 @@ and this project adheres to
   `Auth.OIDCProviders.Put`.
 
 ### Fixed
+
+- An Auth effect queued with the same payload as an existing one but behind a
+  different predecessor kept only the first predecessor; each now keeps its own
+  ordering edge.
 
 - The Rust service and device demos and the native benchmark compile again: they
   pass the installation CA to `discover_native_oauth` (`--ca-certificate` or
