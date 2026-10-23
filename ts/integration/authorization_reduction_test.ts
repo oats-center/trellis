@@ -127,7 +127,7 @@ test("required capability reduction retires native service sockets and fences it
         admittedConnections(await readRuntimeBrokerInventory(runtime), ids)
           .length > 0,
       );
-      const capabilityId = "runtime-trellis.transport_growth@v1::advance";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.advance";
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         principalId: own.principalId,
         capabilityId,

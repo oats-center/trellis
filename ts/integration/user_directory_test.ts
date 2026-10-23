@@ -145,14 +145,14 @@ test(
       });
       await runtime.grantUserCapabilities({
         user: unentitled,
-        capabilityIds: ["trellis.auth@v1::readAccount"],
+        capabilityIds: ["trellis.auth.v1:account.read"],
       });
       for (const user of [alice, unentitled]) {
         const declined = await runtime.registerClient({
           name: "Declined directory",
           contract: apps.DirectoryOptional.request,
           user,
-          approvedCapabilities: ["trellis.auth@v1::readAccount"],
+          approvedCapabilities: ["trellis.auth.v1:account.read"],
         });
         const noDirectory = await connectNativeClient({
           ...declined,
@@ -169,7 +169,7 @@ test(
 
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         principalId: aliceId,
-        capabilityId: "trellis.auth@v1::readUsers",
+        capabilityId: "trellis.auth.v1:users.read",
       });
       assert.equal(grants.items.length, 1);
       await runtime.callAdminRpc("authCapabilityGrantsRevoke", {

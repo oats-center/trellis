@@ -184,7 +184,7 @@ test("generated keyset clients cross the live runtime boundary", async () => {
         request: adminParticipant,
         username: "admin",
         password: runtime.adminPassword,
-        administrativeCapabilities: ["trellis.managePrincipals"],
+        administrativeCapabilities: ["trellis.auth.v1:users.manage"],
       });
       const consoleClient = await connectNativeClient({
         ...login,

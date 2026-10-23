@@ -34,7 +34,7 @@ import { connectNativeClient } from "../native.ts";
 import { TransportError, createAuth } from "../portable.ts";
 import { TrellisService } from "../service/mod.ts";
 
-const echoCapability = "runtime-trellis.runtime@v1::echo";
+const echoCapability = "runtime-trellis.runtime.v1:echo.call";
 type ReplyFrame = Extract<NatsOp, { kind: "msg" }>;
 type ReplyMutation = (
   frame: ReplyFrame,
@@ -188,10 +188,10 @@ test(
           clientId: "trellis.cli",
           request: adminApps.cli.request,
           administrativeCapabilities: [
-            "trellis.managePrincipals",
-            "trellis.acceptApis",
-            "trellis.manageClients",
-            "trellis.manageRoles",
+            "trellis.auth.v1:users.manage",
+            "trellis.auth.v1:apis.accept",
+            "trellis.auth.v1:clients.manage",
+            "trellis.auth.v1:roles.manage",
           ],
           signal: context.signal,
         });

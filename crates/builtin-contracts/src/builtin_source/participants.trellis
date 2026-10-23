@@ -21,108 +21,108 @@ service platform {
 service healthRuntime { implements health; }
 service jobsRuntime {
   implements jobs;
-  use auth { required capability readJobBindings; }
+  use auth { required capability bindings.readJobs; }
 }
 service eventsRuntime {
   implements events;
-  use auth { required capability readEventBindings; }
+  use auth { required capability bindings.readEvents; }
 }
 
 // These declarations are developer requests, never installed principals.
 agent cli {
   use auth {
-    capability manageRoles;
-    capability acceptApis;
-    capability forceReplaceApis;
-    capability manageClients;
-    capability managePlatform;
-    capability managePrincipals;
-    capability readUsers;
-    capability readAccount;
-    capability updateProfile;
-    capability changePassword;
-    capability readIdentities;
-    capability manageIdentities;
-    capability readSessions;
-    capability revokeSessions;
-    capability readDelegations;
-    capability revokeDelegations;
+    capability roles.manage;
+    capability apis.accept;
+    capability apis.forceReplace;
+    capability clients.manage;
+    capability platform.manage;
+    capability users.manage;
+    capability users.read;
+    capability account.read;
+    capability account.edit;
+    capability account.changePassword;
+    capability identities.read;
+    capability identities.manage;
+    capability sessions.read;
+    capability sessions.revoke;
+    capability delegations.read;
+    capability delegations.revoke;
   }
-  use state { capability delete; }
+  use state { capability values.delete; }
   use core {
-    capability destroyResources;
-    capability readResources;
+    capability resources.destroy;
+    capability resources.read;
   }
-  use health { capability query; capability observe; }
-  use jobs { capability query; }
+  use health { capability health.query; capability health.observe; }
+  use jobs { capability jobs.query; }
   use events {
-    capability inspectConsumers;
-    capability dismissDeadLetters;
-    capability inspectDeadLetters;
-    capability replayDeadLetters;
-    capability query;
+    capability consumers.inspect;
+    capability deadLetters.dismiss;
+    capability deadLetters.inspect;
+    capability deadLetters.replay;
+    capability events.query;
   }
 }
 
 app console {
   use auth {
-    capability manageRoles;
-    capability acceptApis;
-    capability forceReplaceApis;
-    capability manageClients;
-    capability managePlatform;
-    capability managePrincipals;
-    capability readUsers;
-    capability observeSecurityEvents;
-    capability readAccount;
-    capability updateProfile;
-    capability changePassword;
-    capability readIdentities;
-    capability manageIdentities;
-    capability readSessions;
-    capability revokeSessions;
-    capability readDelegations;
-    capability revokeDelegations;
+    capability roles.manage;
+    capability apis.accept;
+    capability apis.forceReplace;
+    capability clients.manage;
+    capability platform.manage;
+    capability users.manage;
+    capability users.read;
+    capability security.observe;
+    capability account.read;
+    capability account.edit;
+    capability account.changePassword;
+    capability identities.read;
+    capability identities.manage;
+    capability sessions.read;
+    capability sessions.revoke;
+    capability delegations.read;
+    capability delegations.revoke;
   }
   use state {
-    capability delete;
-    capability read;
-    capability write;
+    capability values.delete;
+    capability values.read;
+    capability values.write;
   }
   use core {
-    capability destroyResources;
-    capability readResources;
+    capability resources.destroy;
+    capability resources.read;
   }
   use health {
-    capability inspect;
-    capability readMetrics;
-    capability query;
-    capability readSummary;
-    capability observe;
+    capability health.inspect;
+    capability metrics.read;
+    capability health.query;
+    capability summary.read;
+    capability health.observe;
   }
   use jobs {
-    capability cancel;
-    capability dismissDeadLetters;
-    capability findByKey;
-    capability inspect;
-    capability readDeadLetters;
-    capability listServices;
-    capability readMetrics;
-    capability query;
-    capability readSummary;
-    capability replayDeadLetters;
-    capability retry;
-    capability observe;
+    capability jobs.cancel;
+    capability deadLetters.dismiss;
+    capability jobs.findByKey;
+    capability jobs.inspect;
+    capability deadLetters.read;
+    capability services.list;
+    capability metrics.read;
+    capability jobs.query;
+    capability summary.read;
+    capability deadLetters.replay;
+    capability jobs.retry;
+    capability jobs.observe;
   }
   use events {
-    capability inspectConsumers;
-    capability dismissDeadLetters;
-    capability inspectDeadLetters;
-    capability replayDeadLetters;
-    capability readDiagnostics;
-    capability inspect;
-    capability readMetrics;
-    capability query;
-    capability observe;
+    capability consumers.inspect;
+    capability deadLetters.dismiss;
+    capability deadLetters.inspect;
+    capability deadLetters.replay;
+    capability diagnostics.read;
+    capability events.inspect;
+    capability metrics.read;
+    capability events.query;
+    capability events.observe;
   }
 }

@@ -35,7 +35,7 @@ service can declare its own health or statistics RPCs if useful, but those
 domain surfaces are not automatically added to its API or required by Trellis.
 
 Provisioned devices use the same event. Auth assigns the runtime-owned
-`trellis.health@v1::reportHealth` capability through ordinary instance provisioning
+`trellis.health.v1:health.report` capability through ordinary instance provisioning
 and requires it during native credential selection. Contract authors need not
 declare this internal runtime dependency. Users and application OAuth grants
 cannot select this publishing right, even through administrative assignment.

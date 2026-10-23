@@ -14,7 +14,8 @@ frozen resolution metadata. Runtime JSON Schema is a validator projection only.
 
 - API identity is `<package>.<ApiName>@v<major>`.
 - Participant identity is `<package>.<lexical-path>`.
-- Capability identity is `<api-id>::<name>`.
+- Capability identity is `<package>.<ApiName>.v<major>:<area>.<action>`, for
+  example `trellis.auth.v1:users.edit`.
 - Resource identity is the owner binding, participant identity, kind, and local
   resource name.
 

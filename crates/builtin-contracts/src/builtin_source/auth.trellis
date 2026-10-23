@@ -125,7 +125,7 @@ api auth@v1 {
   error UnexpectedError(AuthErrorDetails);
   error ValidationError(AuthErrorDetails);
 
-  // trellis.manageRoles; role membership never contains action-level grants.
+  // trellis.auth.v1:roles.manage; role membership never contains action-level grants.
   rpc Roles.List { input AuthPageRequest; output AuthRolesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Roles.Get { input AuthRoleGetRequest; output AuthRoleGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Roles.Put { input AuthRolePutRequest; output AuthRolePutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -159,7 +159,7 @@ api auth@v1 {
   rpc Delegations.Review { input AuthDelegationReviewRequest; output AuthDelegationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Delegations.Revoke { input AuthDelegationRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // trellis.managePrincipals; logical retirement and physical kicks are distinct.
+  // trellis.auth.v1:users.manage; logical retirement and physical kicks are distinct.
   rpc AuthorizationSessions.List { input AuthAuthorizationSessionsListRequest; output AuthAuthorizationSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc AuthorizationSessions.Revoke { input AuthAuthorizationSessionRevokeRequest; output AuthAuthorizationSessionRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Connections.List { input AuthConnectionsListRequest; output AuthConnectionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
@@ -200,12 +200,12 @@ api auth@v1 {
   rpc OIDCProviders.Disable { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OIDCProviders.Delete { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // trellis.manageRoles; mappings apply only to verified claims from this provider.
+  // trellis.auth.v1:roles.manage; mappings apply only to verified claims from this provider.
   rpc OIDCRoleMappings.List { input AuthOIDCRoleMappingsListRequest; output AuthOIDCRoleMappingsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc OIDCRoleMappings.Put { input AuthOIDCRoleMappingPutRequest; output AuthOIDCRoleMappingPutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OIDCRoleMappings.Delete { input AuthOIDCRoleMappingDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // trellis.managePrincipals; only service/device implementations can be deployed.
+  // trellis.auth.v1:users.manage; only service/device implementations can be deployed.
   rpc Devices.Reviews.Get { input AuthDeviceReviewGetRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Devices.Reviews.List { input AuthPageRequest; output AuthDeviceReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Devices.Reviews.Decide { input AuthDeviceReviewDecideRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -244,70 +244,70 @@ api auth@v1 {
     group account {
       title "Your account";
       description "Your profile, password, sign-ins, and connected apps.";
-      capability manageDeviceCompanions {
+      capability account.linkDevice {
         consent_revision 1;
         title "Link to a device";
         description "Link this sign-in to a device you approved, or unlink it.";
         consequence "The device can recognize this sign-in. Unlinking signs it out.";
         allows { rpc Devices.Reviews.Get; rpc DeviceCompanions.Attach; rpc DeviceCompanions.Revoke; }
       }
-      capability readAccount {
+      capability account.read {
         consent_revision 3;
         title "See your profile";
         description "See your name, email, and account, and sign you out.";
         consequence "Can read your profile and email and end your current sign-in.";
         allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; }
       }
-      capability updateProfile {
+      capability account.edit {
         consent_revision 1;
         title "Edit your profile";
         description "Change your display name, email, and photo.";
         consequence "Changes what other apps see about you. Emails entered here are not verified.";
         allows { rpc Users.Profile.Update; }
       }
-      capability changePassword {
+      capability account.changePassword {
         consent_revision 1;
         title "Change your password";
         description "Change your password using your current one.";
         consequence "Changes your password and signs out your other sessions.";
         allows { rpc Users.Password.Change; }
       }
-      capability readIdentities {
+      capability identities.read {
         consent_revision 1;
         title "See linked sign-ins";
         description "See which company accounts you can sign in with.";
         consequence "Can see your linked accounts.";
         allows { rpc UserIdentities.List; }
       }
-      capability manageIdentities {
+      capability identities.manage {
         consent_revision 1;
         title "Manage linked sign-ins";
         description "Link or unlink company accounts.";
         consequence "Changes which accounts can sign in as you.";
         allows { rpc Users.IdentityLink.Create; rpc UserIdentities.Unlink; }
       }
-      capability readSessions {
+      capability sessions.read {
         consent_revision 1;
         title "See your sign-ins";
         description "See when and where you signed in.";
         consequence "Can see your sign-in history.";
         allows { rpc Sessions.List; }
       }
-      capability revokeSessions {
+      capability sessions.revoke {
         consent_revision 1;
         title "Sign out your sessions";
         description "End one of your sign-ins.";
         consequence "Signs out apps that use that sign-in.";
         allows { rpc Sessions.Revoke; }
       }
-      capability readDelegations {
+      capability delegations.read {
         consent_revision 1;
         title "See your connected apps";
         description "See which apps you have allowed and what they can do.";
         consequence "Can see your app choices.";
         allows { rpc Delegations.List; rpc Delegations.Review; }
       }
-      capability revokeDelegations {
+      capability delegations.revoke {
         consent_revision 1;
         title "Disconnect your apps";
         description "Remove an app's access to your account.";
@@ -318,14 +318,14 @@ api auth@v1 {
     group users {
       title "Users";
       description "People's accounts.";
-      capability readUsers {
+      capability users.read {
         consent_revision 2;
         title "See users";
         description "Find people and see their names, emails, and photos.";
         consequence "Can see everyone's name, email, and photo.";
         allows { rpc Users.List; rpc Users.Get; }
       }
-      capability managePrincipals {
+      capability users.manage {
         administrative;
         consent_revision 1;
         title "Manage users and services";
@@ -337,7 +337,7 @@ api auth@v1 {
     group roles {
       title "Roles and permissions";
       description "Who can do what.";
-      capability manageRoles {
+      capability roles.manage {
         administrative;
         consent_revision 1;
         title "Manage roles and access";
@@ -349,7 +349,7 @@ api auth@v1 {
     group apis {
       title "APIs";
       description "The APIs installed on Trellis.";
-      capability acceptApis {
+      capability apis.accept {
         administrative;
         consent_revision 1;
         title "Install API updates";
@@ -357,7 +357,7 @@ api auth@v1 {
         consequence "Changes what installed APIs offer to every app.";
         allows { rpc Apis.List; rpc Apis.Get; rpc Apis.Review; rpc Apis.Accept; }
       }
-      capability forceReplaceApis {
+      capability apis.forceReplace {
         administrative;
         consent_revision 1;
         title "Force API replacements";
@@ -369,7 +369,7 @@ api auth@v1 {
     group apps {
       title "Apps";
       description "Apps that people can sign in to.";
-      capability manageClients {
+      capability clients.manage {
         administrative;
         consent_revision 1;
         title "Manage apps";
@@ -381,14 +381,14 @@ api auth@v1 {
     group security {
       title "Platform security";
       description "Administrators and signing keys.";
-      capability observeSecurityEvents {
+      capability security.observe {
         consent_revision 1;
         title "Watch security activity";
         description "Follow sign-ins, sign-outs, and key changes as they happen.";
         consequence "Can see security activity live.";
         allows { subscribe event Connections.Opened; subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event AuthorizationSessions.Retired; subscribe event Issuers.Rotated; subscribe event Issuers.Revoked; }
       }
-      capability managePlatform {
+      capability platform.manage {
         administrative;
         consent_revision 1;
         title "Manage this Trellis";
@@ -397,14 +397,14 @@ api auth@v1 {
         allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; }
       }
     }
-    capability readJobBindings {
+    capability bindings.readJobs {
       consent_revision 1;
       title "Read job storage settings";
       description "Look up which services own which job queues.";
       consequence "Can see job queue ownership.";
       allows { rpc ResourceBindings.Query; }
     }
-    capability readEventBindings {
+    capability bindings.readEvents {
       consent_revision 1;
       title "Read event delivery settings";
       description "Look up which services own which event consumers.";

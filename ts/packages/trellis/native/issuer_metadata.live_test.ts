@@ -38,10 +38,8 @@ test(
         const lease = connected.owner.own();
         try {
           assert.ok(
-            !lease.authority.capabilities.some(
-              (held) =>
-                held.capabilityId.startsWith("trellis.") &&
-                !held.capabilityId.includes("::"),
+            !lease.authority.capabilities.some((held) =>
+              held.capabilityId.endsWith(":users.manage"),
             ),
           );
           const status = await connected.owner.readIssuerMetadata({

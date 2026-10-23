@@ -18,11 +18,11 @@ api documents@v1 {
   live List.Watch { input Value; event Value; }
   rpc Echo { input Value; output Value; }
   capabilities {
-    capability read { title "Read live documents"; description "Observe the first application major."; consequence "The caller can observe version-one values."; consent_revision 1; allows { live Watch; live List.Watch; rpc Echo; } }
+    capability documents.read { title "Read live documents"; description "Observe the first application major."; consequence "The caller can observe version-one values."; consent_revision 1; allows { live Watch; live List.Watch; rpc Echo; } }
   }
 }
 service LiveV1Provider { implements documents; }
-agent LiveV1Caller { use documents { required capability read; } }
+agent LiveV1Caller { use documents { required capability documents.read; } }
 
 api runtime@v1 {
   title "Runtime acceptance";
@@ -36,10 +36,10 @@ api runtime@v1 {
   event Changed { payload Value; }
   live Watch { input Empty; event Value; }
   capabilities {
-    capability transport { title "Transport"; description "Exercise the runtime transport surfaces."; consequence "The caller may invoke and observe the fixture transports."; consent_revision 1; allows { rpc Echo; operation Work; operation Upload; operation Ingest; publish event Changed; subscribe event Changed; live Watch; } }
-    capability echo { title "Echo"; description "Invoke the echo RPC."; consequence "The caller may echo values."; consent_revision 1; allows { rpc Echo; } }
-    capability work { title "Work"; description "Execute the work operation."; consequence "The caller may execute and control work."; consent_revision 1; allows { operation Work; } }
-    capability download { title "Download"; description "Download a fixture value."; consequence "The caller may download values."; consent_revision 1; allows { rpc Download; rpc Generate; } }
+    capability transfers.transport { title "Transport"; description "Exercise the runtime transport surfaces."; consequence "The caller may invoke and observe the fixture transports."; consent_revision 1; allows { rpc Echo; operation Work; operation Upload; operation Ingest; publish event Changed; subscribe event Changed; live Watch; } }
+    capability echo.call { title "Echo"; description "Invoke the echo RPC."; consequence "The caller may echo values."; consent_revision 1; allows { rpc Echo; } }
+    capability operations.work { title "Work"; description "Execute the work operation."; consequence "The caller may execute and control work."; consent_revision 1; allows { operation Work; } }
+    capability transfers.download { title "Download"; description "Download a fixture value."; consequence "The caller may download values."; consent_revision 1; allows { rpc Download; rpc Generate; } }
   }
 }
 
@@ -52,12 +52,12 @@ api events@v1 {
   rpc DropAlpha { input Empty; output Empty; }
   rpc DeliveryStats { input Empty; output DeliveryStats; }
   capabilities {
-    capability publishAlpha { title "Publish Alpha"; description "Publish Alpha samples."; consequence "The caller may publish Alpha."; consent_revision 1; allows { publish event Alpha; } }
-    capability publishBeta { title "Publish Beta"; description "Publish Beta samples."; consequence "The caller may publish Beta."; consent_revision 1; allows { publish event Beta; } }
-    capability subscribeAlpha { title "Subscribe Alpha"; description "Observe Alpha samples."; consequence "The caller may subscribe to Alpha."; consent_revision 1; allows { subscribe event Alpha; } }
-    capability subscribeBeta { title "Subscribe Beta"; description "Observe Beta samples."; consequence "The caller may subscribe to Beta."; consent_revision 1; allows { subscribe event Beta; } }
-    capability inspect { title "Inspect delivery"; description "Read observed samples and delivery statistics."; consequence "The caller may inspect delivery results."; consent_revision 1; allows { rpc Observed; rpc DeliveryStats; } }
-    capability dropAlpha { title "Drop Alpha"; description "Close the Alpha fixture subscription."; consequence "The caller may stop Alpha observation."; consent_revision 1; allows { rpc DropAlpha; } }
+    capability alpha.publish { title "Publish Alpha"; description "Publish Alpha samples."; consequence "The caller may publish Alpha."; consent_revision 1; allows { publish event Alpha; } }
+    capability beta.publish { title "Publish Beta"; description "Publish Beta samples."; consequence "The caller may publish Beta."; consent_revision 1; allows { publish event Beta; } }
+    capability alpha.subscribe { title "Subscribe Alpha"; description "Observe Alpha samples."; consequence "The caller may subscribe to Alpha."; consent_revision 1; allows { subscribe event Alpha; } }
+    capability beta.subscribe { title "Subscribe Beta"; description "Observe Beta samples."; consequence "The caller may subscribe to Beta."; consent_revision 1; allows { subscribe event Beta; } }
+    capability events.inspect { title "Inspect delivery"; description "Read observed samples and delivery statistics."; consequence "The caller may inspect delivery results."; consent_revision 1; allows { rpc Observed; rpc DeliveryStats; } }
+    capability alpha.drop { title "Drop Alpha"; description "Close the Alpha fixture subscription."; consequence "The caller may stop Alpha observation."; consent_revision 1; allows { rpc DropAlpha; } }
   }
 }
 
@@ -67,14 +67,14 @@ api device_child@v1 {
   rpc Required { input Empty; output Empty; }
   rpc Optional { input Empty; output Empty; }
   capabilities {
-    capability required {
+    capability child.required {
       title "Required";
       description "Required child operation.";
       consequence "The child can invoke its required operation.";
       consent_revision 1;
       allows { rpc Required; }
     }
-    capability optional {
+    capability child.optional {
       title "Optional";
       description "Optional child operation.";
       consequence "The child can invoke its optional operation.";
@@ -87,8 +87,8 @@ api device_child@v1 {
 service Provider {
   implements runtime;
   use runtime {
-    required capability echo;
-    required capability work;
+    required capability echo.call;
+    required capability operations.work;
   }
   job work {
     title "Work";
@@ -111,38 +111,38 @@ service Provider {
 service EchoProvider { implements runtime; }
 service TransferGrowthProvider {
   implements runtime;
-  use transport_growth { capability extend; }
+  use transport_growth { capability growth.extend; }
   store files { title "Files"; description "Transfer acceptance bytes across authority growth."; ttl 0; desired_max_object 8MiB; desired_max_total 16MiB; }
 }
 service OrdinaryJobs {
   job work { title "Work"; description "Ordinary queue cancellation"; payload Value; result Value; }
 }
-agent JobEvidenceReader { use auth { required capability readJobBindings; } }
+agent JobEvidenceReader { use auth { required capability bindings.readJobs; } }
 agent DirectoryCaller {
   use auth {
-    required capability readUsers;
-    required capability readAccount;
-    required capability updateProfile;
-    capability managePrincipals;
+    required capability users.read;
+    required capability account.read;
+    required capability account.edit;
+    capability users.manage;
   }
 }
 agent DirectoryOptional {
-  use auth { required capability readAccount; capability readUsers; }
+  use auth { required capability account.read; capability users.read; }
 }
-agent AccountCaller { use auth { required capability readAccount; } }
-agent EventEvidenceReader { use auth { required capability readEventBindings; } }
+agent AccountCaller { use auth { required capability account.read; } }
+agent EventEvidenceReader { use auth { required capability bindings.readEvents; } }
 api optional_availability@v2 {
   title "Optional operation availability";
   description "Native clients use approved optional operations without legacy atom grants.";
   rpc Read { input Value; output Value; }
   operation Extend { input Value; update Value; output Value; signals { Continue Value; } }
   capabilities {
-    capability read { title "Read"; description "Read fixture values."; consequence "The caller may read values."; consent_revision 1; allows { rpc Read; } }
-    capability extend { title "Extend"; description "Execute the optional operation."; consequence "The caller may extend values."; consent_revision 1; allows { operation Extend; } }
+    capability values.read { title "Read"; description "Read fixture values."; consequence "The caller may read values."; consent_revision 1; allows { rpc Read; } }
+    capability values.extend { title "Extend"; description "Execute the optional operation."; consequence "The caller may extend values."; consent_revision 1; allows { operation Extend; } }
   }
 }
 service NativeOptionalProvider { implements optional_availability; }
-agent NativeOptionalExtend { use optional_availability { required capability read; capability extend; } }
+agent NativeOptionalExtend { use optional_availability { required capability values.read; capability values.extend; } }
 service ResourceProvider {
   kv records { title "Records"; description "Console resource lifecycle acceptance values."; schema ResourceValue; version 1; history 4; ttl 0ms; }
 }
@@ -150,16 +150,16 @@ service OperationProvider {
   implements runtime;
   job keyedWork { title "Keyed work"; description "Rust keyed queue acceptance."; payload KeyedValue; result KeyedValue; key_concurrency { path key; policy queue; } }
 }
-service OperationCaller { use runtime { required capability work; } }
-agent EchoCaller { use runtime { required capability echo; } }
+service OperationCaller { use runtime { required capability operations.work; } }
+agent EchoCaller { use runtime { required capability echo.call; } }
 agent Observer {
-  use health { required capability observe; required capability inspect; }
-  use jobs { required capability observe; required capability readSummary; }
-  use eventlog { required capability observe; required capability query; }
+  use health { required capability health.observe; required capability health.inspect; }
+  use jobs { required capability jobs.observe; required capability summary.read; }
+  use eventlog { required capability events.observe; required capability events.query; }
 }
-agent TransferCaller { use runtime { required capability transport; required capability download; } }
+agent TransferCaller { use runtime { required capability transfers.transport; required capability transfers.download; } }
 agent Caller {
-  use runtime { required capability transport; required capability download; }
+  use runtime { required capability transfers.transport; required capability transfers.download; }
   state saved { title "Saved"; description "Caller-owned saved value."; schema Saved; version 1; }
   state savedResource { title "Saved resource"; description "Rust State acceptance value."; schema ResourceValue; version 1; }
 }
@@ -170,11 +170,11 @@ agent NativeStateCaller {
   state savedResource { title "Saved resource"; description "Native State acceptance value."; schema ResourceValue; version 1; }
 }
 agent Denied { use runtime; }
-agent JobsAdmin { use jobs { required capability query; required capability inspect; required capability findByKey; required capability retry; required capability replayDeadLetters; required capability listServices; } }
+agent JobsAdmin { use jobs { required capability jobs.query; required capability jobs.inspect; required capability jobs.findByKey; required capability jobs.retry; required capability deadLetters.replay; required capability services.list; } }
 service AdminService {
   use auth {
-    required capability managePrincipals;
-    required capability manageRoles;
+    required capability users.manage;
+    required capability roles.manage;
   }
 }
 service EventService {
@@ -187,30 +187,30 @@ service EventServiceConsumerOnly {
 }
 service EventServiceBoth {
   implements events;
-  use events { required capability subscribeAlpha; required capability subscribeBeta; }
+  use events { required capability alpha.subscribe; required capability beta.subscribe; }
   consumer events { title "Events"; description "Durable plus explicit subscribe acceptance values."; events [events.Alpha, events.Beta]; concurrency 1; replay new; }
 }
 service EventSubscriberService {
   implements events;
-  use events { required capability subscribeAlpha; required capability subscribeBeta; }
+  use events { required capability alpha.subscribe; required capability beta.subscribe; }
 }
 service EventClient {
   use events {
-    required capability publishAlpha;
-    required capability subscribeBeta;
+    required capability alpha.publish;
+    required capability beta.subscribe;
   }
 }
 service ChildProvider { implements device_child; }
-agent Alpha { use events { required capability publishAlpha; required capability inspect; required capability dropAlpha; } }
-agent Beta { use events { required capability publishBeta; } }
+agent Alpha { use events { required capability alpha.publish; required capability events.inspect; required capability alpha.drop; } }
+agent Beta { use events { required capability beta.publish; } }
 device Device {
   state telemetry { title "Telemetry"; description "Device-owned State acceptance value."; schema ResourceValue; version 1; }
   agent Companion {
     state shared { title "Shared"; description "Same-user companion State acceptance value."; schema ResourceValue; version 1; }
-    use auth { required capability manageDeviceCompanions; }
+    use auth { required capability account.linkDevice; }
     use device_child {
-      required capability required;
-      capability optional;
+      required capability child.required;
+      capability child.optional;
     }
   }
 }
@@ -219,10 +219,10 @@ device StateDevice {
 }
 device AgentDevice {
   agent Companion {
-    use auth { required capability manageDeviceCompanions; }
+    use auth { required capability account.linkDevice; }
     use device_child {
-      required capability required;
-      capability optional;
+      required capability child.required;
+      capability child.optional;
     }
   }
 }
@@ -264,13 +264,13 @@ api liveprobe@v1 {
   rpc Inspect { input LiveProbeKey; output LiveProbeStatus; }
   rpc Release { input LiveProbeRelease; output LiveProbeStatus; }
   live Watch { input LiveProbeKey; event LiveProbeFrame; }
-  capabilities { capability observe { title "Observe"; description "Control and observe the live fixture."; consequence "The caller may inspect, release, and watch live probes."; consent_revision 1; allows { rpc Inspect; rpc Release; live Watch; } } }
+  capabilities { capability probe.observe { title "Observe"; description "Control and observe the live fixture."; consequence "The caller may inspect, release, and watch live probes."; consent_revision 1; allows { rpc Inspect; rpc Release; live Watch; } } }
 }
 
 service LiveProbeProvider { implements liveprobe; }
 
 agent LiveProbeCaller {
-  use liveprobe { required capability observe; }
+  use liveprobe { required capability probe.observe; }
 }
 
 api transport_growth@v1 {
@@ -285,19 +285,19 @@ api transport_growth@v1 {
   operation Hold { input Empty; progress Update; output Value; signals { Continue Value; } }
   live Progress { input Empty; event Value; }
   capabilities {
-    capability advance { title "Advance"; description "Advance the fixture."; consequence "The caller may advance work."; consent_revision 1; allows { rpc Advance; } }
-    capability control { title "Control"; description "Control the fixture attachment."; consequence "The caller may nudge or park the attachment."; consent_revision 1; allows { rpc Nudge; rpc Park; } }
-    capability hold { title "Hold"; description "Execute held work."; consequence "The caller may execute and observe held work."; consent_revision 1; allows { operation Hold; } }
-    capability progress { title "Progress"; description "Observe live progress."; consequence "The caller may observe progress."; consent_revision 1; allows { live Progress; } }
-    capability publishTick { title "Publish Tick"; description "Publish fixture ticks."; consequence "The caller may publish ticks."; consent_revision 1; allows { publish event Tick; } }
-    capability extend {
+    capability growth.advance { title "Advance"; description "Advance the fixture."; consequence "The caller may advance work."; consent_revision 1; allows { rpc Advance; } }
+    capability growth.control { title "Control"; description "Control the fixture attachment."; consequence "The caller may nudge or park the attachment."; consent_revision 1; allows { rpc Nudge; rpc Park; } }
+    capability growth.hold { title "Hold"; description "Execute held work."; consequence "The caller may execute and observe held work."; consent_revision 1; allows { operation Hold; } }
+    capability growth.progress { title "Progress"; description "Observe live progress."; consequence "The caller may observe progress."; consent_revision 1; allows { live Progress; } }
+    capability growth.publishTick { title "Publish Tick"; description "Publish fixture ticks."; consequence "The caller may publish ticks."; consent_revision 1; allows { publish event Tick; } }
+    capability growth.extend {
       title "Optional capability";
       description "Optional growth operation.";
       consequence "The subject can invoke its optional operation.";
       consent_revision 1;
       allows { rpc Extend; }
     }
-    capability extend2 {
+    capability growth.extendAgain {
       title "Second optional capability";
       description "Second optional growth operation.";
       consequence "The subject can invoke its second optional operation.";
@@ -311,7 +311,7 @@ api probe_aux@v1 {
   title "Auxiliary live route";
   description "A second live route served on one service attachment.";
   live Pulse { input Empty; event Value; }
-  capabilities { capability observe { title "Observe"; description "Observe the auxiliary route."; consequence "The caller may observe auxiliary pulses."; consent_revision 1; allows { live Pulse; } } }
+  capabilities { capability aux.observe { title "Observe"; description "Observe the auxiliary route."; consequence "The caller may observe auxiliary pulses."; consent_revision 1; allows { live Pulse; } } }
 }
 
 api finite@v1 {
@@ -323,7 +323,7 @@ api finite@v1 {
   rpc HoldCancelled { input Value; output Value; errors [Rejected]; }
   rpc HoldDeadline { input Value; output Value; errors [Rejected]; }
   capabilities {
-    capability invoke {
+    capability finite.invoke {
       title "Wait for a result";
       description "Execute the finite response fixture.";
       consequence "The caller may receive a success or declared failure.";
@@ -333,16 +333,16 @@ api finite@v1 {
   }
 }
 service FiniteProvider { implements finite; }
-service FiniteCaller { use finite { required capability invoke; } }
+service FiniteCaller { use finite { required capability finite.invoke; } }
 
 service TransportGrowthSubject {
   implements liveprobe;
   implements probe_aux;
   use transport_growth {
-    required capability advance;
-    required capability hold;
-    required capability progress;
-    capability extend;
+    required capability growth.advance;
+    required capability growth.hold;
+    required capability growth.progress;
+    capability growth.extend;
   }
 }
 
@@ -350,9 +350,9 @@ service TransportGrowthTarget { implements transport_growth; }
 service TransportGrowthOperationProvider {
   implements transport_growth;
   use transport_growth {
-    required capability advance;
-    capability extend;
-    capability extend2;
+    required capability growth.advance;
+    capability growth.extend;
+    capability growth.extendAgain;
   }
   job held {
     title "Held work";
@@ -380,18 +380,18 @@ service TransportGrowthOperationProvider {
 
 agent TransportGrowthCaller {
   use transport_growth {
-    required capability advance;
-    required capability control;
-    required capability hold;
-    required capability publishTick;
-    capability extend;
+    required capability growth.advance;
+    required capability growth.control;
+    required capability growth.hold;
+    required capability growth.publishTick;
+    capability growth.extend;
   }
 }
 agent RpcDistributionCaller {
-  use transport_growth { required capability control; required capability progress; }
+  use transport_growth { required capability growth.control; required capability growth.progress; }
 }
 
 agent DownloadGrowthCaller {
-  use runtime { required capability download; }
-  use transport_growth { capability extend; }
+  use runtime { required capability transfers.download; }
+  use transport_growth { capability growth.extend; }
 }

@@ -46,11 +46,11 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 {
                     "type":"trellis_capabilities",
                     "required": [
-                        "trellis.auth@v1::readAccount",
-                        "trellis.manageRoles",
-                        "trellis.managePrincipals",
-                        "trellis.managePrincipals",
-                        "trellis.managePrincipals"
+                        "trellis.auth.v1:account.read",
+                        "trellis.auth.v1:roles.manage",
+                        "trellis.auth.v1:users.manage",
+                        "trellis.auth.v1:users.manage",
+                        "trellis.auth.v1:users.manage"
                                 ],
                     "optional": []
                 }
@@ -74,8 +74,8 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
             .await
             .unwrap();
         for capability in [
-            "runtime-trellis.events@v1::publishAlpha",
-            "runtime-trellis.events@v1::inspect",
+            "runtime-trellis.events.v1:alpha.publish",
+            "runtime-trellis.events.v1:events.inspect",
         ] {
             auth.capability_grants_grant(
                 &serde_json::from_value(serde_json::json!({
@@ -107,12 +107,12 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                 {
                     "type":"trellis_capabilities",
                     "required": [
-                        "runtime-trellis.events@v1::publishAlpha",
-                        "runtime-trellis.events@v1::inspect",
-                        "trellis.events@v1::query",
-                        "trellis.events@v1::inspectConsumers",
-                        "trellis.events@v1::inspectDeadLetters",
-                        "trellis.events@v1::replayDeadLetters"
+                        "runtime-trellis.events.v1:alpha.publish",
+                        "runtime-trellis.events.v1:events.inspect",
+                        "trellis.events.v1:events.query",
+                        "trellis.events.v1:consumers.inspect",
+                        "trellis.events.v1:deadLetters.inspect",
+                        "trellis.events.v1:deadLetters.replay"
                                 ],
                     "optional": []
                 }

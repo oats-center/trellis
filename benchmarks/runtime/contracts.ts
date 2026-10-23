@@ -33,7 +33,7 @@ api scale@v1 {
   description "Measure authorization and connection cost with a growing complete RPC surface.";
   ${actions.map((name) => `rpc ${name} { input Value; output Value; }`).join("\n  ")}
   capabilities {
-    capability workloads {
+    capability workloads.run {
       title "Run scaled workloads";
       description "Invoke the measured generated RPC surface.";
       consequence "The caller may invoke every scaled Echo action.";
@@ -44,8 +44,8 @@ api scale@v1 {
 }
 service Provider { implements scale; }
 agent Caller {
-  use scale { required capability workloads; }
-  use auth { required capability accountRead; }
+  use scale { required capability workloads.run; }
+  use auth { required capability account.read; }
 }
 `,
   );

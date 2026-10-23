@@ -18,19 +18,19 @@ api documents@v1 {
   rpc Put { input Document; output Document; }
   rpc Export { input Document; output Document; }
   capabilities {
-    capability read {
+    capability documents.read {
       title "Read"; description "Read a document.";
       consequence "The caller sees document contents.";
       consent_revision 2;
       allows { rpc Get; }
     }
-    capability write {
+    capability documents.write {
       title "Write"; description "Update a document.";
       consequence "The caller can overwrite document contents.";
       consent_revision 1;
       allows { rpc Put; }
     }
-    capability export {
+    capability documents.export {
       title "Export"; description "Export a document.";
       consequence "The caller can retain document contents elsewhere.";
       consent_revision 1;
@@ -39,7 +39,7 @@ api documents@v1 {
   }
 }
 service Reader {
-  use documents { required capability read; capability export; }
+  use documents { required capability documents.read; capability documents.export; }
 }
 "#;
 
@@ -68,11 +68,11 @@ fn compile(source: &str) -> miette::Result<PackageGraph> {
 #[test]
 fn capability_selection_exposes_only_selected_surfaces_and_round_trips() {
     let source = format!(
-        "{SOURCE}\napp ReaderApp {{\nuse documents {{ required capability read; \
-        capability export; }}\nstate cache {{ title \"Cache\"; description \
+        "{SOURCE}\napp ReaderApp {{\nuse documents {{ required capability documents.read; \
+        capability documents.export; }}\nstate cache {{ title \"Cache\"; description \
         \"Local document encoding.\"; schema Document; }}\n}}\ndevice \
         ReaderDevice {{ agent optional NativeReader {{ use documents {{ \
-        required capability read; }} }} }}"
+        required capability documents.read; }} }} }}"
     );
     let graph = compile(&source).unwrap();
     let participant = graph
@@ -112,11 +112,14 @@ fn capability_selection_exposes_only_selected_surfaces_and_round_trips() {
 
 #[test]
 fn duplicate_requests_normalize_and_required_selection_wins() {
-    let required = SOURCE.replace("capability export;", "required capability export;");
+    let required = SOURCE.replace(
+        "capability documents.export;",
+        "required capability documents.export;",
+    );
     let duplicated = SOURCE.replace(
-        "required capability read; capability export;",
-        "capability read; required capability export; required capability read; \
-        capability export; required capability read;",
+        "required capability documents.read; capability documents.export;",
+        "capability documents.read; required capability documents.export; required capability documents.read; \
+        capability documents.export; required capability documents.read;",
     );
     assert_eq!(
         compile(&required).unwrap().root_digest(),
@@ -127,7 +130,7 @@ fn duplicate_requests_normalize_and_required_selection_wins() {
 #[test]
 fn application_requests_refuse_private_resource_ownership() {
     let source = format!(
-        "{SOURCE}\napp ReaderApp {{ use documents {{ required capability read; \
+        "{SOURCE}\napp ReaderApp {{ use documents {{ required capability documents.read; \
         }} kv cache {{ title \"Cache\"; description \"Private cache.\"; schema \
         Document; }} }}"
     );
@@ -136,10 +139,11 @@ fn application_requests_refuse_private_resource_ownership() {
 
 #[test]
 fn unknown_capability_and_nonpositive_consent_revision_are_refused() {
-    assert!(
-        compile(&SOURCE.replace("required capability read;", "required capability missing;"))
-            .is_err()
-    );
+    assert!(compile(&SOURCE.replace(
+        "required capability documents.read;",
+        "required capability documents.missing;"
+    ))
+    .is_err());
     assert!(compile(&SOURCE.replace("consent_revision 2;", "consent_revision 0;")).is_err());
 }
 
@@ -202,12 +206,12 @@ import { events } from events;
 import { core } from core;
 import { auth } from auth;
 app Reader {
-  use auth { required capability readSessions; }
-  use state { required capability read; }
-  use jobs { required capability query; }
-  use health { required capability query; }
-  use events { required capability query; }
-  use core { required capability readAuthority; }
+  use auth { required capability sessions.read; }
+  use state { required capability values.read; }
+  use jobs { required capability jobs.query; }
+  use health { required capability health.query; }
+  use events { required capability events.query; }
+  use core { required capability authority.read; }
 }
 "#,
         ),

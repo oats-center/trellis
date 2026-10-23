@@ -5,13 +5,13 @@ model DraftInspectionState { inspectionId: string; siteId: string; checklistName
 
 device Device {
   use fieldops {
-    required capability assignmentsRead;
-    required capability sitesRead;
-    required capability evidenceRead;
-    required capability sitesRefresh;
-    required capability reportsGenerate;
-    required capability evidenceUpload;
-    required capability changesObserve;
+    required capability assignments.read;
+    required capability sites.read;
+    required capability evidence.read;
+    required capability sites.refresh;
+    required capability reports.generate;
+    required capability evidence.upload;
+    required capability changes.observe;
   }
   state selectedSite { title "Selected site"; description "The active site."; schema SelectedSiteState; version 1; }
   kv draftInspections { title "Draft inspections"; description "Editable inspection drafts keyed by inspection id."; schema DraftInspectionState; version 1; history 1; ttl 0; }

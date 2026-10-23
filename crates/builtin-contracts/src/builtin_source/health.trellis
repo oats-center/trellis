@@ -448,42 +448,42 @@ api health@v1 {
     group health {
       title "Health";
       description "Whether services and devices are healthy.";
-      capability query {
+      capability health.query {
         title "Search health";
         description "Find services and devices by health.";
         consequence "Can see health summaries.";
         consent_revision 1;
         allows { rpc Query; }
       }
-      capability inspect {
+      capability health.inspect {
         title "See health details";
         description "See a service's or device's health history.";
         consequence "Can see health details.";
         consent_revision 1;
         allows { rpc Inspect; }
       }
-      capability readSummary {
+      capability summary.read {
         title "See health overview";
         description "See how many things are healthy or not.";
         consequence "Can see overall health.";
         consent_revision 1;
         allows { rpc Summary; }
       }
-      capability readMetrics {
+      capability metrics.read {
         title "See health metrics";
         description "See health measurements over time.";
         consequence "Can see health metrics.";
         consent_revision 1;
         allows { rpc Metrics; }
       }
-      capability observe {
+      capability health.observe {
         title "Watch health live";
         description "Follow health changes as they happen.";
         consequence "Can see health live.";
         consent_revision 1;
         allows { live Watch; }
       }
-      capability observeStatusChanges {
+      capability status.observe {
         title "Get health alerts";
         description "Be told when something becomes healthy or unhealthy.";
         consequence "Receives health changes.";
@@ -491,7 +491,7 @@ api health@v1 {
         allows { subscribe event StatusChanged; }
       }
     }
-    capability reportHealth {
+    capability health.report {
       title "Report own health";
       description "Let a service or device report its own health.";
       consequence "Records health for that service or device only.";

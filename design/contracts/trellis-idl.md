@@ -120,13 +120,13 @@ surfaces are the union of the selected capabilities' actions; unrelated
 capabilities do not become requirements merely because they overlap those
 actions. Operation selections include the operation lifecycle and signals.
 
-Administrative Auth RPCs are allowed by administrative capabilities, declared
-with the `administrative;` marker. Only the built-in `trellis` package may use
-it, and such a capability's ID is the bare `trellis.<name>` rather than
-`<api>::<name>`; Auth refuses any other API in the `trellis.` namespace.
-Own-authority and own-session maintenance are fixed session rights, not
-ordinary capability requests. Every capability name is verb first, such as
-`readSessions` or `managePrincipals`.
+Capabilities are named `area.action`, such as `sessions.read` or
+`users.manage`; the ID is the API's prefix and that name,
+`trellis.auth.v1:sessions.read`. Administrative Auth RPCs are allowed by
+administrative capabilities, declared with the `administrative;` marker. Only
+the built-in `trellis` package may use it, and Auth refuses any other API in
+the `trellis.` namespace. Own-authority and own-session maintenance are fixed
+session rights, not ordinary capability requests.
 
 Every authored capability has an explicit positive integer `consent_revision`;
 descriptor projections must expose it as `consentRevision`. Authors change this

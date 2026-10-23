@@ -280,7 +280,7 @@ for (const closeWhileHeld of [false, true]) {
             const page = await runtime.callAdminRpc(
               "authCapabilityGrantsList",
               {
-                capabilityId: "runtime-trellis.transport_growth@v1::extend",
+                capabilityId: "runtime-trellis.transport_growth.v1:growth.extend",
               },
             );
             const grant = page.items[0];

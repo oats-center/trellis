@@ -36,8 +36,8 @@ async fn oauth(
     .await
     .unwrap();
     let mut optional = Request::OPTIONAL_CAPABILITIES.to_vec();
-    if !optional.contains(&"trellis.auth@v1::manageDeviceCompanions") {
-        optional.push("trellis.auth@v1::manageDeviceCompanions");
+    if !optional.contains(&"trellis.auth.v1:account.linkDevice") {
+        optional.push("trellis.auth.v1:account.linkDevice");
     }
     let mut details = json!([{"type":"trellis_capabilities","required":[],"optional":optional}]);
     if admin {
@@ -271,7 +271,7 @@ async fn retiring_companion_declarations_fences_new_consent_not_existing_grants(
         .capability_grants_grant(
             &serde_json::from_value(json!({
                 "principalId":user.principal.principal_id,
-                "capabilityId":"trellis-test-fixture.echo@v1::invoke",
+                "capabilityId":"trellis-test-fixture.echo.v1:echo.invoke",
                 "expectedRevision":"0",
                 "idempotencyKey":ulid::Ulid::new().to_string()
             }))
@@ -516,7 +516,7 @@ async fn enrolled_companions_require_their_own_consent_and_revoke_only_their_gra
         .capability_grants_grant(
             &serde_json::from_value(json!({
                 "principalId":user.principal.principal_id,
-                "capabilityId":"trellis-test-fixture.echo@v1::invoke",
+                "capabilityId":"trellis-test-fixture.echo.v1:echo.invoke",
                 "expectedRevision":"0",
                 "idempotencyKey":ulid::Ulid::new().to_string()
             }))
@@ -725,7 +725,7 @@ async fn companion_lifecycle<P: ParticipantDescriptor, C: AppRequestDescriptor>(
             .start_device(&json!([
                 {
                     "type":"trellis_capabilities",
-                    "required": ["trellis.auth@v1::usersResolve"],
+                    "required": ["trellis.auth.v1:account.read"],
                     "optional": []
                 }
             ]))

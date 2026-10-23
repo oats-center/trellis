@@ -61,7 +61,7 @@ public HTTPS destinations with no redirects, and stores sanitized small PNGs.
 
 ## Own directory profile
 
-Select `trellis.auth@v1::updateProfile` and call `Users.Profile.Update`
+Select `trellis.auth.v1:account.edit` and call `Users.Profile.Update`
 to edit your own display/given/family names, email, picture override and Gravatar
 preference. Use `Users.Resolve`'s `user.account.profileRevision` as
 `expectedRevision`, plus a fresh `idempotencyKey`. There is no target user ID.
@@ -180,7 +180,7 @@ It never derives authority from subject strings or the redundant session key.
 
 ### User directory
 
-Request `trellis.auth@v1::readUsers` to search active profiles through the generated
+Request `trellis.auth.v1:users.read` to search active profiles through the generated
 `Users.List` and `Users.Get` actions. Consent covers names, email and photos.
 Responses identify users by immutable `principalId`; display names and emails
 are not unique and never grant access to application-owned objects.

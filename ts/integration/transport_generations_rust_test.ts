@@ -42,7 +42,7 @@ import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 import { spawnTracked } from "./_support/process.ts";
 
 /** Optional capability id declined at consent and grown later. */
-const CAPABILITY_EXTEND = "runtime-trellis.transport_growth@v1::extend";
+const CAPABILITY_EXTEND = "runtime-trellis.transport_growth.v1:growth.extend";
 
 /**
  * One deployment carries one participant assignment, so the subject and its

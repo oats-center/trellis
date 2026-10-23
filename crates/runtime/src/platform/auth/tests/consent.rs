@@ -310,7 +310,7 @@ fn declined_and_unknown_optional_capabilities_do_not_expand_at_renewal() {
     request
         .selection
         .optional
-        .push("phase-two/absent@v1::optional".into());
+        .push("phase-two.absent.v1:absent.optional".into());
     let grant = f
         .store
         .approve_grant(&mutation(&f.principal, &request), &request, NOW)

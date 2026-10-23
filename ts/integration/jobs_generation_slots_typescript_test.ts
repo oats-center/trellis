@@ -25,7 +25,7 @@ test("managed Jobs keeps two execution slots and receives new work after generat
         name: "jobs-slots",
         contract,
       });
-      const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         capabilityId,
       });

@@ -486,84 +486,84 @@ api jobs@v1 {
     group jobs {
       title "Jobs";
       description "Background work and failed jobs.";
-      capability query {
+      capability jobs.query {
         title "Search jobs";
         description "Find background jobs.";
         consequence "Can see job summaries.";
         consent_revision 1;
         allows { rpc Query; }
       }
-      capability inspect {
+      capability jobs.inspect {
         title "Open jobs";
         description "See a job's input, result, and history.";
         consequence "Can see job data.";
         consent_revision 1;
         allows { rpc Inspect; }
       }
-      capability findByKey {
+      capability jobs.findByKey {
         title "Find jobs by key";
         description "Look up a job by its key.";
         consequence "Can find jobs by key.";
         consent_revision 1;
         allows { rpc GetKey; }
       }
-      capability listServices {
+      capability services.list {
         title "See job services";
         description "See which services run jobs.";
         consequence "Can see services and their queues.";
         consent_revision 1;
         allows { rpc ListServices; }
       }
-      capability readSummary {
+      capability summary.read {
         title "See job overview";
         description "See how many jobs are waiting, running, or failed.";
         consequence "Can see job counts.";
         consent_revision 1;
         allows { rpc Summary; }
       }
-      capability readMetrics {
+      capability metrics.read {
         title "See job metrics";
         description "See job speed and throughput.";
         consequence "Can see job metrics.";
         consent_revision 1;
         allows { rpc Metrics; }
       }
-      capability cancel {
+      capability jobs.cancel {
         title "Cancel jobs";
         description "Stop a waiting or running job.";
         consequence "Can stop work.";
         consent_revision 1;
         allows { rpc Cancel; }
       }
-      capability retry {
+      capability jobs.retry {
         title "Retry jobs";
         description "Run a job again.";
         consequence "Work may run again.";
         consent_revision 1;
         allows { rpc Retry; }
       }
-      capability readDeadLetters {
+      capability deadLetters.read {
         title "See failed jobs";
         description "See jobs that failed for good.";
         consequence "Can see failed jobs.";
         consent_revision 1;
         allows { rpc ListDLQ; }
       }
-      capability replayDeadLetters {
+      capability deadLetters.replay {
         title "Rerun failed jobs";
         description "Send a failed job back to run again.";
         consequence "Work may run again and repeat its effects.";
         consent_revision 1;
         allows { rpc ReplayDLQ; }
       }
-      capability dismissDeadLetters {
+      capability deadLetters.dismiss {
         title "Dismiss failed jobs";
         description "Clear a failed job from the list.";
         consequence "Removes it from follow-up.";
         consent_revision 1;
         allows { rpc DismissDLQ; }
       }
-      capability observe {
+      capability jobs.observe {
         title "Watch jobs live";
         description "Follow job changes as they happen.";
         consequence "Can see jobs live.";
@@ -571,7 +571,7 @@ api jobs@v1 {
         allows { live Watch; }
       }
     }
-    capability readHistory {
+    capability history.read {
       title "Read own job history";
       description "Let a service read the history of its own jobs.";
       consequence "Only that service's jobs are returned.";

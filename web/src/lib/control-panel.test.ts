@@ -32,7 +32,7 @@ test("navigation separates delegated administration from an ordinary API action"
       ...member,
       capabilities: [
         {
-          capabilityId: "trellis.managePrincipals",
+          capabilityId: "trellis.auth.v1:users.manage",
           identityGeneration: "1",
           consentRevision: "1",
         },
@@ -47,7 +47,7 @@ test("an administrative capability does not replace an exact catalog-authorized 
     authorityDigest: "current-ui-snapshot",
     capabilities: [
       {
-        capabilityId: "trellis.managePrincipals",
+        capabilityId: "trellis.auth.v1:users.manage",
         identityGeneration: "1",
         consentRevision: "1",
       },

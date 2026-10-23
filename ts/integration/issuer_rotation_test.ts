@@ -87,7 +87,7 @@ test("administrator issuer rotation is idempotent and retained native custody fo
         request: adminParticipant,
         username: runtime.adminUsername,
         password: runtime.adminPassword,
-        administrativeCapabilities: ["trellis.managePrincipals"],
+        administrativeCapabilities: ["trellis.auth.v1:users.manage"],
       });
       const freshClient = await connectNativeClient({
         ...freshCredentials,

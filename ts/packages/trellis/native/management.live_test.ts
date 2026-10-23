@@ -26,10 +26,10 @@ test(
           clientId: "trellis.cli",
           request,
           administrativeCapabilities: [
-            "trellis.managePrincipals",
-            "trellis.manageRoles",
-            "trellis.manageClients",
-            "trellis.managePlatform",
+            "trellis.auth.v1:users.manage",
+            "trellis.auth.v1:roles.manage",
+            "trellis.auth.v1:clients.manage",
+            "trellis.auth.v1:platform.manage",
           ],
           signal: context.signal,
         });
@@ -53,10 +53,10 @@ test(
         const approved = [
           ...new Set([
             ...request.requiredCapabilities,
-            "trellis.auth@v1::readSessions",
+            "trellis.auth.v1:sessions.read",
           ]),
         ];
-        const declined = "trellis.manageRoles";
+        const declined = "trellis.auth.v1:roles.manage";
         const { role } = await admin
           .rolesPut({
             title: `Management ${suffix}`,

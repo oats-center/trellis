@@ -33,10 +33,10 @@ async fn delegation_revocation_is_atomic_idempotent_and_grant_scoped() {
                 {
                     "type":"trellis_capabilities",
                     "required": [
-                        "trellis.auth@v1::readAccount",
-                        "trellis.auth@v1::readDelegations",
-                        "trellis.auth@v1::revokeDelegations",
-                        "trellis.auth@v1::readSessions"
+                        "trellis.auth.v1:account.read",
+                        "trellis.auth.v1:delegations.read",
+                        "trellis.auth.v1:delegations.revoke",
+                        "trellis.auth.v1:sessions.read"
                                 ],
                     "optional": []
                 }

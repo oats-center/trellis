@@ -11,18 +11,19 @@ and this project adheres to
 ### Added
 
 - **Breaking:** Administrative capabilities replace platform privileges.
-  Managing the installation uses six ordinary capabilities in the reserved
-  `trellis.*` namespace: `trellis.managePrincipals`, `trellis.manageRoles`,
-  `trellis.acceptApis`, `trellis.forceReplaceApis`, `trellis.manageClients`,
-  and `trellis.managePlatform`. Roles, direct grants, and identity-provider
+  Managing the installation uses six ordinary Auth capabilities:
+  `trellis.auth.v1:users.manage`, `trellis.auth.v1:roles.manage`,
+  `trellis.auth.v1:apis.accept`, `trellis.auth.v1:apis.forceReplace`,
+  `trellis.auth.v1:clients.manage`, and `trellis.auth.v1:platform.manage`.
+  Roles, direct grants, and identity-provider
   mappings carry them; changing who holds one requires
-  `trellis.managePlatform`. The initialized administrator holds all six
+  `trellis.auth.v1:platform.manage`. The initialized administrator holds all six
   inherently and cannot lose them. The IDL `administrative;` marker declares
   them and is reserved to the built-in `trellis` package, and Auth refuses any
   other API in the `trellis.` namespace.
 - `[auth.administration]` safeguards for delegating administration to an app,
   each on by default: `confirm_on_consent` (a separate Portal confirmation
-  step), `require_peer_approval` (another `trellis.managePlatform` holder
+  step), `require_peer_approval` (another `trellis.auth.v1:platform.manage` holder
   decides through `Administration.Reviews.List/Decide`), and
   `registered_clients_only`.
 
@@ -89,8 +90,9 @@ and this project adheres to
 
 ### Changed
 
-- **Breaking:** Every capability name is verb first, for example
-  `readSessions`, `changePassword`, and `managePrincipals`. Auth's one-RPC
+- **Breaking:** Capability IDs are `<package>.<api>.v<major>:<area>.<action>`,
+  for example `trellis.auth.v1:users.edit`, and contracts name capabilities
+  `area.action` (`capability sessions.read { … }`). Auth's one-RPC
   administrative capabilities fold into the administrative capabilities.
 
 - Signed issuer-metadata answers are `trellis-protocol` types:

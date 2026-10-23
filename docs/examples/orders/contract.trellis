@@ -6,7 +6,7 @@ api orders@v1 {
   description "Minimal service walkthrough.";
   rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
   capabilities {
-    capability create {
+    capability orders.create {
       title "Create orders";
       description "Create an order for a customer.";
       consequence "The caller may create customer orders.";
@@ -17,4 +17,4 @@ api orders@v1 {
 }
 
 service OrdersService { implements orders; }
-agent OrdersCaller { use orders { required capability create; } }
+agent OrdersCaller { use orders { required capability orders.create; } }

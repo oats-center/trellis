@@ -44,7 +44,7 @@ api primary@v1 {
   live Watch { input Empty; event Node; }
   capabilities {
     public { consent_revision 1; allows { publish event Changed; } }
-    capability access {
+    capability fixture.access {
       title "Access";
       description "Fixture access.";
       consequence "The caller can use the fixture.";
@@ -61,7 +61,7 @@ api secondary@v2 {
   live Monitor { input Empty; event Empty; }
   capabilities {
     public { consent_revision 1; allows { publish event Ping; } }
-    capability observe {
+    capability fixture.observe {
       title "Observe";
       description "Fixture observation.";
       consequence "The caller can observe the fixture.";
@@ -86,9 +86,9 @@ service Worker {
 
 app Caller {
   use primary {
-    capability access;
+    capability fixture.access;
   }
-  use secondary { required capability observe; }
+  use secondary { required capability fixture.observe; }
 }
 "#;
 

@@ -27,8 +27,8 @@ pub(super) fn register<P: trellis_rs::generated::ParticipantDescriptor>(
         async move {
             caller(&context, None).map_err(rpc_error)?;
             let capability = match &input.kind {
-                AuthResourceEvidenceKind::JobQueue => "trellis.auth@v1::readJobBindings",
-                AuthResourceEvidenceKind::EventConsumer => "trellis.auth@v1::readEventBindings",
+                AuthResourceEvidenceKind::JobQueue => "trellis.auth.v1:bindings.readJobs",
+                AuthResourceEvidenceKind::EventConsumer => "trellis.auth.v1:bindings.readEvents",
                 _ => return Err(rpc_error(AuthError::Denied)),
             };
             // Both capabilities authorize the same route, not each other's data.

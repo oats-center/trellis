@@ -24,7 +24,7 @@ test("retained Jobs refs get, wait and cancel after broker-confirmed original so
         name: "retained-jobs",
         contract,
       });
-      const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         capabilityId,
       });

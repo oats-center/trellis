@@ -110,8 +110,8 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
             )
         })
         .unwrap();
-    let read = "trellis.managePrincipals";
-    let write = "trellis.auth@v1::readAccount";
+    let read = "trellis.auth.v1:users.manage";
+    let write = "trellis.auth.v1:account.read";
     let mut approval = grant_request(&admin, &login, read, write, NOW + 2);
     approval.client_id = CLI_CLIENT_ID.into();
     approval.approved = vec![read.into()];
@@ -203,7 +203,7 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         .source
         .replace(
             "capability rolesRead {",
-            "capability futureRead { title \"Future\"; description \"Future \
+            "capability future.read { title \"Future\"; description \"Future \
             optional right.\"; consequence \"Reads future metadata.\"; \
             consent_revision 1; allows { rpc Roles.List; } }\ncapability rolesRead \
             {",
@@ -285,8 +285,8 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
     let mut approval = grant_request(
         &admin,
         &login,
-        "trellis.manageRoles",
-        "trellis.auth@v1::futureRead",
+        "trellis.auth.v1:roles.manage",
+        "trellis.auth.v1:future.read",
         NOW + 2,
     );
     let cli = cli_registration();
@@ -315,11 +315,11 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         .unsigned
         .capabilities
         .iter()
-        .any(|cap| cap.capability_id == "trellis.manageRoles"));
+        .any(|cap| cap.capability_id == "trellis.auth.v1:roles.manage"));
     assert!(!issued
         .authority
         .unsigned
         .capabilities
         .iter()
-        .any(|cap| cap.capability_id == "trellis.auth@v1::futureRead"));
+        .any(|cap| cap.capability_id == "trellis.auth.v1:future.read"));
 }

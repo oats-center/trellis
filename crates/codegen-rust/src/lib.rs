@@ -1510,7 +1510,9 @@ fn render_app_request(
                 optional_capabilities: BTreeSet::new(),
             });
         for (id, capability) in api.capabilities() {
-            if ["read", "write", "delete"].contains(&trellis_idl::capability_name(id.as_str())) {
+            if ["values.read", "values.write", "values.delete"]
+                .contains(&trellis_idl::capability_name(id.as_str()))
+            {
                 selection.required_capabilities.insert(id.clone());
                 selection.optional_capabilities.remove(id);
                 selection.actions.extend(capability.allows.iter().cloned());
@@ -2930,7 +2932,7 @@ mod tests {
         let graph = graph(
             "model Value { counter: int64; observedAt: timestamp; } api main@v1 { \
             title \"Main\"; description \"Read values.\"; rpc Get { input Value; \
-            output Value; } capabilities { capability read { title \"Read\"; \
+            output Value; } capabilities { capability items.read { title \"Read\"; \
             description \"Read values.\"; consequence \"Reveals values.\"; \
             consent_revision 1; allows { rpc Get; } } } }",
         );
@@ -3086,16 +3088,16 @@ fn main() {
     finite: number; bytes: bytes; } api main@v1 { title \"Main\"; \
     description \"Main API.\"; error Bad(Values); rpc Get { input Values; \
     output Values; errors [Bad]; download; } rpc Write { input Values; \
-    output Values; } capabilities { capability read { consent_revision 1; \
+    output Values; } capabilities { capability items.read { consent_revision 1; \
     title \"Read\"; description \"Read values.\"; consequence \"Reveals \
-    values.\"; allows { rpc Get; } } capability work { consent_revision 1; \
+    values.\"; allows { rpc Get; } } capability items.work { consent_revision 1; \
     title \"Work\"; description \"Run work.\"; consequence \"Changes \
-    values.\"; allows { operation Work; } } capability write { \
+    values.\"; allows { operation Work; } } capability items.write { \
     consent_revision 1; title \"Write\"; description \"Write values.\"; \
     consequence \"Changes values.\"; allows { rpc Write; } } } operation \
     Work { input Values; output Values; progress Values; errors [Bad]; \
     signals { resume Values; } upload; } } api other@v2 { title \"Other\"; \
-    description \"Other API.\"; capabilities { capability observe { \
+    description \"Other API.\"; capabilities { capability other.observe { \
     consent_revision 1; title \"Observe\"; description \"Observe \
     values.\"; consequence \"Reveals value changes.\"; allows { subscribe \
     event Changed; live Watch; } } } event Changed { payload Values; } \
@@ -3105,8 +3107,8 @@ fn main() {
     OldValues; } } } service ResourceOnly { kv records { title \
     \"Records\"; description \"KV-only service.\"; schema Values; version \
     1; history 4; ttl 0ms; } } app Caller { use main { required capability \
-    read; required capability work; } use other { required capability \
-    observe; } }",
+    items.read; required capability items.work; } use other { required capability \
+    other.observe; } }",
         );
         let output = tempfile::tempdir().unwrap();
         let runtime_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../builtin-contracts");

@@ -91,8 +91,8 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         Err(AuthError::Conflict)
     ));
     let changed = source.replace(
-        "required capability read; capability write;",
-        "required capability read; required capability write;",
+        "required capability documents.read; capability documents.write;",
+        "required capability documents.read; required capability documents.write;",
     );
     crate::platform::auth::tests::accept(&f.store, &f.admin, &changed, false, NOW + 2);
     let evidence = f

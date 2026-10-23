@@ -414,7 +414,7 @@ impl<'a> Parser<'a> {
     ) -> miette::Result<Capability> {
         let (public, name) = match head {
             "public" if group.is_none() => (true, "public".to_owned()),
-            "capability" => (false, self.ident()?),
+            "capability" => (false, self.capability_name()?),
             _ if group.is_some() => return Err(self.error_previous("expected 'capability'")),
             _ => return Err(self.error_previous("expected 'public', 'capability', or 'group'")),
         };
@@ -779,6 +779,16 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| self.error_previous("quantity exceeds u64"))
     }
 
+    /// A capability's `area.action` name.
+    fn capability_name(&mut self) -> miette::Result<String> {
+        let name = self.path()?;
+        if name.split('.').count() != 2 {
+            return Err(
+                self.error_previous(format!("capability '{name}' must be named 'area.action'"))
+            );
+        }
+        Ok(name)
+    }
     fn name(&mut self) -> miette::Result<String> {
         self.path()
     }

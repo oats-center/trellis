@@ -58,11 +58,11 @@ api documents@v1 {
  rpc Put { input Document; output Document; }
  rpc Export { input Document; output Document; }
  capabilities {
-  capability read { title "Read"; description "Read documents."; consequence "Sees contents."; consent_revision 1; allows { rpc Get; } }
-  capability write { title "Write"; description "Write documents."; consequence "Changes contents."; consent_revision 1; allows { rpc Put; } }
+  capability documents.read { title "Read"; description "Read documents."; consequence "Sees contents."; consent_revision 1; allows { rpc Get; } }
+  capability documents.write { title "Write"; description "Write documents."; consequence "Changes contents."; consent_revision 1; allows { rpc Put; } }
  }
 }
-service Reader { use documents { required capability read; capability write; } }
+service Reader { use documents { required capability documents.read; capability documents.write; } }
 "#;
 
 pub(super) struct Fixture {
@@ -513,14 +513,14 @@ pub(super) fn fixture() -> Fixture {
     let read = catalog
         .capabilities
         .iter()
-        .find(|cap| cap.capability_id.ends_with("::read"))
+        .find(|cap| cap.capability_id.ends_with(":documents.read"))
         .unwrap()
         .capability_id
         .clone();
     let write = catalog
         .capabilities
         .iter()
-        .find(|cap| cap.capability_id.ends_with("::write"))
+        .find(|cap| cap.capability_id.ends_with(":documents.write"))
         .unwrap()
         .capability_id
         .clone();

@@ -39,7 +39,7 @@ test("optional authority reduction reaps wider transport and revokes old Live wh
           name: "reduction-subject",
           contract,
         });
-        const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+        const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
         const initial = await runtime.callAdminRpc("authCapabilityGrantsList", {
           capabilityId,
         });

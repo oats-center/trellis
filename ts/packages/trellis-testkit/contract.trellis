@@ -2,29 +2,29 @@ import { auth, events, health, jobs, state } from trellis;
 
 agent cli {
   use auth {
-    capability manageRoles;
-    capability managePrincipals;
-    capability readUsers;
-    capability acceptApis;
-    capability forceReplaceApis;
-    capability manageClients;
-    capability readSessions;
-    capability revokeSessions;
-    capability managePlatform;
-    required capability readIdentities;
-    required capability readAccount;
+    capability roles.manage;
+    capability users.manage;
+    capability users.read;
+    capability apis.accept;
+    capability apis.forceReplace;
+    capability clients.manage;
+    capability sessions.read;
+    capability sessions.revoke;
+    capability platform.manage;
+    required capability identities.read;
+    required capability account.read;
   }
   use events {
-    capability inspect;
-    capability inspectConsumers;
-    capability dismissDeadLetters;
-    capability inspectDeadLetters;
-    capability replayDeadLetters;
-    capability query;
+    capability events.inspect;
+    capability consumers.inspect;
+    capability deadLetters.dismiss;
+    capability deadLetters.inspect;
+    capability deadLetters.replay;
+    capability events.query;
   }
-  use health { capability query; }
-  use jobs { capability query; }
+  use health { capability health.query; }
+  use jobs { capability jobs.query; }
   use state {
-    capability delete;
+    capability values.delete;
   }
 }

@@ -9,7 +9,7 @@ import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
 // Uses the initialized production host and registered Console, never a fake issuer.
-for (const selected of [undefined, "trellis.managePrincipals"] as const) {
+for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
   test(`Console consent promotes only selected administration (${selected ?? "none"})`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const username = runtime.adminUsername;

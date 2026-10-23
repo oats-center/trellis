@@ -16,9 +16,9 @@ use super::catalog::{action_identity, resolve_api};
 use super::policy::capability;
 use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
 
-pub(super) const SELF_HEALTH_CAPABILITY: &str = "trellis.health@v1::reportHealth";
-pub(super) const JOB_HISTORY_CAPABILITY: &str = "trellis.jobs@v1::readHistory";
-pub(super) const CONSUMER_RUNTIME_CAPABILITY: &str = "trellis.events@v1::processReplays";
+pub(super) const SELF_HEALTH_CAPABILITY: &str = "trellis.health.v1:health.report";
+pub(super) const JOB_HISTORY_CAPABILITY: &str = "trellis.jobs.v1:history.read";
+pub(super) const CONSUMER_RUNTIME_CAPABILITY: &str = "trellis.events.v1:replays.process";
 
 /// The automatically assigned runtime right must never expand into domain actions.
 pub(super) fn native_health_capability(
@@ -397,7 +397,7 @@ impl SqliteAuthorizationStore {
             .map(ToString::to_string)
             .collect();
         // Deploying a participant that selects administration changes who
-        // holds it, which takes `trellis.managePlatform`.
+        // holds it, which takes `trellis.auth.v1:platform.manage`.
         Self::require_platform_for(
             connection,
             actor,
@@ -555,9 +555,9 @@ impl SqliteAuthorizationStore {
                 if !request.states().is_empty() {
                     required.extend(
                         [
-                            "trellis.state@v1::read",
-                            "trellis.state@v1::write",
-                            "trellis.state@v1::delete",
+                            "trellis.state.v1:values.read",
+                            "trellis.state.v1:values.write",
+                            "trellis.state.v1:values.delete",
                         ]
                         .map(str::to_owned),
                     );
@@ -841,9 +841,9 @@ impl SqliteAuthorizationStore {
             {
                 required.extend(
                     [
-                        "trellis.state@v1::read",
-                        "trellis.state@v1::write",
-                        "trellis.state@v1::delete",
+                        "trellis.state.v1:values.read",
+                        "trellis.state.v1:values.write",
+                        "trellis.state.v1:values.delete",
                     ]
                     .map(str::to_owned),
                 );

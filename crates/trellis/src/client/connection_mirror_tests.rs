@@ -12,7 +12,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         AuthUserCreateRequest, AuthUserGetResponse,
     };
     // An optional capability the user holds only by a direct grant.
-    let inspect = format!("{}::inspect", Query::API_ID);
+    let inspect = "trellis.health.v1:health.inspect".to_owned();
     let mut runtime = trellis_testkit::TrellisTestRuntime::builder()
         .start()
         .await

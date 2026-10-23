@@ -56,70 +56,70 @@ api fieldops@v1 {
   event Sites.Refreshed { payload SitesRefreshedEvent; }
   live Audit.Feed { input ActivityLiveFeedRequest; event ActivityLiveFeedEvent; }
   capabilities {
-    capability assignmentsRead {
+    capability assignments.read {
       consent_revision 1;
       title "Read inspection assignments";
       description "List assigned inspections and their site and checklist details.";
       consequence "Reveals assigned inspection work.";
       allows { rpc Assignments.List; }
     }
-    capability sitesRead {
+    capability sites.read {
       consent_revision 1;
       title "Read site summaries";
       description "List sites and inspect an individual site's current summary.";
       consequence "Reveals site identity and inspection status.";
       allows { rpc Sites.List; rpc Sites.Get; }
     }
-    capability evidenceRead {
+    capability evidence.read {
       consent_revision 1;
       title "Read inspection evidence";
       description "List evidence and download its original files.";
       consequence "Reveals evidence metadata and file contents.";
       allows { rpc Evidence.List; rpc Evidence.Download; }
     }
-    capability evidenceDelete {
+    capability evidence.delete {
       consent_revision 1;
       title "Delete inspection evidence";
       description "Remove a stored evidence file.";
       consequence "Evidence files can be permanently removed.";
       allows { rpc Evidence.Delete; }
     }
-    capability reportsRead {
+    capability reports.read {
       consent_revision 1;
       title "Read inspection reports";
       description "List published inspection reports.";
       consequence "Reveals report findings and comments.";
       allows { rpc Reports.List; }
     }
-    capability sitesRefresh {
+    capability sites.refresh {
       consent_revision 1;
       title "Refresh site summaries";
       description "Start and follow a site-summary refresh.";
       consequence "Recomputes the site's published inspection status.";
       allows { operation Sites.Refresh; }
     }
-    capability reportsGenerate {
+    capability reports.generate {
       consent_revision 1;
       title "Generate inspection reports";
       description "Start and follow report generation for an inspection.";
       consequence "Creates a report containing inspection findings and comments.";
       allows { operation Reports.Generate; }
     }
-    capability evidenceUpload {
+    capability evidence.upload {
       consent_revision 1;
       title "Upload inspection evidence";
       description "Upload a file and follow its evidence-record creation.";
       consequence "Stores new evidence files and metadata.";
       allows { operation Evidence.Upload; }
     }
-    capability changesObserve {
+    capability changes.observe {
       consent_revision 1;
       title "Observe field-work changes";
       description "Receive audit, report, evidence, and site-refresh events.";
       consequence "Continuously reveals changes to inspection work.";
       allows { subscribe event Audit.Recorded; subscribe event Reports.Published; subscribe event Evidence.Uploaded; subscribe event Sites.Refreshed; }
     }
-    capability auditObserve {
+    capability audit.observe {
       consent_revision 1;
       title "Follow field-work activity";
       description "Follow the live combined field-work activity feed.";

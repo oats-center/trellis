@@ -115,11 +115,11 @@ test(
           clientId: "trellis.cli",
           request: adminApps.cli.request,
           administrativeCapabilities: [
-            "trellis.managePrincipals",
-            "trellis.manageRoles",
-            "trellis.manageClients",
-            "trellis.acceptApis",
-            "trellis.forceReplaceApis",
+            "trellis.auth.v1:users.manage",
+            "trellis.auth.v1:roles.manage",
+            "trellis.auth.v1:clients.manage",
+            "trellis.auth.v1:apis.accept",
+            "trellis.auth.v1:apis.forceReplace",
           ],
           signal: context.signal,
         });
@@ -185,7 +185,7 @@ test(
           })
           .orThrow();
         assert(user.account);
-        const capabilityId = "runtime-trellis.runtime@v1::echo";
+        const capabilityId = "runtime-trellis.runtime.v1:echo.call";
         await admin
           .capabilityGrantsGrant({
             principalId: user.principalId,

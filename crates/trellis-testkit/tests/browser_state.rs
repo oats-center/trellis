@@ -40,9 +40,9 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
             {
                 "type":"trellis_capabilities",
                 "required": [
-                    "trellis.managePrincipals",
-                    "trellis.manageRoles",
-                    "trellis.manageClients"
+                    "trellis.auth.v1:users.manage",
+                    "trellis.auth.v1:roles.manage",
+                    "trellis.auth.v1:clients.manage"
                             ],
                 "optional": []
             }
@@ -67,7 +67,7 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
     })).unwrap()).await.unwrap();
     for capability in ["read", "write", "delete"] {
         admin.capability_grants_grant(&serde_json::from_value(serde_json::json!({
-            "principalId":user.user.principal_id,"capabilityId":format!("trellis.state@v1::{capability}"),
+            "principalId":user.user.principal_id,"capabilityId":format!("trellis.state.v1:values.{capability}"),
             "expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()
         })).unwrap()).await.unwrap();
     }

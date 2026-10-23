@@ -583,7 +583,7 @@ pub struct CapabilityDefinition {
     /// API-local presentation group, when the capability declares one.
     pub group: Option<String>,
     /// Manages the Trellis installation itself. Only the builtin `trellis`
-    /// package declares these, and their IDs are `trellis.<name>`.
+    /// package declares these.
     pub administrative: bool,
     /// Exact covered actions.
     pub allows: BTreeSet<ActionSelection>,
@@ -591,13 +591,29 @@ pub struct CapabilityDefinition {
     pub public: bool,
 }
 
-/// The contract-local name of an API-scoped (`api::name`) or administrative
-/// (`trellis.name`) capability ID.
+/// The capability ID prefix of an API: `trellis.auth@v1` becomes
+/// `trellis.auth.v1`.
+pub fn capability_prefix(api: &str) -> String {
+    match api.rsplit_once('@') {
+        Some((name, major)) => format!("{name}.{major}"),
+        None => api.to_owned(),
+    }
+}
+
+/// Split a capability or group ID, `<package>.<api>.v<major>:<name>`, into its
+/// API ID and its contract-local name.
+pub fn split_capability_id(id: &str) -> Option<(String, &str)> {
+    let (prefix, name) = id.rsplit_once(':')?;
+    let (api, major) = prefix.rsplit_once(".v")?;
+    if major.is_empty() || !major.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((format!("{api}@v{major}"), name))
+}
+
+/// The contract-local name of a capability ID.
 pub fn capability_name(id: &str) -> &str {
-    id.rsplit_once("::")
-        .map(|(_, name)| name)
-        .or_else(|| id.strip_prefix("trellis."))
-        .unwrap_or(id)
+    split_capability_id(id).map_or(id, |(_, name)| name)
 }
 
 /// A selected action and direction.

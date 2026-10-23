@@ -14,7 +14,7 @@ test("capability discovery pages the currently accepted API definitions", async 
       apiId,
     });
     const oldInspect = before.items.find(
-      (item) => item.identity.capabilityId === `${apiId}::inspect`,
+      (item) => item.identity.capabilityId === `${apiId.replace("@", ".")}:events.inspect`,
     );
     assert(oldInspect);
     await runtime.contracts.install({

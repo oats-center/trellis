@@ -285,12 +285,12 @@ impl AdminSession {
                 {
                     "type":"trellis_capabilities",
                     "required": [
-                        "trellis.managePrincipals",
-                        "trellis.manageRoles",
-                        "trellis.acceptApis",
-                        "trellis.forceReplaceApis",
-                        "trellis.manageClients",
-                        "trellis.managePlatform"
+                        "trellis.auth.v1:users.manage",
+                        "trellis.auth.v1:roles.manage",
+                        "trellis.auth.v1:apis.accept",
+                        "trellis.auth.v1:apis.forceReplace",
+                        "trellis.auth.v1:clients.manage",
+                        "trellis.auth.v1:platform.manage"
                     ],
                     "optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES
                 }

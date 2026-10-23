@@ -37,7 +37,7 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
         name: "native-supersession",
         contract: participants.TransportGrowthSubject.participant,
       });
-      const firstCapability = "runtime-trellis.transport_growth@v1::extend";
+      const firstCapability = "runtime-trellis.transport_growth.v1:growth.extend";
       const firstGrants = await runtime.callAdminRpc(
         "authCapabilityGrantsList",
         { capabilityId: firstCapability },

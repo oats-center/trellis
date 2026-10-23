@@ -2,55 +2,55 @@ import { auth, events, health, jobs, state } from trellis;
 
 app Console {
   use auth {
-    capability manageRoles;
-    capability managePrincipals;
-    capability readUsers;
-    capability managePlatform;
-    capability acceptApis;
-    capability forceReplaceApis;
-    capability manageClients;
-    required capability readSessions;
-    required capability revokeSessions;
-    required capability readIdentities;
-    required capability manageIdentities;
-    required capability changePassword;
-    required capability readAccount;
-    required capability updateProfile;
+    capability roles.manage;
+    capability users.manage;
+    capability users.read;
+    capability platform.manage;
+    capability apis.accept;
+    capability apis.forceReplace;
+    capability clients.manage;
+    required capability sessions.read;
+    required capability sessions.revoke;
+    required capability identities.read;
+    required capability identities.manage;
+    required capability account.changePassword;
+    required capability account.read;
+    required capability account.edit;
   }
   use events {
-    required capability inspectConsumers;
-    required capability dismissDeadLetters;
-    required capability inspectDeadLetters;
-    required capability replayDeadLetters;
-    required capability readDiagnostics;
-    required capability inspect;
-    required capability readMetrics;
-    required capability query;
-    required capability observe;
+    required capability consumers.inspect;
+    required capability deadLetters.dismiss;
+    required capability deadLetters.inspect;
+    required capability deadLetters.replay;
+    required capability diagnostics.read;
+    required capability events.inspect;
+    required capability metrics.read;
+    required capability events.query;
+    required capability events.observe;
   }
   use health {
-    required capability inspect;
-    required capability readMetrics;
-    required capability query;
-    required capability readSummary;
-    required capability observeStatusChanges;
-    required capability observe;
+    required capability health.inspect;
+    required capability metrics.read;
+    required capability health.query;
+    required capability summary.read;
+    required capability status.observe;
+    required capability health.observe;
   }
   use jobs {
-    required capability cancel;
-    required capability dismissDeadLetters;
-    required capability findByKey;
-    required capability inspect;
-    required capability readDeadLetters;
-    required capability listServices;
-    required capability readMetrics;
-    required capability query;
-    required capability replayDeadLetters;
-    required capability retry;
-    required capability readSummary;
-    required capability observe;
+    required capability jobs.cancel;
+    required capability deadLetters.dismiss;
+    required capability jobs.findByKey;
+    required capability jobs.inspect;
+    required capability deadLetters.read;
+    required capability services.list;
+    required capability metrics.read;
+    required capability jobs.query;
+    required capability deadLetters.replay;
+    required capability jobs.retry;
+    required capability summary.read;
+    required capability jobs.observe;
   }
   use state {
-    required capability delete;
+    required capability values.delete;
   }
 }

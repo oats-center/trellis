@@ -773,23 +773,21 @@ pub(crate) const BUILTIN_PACKAGE: &str = "trellis";
 
 /// Ordinary capabilities are scoped to their API; administrative capabilities
 /// name an installation-wide power in the reserved `trellis.*` namespace.
-fn capability_id(api: &ApiId, name: &str, administrative: bool) -> CapabilityId {
-    if administrative {
-        CapabilityId::new(format!("{BUILTIN_PACKAGE}.{name}"))
-    } else {
-        CapabilityId::new(format!("{api}::{name}"))
-    }
+fn capability_id(api: &ApiId, name: &str) -> CapabilityId {
+    CapabilityId::new(format!(
+        "{}:{name}",
+        crate::semantic::capability_prefix(api.as_str())
+    ))
 }
 
 /// Resolve a capability a participant names on a used API.
 fn named_capability(api: &ApiDefinition, name: &str) -> miette::Result<CapabilityId> {
-    [
-        capability_id(&api.identity, name, false),
-        capability_id(&api.identity, name, true),
-    ]
-    .into_iter()
-    .find(|id| api.capabilities.contains_key(id))
-    .ok_or_else(|| miette!("unknown capability '{}::{name}'", api.identity))
+    let id = capability_id(&api.identity, name);
+    if api.capabilities.contains_key(&id) {
+        Ok(id)
+    } else {
+        Err(miette!("unknown capability '{id}'"))
+    }
 }
 
 fn resolve_api(
@@ -897,7 +895,7 @@ fn resolve_api(
                 capability.name
             ));
         }
-        let id = capability_id(&identity, &capability.name, capability.administrative);
+        let id = capability_id(&identity, &capability.name);
         let allows: BTreeSet<ActionSelection> = capability
             .allows
             .iter()

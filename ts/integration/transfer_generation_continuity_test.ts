@@ -44,7 +44,7 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
         name: "transfer-generation-provider",
         contract: providerContract,
       });
-      const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
       const initialGrants = await runtime.callAdminRpc(
         "authCapabilityGrantsList",
         { capabilityId },
@@ -451,7 +451,7 @@ test("download endAck retires the last caller and provider generation leases", a
         name: "download-ack-provider",
         contract: providerContract,
       });
-      const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
       const providerGrants = await runtime.callAdminRpc(
         "authCapabilityGrantsList",
         { capabilityId },

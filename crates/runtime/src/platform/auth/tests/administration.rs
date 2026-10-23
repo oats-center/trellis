@@ -22,7 +22,7 @@ fn login(f: &Fixture, principal: &str) -> String {
         .unwrap()
 }
 
-/// A confirmed request from `principal` for just `trellis.manageRoles`.
+/// A confirmed request from `principal` for just `trellis.auth.v1:roles.manage`.
 fn request_roles(f: &Fixture, principal: &str) -> GrantApproval {
     let login = login(f, principal);
     let mut approval = grant_request(principal, &login, &f.read, &f.write, NOW);

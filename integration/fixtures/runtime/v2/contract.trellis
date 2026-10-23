@@ -8,9 +8,9 @@ api documents@v2 {
   rpc Echo { input Value; output Value; }
   operation Work { input Value; output Value; }
   capabilities {
-    capability read { title "Read live documents"; description "Observe the second application major."; consequence "The caller can observe version-two values."; consent_revision 1; allows { live Watch; live List.Watch; rpc Echo; } }
-    capability work { title "Run document work"; description "Run second-major work."; consequence "The caller can run and observe document work."; consent_revision 1; allows { operation Work; } }
+    capability documents.read { title "Read live documents"; description "Observe the second application major."; consequence "The caller can observe version-two values."; consent_revision 1; allows { live Watch; live List.Watch; rpc Echo; } }
+    capability documents.work { title "Run document work"; description "Run second-major work."; consequence "The caller can run and observe document work."; consent_revision 1; allows { operation Work; } }
   }
 }
 service LiveV2Provider { implements documents; }
-agent LiveV2Caller { use documents { required capability read; required capability work; } }
+agent LiveV2Caller { use documents { required capability documents.read; required capability documents.work; } }

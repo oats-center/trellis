@@ -25,20 +25,21 @@ impl Administration {
 
     pub(crate) fn capability_id(self) -> &'static str {
         match self {
-            Self::ManagePrincipals => "trellis.managePrincipals",
-            Self::ManageRoles => "trellis.manageRoles",
-            Self::AcceptApis => "trellis.acceptApis",
-            Self::ForceReplaceApis => "trellis.forceReplaceApis",
-            Self::ManageClients => "trellis.manageClients",
-            Self::ManagePlatform => "trellis.managePlatform",
+            Self::ManagePrincipals => "trellis.auth.v1:users.manage",
+            Self::ManageRoles => "trellis.auth.v1:roles.manage",
+            Self::AcceptApis => "trellis.auth.v1:apis.accept",
+            Self::ForceReplaceApis => "trellis.auth.v1:apis.forceReplace",
+            Self::ManageClients => "trellis.auth.v1:clients.manage",
+            Self::ManagePlatform => "trellis.auth.v1:platform.manage",
         }
     }
 }
 
-/// Administrative capability IDs are bare `trellis.<name>`; every other
-/// capability is scoped to its API as `api::name`.
+/// Whether a capability ID is one of the administrative capabilities.
 pub(crate) fn is_administrative(capability: &str) -> bool {
-    capability.starts_with("trellis.") && !capability.contains("::")
+    Administration::ALL
+        .iter()
+        .any(|administration| administration.capability_id() == capability)
 }
 
 impl SqliteAuthorizationStore {
@@ -233,7 +234,7 @@ fn read_review(
     }))?)
 }
 
-/// Decide a pending review. Another holder of `trellis.managePlatform` decides;
+/// Decide a pending review. Another holder of `trellis.auth.v1:platform.manage` decides;
 /// nobody approves their own delegation. Approval also reaches the user's
 /// live grants for that app binding that asked for the capability.
 pub(super) fn decide(

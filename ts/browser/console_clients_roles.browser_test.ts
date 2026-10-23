@@ -55,7 +55,7 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       await page.goto(`${runtime.trellisUrl}/console/admin/roles/new`);
       await page.getByLabel("Title", { exact: true }).fill(title);
       await page
-        .getByRole("checkbox", { name: /trellis.auth@v1::readAccount/ })
+        .getByRole("checkbox", { name: /trellis.auth.v1:account.read/ })
         .check();
       await page
         .getByRole("button", { name: "Save role", exact: true })

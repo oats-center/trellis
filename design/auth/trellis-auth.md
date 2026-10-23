@@ -147,7 +147,7 @@ administrator seeding initializes the administrator and registers `trellis.conso
 and `trellis.cli` in one idempotent aggregate transaction. CLI is an explicitly
 registered native Device Code/refresh client without a callback listener or
 implicit loopback trust. Registration uses the newly created administrator's
-ordinary `trellis.manageClients` capability. Replay returns the saved result
+ordinary `trellis.auth.v1:clients.manage` capability. Replay returns the saved result
 without re-registering or re-enabling a modified client; ordinary startup does
 not change client registration. Registration does not itself grant the user any
 capability: delegation still requires the user's holdings and explicit consent.
@@ -219,7 +219,7 @@ The same rule applies to previously committed shared Job keyed-coordination
 storage: losing it must not reset active ownership fences or cleanup obligations.
 Existing resources must still pass ownership and data-retention validation.
 
-Administrative capabilities (`trellis.*`, see
+Administrative capabilities (see
 [administrative capabilities](./administrative-capabilities.md)) are ordinary
 capabilities with three delegation safeguards, each on by default and
 configurable under `[auth.administration]`: consent asks for a separate
@@ -362,7 +362,7 @@ against its pinned implementation and provider certificate. Compatible callers
 and providers need not have equal accepted revisions within one API generation;
 neither party's catalog can lend authority to the other.
 
-Force replacement requires `trellis.forceReplaceApis`, reviewed-digest confirmation,
+Force replacement requires `trellis.auth.v1:apis.forceReplace`, reviewed-digest confirmation,
 explicit breakage acknowledgment, and declared meaning changes with increased
 consent revisions. It creates a new API generation at revision 1 and makes
 displaced providers ineligible for admission. Technical wire breakage alone does
@@ -547,7 +547,7 @@ directory read to renew an expired URL.
 
 ## User Directory And Account Projection
 
-`trellis.auth@v1::readUsers` authorizes the existing `Users.List` and
+`trellis.auth.v1:users.read` authorizes the existing `Users.List` and
 `Users.Get` actions. Its consent explicitly covers
 names, email and photos. Ordinary callers see active user profiles only:
 `principalId`, `displayName`, optional given/family names and email,
@@ -556,7 +556,7 @@ ID is the identity key; names and email are neither unique nor authorization.
 Unknown and inactive users have the same `not_found` result for ordinary reads.
 
 `account` contains the principal lifecycle/revision, username and local-password
-status. List/Get include it only when `trellis.managePrincipals` was delegated to
+status. List/Get include it only when `trellis.auth.v1:users.manage` was delegated to
 the verified session and is still held at the read transaction. Holding it
 without delegating it never expands a client's delegation.
 `Users.Resolve` requires `readAccount`, is self-only, and includes the caller's
@@ -624,7 +624,7 @@ returns the original mutation result rather than a revision conflict.
 Event Consumer exhaustion, including replay exhaustion, is broker-owned: SDKs
 leave the final failed delivery unacknowledged and Events journals the captured
 MAX_DELIVERIES advisory. Consumer services receive the implicit
-`trellis.events@v1::processReplays` capability only for retained inspection and
+`trellis.events.v1:replays.process` capability only for retained inspection and
 terminal replay reporting. Both require an exact current owned Consumer binding;
 ownership does not authorize Replay/Dismiss. Successful or permanently rejected
 replay is durably reported before ACK/TERM. A JetStream acknowledgement address
@@ -667,7 +667,7 @@ credential check failed.
 Account reset and identity linking use five-minute, one-use account actions in
 the existing isolated OAuth portal. Action creation replay preserves the original
 response under OAuth sealing custody, never a renewed deadline. Reset completion
-checks the originating logical session, current `trellis.managePrincipals`,
+checks the originating logical session, current `trellis.auth.v1:users.manage`,
 credential CAS, and protected-administrator status before atomically changing the
 password and revoking login/grant families. Bootstrap-administrator reset remains
 on the existing local recovery path. Until the protected administrator sets a
@@ -755,10 +755,10 @@ and proof headers even after source retention removes the event. Targeted replay
 resolves those bytes and `originalPublishedAt` through authenticated, resource-scoped
 Events inspection; neither replay-envelope content nor publisher headers supply
 trusted chronology, and the replay stream's newer timestamp is never substituted.
-Issuer rotation/revocation requires `trellis.managePlatform`, not an additional
-`trellis.managePrincipals`. Other hard-root revocation retains its own
-`trellis.managePrincipals` gate.
-`Issuers.Rotate` requires `trellis.managePlatform`, the expected current issuer key,
+Issuer rotation/revocation requires `trellis.auth.v1:platform.manage`, not an additional
+`trellis.auth.v1:users.manage`. Other hard-root revocation retains its own
+`trellis.auth.v1:users.manage` gate.
+`Issuers.Rotate` requires `trellis.auth.v1:platform.manage`, the expected current issuer key,
 and an idempotency key. Auth generates successor signing custody locally; private
 keys never enter the RPC. Before committing a rotation, Auth creates a private
 `0700` directory beside its effective persistent SQLite database, replacing the

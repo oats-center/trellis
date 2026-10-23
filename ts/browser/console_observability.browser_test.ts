@@ -641,8 +641,8 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
       credentials,
     );
     for (const capabilityId of [
-      "trellis.events@v1::query",
-      "trellis.events@v1::readMetrics",
+      "trellis.events.v1:events.query",
+      "trellis.events.v1:metrics.read",
     ]) {
       const current = await runtime.callAdminRpc("authCapabilityGrantsList", {
         principalId,

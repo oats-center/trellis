@@ -6,7 +6,7 @@ api echo@v1 {
   rpc Echo { input Value; output Value; }
   capabilities {
     public {}
-    capability optionalEcho {
+    capability echo.optional {
       title "Optional echo";
       description "Optional API bundle inspection acceptance.";
       consequence "The caller can call Echo.";
@@ -16,7 +16,7 @@ api echo@v1 {
 }
 
 service Caller {
-  use echo { rpc Echo; optional capability optionalEcho; }
+  use echo { rpc Echo; optional capability echo.optional; }
   kv optional cache {
     title "Optional cache";
     description "Optional resource bundle inspection acceptance.";

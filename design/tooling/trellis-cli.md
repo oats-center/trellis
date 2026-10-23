@@ -64,7 +64,7 @@ Client registration and catalog operations call the generated `Auth.OAuthClients
 and `Auth.Apis` families. JSON request files use generated native-contract DTOs;
 the CLI does not author a second policy or contract schema. Mutations retain
 expected revisions and idempotency keys. Force replacement requires
-`trellis.forceReplaceApis` and explicit breakage/consent acknowledgements.
+`trellis.auth.v1:apis.forceReplace` and explicit breakage/consent acknowledgements.
 Client configuration supports exact registered loopback browser callbacks.
 
 Issuer commands manage the online signer. No `infra`, trust-root, certificate,

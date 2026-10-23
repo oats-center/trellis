@@ -29,11 +29,11 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
             {
                 "type":"trellis_capabilities",
                 "required": [
-                    "trellis.managePrincipals",
-                    "trellis.manageRoles",
-                    "trellis.manageClients",
-                    "trellis.manageClients",
-                    "trellis.manageClients"
+                    "trellis.auth.v1:users.manage",
+                    "trellis.auth.v1:roles.manage",
+                    "trellis.auth.v1:clients.manage",
+                    "trellis.auth.v1:clients.manage",
+                    "trellis.auth.v1:clients.manage"
                             ],
                 "optional": []
             }
@@ -62,7 +62,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
         .capability_grants_grant(
             &serde_json::from_value(serde_json::json!({
                 "principalId": user.user.principal_id,
-                "capabilityId": "trellis.auth@v1::readAccount",
+                "capabilityId": "trellis.auth.v1:account.read",
                 "expectedRevision": "0", "idempotencyKey": ulid::Ulid::new().to_string()
             }))
             .unwrap(),
@@ -106,7 +106,7 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
     .await
     .unwrap();
     let device = native.start_device(&serde_json::json!([
-        {"type":"trellis_capabilities","required":["trellis.auth@v1::readAccount"],"optional":[]}
+        {"type":"trellis_capabilities","required":["trellis.auth.v1:account.read"],"optional":[]}
     ])).await.unwrap();
     runtime
         .approve_device_login("lifecycle-native", device.user_code())

@@ -20,8 +20,8 @@ test("a superseding capability publication does not wait for a stale mirror repl
         name: "supersession",
         contract,
       });
-      const firstCapability = "runtime-trellis.transport_growth@v1::extend";
-      const secondCapability = "runtime-trellis.transport_growth@v1::extend2";
+      const firstCapability = "runtime-trellis.transport_growth.v1:growth.extend";
+      const secondCapability = "runtime-trellis.transport_growth.v1:growth.extendAgain";
       const firstGrants = await runtime.callAdminRpc(
         "authCapabilityGrantsList",
         { capabilityId: firstCapability },

@@ -350,9 +350,9 @@ pub(super) fn credential_snapshot(
                     .is_some_and(|state| !state.is_empty())
             {
                 for capability in [
-                    "trellis.state@v1::read",
-                    "trellis.state@v1::write",
-                    "trellis.state@v1::delete",
+                    "trellis.state.v1:values.read",
+                    "trellis.state.v1:values.write",
+                    "trellis.state.v1:values.delete",
                 ] {
                     if !required.iter().any(|id| id == capability) {
                         required.push(capability.into());

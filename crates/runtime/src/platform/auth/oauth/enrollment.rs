@@ -576,9 +576,9 @@ pub(in crate::platform::auth) fn validate_selection(
     if !request.states().is_empty() {
         expected.extend(
             [
-                "trellis.state@v1::read",
-                "trellis.state@v1::write",
-                "trellis.state@v1::delete",
+                "trellis.state.v1:values.read",
+                "trellis.state.v1:values.write",
+                "trellis.state.v1:values.delete",
             ]
             .map(str::to_owned),
         );

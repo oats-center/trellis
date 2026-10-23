@@ -21,10 +21,10 @@ api echo@v1 {
   operation Upload { input Value; output Value; upload; }
   event Observed { payload Value; }
   capabilities {
-    capability invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; consequence "The caller may invoke Echo, work operations, and observe results."; consent_revision 1; allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
-    capability upload { title "Upload"; description "Upload fixture values."; consequence "The caller may execute uploads."; consent_revision 1; allows { operation Upload; } }
-    capability publishObserved { title "Publish observations"; description "Publish fixture observations."; consequence "The publisher may emit Observed events."; consent_revision 1; allows { publish event Observed; } }
-    capability optionalSilent {
+    capability echo.invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; consequence "The caller may invoke Echo, work operations, and observe results."; consent_revision 1; allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
+    capability files.upload { title "Upload"; description "Upload fixture values."; consequence "The caller may execute uploads."; consent_revision 1; allows { operation Upload; } }
+    capability events.publishObserved { title "Publish observations"; description "Publish fixture observations."; consequence "The publisher may emit Observed events."; consent_revision 1; allows { publish event Observed; } }
+    capability echo.optionalSilent {
       title "Optional silent operation";
       description "Partial lifecycle authorization acceptance.";
       consequence "The caller can invoke and manage the optional silent operation.";
@@ -35,7 +35,7 @@ api echo@v1 {
 }
 
 service Provider { implements echo; }
-service Consumer { use echo { required capability invoke; capability optionalSilent; } }
+service Consumer { use echo { required capability echo.invoke; capability echo.optionalSilent; } }
 service JobsProvider {
   job work { title "Work"; description "Private lifecycle recovery acceptance"; payload Value; result Value; }
 }
@@ -50,23 +50,23 @@ service KvProvider {
     ttl 0ms;
   }
 }
-agent Caller { use echo { required capability invoke; required capability upload; } }
-agent AgentCaller { use echo { required capability invoke; } }
+agent Caller { use echo { required capability echo.invoke; required capability files.upload; } }
+agent AgentCaller { use echo { required capability echo.invoke; } }
 agent RestrictedCaller {}
-agent OptionalOperationCaller { use echo { capability optionalSilent; } }
-agent OperationAuthorizationCaller { use echo { required capability optionalSilent; } }
+agent OptionalOperationCaller { use echo { capability echo.optionalSilent; } }
+agent OperationAuthorizationCaller { use echo { required capability echo.optionalSilent; } }
 device UnsupportedDevice {}
 device CompanionDevice {
   state saved { title "Device saved value"; description "Installed device State authority acceptance"; schema Value; version 1; }
   agent Companion {
     state saved { title "User saved value"; description "Independent companion State authority acceptance"; schema Value; version 1; }
-    use auth { required capability manageDeviceCompanions; }
-    use echo { required capability invoke; }
+    use auth { required capability account.linkDevice; }
+    use echo { required capability echo.invoke; }
   }
 }
 device OptionalCompanionDevice {
   agent optional Companion {
-    use auth { required capability manageDeviceCompanions; }
-    use echo { required capability invoke; }
+    use auth { required capability account.linkDevice; }
+    use echo { required capability echo.invoke; }
   }
 }

@@ -13,7 +13,7 @@ const READY_AUTHORITY: Authority = {
   authorityDigest: "current-ui-snapshot",
   capabilities: [
     {
-      capabilityId: "trellis.managePrincipals",
+      capabilityId: "trellis.auth.v1:users.manage",
       identityGeneration: "1",
       consentRevision: "1",
     },

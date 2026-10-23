@@ -40,19 +40,11 @@ impl RequestedAuthority {
                         return Err(invalid());
                     }
                     for name in required.iter().chain(&optional) {
-                        if super::super::administration::is_administrative(name) {
-                            if name.len() > 128
-                                || !name["trellis.".len()..]
-                                    .bytes()
-                                    .all(|byte| byte.is_ascii_alphanumeric())
-                            {
-                                return Err(invalid());
-                            }
-                            continue;
-                        }
-                        let (api, capability) = name.split_once("::").ok_or_else(invalid)?;
+                        let (api, capability) =
+                            trellis_idl::split_capability_id(name).ok_or_else(invalid)?;
                         if name.len() > 1024
-                            || trellis_protocol::validate_api_id(api).is_err()
+                            || (!capability.contains('.') && capability != "public")
+                            || trellis_protocol::validate_api_id(&api).is_err()
                             || capability.is_empty()
                             || !capability.bytes().all(|byte| {
                                 byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.'
@@ -84,16 +76,22 @@ mod tests {
 
     #[test]
     fn capability_details_normalize_selection_and_fail_closed_on_ambiguous_requests() {
-        let request = RequestedAuthority::parse(r#"[{"type":"trellis_capabilities","required":["acme.documents@v1::read","acme.documents@v1::read","trellis.manageRoles"],"optional":["acme.documents@v1::read","acme.documents@v1::export","acme.documents@v1::export"]}]"#).unwrap();
+        let request = RequestedAuthority::parse(r#"[{"type":"trellis_capabilities","required":["acme.documents.v1:documents.read","acme.documents.v1:documents.read","trellis.auth.v1:roles.manage"],"optional":["acme.documents.v1:documents.read","acme.documents.v1:documents.export","acme.documents.v1:documents.export"]}]"#).unwrap();
         assert_eq!(
             request.capabilities.required,
-            ["acme.documents@v1::read", "trellis.manageRoles"]
+            [
+                "acme.documents.v1:documents.read",
+                "trellis.auth.v1:roles.manage"
+            ]
         );
-        assert_eq!(request.capabilities.optional, ["acme.documents@v1::export"]);
+        assert_eq!(
+            request.capabilities.optional,
+            ["acme.documents.v1:documents.export"]
+        );
         for raw in [
             r#"[]"#,
             r#"[{"type":"future_type","required":[]}]"#,
-            r#"[{"type":"trellis_capabilities","required":[],"required":["acme.documents@v1::write"]}]"#,
+            r#"[{"type":"trellis_capabilities","required":[],"required":["acme.documents.v1:write"]}]"#,
             r#"[{"type":"trellis_capabilities","required":[]},{"type":"trellis_capabilities","required":[]}]"#,
             r#"[{"type":"trellis_capabilities","required":["not-qualified"]}]"#,
             r#"[{"type":"trellis_capabilities","required":["trellis.manage-roles"]}]"#,

@@ -109,10 +109,10 @@ test(
           clientId: "trellis.cli",
           request: adminApps.cli.request,
           administrativeCapabilities: [
-            "trellis.managePrincipals",
-            "trellis.acceptApis",
-            "trellis.manageClients",
-            "trellis.manageRoles",
+            "trellis.auth.v1:users.manage",
+            "trellis.auth.v1:apis.accept",
+            "trellis.auth.v1:clients.manage",
+            "trellis.auth.v1:roles.manage",
           ],
           signal: context.signal,
         });
@@ -278,8 +278,8 @@ test(
           })
           .orThrow();
         assert(user.account);
-        const read = `${api.identity}::read`;
-        const extend = `${api.identity}::extend`;
+        const read = `${api.identity.replace("@", ".")}:values.read`;
+        const extend = `${api.identity.replace("@", ".")}:values.extend`;
         const principalId = user.principalId;
         for (const capabilityId of [read, extend])
           await admin

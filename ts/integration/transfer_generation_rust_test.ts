@@ -23,7 +23,7 @@ test("Rust downloads survive growth and open after the original attachment close
         name: "rust-transfer-generation",
         contract,
       });
-      const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         capabilityId,
       });

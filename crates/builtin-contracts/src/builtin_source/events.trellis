@@ -494,63 +494,63 @@ api events@v1 {
     group events {
       title "Events";
       description "Event history and delivery problems.";
-      capability query {
+      capability events.query {
         title "Search events";
         description "Find events in the history.";
         consequence "Can see event summaries.";
         consent_revision 1;
         allows { rpc Query; }
       }
-      capability inspect {
+      capability events.inspect {
         title "Open events";
         description "See an event's full contents and delivery.";
         consequence "Can see event data.";
         consent_revision 1;
         allows { rpc Inspect; }
       }
-      capability readMetrics {
+      capability metrics.read {
         title "See event metrics";
         description "See event volume and delivery speed.";
         consequence "Can see event metrics.";
         consent_revision 1;
         allows { rpc Metrics; }
       }
-      capability observe {
+      capability events.observe {
         title "Watch events live";
         description "Follow new events as they happen.";
         consequence "Can see events live.";
         consent_revision 1;
         allows { live Watch; }
       }
-      capability inspectConsumers {
+      capability consumers.inspect {
         title "See event consumers";
         description "See which services receive events and how delivery is going.";
         consequence "Can see delivery status.";
         consent_revision 1;
         allows { rpc Consumers.Query; rpc Consumers.Inspect; }
       }
-      capability inspectDeadLetters {
+      capability deadLetters.inspect {
         title "See failed deliveries";
         description "See events that services could not process.";
         consequence "Can see failed event data and errors.";
         consent_revision 1;
         allows { rpc DeadLetters.Query; rpc DeadLetters.Inspect; }
       }
-      capability replayDeadLetters {
+      capability deadLetters.replay {
         title "Retry failed deliveries";
         description "Send a failed event to its service again.";
         consequence "The service may repeat its work.";
         consent_revision 1;
         allows { rpc DeadLetters.Replay; }
       }
-      capability dismissDeadLetters {
+      capability deadLetters.dismiss {
         title "Dismiss failed deliveries";
         description "Clear a failed delivery from the list.";
         consequence "Removes it from follow-up.";
         consent_revision 1;
         allows { rpc DeadLetters.Dismiss; }
       }
-      capability readDiagnostics {
+      capability diagnostics.read {
         title "See event diagnostics";
         description "See problems with event storage and processing.";
         consequence "Can see event system errors.";
@@ -558,7 +558,7 @@ api events@v1 {
         allows { rpc Diagnostics; }
       }
     }
-    capability processReplays {
+    capability replays.process {
       title "Process own event replays";
       description "Let a service finish replays of its own events.";
       consequence "The service can complete its own replays.";

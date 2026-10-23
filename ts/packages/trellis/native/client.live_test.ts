@@ -14,8 +14,8 @@ import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_au
 import { connectNativeClient, connectNativeSession } from "../native.ts";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 
-const sessionsRead = "trellis.auth@v1::readSessions";
-const managePrincipals = "trellis.managePrincipals";
+const sessionsRead = "trellis.auth.v1:sessions.read";
+const managePrincipals = "trellis.auth.v1:users.manage";
 
 test(
   "native signed RPCs, explicit consent deselection, same-attachment renewal and enforced policy reduction",
@@ -35,9 +35,9 @@ test(
           clientId: "trellis.cli",
           request: apps.cli.request,
           administrativeCapabilities: [
-            "trellis.managePrincipals",
-            "trellis.manageRoles",
-            "trellis.managePlatform",
+            "trellis.auth.v1:users.manage",
+            "trellis.auth.v1:roles.manage",
+            "trellis.auth.v1:platform.manage",
           ],
           signal,
         });

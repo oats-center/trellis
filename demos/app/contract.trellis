@@ -4,15 +4,15 @@ model InspectionContextState { siteId: string; note: string; updatedBy: string; 
 
 app App {
   use fieldops {
-    required capability assignmentsRead;
-    required capability sitesRead;
-    required capability evidenceRead;
-    required capability evidenceDelete;
-    required capability reportsRead;
-    required capability sitesRefresh;
-    required capability reportsGenerate;
-    required capability evidenceUpload;
-    required capability auditObserve;
+    required capability assignments.read;
+    required capability sites.read;
+    required capability evidence.read;
+    required capability evidence.delete;
+    required capability reports.read;
+    required capability sites.refresh;
+    required capability reports.generate;
+    required capability evidence.upload;
+    required capability audit.observe;
   }
   state workspaceContext { title "Workspace context"; description "Current inspection workspace context."; schema InspectionContextState; version 1; }
 }

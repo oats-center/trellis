@@ -523,7 +523,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
         await runtime.waitFor(
           () =>
             service.connection.availability().capabilities[
-              "runtime-trellis.transport_growth@v1::extend"
+              "runtime-trellis.transport_growth.v1:growth.extend"
             ] === true,
         );
         assert.deepEqual(await service.extend({}).orThrow(), {});
@@ -555,7 +555,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
           socket.id,
           () =>
             service.connection.availability().capabilities[
-              "runtime-trellis.transport_growth@v1::extend"
+              "runtime-trellis.transport_growth.v1:growth.extend"
             ] === false,
         );
         assert(await manager.consumers.delete(stream, mirrors[0].name));
@@ -579,7 +579,7 @@ test("a granted optional RPC waits for coverage rather than being classified as 
         assert.deepEqual(await deadline(pending, 12_000), {});
         assert.equal(calls, 2, "coverage recovery must not retransmit the RPC");
         assert.equal(gate.connection(socket.id)?.closed, false);
-        const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+        const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
         const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
           capabilityId,
         });

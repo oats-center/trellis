@@ -1064,7 +1064,7 @@ pub struct AdministrationConfig {
     /// Consent asks for a separate confirmation that the app may manage this
     /// Trellis installation.
     pub confirm_on_consent: bool,
-    /// Another holder of `trellis.managePlatform` must approve the delegation
+    /// Another holder of `trellis.auth.v1:platform.manage` must approve the delegation
     /// before the app receives it.
     pub require_peer_approval: bool,
     /// Only OAuth clients an administrator registered may receive

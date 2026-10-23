@@ -6,7 +6,7 @@ description: Capability approval, exact grants, and deployment policy.
 # Capability Patterns
 
 Capabilities are API-owned explanation and approval groups. Their identity is
-`<api-id>::<name>`. Human consent fingerprints bind capability identity,
+`<package>.<ApiName>.v<major>:<area>.<action>`. Human consent fingerprints bind capability identity,
 description, and consequence. Titles are presentation; exact `allows` membership
 is machine semantics but not part of the consent fingerprint.
 

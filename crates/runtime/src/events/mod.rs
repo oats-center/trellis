@@ -420,7 +420,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 // the generic action-capability fallback.
                 if method == "DeadLetters.Inspect"
                     && !authority.authority().capabilities.iter().any(|capability| {
-                        capability.capability_id == "trellis.events@v1::inspectDeadLetters"
+                        capability.capability_id == "trellis.events.v1:deadLetters.inspect"
                     })
                 {
                     return Err(events_forbidden(

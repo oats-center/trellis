@@ -24,8 +24,8 @@ api performance@v1 {
   event Changed { payload Value; }
   event Delivered { payload Value; }
   capabilities {
-    capability workloads { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; consequence "The caller may run the benchmark workloads and observe their results."; consent_revision 1; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; rpc DownloadStream; operation Upload; operation UploadStaged; operation UploadStream; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
-    capability publishDelivered { title "Publish delivery results"; description "Report a completed durable delivery."; consequence "The provider may publish Delivered events."; consent_revision 1; allows { publish event Delivered; } }
+    capability workloads.run { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; consequence "The caller may run the benchmark workloads and observe their results."; consent_revision 1; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; rpc DownloadStream; operation Upload; operation UploadStaged; operation UploadStream; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
+    capability deliveries.publish { title "Publish delivery results"; description "Report a completed durable delivery."; consequence "The provider may publish Delivered events."; consent_revision 1; allows { publish event Delivered; } }
   }
 }
 
@@ -40,11 +40,11 @@ service Provider {
 }
 
 agent Caller {
-  use performance { required capability workloads; }
-  use auth { required capability readAccount; }
+  use performance { required capability workloads.run; }
+  use auth { required capability account.read; }
   state saved { title "Saved"; description "Measured client state round trips."; schema Value; version 1; }
 }
 
 app BrowserCaller {
-  use performance { required capability workloads; }
+  use performance { required capability workloads.run; }
 }

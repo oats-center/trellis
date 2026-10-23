@@ -90,7 +90,7 @@ api orders@v1 {
       consent_revision 1;
       allows { publish event Changed; subscribe event Changed; }
     }
-    capability read {
+    capability items.read {
       consent_revision 1;
       title "Read orders";
       description "Reads orders.";
@@ -416,10 +416,10 @@ fn shared_schema_changes_update_only_affected_participant_needs() {
             pagination cursor; }\n  event Changed {",
         )
         .replace(
-            "    capability read {",
-            "    capability again { title \"Read again\"; description \"Read \
+            "    capability items.read {",
+            "    capability items.again { title \"Read again\"; description \"Read \
             another page.\"; consequence \"Order data is shared.\"; \
-            consent_revision 1; allows { rpc Again; } }\n    capability read {",
+            consent_revision 1; allows { rpc Again; } }\n    capability items.read {",
         );
     let compile = |types: &str| {
         compile_project(
@@ -432,8 +432,8 @@ fn shared_schema_changes_update_only_affected_participant_needs() {
                     "app.trellis",
                     r#"
 import { orders } from api;
-service First { use orders { required capability read; required capability again; } }
-service Second { use orders { required capability read; } }
+service First { use orders { required capability items.read; required capability items.again; } }
+service Second { use orders { required capability items.read; } }
 service Observer { use orders { required capability public; } }
 "#,
                 ),
@@ -695,7 +695,7 @@ fn format_two_lock_rejects_cycles_and_inexact_edges() {
 fn selected_compatibility_is_directional_and_recursive() {
     const APP: &str = r#"
     import { orders } from api;
-    app Shopper { use orders { required capability read; } }
+    app Shopper { use orders { required capability items.read; } }
 "#;
     let package_manifest = manifest(&[
         ("types", "types.trellis"),
@@ -1054,7 +1054,7 @@ api work@v2 {
   description "Work API.";
   operation Run { input Empty; output Empty; signals { stop Empty; } }
   capabilities {
-    capability execute {
+    capability items.execute {
       consent_revision 1;
       title "Execute work";
       description "Runs work.";
@@ -1063,7 +1063,7 @@ api work@v2 {
     }
   }
 }
-service Client { use work { required capability execute; } }
+service Client { use work { required capability items.execute; } }
 service Worker { implements work; }
 "#,
         )],
@@ -1165,17 +1165,17 @@ api state@v1 {
   rpc Put { input Empty; output Empty; }
   rpc Delete { input Empty; output Empty; }
   capabilities {
-    capability read {
+    capability values.read {
       title "Read"; description "Read a State value.";
       consequence "The caller sees saved values.";
       consent_revision 1; allows { rpc Get; }
     }
-    capability write {
+    capability values.write {
       title "Write"; description "Overwrite a State value.";
       consequence "The caller replaces saved values.";
       consent_revision 1; allows { rpc Put; }
     }
-    capability delete {
+    capability values.delete {
       title "Delete"; description "Delete a State value.";
       consequence "The caller removes saved values.";
       consent_revision 1; allows { rpc Delete; }
@@ -1203,7 +1203,7 @@ api state@v1 {
             "source",
             "source.trellis",
             "import { state } from trellis;\nmodel Saved { value: string; }\napp \
-            Client { use state { required capability read; } state saved { title \
+            Client { use state { required capability values.read; } state saved { title \
             \"Saved\"; description \"Saved value.\"; schema Saved; } }",
         )],
         BTreeMap::from([("trellis".into(), state_graph)]),

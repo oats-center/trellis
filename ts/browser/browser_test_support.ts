@@ -283,13 +283,13 @@ export async function createOrdinaryUserWithPassword(
   });
   const principalId = created.user.principalId;
   for (const capabilityId of [
-    "trellis.auth@v1::readAccount",
-    "trellis.auth@v1::updateProfile",
-    "trellis.auth@v1::readIdentities",
-    "trellis.auth@v1::manageIdentities",
-    "trellis.auth@v1::changePassword",
-    "trellis.auth@v1::readSessions",
-    "trellis.auth@v1::revokeSessions",
+    "trellis.auth.v1:account.read",
+    "trellis.auth.v1:account.edit",
+    "trellis.auth.v1:identities.read",
+    "trellis.auth.v1:identities.manage",
+    "trellis.auth.v1:account.changePassword",
+    "trellis.auth.v1:sessions.read",
+    "trellis.auth.v1:sessions.revoke",
   ]) {
     await runtime.callAdminRpc("authCapabilityGrantsGrant", {
       principalId,

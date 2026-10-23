@@ -87,7 +87,7 @@ or revoke already-consented independent grants: their ordinary refresh remains
 valid after parent disable, declaration omission, or deployment removal.
 
 `DeviceCompanions.Revoke` is authorized to the associated user or an administrator
-whose verified session delegates `trellis.managePrincipals` and who still holds
+whose verified session delegates `trellis.auth.v1:users.manage` and who still holds
 it. It atomically
 removes the association and revokes that exact OAuth grant and its families.
 It does not revoke the user's login or other grants, or disable the parent.

@@ -351,8 +351,8 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
             {
                 "type":"trellis_capabilities",
                 "required": [
-                    "trellis.managePrincipals",
-                    "trellis.managePrincipals"
+                    "trellis.auth.v1:users.manage",
+                    "trellis.auth.v1:users.manage"
                             ],
                 "optional": []
             }

@@ -12,7 +12,7 @@ api a{index:06}@v1 {{
  description "Document management.";
  rpc Get {{ input Document; output Document; }}
  capabilities {{
-  capability read {{ title "Read"; description "Read documents."; consequence "Sees contents."; consent_revision 1; allows {{ rpc Get; }} }}
+  capability documents.read {{ title "Read"; description "Read documents."; consequence "Sees contents."; consent_revision 1; allows {{ rpc Get; }} }}
  }}
 }}
 "#

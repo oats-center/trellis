@@ -60,7 +60,7 @@ test("a grown finite capability adopts a new generation without disrupting in-fl
             >
           | undefined;
         try {
-          const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+          const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
           const grants = await runtime.callAdminRpc(
             "authCapabilityGrantsList",
             { capabilityId },

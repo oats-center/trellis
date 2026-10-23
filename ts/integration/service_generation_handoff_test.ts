@@ -27,7 +27,7 @@ test("a service drains accepted RPCs across growth and renews in place after rea
         name: "rpc-generation",
         contract,
       });
-      const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         capabilityId,
       });

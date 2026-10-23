@@ -45,7 +45,7 @@ the supported flows. Kind is immutable; use a new client ID to switch kind.
 Native HTTP loopback callbacks need no development flag; browser loopback does.
 `put` reads generated AuthOAuthClientPutRequest JSON; mutations are revision-fenced. `trellis apis
 list|get|review|accept|force-replace` uses generated Auth request JSON and reviewed
-package evidence. Force replacement requires trellis.forceReplaceApis and explicit
+package evidence. Force replacement requires trellis.auth.v1:apis.forceReplace and explicit
 breakage/consent acknowledgements. Console exposes OAuth clients and API catalog.
 
 Identity-link approval remains a protected same-origin POST. Its no-store
@@ -137,14 +137,14 @@ retains credential custody and renews admission with the same runtime identity
 and key, using its owner's authenticated issuer pin. Recovery failure closes
 application transport without deleting the durable credential record.
 
-Administrative capabilities (`trellis.managePrincipals`, `trellis.manageRoles`,
-`trellis.acceptApis`, `trellis.forceReplaceApis`, `trellis.manageClients`,
-`trellis.managePlatform`) are ordinary capabilities in a namespace only built-in
+Administrative capabilities (`trellis.auth.v1:users.manage`, `trellis.auth.v1:roles.manage`,
+`trellis.auth.v1:apis.accept`, `trellis.auth.v1:apis.forceReplace`, `trellis.auth.v1:clients.manage`,
+`trellis.auth.v1:platform.manage`) are ordinary capabilities in a namespace only built-in
 Trellis contracts may use. Roles, direct grants, and identity-provider mappings
-can carry them; changing who holds one requires `trellis.managePlatform`.
+can carry them; changing who holds one requires `trellis.auth.v1:platform.manage`.
 Delegating one to an app has three safeguards, on by default under
 `[auth.administration]`: a separate consent confirmation, approval by another
-`trellis.managePlatform` holder (`Administration.Reviews.*`), and registered
+`trellis.auth.v1:platform.manage` holder (`Administration.Reviews.*`), and registered
 clients only. The initialized administrator holds all six inherently and needs
 no review. Localhost/development mode establishes no trust, and
 application/OAuth origins remain isolated.
@@ -665,7 +665,7 @@ are registry packages; server/compiler/bootstrap implementations remain private.
 Account actions use the generated Auth RPCs. PasswordReset.Create returns a
 five-minute, one-use token for `/account/reset?token=...` on the OAuth origin;
 completion checks Origin/CSRF, credential CAS, and the requester's original active
-logical session/current `trellis.managePrincipals`, then revokes login/grant
+logical session/current `trellis.auth.v1:users.manage`, then revokes login/grant
 families atomically with the credential change. Bootstrap administrators use local
 recovery. IdentityLink.Create returns a five-minute portal URL for the current
 user; completion requires that same signed-in user and fresh nonce/PKCE-verified
@@ -694,7 +694,7 @@ Omission keeps fields, explicit clear flags restore linked-provider defaults,
 manual email is unverified, and manual choices survive OIDC enrichment. Select and
 consent to `usersRead` for `Users.List/Get`: ordinary results expose active
 profiles with immutable `principalId`, names, available email and photos, but no
-`account`. Delegated and currently held `trellis.managePrincipals` additionally
+`account`. Delegated and currently held `trellis.auth.v1:users.manage` additionally
 permits username search, inactive-user lookup and account details. Directory
 identity is not an application-object authorization grant.
 

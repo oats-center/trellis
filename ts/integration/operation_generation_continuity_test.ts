@@ -19,7 +19,7 @@ test("accepted and fresh Operations retain control and observation across capabi
         name: "operation-growth",
         contract,
       });
-      const capabilityId = "runtime-trellis.transport_growth@v1::extend";
+      const capabilityId = "runtime-trellis.transport_growth.v1:growth.extend";
       const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
         capabilityId,
       });

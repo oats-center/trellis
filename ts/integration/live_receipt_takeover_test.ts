@@ -37,7 +37,7 @@ import {
 import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Optional capability id declined at consent and grown later. */
-const CAPABILITY_B = "runtime-trellis.transport_growth@v1::extend";
+const CAPABILITY_B = "runtime-trellis.transport_growth.v1:growth.extend";
 const SUBJECT_DEPLOYMENT = "receipt-takeover-subject";
 const TARGET_DEPLOYMENT = "receipt-takeover-target";
 

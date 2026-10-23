@@ -918,7 +918,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     let ephemeral = nkeys::KeyPair::new_user();
     let runtime = URL_SAFE_NO_PAD.encode([31; 16]);
     let details = serde_json::json!([
-        {"type":"trellis_capabilities","required":[f.read, "trellis.managePrincipals"],"optional":[f.write]}
+        {"type":"trellis_capabilities","required":[f.read, "trellis.auth.v1:users.manage"],"optional":[f.write]}
     ])
     .to_string();
     let start_proof = dpop(
@@ -1151,7 +1151,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             ("presentation", consent["presentationId"].as_str().unwrap()),
             ("decision", "approve"),
             ("approved", f.read.as_str()),
-            ("approved", "trellis.managePrincipals"),
+            ("approved", "trellis.auth.v1:users.manage"),
             ("confirm_device", device.user_code.as_str()),
             ("confirm_administration", "true"),
         ])
@@ -1197,7 +1197,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             ("presentation", consent["presentationId"].as_str().unwrap()),
             ("decision", "approve"),
             ("approved", f.read.as_str()),
-            ("approved", "trellis.managePrincipals"),
+            ("approved", "trellis.auth.v1:users.manage"),
             ("confirm_device", device.user_code.as_str()),
             ("confirm_administration", "true"),
         ])
@@ -1218,7 +1218,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     let granted = serde_json::to_value(&tokens.oauth).unwrap();
     assert_eq!(
         granted["authorization_details"][0]["required"],
-        serde_json::json!([f.read, "trellis.managePrincipals"])
+        serde_json::json!([f.read, "trellis.auth.v1:users.manage"])
     );
     let admitted = crate::platform::auth::tests::admit_credential(
         &authority,
@@ -1239,7 +1239,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             .iter()
             .map(|capability| capability.capability_id.as_str())
             .collect::<Vec<_>>(),
-        vec![f.read.as_str(), "trellis.managePrincipals"]
+        vec![f.read.as_str(), "trellis.auth.v1:users.manage"]
     );
     let replay = http
         .post(&token_uri)

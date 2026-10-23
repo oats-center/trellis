@@ -147,7 +147,7 @@ test(
             if (decision === "unavailable")
               await runtime.callAdminRpc("authCapabilityGrantsGrant", {
                 principalId: user.principalId,
-                capabilityId: "trellis.auth@v1::readAccount",
+                capabilityId: "trellis.auth.v1:account.read",
                 expectedRevision: 0n,
                 idempotencyKey: ulid(),
               });

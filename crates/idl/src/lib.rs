@@ -118,7 +118,7 @@ mod tests {
               description "Transfer fixture.";
               operation Ingest {{ input Value; output Value; {member} }}
               capabilities {{
-                capability write {{ consent_revision 1; title "Write"; description "Send bytes."; consequence "Stores bytes."; allows {{ operation Ingest; }} }}
+                capability files.write {{ consent_revision 1; title "Write"; description "Send bytes."; consequence "Stores bytes."; allows {{ operation Ingest; }} }}
               }}
             }}
             "#
@@ -174,8 +174,8 @@ mod tests {
 
     #[test]
     fn capability_groups_present_without_changing_api_identity() {
-        let read = r#"capability read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
-        let write = r#"capability write { consent_revision 1; title "Change files"; description "Write files."; consequence "Changes files."; allows { rpc Put; } }"#;
+        let read = r#"capability files.read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
+        let write = r#"capability files.write { consent_revision 1; title "Change files"; description "Write files."; consequence "Changes files."; allows { rpc Put; } }"#;
         let grouped = compile(grouped_contract(&format!(
             r#"group files {{ title "Files"; description "Your stored files."; {read} }} {write}"#
         )))
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn capability_groups_require_presentation_text_and_members() {
-        let read = r#"capability read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
+        let read = r#"capability files.read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
         let untitled = compile(grouped_contract(&format!(
             r#"group files {{ description "Files."; {read} }}"#
         )))

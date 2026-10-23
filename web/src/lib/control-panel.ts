@@ -266,9 +266,18 @@ export function hasExactPermission(
   );
 }
 
-/** Administrative capabilities are the bare `trellis.<name>` IDs. */
+const ADMINISTRATIVE_CAPABILITIES: ReadonlySet<string> = new Set([
+  "trellis.auth.v1:users.manage",
+  "trellis.auth.v1:roles.manage",
+  "trellis.auth.v1:apis.accept",
+  "trellis.auth.v1:apis.forceReplace",
+  "trellis.auth.v1:clients.manage",
+  "trellis.auth.v1:platform.manage",
+]);
+
+/** Whether a capability is one of the six administrative capabilities. */
 export function isAdministrativeCapability(capabilityId: string): boolean {
-  return capabilityId.startsWith("trellis.") && !capabilityId.includes("::");
+  return ADMINISTRATIVE_CAPABILITIES.has(capabilityId);
 }
 
 /** Human-facing operator classification: holds any administrative capability. */

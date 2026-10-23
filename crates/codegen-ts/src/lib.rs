@@ -1156,7 +1156,9 @@ fn render_app_request(
                     optional_capabilities: BTreeSet::new(),
                 });
         for (id, capability) in api.capabilities() {
-            if ["read", "write", "delete"].contains(&trellis_idl::capability_name(id.as_str())) {
+            if ["values.read", "values.write", "values.delete"]
+                .contains(&trellis_idl::capability_name(id.as_str()))
+            {
                 selection.required_capabilities.insert(id.clone());
                 selection.optional_capabilities.remove(id);
                 selection.actions.extend(capability.allows.iter().cloned());
@@ -1399,7 +1401,9 @@ fn render_participant(
                     optional_capabilities: BTreeSet::new(),
                 });
         for (id, capability) in api.capabilities() {
-            if ["read", "write", "delete"].contains(&trellis_idl::capability_name(id.as_str())) {
+            if ["values.read", "values.write", "values.delete"]
+                .contains(&trellis_idl::capability_name(id.as_str()))
+            {
                 selection.required_capabilities.insert(id.clone());
                 selection.optional_capabilities.remove(id);
                 selection.actions.extend(
@@ -2611,9 +2615,9 @@ mod tests {
               operation Work { input Empty; output Node; progress Node; signals { Wake Empty; } upload; }
               event Changed { payload Node; }
               capabilities {
-                capability read { consent_revision 1; title "Read"; description "Read orders."; consequence "Reveals order data."; allows { rpc Get; } }
-                capability work { consent_revision 1; title "Work"; description "Run order work."; consequence "Changes orders."; allows { operation Work; } }
-                capability observe { consent_revision 1; title "Observe"; description "Observe order changes."; consequence "Reveals order updates."; allows { subscribe event Changed; } }
+                capability items.read { consent_revision 1; title "Read"; description "Read orders."; consequence "Reveals order data."; allows { rpc Get; } }
+                capability items.work { consent_revision 1; title "Work"; description "Run order work."; consequence "Changes orders."; allows { operation Work; } }
+                capability items.observe { consent_revision 1; title "Observe"; description "Observe order changes."; consequence "Reveals order updates."; allows { subscribe event Changed; } }
               }
             }
             api catalog@v2 {
@@ -2623,8 +2627,8 @@ mod tests {
               capabilities { public { consent_revision 1; allows { rpc List; } } }
             }
             service Worker { implements orders; implements catalog; kv optional cache { title "Cache"; description "Cache"; schema PrivateState; version 2; accepts { 1: PrivateV1; } } job work { title "Work"; description "Work queue."; payload Empty; deadline 45s; retry { attempts 3; backoff [5s, 30s]; } } }
-            app Viewer { use orders { required capability read; capability work; capability observe; } }
-            device Sensor { app optional Console { use orders { required capability read; capability work; } state values { title "Values"; description "Values"; schema Node; } } }
+            app Viewer { use orders { required capability items.read; capability items.work; capability items.observe; } }
+            device Sensor { app optional Console { use orders { required capability items.read; capability items.work; } state values { title "Values"; description "Values"; schema Node; } } }
             "#,
         );
         let root = unique_temp_dir("native");

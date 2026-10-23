@@ -21,10 +21,10 @@ api runtime@v1 {
   event Changed { payload Value; }
   live Watch { input Empty; event Value; }
   capabilities {
-    capability transport { title "Transport"; description "Exercise the runtime transport surfaces."; consequence "The caller may invoke and observe the fixture transports."; consent_revision 1; allows { rpc Echo; operation Work; operation Upload; operation Ingest; publish event Changed; subscribe event Changed; live Watch; } }
-    capability echo { title "Echo"; description "Invoke the echo RPC."; consequence "The caller may echo values."; consent_revision 1; allows { rpc Echo; } }
-    capability work { title "Work"; description "Execute the work operation."; consequence "The caller may execute and control work."; consent_revision 1; allows { operation Work; } }
-    capability download { title "Download"; description "Download a fixture value."; consequence "The caller may download values."; consent_revision 1; allows { rpc Download; rpc Generate; } }
+    capability transfers.transport { title "Transport"; description "Exercise the runtime transport surfaces."; consequence "The caller may invoke and observe the fixture transports."; consent_revision 1; allows { rpc Echo; operation Work; operation Upload; operation Ingest; publish event Changed; subscribe event Changed; live Watch; } }
+    capability echo.call { title "Echo"; description "Invoke the echo RPC."; consequence "The caller may echo values."; consent_revision 1; allows { rpc Echo; } }
+    capability operations.work { title "Work"; description "Execute the work operation."; consequence "The caller may execute and control work."; consent_revision 1; allows { operation Work; } }
+    capability transfers.download { title "Download"; description "Download a fixture value."; consequence "The caller may download values."; consent_revision 1; allows { rpc Download; rpc Generate; } }
   }
 }
 
@@ -36,20 +36,20 @@ api events@v1 {
   rpc Observed { input Empty; output Observed; }
   rpc DropAlpha { input Empty; output Empty; }
   capabilities {
-    capability publishAlpha { title "Publish Alpha"; description "Publish Alpha samples."; consequence "The caller may publish Alpha."; consent_revision 1; allows { publish event Alpha; } }
-    capability publishBeta { title "Publish Beta"; description "Publish Beta samples."; consequence "The caller may publish Beta."; consent_revision 1; allows { publish event Beta; } }
-    capability inspect { title "Inspect delivery"; description "Read observed samples."; consequence "The caller may inspect delivery results."; consent_revision 1; allows { rpc Observed; } }
-    capability dropAlpha { title "Drop Alpha"; description "Close the Alpha fixture subscription."; consequence "The caller may stop Alpha observation."; consent_revision 1; allows { rpc DropAlpha; } }
+    capability alpha.publish { title "Publish Alpha"; description "Publish Alpha samples."; consequence "The caller may publish Alpha."; consent_revision 1; allows { publish event Alpha; } }
+    capability beta.publish { title "Publish Beta"; description "Publish Beta samples."; consequence "The caller may publish Beta."; consent_revision 1; allows { publish event Beta; } }
+    capability events.inspect { title "Inspect delivery"; description "Read observed samples."; consequence "The caller may inspect delivery results."; consent_revision 1; allows { rpc Observed; } }
+    capability alpha.drop { title "Drop Alpha"; description "Close the Alpha fixture subscription."; consequence "The caller may stop Alpha observation."; consent_revision 1; allows { rpc DropAlpha; } }
   }
 }
 
 service Provider { implements runtime; }
 service ResourceProvider {}
 agent Caller {
-  use runtime { required capability transport; }
+  use runtime { required capability transfers.transport; }
 }
 app Denied { use runtime; }
-service AdminService { use auth { required capability manageRoles; required capability managePrincipals; } }
+service AdminService { use auth { required capability roles.manage; required capability users.manage; } }
 service EventService { implements events; }
-app Alpha { use events { required capability publishAlpha; required capability inspect; required capability dropAlpha; } }
-app Beta { use events { required capability publishBeta; } }
+app Alpha { use events { required capability alpha.publish; required capability events.inspect; required capability alpha.drop; } }
+app Beta { use events { required capability beta.publish; } }

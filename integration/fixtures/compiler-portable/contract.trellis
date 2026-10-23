@@ -5,7 +5,7 @@ api echo@v1 {
   description "A generated consumer built using only distribution artifacts.";
   rpc Echo { input Value; output Value; }
   capabilities {
-    capability invoke {
+    capability echo.invoke {
       title "Echo";
       description "Invoke the portable fixture.";
       consequence "The caller may echo values.";
@@ -15,4 +15,4 @@ api echo@v1 {
   }
 }
 
-app Caller { use echo { required capability invoke; } }
+app Caller { use echo { required capability echo.invoke; } }

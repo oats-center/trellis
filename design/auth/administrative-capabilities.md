@@ -7,28 +7,28 @@ installation itself is done with six **administrative capabilities**.
 
 ## Names
 
-Administrative capabilities live in a reserved namespace, `trellis.*`:
+The administrative capabilities belong to the built-in Auth API:
 
-| Capability                 | Allows                                                    |
-| -------------------------- | --------------------------------------------------------- |
-| `trellis.managePrincipals` | users, services, devices, resources, sign-in providers    |
-| `trellis.manageRoles`      | roles, assignments, direct grants, provider role mappings |
-| `trellis.acceptApis`       | reviewing and accepting compatible API updates            |
-| `trellis.forceReplaceApis` | installing API updates that break compatibility           |
-| `trellis.manageClients`    | registering apps and changing their sign-in settings      |
-| `trellis.managePlatform`   | who administers, issuer keys, administration reviews      |
+| Capability                          | Allows                                                    |
+| ----------------------------------- | --------------------------------------------------------- |
+| `trellis.auth.v1:users.manage`      | users, services, devices, resources, sign-in providers    |
+| `trellis.auth.v1:roles.manage`      | roles, assignments, direct grants, provider role mappings |
+| `trellis.auth.v1:apis.accept`       | reviewing and accepting compatible API updates            |
+| `trellis.auth.v1:apis.forceReplace` | installing API updates that break compatibility           |
+| `trellis.auth.v1:clients.manage`    | registering apps and changing their sign-in settings      |
+| `trellis.auth.v1:platform.manage`   | who administers, issuer keys, administration reviews      |
 
 The built-in Auth contract declares them with the IDL `administrative;` marker,
 which only the built-in `trellis` package may use. Auth refuses to review or
 accept any API in the `trellis.` namespace other than the ones Trellis ships.
-Every capability name is verb first (`readSessions`, `changePassword`,
-`managePrincipals`).
+Every capability is named `area.action` (`sessions.read`, `account.changePassword`,
+`users.manage`).
 
 They are ordinary capabilities otherwise: roles, direct grants, and
 identity-provider mappings can all carry them. Mapping administration to a role
 or a provider group is an administrator's decision. Changing who holds an
 administrative capability, by any of those paths, requires
-`trellis.managePlatform`.
+`trellis.auth.v1:platform.manage`.
 
 ## The default administrator
 
@@ -55,7 +55,7 @@ registered_clients_only = true
   administration, and administrative choices are never remembered.
 - **Peer approval.** The grant is created without its administrative
   capabilities and a review opens per user, app binding, and capability.
-  Someone holding `trellis.managePlatform` other than the requester decides it
+  Someone holding `trellis.auth.v1:platform.manage` other than the requester decides it
   with `Administration.Reviews.Decide`. Approval reaches the user's live grants
   for that binding and later grants reuse it; rejection withholds it until the
   user asks again. The default administrator's own delegations need no review.

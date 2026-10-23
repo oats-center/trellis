@@ -113,7 +113,7 @@ async fn sdk_rotation(mode: &str) {
             &f.admin,
             PolicyMutation::CapabilityGrant {
                 principal_id: other.user.principal_id.to_string(),
-                capability_id: "trellis.auth@v1::readIdentities".into(),
+                capability_id: "trellis.auth.v1:identities.read".into(),
                 expected_revision: 0,
                 expires_at: None,
             },
@@ -522,7 +522,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     let action = health_catalog
         .capabilities
         .iter()
-        .find(|capability| capability.capability_id == "trellis.health@v1::reportHealth")
+        .find(|capability| capability.capability_id == "trellis.health.v1:health.report")
         .unwrap()
         .memberships[0]
         .action
