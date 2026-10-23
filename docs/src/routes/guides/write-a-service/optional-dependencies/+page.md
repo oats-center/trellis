@@ -1,0 +1,15 @@
+---
+title: "Declare optional dependencies"
+description: "Use optional uses for additive integrations that should not block service activation."
+---
+
+# Select optional functionality
+
+Optionality belongs on implicated capabilities and resource/companion
+declarations, not on a whole API use or individual action. `use Api;` selects
+nothing; a nonempty body selects exact interactions.
+
+Required implicated capabilities must be approved and eligible for readiness.
+Declining an optional capability leaves its actions unavailable without blocking
+the participant. Optional resource handles are absent when unapproved or
+unusable. Generated method presence is not evidence of current authority.

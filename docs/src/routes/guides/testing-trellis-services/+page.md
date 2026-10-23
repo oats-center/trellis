@@ -1,0 +1,206 @@
+---
+title: "Testing Trellis services"
+description: "Run out-of-tree TypeScript service integration tests with @oatscenter/trellis-testkit, case-scoped fixtures, and the generic runner."
+---
+
+# Test Trellis services
+
+This example starts real NATS and Trellis, provisions the Orders service,
+connects a generated caller, and checks the RPC response. It uses the contract
+and handler from [the service walkthrough](/guides/write-a-service). No
+pre-seeded database or fake transport responder is needed.
+
+Trellis does not prescribe a service's other tests or testing framework. A real
+runtime is useful here because the behavior being checked crosses bootstrap,
+authority, transport, and generated caller/provider boundaries.
+
+## Prerequisites
+
+Install Node 24.5 or later and `@oatscenter/trellis-testkit` in the example's
+npm project. The testkit resolves matching native CLI/server executables. The
+helper downloads pinned NATS binaries on first use, which requires network
+access. Use the committed generated package, or run `trellis generate` after
+authoring changes. The ordinary live test does not need the Trellis CLI or API
+cache.
+
+## A complete test
+
+Create `service_test.ts`:
+
+```ts
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
+import { TrellisService } from "@oatscenter/trellis/service";
+import { apps, participants } from "./trellis/index.js";
+import { createOrder } from "./service.ts";
+
+test("orders caller invokes the real service", async () => {
+  const runtime = await TrellisTestRuntime.start();
+  try {
+    const identity = await runtime.registerService({
+      name: "orders",
+      contract: participants.OrdersService.participant,
+    });
+    const service = await TrellisService.connect({
+      participant: participants.OrdersService.participant,
+      name: "orders-service",
+      trellisUrl: runtime.oauthIssuer,
+      seed: identity.seed,
+    }).orThrow();
+    let exit: Promise<unknown> | undefined;
+    try {
+      await service.handleCreate(createOrder);
+      exit = service.wait().catch((error: unknown) => error);
+      const client = await runtime.connectClient({
+        name: "caller",
+        contract: apps.OrdersCaller.request,
+      });
+      const order = await client.create({ customerId: "customer-1" }).orThrow();
+      assert.equal(order.customerId, "customer-1");
+      assert.match(order.orderId, /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+    } finally {
+      await service.stop();
+      const failure = await exit;
+      if (failure) throw failure;
+    }
+  } finally {
+    await runtime.stop();
+  }
+});
+```
+
+The runtime owns isolated on-disk state. The test helper tracks and
+closes connected clients. The service is stopped before the runtime, even if an
+assertion fails; lifecycle failures are rethrown rather than hidden.
+
+## Distinct ordinary users
+
+Create accounts and grant the generated application's required capabilities
+explicitly, then authenticate each account through ordinary native consent:
+
+```ts
+const alice = await runtime.createUser({ name: "Alice" });
+const bob = await runtime.createUser({ name: "Bob" });
+for (const user of [alice, bob]) {
+  await runtime.grantUserCapabilities({
+    user,
+    capabilityIds: apps.OrdersCaller.request.requiredCapabilities,
+  });
+}
+const a1 = await runtime.connectClient({
+  name: "Alice 1",
+  contract: apps.OrdersCaller.request,
+  user: alice,
+});
+const a2 = await runtime.connectClient({
+  name: "Alice 2",
+  contract: apps.OrdersCaller.request,
+  user: alice,
+});
+const b1 = await runtime.connectClient({
+  name: "Bob 1",
+  contract: apps.OrdersCaller.request,
+  user: bob,
+});
+```
+
+These are three independent native credential families for **one** registered
+application, with two real user principals. The handle exposes a label,
+username, and principal ID, never its password. Explicit-user login does not
+grant capabilities or silently regrant revoked ones. Omit `user` to retain the
+existing seeded-administrator convenience. Service identity provisioning is
+unchanged.
+
+Rust provides the same boundary: `create_user("Alice")`,
+`grant_user_capabilities(&alice, Request::REQUIRED_CAPABILITIES)`,
+`register_native_application::<Request>("app")`, then
+`login_native_application_as(&app, &alice)` for each independent login.
+`register_client_as::<Request>("app", &alice)` is the convenience composition;
+`register_client` retains its existing seeded-administrator behavior.
+
+## Run it
+
+In a standalone service project (no Trellis executables or `nsc` required on `PATH`):
+
+```sh
+node --test service_test.ts
+```
+
+The released testkit acquires its exact-version native CLI/server from SHA-256-pinned
+release archives. Production commands generate configuration and own managed NATS;
+each test has private state and a seeded administrator. For prebuilt local artifacts,
+pass `trellis: { source: { kind: "path", cli, server } }` with both exact-version
+executables. `restart()` retains data and identity while restarting the full host
+and broker; `firstAdmin: "browser-flow"` opts into the first-admin browser flow.
+
+Each test runtime serves Trellis-generated TLS, as a default installation does.
+The testkit trusts that runtime's CA (`runtime.caCertificate`) explicitly for the
+test process, so SDK clients connect without extra options. For a spawned Node
+process, set `NODE_EXTRA_CA_CERTS` to `runtime.caCertificate`. For Playwright,
+launch Chromium with `env: browserTrustEnvironment()` from the testkit. It
+creates a private NSS trust store holding the runtime CA, just as a user would
+import it, and requires NSS `certutil` (`nss-tools` on Fedora, `libnss3-tools`
+on Debian and Ubuntu). Never use `ignoreHTTPSErrors`.
+In the checked-in or copied Orders example:
+
+```sh
+npm run check
+npm test
+```
+
+Expected result: one passing test, with all child processes stopped.
+
+### Testing from Rust
+
+A Rust service repository can start the same kind of real runtime with the
+external `trellis-testkit` crate:
+
+```rust
+use trellis_testkit::TrellisTestRuntime;
+use my_contract::participants::provider::Participant as Provider;
+
+# async fn example() -> Result<(), trellis_testkit::TrellisTestError> {
+let mut runtime = TrellisTestRuntime::builder().start().await?;
+// Always stop the harness, even when an assertion or call returns early.
+let result = exercise(&mut runtime).await;
+runtime.shutdown().await?;
+result
+# }
+
+# async fn exercise(
+#     runtime: &mut TrellisTestRuntime,
+# ) -> Result<(), trellis_testkit::TrellisTestError> {
+let identity = runtime.register_service::<Provider>("provider").await?;
+let mut service = Provider::connect(identity.connect_options()).await?;
+let task = tokio::spawn(async move { service.run().await });
+// Connect a generated caller and call your APIs here.
+task.abort();
+let _ = task.await;
+# Ok(())
+# }
+```
+
+Add `trellis-testkit` as a development dependency. The bare builder acquires
+verified exact-version `trellis` and `trellis-server` executables and runs
+production processes, choosing loopback ports automatically. It does not link
+the server or compiler into downstream tests. Source CI supplies both executables
+through `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`; no private Cargo
+patches are required by published consumers. Service registration reviews
+implemented and consumed APIs before deployment creation, including optional
+consumption, so consumers can be registered before their providers.
+
+NATS is a separate real child process and stays alive across a server restart.
+The default uses verified pinned downloads (first use requires network).
+The verified native executable/archive cache is shared
+(`TRELLIS_CACHE_DIR`, otherwise the platform cache), so later runtimes can boot
+offline. Credentials, broker state, databases, PID files, and logs remain private
+to each sandbox. For a prebuilt broker, set `TRELLIS_TEST_NATS_BIN`
+or use `.nats(NatsSource::Path(path))`; `.nats(NatsSource::PathLookup)` resolves
+`nats-server` from `PATH`. This does not change the TypeScript harness, which
+still requires the Trellis executables.
+
+For deterministic application transaction behavior, test the actual adapter and
+database instead of starting a network solely to check SQL. In particular,
+outbox atomicity means both domain writes and event intents commit together, and
+both disappear on rollback. That property is distinct from this RPC test.

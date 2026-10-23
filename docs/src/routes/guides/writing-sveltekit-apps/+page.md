@@ -1,0 +1,90 @@
+---
+title: "Write a SvelteKit app"
+description: "A working browser app that authenticates with Trellis and calls RPCs."
+---
+
+# Write SvelteKit apps
+
+This page covers the optional Svelte integration. Trellis does not require a
+frontend framework, CSS system, or a particular configuration source. Declare
+the browser app participant in `contract.trellis` and generate it before
+checking or building the app. For example, in `src/lib/trellis.ts`:
+
+```ts
+import { createTrellisApp } from "@oatscenter/trellis-svelte";
+import { participants } from "orders-trellis";
+
+export const trellisApp = createTrellisApp({
+  participant: participants.ordersApp.participant,
+  trellisUrl: "https://trellis.example.com",
+});
+```
+
+Here `orders-trellis` is the package name from `trellis.toml`, installed as an
+ordinary local package. Its JavaScript and declarations need no generation step
+during the app's normal build. Use the generated participant for browser connection and bind flows. Keep
+secrets and durable server credentials in server-only modules; browser trust
+state uses the Trellis browser storage adapter.
+
+## Declare app authority
+
+Add the APIs the app consumes to `trellis.toml`, resolve them with
+`trellis update`, and select exact actions in native IDL `use` blocks. Mark the
+implicated capabilities optional only when the user may decline them. Run
+`trellis generate` after changes, then run the app's normal check and build. Do
+not author `defineAppContract` objects or generate participant evidence in
+browser code.
+
+## Own one browser connection
+
+Mount `TrellisProvider` with the app owner in `src/routes/+layout.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { Snippet } from "svelte";
+  import { TrellisProvider } from "@oatscenter/trellis-svelte";
+  import { trellisApp } from "$lib/trellis";
+
+  let { children }: { children: Snippet } = $props();
+</script>
+
+<TrellisProvider {trellisApp}>
+  {#snippet loading()}<p>Connecting to Trellis...</p>{/snippet}
+  {#snippet error(cause)}<p>Connection failed: {String(cause)}</p>{/snippet}
+  {@render children()}
+</TrellisProvider>
+```
+
+This is a minimal connection-state UI, not a required app layout or visual
+style. In child components, call `trellisApp.getTrellis()` during component
+initialization to obtain the typed generated caller.
+`trellisApp.getConnection()` returns a Svelte-reactive connection; read its
+`status` in markup or a derived expression. Show connecting, disconnected, and
+failed states rather than silently rendering an empty data view.
+
+The app owner can live in a module, but connected clients belong to Svelte
+context. Never put a user's connected client in module-global mutable state on
+the server. Keep server-only helpers under `$lib/server` or in `.server.ts`
+files. SSR versus client-only rendering is an application choice; in either
+case, open the browser connection on the client, not during server rendering.
+
+## Call the generated API
+
+Generated callers expose flat selected methods, for example `ordersGet(...)`,
+not a hand-constructed RPC namespace. Handle their `Result` values explicitly.
+Use operations for asynchronous workflows, generated event subscriptions for
+live delivery, and each API's abort signal or close method when leaving a view.
+Do not subscribe through raw NATS or recreate signed wire envelopes.
+
+Let the provider own browser authentication redirects and the returned callback.
+An expired plain callback starts a new flow; explicit approval denial remains a
+user-visible outcome. The browser's durable trust floor survives logout, so do
+not clear IndexedDB as a routine recovery technique.
+
+## Verify a browser consumer
+
+Keep Vite aliases, npm imports, and TypeScript path mappings aligned with
+the generated module's imports. Run the app's normal `svelte-check` and
+production build, then exercise login, a generated call, disconnect/reconnect,
+and logout against a real runtime. See [the Svelte AI guide](/llms-svelte.txt)
+for resolver details and [/api](/api) for current package APIs.

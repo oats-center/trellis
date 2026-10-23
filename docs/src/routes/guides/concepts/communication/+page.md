@@ -1,0 +1,66 @@
+---
+title: "Communication"
+description: "RPCs, operations, events, live observations, cross-contract dependencies, and surface availability."
+---
+
+# Communication
+
+Trellis participants communicate over NATS through native contract surfaces:
+RPC for unary request/reply, Operations for durable caller-visible workflows,
+Events for facts, Live observations for live observations, Consumers for durable event handling,
+and Jobs for private queued execution.
+
+<span id="rpcs-requestreply"></span>
+
+## RPCs: request/reply
+
+RPC is typed unary request/reply with expected generated Result-style failures.
+
+<span id="operations-async-workflows"></span>
+
+## Operations: async workflows
+
+Operations persist acceptance and resume execution at least once after owner
+loss.
+
+<span id="events-jetstream-pubsub"></span>
+
+## Events
+
+Events are typed facts. Ephemeral listeners are live-only; Consumers are durable.
+
+<span id="live-observations-authorized-live-views"></span>
+
+## Live observations
+
+Live observations are typed live observations owned by the accepting provider executor.
+
+<span id="cross-api-dependencies"></span>
+
+## Participant selection and cross-API dependencies
+
+Providers declare `implements Api;`. Callers import the API and select exact
+interactions in `use Api { ... }`. Declarations and capability approvals do not
+themselves grant authority; Trellis derives exact selected grants and route
+subjects from verified package evidence and current bindings.
+
+RPC/Operation/Live routes bind the API to a provider deployment. Event subjects
+remain API-qualified facts. Applications never derive subjects, queue groups,
+proofs, or raw transport permissions.
+
+Operations are persisted before acceptance and resume at least once after owner
+loss. Live observations are transient and cancellation routes to the accepting executor. Consumer
+concurrency is local per process; retries and scoped Events DLQ/replay are
+runtime-owned. Jobs remain service-private.
+
+<span id="surface-availability"></span>
+
+## Surface availability
+
+Authority determines whether an action may be attempted; compatible provider
+definition and current liveness determine whether it is presently available.
+
+Every request/event carries a message-specific proof tied to its actual subject
+and signed authorization context. Providers enforce the exact action and
+resource scope. Direct event publication is not atomic with an application SQL
+transaction; use the outbox integration when that commit boundary matters.

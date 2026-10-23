@@ -1,0 +1,99 @@
+---
+title: "Author contracts with Trellis IDL"
+description: "Declare APIs and participants in .trellis files, lock dependencies, and generate TypeScript or Rust packages."
+---
+
+# Author contracts with Trellis IDL
+
+Trellis contracts are `.trellis` source files. They define the messages an API
+exchanges, the actions it exposes, and which services or apps provide or use
+those actions. The CLI compiles the same source into Rust and TypeScript
+packages; you do not write separate wire schemas for each language.
+
+## Create a package
+
+Put `trellis.toml` alongside the source file:
+
+```toml
+[package]
+name = "acme-orders"
+version = "1.0.0"
+
+[sources]
+orders = "contract.trellis"
+
+[generate.typescript]
+output = "trellis"
+```
+
+Choose `[generate.rust]` with an `output` path instead for a Rust service, or
+configure both targets. Source aliases such as `orders` are local names used by
+imports in other `.trellis` files; list every source explicitly.
+
+Then author `contract.trellis`:
+
+```trellis
+model CreateOrderRequest { customerId: string; }
+model CreateOrderResponse { orderId: string; customerId: string; }
+
+api orders@v1 {
+  title "Orders";
+  description "Create an order.";
+  rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
+  capabilities { public { allows { rpc Create; } } }
+}
+
+service OrdersService { implements orders; }
+app OrdersCaller { use orders { rpc Create; } }
+```
+
+The service provides `orders`; the app selects the `Create` action. Merely
+importing an API does not grant permission to call it. See the
+[service walkthrough](/guides/write-a-service) for handlers and a working
+[Orders example](https://github.com/OATS-Center/trellis/tree/main/docs/examples/orders).
+
+## Operations with progress and live updates
+
+An Operation declares a durable `progress` schema and, optionally, a distinct
+transient `update` schema:
+
+```trellis
+model Status { stage: string; }
+model Preview { text: string; }
+
+api orders@v1 {
+  title "Orders";
+  description "Reindex orders.";
+  operation Reindex { input Id; output Summary; progress Status; update Preview; }
+  capabilities { public { allows { operation Reindex; } } }
+}
+```
+
+`progress` is written to the durable snapshot; `update` is delivered only to
+live watchers and is never persisted. The generated `Progress` and `Update`
+types stay distinct. When an Operation declares only `progress`, the live
+channel reuses that schema, so existing progress-only contracts are unchanged.
+A handler writes durable status with `progress(...)` and transient previews with
+`emit_update(...)`.
+
+## Install and generate
+
+```sh
+trellis install
+trellis generate
+trellis generate --check
+```
+
+Commit `trellis.toml` and `trellis.lock`. `install` resolves exact locked
+dependencies without upgrading; `trellis update` deliberately refreshes them.
+`generate` writes the configured language package, and `--check` detects stale
+output. If consumers must build without the CLI or package cache, commit the
+generated package too. Do not hand-edit generated files.
+
+For a dependency, add a package alias under `[dependencies]` and explicitly
+import its types or APIs in the source file. Published dependencies use a
+registry and a version range; local development dependencies use a `path`.
+The [contract artifacts guide](/guides/write-a-service/contract-artifacts)
+covers the lockfile and build lifecycle. Consult the
+[IDL design reference](/design/contracts/trellis-idl) for the full grammar and
+compatibility rules.

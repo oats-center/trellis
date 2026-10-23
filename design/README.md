@@ -159,7 +159,7 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 
 1. `core/testing-patterns.md`
 2. relevant subsystem design doc
-3. `docs/src/routes/guides/releasing-trellis/+page.svx` for verification
+3. `docs/src/routes/guides/releasing-trellis/+page.md` for verification
    commands
 
 ### Work on KV resources or projections

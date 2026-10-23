@@ -1,0 +1,268 @@
+[
+  {
+    "title": "Introduction",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "What is Trellis?",
+        "to": "/guides/overview"
+      },
+      {
+        "title": "Concepts overview",
+        "to": "/guides/concepts"
+      }
+    ]
+  },
+  {
+    "title": "Concepts",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "Architecture",
+        "to": "/guides/concepts/architecture"
+      },
+      {
+        "title": "Contracts",
+        "to": "/guides/concepts/contracts"
+      },
+      {
+        "title": "Deployment authority",
+        "to": "/guides/concepts/deployment-authority"
+      },
+      {
+        "title": "Communication",
+        "to": "/guides/concepts/communication"
+      },
+      {
+        "title": "Authentication and authorization",
+        "to": "/guides/concepts/authentication-and-authorization"
+      },
+      {
+        "title": "Resources",
+        "to": "/guides/concepts/resources"
+      },
+      {
+        "title": "Files and transfers",
+        "to": "/guides/concepts/files-and-transfers"
+      },
+      {
+        "title": "Type system and errors",
+        "to": "/guides/concepts/type-system-and-errors"
+      },
+      {
+        "title": "Devices and activation",
+        "to": "/guides/concepts/devices-and-activation"
+      },
+      {
+        "title": "Jobs",
+        "to": "/guides/concepts/jobs"
+      }
+    ]
+  },
+  {
+    "title": "Libraries",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "Libraries",
+        "to": "/guides/libraries"
+      },
+      {
+        "title": "TypeScript libraries",
+        "to": "/guides/libraries/typescript"
+      },
+      {
+        "title": "Rust libraries",
+        "to": "/guides/libraries/rust"
+      },
+      {
+        "title": "Testing Trellis services",
+        "to": "/guides/testing-trellis-services"
+      }
+    ]
+  },
+  {
+    "title": "Installing Trellis",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "Install the Trellis CLI",
+        "to": "/guides/install-trellis-cli"
+      },
+      {
+        "title": "Installing Trellis",
+        "to": "/guides/starting-trellis"
+      }
+    ]
+  },
+  {
+    "title": "Getting started",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "Author contracts with Trellis IDL",
+        "to": "/guides/authoring-contracts"
+      },
+      {
+        "title": "Write a service",
+        "collapsible": true,
+        "items": [
+          {
+            "title": "Overview",
+            "to": "/guides/write-a-service"
+          },
+          {
+            "title": "1. Setup",
+            "to": "/guides/write-a-service/setup"
+          },
+          {
+            "title": "2. IDL",
+            "to": "/guides/write-a-service/first-contract"
+          },
+          {
+            "title": "3. Entry point",
+            "to": "/guides/write-a-service/service-entrypoint"
+          },
+          {
+            "title": "4. KV store",
+            "to": "/guides/write-a-service/kv-store"
+          },
+          {
+            "title": "5. First RPC",
+            "to": "/guides/write-a-service/first-rpc"
+          },
+          {
+            "title": "6. Retrieve order",
+            "to": "/guides/write-a-service/retrieve-order"
+          },
+          {
+            "title": "7. Listen for Events",
+            "to": "/guides/write-a-service/listen-events"
+          },
+          {
+            "title": "8. Publish Events",
+            "to": "/guides/write-a-service/publish-events"
+          },
+          {
+            "title": "9. Live observations",
+            "to": "/guides/write-a-service/live"
+          },
+          {
+            "title": "10. Shutdown",
+            "to": "/guides/write-a-service/shutdown"
+          },
+          {
+            "title": "11. Generation",
+            "to": "/guides/write-a-service/contract-artifacts"
+          },
+          {
+            "title": "12. Optional uses",
+            "to": "/guides/write-a-service/optional-dependencies"
+          },
+          {
+            "title": "13. Dev loop",
+            "to": "/guides/write-a-service/development-loop"
+          }
+        ]
+      },
+      {
+        "title": "Write a SvelteKit app",
+        "to": "/guides/writing-sveltekit-apps"
+      }
+    ]
+  },
+  {
+    "title": "Features",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "Jobs",
+        "collapsible": true,
+        "items": [
+          {
+            "title": "TS",
+            "to": "/guides/using-jobs-ts"
+          },
+          {
+            "title": "Rust",
+            "to": "/guides/using-jobs-rust"
+          }
+        ]
+      },
+      {
+        "title": "Operations",
+        "collapsible": true,
+        "items": [
+          {
+            "title": "TS",
+            "to": "/guides/using-operations-ts"
+          },
+          {
+            "title": "Rust",
+            "to": "/guides/using-operations-rust"
+          }
+        ]
+      },
+      {
+        "title": "Resources",
+        "collapsible": true,
+        "items": [
+          {
+            "title": "Store",
+            "to": "/guides/using-store-resources-ts"
+          },
+          {
+            "title": "State",
+            "to": "/guides/using-state-ts"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "title": "Advanced",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "Devices",
+        "to": "/guides/devices"
+      },
+      {
+        "title": "Develop Trellis services with AI agents",
+        "to": "/guides/ai/developing-trellis-services"
+      }
+    ]
+  },
+  {
+    "title": "Administration",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "Install a service from an image",
+        "to": "/guides/install-service-from-image"
+      },
+      {
+        "title": "Install a service from source",
+        "to": "/guides/install-service-from-source"
+      },
+      {
+        "title": "Administer Jobs",
+        "to": "/guides/administering-jobs"
+      }
+    ]
+  },
+  {
+    "title": "Contributing",
+    "collapsible": false,
+    "items": [
+      {
+        "title": "In-repo development",
+        "to": "/guides/in-repo-development"
+      },
+      {
+        "title": "Releasing Trellis",
+        "to": "/guides/releasing-trellis"
+      }
+    ]
+  }
+]

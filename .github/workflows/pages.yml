@@ -93,6 +93,10 @@ jobs:
               npm ci
               npm run browser:embedded
               cd "${repo_root}/docs"
+              # Releases before the Sveltepress site render design docs in place.
+              if grep -q '"docs:design"' package.json; then
+                npm run docs:design
+              fi
               npm run docs:api
               SITE_BASE_PATH="${base_path}" npm exec -- vite build
               mkdir -p "${out_dir}"

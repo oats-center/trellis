@@ -143,7 +143,7 @@ inventories, or evidence ledgers to enforce this section.
   unrelated drift unless the user asks for that cleanup; report it separately.
 - When changes affect contracts, generated SDKs, or runtime surfaces that depend
   on generated artifacts, run `cargo xtask install` as part of verification.
-- Follow `docs/src/routes/guides/releasing-trellis/+page.svx` for testing and
+- Follow `docs/src/routes/guides/releasing-trellis/+page.md` for testing and
   release practice and `design/core/testing-patterns.md` for test design. Test
   each invariant at the smallest real boundary that proves it. Use live
   TypeScript and Rust integration for transport, authorization, cross-language,
@@ -175,6 +175,11 @@ inventories, or evidence ledgers to enforce this section.
 - Keep design/** and docs/** current with implementation changes; documentation
   updates do not require separate approval. Surface architectural disagreements
   explicitly rather than silently changing the intended design.
+- The docs site is Sveltepress, shared in look with the other OATS sites
+  (`docs/src/lib/family/`, copied verbatim between repositories). A guide is
+  `docs/src/routes/guides/<path>/+page.md` with `title` and `description`
+  frontmatter, listed in `docs/sidebar.json`. Design pages are generated from
+  `design/**` by `npm run docs:design`; edit `design/`, not the generated routes.
 - Keep `docs/static/llms.txt`, `docs/static/llms-full.txt`,
   `docs/static/llms-typescript.txt`, and `docs/static/llms-rust.txt` current
   when Trellis features, service-author workflows, public TypeScript APIs,
