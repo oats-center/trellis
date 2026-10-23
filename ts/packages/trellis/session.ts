@@ -8,7 +8,6 @@ import {
   jetstream,
   type JetStreamClient,
   jetstreamManager,
-  type JsMsg,
 } from "@nats-io/jetstream";
 import {
   createInbox,
@@ -17,19 +16,17 @@ import {
   type MsgHdrs,
   type NatsConnection,
 } from "@nats-io/nats-core";
-import type { EventDesc, InferSchemaType, LiveDesc } from "./participant.ts";
+import type { LiveDesc } from "./participant.ts";
 import {
   type PermissionAtom as DescriptorPermissionAtom,
   routeQueueGroup,
   type RuntimeApi,
 } from "./participant_runtime/api.ts";
-import { codecs, type Codec } from "./generated.ts";
+
 import { encodeEventSubjectParameterToken } from "./helpers.ts";
 import { openLive, openLiveOperationWatch } from "./live/client_open.ts";
 import { LiveProvider, parseLiveOpen } from "./live/provider.ts";
 import type {
-  AuthenticatedCaller,
-  CatalogActionIdentity,
   OriginalEventPublication,
   SessionEvent,
   SessionRequest,
@@ -38,20 +35,14 @@ import type {
 import { LiveAuthorityGuard } from "./live/authority.ts";
 import type { LiveSubscription } from "./live/subscription.ts";
 import { LiveStreamError } from "./live/types.ts";
-import type { ParticipantKvMetadata } from "./participant_runtime/metadata.ts";
-import type { EventConsumerResourceBinding } from "./participant_runtime/schemas.ts";
-import type { StaticDecode } from "typebox";
+
 import {} from "./auth/protocol_wasm.ts";
-import { trellisCrypto } from "./auth/crypto.ts";
+
 import type {
-  SessionAuthorityOwner,
   PendingSessionRequest,
   VerifiedAuthority,
 } from "./auth/authority.ts";
-import {
-  operationRecordRepresentation,
-  type PersistedOperationUpload,
-} from "./service/runtime/operation_record.ts";
+import { operationRecordRepresentation } from "./service/runtime/operation_record.ts";
 import {
   fixedTransportProvider,
   type TransportLease,
@@ -75,66 +66,38 @@ import {
   recordCatalogDuration,
   recordCatalogUpDown,
   recordRpcAttempt,
-  recordTrellisError,
   SpanStatusCode,
   startClientSpan,
   startServerSpan,
-  type TrellisErrorMetricAttributes,
   trellisRoute,
   withSpanAsync,
 } from "./telemetry/mod.ts";
 import { Pointer } from "typebox/value";
 import { ulid } from "ulid";
-import {
-  encodeSchema,
-  type JsonValue,
-  parse,
-  parseUnknownSchema,
-} from "./codec.ts";
+import { encodeSchema, type JsonValue, parse } from "./codec.ts";
 import {
   AuthError,
-  getBuiltinRpcError,
-  machineErrorCode,
   type SchemaValidationError,
-  type StoreError,
   TransferError,
   TransportError,
-  type TrellisErrorInstance,
-  type TrellisErrorMap,
-  type TrellisErrorName,
   UnexpectedError,
   ValidationError,
 } from "./errors/index.ts";
 import { RemoteError } from "./errors/RemoteError.ts";
 import { logger, type LoggerLike } from "./globals.ts";
-import {
-  type KvRepresentation,
-  type ResourceMigrations,
-  TypedKV,
-} from "./kv.ts";
+import { type ResourceMigrations, TypedKV } from "./kv.ts";
 import { TrellisErrorDataSchema } from "./errors/RemoteError.ts";
-import type {
-  ActiveJob,
-  JobRef,
-  JobTypeMetadata,
-  JobUpdatesOptions,
-  JobUpdateSubscription,
-} from "./jobs.ts";
-import type { StoreWaitOptions, TypedStore, TypedStoreEntry } from "./store.ts";
+
 import {
   OperationInvoker,
-  type OperationRefData,
   type OperationTransport,
   operationStartSubject,
 } from "./operations.ts";
 import type { Span } from "./telemetry/mod.ts";
 import {
-  API as STATE_API,
-  Conflict as StateRpcConflict,
   type DeleteOutput as StateDeleteResponse,
   type GetOutput as StateGetResponse,
   type PutOutput as StateSetResponse,
-  type RegisterInput as StateRegisterRequest,
   type RegisterOutput as StateRegisterResponse,
 } from "./internal_sdk/generated/apis/state/mod.js";
 import { API as EVENTS_API } from "./internal_sdk/generated/apis/events/mod.js";
@@ -152,1631 +115,254 @@ import {
 } from "./transfer.ts";
 import { TrellisTasks } from "./tasks.ts";
 import { TrellisConnection } from "./connection.ts";
+import { API as JOBS_HISTORY_API } from "./internal_sdk/generated/apis/jobs/mod.js";
+import type {
+  JobsHistoryRequest,
+  JobsHistoryResponse,
+} from "./internal_sdk/generated/types/index.js";
+import {
+  type EventOpts,
+  type GenerationIntakeInstall,
+  type LiveHandlerContext,
+  type LiveInputBuilder,
+  type LiveRegistration,
+  type LiveSubscribeOpts,
+  type ProviderGenerationAttachment,
+  type ProviderIngress,
+  type RequestOpts,
+  type TrellisAuth,
+  type TrellisMode,
+  type TrellisOpts,
+} from "./session/types.ts";
+import {
+  type EventDescriptorOf,
+  type EventOf,
+  type EventsOf,
+  type LiveDescriptorOf,
+  type LiveEventOf,
+  type LiveInputOf,
+  type LivesOf,
+  type MethodsOf,
+  type OperationsOf,
+  type PreparedTrellisEvent,
+  type RequestInputOf,
+  type RequestMethodOf,
+  type RequestOutputOf,
+  type RpcDescriptorOf,
+  type RpcRequestShapes,
+  type RuntimeStateStores,
+} from "./session/contract_types.ts";
+import {
+  createEventListenerContext,
+  eventConsumerGroupEvents,
+  internalEphemeralEventNeeds,
+  internalEventConsumers,
+  isConsumerNotFoundError,
+  jetStreamDeliveryProof,
+  type ConsumerReplayEnvelope,
+  type DurableEventConsumerLoop,
+  type DurableEventRegistration,
+  type InternalizedTrellisOpts,
+  type RuntimeEventConsumers,
+  type TrellisInternalOpts,
+} from "./session/events.ts";
+import {
+  STATE_RUNTIME_RPC,
+  StateHandle,
+  type StateFacade,
+  type ValueStateStoreClient,
+} from "./session/state.ts";
+import {
+  addSurfaceLeaf,
+  natsSubjectMatches,
+  type ActiveEventFacade,
+  type ActiveEventPublishFacade,
+  type ActiveLiveFacade,
+  type ActiveOperationFacade,
+  type ActiveRpcFacade,
+  type ActiveRpcHandleFacade,
+  type EventCallback,
+  type HandlerFn,
+  type HandlerTrellis,
+  type MaybePromise,
+  type ProcessedRpcResponse,
+  type RpcHandlerContext,
+  type RuntimeEventLeaf,
+  type RuntimeEventPublishLeaf,
+  type RuntimeLiveLeaf,
+  type RuntimeOperationLeaf,
+  type RuntimeRpcLeaf,
+  type SurfaceGroups,
+} from "./session/facades.ts";
+import {
+  type DurableOperationRecord,
+  type OperationSurface,
+  type RuntimeOperationDesc,
+  type RuntimeOperationRecord,
+} from "./session/operations.ts";
+import {
+  EMPTY_TRELLIS_API,
+  activeTraceId,
+  causeLogData,
+  causeMessage,
+  ingressRetiredError,
+  isBrowserAuthRequiredError,
+  isRuntimeRpcErrorDesc,
+  payloadByteLength,
+  sleep,
+  traceIdFromTraceparent,
+} from "./session/helpers.ts";
+import {
+  EventVerificationAuthError,
+  toCatalogAction,
+  verifyLocalAuthorization,
+  type RuntimeRpcErrorDesc,
+  type SessionCaller,
+  type VerifiedCaller,
+} from "./session/local_authorization.ts";
+import {
+  MAX_PENDING_OPENINGS,
+  base64urlEncode,
+  callerOwnsReply,
+  classifyRequestTransportFailure,
+  createTransportError,
+  encodeRuntimeSchema,
+  mapTransportAcquireFailure,
+  outcomeForFailure,
+  parseRuntimeSchema,
+  requestFailedTransportError,
+  safeJson,
+} from "./session/wire.ts";
+import {
+  annotateHandlerBoundaryError,
+  isResultLike,
+  reconstructDeclaredRpcError,
+  recordRuntimeError,
+} from "./session/handler_errors.ts";
+export {
+  verifyLocalAuthorization,
+  toCatalogAction,
+} from "./session/local_authorization.ts";
+export type {
+  VerifiedCaller,
+  InternalCaller,
+  SessionCaller,
+} from "./session/local_authorization.ts";
+export {
+  safeJson,
+  classifyRequestTransportFailure,
+  createActionUnavailableError,
+  base64urlEncode,
+  base64urlDecode,
+  toArrayBuffer,
+  sha256,
+} from "./session/wire.ts";
+export type {
+  GenerationIntakeTarget,
+  GenerationIntakeInstallResult,
+  GenerationIntakeInstall,
+  ProviderGenerationAttachment,
+  TrellisSigner,
+  TrellisAuth,
+  TrellisMode,
+  TrellisOpts,
+  RequestOpts,
+  EventOpts,
+  LiveSubscribeOpts,
+  LiveInputBuilder,
+  LiveHandlerContext,
+  LiveRegistration,
+} from "./session/types.ts";
+export type {
+  RuntimeStateStoreShape,
+  RuntimeStateStores,
+  RuntimeStateStoresForContract,
+  MethodsOf,
+  RpcMethodNameOf,
+  OperationsOf,
+  LivesOf,
+  RpcInputOf,
+  RpcOutputOf,
+  OperationHandlerErrorOf,
+  TrellisEventHeader,
+  TrellisEventMessage,
+  PreparedTrellisEvent,
+  LiveInputOf,
+  LiveEventOf,
+  OperationInputOf,
+  OperationProgressOf,
+  OperationUpdateOf,
+  OperationOutputOf,
+  RpcRequestErrorOf,
+  RpcHandlerErrorOf,
+  EventName,
+  EventType,
+  EventPayload,
+} from "./session/contract_types.ts";
+export {
+  isOperationDeferred,
+  buildRuntimeOperationSnapshot,
+  isTerminalRuntimeOperationSnapshot,
+} from "./session/operations.ts";
+export type {
+  OperationRuntimeHandle,
+  OperationDeferred,
+  AcceptedOperation,
+  OperationTransferHandle,
+  OperationHandlerContext,
+  OperationRegistration,
+  OperationTransferContextOf,
+  OperationSurface,
+  RuntimeOperationDesc,
+  RuntimeOperationSignal,
+  RuntimeOperationSignalWaiter,
+  RuntimeOperationTransferProgress,
+  RuntimeOperationState,
+  RuntimeOperationSnapshot,
+  RuntimeOperationRecord,
+  DurableOperationRecord,
+  RuntimeOperationAcceptedEnvelope,
+  RuntimeOperationControlRequest,
+  RuntimeOperationController,
+} from "./session/operations.ts";
+export {
+  StateConflictError,
+  ResourceUnavailableError,
+  StateHandle,
+} from "./session/state.ts";
+export type {
+  StateValue,
+  ValueStateStoreClient,
+  StateFacade,
+  StateResourceCalls,
+  StateRegistration,
+  StateWatch,
+} from "./session/state.ts";
+export {
+  isResultLike,
+  annotateHandlerBoundaryError,
+} from "./session/handler_errors.ts";
+export type { HandlerErrorAnnotationContext } from "./session/handler_errors.ts";
+export type { EventListenerContext } from "./session/events.ts";
+export type {
+  ActiveRpcFacade,
+  ActiveEventFacade,
+  ActiveEventPublishFacade,
+  ActiveLiveFacade,
+  ActiveOperationFacade,
+  ActiveRpcHandleFacade,
+  LiveSurface,
+  RpcHandlerContext,
+  HandlerTrellis,
+  HandlerKvFacade,
+  HandlerStoreHandle,
+  HandlerJobQueue,
+  HandlerJobsFacade,
+  HandlerTrellisForContract,
+  HandlerFn,
+} from "./session/facades.ts";
 
 export type { NatsConnection } from "@nats-io/nats-core";
-
-type RuntimeRpcErrorDesc = {
-  type: string;
-  schema?: unknown;
-  fromSerializable(data: unknown): Error;
-};
-
-type InferRuntimeRpcError<T> = T extends {
-  fromSerializable(data: unknown): infer TError;
-}
-  ? TError
-  : never;
-
-/** Caller projection returned after a context-bound proof is verified locally. */
-export type VerifiedCaller = AuthenticatedCaller & { type: "verified" };
-
-/** Internal system caller used only by explicitly unauthenticated surfaces. */
-export type InternalCaller = {
-  type: "internal";
-  capabilities: readonly [];
-};
-
-/** Caller data exposed to Trellis handlers. */
-export type SessionCaller = VerifiedCaller | InternalCaller;
-
-type LocalAuthorizationRequestMessage = Pick<
-  Msg,
-  "data" | "headers" | "reply" | "subject"
->;
-type LocalAuthorizationEventMessage = Pick<Msg, "data" | "headers" | "subject">;
-
-type LocalAuthorizationArgs =
-  | {
-      kind: "request" | "provider-request";
-      cache: SessionAuthorityOwner | undefined;
-      message: LocalAuthorizationRequestMessage;
-      proofPayload?: Uint8Array;
-      permission: DescriptorPermissionAtom | undefined;
-      requiredCapabilities: readonly string[];
-    }
-  | {
-      kind: "transfer";
-      cache: SessionAuthorityOwner | undefined;
-      message: LocalAuthorizationRequestMessage;
-      proofPayload?: Uint8Array;
-      permission: DescriptorPermissionAtom | undefined;
-      requiredCapabilities: readonly string[];
-      transferId: string;
-      providerConnectionId: string;
-      consumerConnectionId: string;
-    }
-  | {
-      kind: "event";
-      cache: SessionAuthorityOwner | undefined;
-      message: LocalAuthorizationEventMessage;
-      originalPublication?: OriginalEventPublication;
-      permission: DescriptorPermissionAtom | undefined;
-      descriptorIdentity: string;
-      requiredCapabilities: readonly string[];
-    };
-
-class EventVerificationAuthError extends AuthError {
-  constructor(readonly retryable: boolean) {
-    super({
-      reason: retryable ? "authorization_unavailable" : "invalid_signature",
-    });
-  }
-}
-
-/** Verifies one received request or event through the provider-local WASM cache. */
-export async function verifyLocalAuthorization(
-  args: LocalAuthorizationArgs,
-): Promise<Result<VerifiedCaller, AuthError>> {
-  const startedAt = performance.now();
-  let outcome = "invalid";
-  try {
-    if (!args.permission) {
-      outcome = "denied";
-      return err(new AuthError({ reason: "insufficient_permissions" }));
-    }
-    if (!args.cache) {
-      outcome = "unavailable";
-      return err(new AuthError({ reason: "invalid_signature" }));
-    }
-
-    for (const name of [
-      "proof",
-      "authorization-context",
-      "session-key",
-      "iat",
-      "request-id",
-      "Trellis-Api-Generation",
-      "Trellis-Accepted-Revision",
-      "Trellis-Session-Event",
-      "Nats-Msg-Id",
-      "Trellis-Event-Time",
-      "Trellis-Event-Descriptor",
-    ]) {
-      if ((args.message.headers?.values(name).length ?? 0) > 1)
-        return err(new AuthError({ reason: "invalid_signature" }));
-    }
-    const proof = args.message.headers?.get("proof");
-    const contextDigest = args.message.headers?.get("authorization-context");
-    if (!proof || !contextDigest || !args.permission) {
-      return err(new AuthError({ reason: "missing_proof" }));
-    }
-
-    try {
-      const apiId = `${args.permission.apiId}@${args.permission.apiVersion}`;
-      const action = toCatalogAction(args.permission);
-      const eventPublication: unknown =
-        args.kind === "event"
-          ? JSON.parse(
-              args.message.headers?.get("Trellis-Session-Event") || "null",
-            )
-          : null;
-      const apiGeneration =
-        args.kind === "event"
-          ? eventPublication &&
-            typeof eventPublication === "object" &&
-            "apiGeneration" in eventPublication
-            ? eventPublication.apiGeneration
-            : undefined
-          : args.message.headers?.get("Trellis-Api-Generation");
-      const acceptedRevision =
-        args.kind === "event"
-          ? eventPublication &&
-            typeof eventPublication === "object" &&
-            "acceptedRevision" in eventPublication
-            ? eventPublication.acceptedRevision
-            : undefined
-          : args.message.headers?.get("Trellis-Accepted-Revision");
-      if (
-        typeof apiGeneration !== "string" ||
-        typeof acceptedRevision !== "string"
-      )
-        return err(new AuthError({ reason: "missing_proof" }));
-      if (args.kind !== "event") {
-        const iatHeader = args.message.headers?.get("iat");
-        const requestId = args.message.headers?.get("request-id");
-        const reply = args.message.reply;
-        const iat = Number(iatHeader);
-        if (!Number.isSafeInteger(iat) || !requestId || !reply) {
-          return err(new AuthError({ reason: "invalid_signature" }));
-        }
-        const request: SessionRequest = {
-          authorityDigest: contextDigest,
-          apiId,
-          apiGeneration,
-          acceptedRevision,
-          action: action.name,
-          subject: args.message.subject,
-          replySubject: reply,
-          issuedAt: iat,
-          requestId,
-        };
-        const verified = await args.cache.verifyRequest(
-          request,
-          args.proofPayload ?? args.message.data,
-          proof,
-          action,
-          args.kind === "provider-request" ? "provider" : "consumer",
-        );
-        try {
-          const sessionKey = args.message.headers?.get("session-key");
-          if (
-            sessionKey &&
-            sessionKey !== verified.caller.authority.sessionPublicKey
-          )
-            return err(new AuthError({ reason: "invalid_signature" }));
-          outcome = "ok";
-          return ok({ type: "verified", ...verified.caller.caller });
-        } finally {
-          verified.caller.release();
-        }
-      } else {
-        const eventId = args.message.headers?.get("Nats-Msg-Id");
-        const eventTime = args.message.headers?.get("Trellis-Event-Time");
-        const descriptorIdentity = args.message.headers?.get(
-          "Trellis-Event-Descriptor",
-        );
-        if (
-          !eventId ||
-          !eventTime ||
-          descriptorIdentity !== args.descriptorIdentity
-        ) {
-          return err(new AuthError({ reason: "invalid_signature" }));
-        }
-        const caller = await args.cache.verifyEvent(
-          {
-            authorityDigest: contextDigest,
-            apiId,
-            apiGeneration,
-            acceptedRevision,
-            action: action.name,
-            subject: args.message.subject,
-            eventId,
-            eventTime,
-          },
-          args.message.data,
-          proof,
-          action,
-          args.originalPublication,
-        );
-        const sessionKey = args.message.headers?.get("session-key");
-        if (sessionKey && sessionKey !== caller.sessionPublicKey)
-          return err(new AuthError({ reason: "invalid_signature" }));
-        outcome = "ok";
-        return ok({ type: "verified", ...caller });
-      }
-    } catch (error) {
-      outcome = "error";
-      return err(new AuthError({ reason: "invalid_signature" }));
-    }
-  } finally {
-    try {
-      recordCatalogDuration(
-        "trellis.auth.verification.duration",
-        performance.now() - startedAt,
-        {
-          "trellis.purpose": args.kind,
-          "trellis.outcome": outcome,
-        },
-      );
-    } catch {
-      // Optional telemetry must not replace the verifier's result.
-    }
-  }
-}
-
-/** Map one descriptor permission atom into the verifier's nested atom. */
-export function toCatalogAction(
-  permission: DescriptorPermissionAtom,
-): CatalogActionIdentity {
-  return {
-    kind: permission.surfaceKind,
-    name: permission.surfaceName,
-    direction: permission.action,
-  };
-}
-
-/**
- * How many live openings one route may verify concurrently before it sheds
- * excess unverified requests.
- */
-const MAX_PENDING_OPENINGS = 64;
-
-/**
- * Whether one reply destination is provably inside the verified caller's inbox.
- *
- * Live openings must never reflect a denial, validation error, or offer onto a
- * destination outside this prefix.
- */
-function callerOwnsReply(
-  reply: string | undefined,
-  inboxPrefix: string,
-): boolean {
-  if (!reply || !inboxPrefix) return false;
-  return reply === inboxPrefix || reply.startsWith(`${inboxPrefix}.`);
-}
-
-/**
- * Safely extract JSON from a NATS message.
- * The .json() method can throw if the message data is not valid JSON.
- */
-export function safeJson(msg: Msg): Result<JsonValue, UnexpectedError> {
-  return Result.try(() => msg.json() as JsonValue);
-}
-
-function transportCauseContext(cause: unknown): Record<string, unknown> {
-  if (cause instanceof Error) {
-    return {
-      causeName: cause.name,
-      causeMessage: cause.message,
-    };
-  }
-
-  return { cause: String(cause) };
-}
-
-function createTransportError(args: {
-  code: string;
-  message: string;
-  hint: string;
-  context?: Record<string, unknown>;
-  cause?: unknown;
-}): TransportError {
-  return new TransportError({
-    code: args.code,
-    message: args.message,
-    hint: args.hint,
-    cause: args.cause,
-    context: {
-      ...(args.context ?? {}),
-      ...(args.cause === undefined ? {} : transportCauseContext(args.cause)),
-    },
-  });
-}
-
-function requestFailedTransportError(args: {
-  code: string;
-  method?: string;
-  subject: string;
-  hint: string;
-  message: string;
-  cause?: unknown;
-  context?: Record<string, unknown>;
-}): TransportError {
-  return createTransportError({
-    code: args.code,
-    message: args.message,
-    hint: args.hint,
-    cause: args.cause,
-    context: {
-      subject: args.subject,
-      ...(args.method === undefined ? {} : { method: args.method }),
-      ...(args.context ?? {}),
-    },
-  });
-}
-
-/** Bounded catalog outcome for one logical RPC failure. */
-function outcomeForFailure(
-  error: BaseError,
-):
-  | "declared_error"
-  | "denied"
-  | "invalid"
-  | "rate_limited"
-  | "timeout"
-  | "unavailable"
-  | "cancelled"
-  | "error" {
-  if (error instanceof RemoteError) return "declared_error";
-  if (error instanceof TransportError) {
-    switch (Reflect.get(error, "code")) {
-      case "trellis.request.denied":
-        return "denied";
-      case "trellis.request.unavailable":
-        return "unavailable";
-      case "trellis.request.timeout":
-        return "timeout";
-      case "trellis.request.cancelled":
-        return "cancelled";
-      case "trellis.request.invalid_response":
-      case "trellis.request.invalid":
-        return "invalid";
-      case "trellis.request.rate_limited":
-        return "rate_limited";
-      default:
-        return "error";
-    }
-  }
-  return "error";
-}
-
-export function classifyRequestTransportFailure(args: {
-  method?: string;
-  subject: string;
-  callerCapabilities?: readonly string[];
-  cause: unknown;
-}): TransportError {
-  const message =
-    args.cause instanceof Error ? args.cause.message : String(args.cause);
-  const isNoResponders = message.includes("no responders");
-  const isNatsPermission =
-    args.cause instanceof Error &&
-    [
-      "PermissionViolationError",
-      "AuthorizationError",
-      "UserAuthenticationExpiredError",
-    ].includes(args.cause.name);
-
-  return requestFailedTransportError({
-    code: isNoResponders
-      ? "trellis.request.unavailable"
-      : isNatsPermission
-        ? "trellis.request.denied"
-        : "trellis.request.failed",
-    message: isNoResponders
-      ? "Trellis could not reach the requested capability."
-      : isNatsPermission
-        ? "Trellis denied this request."
-        : "Trellis could not complete the request.",
-    hint: isNoResponders
-      ? "Check that the target service is installed and reachable, then try again."
-      : isNatsPermission
-        ? "Sign in with a profile that has the required capability, then try again."
-        : "Retry the request. If it keeps failing, check Trellis runtime health.",
-    cause: args.cause,
-    method: args.method,
-    subject: args.subject,
-    context: {
-      ...(args.callerCapabilities === undefined
-        ? {}
-        : { requiredCapabilities: args.callerCapabilities }),
-      noResponders: isNoResponders,
-      lowLevelMessage: message,
-    },
-  });
-}
-
-/**
- * Map a generation acquisition failure to the ordinary request transport error.
- *
- * Automatic adoption never invents `transport_upgrade_required`; a caller that
- * cannot obtain a suitable generation within its budget observes a normal
- * unavailable/timeout/cancelled request failure.
- */
-function mapTransportAcquireFailure(args: {
-  method?: string;
-  subject: string;
-  callerCapabilities?: readonly string[];
-  cause: unknown;
-}): TransportError {
-  const cause = args.cause;
-  if (cause instanceof TransportError) {
-    const code =
-      cause.code === "trellis.transport.timeout"
-        ? "trellis.request.timeout"
-        : cause.code === "trellis.transport.aborted"
-          ? "trellis.request.cancelled"
-          : cause.code === "trellis.transport.closed"
-            ? "trellis.request.closed"
-            : "trellis.request.unavailable";
-    return requestFailedTransportError({
-      code,
-      message: cause.message,
-      hint: cause.hint,
-      method: args.method,
-      subject: args.subject,
-      cause,
-      context: {
-        ...(args.callerCapabilities === undefined
-          ? {}
-          : { requiredCapabilities: args.callerCapabilities }),
-        generationCode: cause.code,
-      },
-    });
-  }
-  return classifyRequestTransportFailure(args);
-}
-
-/** Creates the existing typed transport error for an unavailable optional action. */
-export function createActionUnavailableError(
-  action: string,
-  capabilities: readonly string[],
-): TransportError {
-  return requestFailedTransportError({
-    code: "trellis.request.unavailable",
-    message: "Trellis could not reach the requested capability.",
-    hint: "Wait for the optional capability to become available, then try again.",
-    subject: action,
-    context: { action, capabilities },
-  });
-}
-
-function encodeRuntimeSchema(
-  schema: unknown,
-  data: unknown,
-): Result<string, SchemaValidationError | ValidationError | UnexpectedError> {
-  if (
-    schema &&
-    typeof schema === "object" &&
-    typeof Reflect.get(schema, "encode") === "function"
-  ) {
-    try {
-      const encoded = (schema as Codec<unknown>).encode(data);
-      const json = JSON.stringify(encoded);
-      if (json === undefined) {
-        throw new TypeError("Codec encoded no JSON value");
-      }
-      return ok(json);
-    } catch (cause) {
-      return err(new UnexpectedError({ cause }));
-    }
-  }
-  return encodeSchema(schema as never, data);
-}
-
-function parseRuntimeSchema(
-  schema: unknown,
-  data: JsonValue,
-): Result<unknown, SchemaValidationError | ValidationError | UnexpectedError> {
-  if (
-    schema &&
-    typeof schema === "object" &&
-    typeof Reflect.get(schema, "decode") === "function"
-  ) {
-    try {
-      return ok((schema as Codec<unknown>).decode(data));
-    } catch (cause) {
-      return err(new UnexpectedError({ cause }));
-    }
-  }
-  return parseUnknownSchema(
-    schema as Parameters<typeof parseUnknownSchema>[0],
-    data,
-  );
-}
-
-export function base64urlEncode(data: Uint8Array): string {
-  const b64 = btoa(String.fromCharCode(...data));
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
-
-export function base64urlDecode(s: string): Uint8Array {
-  const normalized = s.replace(/-/g, "+").replace(/_/g, "/");
-  const padLen = (4 - (normalized.length % 4)) % 4;
-  const padded = normalized + "=".repeat(padLen);
-  const bin = atob(padded);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
-  const buf = data.buffer;
-  if (buf instanceof ArrayBuffer) {
-    return buf.slice(data.byteOffset, data.byteOffset + data.byteLength);
-  }
-  const copy = new Uint8Array(data.byteLength);
-  copy.set(data);
-  return copy.buffer;
-}
-
-export async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  return await (await trellisCrypto()).sha256(data);
-}
-
-/** One admitted generation a framework intake installs onto. @internal */
-export type GenerationIntakeTarget = {
-  id: number;
-  nc: NatsConnection;
-  contextDigest: string;
-  retainAuthority?: () => VerifiedAuthority;
-  lease?: () => TransportLease;
-};
-
-/** Handle returned by one framework intake install. @internal */
-export type GenerationIntakeInstallResult = {
-  /** Stop accepting new intake; accepted work continues to completion. */
-  drain: () => Promise<void>;
-  /** Resolves when every accepted intake loop has finished. */
-  done: Promise<void>;
-  /** Release per-generation framework resources. */
-  dispose: () => Promise<void>;
-};
-
-/** Installs framework-owned broker-ready intake on one admitted generation. @internal */
-export type GenerationIntakeInstall = (
-  target: GenerationIntakeTarget,
-) => Promise<GenerationIntakeInstallResult>;
-
-/**
- * Handle to retire and dispose one generation's generic provider intake.
- *
- * The same logical connection can install, drain, and dispose one attachment
- * per admitted generation. `retireIntake` is idempotent and stops *new* broker
- * deliveries; `intakeStopped` resolves once every outstanding intake loop has
- * been accounted for (including queued delivery ownership), and `dispose`
- * releases per-generation resources. Disposal is invoked only after intake has
- * stopped and the generation's accepted leases have drained.
- * @internal
- */
-export type ProviderGenerationAttachment = {
-  retireIntake(): void;
-  readonly intakeStopped: Promise<void>;
-  dispose(): Promise<void>;
-};
-
-/** One installed provider ingress for one admitted generation. @internal */
-type ProviderIngress = {
-  id: number;
-  nc: NatsConnection;
-  /** Exact admitted context this generation's providers were built from. */
-  contextDigest: string;
-  retainAuthority?: () => VerifiedAuthority;
-  lease?: () => TransportLease;
-  /**
-   * Held from install until every intake *loop* has finished (not merely until
-   * `drain()` resolves), so a buffered accepted delivery cannot arrive after the
-   * generation is reaped but before its per-callback lease is taken.
-   */
-  intakeLease?: TransportLease;
-  /**
-   * Generic intake subscriptions (RPC + live openings + framework intake).
-   * `intakeId` names the framework registration that owns the entry, so a
-   * single registration can be retracted without disturbing the others.
-   */
-  retireFns: Array<{
-    intakeId?: string;
-    /** Owning generic surface; live owners persist across a drain. */
-    owner?: "rpc" | "live";
-    drain: () => Promise<void>;
-    done: Promise<void>;
-    /**
-     * Live only: re-create the generic open subscription on the same provider
-     * without duplicating it or disturbing accepted sessions/receipts.
-     */
-    reopen?: () =>
-      | { drain: () => Promise<void>; done: Promise<void> }
-      | Promise<{ drain: () => Promise<void>; done: Promise<void> }>;
-  }>;
-  /**
-   * Coherent per-generation provider disposal (session-serving control, owned
-   * sessions, retained authority). Run only when the generation physically
-   * closes, never when its generic intake is drained, so an accepted live
-   * session keeps control until it terminates.
-   */
-  disposeFns: Array<{
-    intakeId?: string;
-    owner?: "rpc" | "live";
-    dispose: () => Promise<void>;
-  }>;
-  /** Generic intake already drained; no new registrations install here. */
-  retired?: boolean;
-  /** Resolves when every outstanding intake loop is accounted for. */
-  intakeStopped?: Promise<void>;
-  /** In-flight coherent disposal, so concurrent calls share one run. */
-  disposing?: Promise<void>;
-};
-
-export type TrellisSigner = (
-  data: Uint8Array,
-) => Promise<Uint8Array> | Uint8Array;
-
-export type TrellisAuth = {
-  sessionKey: string;
-  sign: TrellisSigner;
-  currentIat?: () => number;
-  /** Current authorization-context digest bound into v1 request and event proofs. */
-  contextDigest?: string | (() => string);
-  /** Provider-only local verifier for service request and event handling. */
-  authorityOwner?: SessionAuthorityOwner;
-};
-
-export type TrellisMode = "client" | "service";
-type OwnedApiFor<TContract> = TContract extends {
-  implements: readonly unknown[];
-}
-  ? RuntimeApi
-  : never;
-type ContractKvFor<TContract> = TContract extends {
-  resources: infer TResources extends Readonly<Record<string, unknown>>;
-}
-  ? {
-      [
-        K in keyof TResources as TResources[K] extends { kind: "kv" }
-          ? K
-          : never
-      ]: TResources[K] extends {
-        codec: infer TCodec;
-        availability: infer TAvailability;
-      }
-        ? {
-            value: TCodec extends Codec<infer TValue> ? TValue : unknown;
-            schema: TCodec;
-            required: TAvailability extends "required" ? true : false;
-          }
-        : never;
-    }
-  : {};
-type ContractJobsFor<TContract> = TContract extends {
-  resources: infer TResources extends Readonly<Record<string, unknown>>;
-}
-  ? {
-      [
-        K in keyof TResources as TResources[K] extends { kind: "job" }
-          ? K
-          : never
-      ]: TResources[K] extends {
-        payload: infer TPayload;
-        result: infer TResult;
-        update: infer TUpdate;
-      }
-        ? {
-            payload: TPayload extends Codec<infer TValue> ? TValue : unknown;
-            result: TResult extends Codec<infer TValue> ? TValue : void;
-            update: TUpdate extends Codec<infer TValue> ? TValue : never;
-          }
-        : never;
-    }
-  : {};
-export type RuntimeStateStoreShape = {
-  kind: "value";
-  value: unknown;
-  codec: Codec<unknown>;
-  version: number;
-  migrations: Readonly<Record<number, Codec<unknown>>>;
-  registration?: StateRegistration;
-};
-export type RuntimeStateStores = Record<string, RuntimeStateStoreShape>;
-export type RuntimeStateStoresForContract<TContract> = TContract extends {
-  states: infer TStates extends Readonly<Record<string, unknown>>;
-}
-  ? {
-      [K in keyof TStates]: TStates[K] extends {
-        codec: infer TCodec;
-        version: infer TVersion;
-        migrations: infer TMigrations;
-      }
-        ? {
-            kind: "value";
-            value: TCodec extends Codec<infer TValue> ? TValue : unknown;
-            codec: TCodec;
-            version: TVersion;
-            migrations: TMigrations;
-          }
-        : never;
-    }
-  : TContract extends {
-        resources: infer TResources extends Readonly<Record<string, unknown>>;
-      }
-    ? {
-        [
-          K in keyof TResources as TResources[K] extends { kind: "state" }
-            ? K
-            : never
-        ]: TResources[K] extends { codec: infer TCodec }
-          ? {
-              kind: "value";
-              value: TCodec extends Codec<infer TValue> ? TValue : unknown;
-              codec: TCodec;
-              version: TResources[K] extends { version: infer TVersion }
-                ? TVersion
-                : number;
-              migrations: TResources[K] extends {
-                migrations: infer TMigrations;
-              }
-                ? TMigrations
-                : {};
-            }
-          : never;
-      }
-    : {};
-type TrellisApiFor<TContract> = OwnedApiFor<TContract>;
-type RpcMethodsOf<TA extends RuntimeApi> = TA["rpc"];
-export type MethodsOf<TA extends RuntimeApi> = keyof RpcMethodsOf<TA> & string;
-export type RpcMethodNameOf<TA extends RuntimeApi> = MethodsOf<TA>;
-export type OperationsOf<TA extends RuntimeApi> = keyof TA["operations"] &
-  string;
-type EventsOf<TA extends RuntimeApi> = keyof TA["events"] & string;
-export type LivesOf<TA extends RuntimeApi> = keyof NonNullable<TA["lives"]> &
-  string;
-type RpcMethodOf<
-  TA extends RuntimeApi,
-  M extends keyof TA["rpc"] & string,
-> = RpcMethodsOf<TA>[M];
-type MethodInputOf<TA extends RuntimeApi, M extends keyof TA["rpc"] & string> =
-  RpcMethodOf<TA, M> extends { input: infer TInput }
-    ? InferSchemaType<TInput>
-    : never;
-export type RpcInputOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = MethodInputOf<TA, M>;
-type MethodOutputOf<TA extends RuntimeApi, M extends keyof TA["rpc"] & string> =
-  RpcMethodOf<TA, M> extends { output: infer TOutput }
-    ? InferSchemaType<TOutput>
-    : never;
-export type RpcOutputOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = MethodOutputOf<TA, M>;
-type RpcRequestShapes<TA extends RuntimeApi> = {
-  [M in keyof TA["rpc"] & string]: {
-    input: MethodInputOf<TA, M>;
-    output: MethodOutputOf<TA, M>;
-  };
-};
-type RequestMethodOf<TRequests> = keyof TRequests & string;
-type RequestInputOf<
-  TRequests,
-  M extends RequestMethodOf<TRequests>,
-> = TRequests[M] extends { input: infer TInput } ? TInput : never;
-type RequestOutputOf<
-  TRequests,
-  M extends RequestMethodOf<TRequests>,
-> = TRequests[M] extends { output: infer TOutput } ? TOutput : never;
-type RpcDescriptorOf<
-  TA extends RuntimeApi,
-  M extends keyof TA["rpc"] & string,
-> =
-  RpcMethodOf<TA, M> extends {
-    input: infer TInput;
-    output: infer TOutput;
-    errors?: infer TErrors;
-    runtimeErrors?: infer TRuntimeErrors;
-    declaredErrorTypes?: infer TDeclaredErrorTypes;
-  }
-    ? {
-        input: TInput;
-        output: TOutput;
-        errors?: TErrors;
-        runtimeErrors?: TRuntimeErrors;
-        declaredErrorTypes?: TDeclaredErrorTypes;
-      } & RpcMethodOf<TA, M>
-    : never;
-type DeclaredBuiltinErrorOf<TNames> = TNames extends readonly (infer TName)[]
-  ? TName extends TrellisErrorName
-    ? TrellisErrorMap[TName]
-    : never
-  : never;
-type DeclaredRuntimeErrorOf<TRuntimeErrors> =
-  TRuntimeErrors extends readonly (infer TRuntimeError)[]
-    ? InferRuntimeRpcError<TRuntimeError>
-    : never;
-type MethodDeclaredErrorOf<
-  TA extends RuntimeApi,
-  M extends keyof TA["rpc"] & string,
-> =
-  RpcDescriptorOf<TA, M> extends {
-    errors?: infer TErrors;
-    runtimeErrors?: infer TRuntimeErrors;
-  }
-    ? DeclaredBuiltinErrorOf<TErrors> | DeclaredRuntimeErrorOf<TRuntimeErrors>
-    : never;
-type RequestErrorOf<TA extends RuntimeApi, M extends MethodsOf<TA>> =
-  | MethodDeclaredErrorOf<TA, M>
-  | RemoteError
-  | TransportError
-  | ValidationError
-  | UnexpectedError;
-type HandlerErrorOf<TA extends RuntimeApi, M extends MethodsOf<TA>> =
-  MethodDeclaredErrorOf<TA, M> | TrellisErrorInstance;
-
-type OperationDescriptorOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends {
-  input: infer TInput;
-  progress?: infer TProgress;
-  output?: infer TOutput;
-  errors?: infer TErrors;
-  runtimeErrors?: infer TRuntimeErrors;
-  declaredErrorTypes?: infer TDeclaredErrorTypes;
-}
-  ? {
-      input: TInput;
-      progress?: TProgress;
-      output?: TOutput;
-      errors?: TErrors;
-      runtimeErrors?: TRuntimeErrors;
-      declaredErrorTypes?: TDeclaredErrorTypes;
-    } & TA["operations"][O]
-  : never;
-
-type OperationDeclaredErrorOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> =
-  OperationDescriptorOf<TA, O> extends {
-    errors?: infer TErrors;
-    runtimeErrors?: infer TRuntimeErrors;
-  }
-    ? DeclaredBuiltinErrorOf<TErrors> | DeclaredRuntimeErrorOf<TRuntimeErrors>
-    : never;
-
-export type OperationHandlerErrorOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = OperationDeclaredErrorOf<TA, O> | TrellisErrorInstance;
-type EventMessageOf<TA extends RuntimeApi, E extends EventsOf<TA>> =
-  TA["events"][E] extends EventDesc<infer TEvent>
-    ? InferSchemaType<TEvent>
-    : never;
-type EventOf<TA extends RuntimeApi, E extends EventsOf<TA>> = EventMessageOf<
-  TA,
-  E
->;
-type EventDescriptorOf<TA extends RuntimeApi, E extends EventsOf<TA>> =
-  TA["events"][E] extends EventDesc<infer TEvent>
-    ? EventDesc<TEvent> & TA["events"][E]
-    : never;
-type EventPayloadOf<TA extends RuntimeApi, E extends EventsOf<TA>> = EventOf<
-  TA,
-  E
-> &
-  Record<string, unknown>;
-/** Runtime metadata assigned to every Trellis event message. */
-export type TrellisEventHeader = Readonly<{
-  /** Stable event id used for event identity and JetStream de-duplication. */
-  id: string;
-  /** Event creation time in ISO-8601 format. */
-  time: string;
-}>;
-/** Event body plus Trellis runtime event metadata. */
-export type TrellisEventMessage<
-  TBody extends Record<string, unknown> = Record<string, unknown>,
-> = Readonly<{
-  /** User-authored contract event body. */
-  body: Readonly<TBody>;
-  /** Runtime metadata assigned by Trellis. */
-  header: TrellisEventHeader;
-}>;
-/** A fully encoded event whose subject, payload, and headers are stable. */
-export type PreparedTrellisEvent<
-  TPayload extends Record<string, unknown> = Record<string, unknown>,
-> = Readonly<{
-  event: string;
-  descriptorIdentity: string;
-  subject: string;
-  /** Runtime event metadata assigned when the event was prepared. */
-  header: TrellisEventHeader;
-  payload: Readonly<TPayload>;
-  encodedPayload: string;
-  headers: Readonly<Record<string, string>>;
-}>;
-export type LiveInputOf<TA extends RuntimeApi, F extends LivesOf<TA>> =
-  NonNullable<TA["lives"]>[F] extends LiveDesc<infer TInput, infer _TEvent>
-    ? InferSchemaType<TInput>
-    : never;
-export type LiveEventOf<TA extends RuntimeApi, F extends LivesOf<TA>> =
-  NonNullable<TA["lives"]>[F] extends LiveDesc<infer _TInput, infer TEvent>
-    ? InferSchemaType<TEvent>
-    : never;
-type LiveDescriptorOf<TA extends RuntimeApi, F extends LivesOf<TA>> =
-  NonNullable<TA["lives"]>[F] extends LiveDesc<infer TInput, infer TEvent>
-    ? LiveDesc<TInput, TEvent> & NonNullable<TA["lives"]>[F]
-    : never;
-export type OperationInputOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { input: infer TInput }
-  ? InferSchemaType<TInput>
-  : never;
-export type OperationProgressOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { progress?: infer TProgress }
-  ? TProgress extends undefined
-    ? unknown
-    : InferSchemaType<NonNullable<TProgress>>
-  : unknown;
-/** Infers the transient update payload for an operation descriptor. */
-export type OperationUpdateOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { update?: infer TUpdate }
-  ? TUpdate extends undefined
-    ? unknown
-    : InferSchemaType<NonNullable<TUpdate>>
-  : unknown;
-export type OperationOutputOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { output?: infer TOutput }
-  ? TOutput extends undefined
-    ? unknown
-    : InferSchemaType<NonNullable<TOutput>>
-  : unknown;
-export type OperationRuntimeHandle<
-  TProgress,
-  TOutput,
-  TError extends BaseError,
-  TUpdate = unknown,
-> = {
-  id: string;
-  started(): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  progress(value: TProgress): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  /** Emits a transient update without changing the persisted snapshot. */
-  emitUpdate(value: TUpdate): AsyncResult<void, BaseError>;
-  complete(value: TOutput): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  fail(error: TError): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  /** Durably requests cancellation; terminal state follows handler cleanup. */
-  cancel(): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  attach(job: {
-    wait(): AsyncResult<unknown, BaseError>;
-  }): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  signals(): AsyncIterable<RuntimeOperationSignal>;
-  nextSignal(name?: string): AsyncResult<RuntimeOperationSignal, BaseError>;
-  /** Durably acknowledges a signal after its side effects have been accepted. */
-  acknowledgeSignal(sequence: number): AsyncResult<void, BaseError>;
-  defer(): OperationDeferred;
-};
-export type OperationDeferred = {
-  kind: "deferred";
-};
-
-/**
- * Returns true when a handler result explicitly leaves operation completion to
- * an external control path.
- */
-export function isOperationDeferred(
-  value: unknown,
-): value is OperationDeferred {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    "kind" in value &&
-    value.kind === "deferred"
-  );
-}
-export type AcceptedOperation<
-  TProgress,
-  TOutput,
-  TError extends BaseError,
-  TUpdate = unknown,
-> = OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate> & {
-  ref: OperationRefData;
-  snapshot: RuntimeOperationSnapshot & {
-    progress?: TProgress;
-    output?: TOutput;
-  };
-};
-/**
- * A provider's view of an Operation's caller-sent bytes.
- *
- * For an `upload` Operation the bytes are durably staged before the handler
- * reads them, and can be read again. For a `stream` Operation the handler
- * reads the caller's bytes as they arrive, exactly once: the stream ends only
- * after the caller's final size and SHA-256 digest were verified and the
- * delivery was durably recorded, and errors if the transfer fails. A stream
- * cannot be replayed, so an interrupted `stream` Operation fails and the
- * caller must start a new one.
- */
-export type OperationTransferHandle = {
-  /** Consumed-byte progress while the transfer runs. */
-  updates(): AsyncIterable<RuntimeOperationTransferProgress>;
-  /** Resolves with the verified object metadata once the bytes are committed. */
-  completed(): AsyncResult<FileInfo, TransferOperationError>;
-  /**
-   * `upload`: waits for staging, then opens the staged object.
-   * `stream`: returns the live stream once; a second call fails.
-   */
-  stream(): AsyncResult<ReadableStream<Uint8Array>, TransferOperationError>;
-  /**
-   * `upload`: waits for staging, then reads the staged bytes.
-   * `stream`: reads the live stream to its end, retaining every byte.
-   */
-  bytes(): AsyncResult<Uint8Array, TransferError>;
-};
-/** Decoded current State value and its opaque storage revision. */
-export type StateValue<T> = Readonly<{
-  value: T;
-  revision: string;
-  createdAt: string;
-  updatedAt: string;
-}>;
-
-/** State CAS failure with the authoritative current value, when present. */
-export class StateConflictError<T> extends BaseError {
-  override readonly name = "StateConflictError" as const;
-  readonly current?: StateValue<T>;
-
-  constructor(current?: StateValue<T>) {
-    super("State revision conflict");
-    this.current = current;
-  }
-
-  override toSerializable() {
-    return this.baseSerializable();
-  }
-}
-
-/** Raised when an optional participant resource is not installed. */
-export class ResourceUnavailableError extends BaseError {
-  override readonly name = "ResourceUnavailableError" as const;
-
-  /** Construct an unavailable-resource failure. */
-  constructor(
-    readonly kind: string,
-    readonly resourceName: string,
-  ) {
-    super(`${kind} resource '${resourceName}' is unavailable`);
-  }
-
-  override toSerializable() {
-    return this.baseSerializable();
-  }
-}
-
-/** Typed single-value State handle. */
-export type ValueStateStoreClient<TValue> = StateHandle<TValue>;
-export type StateFacade<TState extends RuntimeStateStores> = {
-  [K in keyof TState]: ValueStateStoreClient<TState[K]["value"]>;
-};
-export type OperationHandlerContext<
-  TInput,
-  TProgress,
-  TOutput,
-  TTransfer,
-  TError extends BaseError,
-  TUpdate = unknown,
-> = {
-  input: TInput;
-  op: OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>;
-  caller: SessionCaller;
-  /**
-   * Aborted when cancellation is requested or this executor loses ownership.
-   * Cancellation-first admission and cancellation recovery enter the handler
-   * with this signal already aborted. Perform cleanup before business work or
-   * accessing transfer, then return successfully to acknowledge cleanup.
-   * Throwing, returning an error, or deferring leaves cancellation nonterminal.
-   */
-  signal: AbortSignal;
-  /** Whether this handler resumes an earlier invocation or reconciles durable state. */
-  resuming: boolean;
-  /** Last durably persisted progress available to a resumed handler. */
-  progress?: TProgress;
-} & (TTransfer extends undefined
-  ? {}
-  : {
-      /**
-       * Absent during cancellation-first admission or cancellation-only recovery
-       * when staging was not opened. Handle aborted-signal cleanup before use.
-       */
-      transfer?: TTransfer;
-    });
-export type OperationRegistration<
-  TInput,
-  TProgress,
-  TOutput,
-  TTransfer,
-  TError extends BaseError,
-  TUpdate = unknown,
-> = {
-  /**
-   * Loads an existing operation by id and returns a service-side control handle.
-   * The operation must belong to this service and registration name.
-   */
-  control(
-    operationId: string,
-  ): AsyncResult<
-    OperationRuntimeHandle<TProgress, TOutput, TError, TUpdate>,
-    BaseError
-  >;
-  /** Rerun the registered handler on its current owner with durable resume state. */
-  reconcile(
-    operationId: string,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  handle(
-    handler: (
-      context: OperationHandlerContext<
-        TInput,
-        TProgress,
-        TOutput,
-        TTransfer,
-        TError,
-        TUpdate
-      >,
-    ) => unknown | Promise<unknown>,
-  ): Promise<void>;
-};
-export type OperationTransferContextOf<
-  TA extends RuntimeApi,
-  O extends OperationsOf<TA>,
-> = TA["operations"][O] extends { transfer: infer TTransfer }
-  ? TTransfer extends undefined
-    ? undefined
-    : OperationTransferHandle
-  : undefined;
-export type OperationSurface<
-  TA extends RuntimeApi,
-  TMode extends TrellisMode,
-  O extends OperationsOf<TA>,
-> = TMode extends "service"
-  ? OperationRegistration<
-      OperationInputOf<TA, O>,
-      OperationProgressOf<TA, O>,
-      OperationOutputOf<TA, O>,
-      OperationTransferContextOf<TA, O>,
-      OperationHandlerErrorOf<TA, O>,
-      OperationUpdateOf<TA, O>
-    >
-  : OperationInvoker<TA["operations"][O] & RuntimeOperationDesc>;
-
-export function isResultLike(
-  value: unknown,
-): value is Result<unknown, BaseError> {
-  return value instanceof Result;
-}
-
-type SerializableRuntimeError = {
-  id?: string;
-  type: string;
-  message: string;
-  context?: Record<string, unknown>;
-  traceId?: string;
-} & Record<string, unknown>;
-
-export type HandlerErrorAnnotationContext = {
-  method?: string;
-  event?: string;
-  live?: string;
-  operation?: string;
-  jobType?: string;
-  requestId?: string;
-  service?: string;
-  contractId?: string;
-  contractDigest?: string;
-  traceId?: string;
-};
-
-function compactHandlerErrorContext(
-  context: HandlerErrorAnnotationContext,
-): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(context).filter(
-      ([key, value]) => key !== "traceId" && value !== undefined,
-    ),
-  );
-}
-
-function sanitizeHandlerErrorContext(error: BaseError): void {
-  delete error.getContext().subject;
-}
-
-export function annotateHandlerBoundaryError(
-  cause: unknown,
-  context: HandlerErrorAnnotationContext,
-): BaseError {
-  const error =
-    cause instanceof BaseError && !(cause instanceof RemoteError)
-      ? cause
-      : new UnexpectedError({ cause });
-  sanitizeHandlerErrorContext(error);
-  error.withContext(compactHandlerErrorContext(context));
-  error.withTraceId(context.traceId);
-  return error;
-}
-
-function recordRuntimeError(
-  error: unknown,
-  attributes: TrellisErrorMetricAttributes,
-): void {
-  recordTrellisError(error, {
-    messagingSystem: "nats",
-    ...attributes,
-  });
-}
-
-export type RuntimeOperationDesc = {
-  subject: string;
-  permissions: RuntimeApi["operations"][string]["permissions"];
-  input: unknown;
-  revision: number;
-  progress?: unknown;
-  update?: unknown;
-  output?: unknown;
-  signals?: Record<string, { input: unknown }>;
-  cancelCapabilities?: readonly string[];
-  controlCapabilities?: readonly string[];
-  /** Caller-sent bytes; `stream` delivers them to the running handler. */
-  transfer?: { direction: "send"; stream?: boolean };
-  cancel?: boolean;
-};
-
-export type RuntimeOperationSignal = {
-  operationId: string;
-  sequence: number;
-  requestId: string;
-  signal: string;
-  input?: JsonValue;
-  acceptedAt: string;
-  acknowledged: boolean;
-};
-
-export type RuntimeOperationSignalWaiter = (
-  result: Result<RuntimeOperationSignal, BaseError>,
-) => void;
-
-export type RuntimeOperationTransferProgress = {
-  chunkIndex: number;
-  chunkBytes: number;
-  transferredBytes: number;
-};
-
-export type RuntimeOperationState =
-  "pending" | "running" | "completed" | "failed" | "cancelled";
-
-export type RuntimeOperationSnapshot = {
-  id: string;
-  service: string;
-  operation: string;
-  revision: number;
-  state: RuntimeOperationState;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  progress?: unknown;
-  transfer?: RuntimeOperationTransferProgress;
-  output?: unknown;
-  error?: SerializableRuntimeError;
-};
-
-export type RuntimeOperationRecord = {
-  id: string;
-  deploymentId: string;
-  service: string;
-  operation: string;
-  callerSessionKey: string;
-  invocationDigest: string;
-  caller: VerifiedCaller;
-  creatorPrincipalId: string;
-  creatorBinding: AuthenticatedCaller["binding"];
-  apiId: string;
-  input: unknown;
-  telemetry?: { traceparent: string; tracestate?: string };
-  revision: number;
-  ownerInstanceId: string;
-  ownerConnectionId: string;
-  ownerEpoch: number;
-  leaseExpiresAt: string;
-  cancelRequestedAt?: string;
-  transferGrant?: SendTransferGrant;
-  /** Retained upload attempt, including its private staging locator and state. */
-  uploadState?: PersistedOperationUpload;
-  snapshot: RuntimeOperationSnapshot;
-  sequence: number;
-  signalSequence: number;
-  signals: RuntimeOperationSignal[];
-  terminal: boolean;
-  watchers: Map<string, { includeUpdates: boolean }>;
-  frameQueue: Promise<void>;
-  signalWaiters: Set<RuntimeOperationSignalWaiter>;
-  cancellation: AbortController;
-  reclaimed?: boolean;
-};
-
-export type DurableOperationRecord = {
-  invocationId: string;
-  deploymentId: string;
-  callerSessionKey: string;
-  invocationDigest: string;
-  caller: VerifiedCaller;
-  creatorPrincipalId: string;
-  creatorBinding: AuthenticatedCaller["binding"];
-  apiId: string;
-  operation: string;
-  input: unknown;
-  telemetry?: { traceparent: string; tracestate?: string };
-  revision: number;
-  ownerInstanceId: string;
-  ownerConnectionId: string;
-  ownerEpoch: number;
-  leaseExpiresAt: string;
-  cancelRequestedAt?: string;
-  transferGrant?: SendTransferGrant;
-  /** Persisted upload attempt, separate from the public logical FileInfo key. */
-  uploadState?: PersistedOperationUpload;
-  sequence: number;
-  signalSequence: number;
-  signals: RuntimeOperationSignal[];
-  snapshot: RuntimeOperationSnapshot;
-};
-
-export type RuntimeOperationAcceptedEnvelope = {
-  kind: "accepted";
-  ref: OperationRefData;
-  snapshot: RuntimeOperationSnapshot;
-  transfer?: SendTransferGrant;
-};
-
-export type RuntimeOperationControlRequest =
-  | {
-      action: "get" | "cancel";
-      operationId: string;
-    }
-  | {
-      action: "watch";
-      operationId: string;
-      includeUpdates?: boolean;
-      observation?: {
-        format: string;
-        type: string;
-        openId: string;
-        receiveMaxPayloadBytes: number;
-      };
-    }
-  | {
-      action: "signal";
-      operationId: string;
-      signal: string;
-      input?: JsonValue;
-    };
-
-export type RuntimeOperationController = {
-  get(operationId: string): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  started(
-    operationId: string,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  progress(
-    operationId: string,
-    progress: unknown,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  complete(
-    operationId: string,
-    output: unknown,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  fail(
-    operationId: string,
-    error: BaseError,
-  ): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  cancel(operationId: string): AsyncResult<RuntimeOperationSnapshot, BaseError>;
-  signals(operationId: string): AsyncIterable<RuntimeOperationSignal>;
-  nextSignal(
-    operationId: string,
-    name?: string,
-  ): AsyncResult<RuntimeOperationSignal, BaseError>;
-};
-
-export function buildRuntimeOperationSnapshot(
-  runtime: Pick<
-    RuntimeOperationRecord,
-    "id" | "service" | "operation" | "snapshot"
-  >,
-  state: RuntimeOperationState,
-  patch?: Partial<RuntimeOperationSnapshot>,
-): RuntimeOperationSnapshot {
-  const updatedAt = new Date().toISOString();
-  const completedAt =
-    state === "completed" || state === "failed" || state === "cancelled"
-      ? (patch?.completedAt ?? updatedAt)
-      : patch?.completedAt;
-  return {
-    id: runtime.id,
-    service: runtime.service,
-    operation: runtime.operation,
-    revision: patch?.revision ?? runtime.snapshot.revision + 1,
-    state,
-    createdAt: patch?.createdAt ?? runtime.snapshot.createdAt,
-    updatedAt,
-    ...(completedAt ? { completedAt } : {}),
-    ...(patch?.progress !== undefined
-      ? { progress: patch.progress }
-      : runtime.snapshot.progress !== undefined
-        ? { progress: runtime.snapshot.progress }
-        : {}),
-    ...(patch?.transfer !== undefined
-      ? { transfer: patch.transfer }
-      : runtime.snapshot.transfer !== undefined
-        ? { transfer: runtime.snapshot.transfer }
-        : {}),
-    ...(patch?.output !== undefined
-      ? { output: patch.output }
-      : runtime.snapshot.output !== undefined
-        ? { output: runtime.snapshot.output }
-        : {}),
-    ...(patch?.error
-      ? { error: patch.error }
-      : runtime.snapshot.error
-        ? { error: runtime.snapshot.error }
-        : {}),
-  };
-}
-
-function isRuntimeOperationSnapshot(
-  value: unknown,
-): value is RuntimeOperationSnapshot {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    typeof (value as RuntimeOperationSnapshot).id === "string" &&
-    typeof (value as RuntimeOperationSnapshot).service === "string" &&
-    typeof (value as RuntimeOperationSnapshot).operation === "string" &&
-    typeof (value as RuntimeOperationSnapshot).revision === "number" &&
-    typeof (value as RuntimeOperationSnapshot).state === "string" &&
-    typeof (value as RuntimeOperationSnapshot).createdAt === "string" &&
-    typeof (value as RuntimeOperationSnapshot).updatedAt === "string"
-  );
-}
-
-export function isTerminalRuntimeOperationSnapshot(
-  value: unknown,
-): value is RuntimeOperationSnapshot {
-  return (
-    isRuntimeOperationSnapshot(value) &&
-    (value.state === "completed" ||
-      value.state === "failed" ||
-      value.state === "cancelled")
-  );
-}
-
-export type TrellisOpts<TA extends RuntimeApi> = {
-  log?: LoggerLike;
-  timeout?: number;
-  stream?: string;
-  api?: TA;
-  state?: RuntimeStateStores;
-  stateMigrations?: Readonly<
-    Record<string, ResourceMigrations<unknown> | undefined>
-  >;
-  resourceGeneration?: () => number;
-  resourceAvailability?: (name: string) => boolean;
-  connection?: TrellisConnection;
-  /** Admitted-transport view for boundary checks, set by the connection owner. @internal */
-  /**
-   * Generation-aware transport provider. When present, finite request and event
-   * exchanges acquire a lease for the exact generation they use; when absent,
-   * the session keeps its single fixed physical connection. @internal
-   */
-  transport?: TrellisTransportProvider;
-  onSessionNotFound?: () => MaybePromise<void>;
-  contractId?: string;
-  contractDigest?: string;
-};
-
-/** Bounds the caller's request wait, not work already accepted by a service. */
-export type RequestOpts = {
-  /** Request deadline in milliseconds; expiry returns trellis.request.timeout. */
-  timeout?: number;
-  /** Cancels the wait with trellis.request.cancelled, including after publication. */
-  signal?: AbortSignal;
-};
-
-export type EventOpts = {
-  mode?: "durable" | "ephemeral";
-  /**
-   * Contract event consumer group to use for durable service listeners when an
-   * event is declared in more than one group.
-   */
-  group?: string;
-  signal?: AbortSignal;
-};
-
-/** Context provided to event listener callbacks. */
-export type EventListenerContext = {
-  /** Stable event id from the Trellis event header. */
-  id: string;
-  /** Event creation time from the Trellis event header. */
-  time: Date;
-  /** NATS subject that delivered the event. */
-  subject: string;
-  /** Runtime listener mode that delivered the event. */
-  mode: "durable" | "ephemeral";
-  /** Durable event consumer group, when delivered through a group. */
-  group?: string;
-  /** JetStream sequence number, when available. */
-  sequence?: number;
-};
-
-function createEventListenerContext(args: {
-  subject: string;
-  mode: "durable" | "ephemeral";
-  group?: string;
-  message: object;
-}): EventListenerContext {
-  const messageId = readMessageHeader(args.message, "Nats-Msg-Id");
-  const messageTime = readMessageHeader(args.message, "Trellis-Event-Time");
-  const sequence = Reflect.get(args.message, "seq");
-
-  return {
-    id: messageId ?? "",
-    time: new Date(messageTime ?? 0),
-    subject: args.subject,
-    mode: args.mode,
-    ...(args.group ? { group: args.group } : {}),
-    ...(typeof sequence === "number" ? { sequence } : {}),
-  };
-}
-
-function readMessageHeader(message: object, key: string): string | undefined {
-  const headers = Reflect.get(message, "headers");
-  if (typeof headers !== "object" || headers === null) return undefined;
-  const get = Reflect.get(headers, "get");
-  if (typeof get !== "function") return undefined;
-  const value = get.call(headers, key);
-  return typeof value === "string" ? value : undefined;
-}
-
-type RuntimeEventConsumers = {
-  metadata?: RuntimeEventConsumerGroups;
-  bindings?: Record<string, EventConsumerResourceBinding>;
-};
-
-type RuntimeEventConsumerGroup = {
-  uses?: Readonly<Record<string, readonly string[]>>;
-  self?: readonly string[];
-};
-
-type RuntimeEventConsumerGroups = Readonly<
-  Record<string, RuntimeEventConsumerGroup>
->;
-
-function eventConsumerGroupEvents(group: RuntimeEventConsumerGroup): string[] {
-  const events = new Set<string>();
-  for (const groupEvents of Object.values(group.uses ?? {})) {
-    for (const event of groupEvents) events.add(event);
-  }
-  for (const event of group.self ?? []) events.add(event);
-  return [...events].sort();
-}
-
-function jetStreamDeliveryProof(message: JsMsg): string {
-  const raw = Reflect.get(message, "msg");
-  const reply =
-    raw && typeof raw === "object" ? Reflect.get(raw, "reply") : undefined;
-  if (typeof reply !== "string" || !reply.startsWith("$JS.ACK.")) {
-    throw new Error("JetStream delivery has no acknowledgement subject");
-  }
-  return reply;
-}
-
-function isConsumerNotFoundError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === "ConsumerNotFoundError" ||
-      error.message.includes("consumer not found"))
-  );
-}
-
-type TrellisInternalOpts<TA extends RuntimeApi> = TrellisOpts<TA> & {
-  inboxPrefix?: string;
-  eventConsumers?: RuntimeEventConsumers;
-  /**
-   * `event:<Name>` descriptor names this participant explicitly declares as
-   * subscribe needs. When present, explicit ephemeral delivery is allowed only
-   * for those events; the declared durable consumer never implies it.
-   */
-  ephemeralEventNeeds?: ReadonlySet<string>;
-};
-
-const internalEventConsumers = Symbol("trellis.internal.eventConsumers");
-const internalEphemeralEventNeeds = Symbol(
-  "trellis.internal.ephemeralEventNeeds",
-);
-
-type InternalizedTrellisOpts<TA extends RuntimeApi> = TrellisOpts<TA> & {
-  [internalEventConsumers]?: RuntimeEventConsumers;
-  [internalEphemeralEventNeeds]?: ReadonlySet<string>;
-};
 
 /**
  * Creates a Trellis runtime with bootstrap-resolved bindings.
@@ -1807,920 +393,6 @@ export function createTrellisInternal<
     internalOpts,
     inboxPrefix,
   );
-}
-
-type DurableEventRegistration<TA extends RuntimeApi> = {
-  event: EventsOf<TA>;
-  ctx: EventDescriptorOf<TA, EventsOf<TA>>;
-  subject: string;
-  fn: EventCallback<EventOf<TA, EventsOf<TA>>>;
-};
-
-type DurableEventConsumerLoop<TA extends RuntimeApi> = {
-  registrations: Array<DurableEventRegistration<TA>>;
-  concurrency: number;
-  startedWorkers: Set<number>;
-  messages: Set<ConsumerMessages>;
-};
-
-type ConsumerReplayEnvelope = {
-  deadLetterId: string;
-  generation: number;
-  resourceId: string;
-  originalRecordSequence: number;
-  originalSubject: string;
-  originalPayloadBytes: number[];
-  originalHeaders: Record<string, string[]>;
-};
-
-export type LiveSubscribeOpts = {
-  signal?: AbortSignal;
-};
-
-export type LiveInputBuilder<TInput, TEvent> = {
-  input(input: TInput): {
-    subscribe(
-      opts?: LiveSubscribeOpts,
-    ): AsyncResult<LiveSubscription<TEvent>, BaseError>;
-  };
-};
-
-export type LiveHandlerContext<TInput, TEvent> = {
-  input: TInput;
-  caller: SessionCaller;
-  signal: AbortSignal;
-  emit(
-    event: TEvent,
-  ): AsyncResult<
-    void,
-    SchemaValidationError | ValidationError | UnexpectedError
-  >;
-};
-
-export type LiveRegistration<TInput, TEvent> = {
-  handle(
-    handler: (
-      context: LiveHandlerContext<TInput, TEvent>,
-    ) => unknown | Promise<unknown>,
-  ): Promise<void>;
-};
-
-type SurfaceGroups<TLeaf> = Record<string, Record<string, TLeaf>>;
-type RuntimeRpcLeaf = (
-  input: unknown,
-  opts?: RequestOpts,
-) => AsyncResult<unknown, BaseError>;
-type RuntimeEventLeaf = {
-  prepare(
-    event: Record<string, unknown>,
-  ): Result<PreparedTrellisEvent, ValidationError | UnexpectedError>;
-  publish(
-    event: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | UnexpectedError>;
-  listen(
-    handler: EventCallback<unknown>,
-    subjectData?: Record<string, unknown>,
-    opts?: EventOpts,
-  ): AsyncResult<void, ValidationError | UnexpectedError>;
-};
-type RuntimeEventPublishLeaf = Omit<RuntimeEventLeaf, "listen">;
-type RuntimeLiveLeaf = (
-  input: unknown,
-  opts?: LiveSubscribeOpts,
-) => AsyncResult<LiveSubscription<unknown>, BaseError>;
-type RuntimeOperationLeaf = OperationInvoker<RuntimeOperationDesc>;
-type PascalSurfaceName<T extends string> =
-  T extends `${infer Head}.${infer Tail}`
-    ? `${Capitalize<Head>}${PascalSurfaceName<Tail>}`
-    : Capitalize<T>;
-type LowerCamelSurfaceName<T extends string> = Uncapitalize<
-  PascalSurfaceName<T>
->;
-type SurfaceGroupName<T extends string> = T extends `${infer Head}.${string}`
-  ? LowerCamelSurfaceName<Head>
-  : LowerCamelSurfaceName<T>;
-type SurfaceLeafName<T extends string> = T extends `${string}.${infer Tail}`
-  ? LowerCamelSurfaceName<Tail>
-  : LowerCamelSurfaceName<T>;
-type SurfaceKeysForGroup<
-  TKeys extends string,
-  TGroup extends string,
-> = TKeys extends string
-  ? SurfaceGroupName<TKeys> extends TGroup
-    ? TKeys
-    : never
-  : never;
-
-export type ActiveRpcFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<MethodsOf<TA>>]: {
-    readonly [
-      M in SurfaceKeysForGroup<MethodsOf<TA>, TGroup> as SurfaceLeafName<M>
-    ]: (
-      input: RpcInputOf<TA, M>,
-      opts?: RequestOpts,
-    ) => AsyncResult<RpcOutputOf<TA, M>, BaseError>;
-  };
-};
-
-export type ActiveEventFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<EventsOf<TA>>]: {
-    readonly [
-      E in SurfaceKeysForGroup<EventsOf<TA>, TGroup> as SurfaceLeafName<E>
-    ]: {
-      prepare(
-        event: EventPayloadOf<TA, E>,
-      ): Result<
-        PreparedTrellisEvent<EventPayloadOf<TA, E>>,
-        ValidationError | UnexpectedError
-      >;
-      publish(
-        event: EventPayloadOf<TA, E>,
-      ): AsyncResult<void, ValidationError | UnexpectedError>;
-      listen(
-        handler: EventCallback<EventOf<TA, E>>,
-        subjectData?: Record<string, unknown>,
-        opts?: EventOpts,
-      ): AsyncResult<void, ValidationError | UnexpectedError>;
-    };
-  };
-};
-
-export type ActiveEventPublishFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<EventsOf<TA>>]: {
-    readonly [
-      E in SurfaceKeysForGroup<EventsOf<TA>, TGroup> as SurfaceLeafName<E>
-    ]: {
-      prepare(
-        event: EventPayloadOf<TA, E>,
-      ): Result<
-        PreparedTrellisEvent<EventPayloadOf<TA, E>>,
-        ValidationError | UnexpectedError
-      >;
-      publish(
-        event: EventPayloadOf<TA, E>,
-      ): AsyncResult<void, ValidationError | UnexpectedError>;
-    };
-  };
-};
-
-export type ActiveLiveFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<LivesOf<TA>>]: {
-    readonly [
-      F in SurfaceKeysForGroup<LivesOf<TA>, TGroup> as SurfaceLeafName<F>
-    ]: (
-      input: LiveInputOf<TA, F>,
-      opts?: LiveSubscribeOpts,
-    ) => AsyncResult<LiveSubscription<LiveEventOf<TA, F>>, BaseError>;
-  };
-};
-
-export type ActiveOperationFacade<TA extends RuntimeApi = RuntimeApi> = {
-  readonly [TGroup in SurfaceGroupName<OperationsOf<TA>>]: {
-    readonly [
-      O in SurfaceKeysForGroup<OperationsOf<TA>, TGroup> as SurfaceLeafName<O>
-    ]: OperationInvoker<TA["operations"][O] & RuntimeOperationDesc>;
-  };
-};
-
-export type ActiveRpcHandleFacade<
-  TA extends RuntimeApi = RuntimeApi,
-  TRequests = RpcRequestShapes<TA>,
-> = {
-  readonly [TGroup in SurfaceGroupName<MethodsOf<TA>>]: {
-    readonly [
-      M in SurfaceKeysForGroup<MethodsOf<TA>, TGroup> as SurfaceLeafName<M>
-    ]: (
-      handler: HandlerFn<TA, M, TA, HandlerTrellis<TA, TRequests>>,
-    ) => Promise<void>;
-  };
-};
-
-export type LiveSurface<
-  TA extends RuntimeApi,
-  TMode extends TrellisMode,
-  F extends LivesOf<TA>,
-> = TMode extends "service"
-  ? LiveRegistration<LiveInputOf<TA, F>, LiveEventOf<TA, F>>
-  : LiveInputBuilder<LiveInputOf<TA, F>, LiveEventOf<TA, F>>;
-
-type MaybePromise<T> = T | Promise<T>;
-
-type EventCallback<TMessage> = {
-  bivarianceHack(
-    message: TMessage,
-    context: EventListenerContext,
-  ): MaybeAsync<void, BaseError>;
-}["bivarianceHack"];
-
-export type RpcHandlerContext = {
-  caller: SessionCaller;
-  sessionKey: string;
-  inboxPrefix: string;
-  /** Exact permission verified for this request. */
-  permission: DescriptorPermissionAtom;
-  /** Capabilities required by this request surface. */
-  requiredCapabilities: readonly string[];
-  requestId?: string;
-  traceId?: string;
-  /** Schedules work after the successful RPC response has reached NATS. */
-  afterReply(task: () => MaybePromise<void>): void;
-};
-
-type ProcessedRpcResponse = {
-  readonly payload: string;
-  readonly afterReply: readonly (() => MaybePromise<void>)[];
-};
-
-export type HandlerTrellis<
-  TA extends RuntimeApi,
-  TRequests = RpcRequestShapes<TA>,
-> = {
-  readonly rpc: ActiveRpcFacade<TA>;
-  readonly event: ActiveEventPublishFacade<TA>;
-  readonly live: ActiveLiveFacade<TA>;
-  readonly operation: ActiveOperationFacade<TA>;
-  request<const M extends RequestMethodOf<TRequests>>(
-    method: M,
-    input: RequestInputOf<TRequests, M>,
-    opts?: RequestOpts,
-  ): AsyncResult<RequestOutputOf<TRequests, M>, BaseError>;
-  publish(
-    event: string,
-    data: Record<string, unknown>,
-  ): AsyncResult<void, ValidationError | TransportError | UnexpectedError>;
-  prepare(
-    event: string,
-    data: Record<string, unknown>,
-  ): Result<PreparedTrellisEvent, ValidationError | UnexpectedError>;
-  publishPrepared(
-    event: PreparedTrellisEvent,
-  ): AsyncResult<void, TransportError | UnexpectedError>;
-  /** Stops durable event listener loops owned by this handler runtime. */
-  stopEventListeners(): void;
-};
-
-function surfaceGroupName(key: string): string {
-  return lowerCamelIdent(key.split(".")[0] ?? key);
-}
-
-function surfaceLeafName(key: string): string {
-  const parts = key.split(".");
-  parts.shift();
-  return lowerCamelIdent(parts.length === 0 ? key : parts.join("."));
-}
-
-function lowerCamelIdent(value: string): string {
-  const pascal = value
-    .split(/[^A-Za-z0-9]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part[0]!.toUpperCase() + part.slice(1))
-    .join("");
-  return pascal.length === 0 ? "_" : pascal[0]!.toLowerCase() + pascal.slice(1);
-}
-
-function addSurfaceLeaf<TLeaf>(
-  surface: SurfaceGroups<TLeaf>,
-  key: string,
-  leaf: TLeaf,
-): void {
-  const group = surfaceGroupName(key);
-  surface[group] ??= {};
-  surface[group][surfaceLeafName(key)] = leaf;
-}
-
-function natsSubjectMatches(pattern: string, subject: string): boolean {
-  const patternParts = pattern.split(".");
-  const subjectParts = subject.split(".");
-  for (let index = 0; index < patternParts.length; index += 1) {
-    const part = patternParts[index];
-    if (part === ">") return true;
-    const subjectPart = subjectParts[index];
-    if (subjectPart === undefined) return false;
-    if (part !== "*" && part !== subjectPart) return false;
-  }
-  return patternParts.length === subjectParts.length;
-}
-
-export type HandlerKvFacade<TKv extends ParticipantKvMetadata> = {
-  [K in keyof TKv]: TKv[K]["required"] extends false
-    ? TypedKV<TKv[K]["value"]> | undefined
-    : TypedKV<TKv[K]["value"]>;
-};
-
-export type HandlerStoreHandle = {
-  open(): AsyncResult<TypedStore, StoreError>;
-  waitFor(
-    key: string,
-    options?: StoreWaitOptions,
-  ): AsyncResult<TypedStoreEntry, StoreError>;
-};
-
-export type HandlerJobQueue<TPayload, TResult, TTrellis, TUpdate = never> = {
-  create(
-    payload: TPayload,
-  ): AsyncResult<JobRef<TPayload, TResult, TUpdate>, BaseError>;
-  updates(
-    jobId: string,
-    options?: JobUpdatesOptions,
-  ): AsyncResult<JobUpdateSubscription<TUpdate>, BaseError>;
-  handle(
-    handler: (args: {
-      job: ActiveJob<TPayload, TResult, TUpdate>;
-      client: TTrellis;
-    }) => Promise<Result<TResult, BaseError>>,
-  ): void;
-};
-
-export type HandlerJobsFacade<
-  TJobs extends Record<string, JobTypeMetadata>,
-  TTrellis,
-> = {
-  [K in keyof TJobs]: HandlerJobQueue<
-    TJobs[K]["payload"],
-    TJobs[K]["result"],
-    TTrellis,
-    TJobs[K]["update"]
-  >;
-};
-
-export type HandlerTrellisForContract<TContract> = HandlerTrellis<
-  TrellisApiFor<TContract>
-> & {
-  kv: HandlerKvFacade<ContractKvFor<TContract>>;
-  store: Record<string, HandlerStoreHandle>;
-  jobs: HandlerJobsFacade<
-    ContractJobsFor<TContract>,
-    HandlerTrellisForContract<TContract>
-  >;
-};
-
-export type HandlerFn<
-  TMountApi extends RuntimeApi,
-  M extends MethodsOf<TMountApi>,
-  TOutboundApi extends RuntimeApi = TMountApi,
-  TTrellis = HandlerTrellis<TOutboundApi>,
-> = (args: {
-  input: MethodInputOf<TMountApi, M>;
-  context: RpcHandlerContext;
-  client: TTrellis;
-}) => MaybePromise<
-  Result<MethodOutputOf<TMountApi, M>, HandlerErrorOf<TMountApi, M>>
->;
-
-const STATE_RUNTIME_RPC = {
-  Register: {
-    subject: "rpc.v1.state.Register",
-    input: STATE_API.actions["rpc:Register"].input,
-    output: STATE_API.actions["rpc:Register"].output,
-    callerCapabilities: [],
-    errors: STATE_API.actions["rpc:Register"].errors.map((error) => error.type),
-    declaredErrorTypes: STATE_API.actions["rpc:Register"].errors.map(
-      (error) => error.type,
-    ),
-    runtimeErrors: STATE_API.actions["rpc:Register"].errors,
-  },
-  Get: {
-    subject: "rpc.v1.state.Get",
-    input: STATE_API.actions["rpc:Get"].input,
-    output: STATE_API.actions["rpc:Get"].output,
-    callerCapabilities: [],
-    errors: STATE_API.actions["rpc:Get"].errors.map((error) => error.type),
-    declaredErrorTypes: STATE_API.actions["rpc:Get"].errors.map(
-      (error) => error.type,
-    ),
-    runtimeErrors: STATE_API.actions["rpc:Get"].errors,
-  },
-  Put: {
-    subject: "rpc.v1.state.Put",
-    input: STATE_API.actions["rpc:Put"].input,
-    output: STATE_API.actions["rpc:Put"].output,
-    callerCapabilities: [],
-    errors: STATE_API.actions["rpc:Put"].errors.map((error) => error.type),
-    declaredErrorTypes: STATE_API.actions["rpc:Put"].errors.map(
-      (error) => error.type,
-    ),
-    runtimeErrors: STATE_API.actions["rpc:Put"].errors,
-  },
-  Delete: {
-    subject: "rpc.v1.state.Delete",
-    input: STATE_API.actions["rpc:Delete"].input,
-    output: STATE_API.actions["rpc:Delete"].output,
-    callerCapabilities: [],
-    errors: STATE_API.actions["rpc:Delete"].errors.map((error) => error.type),
-    declaredErrorTypes: STATE_API.actions["rpc:Delete"].errors.map(
-      (error) => error.type,
-    ),
-    runtimeErrors: STATE_API.actions["rpc:Delete"].errors,
-  },
-};
-
-/** Transport calls consumed by a typed State handle. */
-export type StateResourceCalls = Readonly<{
-  watch?(
-    input: { resourceName: string },
-    opts?: LiveSubscribeOpts,
-  ): PromiseLike<Result<LiveSubscription<StateGetResponse>, BaseError>>;
-  register?(
-    input: StateRegisterRequest,
-  ): PromiseLike<Result<StateRegisterResponse, BaseError>>;
-  get(input: {
-    resourceName: string;
-  }): PromiseLike<Result<StateGetResponse, BaseError>>;
-  set(input: {
-    resourceName: string;
-    representationVersion: bigint;
-    value: Uint8Array;
-    mode: "create" | "set" | "replace";
-    revision?: string;
-  }): PromiseLike<Result<StateSetResponse, BaseError>>;
-  delete(input: {
-    resourceName: string;
-    revision?: string;
-  }): PromiseLike<Result<StateDeleteResponse, BaseError>>;
-}>;
-
-/** Native-IDL projected schemas registered by an app before accessing State. */
-export type StateRegistration = Readonly<{
-  representation: StateRegisterRequest["representation"];
-  accepts: readonly StateRegisterRequest["representation"][];
-}>;
-
-/** Owned certified Live observation of typed State snapshots; `undefined` means unwritten or deleted. */
-export type StateWatch<T> = AsyncIterableIterator<StateValue<T> | undefined> &
-  Pick<LiveSubscription<StateValue<T> | undefined>, "closed" | "close"> &
-  AsyncDisposable;
-
-/** Typed handle for one generated single-value State resource. */
-export class StateHandle<T> {
-  readonly #resourceName: string;
-  readonly #definition: KvRepresentation<T>;
-  readonly #migrations: ResourceMigrations<T>;
-  readonly #isCurrent: () => boolean;
-  readonly #isAvailable: () => boolean;
-  readonly #calls: StateResourceCalls;
-  readonly #registration?: StateRegistration;
-  #registered?: Promise<Result<StateRegisterResponse, BaseError>>;
-  #registrationRequest?: StateRegisterRequest;
-
-  /** Construct a handle from generated metadata and settled State transport calls. */
-  constructor(args: {
-    resourceName: string;
-    definition: KvRepresentation<T>;
-    migrations?: ResourceMigrations<T>;
-    isCurrent?: () => boolean;
-    isAvailable?: () => boolean;
-    calls: StateResourceCalls;
-    registration?: StateRegistration;
-  }) {
-    this.#resourceName = args.resourceName;
-    this.#definition = args.definition;
-    this.#migrations = args.migrations ?? {};
-    this.#isCurrent = args.isCurrent ?? (() => true);
-    this.#isAvailable = args.isAvailable ?? (() => true);
-    this.#calls = args.calls;
-    this.#registration = args.registration;
-  }
-
-  /** Register an app representation with explicit CAS. Initial registration uses `0`; conflicts are never retried automatically. */
-  register(
-    expectedRevision = "0",
-    idempotencyKey = ulid(),
-  ): AsyncResult<StateRegisterResponse, BaseError> {
-    this.#registrationRequest = undefined;
-    return this.#sendRegistration((registration) => ({
-      resourceName: this.#resourceName,
-      representation: registration.representation,
-      accepts: [...registration.accepts],
-      expectedRevision,
-      idempotencyKey: codecs.ulid.decode(idempotencyKey),
-    }));
-  }
-
-  #sendRegistration(
-    request: (registration: StateRegistration) => StateRegisterRequest,
-  ): AsyncResult<StateRegisterResponse, BaseError> {
-    const pending = (async () => {
-      try {
-        this.#assertCurrent();
-        if (!this.#registration || !this.#calls.register)
-          throw new Error("Only app State uses representation registration");
-        const input = request(this.#registration);
-        this.#registrationRequest = input;
-        return await this.#calls.register(input);
-      } catch (cause) {
-        return Result.err(
-          cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-        );
-      }
-    })().then((result) => {
-      if (
-        this.#registered === pending &&
-        result.isErr() &&
-        result.error.toSerializable().type !==
-          "trellis.state@v1::RegistrationConflict"
-      ) {
-        this.#registered = undefined;
-      }
-      return result;
-    });
-    this.#registered = pending;
-    return AsyncResult.from(pending);
-  }
-
-  async #ensureRegistered(): Promise<void> {
-    if (!this.#registration) return;
-    const request = this.#registrationRequest;
-    (
-      await (this.#registered ??
-        (request ? this.#sendRegistration(() => request) : this.register()))
-    ).orThrow();
-  }
-
-  /** Observe the initial snapshot and subsequent changes, migrating only in memory. Close or leave iteration to release the Live observation. */
-  watch(opts?: LiveSubscribeOpts): AsyncResult<StateWatch<T>, BaseError> {
-    return AsyncResult.from(
-      (async () => {
-        try {
-          this.#assertCurrent();
-          await this.#ensureRegistered();
-          if (!this.#calls.watch)
-            throw new Error("Generated State Watch transport is missing");
-          const opened = await this.#calls.watch(
-            { resourceName: this.#resourceName },
-            opts,
-          );
-          if (opened.isErr()) return opened;
-          const subscription = opened.orThrow();
-          let pending = false;
-          let ended = false;
-          const observation: StateWatch<T> = {
-            closed: subscription.closed,
-            close: () => {
-              ended = true;
-              return subscription.close();
-            },
-            [Symbol.asyncIterator]() {
-              return this;
-            },
-            next: async () => {
-              if (ended) return { done: true, value: undefined };
-              if (pending)
-                throw new Error("concurrent next() is not supported");
-              pending = true;
-              try {
-                this.#assertCurrent();
-                const next = await subscription.next();
-                if (next.done) return { done: true, value: undefined };
-                const value = next.value.entry
-                  ? await this.#project(next.value.entry)
-                  : undefined;
-                if (ended) return { done: true, value: undefined };
-                this.#assertCurrent();
-                return { done: false, value };
-              } catch (cause) {
-                ended = true;
-                await subscription.return();
-                throw cause;
-              } finally {
-                pending = false;
-              }
-            },
-            return: async () => {
-              ended = true;
-              await subscription.return();
-              return { done: true, value: undefined };
-            },
-            throw: async (cause?: unknown) => {
-              ended = true;
-              await subscription.return();
-              throw cause;
-            },
-            [Symbol.asyncDispose]: async () => {
-              ended = true;
-              await subscription.return();
-            },
-          };
-          return Result.ok(observation);
-        } catch (cause) {
-          return Result.err(
-            cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-          );
-        }
-      })(),
-    );
-  }
-
-  async #project(
-    entry: NonNullable<StateGetResponse["entry"]>,
-  ): Promise<StateValue<T>> {
-    const version = Number(entry.representationVersion);
-    const encoded = JSON.parse(new TextDecoder().decode(entry.value));
-    let value: T;
-    if (version === this.#definition.version) {
-      value = this.#definition.codec.decode(encoded);
-    } else {
-      const historicCodec = this.#definition.migrations[version];
-      const migrate = this.#migrations[version];
-      if (!historicCodec || !migrate) {
-        throw new Error(`Unsupported State representation version ${version}`);
-      }
-      const migrated = await migrate(historicCodec.decode(encoded));
-      value = this.#definition.codec.decode(
-        this.#definition.codec.encode(
-          migrated instanceof Result ? migrated.orThrow() : migrated,
-        ),
-      );
-    }
-    return {
-      value,
-      revision: entry.revision,
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt,
-    };
-  }
-
-  #assertCurrent(): void {
-    if (!this.#isAvailable()) {
-      throw new ResourceUnavailableError("State", this.#resourceName);
-    }
-    if (!this.#isCurrent()) {
-      throw new Error(
-        `State resource '${this.#resourceName}' has a stale generation`,
-      );
-    }
-  }
-
-  async #conflict(error: StateRpcConflict) {
-    return Result.err(
-      new StateConflictError(
-        error.data.current
-          ? await this.#project(error.data.current)
-          : undefined,
-      ),
-    );
-  }
-
-  #write(
-    value: T,
-    mode: "create" | "set" | "replace",
-    expectedRevision?: string,
-  ): AsyncResult<StateValue<T>, BaseError> {
-    return AsyncResult.from(
-      (async () => {
-        try {
-          this.#assertCurrent();
-          await this.#ensureRegistered();
-          const result = await this.#calls.set({
-            resourceName: this.#resourceName,
-            representationVersion: BigInt(this.#definition.version),
-            value: new TextEncoder().encode(
-              JSON.stringify(this.#definition.codec.encode(value)),
-            ),
-            mode,
-            ...(expectedRevision === undefined
-              ? {}
-              : { revision: expectedRevision }),
-          });
-          if (result.isErr()) {
-            return result.error instanceof StateRpcConflict
-              ? await this.#conflict(result.error)
-              : result;
-          }
-          return Result.ok(
-            await this.#project(
-              result.unwrapOrElse(() => {
-                throw new Error("State set unexpectedly failed");
-              }).entry,
-            ),
-          );
-        } catch (cause) {
-          return Result.err(
-            cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-          );
-        }
-      })(),
-    );
-  }
-
-  /** Read the current value, migrating only in memory when required. */
-  get(): AsyncResult<StateValue<T> | undefined, BaseError> {
-    return AsyncResult.from(
-      (async () => {
-        try {
-          this.#assertCurrent();
-          await this.#ensureRegistered();
-          const result = await this.#calls.get({
-            resourceName: this.#resourceName,
-          });
-          if (result.isErr()) return result;
-          const response = result.unwrapOrElse(() => {
-            throw new Error("State get unexpectedly failed");
-          });
-          return Result.ok(
-            response.entry ? await this.#project(response.entry) : undefined,
-          );
-        } catch (cause) {
-          return Result.err(
-            cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-          );
-        }
-      })(),
-    );
-  }
-
-  /** Create the value only when no live value exists. */
-  create(value: T): AsyncResult<StateValue<T>, BaseError> {
-    return this.#write(value, "create");
-  }
-
-  /** Unconditionally replace the current value. */
-  set(value: T): AsyncResult<StateValue<T>, BaseError> {
-    return this.#write(value, "set");
-  }
-
-  /** Replace the value only while `revision` remains current. */
-  replace(revision: string, value: T): AsyncResult<StateValue<T>, BaseError> {
-    return this.#write(value, "replace", revision);
-  }
-
-  /** Delete unconditionally or only while `revision` remains current. */
-  delete(revision?: string): AsyncResult<boolean, BaseError> {
-    return AsyncResult.from(
-      (async () => {
-        try {
-          this.#assertCurrent();
-          await this.#ensureRegistered();
-          const result = await this.#calls.delete({
-            resourceName: this.#resourceName,
-            ...(revision === undefined ? {} : { revision }),
-          });
-          if (result.isErr()) {
-            return result.error instanceof StateRpcConflict
-              ? await this.#conflict(result.error)
-              : result;
-          }
-          return Result.ok(
-            result.unwrapOrElse(() => {
-              throw new Error("State delete unexpectedly failed");
-            }).deleted,
-          );
-        } catch (cause) {
-          return Result.err(
-            cause instanceof BaseError ? cause : new UnexpectedError({ cause }),
-          );
-        }
-      })(),
-    );
-  }
-}
-
-export type RpcRequestErrorOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = RequestErrorOf<TA, M>;
-export type RpcHandlerErrorOf<
-  TA extends RuntimeApi,
-  M extends RpcMethodNameOf<TA>,
-> = HandlerErrorOf<TA, M>;
-export type EventName<TContract> = EventsOf<OwnedApiFor<TContract>>;
-export type EventType<TContract, E extends EventName<TContract>> = EventOf<
-  OwnedApiFor<TContract>,
-  E
->;
-export type EventPayload<
-  TContract,
-  E extends EventName<TContract>,
-> = EventPayloadOf<OwnedApiFor<TContract>, E>;
-
-function activeTraceId(span: Span): string | undefined {
-  const traceId = span.spanContext().traceId;
-  return traceId === "00000000000000000000000000000000" ? undefined : traceId;
-}
-
-function traceIdFromTraceparent(
-  traceparent: string | undefined,
-): string | undefined {
-  const [version, traceId, parentId, flags, extra] =
-    traceparent?.split("-") ?? [];
-  if (
-    extra !== undefined ||
-    !/^[0-9a-f]{2}$/u.test(version ?? "") ||
-    version === "ff" ||
-    !/^[0-9a-f]{32}$/u.test(traceId ?? "") ||
-    traceId === "00000000000000000000000000000000" ||
-    !/^[0-9a-f]{16}$/u.test(parentId ?? "") ||
-    parentId === "0000000000000000" ||
-    !/^[0-9a-f]{2}$/u.test(flags ?? "")
-  ) {
-    return undefined;
-  }
-  return traceId;
-}
-
-const EMPTY_TRELLIS_API: RuntimeApi = {
-  rpc: {},
-  operations: {},
-  events: {},
-  lives: {},
-  subjects: {},
-};
-
-function isBrowserAuthRequiredError(error: unknown): boolean {
-  return machineErrorCode(error) === "session_not_found";
-}
-
-function isDeclaredRpcError(
-  errorNames: readonly string[] | undefined,
-  type: string,
-): boolean {
-  return !!errorNames?.includes(type);
-}
-
-function isRuntimeRpcErrorDesc(value: unknown): value is RuntimeRpcErrorDesc {
-  return (
-    !!value &&
-    (typeof value === "object" || typeof value === "function") &&
-    typeof Reflect.get(value, "type") === "string" &&
-    typeof Reflect.get(value, "fromSerializable") === "function"
-  );
-}
-
-const payloadSizeEncoder = new TextEncoder();
-
-function payloadByteLength(payload: string | Uint8Array): number {
-  return typeof payload === "string"
-    ? payloadSizeEncoder.encode(payload).byteLength
-    : payload.byteLength;
-}
-
-function causeMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
-function causeLogData(cause: unknown): unknown {
-  return cause instanceof Error
-    ? { message: cause.message, stack: cause.stack, name: cause.name }
-    : cause;
-}
-
-function reconstructDeclaredRpcError(
-  errorNames: readonly string[] | undefined,
-  runtimeErrors: readonly RuntimeRpcErrorDesc[] | undefined,
-  data: StaticDecode<typeof TrellisErrorDataSchema>,
-  json: JsonValue,
-): BaseError | ValidationError | UnexpectedError | null {
-  if (!isDeclaredRpcError(errorNames, data.type)) {
-    return null;
-  }
-
-  const runtimeError =
-    getBuiltinRpcError(data.type) ??
-    runtimeErrors?.find((candidate) => candidate.type === data.type);
-  if (!runtimeError) {
-    return null;
-  }
-
-  const parsed = runtimeError.schema
-    ? parseRuntimeSchema(runtimeError.schema, json).take()
-    : data;
-  if (isErr(parsed)) {
-    return parsed.error instanceof ValidationError ||
-      parsed.error instanceof UnexpectedError
-      ? parsed.error
-      : new UnexpectedError({ cause: parsed.error });
-  }
-
-  try {
-    const reconstructed = runtimeError.fromSerializable(parsed);
-    if (reconstructed instanceof BaseError) {
-      return reconstructed;
-    }
-    return new UnexpectedError({
-      cause: new Error(
-        `RPC error '${data.type}' reconstructed to a non-Trellis error instance`,
-      ),
-    });
-  } catch (cause) {
-    return new UnexpectedError({ cause });
-  }
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/**
- * Error for an owner whose generation was retired before it could install, so
- * it must not add resources to the disposed scope.
- */
-function ingressRetiredError(id: number): TransportError {
-  return createTransportError({
-    code: "trellis.transport.ingress_retired",
-    message:
-      "Trellis stopped installing provider intake for a retired generation.",
-    hint: "Retry against the current generation. This is expected during a fast supersede.",
-    context: { generationId: id },
-  });
 }
 
 export class Trellis<
@@ -7364,8 +5036,3 @@ export class Trellis<
     );
   }
 }
-import { API as JOBS_HISTORY_API } from "./internal_sdk/generated/apis/jobs/mod.js";
-import type {
-  JobsHistoryRequest,
-  JobsHistoryResponse,
-} from "./internal_sdk/generated/types/index.js";
