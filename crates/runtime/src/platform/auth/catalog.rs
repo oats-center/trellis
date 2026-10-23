@@ -457,13 +457,17 @@ impl SqliteAuthorizationStore {
             }
             for (key, action) in &actions {
                 connection.execute(
-                    "INSERT INTO auth_api_actions VALUES(?1,?2,?3,?4,?5)",
+                    "INSERT INTO auth_api_actions VALUES(?1,?2,?3,?4,?5,?6)",
                     params![
                         review.api_id,
                         generation,
                         key,
                         action.introduced_revision.get(),
-                        json(&action.identity)?
+                        json(&action.identity)?,
+                        json(&super::transport::ActionRoute::derive(
+                            api,
+                            &action.identity
+                        )?)?
                     ],
                 )?;
             }

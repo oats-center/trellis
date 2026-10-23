@@ -5,7 +5,7 @@ use trellis_protocol::transfer;
 
 use crate::platform::auth::sqlite::Connection;
 use rusqlite::{params, OptionalExtension};
-use trellis_idl::{compile_evidence, ActionDefinition, PackageEvidence};
+use trellis_idl::ActionDefinition;
 use trellis_protocol::{
     ApiSurfaceKind, PermissionAction, SessionBinding, TransportAuthorizationV1,
     TransportResponseAuthorizationV1, UnsignedSessionAuthority, TRANSPORT_AUTHORIZATION_FORMAT_V1,
@@ -13,7 +13,6 @@ use trellis_protocol::{
 
 use super::{
     authorization_sessions::AdmissionPlan,
-    catalog::resolve_api,
     sqlite::{decode, AuthError, SqliteAuthorizationStore},
 };
 
@@ -46,22 +45,19 @@ impl SqliteAuthorizationStore {
         let mut responds = false;
         let mut operation_providers = BTreeSet::new();
         for reference in &authority.apis {
-            let (generation, revision, evidence): (u64, u64, String) = connection.query_row(
-                "SELECT generation,accepted_revision,definition_json \
+            let (generation, revision): (u64, u64) = connection.query_row(
+                "SELECT generation,accepted_revision \
                 FROM auth_accepted_apis \
                 WHERE api_id=?1",
                 [&reference.api_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             if generation != reference.generation.get()
                 || revision != reference.accepted_revision.get()
             {
                 return Err(AuthError::Denied);
             }
-            let graph = compile_evidence(decode::<PackageEvidence>(&evidence)?)
-                .map_err(|error| AuthError::Invalid(error.to_string()))?;
-            let api = resolve_api(&graph, &reference.api_id)?;
-            let subjects = api.definition().subjects();
+            let routes = accepted_routes(connection, &reference.api_id, generation)?;
             let catalog = self.catalog_in_transaction(connection, &reference.api_id)?;
             if catalog.digest()? != reference.catalog_snapshot_digest {
                 return Err(AuthError::Denied);
@@ -113,9 +109,12 @@ impl SqliteAuthorizationStore {
                 if !can_call && !can_provide {
                     continue;
                 }
+                let route = routes
+                    .get(&super::sqlite::json(identity)?)
+                    .ok_or(AuthError::Denied)?;
+                let subject = &route.subject;
                 match (identity.kind, identity.direction) {
                     (ApiSurfaceKind::Rpc, PermissionAction::Call) => {
-                        let subject = subjects.rpc.get(&identity.name).ok_or(AuthError::Denied)?;
                         responds |= project_request(
                             subject,
                             can_call,
@@ -134,10 +133,6 @@ impl SqliteAuthorizationStore {
                                     .map(|binding| binding.deployment_id.clone()),
                             );
                         }
-                        let subject = subjects
-                            .operations
-                            .get(&identity.name)
-                            .ok_or(AuthError::Denied)?;
                         if direction == PermissionAction::Invoke {
                             responds |= project_request(
                                 subject,
@@ -223,10 +218,6 @@ impl SqliteAuthorizationStore {
                         }
                     }
                     (ApiSurfaceKind::Live, PermissionAction::Subscribe) => {
-                        let subject = subjects
-                            .lives
-                            .get(&identity.name)
-                            .ok_or(AuthError::Denied)?;
                         if can_call {
                             publish.insert(format!("{subject}.observe.*.*"));
                         }
@@ -250,11 +241,6 @@ impl SqliteAuthorizationStore {
                         ApiSurfaceKind::Event,
                         PermissionAction::Publish | PermissionAction::Subscribe,
                     ) => {
-                        let subject = &subjects
-                            .events
-                            .get(&identity.name)
-                            .ok_or(AuthError::Denied)?
-                            .wildcard;
                         if identity.direction == PermissionAction::Publish {
                             publish.insert(subject.clone());
                         } else if can_call {
@@ -264,72 +250,48 @@ impl SqliteAuthorizationStore {
                     _ => return Err(AuthError::Denied),
                 }
                 // Transfer-capable actions retain endpoint-scoped permissions.
-                let definition = api
-                    .definition()
-                    .actions()
-                    .iter()
-                    .find(|(key, _)| {
-                        key.name == identity.name
-                            && matches!(
-                                (key.kind, identity.kind),
-                                (trellis_idl::ActionKind::Rpc, ApiSurfaceKind::Rpc)
-                                    | (
-                                        trellis_idl::ActionKind::Operation,
-                                        ApiSurfaceKind::Operation,
-                                    )
-                            )
-                    })
-                    .map(|(_, value)| value);
-                if let Some(definition) = definition {
-                    if matches!(
-                        definition,
-                        ActionDefinition::Rpc { download: true, .. }
-                            | ActionDefinition::Operation { upload: true, .. }
-                    ) {
-                        if can_call {
-                            publish.insert(
-                                transfer::derive_transfer_consumer_upload_data_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                            publish.insert(
-                                transfer::derive_transfer_consumer_control_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                            subscribe.insert(
-                                transfer::derive_transfer_consumer_download_data_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                            subscribe.insert(
-                                transfer::derive_transfer_consumer_signal_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                        }
-                        if can_provide {
-                            subscribe.insert(
-                                transfer::derive_transfer_provider_upload_data_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                            subscribe.insert(
-                                transfer::derive_transfer_provider_control_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                            publish.insert(
-                                transfer::derive_transfer_provider_download_data_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                            publish.insert(
-                                transfer::derive_transfer_provider_signal_wildcard_subject(
-                                    own_runtime,
-                                )?,
-                            );
-                        }
+                if route.transfer {
+                    if can_call {
+                        publish.insert(
+                            transfer::derive_transfer_consumer_upload_data_wildcard_subject(
+                                own_runtime,
+                            )?,
+                        );
+                        publish.insert(
+                            transfer::derive_transfer_consumer_control_wildcard_subject(
+                                own_runtime,
+                            )?,
+                        );
+                        subscribe.insert(
+                            transfer::derive_transfer_consumer_download_data_wildcard_subject(
+                                own_runtime,
+                            )?,
+                        );
+                        subscribe.insert(
+                            transfer::derive_transfer_consumer_signal_wildcard_subject(
+                                own_runtime,
+                            )?,
+                        );
+                    }
+                    if can_provide {
+                        subscribe.insert(
+                            transfer::derive_transfer_provider_upload_data_wildcard_subject(
+                                own_runtime,
+                            )?,
+                        );
+                        subscribe.insert(
+                            transfer::derive_transfer_provider_control_wildcard_subject(
+                                own_runtime,
+                            )?,
+                        );
+                        publish.insert(
+                            transfer::derive_transfer_provider_download_data_wildcard_subject(
+                                own_runtime,
+                            )?,
+                        );
+                        publish.insert(transfer::derive_transfer_provider_signal_wildcard_subject(
+                            own_runtime,
+                        )?);
                     }
                 }
             }
@@ -488,6 +450,75 @@ impl SqliteAuthorizationStore {
 
 // Used for each owned stream and the read-only verification streams. Stream
 // management is not implied by owning data: no CREATE/UPDATE/DELETE stream ACL.
+/// The broker route of one accepted action, derived when its API is accepted
+/// so that admission never compiles IDL.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub(super) struct ActionRoute {
+    /// The action's subject; an event's is its wildcard subscription subject.
+    pub(super) subject: String,
+    /// The action moves bytes over the Transfer endpoints.
+    pub(super) transfer: bool,
+}
+
+impl ActionRoute {
+    pub(super) fn derive(
+        api: &trellis_idl::ApiDefinition,
+        identity: &trellis_protocol::CatalogActionIdentity,
+    ) -> Result<Self, AuthError> {
+        let subjects = api.subjects();
+        let name = &identity.name;
+        let subject = match identity.kind {
+            ApiSurfaceKind::Rpc => subjects.rpc.get(name).cloned(),
+            ApiSurfaceKind::Operation => subjects.operations.get(name).cloned(),
+            ApiSurfaceKind::Live => subjects.lives.get(name).cloned(),
+            ApiSurfaceKind::Event => subjects
+                .events
+                .get(name)
+                .map(|event| event.wildcard.clone()),
+            ApiSurfaceKind::State => None,
+        }
+        .ok_or_else(|| AuthError::Invalid(format!("action '{name}' has no subject")))?;
+        let transfer = api.actions().iter().any(|(key, definition)| {
+            key.name == *name
+                && matches!(
+                    (key.kind, identity.kind, definition),
+                    (
+                        trellis_idl::ActionKind::Rpc,
+                        ApiSurfaceKind::Rpc,
+                        ActionDefinition::Rpc { download: true, .. }
+                    ) | (
+                        trellis_idl::ActionKind::Operation,
+                        ApiSurfaceKind::Operation,
+                        ActionDefinition::Operation { upload: true, .. }
+                    )
+                )
+        });
+        Ok(Self { subject, transfer })
+    }
+}
+
+/// Routes of the accepted generation's actions, keyed by canonical identity.
+fn accepted_routes(
+    connection: &Connection,
+    api: &str,
+    generation: u64,
+) -> Result<std::collections::BTreeMap<String, ActionRoute>, AuthError> {
+    connection
+        .prepare(
+            "SELECT action_key,route_json \
+            FROM auth_api_actions \
+            WHERE api_id=?1 AND generation=?2",
+        )?
+        .query_map(params![api, generation], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .map(|row| {
+            let (key, route) = row?;
+            Ok((key, decode(&route)?))
+        })
+        .collect()
+}
+
 fn stream_access(
     publish: &mut BTreeSet<String>,
     stream: &str,

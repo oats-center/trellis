@@ -514,6 +514,8 @@ CREATE TABLE auth_api_actions (
     action_key TEXT NOT NULL,
     introduced_revision INTEGER NOT NULL CHECK (introduced_revision >= 1),
     descriptor_json TEXT NOT NULL CHECK (json_valid(descriptor_json)),
+    -- Broker subject and Transfer flag, derived once at acceptance.
+    route_json TEXT NOT NULL CHECK (json_valid(route_json)),
     PRIMARY KEY (api_id, generation, action_key),
     FOREIGN KEY (api_id, generation) REFERENCES auth_accepted_apis(api_id, generation)
         ON DELETE CASCADE
