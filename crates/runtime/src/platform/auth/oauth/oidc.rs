@@ -77,6 +77,9 @@ pub(super) struct VerifiedIdentity {
 #[derive(Deserialize, Serialize)]
 pub(super) struct UpstreamFlow {
     pub(super) account_token: Option<String>,
+    /// Device approval page to return to; it has no OAuth transaction.
+    #[serde(default)]
+    pub(super) device_review: Option<String>,
     pub(super) session_id: String,
     pub(super) authorization_transaction: String,
     pub(super) provider: ProviderIdentity,

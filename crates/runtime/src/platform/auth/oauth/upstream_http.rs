@@ -80,7 +80,16 @@ pub(super) async fn start(
         Ok(session) => session,
         Err(_) => return error(ErrorCode::AccessDenied),
     };
-    let (transaction, deadline, client_id, account_token) = if let Some(token) = form.get("link") {
+    let review = form.get("review").cloned();
+    let (transaction, deadline, client_id, account_token) = if let Some(review) = &review {
+        if ulid::Ulid::from_string(review).is_err() {
+            return error(ErrorCode::InvalidRequest);
+        }
+        if authority.portal_login(&cookie, &csrf, now).is_ok() {
+            return Redirect::to(&format!("/device-enrollment?reviewId={review}")).into_response();
+        }
+        (review.clone(), now + 300, "device-review".to_owned(), None)
+    } else if let Some(token) = form.get("link") {
         if headers.contains_key(axum::http::header::ORIGIN)
             && !super::http::portal_origin(&engine, &headers)
         {
@@ -204,6 +213,7 @@ pub(super) async fn start(
     let (url, state, nonce) = request.url();
     let flow = UpstreamFlow {
         account_token,
+        device_review: review,
         session_id: session,
         authorization_transaction: transaction.clone(),
         provider: snapshot.identity,
@@ -256,7 +266,9 @@ pub(super) async fn callback(
         let flow = store
             .take_upstream(&state, &session, now)
             .map_err(|_| ErrorCode::InvalidRequest)?;
+        // Account links and device approvals have no authorization to resume.
         if flow.account_token.is_none()
+            && flow.device_review.is_none()
             && store
                 .authorization(&flow.authorization_transaction, &session, now)
                 .is_err()
@@ -279,6 +291,12 @@ pub(super) async fn callback(
     if form.contains_key("error") {
         if flow.account_token.is_some() {
             return error(ErrorCode::AccessDenied);
+        }
+        if let Some(review) = &flow.device_review {
+            return Redirect::to(&format!(
+                "/device-enrollment?reviewId={review}&error=upstream_login_failed"
+            ))
+            .into_response();
         }
         return Redirect::to(&format!(
             "/login?transaction={}&error=upstream_login_failed",
@@ -372,8 +390,9 @@ pub(super) async fn callback(
         {
             Ok(()) => super::account::html(
                 &engine,
-                "Identity linked",
-                "<p>You can now sign in using this identity provider.</p>",
+                "Company sign-in linked",
+                "<p class=\"muted\">You can now sign in with your company account. You can \
+                close this window.</p>",
             ),
             Err(_) => error(ErrorCode::AccessDenied),
         };
@@ -384,6 +403,7 @@ pub(super) async fn callback(
     }
     let replacement = URL_SAFE_NO_PAD.encode(replacement);
     let transaction = flow.authorization_transaction.clone();
+    let device_review = flow.device_review.clone();
     let provider_id = flow.provider.provider_id.clone();
     let (login_csrf, login_cookie) = (csrf.clone(), replacement.clone());
     match with_store(&engine, move |store| {
@@ -402,7 +422,11 @@ pub(super) async fn callback(
             &replacement,
             Some(&csrf),
             (login.expires_at - now) as u32,
-            Redirect::to(&format!("/consent?transaction={transaction}")).into_response(),
+            Redirect::to(&match &device_review {
+                Some(review) => format!("/device-enrollment?reviewId={review}"),
+                None => format!("/consent?transaction={transaction}"),
+            })
+            .into_response(),
         ),
         Err(_) => {
             tracing::warn!(%provider_id, "upstream OIDC linked-account login rejected");

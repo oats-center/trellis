@@ -45,6 +45,8 @@ pub(crate) struct OAuthEngine {
     nonces: Mutex<super::nonce::DpopNonces>,
     /// Installation TLS this listener serves, for the always-on user notice.
     generated_tls: std::sync::OnceLock<bool>,
+    /// Runtime connection used when a Portal approval provisions device storage.
+    operational: std::sync::OnceLock<async_nats::Client>,
 }
 
 /// Host nonce challenges are distinct from the library's protocol failures.
@@ -372,6 +374,15 @@ impl OAuthEngine {
         self.generated_tls.get().copied().unwrap_or(false)
     }
 
+    /// Provides the runtime connection Portal device approvals provision with.
+    pub(crate) fn serve_operational(&self, client: async_nats::Client) {
+        let _ = self.operational.set(client);
+    }
+
+    pub(super) fn operational(&self) -> Option<&async_nats::Client> {
+        self.operational.get()
+    }
+
     pub(crate) fn new(storage: OAuthStorage) -> Result<Self, AuthError> {
         let origin = url::Url::parse(&storage.authority.settings.oauth_origin)
             .map_err(|_| AuthError::Denied)?;
@@ -431,6 +442,7 @@ impl OAuthEngine {
             upstream_http,
             device_entries: FixedWindowRateLimiter::new(),
             generated_tls: std::sync::OnceLock::new(),
+            operational: std::sync::OnceLock::new(),
             nonces: Mutex::new(
                 super::nonce::DpopNonces::new(Instant::now())
                     .map_err(|_| AuthError::Unavailable)?,

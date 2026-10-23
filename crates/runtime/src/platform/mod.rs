@@ -109,6 +109,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         &context.config,
         &oauth.transport,
     ));
+    engine.serve_operational(context.trellis_nats.clone());
     let router = auth::oauth_router(
         engine.clone(),
         native.into_iter().chain(websocket).collect(),

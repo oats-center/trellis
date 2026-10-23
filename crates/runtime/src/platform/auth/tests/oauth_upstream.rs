@@ -865,7 +865,6 @@ staticPasswords:
             authorization.as_str(),
         )
         .env("TRELLIS_TEST_OIDC_ISSUER", issuer.as_str())
-        .env("TRELLIS_TEST_OIDC_CAPABILITY", &f.write)
         .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .kill_on_drop(true)
         .output();
@@ -949,6 +948,70 @@ staticPasswords:
         .unwrap();
     assert_eq!(consent["capabilities"][0]["capabilityId"], f.write);
     assert_eq!(consent["capabilities"][0]["available"], true);
+
+    // Company sign-in started from the device approval page, which has no OAuth
+    // transaction, returns there signed in: the review is then refused only for
+    // its code, not for a missing login.
+    let review = id();
+    let review_jar = Arc::new(reqwest::cookie::Jar::default());
+    let review_http = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .cookie_provider(review_jar.clone())
+        .add_root_certificate(reqwest::Certificate::from_pem(certificate.pem.as_bytes()).unwrap())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let inspect = |csrf: String| {
+        review_http
+            .post(format!("{origin}/portal/device-review/inspect"))
+            .header("Origin", &origin)
+            .form(&[
+                ("csrf", csrf),
+                ("review_id", review.clone()),
+                ("code", "ABCDEFGH".to_owned()),
+            ])
+            .send()
+    };
+    let page = review_http
+        .get(format!("{origin}/device-enrollment?reviewId={review}"))
+        .send()
+        .await
+        .unwrap();
+    assert!(page.status().is_success());
+    let review_csrf = review_jar
+        .cookies(&url::Url::parse(&origin).unwrap())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split("; ")
+        .find_map(|value| value.strip_prefix("__Host-trellis-portal-csrf="))
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        inspect(review_csrf.clone()).await.unwrap().status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let started = review_http
+        .get(format!(
+            "{origin}/portal/oidc/{provider}/begin?review={review}"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(started.status(), reqwest::StatusCode::SEE_OTHER);
+    let upstream_review = url::Url::parse(started.headers()["location"].to_str().unwrap()).unwrap();
+    let returned = dex_login(&review_http, upstream_review, &issuer, &callback).await;
+    let finished = review_http.get(returned).send().await.unwrap();
+    assert_eq!(finished.status(), reqwest::StatusCode::SEE_OTHER);
+    assert_eq!(
+        finished.headers()["location"].to_str().unwrap(),
+        format!("/device-enrollment?reviewId={review}")
+    );
+    assert_eq!(
+        inspect(review_csrf).await.unwrap().status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
     let portal = url::Url::parse(&origin).unwrap();
     let cookies = jar.cookies(&portal).unwrap();
     let csrf = cookies

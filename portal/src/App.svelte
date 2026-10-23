@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Mark from "./Mark.svelte";
 
   interface Capability {
     capabilityId: string;
@@ -38,11 +39,100 @@
     displayName: string;
   }
 
+  /** One consent row. */
+  interface Choice {
+    id: string;
+    title: string;
+    description: string;
+    consequence: string;
+    members: string[];
+    administrative: boolean;
+    required: boolean;
+    available: boolean;
+  }
+
+  interface Group {
+    key: string;
+    label: string;
+    description: string;
+    admin: boolean;
+    choices: Choice[];
+  }
+
   const query = new URL(window.location.href).searchParams;
   const transaction = query.get("transaction") ?? "";
   const login = window.location.pathname === "/login";
   const device = window.location.pathname === "/device";
   const deviceComplete = window.location.pathname === "/device/complete";
+  const enrollment = window.location.pathname === "/device-enrollment";
+  const enrollmentComplete =
+    window.location.pathname === "/device-enrollment/complete";
+  const reviewId = query.get("reviewId") ?? "";
+
+  interface EnrollmentReview {
+    reviewId: string;
+    state: string;
+    revision: string;
+    expiresAt: string;
+    participantId: string;
+    deviceType: string;
+    deviceName: string;
+    instanceId: string;
+    canDecide: boolean;
+  }
+
+  // The code survives the sign-in round trip so people type it once.
+  const codeKey = `trellis.device-review.${reviewId}`;
+  let enrollmentCode = $state(sessionStorage.getItem(codeKey) ?? "");
+  let enrollmentReview = $state.raw<EnrollmentReview | null>(null);
+  let enrollmentStep = $state<"code" | "login" | "review">("code");
+  let enrollmentError = $state("");
+  let enrollmentBusy = $state(false);
+  const decisionKey = crypto.randomUUID().replaceAll("-", "").slice(0, 26);
+
+  function readableName(name: string): string {
+    if (!/^[A-Za-z][a-zA-Z0-9]*(\.[A-Za-z][a-zA-Z0-9]*)*$/.test(name))
+      return name;
+    const words = (name.split(".").at(-1) ?? name)
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .toLowerCase();
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
+  async function inspectEnrollment(): Promise<void> {
+    if (enrollmentBusy) return;
+    enrollmentBusy = true;
+    enrollmentError = "";
+    sessionStorage.setItem(codeKey, enrollmentCode);
+    try {
+      const response = await fetch("/portal/device-review/inspect", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+        body: new URLSearchParams({
+          csrf,
+          review_id: reviewId,
+          code: enrollmentCode,
+        }),
+      });
+      if (response.status === 401) {
+        enrollmentStep = "login";
+        return;
+      }
+      if (response.status === 403) {
+        enrollmentError =
+          "That code doesn't match this request. Check the device and try again.";
+        return;
+      }
+      if (!response.ok) throw new Error("unavailable");
+      enrollmentReview = await response.json();
+      enrollmentStep = "review";
+    } catch {
+      enrollmentError = "This request isn't available right now. Try again.";
+    } finally {
+      enrollmentBusy = false;
+    }
+  }
   const csrf =
     document.cookie
       .split(";")
@@ -50,38 +140,173 @@
       .find((cookie) => cookie.startsWith("__Host-trellis-portal-csrf="))
       ?.slice("__Host-trellis-portal-csrf=".length) ?? "";
   let view = $state.raw<Consent | null>(null);
-  let selectedCapabilities = $state<string[]>([]);
+  let selected = $state<string[]>([]);
+  let expanded = $state<string[]>([]);
   let confirming = $state(false);
-  let error = $state("");
+  let error = $state(false);
   let providers = $state.raw<Provider[]>([]);
-  let providerError = $state("");
+  let providerError = $state(false);
   // The server marks pages it serves with Trellis-generated certificates.
   const generatedTls =
     document.documentElement.hasAttribute("data-generated-tls");
-  let blocked = $derived(
-    view?.capabilities.some((item) => item.required && !item.available),
-  );
-  let application = $derived(
-    view?.capabilities.filter((item) => !item.administrative) ?? [],
-  );
-  let administration = $derived(
-    view?.capabilities.filter((item) => item.administrative) ?? [],
-  );
+
+  // "trellis.auth.v1:users.edit" → "users": capabilities are named area.action,
+  // so people choose by area. A capability group is its own row.
+  function areaOf(capabilityId: string): string {
+    const local = capabilityId.slice(capabilityId.indexOf(":") + 1);
+    return local.split(".")[0] ?? local;
+  }
+
+  function sentence(name: string): string {
+    const words = name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+    return words.charAt(0).toUpperCase() + words.slice(1);
+  }
+
+  function toChoice(capability: Capability): Choice {
+    return {
+      id: capability.capabilityId,
+      title: capability.title,
+      description: capability.description,
+      consequence: capability.consequence,
+      members: capability.members?.map((member) => member.title) ?? [],
+      administrative: capability.administrative,
+      required: capability.required,
+      available: capability.available,
+    };
+  }
+
+  let groups = $derived.by((): Group[] => {
+    if (!view) return [];
+    const byKey = new Map<string, Group>();
+    for (const capability of view.capabilities) {
+      if (capability.administrative) continue;
+      const api = capability.capabilityId.split(":")[0] ?? "";
+      const key =
+        capability.kind === "group"
+          ? capability.capabilityId
+          : `${api}:${areaOf(capability.capabilityId)}`;
+      let group = byKey.get(key);
+      if (!group) {
+        group = {
+          key,
+          label:
+            capability.kind === "group"
+              ? capability.title
+              : sentence(areaOf(capability.capabilityId)),
+          description:
+            capability.kind === "group" ? capability.description : "",
+          admin: false,
+          choices: [],
+        };
+        byKey.set(key, group);
+      }
+      group.choices.push(toChoice(capability));
+    }
+    const result = [...byKey.values()].sort((left, right) =>
+      left.label.localeCompare(right.label),
+    );
+    const administration = view.capabilities.filter(
+      (capability) => capability.administrative,
+    );
+    if (administration.length) {
+      result.push({
+        key: "administration",
+        label: "Manage this Trellis",
+        description: "Change how this Trellis installation itself is run.",
+        admin: true,
+        choices: administration.map(toChoice),
+      });
+    }
+    return result;
+  });
   let selectedAdministration = $derived(
-    administration.filter(
-      (item) =>
-        item.available && selectedCapabilities.includes(item.capabilityId),
-    ),
+    groups
+      .flatMap((group) => group.choices)
+      .filter(
+        (choice) =>
+          choice.administrative &&
+          choice.available &&
+          selected.includes(choice.id),
+      ),
   );
   let needsConfirmation = $derived(
     (view?.confirmAdministration ?? false) && selectedAdministration.length > 0,
   );
+  // Administration is never selected in bulk.
+  let optional = $derived(
+    groups
+      .flatMap((group) => group.choices)
+      .filter(
+        (choice) =>
+          !choice.required && choice.available && !choice.administrative,
+      ),
+  );
+  let blocked = $derived(
+    groups.some((group) =>
+      group.choices.some((choice) => choice.required && !choice.available),
+    ),
+  );
+  let allOptionalSelected = $derived(
+    optional.every((choice) => selected.includes(choice.id)),
+  );
+  let appName = $derived(view ? (view.clientName ?? view.clientId) : "");
+
+  function setGroup(group: Group, on: boolean): void {
+    const ids = group.choices
+      .filter((choice) => !choice.required && choice.available)
+      .map((choice) => choice.id);
+    selected = on
+      ? [...new Set([...selected, ...ids])]
+      : selected.filter((id) => !ids.includes(id));
+  }
+
+  function groupState(group: Group): "all" | "some" | "none" {
+    const ids = group.choices
+      .filter((choice) => !choice.required && choice.available)
+      .map((choice) => choice.id);
+    const count = ids.filter((id) => selected.includes(id)).length;
+    if (count === ids.length) return "all";
+    return count ? "some" : "none";
+  }
+
+  function indeterminate(node: HTMLInputElement, value: boolean) {
+    node.indeterminate = value;
+    return {
+      update(next: boolean) {
+        node.indeterminate = next;
+      },
+    };
+  }
 
   onMount(() => {
+    if (enrollmentComplete) {
+      sessionStorage.removeItem(codeKey);
+      return;
+    }
+    if (enrollment) {
+      if (!reviewId || !csrf) {
+        error = true;
+        return;
+      }
+      if (
+        query.get("error") === "login_failed" ||
+        query.get("error") === "upstream_login_failed"
+      )
+        enrollmentStep = "login";
+      else if (enrollmentCode) void inspectEnrollment();
+      void fetch("/portal/providers", {
+        credentials: "same-origin",
+        cache: "no-store",
+      })
+        .then(async (response) => {
+          if (response.ok) providers = await response.json();
+        })
+        .catch(() => {});
+      return;
+    }
     if (deviceComplete || (device && csrf)) return;
     if (!transaction || !csrf) {
-      error =
-        "This authorization request is unavailable. Return to the application and start sign-in again.";
+      error = true;
       return;
     }
     const controller = new AbortController();
@@ -97,9 +322,7 @@
           if (!controller.signal.aborted) providers = result;
         })
         .catch(() => {
-          if (!controller.signal.aborted)
-            providerError =
-              "Company sign-in is temporarily unavailable. You can still use a local Trellis account.";
+          if (!controller.signal.aborted) providerError = true;
         });
       return () => controller.abort();
     }
@@ -112,17 +335,17 @@
         if (!response.ok) throw new Error("authorization_unavailable");
         const result: Consent = await response.json();
         if (!controller.signal.aborted) {
-          selectedCapabilities = result.capabilities
+          selected = result.capabilities
             .filter((item) => item.selected)
             .map((item) => item.capabilityId);
           view = result;
+          // A short request is easier to review fully open.
+          if (result.capabilities.length <= 6)
+            expanded = groups.map((group) => group.key);
         }
       })
       .catch(() => {
-        if (!controller.signal.aborted) {
-          error =
-            "This authorization request is unavailable or has expired. Return to the application and start sign-in again.";
-        }
+        if (!controller.signal.aborted) error = true;
       });
     return () => controller.abort();
   });
@@ -130,15 +353,13 @@
 
 <svelte:head
   ><title
-    >{device || deviceComplete
-      ? "Device verification"
+    >{device || deviceComplete || enrollment || enrollmentComplete
+      ? "Connect a device"
       : login
         ? "Sign in"
-        : "Review access"} · Trellis</title
+        : "Allow access"} · Trellis</title
   ></svelte:head
 >
-
-<header><strong>Trellis</strong><span>Authorization</span></header>
 
 {#if generatedTls}
   <p class="tls-notice" role="status">
@@ -147,38 +368,187 @@
   </p>
 {/if}
 
+<header class="brand"><Mark size={22} /><span>Trellis</span></header>
+
 {#if error}
-  <main>
-    <h1>Authorization unavailable</h1>
-    <p role="alert">{error}</p>
+  <main class="card narrow center">
+    <h1>This sign-in link has expired</h1>
+    <p class="muted" role="alert">Go back to the app and sign in again.</p>
+  </main>
+{:else if enrollmentComplete}
+  {@const approved = query.get("decision") === "approved"}
+  <main class="card narrow center">
+    <span class={["status-icon", approved ? "ok" : "denied"]} aria-hidden="true"
+    ></span>
+    <h1>{approved ? "Device approved" : "Request rejected"}</h1>
+    <p class="muted">
+      {approved
+        ? "The device can connect now. You can close this window."
+        : "The device won't be able to connect. You can close this window."}
+    </p>
+  </main>
+{:else if enrollment}
+  <main class="card narrow">
+    <h1>Approve a device</h1>
+    {#if query.get("error") === "not_allowed"}
+      <p class="alert error" role="alert">
+        Your account can't approve devices. Ask an administrator.
+      </p>
+    {:else if query.get("error") === "changed"}
+      <p class="alert" role="alert">
+        This request changed or was already decided. Check it again.
+      </p>
+    {:else if query.get("error") === "unavailable" || query.get("error") === "invalid"}
+      <p class="alert error" role="alert">Something went wrong. Try again.</p>
+    {/if}
+    {#if enrollmentStep === "review" && enrollmentReview}
+      {@const pending = enrollmentReview.state === "pending"}
+      <p class="muted">Check that this is the device in front of you.</p>
+      <dl class="device-details">
+        <dt>Device</dt>
+        <dd>{enrollmentReview.deviceName}</dd>
+        <dt>Type</dt>
+        <dd>{readableName(enrollmentReview.deviceType)}</dd>
+        <dt>Software</dt>
+        <dd>{readableName(enrollmentReview.participantId)}</dd>
+        <dt>Code</dt>
+        <dd><code>{enrollmentCode.toUpperCase()}</code></dd>
+      </dl>
+      {#if !pending}
+        <p class="alert" role="status">
+          {enrollmentReview.state === "approved"
+            ? "This device is already approved."
+            : enrollmentReview.state === "rejected"
+              ? "This request was rejected."
+              : "This request has expired. Start again on the device."}
+        </p>
+      {:else if !enrollmentReview.canDecide}
+        <p class="alert" role="status">
+          Your account can't approve devices. Ask an administrator to open this
+          link.
+        </p>
+      {:else}
+        <form method="post" action="/portal/device-review/decide">
+          <input type="hidden" name="csrf" value={csrf} />
+          <input type="hidden" name="review_id" value={reviewId} />
+          <input type="hidden" name="code" value={enrollmentCode} />
+          <input
+            type="hidden"
+            name="revision"
+            value={enrollmentReview.revision}
+          />
+          <input type="hidden" name="idempotency_key" value={decisionKey} />
+          <div class="actions">
+            <button name="decision" value="declined" type="submit"
+              >Reject</button
+            >
+            <button
+              name="decision"
+              value="approved"
+              type="submit"
+              class="primary">Approve</button
+            >
+          </div>
+        </form>
+      {/if}
+    {:else if enrollmentStep === "login"}
+      <p class="muted">Sign in to approve this device.</p>
+      {#if query.get("error") === "login_failed"}
+        <p class="alert error" role="alert">
+          That username and password didn't match. Try again.
+        </p>
+      {/if}
+      {#if query.get("error") === "upstream_login_failed"}
+        <p class="alert error" role="alert">
+          Company sign-in wasn't completed. Try again.
+        </p>
+      {/if}
+      {#if providers.length}
+        <div class="providers">
+          {#each providers as provider (provider.providerId)}
+            <a
+              class="button block"
+              href={`/portal/oidc/${encodeURIComponent(provider.providerId)}/begin?review=${encodeURIComponent(reviewId)}`}
+            >
+              Continue with {provider.displayName}
+            </a>
+          {/each}
+        </div>
+        <p class="divider"><span>or</span></p>
+      {/if}
+      <form method="post" action="/portal/device-review/login">
+        <input type="hidden" name="csrf" value={csrf} />
+        <input type="hidden" name="review_id" value={reviewId} />
+        <label class="field" for="enrollment-username">Username</label>
+        <input
+          id="enrollment-username"
+          name="username"
+          type="text"
+          autocomplete="username"
+          autocapitalize="none"
+          spellcheck="false"
+          required
+        />
+        <label class="field" for="enrollment-password">Password</label>
+        <input
+          id="enrollment-password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <button class="primary block" type="submit">Sign in</button>
+      </form>
+    {:else}
+      <p class="muted">Enter the code shown on the device.</p>
+      <form
+        onsubmit={(event) => {
+          event.preventDefault();
+          void inspectEnrollment();
+        }}
+      >
+        <label class="field" for="enrollment-code">Code</label>
+        <input
+          id="enrollment-code"
+          class="code-input"
+          type="text"
+          bind:value={enrollmentCode}
+          maxlength="8"
+          autocomplete="off"
+          autocapitalize="characters"
+          spellcheck="false"
+          required
+        />
+        {#if enrollmentError}<p class="alert error" role="alert">
+            {enrollmentError}
+          </p>{/if}
+        <button
+          class="primary block"
+          type="submit"
+          disabled={enrollmentBusy || enrollmentCode.trim().length !== 8}
+          >Continue</button
+        >
+      </form>
+    {/if}
   </main>
 {:else if deviceComplete}
-  <main>
-    <h1>
-      {query.get("decision") === "approved"
-        ? "Device access approved"
-        : "Device access denied"}
-    </h1>
-    <p>
-      Return to your device or application to continue. You can close this page.
-    </p>
+  {@const approved = query.get("decision") === "approved"}
+  <main class="card narrow center">
+    <span class={["status-icon", approved ? "ok" : "denied"]} aria-hidden="true"
+    ></span>
+    <h1>{approved ? "Your device is connected" : "Request denied"}</h1>
+    <p class="muted">You can close this window and return to your device.</p>
   </main>
 {:else if device}
-  <main class="login">
-    <h1>Verify your device</h1>
-    <p>
-      Enter the code displayed by the device or application you are signing in
-      to.
-    </p>
-    <p class="unavailable">
-      Do not enter a code sent by someone else. You will review the actual
-      application and its requested access before approving anything.
-    </p>
+  <main class="card narrow">
+    <h1>Connect a device</h1>
+    <p class="muted">Enter the code shown on your device.</p>
     <form method="post" action="/portal/device">
       <input type="hidden" name="csrf" value={csrf} />
-      <label class="field" for="user-code">Device code</label>
+      <label class="field" for="user-code">Code</label>
       <input
         id="user-code"
+        class="code-input"
         name="user_code"
         type="text"
         value={query.get("user_code") ?? ""}
@@ -188,44 +558,42 @@
         spellcheck="false"
         required
       />
-      <button class="primary" type="submit" disabled={!csrf}
-        >Review device request</button
+      <button class="primary block" type="submit" disabled={!csrf}
+        >Continue</button
       >
     </form>
+    <p class="hint">Only enter a code from a device you are setting up.</p>
   </main>
 {:else if login}
-  <main class="login">
-    <h1>Sign in to Trellis</h1>
-    <p class="muted">
-      Your account determines which access you can approve. The application
-      never receives your password.
-    </p>
+  <main class="card narrow">
+    <h1>Sign in</h1>
+    <p class="muted">Use your Trellis account to continue.</p>
     {#if query.get("error") === "login_failed"}
-      <p class="unavailable" role="alert">
-        Sign-in failed. Check your username and password, or contact your
-        Trellis administrator.
+      <p class="alert error" role="alert">
+        That username and password didn't match. Try again.
       </p>
     {/if}
     {#if query.get("error") === "upstream_login_failed"}
-      <p class="unavailable" role="alert">
-        Company sign-in was not completed. Try again, or use a local Trellis
-        account.
+      <p class="alert error" role="alert">
+        Company sign-in wasn't completed. Try again.
       </p>
     {/if}
     {#if providers.length}
-      <section aria-label="Company sign-in">
-        <h2>Company account</h2>
+      <div class="providers">
         {#each providers as provider (provider.providerId)}
           <a
+            class="button block"
             href={`/portal/oidc/${encodeURIComponent(provider.providerId)}/begin?transaction=${encodeURIComponent(transaction)}`}
           >
             Continue with {provider.displayName}
           </a>
         {/each}
-      </section>
-      <h2>Local Trellis account</h2>
+      </div>
+      <p class="divider"><span>or</span></p>
     {/if}
-    {#if providerError}<p role="status">{providerError}</p>{/if}
+    {#if providerError}<p class="alert" role="status">
+        Company sign-in is unavailable right now.
+      </p>{/if}
     <form method="post" action="/portal/login">
       <input type="hidden" name="csrf" value={csrf} />
       <input type="hidden" name="request_id" value={transaction} />
@@ -247,215 +615,227 @@
         autocomplete="current-password"
         required
       />
-      <button class="primary" type="submit" disabled={!csrf || !transaction}
-        >Sign in</button
+      <button
+        class="primary block"
+        type="submit"
+        disabled={!csrf || !transaction}>Sign in</button
       >
     </form>
-    <footer>
-      You'll review the application's identity and requested access before
-      approving anything.
-    </footer>
   </main>
 {:else if view}
-  <main>
+  <main class="card consent">
+    <div class="app">
+      <span class="app-icon" aria-hidden="true"
+        >{appName.charAt(0).toUpperCase()}</span
+      >
+      <div>
+        <h1>{appName} wants to use your account</h1>
+        <p class="muted">
+          Signed in as <strong>{view.username ?? view.principalId}</strong>
+        </p>
+      </div>
+    </div>
+
     {#if query.get("error") === "consent_changed"}
-      <p class="unavailable" role="alert">
-        The requested access changed while you were reviewing it. Review the
-        current information below before making a new decision.
+      <p class="alert" role="alert">
+        This request changed while you were reviewing it. Check it again.
       </p>
     {/if}
-    <p class="muted">Signed in as {view.username ?? view.principalId}</p>
-    <h1>Allow {view.clientName ?? view.clientId} to access Trellis?</h1>
-    <section class="identity" aria-label="Application identity">
-      <strong
-        >{view.registered ? "Registered client" : "Unregistered client"}</strong
-      >
-      <p>
-        {view.registered
-          ? "A Trellis administrator registered this client. Review the requested access before approving."
-          : "The publisher claims this name and metadata. A Trellis administrator has not reviewed this application."}
+    {#if !view.registered}
+      <p class="alert warn">
+        <strong>Unverified app.</strong> Your administrator hasn't approved this app.
+        Only continue if you trust it.
       </p>
-      <dl>
-        <dt>Client ID</dt>
-        <dd><code>{view.clientId}</code></dd>
-        {#if view.redirectUri}<dt>Actual callback</dt>
-          <dd><code>{view.redirectUri}</code></dd>{/if}
-        {#if view.deviceUserCode}<dt>Device code</dt>
-          <dd><code>{view.deviceUserCode}</code></dd>{/if}
-      </dl>
-    </section>
+    {/if}
+    {#if blocked}
+      <p class="alert error" role="status">
+        Your account is missing access this app needs. Ask an administrator.
+      </p>
+    {/if}
+
     <form method="post" action="/portal/approve">
       <input type="hidden" name="csrf" value={csrf} />
       <input type="hidden" name="transaction" value={transaction} />
       <input type="hidden" name="presentation" value={view.presentationId} />
+      <!-- Submitted from state so collapsed groups still send their choices. -->
+      {#each view.capabilities as capability (capability.capabilityId)}
+        {#if capability.available && selected.includes(capability.capabilityId)}
+          <input
+            type="hidden"
+            name="approved"
+            value={capability.capabilityId}
+          />
+        {/if}
+      {/each}
+
       {#if view.deviceUserCode}
-        <label class="remember"
+        <div class="device-code">
+          <span class="muted">Code</span>
+          <code>{view.deviceUserCode}</code>
+        </div>
+        <label class="check"
           ><input
             type="checkbox"
             name="confirm_device"
             value={view.deviceUserCode}
             required
-          /><span
-            >This code matches the device or application I am signing in to.
-            Nobody sent me this code.</span
-          ></label
+          /><span>This matches the code on my device</span></label
         >
       {/if}
-      <div class="actions" aria-label="Access selection">
-        <button
-          type="button"
-          onclick={() => {
-            if (!view) return;
-            // Administration is never selected in bulk.
-            selectedCapabilities = view.capabilities
-              .filter(
-                (item) =>
-                  item.available && (item.required || !item.administrative),
-              )
-              .map((item) => item.capabilityId);
-          }}>Select all</button
-        >
-        <button
-          type="button"
-          onclick={() => {
-            if (!view) return;
-            selectedCapabilities = view.capabilities
-              .filter((item) => item.required && item.available)
-              .map((item) => item.capabilityId);
-          }}>Unselect all</button
-        >
-      </div>
-      {#snippet choice(capability: Capability)}
-        <div class="choice">
-          <input
-            id={capability.capabilityId}
-            type="checkbox"
-            name="approved"
-            value={capability.capabilityId}
-            checked={selectedCapabilities.includes(capability.capabilityId)}
-            onchange={(event) => {
-              selectedCapabilities = event.currentTarget.checked
-                ? [...selectedCapabilities, capability.capabilityId]
-                : selectedCapabilities.filter(
-                    (id) => id !== capability.capabilityId,
-                  );
-            }}
-            disabled={capability.required || !capability.available}
-          />
-          <div>
-            <div class="choice-title">
-              <label for={capability.capabilityId}
-                ><strong>{capability.title}</strong></label
-              ><span class="requirement"
-                >{capability.required ? "Required" : "Optional"}</span
-              >
-            </div>
-            <code>{capability.capabilityId}</code>
-            <p>{capability.description}</p>
-            {#if capability.members?.length}<p>
-                <strong>Includes:</strong>
-                {capability.members.map((member) => member.title).join(", ")}
-              </p>{/if}
-            {#if capability.consequence}<p>
-                <strong>Effect:</strong>
-                {capability.consequence}
-              </p>{/if}
-            {#if !capability.available}<p class="unavailable">
-                {capability.administrative && !view?.registered
-                  ? "Only applications an administrator registered can manage Trellis."
-                  : "Your account does not currently have this capability."}
-              </p>{/if}
-            {#if capability.required && capability.available}<input
-                type="hidden"
-                name="approved"
-                value={capability.capabilityId}
-              />{/if}
-          </div>
-        </div>
-      {/snippet}
+
       <div hidden={confirming}>
-        {#if application.length}
-          <fieldset>
-            <legend>Application capabilities</legend>
-            <p class="muted">
-              Required capabilities are necessary to continue. Choose optional
-              capabilities independently.
-            </p>
-            {#each application as capability (capability.capabilityId)}
-              {@render choice(capability)}
-            {/each}
-          </fieldset>
-        {/if}
-        {#if administration.length}
-          <fieldset>
-            <legend>Manage this Trellis</legend>
-            <p class="muted">
-              These capabilities administer this Trellis installation itself,
-              not just the application's own data.
-            </p>
-            {#each administration as capability (capability.capabilityId)}
-              {@render choice(capability)}
-            {/each}
-          </fieldset>
-        {/if}
-        <label class="remember"
+        <div class="section-head">
+          <h2>Allow it to</h2>
+          {#if optional.length}
+            <button
+              type="button"
+              class="link"
+              onclick={() => {
+                const select = !allOptionalSelected;
+                for (const group of groups)
+                  if (!group.admin) setGroup(group, select);
+              }}>{allOptionalSelected ? "Clear all" : "Select all"}</button
+            >
+          {/if}
+        </div>
+
+        <ul class="groups">
+          {#each groups as group (group.key)}
+            {@const state = groupState(group)}
+            {@const open = expanded.includes(group.key)}
+            {@const choosable = group.choices.some(
+              (choice) => !choice.required && choice.available,
+            )}
+            {@const granted = group.choices.filter(
+              (choice) => choice.available && selected.includes(choice.id),
+            ).length}
+            <li
+              class={["group", group.admin && "admin"]}
+              role="group"
+              aria-label={group.label}
+            >
+              <div class="group-head">
+                <input
+                  type="checkbox"
+                  aria-label={`Allow all: ${group.label}`}
+                  checked={granted > 0 && state === "all"}
+                  use:indeterminate={state === "some" ||
+                    (!choosable &&
+                      granted > 0 &&
+                      granted < group.choices.length)}
+                  disabled={!choosable}
+                  onchange={(event) =>
+                    setGroup(group, event.currentTarget.checked)}
+                />
+                <button
+                  type="button"
+                  class="group-toggle"
+                  aria-expanded={open}
+                  onclick={() =>
+                    (expanded = open
+                      ? expanded.filter((key) => key !== group.key)
+                      : [...expanded, group.key])}
+                >
+                  <span class="group-name"
+                    >{group.label}{#if group.description}<span
+                        class="group-desc">{group.description}</span
+                      >{/if}</span
+                  >
+                  <span class="count">{granted} of {group.choices.length}</span>
+                  <span class="chevron" aria-hidden="true"></span>
+                </button>
+              </div>
+              {#if open}
+                <ul class="choices">
+                  {#each group.choices as choice (choice.id)}
+                    <li class={["choice", !choice.available && "unavailable"]}>
+                      <input
+                        id={`choice-${choice.id}`}
+                        type="checkbox"
+                        checked={choice.available &&
+                          selected.includes(choice.id)}
+                        disabled={choice.required || !choice.available}
+                        onchange={(event) => {
+                          selected = event.currentTarget.checked
+                            ? [...selected, choice.id]
+                            : selected.filter((id) => id !== choice.id);
+                        }}
+                      />
+                      <label for={`choice-${choice.id}`}>
+                        <span class="choice-title"
+                          >{choice.title}
+                          {#if !choice.available}<span class="tag"
+                              >Not available to you</span
+                            >{:else if choice.required}<span class="tag"
+                              >Required</span
+                            >{/if}</span
+                        >
+                        <span class="choice-desc">{choice.description}</span>
+                        {#if choice.members.length}<span class="choice-desc"
+                            >Includes {choice.members.join(", ")}</span
+                          >{/if}
+                        {#if !choice.available && choice.administrative && !view.registered}<span
+                            class="choice-desc"
+                            >Only apps your administrator registered can manage
+                            Trellis.</span
+                          >{/if}
+                      </label>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+
+        <label class="check remember"
           ><input type="checkbox" name="remember" value="true" checked /><span
-            >Remember these choices for this account and application.<br
-            /><small
-              >Future capability additions require new approval, and permission
-              to manage Trellis is never remembered. You can revoke access
-              later.</small
-            ></span
+            >Remember my choices for this app</span
           ></label
         >
       </div>
+
       {#if confirming}
-        <section class="administration" aria-labelledby="administration-title">
-          <h2 id="administration-title">
-            Allow {view.clientName ?? view.clientId} to manage this Trellis?
-          </h2>
+        <section
+          class="alert warn administration"
+          aria-labelledby="administration-title"
+        >
+          <h2 id="administration-title">Let {appName} manage this Trellis?</h2>
           <p>
-            This application is asking to manage this Trellis installation
-            itself. That is a rare and exceptional request: most applications
-            never need it. Approve it only if you expected it and trust this
-            application.
+            Most apps never need this. Only allow it if you expected the request
+            and trust this app.
           </p>
           <ul>
-            {#each selectedAdministration as capability (capability.capabilityId)}
+            {#each selectedAdministration as choice (choice.id)}
               <li>
-                <strong>{capability.title}</strong>
-                {#if capability.consequence}— {capability.consequence}{/if}
+                <strong>{choice.title}</strong>{#if choice.consequence}: {choice.consequence}{/if}
               </li>
             {/each}
           </ul>
           {#if view.peerApproval}<p>
-              Another administrator must also approve this before the
-              application receives it.
+              Another administrator must also approve this before the app gets
+              it.
             </p>{/if}
-          <label class="remember"
+          <label class="check"
             ><input
               type="checkbox"
               name="confirm_administration"
               value="true"
               required
             /><span
-              >I understand this application will be able to manage this Trellis
-              installation.</span
+              >I understand this app will be able to manage this Trellis</span
             ></label
           >
         </section>
       {/if}
-      {#if blocked}<p class="unavailable" role="status">
-          Required access is unavailable. You cannot authorize this application
-          with this account.
-        </p>{/if}
+
       <div class="actions">
         {#if confirming}<button
             type="button"
             onclick={() => (confirming = false)}>Back</button
           >{/if}
         <button name="decision" value="deny" type="submit" formnovalidate
-          >Deny access</button
+          >Cancel</button
         >
         <button
           name="decision"
@@ -469,23 +849,28 @@
               event.preventDefault();
               confirming = true;
             }
-          }}
-          >{confirming
-            ? "Allow management of Trellis"
-            : "Authorize application"}</button
+          }}>{confirming ? "Allow management" : "Allow"}</button
         >
       </div>
     </form>
-    <footer>
-      Trellis grants only the access approved here, while your account still
-      holds that access.
-    </footer>
+
+    <details class="app-details">
+      <summary>App details</summary>
+      <dl>
+        <dt>App ID</dt>
+        <dd><code>{view.clientId}</code></dd>
+        {#if view.redirectUri}<dt>Returns to</dt>
+          <dd><code>{view.redirectUri}</code></dd>{/if}
+        <dt>Status</dt>
+        <dd>
+          {view.registered ? "Registered by your administrator" : "Unverified"}
+        </dd>
+      </dl>
+    </details>
   </main>
 {:else}
-  <main aria-busy="true">
-    <h1>Review application access</h1>
-    <p class="muted" role="status">
-      Loading the client's identity, callback, and your current capabilities…
-    </p>
+  <main class="card narrow center" aria-busy="true">
+    <span class="spinner" aria-hidden="true"></span>
+    <p class="muted" role="status">Loading…</p>
   </main>
 {/if}

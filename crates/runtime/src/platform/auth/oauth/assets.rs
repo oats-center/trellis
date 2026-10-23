@@ -11,6 +11,16 @@ use rust_embed::Embed;
 #[folder = "generated/portal"]
 struct PortalAssets;
 
+/// The portal stylesheet, so server-rendered Portal pages match the app.
+pub(super) fn stylesheet() -> Option<String> {
+    let index = PortalAssets::get("index.html")?;
+    let index = std::str::from_utf8(&index.data).ok()?;
+    let start = index.find("rel=\"stylesheet\"")?;
+    let tag = &index[index[..start].rfind('<')?..];
+    let href = tag.split("href=\"").nth(1)?.split('"').next()?;
+    href.starts_with("/portal-assets/").then(|| href.to_owned())
+}
+
 pub(super) fn asset(path: &str) -> Response {
     if path.starts_with(['/', '.'])
         || path.contains('\\')

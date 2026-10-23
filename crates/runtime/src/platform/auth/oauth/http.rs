@@ -129,6 +129,20 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
             }),
         )
         .route("/portal/device", post(super::device::begin))
+        .route("/device-enrollment", get(super::device::page))
+        .route("/device-enrollment/complete", get(super::device::page))
+        .route(
+            "/portal/device-review/inspect",
+            post(super::enrollment::portal_inspect),
+        )
+        .route(
+            "/portal/device-review/decide",
+            post(super::enrollment::portal_decide),
+        )
+        .route(
+            "/portal/device-review/login",
+            post(super::enrollment::portal_login),
+        )
         .route("/login", get(login_page))
         .route("/consent", get(consent_page))
         .route(

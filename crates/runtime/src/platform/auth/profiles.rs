@@ -102,15 +102,23 @@ pub(super) struct Profile {
 }
 
 pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, AuthError> {
+    // Without a stored name, people recognise a local account by its username.
+    let username: Option<String> = connection
+        .query_row(
+            "SELECT normalized_username FROM auth_local_credentials WHERE principal_id=?1",
+            [principal],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(connection
         .query_row(
-            "SELECT coalesce(display_name,principal_id),given_name,family_name,\
+            "SELECT coalesce(display_name,?2),given_name,family_name,\
             display_name_source,given_name_source,family_name_source,email,\
             email_verified,email_source,email_provider_id,oidc_picture_url,\
             avatar_override_url,gravatar_enabled,version \
             FROM auth_user_profiles \
             WHERE principal_id=?1",
-            [principal],
+            rusqlite::params![principal, username.as_deref().unwrap_or(principal)],
             |row| {
                 Ok(Profile {
                     display_name: row.get(0)?,
@@ -132,7 +140,7 @@ pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, 
         )
         .optional()?
         .unwrap_or(Profile {
-            display_name: principal.to_owned(),
+            display_name: username.unwrap_or_else(|| principal.to_owned()),
             given_name: None,
             family_name: None,
             display_source: "default".into(),

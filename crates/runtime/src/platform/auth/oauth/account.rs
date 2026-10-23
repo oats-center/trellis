@@ -790,24 +790,24 @@ pub(super) async fn page(
     };
     let (title, body) = if kind == "reset" {
         (
-            "Reset password",
+            "Set a new password",
             format!(
-                r#"<form method="post" action="/portal/account/reset"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label>New password <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="4096" required></label><button>Reset password and sign out existing sessions</button></form>"#
+                r#"<p class="muted">Choose a new password. You'll be signed out everywhere else.</p><form method="post" action="/portal/account/reset"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label class="field" for="password">New password</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="4096" required><p class="hint">At least 12 characters.</p><button class="primary block">Set password</button></form>"#
             ),
         )
     } else {
         match signed_in {
             Some(principal) if principal == action.target => (
-                "Link sign-in identity",
+                "Link company sign-in",
                 format!(
-                    r#"<form method="post" action="/portal/account/link"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button>Continue to identity provider</button></form>"#
+                    r#"<p class="muted">Add your company sign-in to this account so you can use it next time.</p><form method="post" action="/portal/account/link"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button class="primary block">Continue</button></form>"#
                 ),
             ),
             Some(_) => return error(ErrorCode::AccessDenied),
             None => (
-                "Sign in to link an identity",
+                "Sign in",
                 format!(
-                    r#"<form method="post" action="/portal/account/login"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form>"#
+                    r#"<p class="muted">Sign in to the account you want to link.</p><form method="post" action="/portal/account/login"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label class="field" for="username">Username</label><input id="username" name="username" autocomplete="username" required><label class="field" for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required><button class="primary block">Sign in</button></form>"#
                 ),
             ),
         }
@@ -888,9 +888,9 @@ pub(super) async fn submit(
             Ok(token) => {
                 let mut response = html(
                     &engine,
-                    "Continue to identity provider",
+                    "Continue to your company sign-in",
                     &format!(
-                        r#"<p>Your account-link request has been reviewed. Continue to sign in with the identity provider.</p><a href="/account/continue?token={token}" rel="noreferrer">Continue to identity provider</a>"#
+                        r#"<p class="muted">Sign in with your company account to finish linking it.</p><a class="button primary block" href="/account/continue?token={token}" rel="noreferrer">Continue</a>"#
                     ),
                 );
                 response.headers_mut().insert(
@@ -939,8 +939,9 @@ pub(super) async fn submit(
         return match result {
             Ok(()) => html(
                 &engine,
-                "Password reset",
-                "<p>Your password was changed. Existing sessions have been signed out.</p>",
+                "Password changed",
+                "<p class=\"muted\">Your new password is set and you were signed out everywhere \
+                else. You can close this window.</p>",
             ),
             _ => error(ErrorCode::AccessDenied),
         };
@@ -992,16 +993,29 @@ pub(super) async fn submit(
     error(ErrorCode::InvalidRequest)
 }
 
+/// The leaf mark from art/trellis-mark.svg, inlined because Portal pages load no images.
+const MARK: &str = "<svg width=\"22\" height=\"28\" viewBox=\"0 0 330 420\" aria-hidden=\"true\">\
+<path fill=\"#6b6540\" d=\"M3 145h54c13 0 25 5 35 15l63 66c11 12 17 24 17 40v149h-32V290c0-25-18-41-42-41H70c-37 0-67-27-67-64z\"/>\
+<path fill=\"#8e7f47\" d=\"M233 2v83c0 45-38 80-75 115-33-35-58-60-54-95 4-45 56-80 129-103z\"/>\
+<path fill=\"#c2a86e\" d=\"M325 142v28c0 55-40 97-93 97h-50v-35c0-52 38-90 93-90z\"/>\
+<path fill=\"#ccc7b0\" d=\"M3 268h72c30 0 53 24 53 54v48H78c-42 0-75-33-75-70z\"/></svg>";
+
 pub(super) fn html(engine: &OAuthEngine, title: &str, body: &str) -> Response {
     let notice = if engine.generated_tls() {
-        "<p role=\"status\">This Trellis is using self-generated certificates \
-and may not be suitable for production.</p>"
+        "<p class=\"tls-notice\" role=\"status\">This Trellis is using \
+self-generated certificates and may not be suitable for production.</p>"
     } else {
         ""
     };
-    let mut response = Html(format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta \
-name=\"viewport\" content=\"width=device-width,\
-initial-scale=1\"><title>{title}</title></head><body>{notice}<main><h1>{title}</h1>{body}</main></body></html>")).into_response();
+    let stylesheet = super::assets::stylesheet()
+        .map(|href| format!("<link rel=\"stylesheet\" href=\"{href}\">"))
+        .unwrap_or_default();
+    let mut response = Html(format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta \
+name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title} · \
+Trellis</title>{stylesheet}</head><body>{notice}<header class=\"brand\">{MARK}<span>Trellis</span></header><main class=\"card narrow\"><h1>{title}</h1>{body}</main></body></html>"
+    ))
+    .into_response();
     use axum::http::{header, HeaderValue};
     response
         .headers_mut()
@@ -1013,7 +1027,8 @@ initial-scale=1\"><title>{title}</title></head><body>{notice}<main><h1>{title}</
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self'; \
+            frame-ancestors 'none'",
         ),
     );
     response.headers_mut().insert(

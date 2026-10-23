@@ -991,3 +991,249 @@ pub(crate) fn provision(
         .decode("device-provision-response", &lookup, &sealed)
         .map_err(|_| AuthError::Unavailable)
 }
+
+/// The Portal's signed-in user and the review fields it posted.
+struct PortalReview {
+    principal_id: String,
+    review_id: String,
+    code: String,
+}
+
+/// A Portal review request must come from the Portal origin, carry its CSRF
+/// token, and belong to a signed-in Portal login.
+async fn portal_review(
+    engine: &super::OAuthEngine,
+    headers: &axum::http::HeaderMap,
+    form: &std::collections::BTreeMap<String, String>,
+) -> Result<PortalReview, axum::response::Response> {
+    use axum::{http::StatusCode, response::IntoResponse, Json};
+    if !super::http::portal_origin(engine, headers) {
+        return Err(super::http::error(
+            oauth_as::error::ErrorCode::InvalidRequest,
+        ));
+    }
+    let (Some(csrf), Some(review_id), Some(code), Some(cookie)) = (
+        form.get("csrf"),
+        form.get("review_id"),
+        form.get("code"),
+        super::http::portal_cookie(headers, "__Host-trellis-portal"),
+    ) else {
+        return Err(super::http::error(
+            oauth_as::error::ErrorCode::InvalidRequest,
+        ));
+    };
+    let store = engine.server.store().authority.clone();
+    let csrf = csrf.clone();
+    let login = blocking(move || store.portal_login(&cookie, &csrf, crate::clock::unix_now()))
+        .await
+        .map_err(|_: AuthError| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error":"login_required"})),
+            )
+                .into_response()
+        })?;
+    Ok(PortalReview {
+        principal_id: login.principal_id,
+        review_id: review_id.clone(),
+        code: code.trim().to_uppercase(),
+    })
+}
+
+/// Shows a signed-in user what is asking to connect, once they enter the code
+/// the device displays. Deciding still requires `trellis.auth.v1:users.manage`.
+pub(super) async fn portal_inspect(
+    axum::extract::State(engine): axum::extract::State<Arc<super::OAuthEngine>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Form(pairs): axum::extract::Form<Vec<(String, String)>>,
+) -> axum::response::Response {
+    use axum::{http::StatusCode, response::IntoResponse, Json};
+    let form = match super::http::fields(pairs) {
+        Ok(form) => form,
+        Err(_) => return super::http::error(oauth_as::error::ErrorCode::InvalidRequest),
+    };
+    let review = match portal_review(&engine, &headers, &form).await {
+        Ok(review) => review,
+        Err(response) => return response,
+    };
+    let store = engine.server.store().authority.clone();
+    let (review_id, code, principal_id) = (
+        review.review_id.clone(),
+        review.code.clone(),
+        review.principal_id.clone(),
+    );
+    let result = blocking(move || {
+        store.transaction(|connection| {
+            let review = (&review_id, &code, &principal_id);
+            confirm(connection, review.0, review.1)?;
+            let current = read_review(connection, review.0)?;
+            let (device_type, device_name): (String, String) = connection.query_row(
+                "SELECT d.title,i.title \
+            FROM auth_instances i \
+            JOIN auth_deployments d ON d.deployment_id=i.deployment_id \
+            WHERE i.instance_id=?1",
+                [current.instance_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let can_decide = SqliteAuthorizationStore::require_administration(
+                connection,
+                review.2,
+                Administration::ManagePrincipals,
+            )
+            .is_ok();
+            Ok(json!({
+                "reviewId":review.0,
+                "state":current.state,
+                "revision":current.revision.to_string(),
+                "expiresAt":current.expires_at,
+                "participantId":current.participant_id,
+                "deviceType":device_type,
+                "deviceName":device_name,
+                "instanceId":current.instance_id,
+                "canDecide":can_decide
+            }))
+        })
+    })
+    .await;
+    match result {
+        Ok(view) => Json(view).into_response(),
+        Err(AuthError::Denied) | Err(AuthError::NotFound) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error":"code_mismatch"})),
+        )
+            .into_response(),
+        Err(_) => super::http::error(oauth_as::error::ErrorCode::ServerError),
+    }
+}
+
+/// Approves or rejects a review as the signed-in Portal user, through the same
+/// decision and provisioning the `Devices.Reviews.Decide` RPC performs.
+pub(super) async fn portal_decide(
+    axum::extract::State(engine): axum::extract::State<Arc<super::OAuthEngine>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Form(pairs): axum::extract::Form<Vec<(String, String)>>,
+) -> axum::response::Response {
+    use axum::response::{IntoResponse, Redirect};
+    let form = match super::http::fields(pairs) {
+        Ok(form) => form,
+        Err(_) => return super::http::error(oauth_as::error::ErrorCode::InvalidRequest),
+    };
+    let review = match portal_review(&engine, &headers, &form).await {
+        Ok(review) => review,
+        Err(response) => return response,
+    };
+    let back = |error: &str| {
+        Redirect::to(&format!(
+            "/device-enrollment?reviewId={}&error={error}",
+            url::form_urlencoded::byte_serialize(review.review_id.as_bytes()).collect::<String>()
+        ))
+        .into_response()
+    };
+    let input: Result<AuthDeviceReviewDecideRequest, _> = serde_json::from_value(json!({
+        "reviewId":review.review_id,
+        "confirmationCode":review.code,
+        "decision":form.get("decision").map(String::as_str).unwrap_or_default(),
+        "expectedRevision":form.get("revision").map(String::as_str).unwrap_or_default(),
+        "idempotencyKey":form.get("idempotency_key").map(String::as_str).unwrap_or_default()
+    }));
+    let Ok(input) = input else {
+        return back("invalid");
+    };
+    let identity = match digest(&input) {
+        Ok(request_digest) => super::super::Mutation {
+            actor: review.principal_id.clone(),
+            request_id: input.idempotency_key.to_string(),
+            request_digest,
+        },
+        Err(_) => return back("unavailable"),
+    };
+    let store = engine.server.store().authority.clone();
+    let decided =
+        blocking(move || decide(&store, &identity, &input, crate::clock::unix_now())).await;
+    let response = match decided {
+        Ok(response) => response,
+        Err(AuthError::Denied) => return back("not_allowed"),
+        Err(AuthError::Conflict) => return back("changed"),
+        Err(_) => return back("unavailable"),
+    };
+    let approved = response.review.state == AuthDeviceReviewState::Approved;
+    if approved {
+        let Some(operational) = engine.operational() else {
+            return back("unavailable");
+        };
+        if super::super::resources::materialize_native_kv(
+            &engine.server.store().authority,
+            operational,
+            &response.review.deployment_id.to_string(),
+            crate::clock::unix_now(),
+        )
+        .await
+        .is_err()
+        {
+            return back("unavailable");
+        }
+    }
+    Redirect::to(&format!(
+        "/device-enrollment/complete?decision={}",
+        if approved { "approved" } else { "declined" }
+    ))
+    .into_response()
+}
+
+/// Signs in with a local account from the device approval page, which has no
+/// OAuth transaction of its own.
+pub(super) async fn portal_login(
+    axum::extract::State(engine): axum::extract::State<Arc<super::OAuthEngine>>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Form(pairs): axum::extract::Form<Vec<(String, String)>>,
+) -> axum::response::Response {
+    use axum::response::{IntoResponse, Redirect};
+    if !super::http::portal_origin(&engine, &headers) {
+        return super::http::error(oauth_as::error::ErrorCode::InvalidRequest);
+    }
+    let form = match super::http::fields(pairs) {
+        Ok(form) => form,
+        Err(_) => return super::http::error(oauth_as::error::ErrorCode::InvalidRequest),
+    };
+    let (Some(csrf), Some(review_id), Some(username), Some(password), Some(cookie)) = (
+        form.get("csrf").cloned(),
+        form.get("review_id").cloned(),
+        form.get("username").cloned(),
+        form.get("password").cloned(),
+        super::http::portal_cookie(&headers, "__Host-trellis-portal"),
+    ) else {
+        return super::http::error(oauth_as::error::ErrorCode::InvalidRequest);
+    };
+    let page = format!(
+        "/device-enrollment?reviewId={}",
+        url::form_urlencoded::byte_serialize(review_id.as_bytes()).collect::<String>()
+    );
+    let mut replacement = [0u8; 32];
+    if getrandom::fill(&mut replacement).is_err() {
+        return super::http::error(oauth_as::error::ErrorCode::ServerError);
+    }
+    let replacement = URL_SAFE_NO_PAD.encode(replacement);
+    let new_cookie = replacement.clone();
+    let csrf_cookie = csrf.clone();
+    let store = engine.server.store().authority.clone();
+    let result = blocking(move || {
+        store.portal_local_login(
+            &cookie,
+            &csrf,
+            &new_cookie,
+            (&username, &password),
+            &id(),
+            crate::clock::unix_now(),
+        )
+    })
+    .await;
+    match result {
+        Ok(_) => super::http::cookie_response(
+            &replacement,
+            Some(&csrf_cookie),
+            3600,
+            Redirect::to(&page).into_response(),
+        ),
+        _ => Redirect::to(&format!("{page}&error=login_failed")).into_response(),
+    }
+}
