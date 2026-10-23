@@ -812,6 +812,31 @@ CREATE TABLE auth_authorization_sessions (
     FOREIGN KEY (identity_key_id, principal_id)
         REFERENCES auth_provisioned_identities(identity_key_id, principal_id)
 );
+-- Each session's approved capabilities, kept in step with
+-- `approved_capabilities_json`, so capability-scoped enforcement is indexed.
+CREATE TABLE auth_session_capabilities (
+    authorization_session_id TEXT NOT NULL
+        REFERENCES auth_authorization_sessions(authorization_session_id),
+    capability_id TEXT NOT NULL,
+    PRIMARY KEY (authorization_session_id, capability_id)
+) WITHOUT ROWID;
+CREATE INDEX auth_session_capabilities_capability
+ON auth_session_capabilities(capability_id, authorization_session_id);
+CREATE TRIGGER auth_session_capabilities_insert AFTER INSERT ON auth_authorization_sessions
+BEGIN
+    INSERT OR IGNORE INTO auth_session_capabilities
+    SELECT NEW.authorization_session_id, json_extract(value, '$.capabilityId')
+    FROM json_each(NEW.approved_capabilities_json);
+END;
+CREATE TRIGGER auth_session_capabilities_update
+AFTER UPDATE OF approved_capabilities_json ON auth_authorization_sessions
+BEGIN
+    DELETE FROM auth_session_capabilities
+    WHERE authorization_session_id = NEW.authorization_session_id;
+    INSERT OR IGNORE INTO auth_session_capabilities
+    SELECT NEW.authorization_session_id, json_extract(value, '$.capabilityId')
+    FROM json_each(NEW.approved_capabilities_json);
+END;
 CREATE UNIQUE INDEX auth_authorization_session_active_runtime
 ON auth_authorization_sessions(binding_key, runtime_id, session_public_key) WHERE state = 'active';
 CREATE INDEX auth_authorization_sessions_principal
@@ -847,6 +872,8 @@ CREATE TABLE auth_session_authorities (
     not_before INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     maximum_acceptance_deadline INTEGER NOT NULL,
+    -- What reduction checks compare, so renewal never re-parses signed bytes.
+    projection_json TEXT NOT NULL CHECK (json_valid(projection_json)),
     CHECK (not_before <= issued_at AND issued_at < expires_at
         AND expires_at <= maximum_acceptance_deadline)
 );
@@ -855,6 +882,21 @@ ON auth_session_authorities(authorization_session_id, expires_at);
 CREATE INDEX auth_session_authorities_issuer ON auth_session_authorities(issuer_key_id);
 CREATE UNIQUE INDEX auth_session_authorities_context_session
 ON auth_session_authorities(context_digest, authorization_session_id);
+-- The APIs each session's authorities carry, so API-scoped enforcement is an
+-- indexed lookup rather than a JSON scan of every authority.
+CREATE TABLE auth_session_apis (
+    authorization_session_id TEXT NOT NULL
+        REFERENCES auth_authorization_sessions(authorization_session_id),
+    api_id TEXT NOT NULL,
+    PRIMARY KEY (authorization_session_id, api_id)
+) WITHOUT ROWID;
+CREATE INDEX auth_session_apis_api ON auth_session_apis(api_id, authorization_session_id);
+CREATE TRIGGER auth_session_apis_record AFTER INSERT ON auth_session_authorities
+BEGIN
+    INSERT OR IGNORE INTO auth_session_apis
+    SELECT NEW.authorization_session_id, json_extract(value, '$.apiId')
+    FROM json_each(NEW.api_snapshots_json);
+END;
 CREATE TRIGGER auth_session_authority_immutable BEFORE UPDATE ON auth_session_authorities
 BEGIN SELECT RAISE(ABORT, 'signed session authority is immutable'); END;
 CREATE TRIGGER auth_session_authority_retained BEFORE DELETE ON auth_session_authorities

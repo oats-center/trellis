@@ -293,15 +293,15 @@ fn session_scope(scope: &EnforcementScope) -> (&'static str, Option<&str>) {
             Some(key),
         ),
         EnforcementScope::Capability(key) => (
-            "(EXISTS(SELECT 1 FROM json_each(s.approved_capabilities_json) \
-            WHERE json_extract(value,'$.capabilityId')=?1))",
+            "s.authorization_session_id IN (SELECT authorization_session_id \
+            FROM auth_session_capabilities \
+            WHERE capability_id=?1)",
             Some(key),
         ),
         EnforcementScope::Api(key) => (
-            "(EXISTS(SELECT 1 FROM auth_session_authorities \
-            a,json_each(a.api_snapshots_json) j \
-            WHERE a.authorization_session_id=s.authorization_session_id \
-            AND json_extract(j.value,'$.apiId')=?1))",
+            "s.authorization_session_id IN (SELECT authorization_session_id \
+            FROM auth_session_apis \
+            WHERE api_id=?1)",
             Some(key),
         ),
         EnforcementScope::Deployment(key) => (

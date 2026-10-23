@@ -436,8 +436,44 @@ pub(super) fn session_credential(
     }
 }
 
+/// What reduction checks compare in an issued authority, stored beside it so a
+/// renewal never re-parses the session's signed authorities.
+#[derive(Serialize, Deserialize)]
+struct ReductionProjection {
+    capabilities: Vec<CapabilityAuthority>,
+    apis: Vec<(String, U64s)>,
+    providers: Vec<(String, U64s, String, String)>,
+    resource_bindings_digest: Option<String>,
+}
+
+impl ReductionProjection {
+    fn of(authority: &UnsignedSessionAuthority) -> Self {
+        Self {
+            capabilities: authority.capabilities.clone(),
+            apis: authority
+                .apis
+                .iter()
+                .map(|api| (api.api_id.clone(), api.generation))
+                .collect(),
+            providers: authority
+                .provider_bindings
+                .iter()
+                .map(|provider| {
+                    (
+                        provider.api_id.clone(),
+                        provider.generation,
+                        provider.deployment_id.clone(),
+                        provider.implementation_digest.clone(),
+                    )
+                })
+                .collect(),
+            resource_bindings_digest: authority.resource_bindings_digest.clone(),
+        }
+    }
+}
+
 /// Compare every still-usable context, not the last issuance alone. A narrower
-/// renewal can never hide an earlier live provider/capability/platform right.
+/// renewal can never hide an earlier live provider/capability right.
 pub(super) fn loses_authority(
     connection: &Connection,
     session: &str,
@@ -461,38 +497,48 @@ pub(super) fn loses_authority(
     if family_unavailable {
         return Ok(true);
     }
+    // Renewals usually repeat one projection; each distinct one is compared
+    // once at its latest expiry, which every check below is monotone in.
     let mut statement = connection.prepare(
-        "SELECT signed_bytes \
+        "SELECT projection_json,max(expires_at) \
         FROM auth_session_authorities \
         WHERE authorization_session_id=?1 \
-        AND maximum_acceptance_deadline>?2",
+        AND maximum_acceptance_deadline>?2 \
+        GROUP BY projection_json",
     )?;
-    for row in statement.query_map(params![session, now], |row| row.get::<_, Vec<u8>>(0))? {
-        let old = trellis_protocol::parse_session_authority(&row?, 1_048_576)?;
-        let old = &old.unsigned;
-        if old.expires_at > current.root_not_after
+    let rows = statement
+        .query_map(params![session, now], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (projection, expires_at) in rows {
+        let old: ReductionProjection = decode(&projection)?;
+        if expires_at > current.root_not_after
             || old.capabilities.iter().any(|capability| {
                 !current.capabilities.contains(capability)
                     || current
                         .capability_deadlines
                         .get(&capability.capability_id)
-                        .is_some_and(|deadline| old.expires_at > *deadline)
+                        .is_some_and(|deadline| expires_at > *deadline)
             })
-            || old.apis.iter().any(|api| {
+            || old.apis.iter().any(|(api_id, generation)| {
                 current
                     .apis
                     .iter()
-                    .find(|next| next.api_id == api.api_id)
-                    .is_none_or(|next| next.generation != api.generation)
+                    .find(|next| &next.api_id == api_id)
+                    .is_none_or(|next| next.generation != *generation)
             })
-            || old.provider_bindings.iter().any(|provider| {
-                !current.providers.iter().any(|next| {
-                    next.api_id == provider.api_id
-                        && next.generation == provider.generation
-                        && next.deployment_id == provider.deployment_id
-                        && next.implementation_digest == provider.implementation_digest
+            || old
+                .providers
+                .iter()
+                .any(|(api_id, generation, deployment, implementation)| {
+                    !current.providers.iter().any(|next| {
+                        &next.api_id == api_id
+                            && next.generation == *generation
+                            && &next.deployment_id == deployment
+                            && &next.implementation_digest == implementation
+                    })
                 })
-            })
             || old.resource_bindings_digest != current.resource_bindings_digest
         {
             return Ok(true);
@@ -931,7 +977,8 @@ impl SqliteAuthorizationStore {
             admission_registry(connection, &issuer)?,
         )?;
         connection.execute(
-            "INSERT OR IGNORE INTO auth_session_authorities VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",
+            "INSERT OR IGNORE INTO auth_session_authorities \
+            VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8,?9)",
             params![
                 digest,
                 session,
@@ -940,7 +987,8 @@ impl SqliteAuthorizationStore {
                 json(&authority.unsigned.apis)?,
                 now,
                 expires_at,
-                maximum_acceptance
+                maximum_acceptance,
+                json(&ReductionProjection::of(&authority.unsigned))?
             ],
         )?;
         connection.execute(

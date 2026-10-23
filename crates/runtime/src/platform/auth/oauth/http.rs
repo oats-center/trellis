@@ -211,9 +211,13 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     let Ok(mut requests) = requests.lock() else {
                         return error(ErrorCode::ServerError);
                     };
-                    requests.retain(|_, (started, _)| {
-                        now.duration_since(*started) < Duration::from_secs(60)
-                    });
+                    let expired =
+                        |started: &Instant| now.duration_since(*started) >= Duration::from_secs(60);
+                    // Expired windows restart when next used; the table is only
+                    // swept when it is full, keeping requests off an O(n) scan.
+                    if requests.len() >= 4094 {
+                        requests.retain(|_, (started, _)| !expired(started));
+                    }
                     let peer = (ip, String::new());
                     // Navigations and native clients send no Origin. They are
                     // budgeted per peer only, never in one shared origin bucket.
@@ -226,14 +230,19 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     {
                         false
                     } else {
-                        let window = requests.entry(peer).or_insert((now, 0));
-                        window.1 = window.1.saturating_add(1);
-                        let peer_allowed = window.1 <= 120;
+                        let mut count = |key| {
+                            let window = requests.entry(key).or_insert((now, 0));
+                            if expired(&window.0) {
+                                *window = (now, 0);
+                            }
+                            window.1 = window.1.saturating_add(1);
+                            window.1
+                        };
+                        let peer_allowed = count(peer) <= 120;
                         match origin {
                             Some(origin) => {
-                                let window = requests.entry(origin).or_insert((now, 0));
-                                window.1 = window.1.saturating_add(1);
-                                peer_allowed && window.1 <= 600
+                                let count = count(origin);
+                                peer_allowed && count <= 600
                             }
                             None => peer_allowed,
                         }

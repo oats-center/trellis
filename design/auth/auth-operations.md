@@ -4,16 +4,23 @@ Status: Revision 7 operational requirements.
 
 ## Configuration
 
-Runtime Auth configuration (`[auth]`) includes:
+Every `[auth]` key, from `AuthConfig` in `crates/runtime/src/config/mod.rs`:
 
-- `instance_id`, the installation identity retained across restarts;
-- `oauth_storage_key_file`, the OAuth storage custody key;
-- `[auth.authorization]`: `issuer_signing_seed_file`,
-  `context_lifetime_seconds`, `allowed_clock_skew_seconds`, and
-  `oauth_admission_lifetime_seconds`;
-- `[auth.oauth]`: the dedicated listener's `origin`, `bind_address`, `port`,
-  `transport`, and `trusted_proxies`; and
-- `[auth.local_identity]`: `enabled` and `password_min_length`.
+| Key                                                 | Required | Meaning                                                                                              |
+| --------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `instance_id`                                       | yes      | The installation's ULID, generated at initialization and retained across restarts and key rotations. |
+| `oauth_storage_key_file`                            | yes      | Owner-only key sealing durable OAuth material. Back it up with the database.                         |
+| `authorization.issuer_signing_seed_file`            | yes      | The bootstrap issuer's Ed25519 seed. Successor keys live in `<database>.issuer-keys/`.               |
+| `authorization.context_lifetime_seconds`            | yes      | Longest lifetime of a newly issued session authority, 1–3600.                                        |
+| `authorization.allowed_clock_skew_seconds`          | yes      | Verification and Callout clock skew, at most 300 and less than the context lifetime.                 |
+| `authorization.oauth_admission_lifetime_seconds`    | no (300) | Longest lifetime of a signed OAuth admission, 1–300.                                                 |
+| `oauth.origin`, `bind_address`, `port`, `transport` | yes      | The dedicated OAuth listener; `transport` is `tls`, `proxy`, or `loopback_development`.              |
+| `oauth.trusted_proxies`                             | no       | CIDR ranges whose `X-Forwarded-For` identifies the client in front of a TLS listener.                |
+| `local_identity.enabled`, `password_min_length`     | no       | Local username/password sign-in and its minimum password length.                                     |
+| `avatar.external_fetch_enabled`                     | no (on)  | Fetch OIDC, override, and Gravatar profile images; off serves local initials only.                   |
+| `administration.confirm_on_consent`                 | no (on)  | Consent asks for a separate confirmation before delegating administration.                           |
+| `administration.require_peer_approval`              | no (on)  | Another `trellis.auth.v1:platform.manage` holder approves a delegated administrative capability.     |
+| `administration.registered_clients_only`            | no (on)  | Only administrator-registered OAuth clients may receive administrative capabilities.                 |
 
 Login, OAuth token, device-code, portal, and request-admission lifetimes and
 budgets are fixed in the runtime, not configured. User login expiry bounds
@@ -63,9 +70,10 @@ and rotate on every CONNECT admission and login.
 
 ## Recovery
 
-Auth SQL is authoritative. On restart the runtime rebuilds all signed-context
-and revocation mirrors, resumes durable post-commit actions, and retains exact
-prepared event bytes/proofs across retries. Operators do not repair authority by
+Auth SQL is authoritative. On restart the runtime resumes the durable
+post-commit actions (publications, revocations, kicks, events) where they left
+off, recovering expired claims, and retains exact prepared event bytes and
+proofs across retries; it does not rebuild the mirrors from scratch. Operators do not repair authority by
 editing KV, NATS ACLs, or client caches.
 
 ## Accepted Browser Risk
