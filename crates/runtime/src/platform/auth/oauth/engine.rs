@@ -392,8 +392,7 @@ impl OAuthEngine {
         {
             let connection = storage
                 .authority
-                .connection
-                .lock()
+                .writer()
                 .map_err(|_| AuthError::Unavailable)?;
             let mut clients = connection.prepare(
                 "SELECT redirect_uris_json FROM auth_oauth_clients WHERE state='active'",

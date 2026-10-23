@@ -1,5 +1,6 @@
 //! Capability-scoped resource evidence for independently deployed runtime roles.
 
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -36,7 +37,7 @@ pub(super) fn register<P: trellis_rs::generated::ParticipantDescriptor>(
                     .any(|granted| granted.capability_id == capability)
             });
             if !authorized { return Err(rpc_error(AuthError::Denied)); }
-             tokio::task::spawn_blocking(move || store.transaction(|connection| {
+             blocking(move || store.transaction(|connection| {
                  let projection = input
                      .instance_id
                      .as_ref()
@@ -231,7 +232,8 @@ pub(super) fn register<P: trellis_rs::generated::ParticipantDescriptor>(
                      items,
                      page: CursorPageInfo { next_cursor },
                  })
-             })).await.map_err(|_|rpc_error(AuthError::Unavailable))?.map_err(rpc_error)
+             }))
+.await.map_err(rpc_error)
         }
     });
 }

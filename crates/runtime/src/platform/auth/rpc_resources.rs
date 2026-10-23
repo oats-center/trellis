@@ -4,6 +4,7 @@ use super::{
     rpc::{caller, mutation, rpc_error},
     sqlite::{digest, AuthError, Mutation, SqliteAuthorizationStore},
 };
+use crate::platform::auth::blocking;
 use crate::platform::auth::sqlite::Connection;
 use async_nats::jetstream::{context::GetStreamErrorKind, stream::ConsumerErrorKind, ErrorCode};
 use rusqlite::{params, OptionalExtension};
@@ -28,7 +29,7 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(move |connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -39,7 +40,6 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -49,7 +49,7 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(move |connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -63,7 +63,6 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -213,7 +212,7 @@ pub(super) async fn remove_resource(
     let input_copy = input.clone();
     let execution_owner = super::sqlite::id();
     let claim_owner = execution_owner.clone();
-    let (result, command) = tokio::task::spawn_blocking(move || {
+    let (result, command) = blocking(move || {
         store_copy.transaction(|connection| {
             SqliteAuthorizationStore::require_privilege(
                 connection,
@@ -394,16 +393,17 @@ pub(super) async fn remove_resource(
             Ok((result, command))
         })
     })
-    .await
-    .map_err(|_| AuthError::Unavailable)??;
+    .await?;
     let (id, revision, physical, state, allocation) = command;
     if state == "completed" {
         return Ok(result);
     }
     let jetstream = async_nats::jetstream::new(operational.clone());
     let deletion: Result<(), AuthError> = async {
+        let (selected, selected_allocation) = (id.clone(), allocation.clone());
         let (kind, local_name, owner_id, owner_kind): (String, String, String, String) = store
-            .transaction(|connection| {
+            .transaction_blocking(move |connection| {
+                let (id, allocation) = (&selected, &selected_allocation);
                 connection
                     .query_row(
                         "SELECT kind,local_name,owner_id,owner_kind \
@@ -415,7 +415,8 @@ pub(super) async fn remove_resource(
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
                     .map_err(AuthError::from)
-            })?;
+            })
+            .await?;
         let marker = format!("trellis.resource.v1:{id}:{allocation}");
         if kind == "state" {
             // This key includes the allocation incarnation. A delayed old command
@@ -646,7 +647,7 @@ pub(super) async fn remove_resource(
         // bounded lease for the same manual request to recover.
         let store = store.clone();
         let identity = identity.clone();
-        tokio::task::spawn_blocking(move || {
+        blocking(move || {
             store.transaction(move |connection| {
                 connection.execute(
                     "UPDATE auth_resource_removals \
@@ -659,13 +660,12 @@ pub(super) async fn remove_resource(
                 Ok(())
             })
         })
-        .await
-        .map_err(|_| AuthError::Unavailable)??;
+        .await?;
         return Err(error);
     }
     let store = store.clone();
     let identity = identity.clone();
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         store.transaction(move |connection| {
             if connection.execute(
                 "UPDATE auth_resource_removals \
@@ -711,8 +711,7 @@ pub(super) async fn remove_resource(
             Ok(())
         })
     })
-    .await
-    .map_err(|_| AuthError::Unavailable)??;
+    .await?;
     Ok(result)
 }
 

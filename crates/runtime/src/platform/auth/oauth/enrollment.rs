@@ -1,4 +1,5 @@
 //! Device enrollment and companion association share Auth's authoritative store.
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
@@ -23,7 +24,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
         let store = get.clone();
         async move {
             caller(&context, None).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     confirm(
                         connection,
@@ -37,7 +38,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -47,7 +47,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -88,7 +88,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -105,7 +104,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
             )
             .map_err(rpc_error)?;
             let transaction_store = store.clone();
-            let response = tokio::task::spawn_blocking(move || {
+            let response = blocking(move || {
                 decide(
                     &transaction_store,
                     &identity,
@@ -114,7 +113,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 )
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)?;
             if response.review.state == AuthDeviceReviewState::Approved {
                 super::super::resources::materialize_native_kv(
@@ -141,7 +139,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 .ok_or_else(|| rpc_error(AuthError::Denied))?
                 .caller()
                 .clone();
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 attach(
                     &store,
                     &identity,
@@ -151,7 +149,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 )
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -162,7 +159,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 mutation(&context, &input.idempotency_key, None, &input).map_err(rpc_error)?;
             let delegated_admin =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 revoke(
                     &store,
                     &identity,
@@ -172,7 +169,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 )
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -673,7 +669,7 @@ pub(super) async fn http_enroll(
     axum::Json(body): axum::Json<Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         enroll(
             &engine.server.store().authority,
             body,
@@ -682,8 +678,8 @@ pub(super) async fn http_enroll(
     })
     .await;
     match result {
-        Ok(Ok(value)) => axum::Json(value).into_response(),
-        Ok(Err(AuthError::Unavailable)) | Err(_) => (
+        Ok(value) => axum::Json(value).into_response(),
+        Err(AuthError::Unavailable) => (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             axum::Json(json!({"error":{"code":"unavailable"}})),
         )

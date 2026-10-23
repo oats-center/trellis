@@ -1,6 +1,7 @@
 //! Typed account adapters over Auth's authoritative SQLite aggregates.
 
 use super::sqlite::timestamp;
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
@@ -32,7 +33,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
             let delegated = caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     let administrative = directory_account_access(connection, &actor, delegated)?;
                     Ok(AuthUserGetResponse {
@@ -47,7 +48,6 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -56,7 +56,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&users);
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     Ok(AuthUserGetResponse {
                         user: read_user(&store, connection, &actor, true)?,
@@ -65,7 +65,6 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -82,11 +81,10 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                         &input,
                     )
                     .map_err(rpc_error)?;
-                    tokio::task::spawn_blocking(move || {
+                    blocking(move || {
                         $operation(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
-                    .map_err(|_| rpc_error(AuthError::Unavailable))?
                     .map_err(rpc_error)
                 }
             });
@@ -100,12 +98,9 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         async move {
             let identity =
                 mutation(&context, &input.idempotency_key, None, &input).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
-                update_profile(&store, &identity, &input, crate::clock::unix_now())
-            })
-            .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
-            .map_err(rpc_error)
+            blocking(move || update_profile(&store, &identity, &input, crate::clock::unix_now()))
+                .await
+                .map_err(rpc_error)
         }
     });
     admin_mutation!(register_oidc_providers_disable, disable_provider);
@@ -116,11 +111,10 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&identities);
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| read_identities(connection, &actor, &input))
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -130,12 +124,9 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         async move {
             let identity =
                 mutation(&context, &input.idempotency_key, None, &input).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
-                unlink_identity(&store, &identity, &input, crate::clock::unix_now())
-            })
-            .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
-            .map_err(rpc_error)
+            blocking(move || unlink_identity(&store, &identity, &input, crate::clock::unix_now()))
+                .await
+                .map_err(rpc_error)
         }
     });
 
@@ -145,7 +136,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -177,7 +168,6 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -192,12 +182,9 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 &input,
             )
             .map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
-                delete_mapping(&store, &identity, &input, crate::clock::unix_now())
-            })
-            .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
-            .map_err(rpc_error)
+            blocking(move || delete_mapping(&store, &identity, &input, crate::clock::unix_now()))
+                .await
+                .map_err(rpc_error)
         }
     });
 
@@ -212,11 +199,10 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 .verified_request()
                 .and_then(|request| request.caller().login_session_id.clone())
                 .ok_or_else(|| rpc_error(AuthError::Denied))?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 change_password(&store, &identity, &input, &login, crate::clock::unix_now())
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -226,7 +212,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -240,7 +226,6 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -249,7 +234,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -260,7 +245,6 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -289,7 +273,7 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
                 .caller()
                 .authorization_session_id
                 .clone();
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 super::oauth::account::create_reset(
                     engine.server.store(),
                     &identity,
@@ -299,7 +283,6 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
                 )
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -309,7 +292,7 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
         async move {
             let identity =
                 mutation(&context, &input.idempotency_key, None, &input).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 super::oauth::account::create_link(
                     engine.server.store(),
                     &identity,
@@ -318,7 +301,6 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
                 )
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -332,7 +314,7 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
                 &input,
             )
             .map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 put_provider(
                     engine.server.store(),
                     &identity,
@@ -341,7 +323,6 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
                 )
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });

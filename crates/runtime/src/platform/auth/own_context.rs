@@ -1,6 +1,8 @@
 //! Authenticated first-context retrieval for an already admitted runtime.
 
 use futures_util::StreamExt as _;
+
+use crate::platform::auth::blocking;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use std::{future::Future, sync::Arc, time::Duration};
@@ -118,7 +120,7 @@ impl OwnContextService {
                     requests.spawn(async move {
                         let destination = reply.clone();
                         let publication_store = store.clone();
-                        let result = tokio::task::spawn_blocking(move || {
+                        let result = blocking(move || {
                             store
                                 .own_context_with_digest(
                                     &message.payload,
@@ -148,8 +150,7 @@ impl OwnContextService {
                                     Ok((serde_json::to_vec(&response)?, digest, dependencies))
                                 })
                         })
-                        .await
-                        .map_err(|_| AuthError::Unavailable)?;
+                        .await;
                         // The bootstrap envelope has no signed negative variant.
                         // Failed verification and overload remain transport failures,
                         // never unsigned credential-revocation instructions.
@@ -200,7 +201,7 @@ impl OwnContextService {
                     let client = self.client.clone();
                     requests.spawn(async move {
                         let destination = reply.clone();
-                        let result = tokio::task::spawn_blocking(move || {
+                        let result = blocking(move || {
                             store.issuer_metadata(
                                 &message.payload,
                                 message.subject.as_str(),
@@ -208,8 +209,7 @@ impl OwnContextService {
                                 crate::clock::unix_now(),
                             )
                         })
-                        .await
-                        .map_err(|_| AuthError::Unavailable)?;
+                        .await;
                         let Ok(bytes) = result else { return Ok(()) };
                         client
                             .publish(reply, bytes.into())

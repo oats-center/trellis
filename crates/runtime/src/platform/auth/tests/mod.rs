@@ -222,7 +222,7 @@ pub(super) fn oauth_family(
     expires: i64,
 ) -> String {
     use oauth_as::{store::Storage, token::RefreshTokenRecord, ScopeSet};
-    let path = store.connection.lock().unwrap().path().unwrap().to_owned();
+    let path = store.writer().unwrap().path().unwrap().to_owned();
     let authority = SqliteAuthorizationStore::from_connection(
         rusqlite::Connection::open(path).unwrap(),
         store.signer.clone(),
@@ -231,8 +231,7 @@ pub(super) fn oauth_family(
     )
     .unwrap();
     let (client, jkt): (String, String) = authority
-        .connection
-        .lock()
+        .writer()
         .unwrap()
         .query_row(
             "SELECT client_id,durable_dpop_jkt FROM auth_oauth_grants WHERE oauth_grant_id=?1",

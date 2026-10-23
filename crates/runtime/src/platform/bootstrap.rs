@@ -20,9 +20,10 @@ pub(crate) async fn prepare_builtin_provider<C: ParticipantDescriptor>(
     identity_seed: &str,
 ) -> Result<ProvisionedDeployment, RuntimeError> {
     let now = crate::clock::unix_now();
-    let deployment = store
-        .initialize_builtin_provider::<C>(identity_seed, now)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let (provisioner, seed) = (store.clone(), identity_seed.to_owned());
+    let deployment =
+        super::auth::blocking(move || provisioner.initialize_builtin_provider::<C>(&seed, now))
+            .await?;
     materialize_native_kv(store, operational, &deployment.deployment_id, now)
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
@@ -38,9 +39,8 @@ pub(crate) async fn connect_platform_provider(
     root_certificates: Vec<std::path::PathBuf>,
     identity_seed: &str,
 ) -> Result<ConnectedServiceRuntime<Participant>, RuntimeError> {
-    let mut trust = store
-        .runtime_authorization_trust()
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let reader = store.clone();
+    let mut trust = super::auth::blocking(move || reader.runtime_authorization_trust()).await?;
     trust.root_certificates = root_certificates;
     let mut provider = ConnectedServiceRuntime::<Participant>::connect(ServiceConnectOptions::new(
         nats_servers,

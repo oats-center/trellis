@@ -386,31 +386,37 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         // Runtime shutdown may already have retired this attachment.
         let _ = lost.drain().await;
         assert!(lost.flush().await.is_err());
-        let store =
-            SqliteAuthorizationStore::open(&storage, &config, &identity.audience_nats_account)
+        // Rotate offline through the store, as an operator tool would.
+        let (offline_storage, offline_config, account, principal, offline_pin) = (
+            storage.clone(),
+            config.clone(),
+            identity.audience_nats_account.clone(),
+            identity.principal_id.clone(),
+            pinned.clone(),
+        );
+        let expected = crate::platform::auth::blocking(move || {
+            let store = SqliteAuthorizationStore::open(&offline_storage, &offline_config, &account)
                 .unwrap();
-        let rotation = crate::platform::auth::tests::rotate_issuer(
-            &store,
-            &identity.principal_id,
-            SystemTime::now()
+            let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_secs() as i64,
-        )
-        .unwrap();
-        let expected = rotation
-            .verify_successor(
-                &pinned.issuer,
-                &pinned.instance_id,
-                &pinned.account,
-                pinned.rotation_sequence,
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs() as i64,
+                .as_secs() as i64;
+            let rotation =
+                crate::platform::auth::tests::rotate_issuer(&store, &principal, now).unwrap();
+            Ok::<_, AuthError>(
+                rotation
+                    .verify_successor(
+                        &offline_pin.issuer,
+                        &offline_pin.instance_id,
+                        &offline_pin.account,
+                        offline_pin.rotation_sequence,
+                        now,
+                    )
+                    .unwrap(),
             )
-            .unwrap();
-        drop(store);
+        })
+        .await
+        .unwrap();
         (stop, runtime) = start_runtime(&config, &origin).await;
         warm.refresh_authorization_context().await.unwrap();
         let warm_renewed = tokio::time::timeout(Duration::from_secs(30), async {

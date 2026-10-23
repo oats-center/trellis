@@ -1,6 +1,7 @@
 //! Native policy RPC projections over the authoritative authorization store.
 
 use super::sqlite::timestamp;
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
@@ -28,7 +29,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -39,7 +40,6 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -49,7 +49,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -63,7 +63,6 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -80,11 +79,10 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                         &input,
                     )
                     .map_err(rpc_error)?;
-                    tokio::task::spawn_blocking(move || {
+                    blocking(move || {
                         $aggregate(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
-                    .map_err(|_| rpc_error(AuthError::Unavailable))?
                     .map_err(rpc_error)
                 }
             });
@@ -102,7 +100,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -113,7 +111,6 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -123,7 +120,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -134,7 +131,6 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -144,7 +140,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -155,7 +151,6 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -164,7 +159,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
         async move {
             let actor =
                 caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
@@ -179,7 +174,6 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });

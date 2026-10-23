@@ -281,12 +281,21 @@ pub async fn check(
             "configured OAuth storage custody is valid",
         );
         if stores.platform()?.exists() {
-            let auth_store = crate::platform::auth::SqliteAuthorizationStore::open_read_only(
-                stores.platform()?,
-                &config,
-                keys.target_account(),
-            )?;
-            match auth_store.runtime_authorization_trust() {
+            let (platform, store_config, account) = (
+                stores.platform()?.clone(),
+                config.clone(),
+                keys.target_account().to_owned(),
+            );
+            let issuer = crate::platform::auth::blocking(move || {
+                let auth_store = crate::platform::auth::SqliteAuthorizationStore::open_read_only(
+                    &platform,
+                    &store_config,
+                    &account,
+                )?;
+                Ok::<_, RuntimeError>(auth_store.runtime_authorization_trust())
+            })
+            .await?;
+            match issuer {
                 Ok(_) => report.push(
                     "authorization.issuer_record",
                     RuntimeCheckStatus::Ok,
@@ -982,9 +991,10 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
     // deployment; the installation's generated CA issues both certificates.
     let root_certificates: Vec<_> = nats.ca_certificate.iter().cloned().collect();
     let mut trust = match store {
-        Some(store) => store
-            .runtime_authorization_trust()
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
+        Some(store) => {
+            let store = store.clone();
+            crate::platform::auth::blocking(move || store.runtime_authorization_trust()).await?
+        }
         None => {
             let origin = context
                 .config

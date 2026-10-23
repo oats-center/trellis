@@ -21,6 +21,7 @@ pub mod shutdown;
 /// Installation TLS certificate inspection.
 pub mod tls;
 
+mod blocking;
 mod clock;
 #[cfg(all(feature = "sqlite-storage", feature = "nats-leases"))]
 /// Built-in Events subsystem.

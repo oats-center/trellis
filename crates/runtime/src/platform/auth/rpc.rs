@@ -1,5 +1,6 @@
 //! Shared adapters from verified RPC openings to authoritative Auth operations.
 
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -34,7 +35,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
             let delegated = caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 store.transaction(|connection| {
                     let administrative =
                         super::rpc_users::directory_account_access(connection, &actor, delegated)?;
@@ -99,10 +100,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|error| {
-                tracing::error!(%error, "Auth users query failed");
-                rpc_error(AuthError::Unavailable)
-            })?
             .map_err(rpc_error)
         }
     });
@@ -117,7 +114,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 .ok_or_else(|| rpc_error(AuthError::Denied))?
                 .caller()
                 .clone();
-            tokio::task::spawn_blocking(move || store.transaction(|connection| {
+            blocking(move || store.transaction(|connection| {
                 let now = crate::clock::unix_now();
                 let principal = super::rpc_policy::read_effective_access(
                     connection,
@@ -156,25 +153,17 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                         .map_err(|_| AuthError::Unavailable)?,
                     extra: Default::default(),
                 })
-            })).await.map_err(|error| {
-                tracing::error!(%error, "Auth session query failed");
-                rpc_error(AuthError::Unavailable)
-                    })?.map_err(rpc_error)
+            }))
+.await.map_err(rpc_error)
         }
     });
     provider.register_authority_status(move |context, input| {
         let store = store.clone();
         async move {
             caller(&context, None).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
-                store.authorization_session_status(input.authorization_session_id)
-            })
-            .await
-            .map_err(|error| {
-                tracing::error!(%error, "Auth status task failed");
-                rpc_error(AuthError::Unavailable)
-            })?
-            .map_err(rpc_error)
+            blocking(move || store.authorization_session_status(input.authorization_session_id))
+                .await
+                .map_err(rpc_error)
         }
     });
 }

@@ -1,5 +1,6 @@
 //! Platform-owned Trellis State RPC runtime.
 
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -110,19 +111,21 @@ impl StateRuntime {
                     .ok_or_else(auth_denied)?
                     .caller()
                     .clone();
-                tokio::task::spawn_blocking(move || {
-                    state
-                        .repository
-                        .register_state(
-                            &caller.principal_id,
-                            &caller.binding,
-                            &input,
-                            crate::clock::unix_now(),
-                        )
-                        .map_err(|error| match error {
-                            super::auth::AuthError::Denied => auth_denied(),
-                            error => unexpected(error),
-                        })
+                blocking(move || {
+                    Ok::<_, super::auth::AuthError>(
+                        state
+                            .repository
+                            .register_state(
+                                &caller.principal_id,
+                                &caller.binding,
+                                &input,
+                                crate::clock::unix_now(),
+                            )
+                            .map_err(|error| match error {
+                                super::auth::AuthError::Denied => auth_denied(),
+                                error => unexpected(error),
+                            }),
+                    )
                 })
                 .await
                 .map_err(unexpected)??
@@ -369,23 +372,26 @@ impl StateRuntime {
     ) -> Result<Declaration, ServerError> {
         let verified = context.verified_request().ok_or_else(auth_denied)?;
         let caller = verified.caller();
+        let repository = self.repository.clone();
         if matches!(
             caller.binding,
             trellis_protocol::SessionBinding::Device { .. }
         ) {
-            return self
-                .repository
-                .device_state_declaration(
-                    &caller.principal_id,
-                    &caller.binding,
-                    verified
-                        .authority()
-                        .authority()
-                        .resource_bindings_digest
-                        .as_deref(),
-                    resource_name,
-                )
-                .map_err(|_| auth_denied());
+            let (principal, binding, name) = (
+                caller.principal_id.clone(),
+                caller.binding.clone(),
+                resource_name.to_owned(),
+            );
+            let digest = verified
+                .authority()
+                .authority()
+                .resource_bindings_digest
+                .clone();
+            return blocking(move || {
+                repository.device_state_declaration(&principal, &binding, digest.as_deref(), &name)
+            })
+            .await
+            .map_err(|_| auth_denied());
         }
         let (resource_id, _) = SqliteAuthorizationStore::state_namespace(
             &caller.principal_id,
@@ -393,8 +399,8 @@ impl StateRuntime {
             resource_name,
         )
         .map_err(|_| auth_denied())?;
-        self.repository
-            .state_declaration(&resource_id)
+        blocking(move || repository.state_declaration(&resource_id))
+            .await
             .map_err(unexpected)
     }
 

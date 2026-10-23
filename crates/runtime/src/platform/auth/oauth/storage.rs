@@ -348,7 +348,7 @@ impl OAuthStorage {
         &self,
         code: &str,
     ) -> Result<super::device::DeviceSelection, StorageError> {
-        let connection = self.authority.connection.lock().map_err(failure)?;
+        let connection = self.authority.writer().map_err(failure)?;
         self.read(Connection::new(&connection), "deviceSelection", code)?
             .ok_or_else(|| StorageError::new("device request unavailable"))
     }
@@ -538,7 +538,7 @@ impl OAuthStorage {
         session: &str,
         now: i64,
     ) -> Result<super::portal::PortalAuthorization, StorageError> {
-        let connection = self.authority.connection.lock().map_err(failure)?;
+        let connection = self.authority.writer().map_err(failure)?;
         let mut flow: super::portal::PortalAuthorization = self
             .read(Connection::new(&connection), "authorization", id)?
             .ok_or_else(|| StorageError::new("authorization unavailable"))?;
@@ -622,7 +622,7 @@ impl OAuthStorage {
         &self,
         action: impl FnOnce(&Connection) -> Result<T, StorageError>,
     ) -> Result<T, StorageError> {
-        let mut connection = self.authority.connection.lock().map_err(failure)?;
+        let mut connection = self.authority.writer().map_err(failure)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(failure)?;
@@ -922,7 +922,7 @@ impl Storage for OAuthStorage {
         let client_id = client_id.clone();
         super::super::sqlite::blocking(move || {
             let client_id = &client_id;
-            let connection = this.authority.connection.lock().map_err(failure)?;
+            let connection = this.authority.writer().map_err(failure)?;
             let registered: Option<(String, String, String, String, String)> = connection
                 .query_row(
                     "SELECT state,kind,display_name,redirect_uris_json,metadata_json \
@@ -1092,7 +1092,7 @@ impl Storage for OAuthStorage {
         let device_code = device_code.to_owned();
         super::super::sqlite::blocking(move || {
             let device_code = device_code.as_str();
-            let connection = this.authority.connection.lock().map_err(failure)?;
+            let connection = this.authority.writer().map_err(failure)?;
             this.read(Connection::new(&connection), "device", device_code)
         })
         .await
@@ -1106,7 +1106,7 @@ impl Storage for OAuthStorage {
         let normalized_user_code = normalized_user_code.to_owned();
         super::super::sqlite::blocking(move || {
             let normalized_user_code = normalized_user_code.as_str();
-            let connection = this.authority.connection.lock().map_err(failure)?;
+            let connection = this.authority.writer().map_err(failure)?;
             let sealed: Option<(String, Vec<u8>)> = connection
                 .query_row(
                     "SELECT lookup_hash,sealed_record \
@@ -1236,7 +1236,7 @@ impl Storage for OAuthStorage {
         let token = token.to_owned();
         super::super::sqlite::blocking(move || {
             let token = token.as_str();
-            let connection = this.authority.connection.lock().map_err(failure)?;
+            let connection = this.authority.writer().map_err(failure)?;
             this.read(Connection::new(&connection), "token", token)
                 .map(|record| record.map(Arc::new))
         })
@@ -1283,7 +1283,7 @@ impl Storage for OAuthStorage {
         let token = token.to_owned();
         super::super::sqlite::blocking(move || {
             let token = token.as_str();
-            let connection = this.authority.connection.lock().map_err(failure)?;
+            let connection = this.authority.writer().map_err(failure)?;
             this.read(Connection::new(&connection), "refresh", token)
                 .map(|record| record.map(Arc::new))
         })

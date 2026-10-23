@@ -1,6 +1,7 @@
 //! Credential and runtime-authority adapters over the existing Auth owners.
 
 use super::sqlite::timestamp;
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
@@ -43,12 +44,9 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                         .ok_or_else(|| rpc_error(AuthError::Denied))?
                         .caller()
                         .clone();
-                    tokio::task::spawn_blocking(move || {
-                        ($operation)(&store, &actor, &verified, &input)
-                    })
-                    .await
-                    .map_err(|_| rpc_error(AuthError::Unavailable))?
-                    .map_err(rpc_error)
+                    blocking(move || ($operation)(&store, &actor, &verified, &input))
+                        .await
+                        .map_err(rpc_error)
                 }
             });
         }};
@@ -67,7 +65,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                         .ok_or_else(|| rpc_error(AuthError::Denied))?
                         .caller()
                         .clone();
-                    tokio::task::spawn_blocking(move || {
+                    blocking(move || {
                         ($operation)(
                             &store,
                             &identity,
@@ -77,7 +75,6 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                         )
                     })
                     .await
-                    .map_err(|_| rpc_error(AuthError::Unavailable))?
                     .map_err(rpc_error)
                 }
             });
@@ -307,7 +304,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                 .ok_or_else(|| rpc_error(AuthError::Denied))?
                 .caller()
                 .clone();
-            tokio::task::spawn_blocking(move || {
+            blocking(move || {
                 let login = verified
                     .login_session_id
                     .as_ref()
@@ -335,7 +332,6 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                 })
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)
         }
     });
@@ -561,11 +557,10 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                 .ok_or_else(|| rpc_error(AuthError::Denied))?
                 .caller()
                 .clone();
-            let renewed = tokio::task::spawn_blocking(move || {
+            let renewed = blocking(move || {
                 renew_admission(&store, &verified, &input, crate::clock::unix_now())
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(rpc_error)?;
             renewed.ok_or_else(|| {
                 domain_failure(

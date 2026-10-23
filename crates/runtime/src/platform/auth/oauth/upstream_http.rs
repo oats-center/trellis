@@ -22,32 +22,26 @@ use serde_json::json;
 use std::sync::Arc;
 
 pub(super) async fn providers(State(engine): State<Arc<OAuthEngine>>) -> Response {
-    let result = (|| {
-        let connection = engine
-            .server
-            .store()
-            .authority
-            .connection
-            .lock()
-            .map_err(|_| super::super::AuthError::Unavailable)?;
-        let mut statement = connection.prepare(
-            "SELECT provider_id,display_name \
-            FROM auth_oidc_providers \
-            WHERE state='active' \
-            ORDER BY display_name,provider_id",
-        )?;
-        let providers = statement
-            .query_map([], |row| {
-                Ok(json!({
-                    "providerId":row.get::<_,
-                    String>(0)?,
-                    "displayName":row.get::<_,
-                    String>(1)?
-                }))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok::<_, super::super::AuthError>(providers)
-    })();
+    let result = with_store(&engine, |store| {
+        store.authority.read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT provider_id,display_name \
+                FROM auth_oidc_providers \
+                WHERE state='active' \
+                ORDER BY display_name,provider_id",
+            )?;
+            let providers = statement
+                .query_map([], |row| {
+                    Ok(json!({
+                        "providerId": row.get::<_, String>(0)?,
+                        "displayName": row.get::<_, String>(1)?
+                    }))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(providers)
+        })
+    })
+    .await;
     match result {
         Ok(providers) => Json(providers).into_response(),
         Err(_) => error(ErrorCode::ServerError),

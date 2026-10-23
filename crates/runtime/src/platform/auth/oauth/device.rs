@@ -255,17 +255,15 @@ impl OAuthEngine {
             .await
             .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
             .ok_or_else(|| ErrorResponse::new(ErrorCode::ServerError))?;
-        self.server
-            .store()
-            .store_device_selection(
-                &grant,
-                &DeviceSelection {
-                    client_id: client_id.as_str().into(),
-                    authorization_details: details.into(),
-                    persistent_dpop_jkt: binding.persistent_dpop_jkt,
-                    public_jwk: binding.public_jwk,
-                },
-            )
+        let store = self.server.store().clone();
+        let selection = DeviceSelection {
+            client_id: client_id.as_str().into(),
+            authorization_details: details.into(),
+            persistent_dpop_jkt: binding.persistent_dpop_jkt,
+            public_jwk: binding.public_jwk,
+        };
+        blocking(move || store.store_device_selection(&grant, &selection))
+            .await
             .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
         Ok(response)
     }
@@ -284,10 +282,9 @@ impl OAuthEngine {
             .await
             .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
             .ok_or_else(|| ErrorResponse::new(ErrorCode::InvalidGrant))?;
-        let selection = self
-            .server
-            .store()
-            .device_selection(&device.device_code)
+        let (store, device_code) = (self.server.store().clone(), device.device_code.clone());
+        let selection = blocking(move || store.device_selection(&device_code))
+            .await
             .map_err(|_| ErrorResponse::new(ErrorCode::InvalidGrant))?;
         let requested = RequestedAuthority::parse(&selection.authorization_details)?;
         if device.client_id.as_str() != approval.client_id
@@ -311,11 +308,10 @@ impl OAuthEngine {
             return Err(ErrorResponse::new(ErrorCode::InvalidGrant).into());
         }
         let now = crate::clock::unix_now();
-        let grant = self
-            .server
-            .store()
-            .authority
-            .approve_grant(identity, approval, now)
+        let authority = self.server.store().authority.clone();
+        let (identity, approval) = (identity.clone(), approval.clone());
+        let grant = blocking(move || authority.approve_grant(&identity, &approval, now))
+            .await
             .map_err(super::portal::ApprovalError::from)?;
         self.server
             .approve_device(user_code, grant)

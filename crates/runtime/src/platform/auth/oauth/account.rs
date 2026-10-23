@@ -11,6 +11,7 @@ use super::{
     oidc::{UpstreamFlow, VerifiedIdentity},
     OAuthEngine, OAuthStorage,
 };
+use crate::platform::auth::blocking;
 use crate::platform::auth::sqlite::Connection;
 use axum::{
     extract::{Path, Query, State},
@@ -909,7 +910,7 @@ pub(super) async fn submit(
     let password = password.clone();
     if kind == "reset" {
         let reset_engine = engine.clone();
-        let result = tokio::task::spawn_blocking(move || {
+        let result = blocking(move || {
             let engine = reset_engine;
             engine.server.store().authority.portal_session_identity(
                 &cookie,
@@ -936,7 +937,7 @@ pub(super) async fn submit(
         })
         .await;
         return match result {
-            Ok(Ok(())) => html(
+            Ok(()) => html(
                 &engine,
                 "Password reset",
                 "<p>Your password was changed. Existing sessions have been signed out.</p>",
@@ -955,7 +956,7 @@ pub(super) async fn submit(
         let new_cookie = replacement.clone();
         let csrf_cookie = csrf.clone();
         let destination = format!("/account/link?token={token}");
-        let result = tokio::task::spawn_blocking(move || {
+        let result = blocking(move || {
             let action = engine.server.store().authority.transaction(|connection| {
                 action(
                     connection,
@@ -979,7 +980,7 @@ pub(super) async fn submit(
         })
         .await;
         return match result {
-            Ok(Ok(())) => cookie_response(
+            Ok(()) => cookie_response(
                 &replacement,
                 Some(&csrf_cookie),
                 300,

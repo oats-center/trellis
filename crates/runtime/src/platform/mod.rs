@@ -40,48 +40,54 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         )
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let keys = callout_keys(&context.config, &nats)?;
-    let store = Arc::new(SqliteAuthorizationStore::open(
-        context.stores.platform()?,
-        &context.config,
-        keys.target_account(),
-    )?);
+    let (platform_store, config, account) = (
+        context.stores.platform()?.clone(),
+        context.config.clone(),
+        keys.target_account().to_owned(),
+    );
+    let store = Arc::new(
+        auth::blocking(move || SqliteAuthorizationStore::open(&platform_store, &config, &account))
+            .await?,
+    );
     verify_jetstream_identity(&store, &context.trellis_nats).await?;
-    store
-        .initialize_issuer(crate::clock::unix_now())
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let custody = context
         .config
         .auth
         .as_ref()
-        .and_then(|auth| auth.oauth_storage_key_file.as_deref())
+        .and_then(|auth| auth.oauth_storage_key_file.clone())
         .ok_or_else(|| RuntimeError::Platform("auth.oauth_storage_key_file is required".into()))?;
-    let storage = auth::OAuthStorage::open(store.clone(), custody)
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let initialized: bool = store
-        .has_administrator()
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-    let account_url = if !initialized {
-        storage
-            .initialize_local_administrator(
-                &context.config.public_origin(),
-                "admin",
-                None,
-                crate::clock::unix_now(),
-            )
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?
-            .1
-    } else {
-        storage
-            .reset_local_administrator(crate::clock::unix_now(), !context.reset_admin)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?
-    };
+    let (opened, public_origin, keep_admin) = (
+        store.clone(),
+        context.config.public_origin(),
+        !context.reset_admin,
+    );
+    let (engine, account_url) = auth::blocking(move || {
+        let platform = |error: &dyn std::fmt::Display| RuntimeError::Platform(error.to_string());
+        opened.initialize_issuer(crate::clock::unix_now())?;
+        let storage =
+            auth::OAuthStorage::open(opened.clone(), &custody).map_err(|error| platform(&error))?;
+        let account_url = if !opened.has_administrator()? {
+            storage
+                .initialize_local_administrator(
+                    &public_origin,
+                    "admin",
+                    None,
+                    crate::clock::unix_now(),
+                )
+                .map_err(|error| platform(&error))?
+                .1
+        } else {
+            storage
+                .reset_local_administrator(crate::clock::unix_now(), keep_admin)
+                .map_err(|error| platform(&error))?
+        };
+        let engine = auth::OAuthEngine::new(storage)?;
+        Ok::<_, RuntimeError>((Arc::new(engine), account_url))
+    })
+    .await?;
     if let Some(url) = account_url {
         println!("{}", serde_json::json!({"adminAccountUrl":url}));
     }
-    let engine = Arc::new(
-        auth::OAuthEngine::new(storage)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?,
-    );
     let oauth = context
         .config
         .resolve_oauth_listener()
@@ -491,6 +497,20 @@ pub async fn initialize_admin_credentials(
     username: &str,
     password: Option<&str>,
 ) -> Result<(String, Option<String>), RuntimeError> {
+    let (config, username, password) = (
+        config.clone(),
+        username.to_owned(),
+        password.map(str::to_owned),
+    );
+    auth::blocking(move || initialize_admin_credentials_in(&config, &username, password.as_deref()))
+        .await
+}
+
+fn initialize_admin_credentials_in(
+    config: &RuntimeConfig,
+    username: &str,
+    password: Option<&str>,
+) -> Result<(String, Option<String>), RuntimeError> {
     let crate::StorageBackend::Sqlite(storage) = config
         .platform_storage_backend()
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
@@ -549,15 +569,14 @@ pub async fn initialize_admin_credentials(
 
 // Resource evidence must never be reused after restoring a mismatched NATS store.
 async fn verify_jetstream_identity(
-    auth_store: &SqliteAuthorizationStore,
+    auth_store: &Arc<SqliteAuthorizationStore>,
     client: &async_nats::Client,
 ) -> Result<(), RuntimeError> {
     use async_nats::jetstream::{context::GetStreamErrorKind, kv, ErrorCode};
     const BUCKET: &str = "TRELLIS_PLATFORM_IDENTITY";
     const KEY: &str = "store";
-    let (identity, bound) = auth_store
-        .jetstream_identity()
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let reader = auth_store.clone();
+    let (identity, bound) = auth::blocking(move || reader.jetstream_identity()).await?;
     let jetstream = async_nats::jetstream::new(client.clone());
     let marker = match jetstream.get_stream(format!("KV_{BUCKET}")).await {
         Ok(_) => Some(
@@ -639,9 +658,8 @@ async fn verify_jetstream_identity(
         ));
     }
     if !bound {
-        auth_store
-            .mark_jetstream_bound(&identity)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        let writer = auth_store.clone();
+        auth::blocking(move || writer.mark_jetstream_bound(&identity)).await?;
     }
     Ok(())
 }

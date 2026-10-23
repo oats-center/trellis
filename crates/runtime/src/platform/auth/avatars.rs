@@ -1,5 +1,6 @@
 //! Image-only short-lived bearers and bounded presentation-image storage.
 
+use crate::platform::auth::blocking;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use image::ImageDecoder as _;
 use ring::hmac;
@@ -186,7 +187,7 @@ impl Avatars {
         let principal = token.principal.clone();
         let revision = token.revision;
         let fingerprint = source.fingerprint.clone();
-        tokio::task::spawn_blocking(move || {
+        blocking(move || {
             store.transaction(|connection| {
                 let current: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 \
@@ -214,7 +215,6 @@ impl Avatars {
             })
         })
         .await
-        .map_err(|_| AuthError::Unavailable)?
     }
 
     async fn save(
@@ -228,7 +228,7 @@ impl Avatars {
         let principal = token.principal.clone();
         let revision = token.revision;
         let fingerprint = source.fingerprint.clone();
-        tokio::task::spawn_blocking(move || {
+        blocking(move || {
             store.transaction(|connection| {
                 let current: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 \
@@ -270,7 +270,6 @@ impl Avatars {
             })
         })
         .await
-        .map_err(|_| AuthError::Unavailable)?
     }
 
     async fn ingest(
@@ -283,6 +282,7 @@ impl Avatars {
         now: i64,
     ) -> Result<OwnedSemaphorePermit, AuthError> {
         // The permit remains owned by bounded decoding even if HTTP is cancelled.
+        // Image decoding is CPU work, not store access.
         let (result, permit) =
             tokio::task::spawn_blocking(move || (sanitize(&mime, &bytes).map(Some), permit))
                 .await
@@ -353,11 +353,10 @@ impl Avatars {
             .ok_or(AuthError::NotFound)?;
         let store = self.store.clone();
         let principal = token.principal.clone();
-        let profile = tokio::task::spawn_blocking(move || {
+        let profile = blocking(move || {
             store.transaction(|connection| profiles::read(connection, &principal))
         })
-        .await
-        .map_err(|_| AuthError::Unavailable)??;
+        .await?;
         if profile.revision != token.revision {
             return Err(AuthError::NotFound);
         }

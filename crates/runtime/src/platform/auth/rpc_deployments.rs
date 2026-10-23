@@ -1,6 +1,7 @@
 //! Typed catalog and provisioning reads over the authoritative SQLite aggregates.
 
 use super::sqlite::timestamp;
+use crate::platform::auth::blocking;
 use std::sync::Arc;
 use trellis_rs::generated::TrellisError;
 use trellis_rs::service::{DeclaredRpcError, ServerError};
@@ -36,14 +37,13 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                 async move {
                     let actor =
                         caller(&context, Some(PlatformPrivilege::$privilege)).map_err(rpc_error)?;
-                    tokio::task::spawn_blocking(move || {
+                    blocking(move || {
                         store.transaction(|connection| {
                             SqliteAuthorizationStore::require_privilege(connection, &actor, $name)?;
                             ($operation)(connection, &input)
                         })
                     })
                     .await
-                    .map_err(|_| rpc_error(AuthError::Unavailable))?
                     .map_err(rpc_error)
                 }
             });
@@ -89,12 +89,9 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&reviews);
         async move {
             let actor = caller(&context, Some(PlatformPrivilege::ApisAccept)).map_err(rpc_error)?;
-            tokio::task::spawn_blocking(move || {
-                review_api(&store, &actor, &input, crate::clock::unix_now())
-            })
-            .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
-            .map_err(rpc_error)
+            blocking(move || review_api(&store, &actor, &input, crate::clock::unix_now()))
+                .await
+                .map_err(rpc_error)
         }
     });
     macro_rules! accept {
@@ -110,11 +107,10 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                         &input,
                     )
                     .map_err(rpc_error)?;
-                    tokio::task::spawn_blocking(move || {
+                    blocking(move || {
                         $operation(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
-                    .map_err(|_| rpc_error(AuthError::Unavailable))?
                     .map_err(rpc_error)
                 }
             });
@@ -139,11 +135,10 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                         &input,
                     )
                     .map_err(rpc_error)?;
-                    tokio::task::spawn_blocking(move || {
+                    blocking(move || {
                         ($operation)(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
-                    .map_err(|_| rpc_error(AuthError::Unavailable))?
                     .map_err(|error| match error {
                         AuthError::Invalid(ref code) if code == "identity_public_key_required" => {
                             ServerError::DeclaredRpc(DeclaredRpcError::new(
@@ -229,11 +224,10 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             let deployment = input.deployment_id.to_string();
             let now = crate::clock::unix_now();
             let active = input.identity_public_key.is_some();
-            let response = tokio::task::spawn_blocking(move || {
+            let response = blocking(move || {
                 super::oauth::enrollment::provision(oauth.server.store(), &identity, &input, now)
             })
             .await
-            .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(|error| match error {
                 AuthError::Invalid(ref code) if code == "identity_public_key_required" => {
                     ServerError::DeclaredRpc(DeclaredRpcError::new(
@@ -449,11 +443,10 @@ pub(super) async fn provision_service_instance(
     let saved_store = store.clone();
     let saved_identity = identity.clone();
     let saved_input = input.clone();
-    let response = tokio::task::spawn_blocking(move || {
+    let response = blocking(move || {
         provision_instance(&saved_store, &saved_identity, &saved_input, "service", now)
     })
-    .await
-    .map_err(|_| AuthError::Unavailable)??;
+    .await?;
     super::resources::materialize_native_kv(
         store,
         operational,

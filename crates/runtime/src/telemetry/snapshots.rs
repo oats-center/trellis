@@ -966,7 +966,7 @@ where
         Ok(Ok(permit)) => permit,
         _ => return None,
     };
-    let join = tokio::task::spawn_blocking(move || {
+    let join = crate::blocking::spawn(move || {
         let result = read();
         // Held until the blocking work really finishes.
         drop(permit);

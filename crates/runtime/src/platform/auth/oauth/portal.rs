@@ -141,11 +141,11 @@ impl super::OAuthEngine {
                 {
                     return Err(invalid());
                 }
-                let selection = self
-                    .server
-                    .store()
-                    .device_selection(device_code)
-                    .map_err(|_| invalid())?;
+                let (store, code) = (self.server.store().clone(), device_code.clone());
+                let selection =
+                    super::super::sqlite::blocking(move || store.device_selection(&code))
+                        .await
+                        .map_err(|_| invalid())?;
                 Ok(ConsentIntent {
                     client_id: device.client_id,
                     redirect_uri: None,

@@ -105,7 +105,8 @@ pub(crate) struct AuthSettings {
 
 /// Auth's existing platform database owns all policy and effect transactions.
 pub(crate) struct SqliteAuthorizationStore {
-    pub(super) connection: Mutex<rusqlite::Connection>,
+    /// Reached only through `writer`, which enforces the blocking-pool rule.
+    connection: Mutex<rusqlite::Connection>,
     /// A read-only connection to the same WAL database, so reads neither wait
     /// for nor delay the writer. Without WAL, reads share the writer.
     reader: Option<Mutex<rusqlite::Connection>>,
@@ -163,6 +164,12 @@ pub(super) fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp
     trellis_rs::generated::Timestamp::from_unix_seconds(seconds).map_err(|_| AuthError::Unavailable)
 }
 
+impl From<AuthError> for crate::supervisor::RuntimeError {
+    fn from(error: AuthError) -> Self {
+        Self::Platform(error.to_string())
+    }
+}
+
 /// Run synchronous Auth storage work on Tokio's blocking pool.
 ///
 /// Every store call takes the connection mutex and can wait behind password
@@ -179,12 +186,10 @@ where
     if tokio::runtime::Handle::try_current().is_err() {
         return work();
     }
-    tokio::task::spawn_blocking(work)
-        .await
-        .unwrap_or_else(|error| {
-            tracing::error!(%error, "Auth storage task failed");
-            Err(AuthError::Unavailable.into())
-        })
+    crate::blocking::spawn(work).await.unwrap_or_else(|error| {
+        tracing::error!(%error, "Auth storage task failed");
+        Err(AuthError::Unavailable.into())
+    })
 }
 
 /// A locked read connection.
@@ -421,8 +426,7 @@ impl SqliteAuthorizationStore {
         let store = Self::from_connection(connection, signer, settings, custody_directory)
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         let initialized: bool = store
-            .connection
-            .lock()
+            .writer()
             .map_err(|_| RuntimeError::Platform("authorization writer unavailable".into()))?
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM auth_authorization_issuers)",
@@ -514,7 +518,7 @@ impl SqliteAuthorizationStore {
     }
 
     pub(crate) fn issuer(&self) -> Result<AuthorityIssuerKey, AuthError> {
-        let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        let connection = self.writer()?;
         self.current_issuer(Connection::new(&connection))
     }
 
@@ -529,7 +533,7 @@ impl SqliteAuthorizationStore {
     pub(crate) fn runtime_authorization_trust(
         &self,
     ) -> Result<trellis_rs::client::RuntimeAuthorizationTrust, AuthError> {
-        let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        let connection = self.writer()?;
         let connection = Connection::new(&connection);
         let issuer = self.current_issuer(connection)?;
         let (current, rotation_sequence): (bool, u64) = connection.query_row(
@@ -565,7 +569,7 @@ impl SqliteAuthorizationStore {
         &self,
         operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
     ) -> Result<T, AuthError> {
-        let mut connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        let mut connection = self.writer()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = operation(Connection::new(&transaction))?;
         transaction.commit()?;
@@ -630,8 +634,17 @@ impl SqliteAuthorizationStore {
         operation(Connection::new(&transaction))
     }
 
+    /// The writer connection. Every write and every transaction locks it here.
+    pub(super) fn writer(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, AuthError> {
+        crate::blocking::assert_off_async_workers();
+        self.connection.lock().map_err(|_| AuthError::Unavailable)
+    }
+
     /// The connection for a single read-only statement outside a transaction.
     pub(super) fn reader(&self) -> Result<Reader<'_>, AuthError> {
+        crate::blocking::assert_off_async_workers();
         self.reader
             .as_ref()
             .unwrap_or(&self.connection)

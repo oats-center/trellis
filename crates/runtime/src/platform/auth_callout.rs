@@ -2,6 +2,8 @@
 
 use std::{fs, path::Path, sync::Arc, time::Duration};
 
+use crate::platform::auth::blocking;
+
 use async_nats::HeaderMap;
 use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -269,11 +271,10 @@ impl AuthCallout {
                         }
                         let store = self.store.clone();
                         let now = crate::clock::unix_now();
-                        tokio::task::spawn_blocking(move || {
+                        blocking(move || {
                             store.disconnect_attachment(&server, cid, &key, now)
                         })
                         .await
-                        .map_err(|error| RuntimeError::Platform(error.to_string()))?
                         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                     }
                 }
@@ -339,7 +340,7 @@ async fn process(
     }
     let request = request.clone();
     let signing = keys.clone();
-    let admission = tokio::task::spawn_blocking(move || {
+    let admission = blocking(move || {
         let connect = &request.connect_opts;
         let ephemeral = connect.nkey.as_deref().ok_or(AuthError::Denied)?;
         signing.validate_sentinel(connect.jwt.as_deref().ok_or(AuthError::Denied)?)?;
@@ -360,8 +361,8 @@ async fn process(
         signing.authorized_user_jwt(&request.user_nkey, &policy, &attachment.attachment_id)
     });
     let result = match tokio::time::timeout(ADMISSION_TIMEOUT, admission).await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) | Err(_) => Err(AuthError::Unavailable),
+        Ok(result) => result,
+        Err(_) => Err(AuthError::Unavailable),
     };
     let response = match result {
         Ok(jwt) => keys.response(&claims.payload().request, Ok(jwt))?,

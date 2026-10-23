@@ -52,7 +52,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                 let engine = metadata_engine.clone();
                 let endpoints = nats_endpoints.clone();
                 async move {
-                    let metadata = tokio::task::spawn_blocking(move || {
+                    let metadata = blocking(move || {
                         let trust = engine
                             .server
                             .store()
@@ -82,7 +82,7 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     })
                     .await;
                     match metadata {
-                        Ok(Ok(metadata)) => Json(metadata).into_response(),
+                        Ok(metadata) => Json(metadata).into_response(),
                         _ => error(ErrorCode::ServerError),
                     }
                 }
@@ -259,10 +259,9 @@ pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> R
                     }
                 };
                 if cleanup_due {
-                    let result = maintenance_engine
-                        .server
-                        .store()
-                        .cleanup_expired(crate::clock::unix_now());
+                    let store = maintenance_engine.server.store().clone();
+                    let result =
+                        blocking(move || store.cleanup_expired(crate::clock::unix_now())).await;
                     if result.is_err() {
                         tracing::warn!(
                             security_event = "oauth_cleanup_unavailable",
@@ -320,7 +319,7 @@ async fn issuer_chain(
     if input.pinned_key_id.len() > 128 || input.target_key_id.len() > 128 {
         return error(ErrorCode::InvalidRequest);
     }
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let store = &engine.server.store().authority;
         store.transaction(|connection| {
             // A compromised pin cannot authenticate a new trust root. Recovery
@@ -351,7 +350,7 @@ async fn issuer_chain(
     })
     .await;
     match result {
-        Ok(Ok(chain)) => {
+        Ok(chain) => {
             let mut response = Json(chain).into_response();
             response
                 .headers_mut()
@@ -519,24 +518,22 @@ async fn login_page(
         return error(ErrorCode::AccessDenied);
     };
     let now = crate::clock::unix_now();
-    let session = match engine
-        .server
-        .store()
-        .authority
-        .portal_session_identity(&cookie, &csrf, now)
-    {
-        Ok(session) => session,
-        Err(_) => return error(ErrorCode::AccessDenied),
-    };
-    if engine
-        .server
-        .store()
-        .authorization(transaction, &session, now)
-        .is_err()
-    {
-        return error(ErrorCode::InvalidRequest);
+    let transaction = transaction.clone();
+    let pending = super::with_store(&engine, move |store| {
+        let session = store
+            .authority
+            .portal_session_identity(&cookie, &csrf, now)
+            .map_err(|_| ErrorCode::AccessDenied)?;
+        store
+            .authorization(&transaction, &session, now)
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        Ok::<_, ErrorCode>(())
+    })
+    .await;
+    match pending {
+        Ok(()) => super::assets::page(&engine, None),
+        Err(code) => error(code),
     }
-    super::assets::page(&engine, None)
 }
 
 async fn consent_page(
