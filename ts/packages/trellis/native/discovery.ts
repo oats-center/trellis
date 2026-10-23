@@ -6,6 +6,7 @@ import type { RuntimeAuthorizationTrust } from "../auth/authority.ts";
 import { base64urlDecode, base64urlEncode, sha256 } from "../auth/utils.ts";
 import { codecs } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
+import { boundedJson } from "../auth/oauth_core.ts";
 
 const metadataSchema = z.object({
   issuer: z.string(),
@@ -39,32 +40,6 @@ export type NativeOAuthServer = Readonly<{
 }>;
 
 /** Decode a bounded OAuth response before interpreting its protocol fields. @internal */
-export async function boundedJson(response: Response): Promise<unknown> {
-  if (!response.body) throw new AuthError({ reason: "InvalidOAuthResponse" });
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > 65536)
-        throw new AuthError({ reason: "InvalidOAuthResponse" });
-      chunks.push(next.value);
-    }
-  } finally {
-    await reader.cancel();
-  }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-}
-
 /** Discover only the selected HTTPS origin (literal loopback HTTP is allowed), without redirects. Retained custody never repins from discovery. */
 export async function discoverNativeOAuth(
   origin: string,

@@ -1,15 +1,17 @@
 import { err, isErr, ok, type Result } from "@oatscenter/result";
-import { ulid } from "ulid";
 import { z } from "zod";
 import { AuthError } from "../../errors/AuthError.ts";
 import { authenticateIssuerChain } from "../issuer_trust.ts";
 import { createAuth, type TrellisAuth } from "../session_auth.ts";
 import { base64urlEncode, sha256, utf8, toArrayBuffer } from "../utils.ts";
 import { BrowserSessionStore, type BrowserOAuthScope } from "./storage.ts";
+import { type SignedOAuthAdmission } from "../protocol_wasm.ts";
 import {
-  verifyOAuthAdmissionWasm,
-  type SignedOAuthAdmission,
-} from "../protocol_wasm.ts";
+  boundedJson,
+  dpopThumbprint,
+  postWithDpop,
+  verifyAdmission,
+} from "../oauth_core.ts";
 import {
   SessionAuthorityOwner,
   type RuntimeAuthorizationTrust,
@@ -226,9 +228,7 @@ export class BrowserOAuthClient {
         this.store.dpop.publicKey,
       );
       const publicJwk = { crv, kty, x, y };
-      const jkt = base64urlEncode(
-        await sha256(utf8(JSON.stringify(publicJwk))),
-      );
+      const jkt = await dpopThumbprint(publicJwk);
       sessionStorage.setItem(
         this.#pendingKey(),
         JSON.stringify({
@@ -407,129 +407,90 @@ export class BrowserOAuthClient {
       form.set("client_id", this.scope.clientId);
       form.set("trellis_runtime_id", runtimeId);
       form.set("trellis_session_nkey", auth.sessionNkey);
-      for (let attempt = 0; attempt < 3; attempt++) {
-        // Nonce challenges precede artifact consumption. Each retry has a new jti/signature.
-        const proof = await createBrowserDpopProof(
-          this.store.dpop,
-          this.metadata.token_endpoint,
-          runtimeId,
-          auth.sessionKey,
-          this.#nonce,
+      const dpop = this.store.dpop;
+      const publicJwk = await crypto.subtle.exportKey("jwk", dpop.publicKey);
+      const response = await postWithDpop({
+        endpoint: this.metadata.token_endpoint,
+        form,
+        key: {
+          publicJwk,
+          sign: async (bytes) =>
+            await crypto.subtle.sign(
+              { name: "ECDSA", hash: "SHA-256" },
+              dpop.privateKey,
+              toArrayBuffer(bytes),
+            ),
+        },
+        runtimeId,
+        sessionPublicKey: auth.sessionKey,
+        nonce: this.#nonce,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (response.nonce) this.#nonce = response.nonce;
+      // Neither unsigned NATS errors nor transient HTTP failures delete the durable grant/key.
+      if (!response.ok)
+        return err(
+          new AuthError({
+            reason:
+              response.status >= 500
+                ? "OAuthUnavailable"
+                : "OAuthRecoveryRequired",
+          }),
         );
-        const response = await fetch(this.metadata.token_endpoint, {
-          method: "POST",
-          body: form,
-          headers: { DPoP: proof },
-          credentials: "omit",
-          redirect: "error",
-          signal: AbortSignal.timeout(30_000),
-        });
-        const data = await boundedJson(response);
-        const nonce = response.headers.get("DPoP-Nonce");
-        const challenge = z
-          .object({ error: z.literal("use_dpop_nonce") })
-          .safeParse(data);
-        if (
-          response.status === 400 &&
-          challenge.success &&
-          nonce &&
-          nonce.length <= 1024
-        ) {
-          this.#nonce = nonce;
-          continue;
-        }
-        // Neither unsigned NATS errors nor transient HTTP failures delete the durable grant/key.
-        if (!response.ok)
-          return err(
-            new AuthError({
-              reason:
-                response.status >= 500
-                  ? "OAuthUnavailable"
-                  : "OAuthRecoveryRequired",
-            }),
-          );
-        const token = tokenSchema.parse(data);
-        if (form.get("grant_type") === "refresh_token") {
-          const saved = await this.store.retainRotatedToken(
-            token.refresh_token,
-            form.get("refresh_token") ?? "",
-          );
-          if (saved.isErr()) return err(saved.error);
-        }
-        // Recheck the authenticated chain after network I/O; an issuer retired
-        // while the request was in flight must not mint a newly installed grant.
-        if (this.#owner) await this.store.retainTrust(this.#owner);
-        let trust = this.store.trust;
-        let verified = await verifyOAuthAdmissionWasm(
-          utf8(token.trellis_admission),
-          {
-            issuer: trust.issuer,
-            trellisInstanceId: trust.instanceId,
-            audienceNatsAccount: trust.account,
-            ephemeralNkey: auth.sessionNkey,
-            nowUnixSeconds: auth.currentIat(),
-            maximumLifetimeSeconds: 300,
-          },
+      const token = tokenSchema.parse(response.data);
+      if (form.get("grant_type") === "refresh_token") {
+        const saved = await this.store.retainRotatedToken(
+          token.refresh_token,
+          form.get("refresh_token") ?? "",
         );
-        if (!verified.ok) {
-          await this.#prepareTrust();
-          trust = this.store.trust;
-          verified = await verifyOAuthAdmissionWasm(
-            utf8(token.trellis_admission),
-            {
-              issuer: trust.issuer,
-              trellisInstanceId: trust.instanceId,
-              audienceNatsAccount: trust.account,
-              ephemeralNkey: auth.sessionNkey,
-              nowUnixSeconds: auth.currentIat(),
-              maximumLifetimeSeconds: 300,
-            },
-          );
-          if (!verified.ok)
-            return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
-        }
-        const body = verified.admission.credential;
-        const { crv, kty, x, y } = await crypto.subtle.exportKey(
-          "jwk",
-          this.store.dpop.publicKey,
-        );
-        const jkt = base64urlEncode(
-          await sha256(utf8(JSON.stringify({ crv, kty, x, y }))),
-        );
-        const grant = this.store.grant;
-        if (
-          (this.#owner &&
-            this.#owner.trustSnapshot.issuer.keyId !== trust.issuer.keyId) ||
-          body.runtimeId !== runtimeId ||
-          body.clientId !== this.scope.clientId ||
-          body.persistentDpopJkt !== jkt ||
-          body.binding.bindingKind !== "browser" ||
-          body.binding.browserOrigin !== location.origin ||
-          body.binding.browserOrigin !== this.scope.browserOrigin ||
-          (grant &&
-            (body.principalId !== grant.principalId ||
-              (form.get("grant_type") === "refresh_token" &&
-                (body.oauthGrantId !== grant.oauthGrantId ||
-                  body.loginSessionId !== grant.loginSessionId))))
-        )
-          return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
-        if (nonce && nonce.length <= 1024) this.#nonce = nonce;
-        return ok({
-          value: {
-            auth,
-            runtimeId,
-            admission: token.trellis_admission,
-            verifiedAdmission: verified.admission,
-            trust,
-            accessToken: token.access_token,
-            expiresIn: token.expires_in,
-            authorizationDetails: token.authorization_details,
-            metadata: this.metadata,
-          },
-          refreshToken: token.refresh_token,
-        });
+        if (saved.isErr()) return err(saved.error);
       }
-      return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+      // Recheck the authenticated chain after network I/O; an issuer retired
+      // while the request was in flight must not mint a newly installed grant.
+      if (this.#owner) await this.store.retainTrust(this.#owner);
+      const verified = await verifyAdmission({
+        admission: token.trellis_admission,
+        ephemeralNkey: auth.sessionNkey,
+        nowUnixSeconds: () => auth.currentIat(),
+        trust: () => this.store.trust,
+        refreshTrust: async () => await this.#prepareTrust(),
+      });
+      if (!verified.ok)
+        return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+      const trust = verified.trust;
+      const body = verified.admission.credential;
+      const jkt = await dpopThumbprint(publicJwk);
+      const grant = this.store.grant;
+      if (
+        (this.#owner &&
+          this.#owner.trustSnapshot.issuer.keyId !== trust.issuer.keyId) ||
+        body.runtimeId !== runtimeId ||
+        body.clientId !== this.scope.clientId ||
+        body.persistentDpopJkt !== jkt ||
+        body.binding.bindingKind !== "browser" ||
+        body.binding.browserOrigin !== location.origin ||
+        body.binding.browserOrigin !== this.scope.browserOrigin ||
+        (grant &&
+          (body.principalId !== grant.principalId ||
+            (form.get("grant_type") === "refresh_token" &&
+              (body.oauthGrantId !== grant.oauthGrantId ||
+                body.loginSessionId !== grant.loginSessionId))))
+      )
+        return err(new AuthError({ reason: "OAuthRecoveryRequired" }));
+      return ok({
+        value: {
+          auth,
+          runtimeId,
+          admission: token.trellis_admission,
+          verifiedAdmission: verified.admission,
+          trust,
+          accessToken: token.access_token,
+          expiresIn: token.expires_in,
+          authorizationDetails: token.authorization_details,
+          metadata: this.metadata,
+        },
+        refreshToken: token.refresh_token,
+      });
     } catch (cause) {
       return err(
         cause instanceof AuthError
@@ -538,73 +499,4 @@ export class BrowserOAuthClient {
       );
     }
   }
-}
-
-/** RFC 9449 proof and the authenticated Trellis runtime/NKey extension, signed without exporting the private key. */
-export async function createBrowserDpopProof(
-  key: Readonly<CryptoKeyPair>,
-  tokenEndpoint: string,
-  runtimeId: string,
-  sessionPublicKey: string,
-  nonce?: string,
-): Promise<string> {
-  const publicKey = await crypto.subtle.exportKey("jwk", key.publicKey);
-  const header = base64urlEncode(
-    utf8(JSON.stringify({ typ: "dpop+jwt", alg: "ES256", jwk: publicKey })),
-  );
-  const endpoint = new URL(tokenEndpoint);
-  endpoint.search = "";
-  endpoint.hash = "";
-  const thumbprint = base64urlEncode(
-    await sha256(
-      utf8(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: sessionPublicKey })),
-    ),
-  );
-  const payload = base64urlEncode(
-    utf8(
-      JSON.stringify({
-        jti: ulid(),
-        htm: "POST",
-        htu: endpoint.href,
-        iat: Math.floor(Date.now() / 1000),
-        trellis_runtime_id: runtimeId,
-        trellis_nats_jkt: thumbprint,
-        ...(nonce === undefined ? {} : { nonce }),
-      }),
-    ),
-  );
-  const input = `${header}.${payload}`;
-  const signature = new Uint8Array(
-    await crypto.subtle.sign(
-      { name: "ECDSA", hash: "SHA-256" },
-      key.privateKey,
-      toArrayBuffer(utf8(input)),
-    ),
-  );
-  return `${input}.${base64urlEncode(signature)}`;
-}
-
-async function boundedJson(response: Response): Promise<unknown> {
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("empty OAuth response");
-  let size = 0;
-  const chunks: Uint8Array[] = [];
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.length;
-      if (size > 64 * 1024) throw new Error("OAuth response budget exceeded");
-      chunks.push(value);
-    }
-  } finally {
-    await reader.cancel();
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }

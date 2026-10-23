@@ -6,8 +6,12 @@ import {
   SessionAuthorityOwner,
   type RuntimeAuthorizationTrust,
 } from "../auth/authority.ts";
-import { verifyOAuthAdmissionWasm } from "../auth/protocol_wasm.ts";
-import { base64urlEncode, sha256, utf8, toArrayBuffer } from "../auth/utils.ts";
+import {
+  dpopThumbprint,
+  postWithDpop,
+  verifyAdmission,
+} from "../auth/oauth_core.ts";
+import { base64urlEncode } from "../auth/utils.ts";
 import type { AppRequestDescriptor } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
 import { authenticateIssuerChain } from "../auth/issuer_trust.ts";
@@ -19,7 +23,7 @@ import {
   type NativeOAuthCustodyLease,
   type NativeCredentialScope,
 } from "./custody.ts";
-import { boundedJson, discoverNativeOAuth } from "./discovery.ts";
+import { discoverNativeOAuth } from "./discovery.ts";
 
 const tokenSchema = z.object({
   token_type: z.string(),
@@ -309,90 +313,40 @@ export class NativeOAuthClient {
     fields: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<unknown> {
-    const uri = `${this.scope.issuer}${endpoint}`;
-    let nonce: string | undefined;
-    const boundedSignal = AbortSignal.any([
-      AbortSignal.timeout(30000),
-      ...(signal ? [signal] : []),
-    ]);
     const form = new URLSearchParams({
       ...fields,
       client_id: this.scope.clientId,
       trellis_runtime_id: this.runtimeId,
       trellis_session_nkey: this.auth.sessionNkey,
     });
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const header = base64urlEncode(
-        utf8(
-          JSON.stringify({
-            typ: "dpop+jwt",
-            alg: "ES256",
-            jwk: this.#lease.publicJwk,
-          }),
-        ),
-      );
-      const thumbprint = base64urlEncode(
-        await sha256(
-          utf8(
-            JSON.stringify({
-              crv: "Ed25519",
-              kty: "OKP",
-              x: this.auth.sessionKey,
-            }),
-          ),
-        ),
-      );
-      const claims = base64urlEncode(
-        utf8(
-          JSON.stringify({
-            htm: "POST",
-            htu: uri,
-            iat: Math.floor(Date.now() / 1000),
-            jti: crypto.randomUUID(),
-            trellis_runtime_id: this.runtimeId,
-            trellis_nats_jkt: thumbprint,
-            ...(nonce ? { nonce } : {}),
-          }),
-        ),
-      );
-      const input = `${header}.${claims}`;
-      const proof = `${input}.${base64urlEncode(new Uint8Array(await this.#lease.sign(new Uint8Array(toArrayBuffer(utf8(input))))))}`;
-      const response = await fetch(uri, {
-        method: "POST",
-        body: form,
-        headers: { DPoP: proof },
-        credentials: "omit",
-        redirect: "error",
-        signal: boundedSignal,
-      });
-      const data = await boundedJson(response);
-      if (response.ok) return data;
-      const failure = z.object({ error: z.string() }).parse(data);
-      const challenge = response.headers.get("DPoP-Nonce");
-      if (
-        response.status === 400 &&
-        failure.error === "use_dpop_nonce" &&
-        attempt === 0 &&
-        challenge &&
-        challenge.length <= 1024 &&
-        !challenge.includes(",")
-      ) {
-        nonce = challenge;
-        continue;
-      }
-      throw new AuthError({
-        reason:
-          failure.error === "access_denied"
-            ? "OAuthAuthorizationDenied"
-            : failure.error === "expired_token"
-              ? "OAuthDeviceExpired"
-              : failure.error === "authorization_pending" ||
-                  failure.error === "slow_down"
-                ? failure.error
-                : "OAuthRecoveryRequired",
-      });
-    }
-    throw new AuthError({ reason: "OAuthRecoveryRequired" });
+    const lease = this.#lease;
+    const response = await postWithDpop({
+      endpoint: `${this.scope.issuer}${endpoint}`,
+      form,
+      key: {
+        publicJwk: lease.publicJwk,
+        sign: async (bytes) => await lease.sign(bytes),
+      },
+      runtimeId: this.runtimeId,
+      sessionPublicKey: this.auth.sessionKey,
+      signal: AbortSignal.any([
+        AbortSignal.timeout(30000),
+        ...(signal ? [signal] : []),
+      ]),
+    });
+    if (response.ok) return response.data;
+    const failure = z.object({ error: z.string() }).parse(response.data);
+    throw new AuthError({
+      reason:
+        failure.error === "access_denied"
+          ? "OAuthAuthorizationDenied"
+          : failure.error === "expired_token"
+            ? "OAuthDeviceExpired"
+            : failure.error === "authorization_pending" ||
+                failure.error === "slow_down"
+              ? failure.error
+              : "OAuthRecoveryRequired",
+    });
   }
 
   async #retainTrust(owner: SessionAuthorityOwner): Promise<void> {
@@ -432,48 +386,23 @@ export class NativeOAuthClient {
     const response = tokenSchema.parse(data);
     if (rotating && response.token_type.toLowerCase() === "dpop")
       await this.#lease.retainRotatedToken(response.refresh_token);
-    let trust = this.trust;
-    let verified = await verifyOAuthAdmissionWasm(
-      utf8(response.trellis_admission),
-      {
-        issuer: trust.issuer,
-        trellisInstanceId: trust.instanceId,
-        audienceNatsAccount: trust.account,
-        ephemeralNkey: this.auth.sessionNkey,
-        nowUnixSeconds: Math.floor(Date.now() / 1000),
-        maximumLifetimeSeconds: 300,
-      },
-    );
-    if (!verified.ok) {
-      // The old token was spent, but this freshly returned successor has never
-      // been sent. Retain it without promoting unverified admission authority.
-      await this.#prepareTrust(signal);
-      trust = this.trust;
-      verified = await verifyOAuthAdmissionWasm(
-        utf8(response.trellis_admission),
-        {
-          issuer: trust.issuer,
-          trellisInstanceId: trust.instanceId,
-          audienceNatsAccount: trust.account,
-          ephemeralNkey: this.auth.sessionNkey,
-          nowUnixSeconds: Math.floor(Date.now() / 1000),
-          maximumLifetimeSeconds: 300,
-        },
-      );
-      if (!verified.ok) throw new AuthError({ reason: "InvalidOAuthResponse" });
-    }
+    // If the old token was spent but this freshly returned successor fails to
+    // verify, it is retained without promoting unverified admission authority.
+    const verified = await verifyAdmission({
+      admission: response.trellis_admission,
+      ephemeralNkey: this.auth.sessionNkey,
+      nowUnixSeconds: () => Math.floor(Date.now() / 1000),
+      trust: () => this.trust,
+      refreshTrust: async () => await this.#prepareTrust(signal),
+    });
+    if (!verified.ok) throw new AuthError({ reason: "InvalidOAuthResponse" });
     const body = verified.admission.credential;
     if (
       this.#lease.principalId !== undefined &&
       this.#lease.principalId !== body.principalId
     )
       throw new AuthError({ reason: "InvalidCredential" });
-    const jwk = this.#lease.publicJwk;
-    const jkt = base64urlEncode(
-      await sha256(
-        utf8(JSON.stringify({ crv: "P-256", kty: "EC", x: jwk.x, y: jwk.y })),
-      ),
-    );
+    const jkt = await dpopThumbprint(this.#lease.publicJwk);
     if (
       response.token_type.toLowerCase() !== "dpop" ||
       body.clientId !== this.scope.clientId ||
