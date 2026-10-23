@@ -314,8 +314,11 @@ tls {
 
 #[test]
 fn managed_listener_parser_rejects_duplicate_listeners() {
-    let error = parse_config("listen: 127.0.0.1:4222\nlisten: 127.0.0.1:4322\nhttp: 127.0.0.1:8222\nwebsocket {\nlisten: 127.0.0.1:8080\n}\n")
-        .expect_err("duplicate native listener must fail");
+    let error = parse_config(
+        "listen: 127.0.0.1:4222\nlisten: 127.0.0.1:4322\nhttp: \
+        127.0.0.1:8222\nwebsocket {\nlisten: 127.0.0.1:8080\n}\n",
+    )
+    .expect_err("duplicate native listener must fail");
     assert!(matches!(
         error,
         NatsConfigError::DuplicateListener {
@@ -349,7 +352,10 @@ fn managed_listener_parser_requires_every_listener() {
     ] {
         let error = parse_config(config).expect_err("missing listener must fail");
         assert!(
-            matches!(error, NatsConfigError::MissingListener { listener: actual, .. } if actual == listener),
+            matches!(
+                error,
+                NatsConfigError::MissingListener { listener: actual, .. } if actual == listener
+            ),
             "expected missing {listener}, got {error}"
         );
     }

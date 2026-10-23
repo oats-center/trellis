@@ -24,10 +24,26 @@ async fn browser_accounts_survive_tabs_and_restart_without_crossing_principals()
     )
     .await
     .unwrap();
-    let device = native.start_device(&serde_json::json!([
-        {"type":"trellis_capabilities","required":["trellis.auth@v1::usersCreate", "trellis.auth@v1::capabilityGrantsGrant", "trellis.auth@v1::oauthClientsPut", "trellis.auth@v1::oauthClientsDisable", "trellis.auth@v1::oauthClientsDelete"],"optional":[]},
-        {"type":"trellis_platform_privileges","required":["principals.manage", "roles.manage", "clients.manage"]}
-    ])).await.unwrap();
+    let device = native
+        .start_device(&serde_json::json!([
+            {
+                "type":"trellis_capabilities",
+                "required": [
+                    "trellis.auth@v1::usersCreate",
+                    "trellis.auth@v1::capabilityGrantsGrant",
+                    "trellis.auth@v1::oauthClientsPut",
+                    "trellis.auth@v1::oauthClientsDisable",
+                    "trellis.auth@v1::oauthClientsDelete"
+                            ],
+                "optional": []
+            },
+            {
+                "type":"trellis_platform_privileges",
+                "required": ["principals.manage", "roles.manage", "clients.manage"]
+            }
+        ]))
+        .await
+        .unwrap();
     runtime
         .approve_device_login("trellis.cli", device.user_code())
         .await

@@ -48,7 +48,13 @@ fn caller(f: &Fixture, issued: &IssuedAuthority) -> AuthenticatedCaller {
     };
     let payload = br#"{"id":"document"}"#;
     let proof = sign_session_request(&request, payload, &SigningKey::from_bytes(&[9; 32])).unwrap();
-    let catalog = f.store.current_catalog(&f.api).unwrap();
+    let catalog = trellis_protocol::AuthenticatedCatalog::authenticate(
+        f.store.current_catalog(&f.api).unwrap(),
+        &issuer,
+        &f.store.settings.instance_id,
+        &f.store.settings.account,
+    )
+    .unwrap();
     AuthorizationVerificationCore::new()
         .verify_request(RequestVerificationInput {
             authority,

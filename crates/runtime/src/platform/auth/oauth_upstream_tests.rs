@@ -445,11 +445,7 @@ staticPasswords:
     .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let server = tokio::spawn(listener.run(
-        super::super::oauth::router(
-            engine.clone(),
-            vec!["tls://127.0.0.1:4222".into()],
-            Vec::new(),
-        ),
+        super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]),
         shutdown.clone(),
     ));
     // Exercise the actual account-link forms and the same verified OIDC callback,
@@ -505,7 +501,17 @@ staticPasswords:
         String::from_utf8_lossy(&browser.stdout),
         String::from_utf8_lossy(&browser.stderr)
     );
-    let linked: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
+    let linked: String = authority
+        .transaction(|connection| {
+            Ok(connection.query_row(
+                "SELECT principal_id \
+                FROM auth_provider_identities \
+                WHERE provider=?1 AND provider_subject=?2",
+                rusqlite::params![provider, subject],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
     assert_eq!(linked, f.principal);
     for (actor, username, password, success) in [
         (&f.principal, "alice", "initial alice password", true),
@@ -623,7 +629,17 @@ staticPasswords:
                 http.get(callback_url).send().await.unwrap().status(),
                 reqwest::StatusCode::BAD_REQUEST
             );
-            let linked: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
+            let linked: String = authority
+                .transaction(|connection| {
+                    Ok(connection.query_row(
+                        "SELECT principal_id \
+                        FROM auth_provider_identities \
+                        WHERE provider=?1 AND provider_subject=?2",
+                        rusqlite::params![provider, subject],
+                        |row| row.get(0),
+                    )?)
+                })
+                .unwrap();
             assert_eq!(linked, f.principal);
             let profile = authority
                 .transaction(|connection| {
@@ -634,7 +650,17 @@ staticPasswords:
             assert_eq!(profile.display_name, "Alice");
         } else {
             assert_eq!(completed.status(), reqwest::StatusCode::BAD_REQUEST);
-            let unchanged: String = authority.transaction(|connection| Ok(connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2", rusqlite::params![provider, subject], |row| row.get(0))?)).unwrap();
+            let unchanged: String = authority
+                .transaction(|connection| {
+                    Ok(connection.query_row(
+                        "SELECT principal_id \
+                        FROM auth_provider_identities \
+                        WHERE provider=?1 AND provider_subject=?2",
+                        rusqlite::params![provider, subject],
+                        |row| row.get(0),
+                    )?)
+                })
+                .unwrap();
             assert_eq!(unchanged, f.principal);
             // Reset uses a real admitted administrative session, the native HTTP
             // form, and real Argon2 credentials, not a fake verified context.
@@ -1022,7 +1048,19 @@ staticPasswords:
         vec![f.write.as_str()]
     );
     // Both mapped roles contribute only through claims verified by the real IdP flow.
-    let login: String = authority.transaction(|connection| Ok(connection.query_row("SELECT login_session_id FROM auth_login_sessions WHERE principal_id=?1 AND provider_id=?2 ORDER BY observation_order DESC LIMIT 1", rusqlite::params![f.principal,provider], |row| row.get(0))?)).unwrap();
+    let login: String = authority
+        .transaction(|connection| {
+            Ok(connection.query_row(
+                "SELECT login_session_id \
+                FROM auth_login_sessions \
+                WHERE principal_id=?1 \
+                AND provider_id=?2 ORDER BY observation_order DESC \
+                LIMIT 1",
+                rusqlite::params![f.principal, provider],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
     let access = authority
         .transaction(|connection| {
             crate::platform::auth::policy::entitlements(connection, &f.principal, Some(&login), now)

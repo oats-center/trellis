@@ -4,32 +4,11 @@ import type { ConnectedNativeClient } from "@oatscenter/trellis/native";
 /** Authorization timing owned by production bootstrap. */
 export type TrellisControlPlaneAuthorization = {
   contextLifetimeSeconds: number;
-  refreshLeadSeconds: number;
-  refreshJitterSeconds: number;
-  minimumContextLifetimeSeconds: number;
   /** Signed OAuth admission lifetime for real NATS CONNECT. */
   oauthAdmissionLifetimeSeconds: number;
   /** Allowed skew for real signed authorization contexts. */
   allowedClockSkewSeconds: number;
 };
-
-/** Provider input accepted by production bootstrap; secrets travel in private JSON files. */
-export type TrellisControlPlaneOAuthProvider =
-  | {
-      type: "github";
-      clientId: string;
-      clientSecret?: string;
-      displayName?: string;
-    }
-  | {
-      type: "oidc";
-      issuer: string;
-      clientId: string;
-      clientSecret?: string;
-      displayName?: string;
-      scopes?: string[];
-      roleClaims?: string[];
-    };
 
 /** Generated participant descriptor accepted by Trellis test admin automation. */
 export type TrellisTestParticipantLike = Readonly<{
@@ -76,8 +55,6 @@ export type TrellisTestRuntimeStartOptions = {
   trellis?: TrellisTestRuntimeTrellisOptions;
   /** Seed via production bootstrap-admin by default; browser-flow exercises first-admin UI. */
   firstAdmin?: "seeded" | "browser-flow";
-  /** OAuth/OIDC providers injected into the isolated test control-plane config. */
-  oauthProviders?: Record<string, TrellisControlPlaneOAuthProvider>;
   /** Additional exact browser origins allowed by the test runtime. */
   webOrigins?: readonly string[];
   /** Route the advertised browser WebSocket endpoint through a replaceable TCP proxy. */

@@ -45,9 +45,6 @@ const PROVIDER_DEPLOYMENT = "tg-op-provider";
 const runtimeOptions = {
   authorization: {
     contextLifetimeSeconds: 55,
-    refreshLeadSeconds: 12,
-    refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 20,
     allowedClockSkewSeconds: 2,
   },
 };

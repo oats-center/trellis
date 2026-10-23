@@ -6,10 +6,7 @@ export {
   trustedInstallationCas,
   trustInstallationCa,
 } from "./src/tls_trust.ts";
-export type {
-  TrellisControlPlaneAuthorization,
-  TrellisControlPlaneOAuthProvider,
-} from "./src/types.ts";
+export type { TrellisControlPlaneAuthorization } from "./src/types.ts";
 export type {
   TrellisNativeSource,
   TrellisTestClientParticipant,

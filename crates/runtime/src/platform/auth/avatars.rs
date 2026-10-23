@@ -186,11 +186,35 @@ impl Avatars {
         let principal = token.principal.clone();
         let revision = token.revision;
         let fingerprint = source.fingerprint.clone();
-        tokio::task::spawn_blocking(move || store.transaction(|connection| {
-            let current:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals p JOIN auth_user_profiles u USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND p.state='active' AND u.version=?2)",params![principal,revision],|row|row.get(0))?;
-            if !current {return Err(AuthError::NotFound);}
-            Ok(connection.query_row("SELECT image_bytes FROM auth_avatar_cache WHERE principal_id=?1 AND source_fingerprint=?2 AND expires_at>?3",params![principal,fingerprint,now],|row|row.get::<_,Option<Vec<u8>>>(0)).optional()?)
-        })).await.map_err(|_|AuthError::Unavailable)?
+        tokio::task::spawn_blocking(move || {
+            store.transaction(|connection| {
+                let current: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 \
+                    FROM auth_principals p \
+                    JOIN auth_user_profiles u USING(principal_id) \
+                    WHERE p.principal_id=?1 \
+                    AND p.kind='user' AND p.state='active' \
+                    AND u.version=?2)",
+                    params![principal, revision],
+                    |row| row.get(0),
+                )?;
+                if !current {
+                    return Err(AuthError::NotFound);
+                }
+                Ok(connection
+                    .query_row(
+                        "SELECT image_bytes FROM auth_avatar_cache \
+                        WHERE principal_id=?1 \
+                        AND source_fingerprint=?2 \
+                        AND expires_at>?3",
+                        params![principal, fingerprint, now],
+                        |row| row.get::<_, Option<Vec<u8>>>(0),
+                    )
+                    .optional()?)
+            })
+        })
+        .await
+        .map_err(|_| AuthError::Unavailable)?
     }
 
     async fn save(
@@ -204,13 +228,49 @@ impl Avatars {
         let principal = token.principal.clone();
         let revision = token.revision;
         let fingerprint = source.fingerprint.clone();
-        tokio::task::spawn_blocking(move || store.transaction(|connection| {
-            let current:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals p JOIN auth_user_profiles u USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND p.state='active' AND u.version=?2)",params![principal,revision],|row|row.get(0))?;
-            if !current {return Err(AuthError::NotFound);}
-            let (status,bytes,ttl)=match result { Ok(Some(bytes))=>("ok",Some(bytes),7*86400),Ok(None)=>("not_found",None,86400),Err(())=>("temporary_error",None,900) };
-            connection.execute("INSERT INTO auth_avatar_cache(principal_id,source_fingerprint,status,mime,image_bytes,fetched_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(principal_id,source_fingerprint) DO UPDATE SET status=excluded.status,mime=excluded.mime,image_bytes=excluded.image_bytes,fetched_at=excluded.fetched_at,expires_at=excluded.expires_at",params![principal,fingerprint,status,bytes.as_ref().map(|_|"image/png"),bytes,now,now+ttl])?;
-            Ok(())
-        })).await.map_err(|_|AuthError::Unavailable)?
+        tokio::task::spawn_blocking(move || {
+            store.transaction(|connection| {
+                let current: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 \
+                    FROM auth_principals p \
+                    JOIN auth_user_profiles u USING(principal_id) \
+                    WHERE p.principal_id=?1 \
+                    AND p.kind='user' AND p.state='active' \
+                    AND u.version=?2)",
+                    params![principal, revision],
+                    |row| row.get(0),
+                )?;
+                if !current {
+                    return Err(AuthError::NotFound);
+                }
+                let (status, bytes, ttl) = match result {
+                    Ok(Some(bytes)) => ("ok", Some(bytes), 7 * 86400),
+                    Ok(None) => ("not_found", None, 86400),
+                    Err(()) => ("temporary_error", None, 900),
+                };
+                connection.execute(
+                    "INSERT INTO auth_avatar_cache(principal_id,source_fingerprint,status,\
+                    mime,image_bytes,fetched_at,expires_at) \
+                    VALUES(?1,?2,?3,?4,?5,?6,?7) \
+                    ON CONFLICT(principal_id,source_fingerprint) \
+                    DO UPDATE SET status=excluded.status,mime=excluded.mime,\
+                    image_bytes=excluded.image_bytes,fetched_at=excluded.fetched_at,\
+                    expires_at=excluded.expires_at",
+                    params![
+                        principal,
+                        fingerprint,
+                        status,
+                        bytes.as_ref().map(|_| "image/png"),
+                        bytes,
+                        now,
+                        now + ttl
+                    ],
+                )?;
+                Ok(())
+            })
+        })
+        .await
+        .map_err(|_| AuthError::Unavailable)?
     }
 
     async fn ingest(
@@ -350,7 +410,12 @@ impl Avatars {
                 }
                 Ok(Ok(None)) => self.save(&token, &source, Ok(None), now).await?,
                 result => {
-                    tracing::debug!(principal_id=%token.principal,source=source.category,reason="fetch_failed","profile image unavailable");
+                    tracing::debug!(
+                        principal_id=%token.principal,
+                        source=source.category,
+                        reason="fetch_failed",
+                        "profile image unavailable"
+                    );
                     self.save(&token, &source, Err(()), now).await?;
                     if result.is_err() {
                         return Err(AuthError::NotFound);

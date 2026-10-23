@@ -1,3 +1,5 @@
+use async_nats::jetstream::consumer::{pull, AckPolicy, DeliverPolicy};
+use async_nats::jetstream::{stream::ConsumerErrorKind, ErrorCode};
 use std::{fmt, pin::Pin, task::Poll, time::Duration, time::Instant};
 
 use async_nats::jetstream::kv::{CreateErrorKind, Operation, UpdateErrorKind};
@@ -447,9 +449,7 @@ impl tokio::io::AsyncRead for BoundStoreObject {
 struct StoreReadState {
     runtime: tokio::runtime::Handle,
     guard: StoreGuard,
-    consumer: Option<
-        async_nats::jetstream::consumer::Consumer<async_nats::jetstream::consumer::pull::Config>,
-    >,
+    consumer: Option<async_nats::jetstream::consumer::Consumer<pull::Config>>,
     stream: String,
     subject: String,
     name: Option<String>,
@@ -683,13 +683,17 @@ impl BoundStoreResourceClient {
                 .guard
                 .context
                 .create_consumer_on_stream(
-                    async_nats::jetstream::consumer::pull::Config {
+                    pull::Config {
                         name: Some(name.clone()),
                         filter_subject: format!("$O.{}.C.{}", state.guard.bucket, info.nuid),
-                        ack_policy: async_nats::jetstream::consumer::AckPolicy::None,
+                        ack_policy: AckPolicy::None,
                         max_waiting: 1,
                         max_batch: 100,
-                        max_bytes: state.guard.read_batch_bytes.try_into().map_err(nats_error)?,
+                        max_bytes: state
+                            .guard
+                            .read_batch_bytes
+                            .try_into()
+                            .map_err(nats_error)?,
                         inactive_threshold: Duration::from_secs(300),
                         ..Default::default()
                     },
@@ -709,9 +713,9 @@ impl BoundStoreResourceClient {
                         )
                         .await;
                     if let Err(error) = deletion {
-                        let absent = matches!(error.kind(), async_nats::jetstream::stream::ConsumerErrorKind::JetStream(error)
-                            if error.error_code() == async_nats::jetstream::ErrorCode::CONSUMER_NOT_FOUND
-                                || error.error_code() == async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND);
+                        let absent = matches!(error.kind(), ConsumerErrorKind::JetStream(error)
+                    if error.error_code() == ErrorCode::CONSUMER_NOT_FOUND
+                        || error.error_code() == ErrorCode::STREAM_NOT_FOUND);
                         if !absent {
                             return Err(std::io::Error::other(error));
                         }
@@ -723,65 +727,120 @@ impl BoundStoreResourceClient {
                     if state.batch.is_none() {
                         // No SDK expiry timer: a held reader must not discard
                         // already queued chunks when application demand resumes.
-                        state.batch = Some(state.consumer.as_ref().expect("opened store consumer")
-                            .fetch().max_messages(100).max_bytes(state.guard.read_batch_bytes)
-                            .messages().await.map_err(std::io::Error::other)?);
+                        state.batch = Some(
+                            state
+                                .consumer
+                                .as_ref()
+                                .expect("opened store consumer")
+                                .fetch()
+                                .max_messages(100)
+                                .max_bytes(state.guard.read_batch_bytes)
+                                .messages()
+                                .await
+                                .map_err(std::io::Error::other)?,
+                        );
                         state.batch_chunks = 0;
                         state.batch_bytes = 0;
                     }
-                    let wait = super::super::transfer::telemetry::wait(trellis_protocol::transfer::TransferDirection::Receive, "store", "storage_refill");
-                    let next = tokio::time::timeout(Duration::from_secs(5), state.batch.as_mut().expect("active batch").next())
-                        .await.map_err(std::io::Error::other)?;
+                    let wait = super::super::transfer::telemetry::wait(
+                        trellis_protocol::transfer::TransferDirection::Receive,
+                        "store",
+                        "storage_refill",
+                    );
+                    let next = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        state.batch.as_mut().expect("active batch").next(),
+                    )
+                    .await
+                    .map_err(std::io::Error::other)?;
                     wait.finish("ok");
                     let error = match next {
-                        Some(Ok(message)) => break message,
-                        // async-nats 0.50 erases the typed status in finite Batch.
-                        // Accept only the precise byte-boundary status after data;
-                        // an oversized first chunk remains an error.
-                        Some(Err(error)) if state.batch_chunks > 0 && error.to_string().eq_ignore_ascii_case(
-                            "error while processing messages from the stream: 409, Some(\"Message Size Exceeds MaxBytes\")") => {
-                            state.batch = None;
-                            continue;
-                        }
-                        None if state.batch_chunks > 0 => {
-                            state.batch = None;
-                            continue;
-                        }
-                        Some(Err(error)) => std::io::Error::other(error),
-                        None => std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "object chunks missing"),
-                    };
+                Some(Ok(message)) => break message,
+                // async-nats 0.50 erases the typed status in finite Batch.
+                // Accept only the precise byte-boundary status after data;
+                // an oversized first chunk remains an error.
+                Some(Err(error))
+                    if state.batch_chunks > 0 && error.to_string().eq_ignore_ascii_case(
+                    "error while processing messages from the stream: 409, Some(\"Message \
+                    Size Exceeds MaxBytes\")") => {
+                    state.batch = None;
+                    continue;
+                }
+                None if state.batch_chunks > 0 => {
+                    state.batch = None;
+                    continue;
+                }
+                Some(Err(error)) => std::io::Error::other(error),
+                None =>
+                    std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "object chunks missing",
+                        ),
+                            };
                     state.batch = None;
                     // Only a failed/empty pull requires management reconciliation.
                     // Missing consumers resume at the exact last yielded cursor.
-                match state.guard.context.get_consumer_from_stream::<async_nats::jetstream::consumer::pull::Config, _, _>(state.name.as_ref().expect("active store consumer"), &state.stream).await {
-                    Ok(_) => return Err(error),
-                    Err(error) if matches!(error.kind(), async_nats::jetstream::stream::ConsumerErrorKind::JetStream(error) if error.error_code() == async_nats::jetstream::ErrorCode::CONSUMER_NOT_FOUND) => {
-                        let consumer = state.guard.context.create_consumer_on_stream(
-                            async_nats::jetstream::consumer::pull::Config {
-                                name: state.name.clone(),
-                                filter_subject: state.subject.clone(),
-                                deliver_policy: async_nats::jetstream::consumer::DeliverPolicy::ByStartSequence { start_sequence: state.stream_sequence + 1 },
-                                ack_policy: async_nats::jetstream::consumer::AckPolicy::None,
-                                max_waiting: 1,
-                                max_batch: 100,
-                                max_bytes: state.guard.read_batch_bytes.try_into().map_err(std::io::Error::other)?,
-                                inactive_threshold: Duration::from_secs(300),
-                                ..Default::default()
-                            }, &state.stream).await.map_err(std::io::Error::other)?;
-                        state.consumer = Some(consumer);
-                        state.consumer_epoch_chunks = state.received_chunks;
+                    match state
+                        .guard
+                        .context
+                        .get_consumer_from_stream::<pull::Config, _, _>(
+                            state.name.as_ref().expect("active store consumer"),
+                            &state.stream,
+                        )
+                        .await
+                    {
+                        Ok(_) => return Err(error),
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                ConsumerErrorKind::JetStream(error)
+                                    if error.error_code() == ErrorCode::CONSUMER_NOT_FOUND
+                            ) =>
+                        {
+                            let consumer = state
+                                .guard
+                                .context
+                                .create_consumer_on_stream(
+                                    pull::Config {
+                                        name: state.name.clone(),
+                                        filter_subject: state.subject.clone(),
+                                        deliver_policy: DeliverPolicy::ByStartSequence {
+                                            start_sequence: state.stream_sequence + 1,
+                                        },
+                                        ack_policy: AckPolicy::None,
+                                        max_waiting: 1,
+                                        max_batch: 100,
+                                        max_bytes: state
+                                            .guard
+                                            .read_batch_bytes
+                                            .try_into()
+                                            .map_err(std::io::Error::other)?,
+                                        inactive_threshold: Duration::from_secs(300),
+                                        ..Default::default()
+                                    },
+                                    &state.stream,
+                                )
+                                .await
+                                .map_err(std::io::Error::other)?;
+                            state.consumer = Some(consumer);
+                            state.consumer_epoch_chunks = state.received_chunks;
+                        }
+                        Err(error) => return Err(std::io::Error::other(error)),
                     }
-                    Err(error) => return Err(std::io::Error::other(error)),
-                }
                 };
                 state.batch_chunks += 1;
-                state.batch_bytes = state.batch_bytes.checked_add(message.payload.len()).ok_or_else(|| std::io::Error::other("batch size overflow"))?;
+                state.batch_bytes = state
+                    .batch_bytes
+                    .checked_add(message.payload.len())
+                    .ok_or_else(|| std::io::Error::other("batch size overflow"))?;
                 if state.batch_chunks > 100 || state.batch_bytes > state.guard.read_batch_bytes {
                     return Err(std::io::Error::other("object batch exceeds read budget"));
                 }
                 let message_info = message.info().map_err(std::io::Error::other)?;
-                if message_info.consumer_sequence != (state.received_chunks - state.consumer_epoch_chunks) as u64 + 1
-                    || message_info.stream_sequence <= state.stream_sequence {
+                if message_info.consumer_sequence
+                    != (state.received_chunks - state.consumer_epoch_chunks) as u64 + 1
+                    || message_info.stream_sequence <= state.stream_sequence
+                {
                     return Err(std::io::Error::other("object chunk sequence mismatch"));
                 }
                 state.received_chunks += 1;

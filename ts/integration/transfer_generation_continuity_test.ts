@@ -432,9 +432,6 @@ test("an in-flight upload transfer finishes with exact bytes across automatic gr
     {
       authorization: {
         contextLifetimeSeconds: 80,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 46,
       },
     },
   );
@@ -681,9 +678,6 @@ test("download endAck retires the last caller and provider generation leases", a
     {
       authorization: {
         contextLifetimeSeconds: 80,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 46,
       },
     },
   );

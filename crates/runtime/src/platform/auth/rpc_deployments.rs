@@ -1,6 +1,10 @@
 //! Typed catalog and provisioning reads over the authoritative SQLite aggregates.
 
+use super::sqlite::timestamp;
 use std::sync::Arc;
+use trellis_rs::generated::TrellisError;
+use trellis_rs::service::{DeclaredRpcError, ServerError};
+use trellis_runtime_apis::apis::trellis_auth_v1::errors::ValidationError as AuthValidationError;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use trellis_protocol::PlatformPrivilege;
@@ -85,12 +89,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
         async move {
             let actor = caller(&context, Some(PlatformPrivilege::ApisAccept)).map_err(rpc_error)?;
             tokio::task::spawn_blocking(move || {
-                review_api(
-                    &store,
-                    &actor,
-                    &input,
-                    time::OffsetDateTime::now_utc().unix_timestamp(),
-                )
+                review_api(&store, &actor, &input, crate::clock::unix_now())
             })
             .await
             .map_err(|_| rpc_error(AuthError::Unavailable))?
@@ -111,12 +110,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                     )
                     .map_err(rpc_error)?;
                     tokio::task::spawn_blocking(move || {
-                        $operation(
-                            &store,
-                            &identity,
-                            &input,
-                            time::OffsetDateTime::now_utc().unix_timestamp(),
-                        )
+                        $operation(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
                     .map_err(|_| rpc_error(AuthError::Unavailable))?
@@ -145,21 +139,21 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                     )
                     .map_err(rpc_error)?;
                     tokio::task::spawn_blocking(move || {
-                        ($operation)(
-                            &store,
-                            &identity,
-                            &input,
-                            time::OffsetDateTime::now_utc().unix_timestamp(),
-                        )
+                        ($operation)(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
                     .map_err(|_| rpc_error(AuthError::Unavailable))?
                     .map_err(|error| match error {
                         AuthError::Invalid(ref code) if code == "identity_public_key_required" => {
-                            trellis_rs::service::ServerError::DeclaredRpc(trellis_rs::service::DeclaredRpcError::new(
-                                <trellis_runtime_apis::apis::trellis_auth_v1::errors::ValidationError as trellis_rs::generated::TrellisError>::TYPE,
+                            ServerError::DeclaredRpc(DeclaredRpcError::new(
+                                <AuthValidationError as TrellisError>::TYPE,
                                 "Identity public key required",
-                                [("code", serde_json::Value::String("identity_public_key_required".into()))],
+                                [(
+                                    "code",
+                                    serde_json::Value::String(
+                                        "identity_public_key_required".into(),
+                                    ),
+                                )],
                             ))
                         }
                         error => rpc_error(error),
@@ -188,13 +182,30 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&instances);
         let operational = service_operational.clone();
         async move {
-            let identity = mutation(&context, &input.idempotency_key, Some(PlatformPrivilege::PrincipalsManage), &input).map_err(rpc_error)?;
-            provision_service_instance(&store, &operational, &identity, &input, time::OffsetDateTime::now_utc().unix_timestamp()).await.map_err(|error| match error {
+            let identity = mutation(
+                &context,
+                &input.idempotency_key,
+                Some(PlatformPrivilege::PrincipalsManage),
+                &input,
+            )
+            .map_err(rpc_error)?;
+            provision_service_instance(
+                &store,
+                &operational,
+                &identity,
+                &input,
+                crate::clock::unix_now(),
+            )
+            .await
+            .map_err(|error| match error {
                 AuthError::Invalid(ref code) if code == "identity_public_key_required" => {
-                    trellis_rs::service::ServerError::DeclaredRpc(trellis_rs::service::DeclaredRpcError::new(
-                        <trellis_runtime_apis::apis::trellis_auth_v1::errors::ValidationError as trellis_rs::generated::TrellisError>::TYPE,
+                    ServerError::DeclaredRpc(DeclaredRpcError::new(
+                        <AuthValidationError as TrellisError>::TYPE,
                         "Identity public key required",
-                        [("code", serde_json::Value::String("identity_public_key_required".into()))],
+                        [(
+                            "code",
+                            serde_json::Value::String("identity_public_key_required".into()),
+                        )],
                     ))
                 }
                 error => rpc_error(error),
@@ -215,7 +226,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             )
             .map_err(rpc_error)?;
             let deployment = input.deployment_id.to_string();
-            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let now = crate::clock::unix_now();
             let active = input.identity_public_key.is_some();
             let response = tokio::task::spawn_blocking(move || {
                 super::oauth::enrollment::provision(oauth.server.store(), &identity, &input, now)
@@ -224,10 +235,13 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             .map_err(|_| rpc_error(AuthError::Unavailable))?
             .map_err(|error| match error {
                 AuthError::Invalid(ref code) if code == "identity_public_key_required" => {
-                    trellis_rs::service::ServerError::DeclaredRpc(trellis_rs::service::DeclaredRpcError::new(
-                        <trellis_runtime_apis::apis::trellis_auth_v1::errors::ValidationError as trellis_rs::generated::TrellisError>::TYPE,
+                    ServerError::DeclaredRpc(DeclaredRpcError::new(
+                        <AuthValidationError as TrellisError>::TYPE,
                         "Identity public key required",
-                        [("code", serde_json::Value::String("identity_public_key_required".into()))],
+                        [(
+                            "code",
+                            serde_json::Value::String("identity_public_key_required".into()),
+                        )],
                     ))
                 }
                 error => rpc_error(error),
@@ -367,19 +381,58 @@ pub(super) fn apply_deployment(
     input: &AuthDeploymentApplyRequest,
     now: i64,
 ) -> Result<AuthDeploymentMutationResponse, AuthError> {
-    store.mutate(identity, "rpc.deployments.apply", input, now, |connection| {
-        SqliteAuthorizationStore::require_privilege(connection, &identity.actor, "principals.manage")?;
-        let deployment = input.deployment_id.to_string();
-        let current = read_deployment(connection, &deployment)?;
-        if current.revision != input.expected_revision || current.state == AuthDeploymentState::Removed { return Err(AuthError::Conflict); }
-        let resources: String = connection.query_row("SELECT resource_commitments_json FROM auth_deployment_bindings WHERE deployment_id=?1", [&deployment], |row| row.get(0))?;
-        let provisioning = deployment_input(connection, &input.package_evidence, &current.participant_id, serde_json::from_str(&resources)?)?;
-        SqliteAuthorizationStore::install_deployment_in_transaction(connection, &provisioning, Some(&deployment), &current.title, now)?;
-        // Processes retain their installed revision. Current policy projects and
-        // fences their pinned authority; a newer deployment is not a revocation.
-        SqliteAuthorizationStore::policy_changed(connection, &super::EnforcementScope::Deployment(deployment.clone()), now)?;
-        Ok(AuthDeploymentMutationResponse { deployment: read_deployment(connection, &deployment)?, enforcement: None, extra: Default::default() })
-    })
+    store.mutate(
+        identity,
+        "rpc.deployments.apply",
+        input,
+        now,
+        |connection| {
+            SqliteAuthorizationStore::require_privilege(
+                connection,
+                &identity.actor,
+                "principals.manage",
+            )?;
+            let deployment = input.deployment_id.to_string();
+            let current = read_deployment(connection, &deployment)?;
+            if current.revision != input.expected_revision
+                || current.state == AuthDeploymentState::Removed
+            {
+                return Err(AuthError::Conflict);
+            }
+            let resources: String = connection.query_row(
+                "SELECT resource_commitments_json \
+                FROM auth_deployment_bindings \
+                WHERE deployment_id=?1",
+                [&deployment],
+                |row| row.get(0),
+            )?;
+            let provisioning = deployment_input(
+                connection,
+                &input.package_evidence,
+                &current.participant_id,
+                serde_json::from_str(&resources)?,
+            )?;
+            SqliteAuthorizationStore::install_deployment_in_transaction(
+                connection,
+                &provisioning,
+                Some(&deployment),
+                &current.title,
+                now,
+            )?;
+            // Processes retain their installed revision. Current policy projects and
+            // fences their pinned authority; a newer deployment is not a revocation.
+            SqliteAuthorizationStore::policy_changed(
+                connection,
+                &super::EnforcementScope::Deployment(deployment.clone()),
+                now,
+            )?;
+            Ok(AuthDeploymentMutationResponse {
+                deployment: read_deployment(connection, &deployment)?,
+                enforcement: None,
+                extra: Default::default(),
+            })
+        },
+    )
 }
 
 /// Complete service provisioning through the same resource owner used at startup.
@@ -447,15 +500,32 @@ pub(super) fn change_deployment(
                 // Lifecycle changes retain the same materialization. Advance only
                 // evidence that was current before this transition, never stale state.
                 connection.execute(
-                    "UPDATE auth_resources SET binding_revision=binding_revision+1 WHERE owner_kind='deployment' AND owner_id=?1 AND state='ready' AND binding_revision=?2",
-                    params![deployment, current.revision.0.0],
+                    "UPDATE auth_resources \
+                    SET binding_revision=binding_revision+1 \
+                    WHERE owner_kind='deployment' \
+                    AND owner_id=?1 AND state='ready' \
+                    AND binding_revision=?2",
+                    params![deployment, current.revision.0 .0],
                 )?;
             }
             if state == "revoked" {
-                super::resources::detach_deployment_resources(connection, &deployment, &Default::default(), now)?;
-                connection.execute("UPDATE auth_deployment_bindings SET resource_commitments_json='{}' WHERE deployment_id=?1", [&deployment])?;
+                super::resources::detach_deployment_resources(
+                    connection,
+                    &deployment,
+                    &Default::default(),
+                    now,
+                )?;
                 connection.execute(
-                    "UPDATE auth_provisioned_identities SET state='revoked',revoked_at=?2 WHERE deployment_id=?1 AND state='active'",
+                    "UPDATE auth_deployment_bindings \
+                    SET resource_commitments_json='{}' \
+                    WHERE deployment_id=?1",
+                    [&deployment],
+                )?;
+                connection.execute(
+                    "UPDATE auth_provisioned_identities \
+                    SET state='revoked',revoked_at=?2 \
+                    WHERE deployment_id=?1 \
+                    AND state='active'",
                     params![deployment, now],
                 )?;
             }
@@ -524,33 +594,113 @@ pub(super) fn change_instance(
     state: &str,
     now: i64,
 ) -> Result<AuthInstanceMutationResponse, AuthError> {
-    store.mutate(identity, &format!("rpc.{kind}.{state}"), input, now, |connection| {
-        SqliteAuthorizationStore::require_privilege(connection, &identity.actor, "principals.manage")?;
-        let instance_id = input.instance_id.to_string();
-        let instance = read_instance(connection, &instance_id)?;
-        if instance.principal.kind.as_str() != kind || instance.revision != input.expected_revision { return Err(AuthError::Conflict); }
-        let deployment = read_deployment(connection, &instance.deployment_id.to_string())?;
-        if state == "active" {
-            if deployment.state != AuthDeploymentState::Enabled { return Err(AuthError::Denied); }
-            let current: bool = connection.query_row("SELECT i.installed_revision=b.installed_revision FROM auth_instances i JOIN auth_deployment_bindings b USING(deployment_id) WHERE instance_id=?1", [&instance_id], |row| row.get(0))?;
-            if !current { return Err(AuthError::Conflict); }
-        }
-        let command = PolicyMutation::PrincipalState { principal_id: instance.principal.principal_id.to_string(), expected_revision: instance.principal.revision.0.0, state: state.into() };
-        super::policy::apply_policy_in_transaction(connection, identity, &command, now)?;
-        if connection.execute("UPDATE auth_instances SET state=?2,version=version+1,updated_at=?3 WHERE instance_id=?1 AND version=?4 AND state!='revoked'", params![instance_id,state,now,input.expected_revision.0.0])? != 1 { return Err(AuthError::Conflict); }
-        if state == "revoked" {
-            connection.execute("UPDATE auth_provisioned_identities SET state='revoked',revoked_at=?2 WHERE instance_id=?1 AND state='active'", params![instance_id, now])?;
-        }
-        if kind == "device" { connection.execute("UPDATE auth_devices SET state=?2,updated_at=?3,version=version+1 WHERE principal_id=?1", params![instance.principal.principal_id.to_string(),state,now])?; }
-        Ok(AuthInstanceMutationResponse { instance: read_instance(connection, &instance_id)?, enforcement: None, extra: Default::default() })
-    })
+    store.mutate(
+        identity,
+        &format!("rpc.{kind}.{state}"),
+        input,
+        now,
+        |connection| {
+            SqliteAuthorizationStore::require_privilege(
+                connection,
+                &identity.actor,
+                "principals.manage",
+            )?;
+            let instance_id = input.instance_id.to_string();
+            let instance = read_instance(connection, &instance_id)?;
+            if instance.principal.kind.as_str() != kind
+                || instance.revision != input.expected_revision
+            {
+                return Err(AuthError::Conflict);
+            }
+            let deployment = read_deployment(connection, &instance.deployment_id.to_string())?;
+            if state == "active" {
+                if deployment.state != AuthDeploymentState::Enabled {
+                    return Err(AuthError::Denied);
+                }
+                let current: bool = connection.query_row(
+                    "SELECT i.installed_revision=b.installed_revision \
+                    FROM auth_instances i \
+                    JOIN auth_deployment_bindings b USING(deployment_id) \
+                    WHERE instance_id=?1",
+                    [&instance_id],
+                    |row| row.get(0),
+                )?;
+                if !current {
+                    return Err(AuthError::Conflict);
+                }
+            }
+            let command = PolicyMutation::PrincipalState {
+                principal_id: instance.principal.principal_id.to_string(),
+                expected_revision: instance.principal.revision.0 .0,
+                state: state.into(),
+            };
+            super::policy::apply_policy_in_transaction(connection, identity, &command, now)?;
+            if connection.execute(
+                "UPDATE auth_instances \
+                SET state=?2,version=version+1,updated_at=?3 \
+                WHERE instance_id=?1 \
+                AND version=?4 AND state!='revoked'",
+                params![instance_id, state, now, input.expected_revision.0 .0],
+            )? != 1
+            {
+                return Err(AuthError::Conflict);
+            }
+            if state == "revoked" {
+                connection.execute(
+                    "UPDATE auth_provisioned_identities \
+                    SET state='revoked',revoked_at=?2 \
+                    WHERE instance_id=?1 \
+                    AND state='active'",
+                    params![instance_id, now],
+                )?;
+            }
+            if kind == "device" {
+                connection.execute(
+                    "UPDATE auth_devices \
+                    SET state=?2,updated_at=?3,version=version+1 \
+                    WHERE principal_id=?1",
+                    params![instance.principal.principal_id.to_string(), state, now],
+                )?;
+            }
+            Ok(AuthInstanceMutationResponse {
+                instance: read_instance(connection, &instance_id)?,
+                enforcement: None,
+                extra: Default::default(),
+            })
+        },
+    )
 }
 
 pub(super) fn read_instance(
     connection: &Connection,
     instance_id: &str,
 ) -> Result<AuthProvisionedInstance, AuthError> {
-    let (deployment, principal, revision, key, title): (String, String, u64, Option<String>, String) = connection.query_row("SELECT i.deployment_id,i.principal_id,i.version,p.identity_public_key,i.title FROM auth_instances i LEFT JOIN auth_provisioned_identities p USING(instance_id) WHERE i.instance_id=?1", [instance_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (deployment, principal, revision, key, title): (
+        String,
+        String,
+        u64,
+        Option<String>,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT i.deployment_id,i.principal_id,i.version,p.identity_public_key,\
+            i.title \
+            FROM auth_instances i \
+            LEFT JOIN auth_provisioned_identities p USING(instance_id) \
+            WHERE i.instance_id=?1",
+            [instance_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     let (kind, state, created_at, version): (String, String, i64, u64) = connection.query_row(
         "SELECT kind,state,created_at,version FROM auth_principals WHERE principal_id=?1",
         [&principal],
@@ -582,42 +732,125 @@ pub(super) fn review_api(
 ) -> Result<AuthApiReviewResponse, AuthError> {
     let evidence = serde_json::from_value(serde_json::to_value(&input.package_evidence)?)?;
     store.transaction(|connection| {
-        let review = store.review_api_in_transaction(connection, actor, evidence, &input.api_id, now)?;
-        let graph = trellis_idl::compile_evidence(review.proposed.clone()).map_err(|error| AuthError::Invalid(error.to_string()))?;
+        let review =
+            store.review_api_in_transaction(connection, actor, evidence, &input.api_id, now)?;
+        let graph = trellis_idl::compile_evidence(review.proposed.clone())
+            .map_err(|error| AuthError::Invalid(error.to_string()))?;
         let candidate = super::catalog::resolve_api(&graph, &review.api_id)?;
         let mut capability_changes = Vec::new();
-        for name in review.removed_capabilities.iter().chain(&review.consent_changes) {
-            let previous: Option<(u64, u64)> = connection.query_row("SELECT identity_generation,consent_revision FROM auth_capability_identities WHERE capability_id=?1 AND state='active'", [name], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+        for name in review
+            .removed_capabilities
+            .iter()
+            .chain(&review.consent_changes)
+        {
+            let previous: Option<(u64, u64)> = connection
+                .query_row(
+                    "SELECT identity_generation,consent_revision \
+                    FROM auth_capability_identities \
+                    WHERE capability_id=?1 \
+                    AND state='active'",
+                    [name],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
             capability_changes.push(AuthCapabilityChange {
                 capability_id: name.clone().into(),
-                description: if review.removed_capabilities.contains(name) { "Removed" } else { "Consent meaning changed" }.into(),
+                description: if review.removed_capabilities.contains(name) {
+                    "Removed"
+                } else {
+                    "Consent meaning changed"
+                }
+                .into(),
                 previous_identity_generation: previous.map(|value| AuthRevision(value.0.into())),
                 previous_consent_revision: previous.map(|value| AuthRevision(value.1.into())),
-                proposed_consent_revision: candidate.definition().capabilities().iter().find(|(id, _)| id.as_str() == name).map(|(_, definition)| AuthRevision(definition.consent_revision.into())),
+                proposed_consent_revision: candidate
+                    .definition()
+                    .capabilities()
+                    .iter()
+                    .find(|(id, _)| id.as_str() == name)
+                    .map(|(_, definition)| AuthRevision(definition.consent_revision.into())),
                 extra: Default::default(),
             });
         }
         // Changed actions include removed actions: resolve against both definitions.
-        let previous: Option<String> = connection.query_row("SELECT definition_json FROM auth_accepted_apis WHERE api_id=?1", [&review.api_id], |row| row.get(0)).optional()?;
-        let previous = previous.map(|value| super::sqlite::decode(&value)).transpose()?.map(trellis_idl::compile_evidence).transpose().map_err(|error| AuthError::Invalid(error.to_string()))?;
+        let previous: Option<String> = connection
+            .query_row(
+                "SELECT definition_json FROM auth_accepted_apis WHERE api_id=?1",
+                [&review.api_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let previous = previous
+            .map(|value| super::sqlite::decode(&value))
+            .transpose()?
+            .map(trellis_idl::compile_evidence)
+            .transpose()
+            .map_err(|error| AuthError::Invalid(error.to_string()))?;
         let mut action_changes = Vec::new();
         for key in &review.changed_actions {
-            let identity = candidate.definition().actions().keys().find(|action| format!("{:?}:{}", action.kind, action.name) == *key).cloned()
-                .or_else(|| previous.as_ref().and_then(|graph| super::catalog::resolve_api(graph, &review.api_id).ok()).and_then(|api| api.definition().actions().keys().find(|action| format!("{:?}:{}", action.kind, action.name) == *key).cloned()))
+            let identity = candidate
+                .definition()
+                .actions()
+                .keys()
+                .find(|action| format!("{:?}:{}", action.kind, action.name) == *key)
+                .cloned()
+                .or_else(|| {
+                    previous
+                        .as_ref()
+                        .and_then(|graph| super::catalog::resolve_api(graph, &review.api_id).ok())
+                        .and_then(|api| {
+                            api.definition()
+                                .actions()
+                                .keys()
+                                .find(|action| format!("{:?}:{}", action.kind, action.name) == *key)
+                                .cloned()
+                        })
+                })
                 .ok_or(AuthError::Unavailable)?;
-            let direction = match identity.kind { trellis_idl::ActionKind::Rpc => trellis_idl::InteractionDirection::Call, trellis_idl::ActionKind::Operation => trellis_idl::InteractionDirection::Invoke, trellis_idl::ActionKind::Event => trellis_idl::InteractionDirection::Publish, trellis_idl::ActionKind::Live => trellis_idl::InteractionDirection::Subscribe };
-            for action in super::catalog::action_identity(&trellis_idl::ActionSelection { action: identity.clone(), direction }) {
+            let direction = match identity.kind {
+                trellis_idl::ActionKind::Rpc => trellis_idl::InteractionDirection::Call,
+                trellis_idl::ActionKind::Operation => trellis_idl::InteractionDirection::Invoke,
+                trellis_idl::ActionKind::Event => trellis_idl::InteractionDirection::Publish,
+                trellis_idl::ActionKind::Live => trellis_idl::InteractionDirection::Subscribe,
+            };
+            for action in super::catalog::action_identity(&trellis_idl::ActionSelection {
+                action: identity.clone(),
+                direction,
+            }) {
                 action_changes.push(serde_json::from_value(serde_json::to_value(action)?)?);
             }
         }
-        Ok(AuthApiReviewResponse { review: AuthApiReview {
-            review_id: review.review_id.parse().map_err(|_| AuthError::Unavailable)?, api_id: review.api_id.into(), canonical_digest: review.definition_digest.into(),
-            compatible: review.compatible, breakage: review.breaking_changes, capability_changes, action_changes,
-            affected_role_ids: review.affected_roles.keys().map(|value| value.parse().map_err(|_| AuthError::Unavailable)).collect::<Result<_, _>>()?,
-            affected_deployment_ids: review.affected_providers.iter().map(|value| value.parse().map_err(|_| AuthError::Unavailable)).collect::<Result<_, _>>()?,
-            current_generation: (review.expected_generation != 0).then(|| AuthRevision(review.expected_generation.into())),
-            current_accepted_revision: (review.expected_revision != 0).then(|| AuthRevision(review.expected_revision.into())), expires_at: timestamp(now.saturating_add(900))?, extra: Default::default(),
-        }, extra: Default::default() })
+        Ok(AuthApiReviewResponse {
+            review: AuthApiReview {
+                review_id: review
+                    .review_id
+                    .parse()
+                    .map_err(|_| AuthError::Unavailable)?,
+                api_id: review.api_id.into(),
+                canonical_digest: review.definition_digest.into(),
+                compatible: review.compatible,
+                breakage: review.breaking_changes,
+                capability_changes,
+                action_changes,
+                affected_role_ids: review
+                    .affected_roles
+                    .keys()
+                    .map(|value| value.parse().map_err(|_| AuthError::Unavailable))
+                    .collect::<Result<_, _>>()?,
+                affected_deployment_ids: review
+                    .affected_providers
+                    .iter()
+                    .map(|value| value.parse().map_err(|_| AuthError::Unavailable))
+                    .collect::<Result<_, _>>()?,
+                current_generation: (review.expected_generation != 0)
+                    .then(|| AuthRevision(review.expected_generation.into())),
+                current_accepted_revision: (review.expected_revision != 0)
+                    .then(|| AuthRevision(review.expected_revision.into())),
+                expires_at: timestamp(now.saturating_add(900))?,
+                extra: Default::default(),
+            },
+            extra: Default::default(),
+        })
     })
 }
 
@@ -703,7 +936,16 @@ fn reviewed_acceptance(
     mappings: &[AuthReviewedMappingEdit],
     now: i64,
 ) -> Result<ApiAcceptance, AuthError> {
-    let review: String = connection.query_row("SELECT review_json FROM auth_api_reviews WHERE review_id=?1 AND expires_at>?2 AND consumed_at IS NULL", params![acceptance.review_id, now], |row| row.get(0)).optional()?.ok_or(AuthError::Conflict)?;
+    let review: String = connection
+        .query_row(
+            "SELECT review_json FROM auth_api_reviews \
+            WHERE review_id=?1 AND expires_at>?2 \
+            AND consumed_at IS NULL",
+            params![acceptance.review_id, now],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(AuthError::Conflict)?;
     let review: ApiReview = super::sqlite::decode(&review)?;
     if (generation, revision) != (review.expected_generation, review.expected_revision) {
         return Err(AuthError::Conflict);
@@ -731,7 +973,16 @@ fn reviewed_acceptance(
                 expected_revision: edit.expected_revision.0 .0,
             }),
             roles => {
-                let (provider_id, claim_name, claim_value) = connection.query_row("SELECT provider_id,claim_name,claim_value FROM auth_oidc_role_mappings WHERE mapping_id=?1", [&mapping_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?.ok_or(AuthError::NotFound)?;
+                let (provider_id, claim_name, claim_value) = connection
+                    .query_row(
+                        "SELECT provider_id,claim_name,claim_value \
+                        FROM auth_oidc_role_mappings \
+                        WHERE mapping_id=?1",
+                        [&mapping_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?
+                    .ok_or(AuthError::NotFound)?;
                 edits.push(PolicyMutation::OidcMappingPut {
                     mapping_id,
                     provider_id,
@@ -751,8 +1002,23 @@ fn reviewed_acceptance(
 }
 
 fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi, AuthError> {
-    let (generation, revision, digest, accepted_at): (u64, u64, String, i64) = connection.query_row("SELECT generation,accepted_revision,definition_digest,accepted_at FROM auth_accepted_apis WHERE api_id=?1", [api_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).optional()?.ok_or(AuthError::NotFound)?;
-    let mut statement = connection.prepare("SELECT c.capability_id,c.identity_generation,c.consent_revision,c.title,c.description,c.consequence FROM auth_capability_identities c WHERE api_id=?1 AND state='active' ORDER BY capability_id")?;
+    let (generation, revision, digest, accepted_at): (u64, u64, String, i64) = connection
+        .query_row(
+            "SELECT generation,accepted_revision,definition_digest,accepted_at \
+            FROM auth_accepted_apis \
+            WHERE api_id=?1",
+            [api_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
+    let mut statement = connection.prepare(
+        "SELECT c.capability_id,c.identity_generation,c.consent_revision,\
+        c.title,c.description,c.consequence \
+        FROM auth_capability_identities c \
+        WHERE api_id=?1 AND state='active' \
+        ORDER BY capability_id",
+    )?;
     let rows = statement
         .query_map([api_id], |row| {
             Ok((
@@ -765,11 +1031,39 @@ fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let capabilities = rows.into_iter().map(|(id, identity, consent, title, description, consequence)| {
-        let mut statement = connection.prepare("SELECT a.descriptor_json FROM auth_capability_actions c JOIN auth_api_actions a ON a.api_id=c.api_id AND a.generation=c.api_generation AND a.action_key=c.action_key WHERE c.capability_id=?1 AND c.identity_generation=?2 ORDER BY a.action_key")?;
-        let allows = statement.query_map(params![id, identity], |row| row.get::<_, String>(0))?.map(|row| Ok(serde_json::from_str(&row?)?)).collect::<Result<Vec<_>, AuthError>>()?;
-        Ok(AuthCapabilityDefinition { identity: AuthCapabilityIdentity { capability_id: id.into(), identity_generation: AuthRevision(identity.into()), extra: Default::default() }, consent_revision: AuthRevision(consent.into()), api_id: api_id.to_owned().into(), title, description, consequence, allows, extra: Default::default() })
-    }).collect::<Result<_, AuthError>>()?;
+    let capabilities = rows
+        .into_iter()
+        .map(|(id, identity, consent, title, description, consequence)| {
+            let mut statement = connection.prepare(
+                "SELECT a.descriptor_json \
+                FROM auth_capability_actions c \
+                JOIN auth_api_actions a ON a.api_id=c.api_id \
+                AND a.generation=c.api_generation \
+                AND a.action_key=c.action_key \
+                WHERE c.capability_id=?1 \
+                AND c.identity_generation=?2 \
+                ORDER BY a.action_key",
+            )?;
+            let allows = statement
+                .query_map(params![id, identity], |row| row.get::<_, String>(0))?
+                .map(|row| Ok(serde_json::from_str(&row?)?))
+                .collect::<Result<Vec<_>, AuthError>>()?;
+            Ok(AuthCapabilityDefinition {
+                identity: AuthCapabilityIdentity {
+                    capability_id: id.into(),
+                    identity_generation: AuthRevision(identity.into()),
+                    extra: Default::default(),
+                },
+                consent_revision: AuthRevision(consent.into()),
+                api_id: api_id.to_owned().into(),
+                title,
+                description,
+                consequence,
+                allows,
+                extra: Default::default(),
+            })
+        })
+        .collect::<Result<_, AuthError>>()?;
     Ok(AuthAcceptedApi {
         api_id: api_id.to_owned().into(),
         generation: AuthRevision(generation.into()),
@@ -813,7 +1107,12 @@ pub(super) fn read_apis(
     input: &AuthPageRequest,
 ) -> Result<AuthApisListResponse, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare("SELECT api_id FROM auth_accepted_apis WHERE api_id>?1 AND (?2 IS NULL OR instr(lower(api_id),lower(?2))>0) ORDER BY api_id LIMIT ?3")?;
+    let mut statement = connection.prepare(
+        "SELECT api_id FROM auth_accepted_apis \
+        WHERE api_id>?1 AND (?2 IS NULL \
+        OR instr(lower(api_id),lower(?2))>0) \
+        ORDER BY api_id LIMIT ?3",
+    )?;
     let mut ids = statement
         .query_map(
             params![
@@ -846,20 +1145,43 @@ fn page_bounds(page: Option<&CursorQuery>) -> Result<(&str, usize), AuthError> {
     ))
 }
 
-fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp, AuthError> {
-    time::OffsetDateTime::from_unix_timestamp(seconds)
-        .map_err(|_| AuthError::Unavailable)?
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|_| AuthError::Unavailable)?
-        .parse()
-        .map_err(|_| AuthError::Unavailable)
-}
-
 pub(super) fn read_deployment(
     connection: &Connection,
     deployment_id: &str,
 ) -> Result<AuthDeployment, AuthError> {
-    let (participant, kind, state, revision, digest, required, optional, title): (String, String, String, u64, String, String, String, String) = connection.query_row("SELECT d.participant_id,d.participant_kind,d.state,b.revision,b.implementation_digest,b.required_capabilities_json,b.optional_capabilities_json,d.title FROM auth_deployments d JOIN auth_deployment_bindings b USING(deployment_id) WHERE deployment_id=?1", [deployment_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (participant, kind, state, revision, digest, required, optional, title): (
+        String,
+        String,
+        String,
+        u64,
+        String,
+        String,
+        String,
+        String,
+    ) = connection
+        .query_row(
+            "SELECT d.participant_id,d.participant_kind,d.state,b.revision,\
+            b.implementation_digest,b.required_capabilities_json,\
+            b.optional_capabilities_json,d.title \
+            FROM auth_deployments d \
+            JOIN auth_deployment_bindings b USING(deployment_id) \
+            WHERE deployment_id=?1",
+            [deployment_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     Ok(AuthDeployment {
         deployment_id: deployment_id.parse().map_err(|_| AuthError::Unavailable)?,
         title,
@@ -887,7 +1209,15 @@ pub(super) fn read_deployments(
     input: &AuthPageRequest,
 ) -> Result<CursorPage<AuthDeployment>, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare("SELECT deployment_id FROM auth_deployments WHERE deployment_id>?1 AND (?2 IS NULL OR instr(lower(participant_id),lower(?2))>0 OR instr(lower(title),lower(?2))>0) ORDER BY deployment_id LIMIT ?3")?;
+    let mut statement = connection.prepare(
+        "SELECT deployment_id \
+        FROM auth_deployments \
+        WHERE deployment_id>?1 \
+        AND (?2 IS NULL OR instr(lower(participant_id),lower(?2))>0 \
+        OR instr(lower(title),lower(?2))>0) \
+        ORDER BY deployment_id \
+        LIMIT ?3",
+    )?;
     let mut ids = statement
         .query_map(
             params![
@@ -915,7 +1245,16 @@ pub(super) fn read_instances(
     kind: &str,
 ) -> Result<AuthInstancesListResponse, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare("SELECT i.instance_id FROM auth_instances i JOIN auth_deployments d USING(deployment_id) WHERE i.instance_id>?1 AND (?2 IS NULL OR i.deployment_id=?2) AND d.participant_kind=?3 ORDER BY i.instance_id LIMIT ?4")?;
+    let mut statement = connection.prepare(
+        "SELECT i.instance_id \
+        FROM auth_instances i \
+        JOIN auth_deployments d USING(deployment_id) \
+        WHERE i.instance_id>?1 \
+        AND (?2 IS NULL OR i.deployment_id=?2) \
+        AND d.participant_kind=?3 \
+        ORDER BY i.instance_id \
+        LIMIT ?4",
+    )?;
     let mut rows = statement
         .query_map(
             params![

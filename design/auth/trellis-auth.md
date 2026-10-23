@@ -56,10 +56,10 @@ Request admission budgets each client address, and additionally each browser
 clients, navigations, asset loads) share no common budget. Forwarding headers
 are ignored unless the TCP peer falls inside `auth.oauth.trusted_proxies`, a
 list of CIDR ranges (`/32` or `/128` for one address). For a trusted peer, the
-client is the right-most `X-Forwarded-For` hop outside those ranges. Use it for
-a proxy in front of a TLS listener, such as one that re-encrypts; a `proxy`
-transport already admits only its own trusted proxies and presents the
-forwarded client.
+client is the right-most `X-Forwarded-For` hop outside those ranges, and a
+malformed header is rejected. Use it for a proxy in front of a TLS listener,
+such as one that re-encrypts; a `proxy` transport already admits only its own
+trusted proxies and presents the forwarded client. Both use the same walk.
 
 Remote deployments use native TLS NATS and WSS in addition to the dedicated
 HTTPS OAuth listener. Native NATS always terminates its own TLS, because its
@@ -85,10 +85,10 @@ runtime reloads its leaf automatically; the broker reloads on its ordinary
 reload signal.
 
 `[tls] generated_ca_certificate` marks an installation serving its generated
-CA. The runtime then always warns operators at startup, and every user through
-the bundled Console and the Login Portal (`GET /portal/tls` on the OAuth
-listener), with the CA's SHA-256 fingerprint and the expiry of that listener's
-leaf, so trust is verified out of band rather than accepted blindly.
+CA. The runtime then warns operators at startup with the CA's SHA-256
+fingerprint, and the bundled Console and the Login Portal show every user a
+short banner: this Trellis is using self-generated certificates and may not be
+suitable for production.
 Trellis never installs system trust and never disables verification.
 
 Clients trust a private installation CA only through explicit configuration:
@@ -231,11 +231,13 @@ a localhost redirect establishes trust. CIMD and unregistered clients remain
 ineligible for platform privileges, and OAuth/application origin isolation is
 unchanged.
 
-Interactive OAuth approval initially selects all available requested capabilities
-and platform privileges. Select all and Unselect all operate on optional access;
-required access stays selected and unavailable access stays disabled. These are
-presentation defaults, not authorization: the user must still submit approval,
-and the server rechecks the submitted selection against current authority.
+Interactive OAuth approval is opt-in. It initially selects only required access
+and capabilities the user previously remembered for the client; optional
+capabilities and platform privileges start unselected. Select all and Unselect
+all are explicit actions over optional access; required access stays selected
+and unavailable access stays disabled. Selection is presentation, not
+authorization: the user must still submit approval, and the server rechecks the
+submitted selection against current authority.
 Bulk access selection never checks the separate Device Code confirmation.
 
 Registered-client implied capability consent is browser-only and limited to the

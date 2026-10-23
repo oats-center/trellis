@@ -163,39 +163,28 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Dex publishes container images but no release binaries, so build the
-    # pinned v2.46.0 commit once and reuse it until the pin changes.
-    env:
-      DEX_COMMIT: 05a275057112ba93e17db21f600b756f000f1c21
+    # scripts/acquire-test-dex.sh owns the pinned Dex revision for Check and
+    # local runs alike; rebuild only when that pin changes.
     steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
       - name: Restore built Dex
         id: dex-cache
         uses: actions/cache@v4
         with:
-          path: dex-bin/dex
-          key: dex-${{ runner.os }}-${{ runner.arch }}-${{ env.DEX_COMMIT }}
-
-      - name: Check out pinned Dex source
-        if: steps.dex-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: dexidp/dex
-          ref: ${{ env.DEX_COMMIT }}
-          path: dex-source
+          path: dex-bin
+          key: dex-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/acquire-test-dex.sh') }}
 
       - name: Set up Go
         if: steps.dex-cache.outputs.cache-hit != 'true'
         uses: actions/setup-go@v5
         with:
-          go-version-file: dex-source/go.mod
-          cache-dependency-path: dex-source/go.sum
+          go-version: stable
 
-      # Dex's API is an in-tree module replacement, so build the pinned tree
-      # rather than attempting go install against a detached module download.
       - name: Build Dex
         if: steps.dex-cache.outputs.cache-hit != 'true'
-        working-directory: dex-source
-        run: go build -mod=readonly -trimpath -o "$GITHUB_WORKSPACE/dex-bin/dex" ./cmd/dex
+        run: bash scripts/acquire-test-dex.sh --dest dex-bin
 
       - name: Upload test identity provider
         uses: actions/upload-artifact@v4
@@ -213,21 +202,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+          generated: true
+          protocol-wasm: true
+          node: true
 
       - name: Install Node workspace dependencies
         run: npm ci
@@ -253,16 +233,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
+          generated: true
+          portal: true
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -296,16 +271,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
+          generated: true
+          portal: true
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -394,22 +364,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
+          generated: true
+          protocol-wasm: true
+          portal: true
 
       # The one release build every live, browser, demo, package, and image job
       # runs, compiled against the runtime image's Debian bookworm glibc. See
@@ -472,16 +432,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
 
       - name: Download runtime and fixture binaries
         uses: actions/download-artifact@v4
@@ -523,11 +480,6 @@ jobs:
       - name: Expose Rust toolchain binaries
         run: echo "$(dirname "$(rustup which rustfmt)")" >> "$GITHUB_PATH"
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
         with:
@@ -536,12 +488,6 @@ jobs:
           restore-keys: |
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/Cargo.toml', 'xtask/Cargo.toml', '.cargo/config.toml') }}-
             cargo-${{ steps.rust.outputs.cachekey }}-${{ runner.os }}-${{ runner.arch }}-workspace-all-targets-ci-linetables-v1-
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
 
       - name: Install Node workspace dependencies
         run: npm ci
@@ -552,11 +498,7 @@ jobs:
       # Nextest runs every test binary in parallel instead of one binary at a
       # time; it does not run documentation examples, so those run separately.
       - name: Test Rust workspace
-        run: cargo nextest run --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres --no-fail-fast
-
-      - name: Test Rust documentation examples
-        if: ${{ !cancelled() }}
-        run: cargo test --manifest-path Cargo.toml --workspace --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres --doc
+        run: bash scripts/run-rust-tests.sh
 
   typescript:
     name: TypeScript
@@ -567,16 +509,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
+          generated: true
+          protocol-wasm: true
+          node: true
 
       - name: Download producer-built adapter-test runtime
         uses: actions/download-artifact@v4
@@ -586,11 +524,6 @@ jobs:
 
       - name: Extract producer-built adapter-test runtime
         run: mkdir -p dist/runtime-binaries && tar -xzf dist/runtime-binaries.tar.gz -C dist/runtime-binaries ./trellis ./trellis-server
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
 
       - name: Install Node workspace dependencies
         id: deps
@@ -621,33 +554,19 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -721,22 +640,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
+          generated: true
+          protocol-wasm: true
+          portal: true
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -774,27 +683,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
 
       - name: Download runtime and fixture binaries
         uses: actions/download-artifact@v4
@@ -830,21 +725,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+          generated: true
+          protocol-wasm: true
+          node: true
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -875,27 +761,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -948,27 +820,13 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
+          generated: true
+          protocol-wasm: true
+          portal: true
+          node: true
 
       - name: Download runtime binaries
         uses: actions/download-artifact@v4
@@ -1135,22 +993,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
+      - name: Restore Check inputs
+        uses: ./.github/actions/check-inputs
         with:
-          name: check-generated
-
-      - name: Download embedded browser apps
-        uses: actions/download-artifact@v4
-        with:
-          name: check-portal
-          path: crates/runtime/generated
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
+          generated: true
+          protocol-wasm: true
+          portal: true
 
       - name: Download native Linux runtime archives
         if: matrix.image == 'trellis'

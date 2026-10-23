@@ -46,9 +46,6 @@ const runtimeOptions = {
   interruptibleNativeProxy: true,
   authorization: {
     contextLifetimeSeconds: 80,
-    refreshLeadSeconds: 15,
-    refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 46,
   },
   trellis: { source: repoTrellisSource() },
 };

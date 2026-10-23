@@ -5,7 +5,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use super::OAuthEngine;
@@ -28,14 +28,9 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-pub(crate) fn router(
-    engine: Arc<OAuthEngine>,
-    nats_endpoints: Vec<String>,
-    trusted_proxies: Vec<ipnet::IpNet>,
-) -> Router {
+pub(crate) fn router(engine: Arc<OAuthEngine>, nats_endpoints: Vec<String>) -> Router {
     let origin = engine.server.config().issuer.clone();
     let cors_engine = engine.clone();
-    let trusted_proxies = Arc::new(trusted_proxies);
     // Single platform owner: bounded fixed-window request admission, not a
     // policy ceiling. Untrusted forwarding headers never select the peer IP.
     let requests = Arc::new(Mutex::new(BTreeMap::<
@@ -57,22 +52,34 @@ pub(crate) fn router(
                 let endpoints = nats_endpoints.clone();
                 async move {
                     let metadata = tokio::task::spawn_blocking(move || {
-                        let trust = engine.server.store().authority.runtime_authorization_trust()?;
+                        let trust = engine
+                            .server
+                            .store()
+                            .authority
+                            .runtime_authorization_trust()?;
                         let mut metadata = serde_json::to_value(engine.server.metadata())?;
-                        let document = metadata.as_object_mut().ok_or(super::super::AuthError::Unavailable)?;
+                        let document = metadata
+                            .as_object_mut()
+                            .ok_or(super::super::AuthError::Unavailable)?;
                         document.remove("introspection_endpoint");
-                        document.insert("trellis".into(), serde_json::json!({
-                            "trellisInstanceId": trust.instance_id,
-                            "audienceNatsAccount": trust.account,
-                            "natsEndpoints": endpoints,
-                            "authorityFormat": trellis_protocol::SESSION_AUTHORITY_FORMAT_V1,
-                            "admissionFormat": trellis_protocol::OAUTH_ADMISSION_FORMAT_V1,
-                            "issuers": [trust.issuer],
-                            "rotationSequence": trellis_protocol::U64s::new(trust.rotation_sequence),
-                            "requiredAuthorizationDetailsTypes": ["trellis_capabilities"],
-                        }));
+                        document.insert(
+                            "trellis".into(),
+                            serde_json::json!({
+                                "trellisInstanceId": trust.instance_id,
+                                "audienceNatsAccount": trust.account,
+                                "natsEndpoints": endpoints,
+                                "authorityFormat": trellis_protocol::SESSION_AUTHORITY_FORMAT_V1,
+                                "admissionFormat": trellis_protocol::OAUTH_ADMISSION_FORMAT_V1,
+                                "issuers": [trust.issuer],
+                                "rotationSequence": trellis_protocol::U64s::new(
+                                        trust.rotation_sequence,
+                                    ),
+                                "requiredAuthorizationDetailsTypes": ["trellis_capabilities"],
+                            }),
+                        );
                         Ok::<_, super::super::AuthError>(metadata)
-                    }).await;
+                    })
+                    .await;
                     match metadata {
                         Ok(Ok(metadata)) => Json(metadata).into_response(),
                         _ => error(ErrorCode::ServerError),
@@ -96,14 +103,33 @@ pub(crate) fn router(
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::predicate(move |origin, _| {
-                    let Ok(origin) = origin.to_str() else { return false; };
-                    let Ok(connection) = cors_engine.server.store().authority.connection.lock() else { return false; };
+                    let Ok(origin) = origin.to_str() else {
+                        return false;
+                    };
+                    let Ok(connection) = cors_engine.server.store().authority.connection.lock()
+                    else {
+                        return false;
+                    };
                     let Ok(mut redirects) = connection.prepare(
-                        "SELECT j.value FROM auth_oauth_clients c,json_each(c.redirect_uris_json) j WHERE c.state='active' UNION ALL SELECT j.value FROM auth_cimd_clients c,json_each(c.metadata_json,'$.redirect_uris') j WHERE NOT EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id)"
-                    ) else { return false; };
-                    let Ok(values) = redirects.query_map([], |row| row.get::<_, String>(0)) else { return false; };
+                        "SELECT j.value FROM auth_oauth_clients c,\
+                        json_each(c.redirect_uris_json) j \
+                        WHERE c.state='active' \
+                        UNION ALL SELECT j.value \
+                        FROM auth_cimd_clients c,json_each(c.metadata_json,'$.redirect_uris') \
+                        j \
+                        WHERE NOT EXISTS(SELECT 1 \
+                        FROM auth_oauth_clients r \
+                        WHERE r.client_id=c.client_id)",
+                    ) else {
+                        return false;
+                    };
+                    let Ok(values) = redirects.query_map([], |row| row.get::<_, String>(0)) else {
+                        return false;
+                    };
                     for uri in values.filter_map(Result::ok) {
-                        if url::Url::parse(&uri).is_ok_and(|uri| uri.origin().ascii_serialization() == origin) {
+                        if url::Url::parse(&uri)
+                            .is_ok_and(|uri| uri.origin().ascii_serialization() == origin)
+                        {
                             return true;
                         }
                     }
@@ -121,7 +147,9 @@ pub(crate) fn router(
         .route("/device", get(super::device::page))
         .route(
             "/device/complete",
-            get(|| async { super::assets::page(None) }),
+            get(|State(engine): State<Arc<OAuthEngine>>| async move {
+                super::assets::page(&engine, None)
+            }),
         )
         .route("/portal/device", post(super::device::begin))
         .route("/login", get(login_page))
@@ -153,7 +181,6 @@ pub(crate) fn router(
             };
             let maintenance = maintenance.clone();
             let maintenance_engine = maintenance_engine.clone();
-            let trusted_proxies = trusted_proxies.clone();
             async move {
                 // HTTP/2 supplies :authority through the URI rather than Host.
                 // If both forms are supplied, every one must select this origin.
@@ -196,31 +223,12 @@ pub(crate) fn router(
                     },
                     None => String::new(),
                 };
-                let mut ip = request
+                // The listener already replaced a trusted proxy's peer address
+                // with the client it forwarded.
+                let ip = request
                     .extensions()
                     .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                     .map(|peer| peer.0.ip());
-                // Only a configured proxy's X-Forwarded-For selects the client.
-                // Walk its appended hops right to left, past other trusted
-                // proxies; a malformed hop stops at the last trusted address.
-                if ip.is_some_and(|peer| trusted_proxies.iter().any(|net| net.contains(&peer))) {
-                    let forwarded = request
-                        .headers()
-                        .get_all("x-forwarded-for")
-                        .iter()
-                        .map(|value| value.to_str().unwrap_or(""))
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    for hop in forwarded.rsplit(',') {
-                        let Ok(address) = hop.trim().parse::<std::net::IpAddr>() else {
-                            break;
-                        };
-                        ip = Some(address);
-                        if !trusted_proxies.iter().any(|net| net.contains(&address)) {
-                            break;
-                        }
-                    }
-                }
                 let now = Instant::now();
                 let allowed = {
                     let Ok(mut requests) = requests.lock() else {
@@ -274,12 +282,11 @@ pub(crate) fn router(
                     }
                 };
                 if cleanup_due {
-                    let result = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .ok()
-                        .and_then(|time| i64::try_from(time.as_secs()).ok())
-                        .map(|now| maintenance_engine.server.store().cleanup_expired(now));
-                    if !matches!(result, Some(Ok(_))) {
+                    let result = maintenance_engine
+                        .server
+                        .store()
+                        .cleanup_expired(crate::clock::unix_now());
+                    if result.is_err() {
                         tracing::warn!(
                             security_event = "oauth_cleanup_unavailable",
                             "OAuth expiry cleanup failed"
@@ -293,10 +300,10 @@ pub(crate) fn router(
 }
 
 async fn avatar(State(engine): State<Arc<OAuthEngine>>, Path(token): Path<String>) -> Response {
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let now = crate::clock::unix_now();
     let mut response = match engine.avatars.get(&token, now).await {
-        Ok((bytes, expires)) if expires > time::OffsetDateTime::now_utc().unix_timestamp() => {
-            let max_age = expires - time::OffsetDateTime::now_utc().unix_timestamp();
+        Ok((bytes, expires)) if expires > crate::clock::unix_now() => {
+            let max_age = expires - crate::clock::unix_now();
             let cache = format!("private, max-age={}", max_age.max(0));
             (
                 [
@@ -443,12 +450,7 @@ async fn authorize(
     {
         return error(ErrorCode::InvalidRequest);
     }
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|now| now.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let authenticated = portal_cookie(&headers, "__Host-trellis-portal")
         .zip(portal_cookie(&headers, "__Host-trellis-portal-csrf"))
@@ -531,12 +533,7 @@ async fn login_page(
     let Some(csrf) = portal_cookie(&headers, "__Host-trellis-portal-csrf") else {
         return error(ErrorCode::AccessDenied);
     };
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|now| now.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let session = match engine
         .server
         .store()
@@ -554,7 +551,7 @@ async fn login_page(
     {
         return error(ErrorCode::InvalidRequest);
     }
-    super::assets::page(None)
+    super::assets::page(&engine, None)
 }
 
 async fn consent_page(
@@ -576,7 +573,7 @@ async fn consent_page(
         Ok(view) => view,
         Err(code) => return error(code),
     };
-    super::assets::page(view.get("redirectUri").and_then(Value::as_str))
+    super::assets::page(&engine, view.get("redirectUri").and_then(Value::as_str))
 }
 
 async fn consent(
@@ -607,12 +604,7 @@ async fn consent_data(
     let Some(csrf) = portal_cookie(headers, "__Host-trellis-portal-csrf") else {
         return Err(ErrorCode::AccessDenied);
     };
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|now| now.as_secs() as i64)
-    else {
-        return Err(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let login = match authority.portal_login(&cookie, &csrf, now) {
         Ok(login) => login,
@@ -639,50 +631,232 @@ async fn consent_data(
         _ => return Err(ErrorCode::InvalidClient),
     };
     let result = authority.transaction(|connection| {
-        let entitled = super::super::policy::entitlements(connection,&login.principal_id,Some(&login.login_session_id),now)?;
-        let eligible: Option<String> = connection.query_row("SELECT requested_privileges_json FROM auth_oauth_clients WHERE client_id=?1 AND state='active'",[validated.client_id.as_str()],|row|row.get(0)).optional()?;
+        let entitled = super::super::policy::entitlements(
+            connection,
+            &login.principal_id,
+            Some(&login.login_session_id),
+            now,
+        )?;
+        let eligible: Option<String> = connection
+            .query_row(
+                "SELECT requested_privileges_json \
+                FROM auth_oauth_clients \
+                WHERE client_id=?1 AND state='active'",
+                [validated.client_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
         let registered = eligible.is_some();
-        let eligible: Vec<trellis_protocol::PlatformPrivilege> = match eligible {Some(value)=>serde_json::from_str(&value)?,None=>Vec::new()};
-        let kind:String = connection.query_row("SELECT kind FROM auth_oauth_clients WHERE client_id=?1 AND state='active' UNION ALL SELECT kind FROM auth_cimd_clients WHERE client_id=?1 AND NOT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",[validated.client_id.as_str()],|row|row.get(0))?;
-        let binding = if kind=="native" {validated.dpop_jkt.clone()} else {url::Url::parse(validated.redirect_uri.as_deref().ok_or(super::super::AuthError::Denied)?).map_err(|_|super::super::AuthError::Denied)?.origin().ascii_serialization()};
-        let username:Option<String> = connection.query_row("SELECT normalized_username FROM auth_local_credentials WHERE principal_id=?1",[&login.principal_id],|row|row.get(0)).optional()?;
+        let eligible: Vec<trellis_protocol::PlatformPrivilege> = match eligible {
+            Some(value) => serde_json::from_str(&value)?,
+            None => Vec::new(),
+        };
+        let kind: String = connection.query_row(
+            "SELECT kind FROM auth_oauth_clients \
+            WHERE client_id=?1 AND state='active' \
+            UNION ALL SELECT kind \
+            FROM auth_cimd_clients \
+            WHERE client_id=?1 AND NOT EXISTS(SELECT 1 \
+            FROM auth_oauth_clients \
+            WHERE client_id=?1)",
+            [validated.client_id.as_str()],
+            |row| row.get(0),
+        )?;
+        let binding = if kind == "native" {
+            validated.dpop_jkt.clone()
+        } else {
+            url::Url::parse(
+                validated
+                    .redirect_uri
+                    .as_deref()
+                    .ok_or(super::super::AuthError::Denied)?,
+            )
+            .map_err(|_| super::super::AuthError::Denied)?
+            .origin()
+            .ascii_serialization()
+        };
+        let username: Option<String> = connection
+            .query_row(
+                "SELECT normalized_username \
+                FROM auth_local_credentials \
+                WHERE principal_id=?1",
+                [&login.principal_id],
+                |row| row.get(0),
+            )
+            .optional()?;
         let mut capabilities = Vec::new();
         let mut meanings = std::collections::BTreeMap::new();
         let mut api_generations = std::collections::BTreeMap::new();
-        for capability in requested.capabilities.required.iter().chain(&requested.capabilities.optional) {
-            let meaning=match super::super::policy::capability(connection,capability) {Ok(value)=>Some(value),Err(super::super::AuthError::NotFound)=>None,Err(error)=>return Err(error)};
-            meanings.insert(capability.clone(),meaning);
-            let api:Option<(String,u64)>=connection.query_row("SELECT a.api_id,a.generation FROM auth_capability_identities c JOIN auth_accepted_apis a ON a.api_id=c.api_id WHERE c.capability_id=?1 AND c.state='active'",[capability],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-            if let Some((api,generation))=api {api_generations.insert(api,generation);}
-            let metadata: Option<(String,String,String)> = connection.query_row("SELECT title,description,consequence FROM auth_capability_identities WHERE capability_id=?1 AND state='active'",[capability],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
-            let (title,description,consequence) = metadata.unwrap_or_else(||(capability.clone(),"This capability is not installed.".into(),String::new()));
-            let remembered:bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_remembered_consent d JOIN auth_capability_identities c ON c.capability_id=d.capability_id AND c.identity_generation=d.capability_generation AND c.consent_revision=d.consent_revision WHERE d.principal_id=?1 AND d.binding_kind=?2 AND d.binding_value=?3 AND d.client_id=?4 AND d.capability_id=?5 AND d.decision='approved' AND c.state='active' AND (d.expires_at IS NULL OR d.expires_at>?6))",rusqlite::params![login.principal_id,kind,binding,validated.client_id.as_str(),capability,now],|row|row.get(0))?;
-            capabilities.push(serde_json::json!({"capabilityId":capability,"title":title,"description":description,"consequence":consequence,"required":requested.capabilities.required.contains(capability),"available":entitled.contains_key(capability),"selected":requested.capabilities.required.contains(capability)||(remembered&&entitled.contains_key(capability))}));
+        for capability in requested
+            .capabilities
+            .required
+            .iter()
+            .chain(&requested.capabilities.optional)
+        {
+            let meaning = match super::super::policy::capability(connection, capability) {
+                Ok(value) => Some(value),
+                Err(super::super::AuthError::NotFound) => None,
+                Err(error) => return Err(error),
+            };
+            meanings.insert(capability.clone(), meaning);
+            let api: Option<(String, u64)> = connection
+                .query_row(
+                    "SELECT a.api_id,a.generation \
+                    FROM auth_capability_identities c \
+                    JOIN auth_accepted_apis a ON a.api_id=c.api_id \
+                    WHERE c.capability_id=?1 \
+                    AND c.state='active'",
+                    [capability],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((api, generation)) = api {
+                api_generations.insert(api, generation);
+            }
+            let metadata: Option<(String, String, String)> = connection
+                .query_row(
+                    "SELECT title,description,consequence \
+                    FROM auth_capability_identities \
+                    WHERE capability_id=?1 \
+                    AND state='active'",
+                    [capability],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let (title, description, consequence) = metadata.unwrap_or_else(|| {
+                (
+                    capability.clone(),
+                    "This capability is not installed.".into(),
+                    String::new(),
+                )
+            });
+            let remembered: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_remembered_consent d \
+                JOIN auth_capability_identities c ON c.capability_id=d.capability_id \
+                AND c.identity_generation=d.capability_generation \
+                AND c.consent_revision=d.consent_revision \
+                WHERE d.principal_id=?1 \
+                AND d.binding_kind=?2 \
+                AND d.binding_value=?3 \
+                AND d.client_id=?4 AND d.capability_id=?5 \
+                AND d.decision='approved' \
+                AND c.state='active' \
+                AND (d.expires_at IS NULL \
+                OR d.expires_at>?6))",
+                rusqlite::params![
+                    login.principal_id,
+                    kind,
+                    binding,
+                    validated.client_id.as_str(),
+                    capability,
+                    now
+                ],
+                |row| row.get(0),
+            )?;
+            capabilities.push(serde_json::json!({
+                "capabilityId":capability,
+                "title":title,
+                "description":description,
+                "consequence":consequence,
+                "required":requested.capabilities.required.contains(capability),
+                "available":entitled.contains_key(capability),
+                "selected": requested.capabilities.required.contains(capability)
+                        || (remembered && entitled.contains_key(capability))
+            }));
         }
         let mut privileges = Vec::new();
-        for privilege in requested.required_privileges.iter().chain(&requested.optional_privileges) {
+        for privilege in requested
+            .required_privileges
+            .iter()
+            .chain(&requested.optional_privileges)
+        {
             let privilege_id = serde_json::to_value(privilege)?;
-            let available:bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_platform_privileges WHERE principal_id=?1 AND privilege=?2)",rusqlite::params![login.principal_id,privilege_id.as_str().ok_or(super::super::AuthError::Denied)?],|row|row.get(0))?;
-            let (label,description) = match privilege {
-                trellis_protocol::PlatformPrivilege::PrincipalsManage => ("Manage identities", "Manage users, service/device identities, deployments, resources, and identity providers."),
-                trellis_protocol::PlatformPrivilege::RolesManage => ("Manage roles", "Change roles, role assignments, and upstream identity-provider role mappings."),
-                trellis_protocol::PlatformPrivilege::ApisAccept => ("Accept API updates", "Install normally compatible API definitions into the accepted catalog."),
-                trellis_protocol::PlatformPrivilege::ApisForceReplace => ("Force API replacement", "Replace an incompatible API generation and invalidate affected authorization."),
-                trellis_protocol::PlatformPrivilege::ClientsManage => ("Manage OAuth clients", "Register public clients and change trusted client metadata."),
-                trellis_protocol::PlatformPrivilege::PrivilegesManage => ("Manage platform authority", "Assign administrative privileges, administrative delegations, and issuer keys."),
+            let available: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_platform_privileges \
+                WHERE principal_id=?1 \
+                AND privilege=?2)",
+                rusqlite::params![
+                    login.principal_id,
+                    privilege_id
+                        .as_str()
+                        .ok_or(super::super::AuthError::Denied)?
+                ],
+                |row| row.get(0),
+            )?;
+            let (label, description) = match privilege {
+                trellis_protocol::PlatformPrivilege::PrincipalsManage => (
+                    "Manage identities",
+                    "Manage users, service/device identities, deployments, resources, \
+                    and identity providers.",
+                ),
+                trellis_protocol::PlatformPrivilege::RolesManage => (
+                    "Manage roles",
+                    "Change roles, role assignments, and upstream identity-provider role \
+                    mappings.",
+                ),
+                trellis_protocol::PlatformPrivilege::ApisAccept => (
+                    "Accept API updates",
+                    "Install normally compatible API definitions into the accepted catalog.",
+                ),
+                trellis_protocol::PlatformPrivilege::ApisForceReplace => (
+                    "Force API replacement",
+                    "Replace an incompatible API generation and invalidate affected \
+                    authorization.",
+                ),
+                trellis_protocol::PlatformPrivilege::ClientsManage => (
+                    "Manage OAuth clients",
+                    "Register public clients and change trusted client metadata.",
+                ),
+                trellis_protocol::PlatformPrivilege::PrivilegesManage => (
+                    "Manage platform authority",
+                    "Assign administrative privileges, administrative delegations, \
+                    and issuer keys.",
+                ),
             };
-            privileges.push(serde_json::json!({"privilege":privilege_id,"label":label,"description":description,"required":requested.required_privileges.contains(privilege),"available":available&&eligible.contains(privilege)}));
+            privileges.push(serde_json::json!({
+                "privilege":privilege_id,
+                "label":label,
+                "description":description,
+                "required":requested.required_privileges.contains(privilege),
+                "available":available&&eligible.contains(privilege)
+            }));
         }
-        let presentation_id=super::super::sqlite::id();
-        let presentation=super::portal::ConsentPresentation {
-            id:presentation_id.clone(),principal_id:login.principal_id.clone(),login_session_id:login.login_session_id.clone(),
-            client_id:validated.client_id.as_str().into(),binding_kind:kind,binding_value:binding,
-            selection:requested.capabilities.clone(),capabilities:meanings,api_generations,
-            required_privileges:requested.required_privileges.clone(),optional_privileges:requested.optional_privileges.clone(),
-            lookup_hash:String::new(),sealed_digest:String::new(),
+        let presentation_id = super::super::sqlite::id();
+        let presentation = super::portal::ConsentPresentation {
+            id: presentation_id.clone(),
+            principal_id: login.principal_id.clone(),
+            login_session_id: login.login_session_id.clone(),
+            client_id: validated.client_id.as_str().into(),
+            binding_kind: kind,
+            binding_value: binding,
+            selection: requested.capabilities.clone(),
+            capabilities: meanings,
+            api_generations,
+            required_privileges: requested.required_privileges.clone(),
+            optional_privileges: requested.optional_privileges.clone(),
+            lookup_hash: String::new(),
+            sealed_digest: String::new(),
         };
-        engine.server.store().present_authorization(connection,transaction,&flow,presentation,now).map_err(|_|super::super::AuthError::Unavailable)?;
-        Ok(serde_json::json!({"transaction":transaction,"presentationId":presentation_id,"clientId":validated.client_id.as_str(),"clientName":client.name,"registered":registered,"username":username,"principalId":login.principal_id,"redirectUri":validated.redirect_uri,"deviceUserCode":validated.device_user_code,"capabilities":capabilities,"platformPrivileges":privileges}))
+        engine
+            .server
+            .store()
+            .present_authorization(connection, transaction, &flow, presentation, now)
+            .map_err(|_| super::super::AuthError::Unavailable)?;
+        Ok(serde_json::json!({
+            "transaction":transaction,
+            "presentationId":presentation_id,
+            "clientId":validated.client_id.as_str(),
+            "clientName":client.name,
+            "registered":registered,
+            "username":username,
+            "principalId":login.principal_id,
+            "redirectUri":validated.redirect_uri,
+            "deviceUserCode":validated.device_user_code,
+            "capabilities":capabilities,
+            "platformPrivileges":privileges
+        }))
     });
     result.map_err(|_| ErrorCode::ServerError)
 }
@@ -737,12 +911,7 @@ async fn approve(
     {
         return error(ErrorCode::InvalidRequest);
     }
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|now| now.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let login = match authority.portal_login(&cookie, csrf, now) {
         Ok(login) => login,
@@ -819,7 +988,13 @@ async fn approve(
             return error(ErrorCode::ServerError);
         };
         match connection.query_row(
-            "SELECT kind FROM auth_oauth_clients WHERE client_id=?1 AND state='active' UNION ALL SELECT kind FROM auth_cimd_clients WHERE client_id=?1 AND NOT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",
+            "SELECT kind FROM auth_oauth_clients \
+            WHERE client_id=?1 AND state='active' \
+            UNION ALL SELECT kind \
+            FROM auth_cimd_clients \
+            WHERE client_id=?1 AND NOT EXISTS(SELECT 1 \
+            FROM auth_oauth_clients \
+            WHERE client_id=?1)",
             [validated.client_id.as_str()],
             |row| row.get::<_, String>(0),
         ) {
@@ -972,12 +1147,7 @@ async fn portal_session(State(engine): State<Arc<OAuthEngine>>, headers: HeaderM
     if !portal_origin(&engine, &headers) {
         return error(ErrorCode::InvalidRequest);
     }
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|now| now.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     match engine.server.store().authority.create_portal_session(now) {
         Ok(session) => cookie_response(
             &session.cookie,
@@ -1045,10 +1215,7 @@ async fn portal_login(
     let authority = engine.server.store().authority.clone();
     let new_cookie = replacement.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| super::super::AuthError::Unavailable)?
-            .as_secs() as i64;
+        let now = crate::clock::unix_now();
         authority.portal_local_login(
             &cookie,
             &csrf,
@@ -1095,12 +1262,7 @@ async fn portal_logout(
     let (Some(csrf), Some(request_id)) = (form.get("csrf"), form.get("request_id")) else {
         return error(ErrorCode::InvalidRequest);
     };
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|now| now.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let Ok(login) = authority.portal_login(&cookie, csrf, now) else {
         return error(ErrorCode::AccessDenied);

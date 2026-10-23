@@ -70,9 +70,14 @@ pub(crate) fn output_paths(
     miette::ensure!(
         name.len() <= 214
             && name.starts_with(|character: char| character.is_ascii_lowercase())
-            && name.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            && !name.ends_with('-') && !name.contains("--"),
-        "invalid generated package name '{name}'; use at most 214 characters: a lowercase ASCII letter followed by lowercase letters, digits, or single hyphens"
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && !name.ends_with('-')
+            && !name.contains("--"),
+        "invalid generated package name '{name}'; use at most 214 characters: a \
+        lowercase ASCII letter followed by lowercase letters, digits, or \
+        single hyphens"
     );
     let mut outputs = Vec::new();
     for (language, detected, selected) in targets {
@@ -86,7 +91,8 @@ pub(crate) fn output_paths(
                 // output; multiple targets must name their outputs explicitly.
                 miette::ensure!(
                     target_count == 1,
-                    "multiple languages detected; configure [generate.rust].output and [generate.typescript].output"
+                    "multiple languages detected; configure [generate.rust].output and \
+                    [generate.typescript].output"
                 );
                 "trellis"
             }
@@ -235,7 +241,8 @@ pub(crate) fn generate_compiled(
                     .is_some_and(|bytes| generated_file(relative, bytes));
             miette::ensure!(
                 check || previous.is_none() || owned,
-                "refusing to overwrite unrelated file {} (generated packages require an explicit Trellis package marker)",
+                "refusing to overwrite unrelated file {} (generated packages require an \
+                explicit Trellis package marker)",
                 old.display()
             );
             if new.is_file() {
@@ -311,7 +318,10 @@ pub(crate) fn generate_compiled(
                 .map(|(_, stage, _)| stage.keep().display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            return Err(miette!("generation publication failed: {error}; rollback failed: {rollback_error}; recoverable outputs retained at {recovery}"));
+            return Err(miette!(
+                "generation publication failed: {error}; rollback failed: \
+                {rollback_error}; recoverable outputs retained at {recovery}"
+            ));
         }
         return Err(error).into_diagnostic();
     }
@@ -463,7 +473,8 @@ mod tests {
         .unwrap();
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='.'\n",
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\n\
+            main='contract.trellis'\n[generate.rust]\noutput='.'\n",
         )
         .unwrap();
         fs::write(root.path().join("contract.trellis"), "").unwrap();
@@ -481,7 +492,9 @@ mod tests {
         fs::write(root.path().join("package.json"), "{}").unwrap();
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.typescript]\noutput='ts-out'\n[generate.rust]\noutput='rust-out'\n",
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\n\
+            main='contract.trellis'\n[generate.typescript]\noutput='ts-out'\n\
+            [generate.rust]\noutput='rust-out'\n",
         )
         .unwrap();
         fs::write(root.path().join("contract.trellis"), "").unwrap();
@@ -496,7 +509,8 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\nmain='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
+            "[package]\nname='fixture'\nversion='1.0.0'\n[sources]\n\
+            main='contract.trellis'\n[generate.rust]\noutput='rust-out'\n",
         )
         .unwrap();
         fs::write(root.path().join("contract.trellis"), "").unwrap();

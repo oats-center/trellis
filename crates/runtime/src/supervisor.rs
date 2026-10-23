@@ -418,7 +418,8 @@ pub enum RuntimeError {
     },
     /// A selected singleton owner lease is already held.
     #[error(
-        "runtime owner lease {key:?} for {subsystem} is already held; owner {owner_id} cannot start: {source}"
+        "runtime owner lease {key:?} for {subsystem} is already held; owner \
+        {owner_id} cannot start: {source}"
     )]
     OwnerHeld {
         /// Selected subsystem owner group.
@@ -1305,11 +1306,12 @@ mod tests {
         // HTTPS proxy; there is no insecure-origin escape hatch.
         for http in [
             "public_origin = \"http://trellis-demo.lan:3000\"",
-            "public_origin = \"http://trellis-demo.lan:3000\"\n[http.transport]\nmode = \"proxy\"\ntrusted_proxies = [\"10.0.0.0/8\"]",
+            "public_origin = \"http://trellis-demo.lan:3000\"\n[http.transport]\n\
+            mode = \"proxy\"\ntrusted_proxies = [\"10.0.0.0/8\"]",
             "public_origin = \"http://localhost:3000\"\nbind_address = \"0.0.0.0\"",
         ] {
-            let config = RuntimeConfig::from_toml_str(&format!("[http]\n{http}\n"))
-                .expect("parse config");
+            let config =
+                RuntimeConfig::from_toml_str(&format!("[http]\n{http}\n")).expect("parse config");
             let error = run_with_stop(
                 RuntimeOptions {
                     mode: RuntimeMode::All,

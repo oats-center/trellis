@@ -524,7 +524,8 @@ pub trait StoreResourceClient: Clone + fmt::Debug + Send + Sync + 'static {
         &self,
     ) -> impl Future<Output = Result<Vec<StoreObjectInfo>, ServerError>> + Send {
         async move {
-            // ponytail: generic adapters use one metadata read per key; native backends override it.
+            // ponytail: generic adapters use one metadata read per key; native backends override
+            // it.
             let mut objects = Vec::new();
             for key in self.list().await? {
                 if let Some(info) = self.metadata(&key).await? {

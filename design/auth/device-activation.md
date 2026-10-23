@@ -142,8 +142,8 @@ review or resubmitting the consumed provisioning secret. The local completion
 is never authorization: disabled or removed devices still fail enrollment and
 connection at Auth.
 
-Authorization contexts, route JWTs, transports, grants, and issuer keys remain
-process-memory-only. Reconnect uses proof-bound refresh once per disconnected
+Session authority, admission credentials, transports, grants, and issuer keys
+remain process-memory-only. Reconnect uses proof-bound refresh once per disconnected
 episode.
 
 ## Non-Goals

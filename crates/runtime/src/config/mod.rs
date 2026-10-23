@@ -44,9 +44,6 @@ pub struct RuntimeConfig {
     /// Authentication configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthConfig>,
-    /// OAuth provider configuration.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth: Option<OAuthConfig>,
     /// Platform subsystem configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub platform: Option<SubsystemConfig>,
@@ -114,7 +111,6 @@ impl RuntimeConfig {
     pub fn validate_for_mode(&self, mode: RuntimeMode) -> Result<(), ConfigError> {
         self.validate_distinct_sqlite_paths()?;
         self.validate_http_listener()?;
-        self.validate_oauth_provider_secrets()?;
         self.resolve_nats_runtime()?;
         self.resolve_leases()?;
         if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
@@ -191,7 +187,11 @@ impl RuntimeConfig {
             || origin.fragment().is_some()
             || oauth.port == 0
         {
-            return Err(invalid_authorization("oauth", "requires a nonzero listener port and an origin without credentials, path, query, or fragment"));
+            return Err(invalid_authorization(
+                "oauth",
+                "requires a nonzero listener port and an origin without credentials, \
+                path, query, or fragment",
+            ));
         }
         validate_listener_transport(&origin, oauth.bind_address, &oauth.transport)
             .map_err(|reason| invalid_authorization("oauth.transport", reason))?;
@@ -509,24 +509,6 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    fn validate_oauth_provider_secrets(&self) -> Result<(), ConfigError> {
-        let Some(oauth) = &self.oauth else {
-            return Ok(());
-        };
-
-        for (provider_id, provider) in &oauth.providers {
-            if provider.client_secret.is_some() && provider.client_secret_file.is_some() {
-                return Err(ConfigError::InvalidSecretConfig {
-                    section: "oauth.providers",
-                    field: "client_secret",
-                    provider_id: provider_id.clone(),
-                });
-            }
-        }
-
-        Ok(())
-    }
-
     fn subsystem_storage_backend(
         &self,
         name: SubsystemName,
@@ -598,11 +580,6 @@ impl RuntimeConfig {
             resolve_path(base_dir, &mut storage.path);
         }
 
-        if let Some(oauth) = &mut self.oauth {
-            for provider in oauth.providers.values_mut() {
-                resolve_path(base_dir, &mut provider.client_secret_file);
-            }
-        }
         if let Some(auth) = &mut self.auth {
             resolve_path(base_dir, &mut auth.oauth_storage_key_file);
             if let Some(OAuthListenerConfig {
@@ -678,7 +655,10 @@ pub(crate) fn warn_oauth_cookie_isolation(oauth: &Url, application: &Url) {
             security_event = "oauth_cookie_isolation_at_risk",
             oauth_origin = %oauth.origin().ascii_serialization(),
             application_origin = %application.origin().ascii_serialization(),
-            "SECURITY WARNING: OAuth login cookies can be sent to application servers on this shared hostname. Different ports and HttpOnly do NOT isolate these cookies. A compromised application server could steal a portal session. Use a dedicated OAuth hostname."
+            "SECURITY WARNING: OAuth login cookies can be sent to application \
+            servers on this shared hostname. Different ports and HttpOnly do NOT \
+            isolate these cookies. A compromised application server could steal a \
+            portal session. Use a dedicated OAuth hostname."
         );
     }
 }
@@ -767,7 +747,8 @@ impl RuntimePathDefaults {
             .map(|value| PathBuf::from(value).join("trellis"))
             .unwrap_or_else(|| {
                 #[cfg(unix)]
-                // SAFETY: geteuid has no memory preconditions and reads only this process's identity.
+                // SAFETY: geteuid has no memory preconditions and reads only this process's
+                // identity.
                 let user = unsafe { libc::geteuid() }.to_string();
                 #[cfg(not(unix))]
                 let user = get("USERNAME")
@@ -1162,7 +1143,10 @@ pub(crate) fn validate_listener_transport(
                 None => false,
             };
             if origin.scheme() != "http" || !local || !bind_address.is_loopback() {
-                return Err("plaintext is restricted to loopback development: use an HTTP loopback origin and a loopback bind address, or select tls or proxy transport");
+                return Err(
+                    "plaintext is restricted to loopback development: use an HTTP loopback \
+                    origin and a loopback bind address, or select tls or proxy transport",
+                );
             }
         }
     }
@@ -1212,27 +1196,11 @@ pub struct AuthorizationConfig {
     pub issuer_signing_seed_file: PathBuf,
     /// Maximum newly issued context lifetime in seconds.
     pub context_lifetime_seconds: u64,
-    /// Refresh lead before context expiry in seconds.
-    pub refresh_lead_seconds: u64,
-    /// Maximum deterministic earlier-only refresh jitter in seconds.
-    pub refresh_jitter_seconds: u64,
-    /// Minimum useful context lease in seconds.
-    pub minimum_context_lifetime_seconds: u64,
-    /// Maximum lifetime of a deny-all bootstrap JWT in seconds.
-    pub maximum_bootstrap_jwt_lifetime_seconds: u64,
     /// Verification clock skew in seconds.
     pub allowed_clock_skew_seconds: u64,
     /// Maximum signed OAuth admission lifetime in seconds.
     #[serde(default = "default_oauth_admission_lifetime_seconds")]
     pub oauth_admission_lifetime_seconds: u64,
-    /// Maximum canonical signed-context JSON size in UTF-8 bytes.
-    pub maximum_context_bytes: usize,
-    /// Maximum permission atoms allowed in one context.
-    pub maximum_permissions: usize,
-    /// Context/revocation registry KV bucket.
-    pub context_bucket: String,
-    /// Replica count for both registry buckets.
-    pub registry_replicas: usize,
 }
 
 fn default_oauth_admission_lifetime_seconds() -> u64 {
@@ -1253,75 +1221,18 @@ impl AuthorizationConfig {
                 "must be between 1 and 3600",
             ));
         }
-        let useful_context_lifetime = self
-            .context_lifetime_seconds
-            .saturating_sub(self.allowed_clock_skew_seconds);
-        if self.refresh_lead_seconds >= useful_context_lifetime {
-            return Err(invalid_authorization(
-                "refresh_lead_seconds",
-                "must be less than context_lifetime_seconds minus allowed_clock_skew_seconds",
-            ));
-        }
-        if self.refresh_jitter_seconds > 300
-            || self
-                .refresh_lead_seconds
-                .saturating_add(self.refresh_jitter_seconds)
-                >= useful_context_lifetime
+        if self.allowed_clock_skew_seconds > 300
+            || self.allowed_clock_skew_seconds >= self.context_lifetime_seconds
         {
-            return Err(invalid_authorization(
-                "refresh_jitter_seconds",
-                "must not exceed 300 and must leave a usable context window",
-            ));
-        }
-        if self.minimum_context_lifetime_seconds <= self.allowed_clock_skew_seconds
-            || self.minimum_context_lifetime_seconds > useful_context_lifetime
-            || self.minimum_context_lifetime_seconds
-                <= self
-                    .refresh_lead_seconds
-                    .saturating_add(self.refresh_jitter_seconds)
-        {
-            return Err(invalid_authorization(
-                "minimum_context_lifetime_seconds",
-                "must exceed clock skew and the complete refresh window without exceeding useful lifetime",
-            ));
-        }
-        if !(60..=86_400).contains(&self.maximum_bootstrap_jwt_lifetime_seconds) {
-            return Err(invalid_authorization(
-                "maximum_bootstrap_jwt_lifetime_seconds",
-                "must be between 60 and 86400",
-            ));
-        }
-        if self.allowed_clock_skew_seconds > 300 {
             return Err(invalid_authorization(
                 "allowed_clock_skew_seconds",
-                "must not exceed 300",
+                "must not exceed 300 and must be less than context_lifetime_seconds",
             ));
         }
         if !(1..=300).contains(&self.oauth_admission_lifetime_seconds) {
             return Err(invalid_authorization(
                 "oauth_admission_lifetime_seconds",
                 "must be between 1 and 300",
-            ));
-        }
-        if self.maximum_context_bytes == 0 || self.maximum_context_bytes > 1_048_576 {
-            return Err(invalid_authorization(
-                "maximum_context_bytes",
-                "must be between 1 and 1048576",
-            ));
-        }
-        if self.maximum_permissions == 0 || self.maximum_permissions > 16_384 {
-            return Err(invalid_authorization(
-                "maximum_permissions",
-                "must be between 1 and 16384",
-            ));
-        }
-        if self.context_bucket.trim().is_empty() {
-            return Err(invalid_authorization("context_bucket", "must not be empty"));
-        }
-        if self.registry_replicas == 0 {
-            return Err(invalid_authorization(
-                "registry_replicas",
-                "must be positive",
             ));
         }
         Ok(())
@@ -1337,43 +1248,6 @@ pub struct LocalIdentityConfig {
     /// Minimum local password length.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_min_length: Option<u16>,
-}
-
-/// Upstream identity-provider configuration, separate from the Trellis OAuth listener.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct OAuthConfig {
-    /// OAuth providers keyed by provider identifier.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub providers: std::collections::BTreeMap<String, OAuthProviderConfig>,
-}
-
-/// OAuth provider configuration.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct OAuthProviderConfig {
-    /// Provider type, currently expected to be `oidc`.
-    #[serde(rename = "type")]
-    pub provider_type: String,
-    /// OIDC issuer URL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
-    /// OAuth client id.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
-    /// Inline OAuth client secret.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_secret: Option<String>,
-    /// File-backed OAuth client secret path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_secret_file: Option<PathBuf>,
-    /// Display name for UI surfaces.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    /// Requested OAuth scopes.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scopes: Option<Vec<String>>,
-    /// JSON Pointers selecting provider role claims from the verified ID token.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub role_claims: Vec<String>,
 }
 
 /// Configuration for a built-in runtime subsystem.
@@ -1516,7 +1390,10 @@ pub enum ConfigError {
         reason: &'static str,
     },
     /// Two subsystems were configured to write the same SQLite file.
-    #[error("runtime subsystems [{first}] and [{second}] must use separate SQLite files, but both use {path}")]
+    #[error(
+        "runtime subsystems [{first}] and [{second}] must use separate SQLite \
+        files, but both use {path}"
+    )]
     SharedSqlitePath {
         /// Duplicated SQLite path.
         path: PathBuf,
@@ -1532,16 +1409,6 @@ pub enum ConfigError {
         section: &'static str,
         /// Unsupported backend name.
         backend: &'static str,
-    },
-    /// Inline and file-backed secret fields were both provided.
-    #[error("invalid runtime config section [{section}.{provider_id}]: {field} and {field}_file are mutually exclusive")]
-    InvalidSecretConfig {
-        /// Section containing the invalid secret configuration.
-        section: &'static str,
-        /// Provider id containing the invalid secret configuration.
-        provider_id: String,
-        /// Inline secret field that conflicts with the file-backed form.
-        field: &'static str,
     },
     /// A required NATS path field is missing or empty.
     #[error("invalid runtime config section [{section}]: {field} {reason}")]
@@ -1572,7 +1439,10 @@ pub enum ConfigError {
         reason: &'static str,
     },
     /// The configured HTTP public origin is not a valid absolute HTTP(S) origin.
-    #[error("invalid runtime config [http] public_origin '{origin}': must be an absolute HTTP(S) origin")]
+    #[error(
+        "invalid runtime config [http] public_origin '{origin}': must be an \
+        absolute HTTP(S) origin"
+    )]
     InvalidPublicOrigin {
         /// Offending public origin value.
         origin: String,

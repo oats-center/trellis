@@ -892,16 +892,12 @@ CREATE TABLE auth_enforcement_work (
     scope_key TEXT NOT NULL,
     scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
     cursor TEXT,
-    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed', 'failed')),
+    state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed')),
     scanned_sessions INTEGER NOT NULL DEFAULT 0 CHECK (scanned_sessions >= 0),
     retired_sessions INTEGER NOT NULL DEFAULT 0 CHECK (retired_sessions >= 0),
     pending_kicks INTEGER NOT NULL DEFAULT 0 CHECK (pending_kicks >= 0),
     failed_kicks INTEGER NOT NULL DEFAULT 0 CHECK (failed_kicks >= 0),
-    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     next_attempt_at INTEGER NOT NULL,
-    claimed_until INTEGER,
-    claim_token TEXT,
-    last_error TEXT,
     created_at INTEGER NOT NULL,
     completed_at INTEGER
 );

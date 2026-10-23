@@ -737,7 +737,7 @@ pub(crate) async fn run_auth_sampler(
             _ = stop.stopped() => return Ok(()),
         }
         let poll = SourcePoll::start();
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let now = crate::clock::unix_now();
         let snapshot_store = Arc::clone(&store);
         let Some(mut read) =
             start_bounded_read(&poll, move || snapshot_store.telemetry_snapshot(now)).await

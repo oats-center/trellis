@@ -487,7 +487,8 @@ fn validate_imports(
                     },
                     import.span.clone(),
                     format!(
-                        "import '{local}' refers to unexported type or missing API '{}' in package '{}'",
+                        "import '{local}' refers to unexported type or missing API '{}' in \
+                        package '{}'",
                         import.name, package
                     ),
                 ));
@@ -690,11 +691,12 @@ fn bounds(kind: &str, constraints: &[(String, String)]) -> miette::Result<Bounds
         _ => None,
     };
     if domain.is_some_and(|(minimum, maximum)| {
-        bounds
-            .min
-            .into_iter()
-            .chain(bounds.max)
-            .any(|value| matches!(value, NumericBound::Integer(value) if value < minimum || value > maximum))
+        bounds.min.into_iter().chain(bounds.max).any(|value| {
+            matches!(
+                value,
+                NumericBound::Integer(value) if value < minimum || value > maximum
+            )
+        })
     }) {
         return Err(miette!("integer bound is outside the {kind} domain"));
     }
@@ -1025,7 +1027,8 @@ fn resolve_action(
             let stream = raw.members.contains_key("stream");
             if stream && raw.members.contains_key("upload") {
                 return Err(miette!(
-                    "operation declares both 'upload' and 'stream'; 'stream' already accepts caller bytes"
+                    "operation declares both 'upload' and 'stream'; 'stream' already \
+                    accepts caller bytes"
                 ));
             }
             let signals = match raw.members.get("signals") {
@@ -1299,14 +1302,21 @@ fn resolve_authoring(
     let mut resources = BTreeMap::new();
     for resource in &raw.resources {
         if kind.is_none() && resource.kind != "state" {
-            return Err(miette!("application '{}' cannot own '{}' resources; app State declarations describe local codecs only", raw.name, resource.kind));
+            return Err(miette!(
+                "application '{}' cannot own '{}' resources; app State declarations \
+                describe local codecs only",
+                raw.name,
+                resource.kind
+            ));
         }
         let definition = resolve_resource(resource, kind, source, scope, root)?;
         if matches!(definition, ResourceDefinition::Consumer { .. }) {
             let trellis = PackageId::new("trellis");
             if scope.package != &trellis && !root.dependencies.contains_key(&trellis) {
                 return Err(miette!(
-                    "consumer '{}' requires a direct dependency on the trellis package containing trellis.events@v1; add trellis to trellis.toml and update trellis.lock",
+                    "consumer '{}' requires a direct dependency on the trellis package \
+                    containing trellis.events@v1; add trellis to trellis.toml and update \
+                    trellis.lock",
                     resource.name
                 ));
             }
@@ -1651,10 +1661,21 @@ fn accepts(
         _ => return Err(miette!("invalid accepts member")),
     };
     let mut seen = BTreeSet::new();
-    values.iter().map(|(version, ty)| {
-        if *version == 0 || *version == current || !seen.insert(*version) { return Err(miette!("accepted representation versions must be distinct, positive, and differ from current")); }
-        Ok(HistoricRepresentation { version: *version, ty: resolve_type_ref(ty, source, scope)? })
-    }).collect()
+    values
+        .iter()
+        .map(|(version, ty)| {
+            if *version == 0 || *version == current || !seen.insert(*version) {
+                return Err(miette!(
+                    "accepted representation versions must be distinct, positive, \
+                    and differ from current"
+                ));
+            }
+            Ok(HistoricRepresentation {
+                version: *version,
+                ty: resolve_type_ref(ty, source, scope)?,
+            })
+        })
+        .collect()
 }
 
 fn resolve_event(

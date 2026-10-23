@@ -120,8 +120,10 @@ async fn connect<C: ParticipantDescriptor>(
         .ok_or_else(|| {
             RuntimeError::Platform("built-in provider has no installed authority".into())
         })?;
-    if !matches!(&context.context.unsigned.binding, SessionBinding::Service { participant_id, .. } if participant_id == C::ID)
-    {
+    if !matches!(
+        &context.context.unsigned.binding,
+        SessionBinding::Service { participant_id, .. } if participant_id == C::ID
+    ) {
         return Err(RuntimeError::Platform(
             "installed built-in authority does not match the generated role".into(),
         ));

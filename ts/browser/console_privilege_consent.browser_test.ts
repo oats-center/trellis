@@ -70,13 +70,7 @@ for (const selected of [undefined, "principals.manage"] as const) {
         const access = page.locator(
           'input[name="approved"][type="checkbox"], input[name="privilege"][type="checkbox"]',
         );
-        for (const choice of await access.all()) {
-          if (await choice.isEnabled())
-            strictEqual(await choice.isChecked(), true);
-        }
-        await page
-          .getByRole("button", { name: "Unselect all", exact: true })
-          .click();
+        // Consent is opt-in: optional access starts unselected.
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
             strictEqual(await choice.isChecked(), false);
@@ -87,6 +81,13 @@ for (const selected of [undefined, "principals.manage"] as const) {
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
             strictEqual(await choice.isChecked(), true);
+        }
+        await page
+          .getByRole("button", { name: "Unselect all", exact: true })
+          .click();
+        for (const choice of await access.all()) {
+          if (await choice.isEnabled())
+            strictEqual(await choice.isChecked(), false);
         }
         // Accept ordinary capabilities but decline the separate administrative choices.
         for (const choice of await page.getByRole("checkbox").all())

@@ -62,13 +62,13 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-Bootstrap proves the provisioned identity and a fresh session key. Trellis
-returns the server-owned assignment, exact installed participant/API evidence,
-current `GrantBinding`, resources, signed context, route JWT, and transports.
-The runtime verifies them before NATS CONNECT. Authorization state remains in
-process memory and is refreshed proactively as SDK-owned maintenance. Renewing
-unchanged transport authority promotes the context and routing credentials in
-place without replacing a healthy socket. Newly approved transport authority is
+NATS CONNECT carries a signed provisioned admission that proves the identity
+and a fresh session key; there is no HTTP bootstrap. Auth Callout resolves the
+deployment, installed participant, and resources, then returns signed session
+authority and exact transport permissions, which the runtime verifies.
+Authorization state remains in process memory and is refreshed proactively as
+SDK-owned maintenance. Renewing unchanged transport authority promotes the new
+session authority in place without replacing a healthy socket. Newly approved transport authority is
 adopted automatically, with no manual refresh API or upgrade notification. There
 is no authorization-context file.
 

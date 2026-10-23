@@ -1,7 +1,7 @@
 # Build and activate a device
 
 Devices are durable Trellis principals. Their root/identity key survives
-restarts; login sessions, route JWTs, authorization contexts, participant
+restarts; login sessions, admission credentials, session authority, participant
 artifacts, grants, and deployment assignments do not belong in device config.
 
 ## 1. Declare the participant
@@ -103,6 +103,6 @@ proof-bound `/auth/device/enroll` request when online.
 ## Lifecycle
 
 Enable, disable, and remove operations atomically update the principal/device,
-events, context revocations, and connection-kick intents. An old local context
-or route token cannot bypass current lifecycle state because bootstrap, refresh,
-and Auth Callout revalidate it.
+events, authority revocations, and connection-kick intents. An old local session
+authority cannot bypass current lifecycle state because renewal and Auth Callout
+revalidate it.

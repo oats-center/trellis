@@ -162,7 +162,11 @@ impl IssuerMetadata {
             || self.expires_at <= self.issued_at
             || self.expires_at > self.issued_at.saturating_add(30)
             || self.expires_at > 9_007_199_254_740_991
-            || matches!(&self.result, IssuerMetadataResult::Value { payload } if payload.is_empty() || payload.len() > MAX_ADMISSION_RESPONSE_BYTES)
+            || matches!(
+                &self.result,
+                IssuerMetadataResult::Value { payload }
+                    if payload.is_empty() || payload.len() > MAX_ADMISSION_RESPONSE_BYTES
+            )
         {
             return Err(authorization_error(
                 AuthorizationErrorCode::InvalidFormat,

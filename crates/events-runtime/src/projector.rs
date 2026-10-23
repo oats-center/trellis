@@ -128,7 +128,12 @@ pub async fn start_events_projector(
                 "failed to start Events projector consumer '{consumer_name}': {error}"
             ))
         })?;
-    tracing::info!(stream = EVENT_STREAM, consumer = %consumer_name, filter = EVENT_SUBJECT_WILDCARD, "started Events projector consumer");
+    tracing::info!(
+        stream = EVENT_STREAM,
+        consumer = %consumer_name,
+        filter = EVENT_SUBJECT_WILDCARD,
+        "started Events projector consumer"
+    );
 
     let task = tokio::spawn(async move {
         loop {

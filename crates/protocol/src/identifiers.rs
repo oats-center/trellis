@@ -42,7 +42,8 @@ pub fn validate_api_id(value: &str) -> Result<(), ProtocolError> {
     {
         return Err(invalid(
             "api id",
-            "must use lowercase alphanumeric lineage tokens separated by '.', '_', or '-' before '@vN'",
+            "must use lowercase alphanumeric lineage tokens separated by '.', \
+            '_', or '-' before '@vN'",
         ));
     }
     validate_positive_decimal("api id", major)

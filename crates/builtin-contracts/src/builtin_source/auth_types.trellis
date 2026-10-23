@@ -32,7 +32,7 @@ enum AuthPlatformPrivilege {
   "clients.manage";
   "privileges.manage";
 }
-enum AuthEnforcementState { queued; running; completed; failed; }
+enum AuthEnforcementState { queued; running; completed; }
 enum AuthAuthorizationSessionState { active; superseded; revoked; }
 enum AuthAttachmentState { pending; admitted; closed; }
 enum AuthDecision { approved; declined; }

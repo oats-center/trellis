@@ -64,12 +64,7 @@ pub(super) async fn start(
 }
 
 pub(super) async fn page(State(engine): State<Arc<OAuthEngine>>, headers: HeaderMap) -> Response {
-    let Ok(now) = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| time.as_secs() as i64)
-    else {
-        return super::http::error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let existing = super::http::portal_cookie(&headers, "__Host-trellis-portal")
         .zip(super::http::portal_cookie(
@@ -82,14 +77,14 @@ pub(super) async fn page(State(engine): State<Arc<OAuthEngine>>, headers: Header
                 .is_ok()
         });
     if existing {
-        return super::assets::page(None);
+        return super::assets::page(&engine, None);
     }
     match authority.create_portal_session(now) {
         Ok(guest) => super::http::cookie_response(
             &guest.cookie,
             Some(&guest.csrf),
             600,
-            super::assets::page(None),
+            super::assets::page(&engine, None),
         ),
         Err(_) => super::http::error(ErrorCode::ServerError),
     }
@@ -119,12 +114,7 @@ pub(super) async fn begin(
     if code.len() > 32 {
         return super::http::error(ErrorCode::InvalidRequest);
     }
-    let Ok(now) = SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| time.as_secs() as i64)
-    else {
-        return super::http::error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let session = match authority.portal_session_identity(&cookie, csrf, now) {
         Ok(session) => session,
@@ -303,11 +293,7 @@ impl OAuthEngine {
         {
             return Err(ErrorResponse::new(ErrorCode::InvalidGrant).into());
         }
-        let now = SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|time| i64::try_from(time.as_secs()).ok())
-            .ok_or_else(|| ErrorResponse::new(ErrorCode::ServerError))?;
+        let now = crate::clock::unix_now();
         let grant = self
             .server
             .store()

@@ -10,6 +10,16 @@ and this project adheres to
 
 ### Added
 
+- Rust generated open enums implement `From<String>` and `From<&str>`, and
+  `trellis_protocol::model::Timestamp::from_unix_seconds` builds a canonical
+  timestamp without a format/parse round trip.
+- `scripts/run-rust-tests.sh` runs the whole Rust test catalog locally with no
+  preset environment: it acquires the pinned NATS server, builds the pinned Dex
+  identity provider (`scripts/acquire-test-dex.sh`), and builds the CLI, server,
+  and Events fixture. Check runs the same script, so the upstream OIDC test runs
+  everywhere instead of failing for a missing executable.
+- Check fails when rustfmt leaves a Rust statement unformatted because part of
+  it cannot fit (`scripts/check-rust-width.py`).
 - Transfer receivers choose their outstanding window, up to 1,024 frames and
   64 MiB, and admit it from one process-wide receive budget, released when the
   transfer ends. A download consumer declares its window at activation; the
@@ -46,8 +56,9 @@ and this project adheres to
   client trust, and `trellis tls status` reports the CA fingerprint and expiry.
   Running listeners reload replaced certificates without a restart.
 - Installations serving their generated CA always warn: at initialization, at
-  runtime startup, in `trellis tls status`, and in Console and Login Portal
-  banners shown to every user with the CA fingerprint to verify.
+  runtime startup, and in `trellis tls status`. The Console and the Login
+  Portal show every user a short banner that the installation uses
+  self-generated certificates and may not be suitable for production.
 - The Rust and Node test kits run on generated TLS and trust each runtime's CA
   explicitly; `browserTrustEnvironment()` gives Playwright a private NSS trust
   store holding it.
@@ -127,6 +138,14 @@ and this project adheres to
 
 ### Removed
 
+- **Breaking:** `AuthEnforcementState.failed`. Enforcement never gives up: a
+  page or kick that fails is retried, and `failedKicks` reports kicks that
+  needed a retry.
+- `GET /portal/tls` and the generated-CA fingerprint and expiry shown to users.
+  The Console and Login Portal now show a short banner that the installation
+  uses self-generated certificates and may not be suitable for production; the
+  fingerprint remains in operator output (`trellis init config`,
+  `trellis tls status`, and the startup warning).
 - The `http.web_source`, `http.portal_source`, and `http.console_source`
   settings and the `trellis init config` `--web-*`, `--portal-*`, and
   `--console-*` directory/proxy flags. They were accepted but had no effect: the
@@ -141,9 +160,28 @@ and this project adheres to
   `webSource`, `portalSource`, and `consoleSource` runtime options.
 - **Breaking:** `[http] allow_insecure_origins`. A remote origin is served only
   over TLS or behind a trusted HTTPS proxy.
+- The `[auth.authorization]` settings `refresh_lead_seconds`,
+  `refresh_jitter_seconds`, `minimum_context_lifetime_seconds`,
+  `maximum_bootstrap_jwt_lifetime_seconds`, `maximum_context_bytes`,
+  `maximum_permissions`, `context_bucket`, and `registry_replicas`, the
+  `trellis init config` `--auth-refresh-lead-seconds`,
+  `--auth-refresh-jitter-seconds`, and `--auth-minimum-context-lifetime-seconds`
+  flags, and the matching testkit `authorization` options. They were validated
+  but had no effect. Existing configuration files still load.
+- The `[oauth.providers]` runtime section, the `trellis init config`
+  `--oauth-providers-file` flag, and the testkit `oauthProviders` option. They
+  were accepted without effect; upstream OIDC providers are managed with
+  `Auth.OIDCProviders.Put`.
 
 ### Fixed
 
+- The Rust service and device demos and the native benchmark compile again: they
+  pass the installation CA to `discover_native_oauth` (`--ca-certificate` or
+  `TRELLIS_CA_CERTIFICATE`).
+- A kick that needs retries counts once in `failedKicks`, and Auth effect
+  retries are jittered.
+- Auth Callout accepts a broker request issued up to
+  `allowed_clock_skew_seconds` in the future instead of a fixed five seconds.
 - OAuth requests without an `Origin` header, including native token refreshes,
   no longer share one server-wide request budget; each client has its own.
 - Idle Live routes adopt renewed provider authority before signing an offer, so

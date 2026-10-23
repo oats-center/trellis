@@ -8,14 +8,7 @@ import {
 import { recordTrellisDuration } from "@oatscenter/trellis/telemetry";
 import { execFile } from "node:child_process";
 import { once } from "node:events";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import {
   type Server,
   type Socket,
@@ -800,18 +793,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
           options.authorization?.contextLifetimeSeconds,
         ],
         [
-          "auth-refresh-lead-seconds",
-          options.authorization?.refreshLeadSeconds,
-        ],
-        [
-          "auth-refresh-jitter-seconds",
-          options.authorization?.refreshJitterSeconds,
-        ],
-        [
-          "auth-minimum-context-lifetime-seconds",
-          options.authorization?.minimumContextLifetimeSeconds,
-        ],
-        [
           "auth-oauth-admission-lifetime-seconds",
           options.authorization?.oauthAdmissionLifetimeSeconds,
         ],
@@ -821,16 +802,6 @@ export class TrellisTestRuntime implements AsyncDisposable {
         ],
       ] as const)
         if (value !== undefined) initArgs.push(`--${flag}`, String(value));
-      if (
-        options.oauthProviders &&
-        Object.keys(options.oauthProviders).length
-      ) {
-        const inputPath = join(workdir, "config", "oauth-providers.json");
-        await writeFile(inputPath, JSON.stringify(options.oauthProviders), {
-          mode: 0o600,
-        });
-        initArgs.push("--oauth-providers-file", inputPath);
-      }
       const output = await runBootstrapCommand(
         native.cli,
         initArgs,

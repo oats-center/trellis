@@ -91,7 +91,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             DeviceActivationStatus::Pending(pending) => {
                 emit(format!(
                     "DEVICE_COMPANION_ACTIVATION {}",
-                    serde_json::json!({"reviewId":pending.review_id,"activationUrl":pending.activation_url,"confirmationCode":pending.confirmation_code,"nonce":pending.nonce})
+                    serde_json::json!({
+                        "reviewId":pending.review_id,
+                        "activationUrl":pending.activation_url,
+                        "confirmationCode":pending.confirmation_code,
+                        "nonce":pending.nonce
+                    })
                 ))?;
                 pending
             }

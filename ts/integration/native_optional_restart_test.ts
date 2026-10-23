@@ -61,9 +61,6 @@ for (const expireAdmission of [false, true]) {
         ? {
             authorization: {
               contextLifetimeSeconds: 55,
-              refreshLeadSeconds: 12,
-              refreshJitterSeconds: 5,
-              minimumContextLifetimeSeconds: 24,
               allowedClockSkewSeconds: 2,
             },
           }

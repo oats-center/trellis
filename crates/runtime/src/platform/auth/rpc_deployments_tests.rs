@@ -14,7 +14,11 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         .store
         .transaction(|connection| {
             let value: String = connection.query_row(
-                "SELECT definition_json FROM auth_accepted_apis WHERE api_id=(SELECT api_id FROM auth_capability_identities WHERE capability_id=?1)",
+                "SELECT definition_json \
+                FROM auth_accepted_apis \
+                WHERE api_id=(SELECT api_id \
+                FROM auth_capability_identities \
+                WHERE capability_id=?1)",
                 [&f.read],
                 |row| row.get(0),
             )?;
@@ -98,7 +102,11 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         .store
         .transaction(|connection| {
             let value: String = connection.query_row(
-                "SELECT definition_json FROM auth_accepted_apis WHERE api_id=(SELECT api_id FROM auth_capability_identities WHERE capability_id=?1)",
+                "SELECT definition_json \
+                FROM auth_accepted_apis \
+                WHERE api_id=(SELECT api_id \
+                FROM auth_capability_identities \
+                WHERE capability_id=?1)",
                 [&f.read],
                 |row| row.get(0),
             )?;
@@ -202,7 +210,11 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         .store
         .transaction(|connection| {
             let value: String = connection.query_row(
-                "SELECT definition_json FROM auth_accepted_apis WHERE api_id=(SELECT api_id FROM auth_capability_identities WHERE capability_id=?1)",
+                "SELECT definition_json \
+                FROM auth_accepted_apis \
+                WHERE api_id=(SELECT api_id \
+                FROM auth_capability_identities \
+                WHERE capability_id=?1)",
                 [&f.read],
                 |row| row.get(0),
             )?;
@@ -252,9 +264,10 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
             )
         })
         .unwrap();
-    assert!(
-        matches!(provision_instance(&f.store, &failed_identity, &missing_key, "service", NOW), Err(AuthError::Invalid(code)) if code == "identity_public_key_required")
-    );
+    assert!(matches!(
+        provision_instance(&f.store, &failed_identity, &missing_key, "service", NOW),
+        Err(AuthError::Invalid(code)) if code == "identity_public_key_required"
+    ));
     f.store
         .transaction(|connection| {
             let instances = read_instances(
@@ -581,7 +594,11 @@ fn catalog_acceptance_replays_typed_result_after_later_replacement() {
         .store
         .transaction(|connection| {
             let value: String = connection.query_row(
-                "SELECT definition_json FROM auth_accepted_apis WHERE api_id=(SELECT api_id FROM auth_capability_identities WHERE capability_id=?1)",
+                "SELECT definition_json \
+                FROM auth_accepted_apis \
+                WHERE api_id=(SELECT api_id \
+                FROM auth_capability_identities \
+                WHERE capability_id=?1)",
                 [&f.read],
                 |row| row.get(0),
             )?;
@@ -687,7 +704,11 @@ fn provisioned_service_is_discoverable_without_leaking_into_device_listing() {
         .store
         .transaction(|connection| {
             let value: String = connection.query_row(
-                "SELECT definition_json FROM auth_accepted_apis WHERE api_id=(SELECT api_id FROM auth_capability_identities WHERE capability_id=?1)",
+                "SELECT definition_json \
+                FROM auth_accepted_apis \
+                WHERE api_id=(SELECT api_id \
+                FROM auth_capability_identities \
+                WHERE capability_id=?1)",
                 [&f.read],
                 |row| row.get(0),
             )?;

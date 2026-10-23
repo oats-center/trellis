@@ -274,10 +274,33 @@ impl AdminSession {
         username: &str,
         password: &str,
     ) -> Result<Self, TrellisTestError> {
-        let (session, nats_servers) = login_client(oauth_origin, trust_roots, custody, "trellis.cli", &json!([
-            {"type":"trellis_capabilities","required":[],"optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES},
-            {"type":"trellis_platform_privileges","required":["principals.manage","roles.manage","apis.accept","apis.forceReplace","clients.manage","privileges.manage"]}
-        ]), username, password).await?;
+        let (session, nats_servers) = login_client(
+            oauth_origin,
+            trust_roots,
+            custody,
+            "trellis.cli",
+            &json!([
+                {
+                    "type":"trellis_capabilities",
+                    "required": [],
+                    "optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES
+                },
+                {
+                    "type":"trellis_platform_privileges",
+                    "required": [
+                        "principals.manage",
+                        "roles.manage",
+                        "apis.accept",
+                        "apis.forceReplace",
+                        "clients.manage",
+                        "privileges.manage"
+                                ]
+                }
+            ]),
+            username,
+            password,
+        )
+        .await?;
         let trust = session.trust.clone();
         let generated = trellis_rs::generated::Client::connect_user(UserConnectOptions::new(
             nats_servers.clone(),
@@ -411,12 +434,32 @@ impl AdminSession {
                 .await
                 .map_err(|error| failure(TrellisTestStage::ParticipantInstallation, error))?
                 .review;
-            match self.auth.apis_get(&AuthApiGetRequest { api_id: api_id.to_owned().into(), extra: Default::default() }).await {
-                    Ok(current) if current.api.canonical_digest == review.canonical_digest => continue,
-                    Ok(_) => return Err(failure(TrellisTestStage::ParticipantInstallation, "API already accepted with a different definition; explicit catalog update required")),
-                    Err(CallError::Declared(error)) if matches!(error.as_ref(), ApisGetError::AuthError(error) if error.payload().is_ok_and(|payload| payload.code.as_ref() == "not_found")) => {},
-                    Err(error) => return Err(failure(TrellisTestStage::ParticipantInstallation, error)),
+            match self
+                .auth
+                .apis_get(&AuthApiGetRequest {
+                    api_id: api_id.to_owned().into(),
+                    extra: Default::default(),
+                })
+                .await
+            {
+                Ok(current) if current.api.canonical_digest == review.canonical_digest => continue,
+                Ok(_) => {
+                    return Err(failure(
+                        TrellisTestStage::ParticipantInstallation,
+                        "API already accepted with a different definition; explicit catalog \
+        update required",
+                    ))
                 }
+                Err(CallError::Declared(error))
+                    if matches!(
+                        error.as_ref(),
+                        ApisGetError::AuthError(error)
+                            if error.payload().is_ok_and(|payload| payload.code.as_ref() == "not_found")
+                    ) => {}
+                Err(error) => {
+                    return Err(failure(TrellisTestStage::ParticipantInstallation, error))
+                }
+            }
             if !review.compatible {
                 return Err(failure(
                     TrellisTestStage::ParticipantInstallation,

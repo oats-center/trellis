@@ -129,31 +129,6 @@ impl GeneratedTlsNotice {
         }))
     }
 
-    /// The notice shown to every browser user: the CA fingerprint to verify and
-    /// the serving certificate's expiry. Unreadable certificates still produce
-    /// a notice, without a fingerprint, so users are never silently uninformed.
-    #[must_use]
-    pub fn browser_json(
-        config: &crate::RuntimeConfig,
-        transport: &crate::ListenerTransport,
-    ) -> serde_json::Value {
-        match Self::from_config(config, transport) {
-            Ok(None) => serde_json::Value::Null,
-            Ok(Some(notice)) => serde_json::json!({
-                "caSha256Fingerprint": notice.ca.sha256_fingerprint,
-                "leafNotAfter": notice.leaf.and_then(|leaf| {
-                    leaf.not_after
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .ok()
-                }),
-            }),
-            Err(error) => {
-                tracing::warn!(error = %error, "generated TLS certificates are unreadable");
-                serde_json::json!({"caSha256Fingerprint": null, "leafNotAfter": null})
-            }
-        }
-    }
-
     /// Logs the always-on operator warning for a private generated CA.
     pub fn warn(&self) {
         let format = time::format_description::well_known::Rfc3339;
@@ -165,7 +140,23 @@ impl GeneratedTlsNotice {
             security_event = "generated_tls_in_use",
             ca_sha256_fingerprint = %self.ca.sha256_fingerprint,
             leaf_not_after = leaf_expires.as_deref().unwrap_or("not served by this listener"),
-            "Trellis is serving certificates from its generated installation CA. Browsers and native clients must trust that CA explicitly; verify the fingerprint out of band before trusting it, and renew leaf certificates before they expire with `trellis tls renew`."
+            "Trellis is serving certificates from its generated installation CA. \
+            Browsers and native clients must trust that CA explicitly; verify the \
+            fingerprint out of band before trusting it, and renew leaf \
+            certificates before they expire with `trellis tls renew`."
         );
     }
+}
+
+/// Whether `transport` serves a certificate issued by the Trellis-generated
+/// installation CA, so browser users see the not-for-production banner.
+pub(crate) fn serves_generated_certificate(
+    config: &crate::RuntimeConfig,
+    transport: &crate::ListenerTransport,
+) -> bool {
+    config
+        .tls
+        .as_ref()
+        .is_some_and(|tls| tls.generated_ca_certificate.is_some())
+        && matches!(transport, crate::ListenerTransport::Tls { .. })
 }

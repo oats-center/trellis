@@ -319,7 +319,12 @@ impl NativeCredentialLease {
     pub fn public_jwk(&self) -> serde_json::Value {
         let point = self.signing_key.verifying_key().to_encoded_point(false);
         let bytes = point.as_bytes();
-        serde_json::json!({"kty":"EC","crv":"P-256","x":URL_SAFE_NO_PAD.encode(&bytes[1..33]),"y":URL_SAFE_NO_PAD.encode(&bytes[33..65])})
+        serde_json::json!({
+            "kty":"EC",
+            "crv":"P-256",
+            "x":URL_SAFE_NO_PAD.encode(&bytes[1..33]),
+            "y":URL_SAFE_NO_PAD.encode(&bytes[33..65])
+        })
     }
 
     /// Sign the standards client's exact JWS signing input without exporting a key.

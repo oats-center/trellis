@@ -42,15 +42,7 @@ mode = "loopback_development"
 [auth.authorization]
 issuer_signing_seed_file = "./auth/authorization-issuer.seed"
 context_lifetime_seconds = 300
-refresh_lead_seconds = 60
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
-maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "trellis_authorization_contexts"
-registry_replicas = 1
 
 [platform.storage]
 kind = "sqlite"
@@ -435,22 +427,10 @@ servers = "nats://127.0.0.1:4222"
 [nats.runtime]
 auth_creds_path = "./nats/auth.creds"
 
-[oauth.providers.google]
-type = "oidc"
-client_secret_file = "./secrets/google"
-
 [auth.authorization]
 issuer_signing_seed_file = "./auth/issuer.seed"
 context_lifetime_seconds = 300
-refresh_lead_seconds = 60
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
-maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "trellis_authorization_contexts"
-registry_replicas = 1
 
 [platform.storage]
 kind = "sqlite"
@@ -478,14 +458,6 @@ path = "./data/platform.sqlite"
             .and_then(|runtime| runtime.auth_creds_path.as_ref()),
         Some(&directory.path().join("./nats/auth.creds"))
     );
-    assert_eq!(
-        config
-            .oauth
-            .as_ref()
-            .and_then(|oauth| oauth.providers.get("google"))
-            .and_then(|google| google.client_secret_file.as_ref()),
-        Some(&directory.path().join("./secrets/google"))
-    );
     let authorization = config.resolve_authorization().expect("authorization");
     assert_eq!(
         authorization.issuer_signing_seed_file,
@@ -499,23 +471,15 @@ fn authorization_config_rejects_root_seed_and_invalid_policy() {
         r#"
 [auth.authorization]
 issuer_signing_seed_file = "issuer.seed"
-context_lifetime_seconds = 300
-refresh_lead_seconds = 300
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
-maximum_bootstrap_jwt_lifetime_seconds = 3600
+context_lifetime_seconds = 30
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "contexts"
-registry_replicas = 1
 "#,
     )
     .expect("parse authorization config");
     assert!(matches!(
         config.resolve_authorization(),
         Err(ConfigError::InvalidAuthorizationConfig {
-            field: "refresh_lead_seconds",
+            field: "allowed_clock_skew_seconds",
             ..
         })
     ));
@@ -527,15 +491,7 @@ fn oauth_admission_lifetime_defaults_and_enforces_bounds() {
 [auth.authorization]
 issuer_signing_seed_file = "issuer.seed"
 context_lifetime_seconds = 60
-refresh_lead_seconds = 10
-refresh_jitter_seconds = 0
-minimum_context_lifetime_seconds = 15
-maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 2
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "contexts"
-registry_replicas = 1
 "#;
     let parse = |value: Option<u64>| {
         let configured = match value {
@@ -592,15 +548,7 @@ sentinel_public_key_file = "./nats/auth-sentinel.pub"
 [auth.authorization]
 issuer_signing_seed_file = "./auth/issuer.seed"
 context_lifetime_seconds = 300
-refresh_lead_seconds = 60
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
-maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "trellis_authorization_contexts"
-registry_replicas = 1
 
 [jobs.storage]
 kind = "sqlite"
@@ -943,15 +891,7 @@ system_creds_path = "./nats/system-runtime.creds"
 [auth.authorization]
 issuer_signing_seed_file = "./auth/issuer.seed"
 context_lifetime_seconds = 300
-refresh_lead_seconds = 60
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
-maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "trellis_authorization_contexts"
-registry_replicas = 1
 
 [jobs.storage]
 kind = "sqlite"

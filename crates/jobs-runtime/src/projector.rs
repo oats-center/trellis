@@ -169,7 +169,8 @@ async fn collect_projector_message(
 ) -> Result<(), ServerError> {
     let message = message.map_err(|error| {
         ServerError::Nats(format!(
-            "jobs projector failed to pull from consumer '{consumer_name}' on stream '{jobs_stream}': {error}"
+            "jobs projector failed to pull from consumer '{consumer_name}' on \
+            stream '{jobs_stream}': {error}"
         ))
     })?;
     let Some(event) = parse_projector_message(&message) else {

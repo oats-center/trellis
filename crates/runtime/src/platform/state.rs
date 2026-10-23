@@ -66,11 +66,17 @@ impl StateRuntime {
             Ok(store) => store,
             Err(open_error) => match jetstream.create_key_value(config).await {
                 Ok(store) => store,
-                Err(create_error) => jetstream.get_key_value(BUCKET).await.map_err(|retry_error| {
-                    RuntimeError::Platform(format!(
-                        "failed to open {BUCKET} ({open_error}), create it ({create_error}), or reopen it after a possible concurrent create ({retry_error})"
+                Err(create_error) => {
+                    jetstream
+                        .get_key_value(BUCKET)
+                        .await
+                        .map_err(|retry_error| {
+                            RuntimeError::Platform(format!(
+                        "failed to open {BUCKET} ({open_error}), create it ({create_error}), or \
+                        reopen it after a possible concurrent create ({retry_error})"
                     ))
-                })?,
+                        })?
+                }
             },
         };
         let status = store.status().await.map_err(|error| {
@@ -111,7 +117,7 @@ impl StateRuntime {
                             &caller.principal_id,
                             &caller.binding,
                             &input,
-                            OffsetDateTime::now_utc().unix_timestamp(),
+                            crate::clock::unix_now(),
                         )
                         .map_err(|error| match error {
                             super::auth::AuthError::Denied => auth_denied(),

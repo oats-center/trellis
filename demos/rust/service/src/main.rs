@@ -1,3 +1,4 @@
+use service_trellis::participants::demo_rust_service_service::resources::RefreshSiteSummaryResult;
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
@@ -29,6 +30,10 @@ struct Args {
     /// Base64url provisioned service identity seed.
     #[arg(long, env = "TRELLIS_SEED")]
     seed: Option<String>,
+
+    /// Private installation CA to trust, such as a Trellis-generated CA.
+    #[arg(long, env = "TRELLIS_CA_CERTIFICATE")]
+    ca_certificate: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -59,7 +64,9 @@ async fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!("--trellis-url and --seed must be provided together"),
     };
 
-    let server = trellis_rs::auth::discover_native_oauth(&trellis_url).await?;
+    let server =
+        trellis_rs::auth::discover_native_oauth(&trellis_url, args.ca_certificate.as_slice())
+            .await?;
     let mut runtime = Participant::connect(
         ServiceConnectOptions::new(server.nats_servers, server.trust, &seed)
             .with_name("rust-field-ops-demo")
@@ -87,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
                     let sites = sites.clone();
                     async move {
                         let site = refresh_site(&sites, &job.payload().site_id).await?;
-                        Ok::<_, JobProcessError<String>>(service_trellis::participants::demo_rust_service_service::resources::RefreshSiteSummaryResult {
+                        Ok::<_, JobProcessError<String>>(RefreshSiteSummaryResult {
                             refresh_id: format!("refresh-{}", job.context().request_id),
                             site,
                             status: "completed".into(),

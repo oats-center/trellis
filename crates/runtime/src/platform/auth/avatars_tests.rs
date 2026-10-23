@@ -52,7 +52,7 @@ fn bounded_image_decode_reencodes_static_pixels_and_rejects_unsafe_inputs() {
 async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remote_browser_requests(
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let mut now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let mut now = crate::clock::unix_now();
     let mut store = open(&directory, SigningKey::from_bytes(&[37; 32]));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -85,12 +85,32 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         claim_freshness_seconds: 3600,
         expected_revision: 0,
     };
-    store.transaction(|connection| {
-        store.register_oidc_provider_in_transaction(connection,&mutation(&principal,&registration),&registration,now)?;
-        SqliteAuthorizationStore::link_oidc_identity_in(connection,&owner,&provider,"subject",now)?;
-        profiles::ingest(connection,&owner,&provider,"subject",&profiles::VerifiedProfile::from_claims(&json!({"picture":"https://images.example.com/first.png","email":"verified@example.com","email_verified":true})),now)?;
-        Ok(())
-    }).unwrap();
+    store
+        .transaction(|connection| {
+            store.register_oidc_provider_in_transaction(
+                connection,
+                &mutation(&principal, &registration),
+                &registration,
+                now,
+            )?;
+            SqliteAuthorizationStore::link_oidc_identity_in(
+                connection, &owner, &provider, "subject", now,
+            )?;
+            profiles::ingest(
+                connection,
+                &owner,
+                &provider,
+                "subject",
+                &profiles::VerifiedProfile::from_claims(&json!({
+                    "picture":"https://images.example.com/first.png",
+                    "email":"verified@example.com",
+                    "email_verified":true
+                })),
+                now,
+            )?;
+            Ok(())
+        })
+        .unwrap();
     let user = store
         .transaction(|connection| rpc_users::read_user(&store, connection, &owner, true))
         .unwrap();
@@ -103,7 +123,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         "verified OIDC picture precedes the verified-email fallback"
     );
     let url = user.avatar_url.unwrap();
-    now = time::OffsetDateTime::now_utc().unix_timestamp();
+    now = crate::clock::unix_now();
     let encoded = url.rsplit('/').next().unwrap();
     let token = store
         .avatar_signer
@@ -158,7 +178,7 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
     let server = tokio::spawn(
         axum::serve(
             listener,
-            super::super::oauth::router(engine.clone(), vec![], Vec::new()),
+            super::super::oauth::router(engine.clone(), vec![]),
         )
         .with_graceful_shutdown(async move { stop.cancelled().await })
         .into_future(),
@@ -271,7 +291,12 @@ async fn cached_image_delivery_is_bound_to_profile_and_installation_without_remo
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let changed:AuthUserProfileUpdateRequest=serde_json::from_value(json!({"avatarOverrideUrl":"https://images.example.com/new.png","expectedRevision":user.account.unwrap().profile_revision,"idempotencyKey":id()})).unwrap();
+    let changed: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
+        "avatarOverrideUrl":"https://images.example.com/new.png",
+        "expectedRevision":user.account.unwrap().profile_revision,
+        "idempotencyKey":id()
+    }))
+    .unwrap();
     rpc_users::update_profile(&store, &mutation(&owner, &changed), &changed, now + 1).unwrap();
     assert_eq!(
         http.get(&url).send().await.unwrap().status(),

@@ -224,7 +224,8 @@ pub enum RuntimeWorkerError {
     #[error("failed to open jobs lifecycle stream '{stream}': {details}")]
     LifecycleStream { stream: String, details: String },
     #[error(
-        "failed to read latest jobs lifecycle event for subject '{subject}' from stream '{stream}': {details}"
+        "failed to read latest jobs lifecycle event for subject '{subject}' \
+        from stream '{stream}': {details}"
     )]
     LifecycleRead {
         stream: String,
@@ -232,7 +233,8 @@ pub enum RuntimeWorkerError {
         details: String,
     },
     #[error(
-        "failed to decode latest jobs lifecycle event for subject '{subject}' from stream '{stream}': {details}"
+        "failed to decode latest jobs lifecycle event for subject '{subject}' \
+        from stream '{stream}': {details}"
     )]
     LifecycleDecode {
         stream: String,
@@ -311,6 +313,7 @@ type WorkerJoinResult = (
     Result<Result<(), RuntimeWorkerError>, tokio::task::JoinError>,
 );
 type WorkerJoinFuture = BoxFuture<'static, WorkerJoinResult>;
+type HeartbeatHook = Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// Handle for a binding-driven worker host.
 pub struct WorkerHostHandle {
@@ -738,7 +741,7 @@ where
         } else if cancellation.is_lease_lost() {
             job_cancellation.cancel_for_lease_loss();
         }
-        let heartbeat_hook: Arc<dyn Fn() -> BoxFuture<'static, Result<(), String>> + Send + Sync> = {
+        let heartbeat_hook: HeartbeatHook = {
             let heartbeat_message = message.clone();
             Arc::new(move || {
                 let heartbeat_message = heartbeat_message.clone();
@@ -1505,7 +1508,8 @@ fn worker_consumer_mismatch(info: &consumer::Info, queue: &JobsQueueBinding) -> 
     // finishes reconciliation, including after repeated worker crashes.
     if config.max_deliver != -1 {
         return Some(format!(
-            "stale consumer max deliver {}, expected unlimited (-1) for execution-owner reconciliation",
+            "stale consumer max deliver {}, expected unlimited (-1) for \
+            execution-owner reconciliation",
             config.max_deliver
         ));
     }
@@ -2197,7 +2201,9 @@ where
                     ));
                 }
                 result = self.install(generation) => {
-                    result.map_err(|error| TrellisClientError::TransportUnavailable(error.to_string()))?
+                    result.map_err(|error| {
+                        TrellisClientError::TransportUnavailable(error.to_string())
+                    })?
                 }
             };
             // The stopped check and the registration share the `installed` lock

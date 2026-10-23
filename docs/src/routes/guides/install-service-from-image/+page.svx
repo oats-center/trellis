@@ -60,11 +60,11 @@ podman run --rm \
   ghcr.io/my-org/my-service:1.2.3
 ```
 
-Bootstrap proves the identity and a fresh session key. Trellis resolves the
-deployment/instance assignment, exact installed participant/APIs, current
-grant, resource evidence, signed context, route JWT, inbox, and NATS endpoints.
-Do not mount NATS administrator credentials, semantic digests, deployment
-IDs, instance IDs, resource bindings, or authorization-context files.
+NATS CONNECT proves the identity and a fresh session key. Auth resolves the
+deployment and instance, exact installed participant and APIs, resource
+evidence, and inbox, and returns signed session authority with exact transport
+permissions. Do not mount NATS administrator credentials, semantic digests,
+deployment IDs, instance IDs, resource bindings, or authority files.
 
 ## 5. Upgrade
 

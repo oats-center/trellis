@@ -1,10 +1,6 @@
 //! Runtime ownership of the authoritative Auth store and its serving boundaries.
 
-use std::{
-    path::Path,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
 pub mod auth;
 pub mod auth_callout;
@@ -48,7 +44,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     )?);
     verify_jetstream_identity(&store, &context.trellis_nats).await?;
     store
-        .initialize_issuer(now_seconds()?)
+        .initialize_issuer(crate::clock::unix_now())
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let custody = context
         .config
@@ -67,13 +63,13 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                 &context.config.public_origin(),
                 "admin",
                 None,
-                now_seconds()?,
+                crate::clock::unix_now(),
             )
             .map_err(|error| RuntimeError::Platform(error.to_string()))?
             .1
     } else {
         storage
-            .reset_local_administrator(now_seconds()?, !context.reset_admin)
+            .reset_local_administrator(crate::clock::unix_now(), !context.reset_admin)
             .map_err(|error| RuntimeError::Platform(error.to_string()))?
     };
     if let Some(url) = account_url {
@@ -94,29 +90,19 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         })?;
     let listener = auth::OAuthListener::load(socket, &oauth.origin, &oauth.transport)
         .await
-        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+        .forwarded_by(&oauth.trusted_proxies);
     let (native, websocket) =
         advertised_endpoints(&context.config, &nats, context.nats_override.as_ref());
     // Every Login Portal page shows the generated-CA notice for the
     // certificate this OAuth listener serves.
-    engine.serve_generated_tls_notice(context.config.clone(), oauth.transport.clone());
-    let notice_engine = engine.clone();
+    engine.serve_generated_tls(crate::tls::serves_generated_certificate(
+        &context.config,
+        &oauth.transport,
+    ));
     let router = auth::oauth_router(
         engine.clone(),
         native.into_iter().chain(websocket).collect(),
-        oauth.trusted_proxies.clone(),
-    )
-    .route(
-        "/portal/tls",
-        axum::routing::get(move || {
-            let notice = notice_engine.generated_tls_notice();
-            async move {
-                (
-                    [(axum::http::header::CACHE_CONTROL, "no-store")],
-                    axum::Json(notice),
-                )
-            }
-        }),
     );
     let jetstream = async_nats::jetstream::new(context.trellis_nats.clone());
     let mut buckets = Vec::new();
@@ -174,7 +160,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
     >(&store, &context.trellis_nats, &provider_seed)
     .await?;
     while store
-        .process_effects(&material, &revocations, &system, now_seconds()?)
+        .process_effects(&material, &revocations, &system, crate::clock::unix_now())
         .await
         .map_err(|error| RuntimeError::Platform(error.to_string()))?
         != 0
@@ -237,20 +223,33 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         let worker_stop = task_stop.clone();
         let provider_oauth = engine.clone();
         tasks.spawn(async move {
-            let mut interval=tokio::time::interval(Duration::from_secs(1));
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     ()=worker_stop.stopped()=>return Ok(()),
                     _=interval.tick()=> {
-                        let now=now_seconds()?;
-                        match store.process_effects(&material,&revocations,&system,now).await {
-                            Ok(_)=>{},
-                            Err(auth::AuthError::Broker(_) | auth::AuthError::Unavailable)=>tracing::warn!("Auth broker effects unavailable; durable work retained"),
-                            Err(error)=>return Err(RuntimeError::Platform(error.to_string())),
+                        let now = crate::clock::unix_now();
+                        match store
+                            .process_effects(&material, &revocations, &system, now)
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(auth::AuthError::Broker(_) | auth::AuthError::Unavailable) => {
+                                tracing::warn!(
+                                    "Auth broker effects unavailable; durable work retained"
+                                )
+                            }
+                            Err(error) => return Err(RuntimeError::Platform(error.to_string())),
                         }
-                        store.prune_expired_artifacts(now).map_err(|error|RuntimeError::Platform(error.to_string()))?;
-                        engine.server.store().cleanup_expired(now).map_err(|error|RuntimeError::Platform(error.to_string()))?;
+                        store
+                            .prune_expired_artifacts(now)
+                            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+                        engine
+                            .server
+                            .store()
+                            .cleanup_expired(now)
+                            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                     }
                 }
             }
@@ -278,41 +277,67 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                     // Claim each publication immediately before sending it, so
                     // a slow broker cannot consume another event's lease.
                     for _ in 0..8 {
-                        let Some(effect) = event_store.claim_effects(1, now_seconds()?, 10, true)
+                        let Some(effect) = event_store
+                            .claim_effects(1, crate::clock::unix_now(), 10, true)
                             .map_err(|error| RuntimeError::Platform(error.to_string()))?
-                            .into_iter().next() else { break; };
+                            .into_iter()
+                            .next()
+                        else {
+                            break;
+                        };
                         let result = async {
-                            let text = |key: &str| effect.payload[key].as_str().ok_or(auth::AuthError::Unavailable);
+                            let text = |key: &str| {
+                                effect.payload[key]
+                                    .as_str()
+                                    .ok_or(auth::AuthError::Unavailable)
+                            };
                             let body = &effect.payload["event"];
                             let event = trellis_rs::client::PreparedTrellisEvent::restore(
                                 text("subject")?,
                                 serde_json::to_vec(body)?.into(),
                                 text("descriptor")?,
-                                body["eventId"].as_str().ok_or(auth::AuthError::Unavailable)?,
-                                body["occurredAt"].as_str().ok_or(auth::AuthError::Unavailable)?,
-                            ).map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
-                            publisher.publish_prepared(&event).await
+                                body["eventId"]
+                                    .as_str()
+                                    .ok_or(auth::AuthError::Unavailable)?,
+                                body["occurredAt"]
+                                    .as_str()
+                                    .ok_or(auth::AuthError::Unavailable)?,
+                            )
+                            .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
+                            publisher
+                                .publish_prepared(&event)
+                                .await
                                 .map_err(|error| auth::AuthError::Broker(error.to_string()))
-                        }.await;
-                        let now = now_seconds()?;
+                        }
+                        .await;
+                        let now = crate::clock::unix_now();
                         match result {
                             Ok(()) => event_store.complete_effect(&effect, now),
                             Err(error) => {
-                                tracing::warn!(action_id=%effect.action_id, attempt=effect.attempts, %error, "Auth event publication remains pending");
+                                tracing::warn!(
+                                    action_id=%effect.action_id,
+                                    attempt=effect.attempts,
+                                    %error,
+                                    "Auth event publication remains pending"
+                                );
                                 event_store.retry_effect(&effect, now)
                             }
-                        }.map_err(|error| RuntimeError::Platform(error.to_string()))?;
+                        }
+                        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                     }
                 }
             };
             let result = tokio::select! {
-                result = provider.run() => result.map_err(|error| RuntimeError::Platform(error.to_string())),
+                result = provider.run() =>
+                    result.map_err(|error| RuntimeError::Platform(error.to_string())),
                 result = publications => result,
             };
             // Cancelling intake is not logical shutdown: retained callbacks and
             // publishers may still hold this separate Platform RPC connection.
             // End and join its recovery workers before the host stops NATS.
-            let shutdown = owner.shutdown_native_runtime().await
+            let shutdown = owner
+                .shutdown_native_runtime()
+                .await
                 .map_err(|error| RuntimeError::Platform(error.to_string()));
             result.and(shutdown)
         });
@@ -343,14 +368,6 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         stop,
         join,
     })
-}
-
-fn now_seconds() -> Result<i64, RuntimeError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|time| i64::try_from(time.as_secs()).ok())
-        .ok_or_else(|| RuntimeError::Platform("current time is outside the supported range".into()))
 }
 
 pub(crate) fn callout_keys(
@@ -458,7 +475,7 @@ pub async fn initialize_admin_credentials(
         config,
         keys.target_account(),
     )?);
-    let now = now_seconds()?;
+    let now = crate::clock::unix_now();
     auth.initialize_issuer(now)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;
     let minimum = config
@@ -517,7 +534,13 @@ async fn verify_jetstream_identity(
                 .await
                 .map_err(|error| RuntimeError::Platform(error.to_string()))?,
         ),
-        Err(error) if matches!(error.kind(),GetStreamErrorKind::JetStream(error) if error.error_code()==ErrorCode::STREAM_NOT_FOUND) => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                GetStreamErrorKind::JetStream(error)
+                    if error.error_code()==ErrorCode::STREAM_NOT_FOUND
+            ) =>
+        {
             None
         }
         Err(error) => return Err(RuntimeError::Platform(error.to_string())),

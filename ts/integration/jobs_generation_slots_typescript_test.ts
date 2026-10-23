@@ -157,9 +157,6 @@ test("managed Jobs keeps two execution slots and receives new work after generat
     {
       authorization: {
         contextLifetimeSeconds: 60,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 26,
         allowedClockSkewSeconds: 2,
       },
     },

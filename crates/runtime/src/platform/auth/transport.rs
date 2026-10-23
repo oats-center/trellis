@@ -1,6 +1,7 @@
 //! The single broker ACL projection of accepted application authority.
 
 use std::collections::BTreeSet;
+use trellis_protocol::transfer;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use trellis_idl::{compile_evidence, ActionDefinition, PackageEvidence};
@@ -53,9 +54,13 @@ impl SqliteAuthorizationStore {
         let mut responds = false;
         let mut operation_providers = BTreeSet::new();
         for reference in &authority.apis {
-            let (generation,revision,evidence):(u64,u64,String)=connection.query_row(
-                "SELECT generation,accepted_revision,definition_json FROM auth_accepted_apis WHERE api_id=?1",
-                [&reference.api_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            let (generation, revision, evidence): (u64, u64, String) = connection.query_row(
+                "SELECT generation,accepted_revision,definition_json \
+                FROM auth_accepted_apis \
+                WHERE api_id=?1",
+                [&reference.api_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
             if generation != reference.generation.get()
                 || revision != reference.accepted_revision.get()
             {
@@ -153,7 +158,7 @@ impl SqliteAuthorizationStore {
                         // Established work retains its deployment owner. The set
                         // contains all eligible owners, never a sticky selection.
                         let mut deployments = connection.prepare(
-                            "SELECT DISTINCT b.deployment_id FROM auth_deployment_bindings b
+                    "SELECT DISTINCT b.deployment_id FROM auth_deployment_bindings b
                              JOIN auth_instances i USING(deployment_id)
                              JOIN auth_deployments d USING(deployment_id)
                              WHERE i.state='active' AND d.state='active'
@@ -290,21 +295,45 @@ impl SqliteAuthorizationStore {
                             | ActionDefinition::Operation { upload: true, .. }
                     ) {
                         if can_call {
-                            publish.insert(trellis_protocol::transfer::derive_transfer_consumer_upload_data_wildcard_subject(own_runtime)?);
-                            publish.insert(trellis_protocol::transfer::derive_transfer_consumer_control_wildcard_subject(own_runtime)?);
-                            subscribe.insert(trellis_protocol::transfer::derive_transfer_consumer_download_data_wildcard_subject(own_runtime)?);
+                            publish.insert(
+                                transfer::derive_transfer_consumer_upload_data_wildcard_subject(
+                                    own_runtime,
+                                )?,
+                            );
+                            publish.insert(
+                                transfer::derive_transfer_consumer_control_wildcard_subject(
+                                    own_runtime,
+                                )?,
+                            );
                             subscribe.insert(
-                                trellis_protocol::transfer::derive_transfer_consumer_signal_wildcard_subject(
+                                transfer::derive_transfer_consumer_download_data_wildcard_subject(
+                                    own_runtime,
+                                )?,
+                            );
+                            subscribe.insert(
+                                transfer::derive_transfer_consumer_signal_wildcard_subject(
                                     own_runtime,
                                 )?,
                             );
                         }
                         if can_provide {
-                            subscribe.insert(trellis_protocol::transfer::derive_transfer_provider_upload_data_wildcard_subject(own_runtime)?);
-                            subscribe.insert(trellis_protocol::transfer::derive_transfer_provider_control_wildcard_subject(own_runtime)?);
-                            publish.insert(trellis_protocol::transfer::derive_transfer_provider_download_data_wildcard_subject(own_runtime)?);
+                            subscribe.insert(
+                                transfer::derive_transfer_provider_upload_data_wildcard_subject(
+                                    own_runtime,
+                                )?,
+                            );
+                            subscribe.insert(
+                                transfer::derive_transfer_provider_control_wildcard_subject(
+                                    own_runtime,
+                                )?,
+                            );
                             publish.insert(
-                                trellis_protocol::transfer::derive_transfer_provider_signal_wildcard_subject(
+                                transfer::derive_transfer_provider_download_data_wildcard_subject(
+                                    own_runtime,
+                                )?,
+                            );
+                            publish.insert(
+                                transfer::derive_transfer_provider_signal_wildcard_subject(
                                     own_runtime,
                                 )?,
                             );
@@ -347,7 +376,22 @@ impl SqliteAuthorizationStore {
                 }
                 // Framework storage is deployment-owned, not software-revision-owned.
                 // The pinned provider actions above already establish eligibility.
-                let evidence: Option<String> = connection.query_row("SELECT e.actual_json FROM auth_resource_binding_evidence e JOIN auth_instances i ON i.deployment_id=e.owner_id WHERE e.owner_kind='deployment' AND e.owner_id=?1 AND e.participant_id=?2 AND e.resource_kind='framework_operation' AND e.local_name='operations' AND e.state='available' AND i.instance_id=?3 AND i.state='active'",params![deployment,participant,instance], |row|row.get(0)).optional()?;
+                let evidence: Option<String> = connection
+                    .query_row(
+                        "SELECT e.actual_json \
+                        FROM auth_resource_binding_evidence e \
+                        JOIN auth_instances i ON i.deployment_id=e.owner_id \
+                        WHERE e.owner_kind='deployment' \
+                        AND e.owner_id=?1 AND e.participant_id=?2 \
+                        AND e.resource_kind='framework_operation' \
+                        AND e.local_name='operations' \
+                        AND e.state='available' \
+                        AND i.instance_id=?3 \
+                        AND i.state='active'",
+                        params![deployment, participant, instance],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
                 let storage: super::framework_storage::OperationStorage =
                     decode(&evidence.ok_or(AuthError::Unavailable)?)?;
                 for (bucket, stream_prefix, subject_prefix) in [

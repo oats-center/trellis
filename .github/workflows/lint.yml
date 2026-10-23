@@ -34,6 +34,10 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --manifest-path Cargo.toml --all --check
 
+      # rustfmt silently leaves statements it cannot fit unformatted.
+      - name: Check Rust statements rustfmt could not format
+        run: python3 scripts/check-rust-width.py
+
   prettier:
     name: Prettier formatting
     runs-on: ubuntu-latest

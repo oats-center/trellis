@@ -458,7 +458,10 @@ impl<D: 'static> StateResourceClient for BoundStateResourceClient<D> {
         resource_name: &str,
         revision: Option<ResourceRevision>,
     ) -> Result<(), RawStateWriteError> {
-        let body = serde_json::json!({ "resourceName": resource_name, "revision": revision.map(|value| value.into_backend().to_string()) });
+        let body = serde_json::json!({
+            "resourceName": resource_name,
+            "revision": revision.map(|value| value.into_backend().to_string())
+        });
         match self.call("Delete", body).await {
             Ok(_) => Ok(()),
             Err(error) => match state_conflict(&error) {

@@ -38,9 +38,6 @@ import {
  */
 const shortAuthorizationLifetimes = {
   contextLifetimeSeconds: 76,
-  refreshLeadSeconds: 15,
-  refreshJitterSeconds: 0,
-  minimumContextLifetimeSeconds: 46,
 };
 
 const runtimeOptions = {
@@ -55,9 +52,6 @@ const fastRuntimeOptions = {
   ...runtimeOptions,
   authorization: {
     contextLifetimeSeconds: 28,
-    refreshLeadSeconds: 7,
-    refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 12,
     allowedClockSkewSeconds: 2,
   },
 };
@@ -120,7 +114,6 @@ test("verified short-lived authority remains usable after delayed admission", as
       authorization: {
         ...shortAuthorizationLifetimes,
         contextLifetimeSeconds: 61,
-        minimumContextLifetimeSeconds: 31,
       },
     },
   );

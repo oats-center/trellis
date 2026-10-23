@@ -65,7 +65,7 @@ pub(crate) struct SqliteAuthorizationStore {
     pub(super) custody_directory: PathBuf,
     current_key: Mutex<Option<(String, SigningKey)>>,
     pub(super) avatar_signer: std::sync::OnceLock<Arc<super::avatars::AvatarSigner>>,
-    pub(super) settings: AuthSettings,
+    pub(crate) settings: AuthSettings,
 }
 
 impl std::fmt::Debug for SqliteAuthorizationStore {
@@ -96,6 +96,11 @@ pub(super) fn decode<T: DeserializeOwned>(value: &str) -> Result<T, AuthError> {
     Ok(serde_json::from_str(value)?)
 }
 
+/// The wire timestamp for a stored Unix-seconds instant.
+pub(super) fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp, AuthError> {
+    trellis_rs::generated::Timestamp::from_unix_seconds(seconds).map_err(|_| AuthError::Unavailable)
+}
+
 pub(super) fn id() -> String {
     ulid::Ulid::new().to_string()
 }
@@ -104,50 +109,58 @@ pub(crate) fn read_custody_key(
     path: &std::path::Path,
 ) -> Result<[u8; 32], crate::supervisor::RuntimeError> {
     use crate::supervisor::RuntimeError;
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| {
-        RuntimeError::Platform(format!(
-            "cannot inspect custody key '{}': {error}",
-            path.display()
-        ))
-    })?;
+    use std::io::Read as _;
+    let invalid =
+        |reason: &str| RuntimeError::Platform(format!("custody key '{}' {reason}", path.display()));
+    let unreadable = |error: std::io::Error| invalid(&format!("cannot be read: {error}"));
+    // Open without following a link and check the opened file, so a swap
+    // between inspection and read cannot substitute another file.
+    let metadata = std::fs::symlink_metadata(path).map_err(unreadable)?;
     if !metadata.is_file() {
-        return Err(RuntimeError::Platform(format!(
-            "custody key '{}' must be a regular file",
-            path.display()
-        )));
+        return Err(invalid("must be a regular file"));
     }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            return Err(RuntimeError::Platform(format!(
-                "custody key '{}' must not be group/world accessible",
-                path.display()
-            )));
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(unreadable)?;
+    let opened = file.metadata().map_err(unreadable)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: geteuid has no arguments or borrowed memory.
+        let owner = unsafe { libc::geteuid() };
+        if metadata.dev() != opened.dev()
+            || metadata.ino() != opened.ino()
+            || opened.mode() & 0o077 != 0
+            || opened.uid() != owner
+            || opened.nlink() != 1
+        {
+            return Err(invalid(
+                "must be a single-link file owned by this user without group or world access",
+            ));
         }
     }
-    let encoded = std::fs::read_to_string(path).map_err(|error| {
-        RuntimeError::Platform(format!(
-            "cannot read custody key '{}': {error}",
-            path.display()
-        ))
-    })?;
+    if !opened.is_file() || opened.len() > 128 {
+        return Err(invalid("must be a regular file"));
+    }
+    let mut encoded = String::new();
+    file.take(128)
+        .read_to_string(&mut encoded)
+        .map_err(unreadable)?;
     let encoded = encoded.trim();
     let bytes = URL_SAFE_NO_PAD
         .decode(encoded)
-        .map_err(|_| RuntimeError::Platform(format!("invalid custody key '{}'", path.display())))?;
+        .map_err(|_| invalid("is not base64url"))?;
     if URL_SAFE_NO_PAD.encode(&bytes) != encoded {
-        return Err(RuntimeError::Platform(format!(
-            "noncanonical custody key '{}'",
-            path.display()
-        )));
+        return Err(invalid("is not canonical base64url"));
     }
-    bytes.try_into().map_err(|_| {
-        RuntimeError::Platform(format!(
-            "custody key '{}' must contain exactly 32 bytes",
-            path.display()
-        ))
-    })
+    bytes
+        .try_into()
+        .map_err(|_| invalid("must contain exactly 32 bytes"))
 }
 
 impl SqliteAuthorizationStore {
@@ -163,7 +176,15 @@ impl SqliteAuthorizationStore {
 
     pub(crate) fn mark_jetstream_bound(&self, identity: &str) -> Result<(), AuthError> {
         self.transaction(|connection| {
-            if connection.execute("UPDATE trellis_platform_store_marker SET jetstream_bound=1 WHERE id=1 AND jetstream_id=?1",[identity])?!=1 {return Err(AuthError::Conflict);}
+            if connection.execute(
+                "UPDATE trellis_platform_store_marker \
+                SET jetstream_bound=1 \
+                WHERE id=1 AND jetstream_id=?1",
+                [identity],
+            )? != 1
+            {
+                return Err(AuthError::Conflict);
+            }
             Ok(())
         })
     }
@@ -257,9 +278,13 @@ impl SqliteAuthorizationStore {
             )
             .map_err(|error| RuntimeError::Platform(error.to_string()))?;
         if initialized {
-            store
-                .issuer()
-                .map_err(|error| RuntimeError::Platform(format!("cannot load committed authorization issuer custody from '{}': {error}; restore the matching signing-key backup", store.custody_directory.display())))?;
+            store.issuer().map_err(|error| {
+                RuntimeError::Platform(format!(
+                    "cannot load committed authorization issuer custody from '{}': {error}; \
+                    restore the matching signing-key backup",
+                    store.custody_directory.display()
+                ))
+            })?;
         }
         Ok(store)
     }
@@ -340,7 +365,23 @@ impl SqliteAuthorizationStore {
     ) -> Result<trellis_rs::client::RuntimeAuthorizationTrust, AuthError> {
         let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
         let issuer = self.current_issuer(&connection)?;
-        let (current,rotation_sequence):(bool,u64)=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_authorization_issuers WHERE key_id=?1 AND public_key=?2 AND is_current=1 AND state='active' AND revoked_at IS NULL), coalesce((SELECT max(sequence) FROM auth_issuer_rotations WHERE trellis_instance_id=?3 AND audience_nats_account=?4),0)",params![issuer.key_id,issuer.public_key,self.settings.instance_id,self.settings.account],|row|Ok((row.get(0)?,row.get(1)?)))?;
+        let (current, rotation_sequence): (bool, u64) = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_authorization_issuers \
+            WHERE key_id=?1 AND public_key=?2 \
+            AND is_current=1 AND state='active' \
+            AND revoked_at IS NULL), coalesce((SELECT max(sequence) \
+            FROM auth_issuer_rotations \
+            WHERE trellis_instance_id=?3 \
+            AND audience_nats_account=?4),0)",
+            params![
+                issuer.key_id,
+                issuer.public_key,
+                self.settings.instance_id,
+                self.settings.account
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         if !current {
             return Err(AuthError::Denied);
         }
@@ -365,7 +406,15 @@ impl SqliteAuthorizationStore {
     }
 
     pub(super) fn current_signer(&self, connection: &Connection) -> Result<SigningKey, AuthError> {
-        let current: Option<String> = connection.query_row("SELECT key_id FROM auth_authorization_issuers WHERE is_current=1 AND state='active' AND revoked_at IS NULL", [], |row| row.get(0)).optional()?;
+        let current: Option<String> = connection
+            .query_row(
+                "SELECT key_id FROM auth_authorization_issuers \
+                WHERE is_current=1 AND state='active' \
+                AND revoked_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
         let current = current.ok_or(AuthError::Denied)?;
         if current == self.initial_issuer().key_id {
             return Ok(self.signer.clone());
@@ -495,9 +544,16 @@ impl SqliteAuthorizationStore {
         {
             return Err(AuthError::Invalid("invalid mutation identity".into()));
         }
-        let previous: Option<(String, String)> = connection.query_row(
-                "SELECT request_digest,result_json FROM auth_idempotency_results WHERE purpose=?1 AND signer_id=?2 AND request_id=?3",
-                params![purpose, identity.actor, identity.request_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?;
+        let previous: Option<(String, String)> = connection
+            .query_row(
+                "SELECT request_digest,result_json \
+                FROM auth_idempotency_results \
+                WHERE purpose=?1 AND signer_id=?2 \
+                AND request_id=?3",
+                params![purpose, identity.actor, identity.request_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
         if let Some((previous_digest, result)) = previous {
             if previous_digest != identity.request_digest {
                 return Err(AuthError::Conflict);
@@ -505,10 +561,34 @@ impl SqliteAuthorizationStore {
             return decode(&result);
         }
         let result = operation(connection)?;
-        connection.execute("INSERT INTO auth_idempotency_results(scope_key,purpose,signer_id,request_id,request_digest,result_json,created_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-                params![digest(&(purpose, &identity.actor, &identity.request_id))?,purpose,identity.actor,identity.request_id,identity.request_digest,json(&result)?,now,now.saturating_add(2_592_000)])?;
-        connection.execute("INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,target_id,data_json,created_at) VALUES(?1,?2,?3,?4,?5,?6)",
-                params![id(),identity.actor,purpose,identity.request_id,json(input)?,now])?;
+        connection.execute(
+            "INSERT INTO auth_idempotency_results(scope_key,purpose,signer_id,\
+            request_id,request_digest,result_json,created_at,expires_at) \
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                digest(&(purpose, &identity.actor, &identity.request_id))?,
+                purpose,
+                identity.actor,
+                identity.request_id,
+                identity.request_digest,
+                json(&result)?,
+                now,
+                now.saturating_add(2_592_000)
+            ],
+        )?;
+        connection.execute(
+            "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\
+            target_id,data_json,created_at) \
+            VALUES(?1,?2,?3,?4,?5,?6)",
+            params![
+                id(),
+                identity.actor,
+                purpose,
+                identity.request_id,
+                json(input)?,
+                now
+            ],
+        )?;
         Ok(result)
     }
 
@@ -516,14 +596,31 @@ impl SqliteAuthorizationStore {
     /// replaced by configuring an unrelated private key on the next restart.
     pub(crate) fn initialize_issuer(&self, now: i64) -> Result<(), AuthError> {
         self.transaction(|connection| {
-            let current: Option<String> = connection.query_row("SELECT key_id FROM auth_authorization_issuers WHERE is_current=1", [], |row| row.get(0)).optional()?;
+            let current: Option<String> = connection
+                .query_row(
+                    "SELECT key_id FROM auth_authorization_issuers WHERE is_current=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
             let issuer = self.initial_issuer();
             match current {
                 Some(_) => self.current_signer(connection).map(|_| ()),
                 None => {
-                    let count: i64 = connection.query_row("SELECT count(*) FROM auth_authorization_issuers", [], |row| row.get(0))?;
-                    if count != 0 { return Err(AuthError::Conflict); }
-                    connection.execute("INSERT INTO auth_authorization_issuers(key_id,public_key,is_current,state,activated_at,maximum_acceptance_deadline,created_at) VALUES(?1,?2,1,'active',?3,?3,?3)", params![issuer.key_id,issuer.public_key,now])?;
+                    let count: i64 = connection.query_row(
+                        "SELECT count(*) FROM auth_authorization_issuers",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if count != 0 {
+                        return Err(AuthError::Conflict);
+                    }
+                    connection.execute(
+                        "INSERT INTO auth_authorization_issuers(key_id,public_key,is_current,\
+                        state,activated_at,maximum_acceptance_deadline,created_at) \
+                        VALUES(?1,?2,1,'active',?3,?3,?3)",
+                        params![issuer.key_id, issuer.public_key, now],
+                    )?;
                     Ok(())
                 }
             }
@@ -535,7 +632,15 @@ impl SqliteAuthorizationStore {
         actor: &str,
         privilege: &str,
     ) -> Result<(), AuthError> {
-        let permitted: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_platform_privileges p JOIN auth_principals u USING(principal_id) WHERE p.principal_id=?1 AND p.privilege=?2 AND u.state='active')", params![actor,privilege], |row| row.get(0))?;
+        let permitted: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_platform_privileges p \
+            JOIN auth_principals u USING(principal_id) \
+            WHERE p.principal_id=?1 \
+            AND p.privilege=?2 AND u.state='active')",
+            params![actor, privilege],
+            |row| row.get(0),
+        )?;
         if permitted {
             Ok(())
         } else {

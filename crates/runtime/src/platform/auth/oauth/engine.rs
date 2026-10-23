@@ -3,7 +3,7 @@
 
 use std::{
     sync::{Arc, Mutex},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime},
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -43,7 +43,7 @@ pub(crate) struct OAuthEngine {
     pub(super) avatars: super::super::avatars::Avatars,
     nonces: Mutex<super::nonce::DpopNonces>,
     /// Installation TLS this listener serves, for the always-on user notice.
-    generated_tls: std::sync::OnceLock<(crate::RuntimeConfig, crate::ListenerTransport)>,
+    generated_tls: std::sync::OnceLock<bool>,
 }
 
 /// Host nonce challenges are distinct from the library's protocol failures.
@@ -75,7 +75,22 @@ impl SqliteAuthorizationStore {
         family: &str,
         now: i64,
     ) -> Result<i64, AuthError> {
-        connection.query_row("SELECT expires_at FROM auth_oauth_families WHERE family_lookup_hash=?1 AND oauth_grant_id=?2 AND revoked_at IS NULL AND expires_at>?3",params![URL_SAFE_NO_PAD.encode(Sha256::digest(family.as_bytes())),grant,now],|row|row.get(0)).optional()?.ok_or(AuthError::Denied)
+        connection
+            .query_row(
+                "SELECT expires_at FROM auth_oauth_families \
+                WHERE family_lookup_hash=?1 \
+                AND oauth_grant_id=?2 \
+                AND revoked_at IS NULL \
+                AND expires_at>?3",
+                params![
+                    URL_SAFE_NO_PAD.encode(Sha256::digest(family.as_bytes())),
+                    grant,
+                    now
+                ],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)
     }
 
     /// Shared token/RPC minting owner: original family and current grant policy,
@@ -98,7 +113,30 @@ impl SqliteAuthorizationStore {
             return Err(AuthError::RequiredMissing);
         }
         let deadline = self.oauth_family_deadline_in(connection, grant, family, now)?;
-        let (principal,login,client,kind,value,jkt):(String,String,String,String,String,String)=connection.query_row("SELECT principal_id,login_session_id,client_id,binding_kind,binding_value,durable_dpop_jkt FROM auth_oauth_grants WHERE oauth_grant_id=?1",[grant],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)))?;
+        let (principal, login, client, kind, value, jkt): (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = connection.query_row(
+            "SELECT principal_id,login_session_id,client_id,binding_kind,binding_value,\
+            durable_dpop_jkt \
+            FROM auth_oauth_grants \
+            WHERE oauth_grant_id=?1",
+            [grant],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
         if principal != current.principal_id {
             return Err(AuthError::Denied);
         }
@@ -162,10 +200,17 @@ impl SqliteAuthorizationStore {
         let unsigned =
             serde_json::from_slice::<trellis_protocol::SignedProvisionedAdmission>(credential)
                 .map_err(|_| AuthError::Denied)?;
-        let public_key: String = connection.query_row(
-            "SELECT identity_public_key FROM auth_provisioned_identities WHERE identity_key_id=?1 AND state='active'",
-            [&unsigned.credential.credential_id], |row| row.get(0),
-        ).optional()?.ok_or(AuthError::Denied)?;
+        let public_key: String = connection
+            .query_row(
+                "SELECT identity_public_key \
+                FROM auth_provisioned_identities \
+                WHERE identity_key_id=?1 \
+                AND state='active'",
+                [&unsigned.credential.credential_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)?;
         let body = trellis_protocol::verify_provisioned_admission(
             credential,
             &public_key,
@@ -212,7 +257,27 @@ impl SqliteAuthorizationStore {
             300,
         )?;
         let body = admission.credential;
-        let grant: Option<(String,String,String,String,String,String)> = connection.query_row("SELECT principal_id,login_session_id,client_id,binding_kind,binding_value,durable_dpop_jkt FROM auth_oauth_grants WHERE oauth_grant_id=?1 AND revoked_at IS NULL AND expires_at>?2", params![body.oauth_grant_id,now], |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?;
+        let grant: Option<(String, String, String, String, String, String)> = connection
+            .query_row(
+                "SELECT principal_id,login_session_id,client_id,binding_kind,binding_value,\
+                durable_dpop_jkt \
+                FROM auth_oauth_grants \
+                WHERE oauth_grant_id=?1 \
+                AND revoked_at IS NULL \
+                AND expires_at>?2",
+                params![body.oauth_grant_id, now],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?;
         let (principal, login, client, kind, value, jkt) = grant.ok_or(AuthError::Denied)?;
         let binding_matches = match &body.binding {
             OAuthAdmissionBinding::Browser { browser_origin } => {
@@ -222,7 +287,20 @@ impl SqliteAuthorizationStore {
                 kind == "native" && native_dpop_jkt == &value
             }
         };
-        let live_family: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_families WHERE family_lookup_hash=?1 AND oauth_grant_id=?2 AND revoked_at IS NULL AND expires_at>?3)",params![URL_SAFE_NO_PAD.encode(Sha256::digest(body.refresh_family_id.as_bytes())),body.oauth_grant_id,now],|row|row.get(0))?;
+        let live_family: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_oauth_families \
+            WHERE family_lookup_hash=?1 \
+            AND oauth_grant_id=?2 \
+            AND revoked_at IS NULL \
+            AND expires_at>?3)",
+            params![
+                URL_SAFE_NO_PAD.encode(Sha256::digest(body.refresh_family_id.as_bytes())),
+                body.oauth_grant_id,
+                now
+            ],
+            |row| row.get(0),
+        )?;
         if principal != body.principal_id
             || login != body.login_session_id
             || client != body.client_id
@@ -282,32 +360,15 @@ impl oauth_as::events::EventSink for OAuthAudit {
 fn rejected() -> ErrorResponse {
     ErrorResponse::new(ErrorCode::InvalidGrant)
 }
-fn now_seconds() -> Result<i64, ErrorResponse> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|time| i64::try_from(time.as_secs()).ok())
-        .ok_or_else(rejected)
-}
-
 impl OAuthEngine {
-    /// Records the configuration and transport this OAuth listener serves, so
-    /// every Portal page can show the generated-CA notice.
-    pub(crate) fn serve_generated_tls_notice(
-        &self,
-        config: crate::RuntimeConfig,
-        transport: crate::ListenerTransport,
-    ) {
-        let _ = self.generated_tls.set((config, transport));
+    /// Records whether this OAuth listener serves Trellis-generated certificates,
+    /// so every Portal page can show the not-for-production banner.
+    pub(crate) fn serve_generated_tls(&self, generated: bool) {
+        let _ = self.generated_tls.set(generated);
     }
 
-    /// The generated-CA notice for this listener, or `null` when it serves none.
-    pub(crate) fn generated_tls_notice(&self) -> serde_json::Value {
-        self.generated_tls
-            .get()
-            .map_or(serde_json::Value::Null, |(config, transport)| {
-                crate::tls::GeneratedTlsNotice::browser_json(config, transport)
-            })
+    pub(crate) fn generated_tls(&self) -> bool {
+        self.generated_tls.get().copied().unwrap_or(false)
     }
 
     pub(crate) fn new(storage: OAuthStorage) -> Result<Self, AuthError> {
@@ -466,7 +527,7 @@ impl OAuthEngine {
                 return Err(rejected().into());
             }
         }
-        let now = now_seconds()?;
+        let now = crate::clock::unix_now();
         let grant = self
             .server
             .store()
@@ -474,16 +535,42 @@ impl OAuthEngine {
             .approve_grant(identity, approval, now)
             .map_err(super::portal::ApprovalError::from)?;
         // OAuth reports what was actually granted, not unchecked request JSON.
-        let actual = self.server.store().authority.transaction(|connection| {
-            let current = evaluate(connection, &Credential::OAuthGrant(grant.clone()), now)?;
-            if !current.required_missing.is_empty() { return Err(AuthError::RequiredMissing); }
-            let approved: Vec<_> = current.capabilities.iter().map(|capability| capability.capability_id.clone()).collect();
-            let mut details = vec![serde_json::json!({"type":"trellis_capabilities", "required":approval.selection.required, "optional":approved.into_iter().filter(|name| !approval.selection.required.contains(name)).collect::<Vec<_>>()})];
-            if !approval.privileges.is_empty() {
-                details.push(serde_json::json!({"type":"trellis_platform_privileges", "required":requested.required_privileges, "optional":approval.privileges.iter().filter(|privilege| !requested.required_privileges.contains(privilege)).collect::<Vec<_>>()}));
-            }
-            Ok(serde_json::to_string(&details)?)
-        }).map_err(|_| rejected())?;
+        let actual = self
+            .server
+            .store()
+            .authority
+            .transaction(|connection| {
+                let current = evaluate(connection, &Credential::OAuthGrant(grant.clone()), now)?;
+                if !current.required_missing.is_empty() {
+                    return Err(AuthError::RequiredMissing);
+                }
+                let approved: Vec<_> = current
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.capability_id.clone())
+                    .collect();
+                let mut details = vec![serde_json::json!({
+                    "type":"trellis_capabilities",
+                    "required":approval.selection.required,
+                    "optional": approved
+                            .into_iter()
+                            .filter(|name| !approval.selection.required.contains(name))
+                            .collect::<Vec<_>>()
+                })];
+                if !approval.privileges.is_empty() {
+                    details.push(serde_json::json!({
+                    "type":"trellis_platform_privileges",
+                    "required":requested.required_privileges,
+                    "optional": approval
+                            .privileges
+                            .iter()
+                            .filter(|privilege| !requested.required_privileges.contains(privilege))
+                            .collect::<Vec<_>>()
+                }));
+                }
+                Ok(serde_json::to_string(&details)?)
+            })
+            .map_err(|_| rejected())?;
         validated.authorization_details = oauth_as::rar::AuthorizationDetails::parse(&actual)?;
         self.server
             .issue_authorization_code(UserApproval::granted(&validated, grant))
@@ -559,27 +646,79 @@ impl OAuthEngine {
         }
         let grant = token.subject.as_deref().ok_or_else(rejected)?;
         let family = token.family_id.as_deref().ok_or_else(rejected)?;
-        let now = now_seconds()?;
-        let signed = self.server.store().authority.transaction(|connection| {
-            self.server.store().authority.current_signer(connection)?;
-            let current = evaluate(connection, &Credential::OAuthGrant(grant.into()), now)?;
-            if !current.required_missing.is_empty() { return Err(AuthError::RequiredMissing); }
-            let (_,key)=nkeys::from_public_key(&binding.ephemeral_nkey).map_err(|_|AuthError::Denied)?;
-            let identity=AdmissionIdentity {credential:Credential::OAuthGrant(grant.into()),refresh_family_id:Some(family.into()),runtime_id:binding.runtime_id,session_public_key:URL_SAFE_NO_PAD.encode(key),inbox_prefix:trellis_protocol::admission_inbox_prefix(&URL_SAFE_NO_PAD.encode(key))?};
-            let signed=self.server.store().authority.sign_oauth_admission_in(connection,&identity,&binding.ephemeral_nkey,&current,now)?;
-            if signed.credential.persistent_dpop_jkt != binding.persistent_dpop_jkt || signed.credential.client_id != token.client_id.as_str() {return Err(AuthError::Denied)}
-            let expires=signed.credential.expires_at;
-            // Read the exact granted details from the same current snapshot.
-            let approved:Vec<_> = current.capabilities.iter().map(|capability| capability.capability_id.clone()).collect();
-            let mut actual = vec![serde_json::json!({"type":"trellis_capabilities", "required":current.selection.required, "optional":approved.into_iter().filter(|name|!current.selection.required.contains(name)).collect::<Vec<_>>()})];
-            if !current.platform_privileges.is_empty() {
-                let required:String=connection.query_row("SELECT required_privileges_json FROM auth_oauth_grants WHERE oauth_grant_id=?1",[grant],|row|row.get(0))?;
-                let required:Vec<trellis_protocol::PlatformPrivilege>=serde_json::from_str(&required)?;
-                actual.push(serde_json::json!({"type":"trellis_platform_privileges","required":required,"optional":current.platform_privileges.iter().filter(|privilege|!required.contains(privilege)).collect::<Vec<_>>()}));
-            }
-            let actual=serde_json::Value::Array(actual);
-            Ok((signed,actual,expires))
-        }).map_err(|_| rejected())?;
+        let now = crate::clock::unix_now();
+        let signed = self
+            .server
+            .store()
+            .authority
+            .transaction(|connection| {
+                self.server.store().authority.current_signer(connection)?;
+                let current = evaluate(connection, &Credential::OAuthGrant(grant.into()), now)?;
+                if !current.required_missing.is_empty() {
+                    return Err(AuthError::RequiredMissing);
+                }
+                let (_, key) = nkeys::from_public_key(&binding.ephemeral_nkey)
+                    .map_err(|_| AuthError::Denied)?;
+                let identity = AdmissionIdentity {
+                    credential: Credential::OAuthGrant(grant.into()),
+                    refresh_family_id: Some(family.into()),
+                    runtime_id: binding.runtime_id,
+                    session_public_key: URL_SAFE_NO_PAD.encode(key),
+                    inbox_prefix: trellis_protocol::admission_inbox_prefix(
+                        &URL_SAFE_NO_PAD.encode(key),
+                    )?,
+                };
+                let signed = self.server.store().authority.sign_oauth_admission_in(
+                    connection,
+                    &identity,
+                    &binding.ephemeral_nkey,
+                    &current,
+                    now,
+                )?;
+                if signed.credential.persistent_dpop_jkt != binding.persistent_dpop_jkt
+                    || signed.credential.client_id != token.client_id.as_str()
+                {
+                    return Err(AuthError::Denied);
+                }
+                let expires = signed.credential.expires_at;
+                // Read the exact granted details from the same current snapshot.
+                let approved: Vec<_> = current
+                    .capabilities
+                    .iter()
+                    .map(|capability| capability.capability_id.clone())
+                    .collect();
+                let mut actual = vec![serde_json::json!({
+                    "type":"trellis_capabilities",
+                    "required":current.selection.required,
+                    "optional": approved
+                            .into_iter()
+                            .filter(|name| !current.selection.required.contains(name))
+                            .collect::<Vec<_>>()
+                })];
+                if !current.platform_privileges.is_empty() {
+                    let required: String = connection.query_row(
+                        "SELECT required_privileges_json \
+                    FROM auth_oauth_grants \
+                    WHERE oauth_grant_id=?1",
+                        [grant],
+                        |row| row.get(0),
+                    )?;
+                    let required: Vec<trellis_protocol::PlatformPrivilege> =
+                        serde_json::from_str(&required)?;
+                    actual.push(serde_json::json!({
+                        "type":"trellis_platform_privileges",
+                        "required":required,
+                        "optional": current
+                                .platform_privileges
+                                .iter()
+                                .filter(|privilege| !required.contains(privilege))
+                                .collect::<Vec<_>>()
+                    }));
+                }
+                let actual = serde_json::Value::Array(actual);
+                Ok((signed, actual, expires))
+            })
+            .map_err(|_| rejected())?;
         response.expires_in = response.expires_in.min((signed.2 - now) as u64);
         response.authorization_details =
             oauth_as::rar::AuthorizationDetails::parse(&signed.1.to_string())?;

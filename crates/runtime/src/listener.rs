@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use axum::extract::{ConnectInfo, Request};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
@@ -26,6 +26,7 @@ const TLS_RELOAD_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) struct LoadedListener {
     listener: std::net::TcpListener,
     mode: Mode,
+    forwarded_by: Arc<[ipnet::IpNet]>,
 }
 
 enum Mode {
@@ -83,7 +84,17 @@ impl LoadedListener {
         Ok(Self {
             listener: listener.into_std()?,
             mode,
+            forwarded_by: Arc::new([]),
         })
+    }
+
+    /// Accepts `X-Forwarded-For` from `trusted` peers of a listener that also
+    /// faces clients directly, such as TLS behind a re-encrypting proxy. Other
+    /// peers are served as themselves. A `proxy` transport already does this
+    /// for its own proxies and refuses every other peer.
+    pub(crate) fn forwarded_by(mut self, trusted: &[ipnet::IpNet]) -> Self {
+        self.forwarded_by = trusted.into();
+        self
     }
 
     /// Serves `router` until `shutdown` resolves, then drains for up to ten seconds.
@@ -98,6 +109,14 @@ impl LoadedListener {
             shutdown.await;
             drain.graceful_shutdown(Some(Duration::from_secs(10)));
         }));
+        let router = if self.forwarded_by.is_empty() {
+            router
+        } else {
+            let trusted = self.forwarded_by;
+            router.layer(axum::middleware::from_fn(move |request, next| {
+                forward(Arc::clone(&trusted), false, request, next)
+            }))
+        };
         let result = match self.mode {
             Mode::Tls {
                 config,
@@ -114,7 +133,7 @@ impl LoadedListener {
             }
             Mode::Proxy(trusted) => {
                 let router = router.layer(axum::middleware::from_fn(move |request, next| {
-                    forwarded_client(Arc::clone(&trusted), request, next)
+                    forward(Arc::clone(&trusted), true, request, next)
                 }));
                 axum_server::from_tcp(self.listener)?
                     .handle(handle)
@@ -140,7 +159,8 @@ fn check_leaf(certificate_chain: &std::path::Path, origin: &url::Url) -> std::io
         .map_err(|error| invalid(error.to_string()))?;
     if leaf.not_after <= time::OffsetDateTime::now_utc() {
         return Err(invalid(format!(
-            "TLS certificate '{}' expired at {}; renew it (generated certificates: `trellis tls renew`) before starting",
+            "TLS certificate '{}' expired at {}; renew it (generated certificates: \
+            `trellis tls renew`) before starting",
             certificate_chain.display(),
             leaf.not_after
         )));
@@ -159,7 +179,8 @@ fn check_leaf(certificate_chain: &std::path::Path, origin: &url::Url) -> std::io
     };
     if !covered {
         return Err(invalid(format!(
-            "TLS certificate '{}' does not name origin host '{}'; issue a certificate for this hostname",
+            "TLS certificate '{}' does not name origin host '{}'; issue a \
+            certificate for this hostname",
             certificate_chain.display(),
             origin.host_str().unwrap_or_default()
         )));
@@ -211,50 +232,58 @@ async fn reload_certificates(
     }
 }
 
-/// Serves only trusted proxies and identifies the client they forwarded.
+/// Identifies the client a trusted peer forwarded, replacing [`ConnectInfo`]
+/// so per-client limits key on the real client rather than on the proxy.
 ///
-/// `X-Forwarded-For` is read right to left: entries appended by trusted
-/// proxies are skipped and the first untrusted address is the client. The
-/// result replaces [`ConnectInfo`], so per-client limits key on the real
-/// client rather than on the proxy.
-async fn forwarded_client(
+/// An untrusted peer is refused when `refuse_untrusted`, and otherwise served
+/// as itself. A malformed `X-Forwarded-For` from a trusted peer is rejected.
+async fn forward(
     trusted: Arc<[ipnet::IpNet]>,
+    refuse_untrusted: bool,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let is_trusted = |ip: &IpAddr| trusted.iter().any(|network| network.contains(ip));
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip());
-    let Some(peer) = peer.filter(is_trusted) else {
+    let Some(peer) = peer.filter(|peer| trusted.iter().any(|network| network.contains(peer)))
+    else {
+        if !refuse_untrusted {
+            return next.run(request).await;
+        }
         tracing::warn!(
             peer = ?peer,
             "refused a connection from outside the configured trusted_proxies"
         );
         return StatusCode::FORBIDDEN.into_response();
     };
-    let mut client = peer;
-    let mut forwarded = Vec::new();
-    for value in request.headers().get_all("x-forwarded-for") {
-        let Ok(value) = value.to_str() else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        forwarded.extend(value.split(',').map(str::trim));
-    }
-    for entry in forwarded.into_iter().rev() {
-        if !is_trusted(&client) {
-            break;
-        }
-        let Ok(address) = entry.parse::<IpAddr>() else {
-            return StatusCode::BAD_REQUEST.into_response();
-        };
-        client = address;
-    }
+    let Some(client) = forwarded_client(&trusted, peer, request.headers()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
     request
         .extensions_mut()
         .insert(ConnectInfo(SocketAddr::new(client, 0)));
     next.run(request).await
+}
+
+/// Reads `X-Forwarded-For` right to left from a trusted `peer`: entries
+/// appended by trusted proxies are skipped and the first untrusted address is
+/// the client. `None` means the header is malformed.
+fn forwarded_client(trusted: &[ipnet::IpNet], peer: IpAddr, headers: &HeaderMap) -> Option<IpAddr> {
+    let is_trusted = |ip: &IpAddr| trusted.iter().any(|network| network.contains(ip));
+    let mut forwarded = Vec::new();
+    for value in headers.get_all("x-forwarded-for") {
+        forwarded.extend(value.to_str().ok()?.split(',').map(str::trim));
+    }
+    let mut client = peer;
+    for entry in forwarded.into_iter().rev() {
+        if !is_trusted(&client) {
+            break;
+        }
+        client = entry.parse().ok()?;
+    }
+    Some(client)
 }
 
 #[cfg(test)]

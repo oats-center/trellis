@@ -38,15 +38,6 @@
     displayName: string;
   }
 
-  /** Identity of the installation's Trellis-generated private CA. */
-  interface GeneratedTls {
-    caSha256Fingerprint: string | null;
-    leafNotAfter: string | null;
-  }
-
-  /** Days before certificate expiry at which the notice says so prominently. */
-  const EXPIRY_WARNING_DAYS = 14;
-
   const query = new URL(window.location.href).searchParams;
   const transaction = query.get("transaction") ?? "";
   const login = window.location.pathname === "/login";
@@ -64,36 +55,13 @@
   let error = $state("");
   let providers = $state.raw<Provider[]>([]);
   let providerError = $state("");
-  let generatedTls = $state.raw<GeneratedTls | null>(null);
-  let tlsExpires = $derived(
-    generatedTls?.leafNotAfter ? new Date(generatedTls.leafNotAfter) : null,
-  );
-  let tlsExpiringSoon = $derived(
-    tlsExpires !== null &&
-      tlsExpires.getTime() - Date.now() <
-        EXPIRY_WARNING_DAYS * 24 * 60 * 60 * 1000,
-  );
+  // The server marks pages it serves with Trellis-generated certificates.
+  const generatedTls =
+    document.documentElement.hasAttribute("data-generated-tls");
   let blocked = $derived(
     view?.capabilities.some((item) => item.required && !item.available) ||
       view?.platformPrivileges.some((item) => item.required && !item.available),
   );
-
-  onMount(() => {
-    // Every user is told when this installation serves its own private CA.
-    const controller = new AbortController();
-    void fetch("/portal/tls", {
-      signal: controller.signal,
-      credentials: "same-origin",
-      cache: "no-store",
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("tls_notice_unavailable");
-        const result: GeneratedTls | null = await response.json();
-        if (!controller.signal.aborted) generatedTls = result;
-      })
-      .catch(() => undefined);
-    return () => controller.abort();
-  });
 
   onMount(() => {
     if (deviceComplete || (device && csrf)) return;
@@ -131,10 +99,10 @@
         const result: Consent = await response.json();
         if (!controller.signal.aborted) {
           selectedCapabilities = result.capabilities
-            .filter((item) => item.available)
+            .filter((item) => item.selected)
             .map((item) => item.capabilityId);
           selectedPrivileges = result.platformPrivileges
-            .filter((item) => item.available)
+            .filter((item) => item.required)
             .map((item) => item.privilege);
           view = result;
         }
@@ -162,18 +130,9 @@
 <header><strong>Trellis</strong><span>Authorization</span></header>
 
 {#if generatedTls}
-  <p class="tls-notice" class:unavailable={tlsExpiringSoon} role="status">
-    This Trellis uses a private certificate authority generated at installation.
-    {#if generatedTls.caSha256Fingerprint}
-      Trust it only if this SHA-256 fingerprint matches the one your operator
-      published: <code>{generatedTls.caSha256Fingerprint}</code>.
-    {:else}
-      Its certificates could not be read; contact your operator.
-    {/if}
-    {#if tlsExpires}
-      The server certificate {tlsExpiringSoon ? "expires soon" : "expires"} on
-      {tlsExpires.toLocaleString()}.
-    {/if}
+  <p class="tls-notice" role="status">
+    This Trellis is using self-generated certificates and may not be suitable
+    for production.
   </p>
 {/if}
 

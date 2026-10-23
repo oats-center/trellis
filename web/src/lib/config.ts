@@ -37,35 +37,18 @@ function readRuntimeConfig(): RuntimeAppConfig {
   return config;
 }
 
-/** Identity of the installation's Trellis-generated private CA. */
-export type GeneratedTlsNotice = {
-  /** SHA-256 fingerprint users verify out of band; null when unreadable. */
-  caSha256Fingerprint: string | null;
-  /** RFC 3339 expiry of the Console certificate, when served directly. */
-  leafNotAfter: string | null;
-};
-
 /**
- * Returns the generated-TLS notice every Console user must see, or null when
- * the installation does not serve a Trellis-generated CA.
+ * Returns whether the Console is served with Trellis-generated certificates,
+ * which every user is told may not be suitable for production.
  */
-export function generatedTlsNotice(): GeneratedTlsNotice | null {
-  const config = (
-    globalThis as typeof globalThis & {
-      __TRELLIS_RUNTIME_CONFIG__?: { generatedTls?: unknown };
-    }
-  ).__TRELLIS_RUNTIME_CONFIG__;
-  const notice = config?.generatedTls;
-  if (!notice || typeof notice !== "object") return null;
-  const { caSha256Fingerprint, leafNotAfter } = notice as Record<
-    string,
-    unknown
-  >;
-  return {
-    caSha256Fingerprint:
-      typeof caSha256Fingerprint === "string" ? caSha256Fingerprint : null,
-    leafNotAfter: typeof leafNotAfter === "string" ? leafNotAfter : null,
-  };
+export function usesGeneratedTls(): boolean {
+  return (
+    (
+      globalThis as typeof globalThis & {
+        __TRELLIS_RUNTIME_CONFIG__?: { generatedTls?: unknown };
+      }
+    ).__TRELLIS_RUNTIME_CONFIG__?.generatedTls === true
+  );
 }
 
 export const APP_CONFIG: RuntimeAppConfig = {

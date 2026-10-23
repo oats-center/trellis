@@ -1450,7 +1450,10 @@ mod tests {
         let consumer_key =
             URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes());
         let mut send = json!({
-            "origin": {"apiId":"trellis.files@v1", "action":{"kind":"rpc", "name":"Upload", "direction":"call"}},
+            "origin": {
+                "apiId":"trellis.files@v1",
+                "action": {"kind":"rpc", "name":"Upload", "direction":"call"}
+            },
             "format": TRANSFER_VERSION, "type": "TransferGrant", "direction": "send", "service": "files",
             "transferId": id(), "expiresAt": "2026-10-04T12:00:00Z",
             "provider": {"connectionId": "provider", "sessionKey": provider_key},
@@ -1467,7 +1470,13 @@ mod tests {
         send["metadata"] = json!({"label":"evidence"});
         let parsed = parse_transfer_grant(&serde_json::to_vec(&send).unwrap()).unwrap();
         assert_eq!(serde_json::to_value(&parsed).unwrap(), send);
-        let info = json!({"key":"logical/evidence", "size":8192, "updatedAt":"2026-10-04T11:00:00Z", "digest":object_digest(&vec![42;8192]), "metadata":{}});
+        let info = json!({
+            "key":"logical/evidence",
+            "size":8192,
+            "updatedAt":"2026-10-04T11:00:00Z",
+            "digest":object_digest(&vec![42;8192]),
+            "metadata": {}
+        });
         let mut receive = send.clone();
         for field in ["maxBytes", "contentType", "metadata"] {
             receive.as_object_mut().unwrap().remove(field);
@@ -1743,7 +1752,16 @@ mod tests {
             id()
         );
         assert!(parse_transfer_control(duplicate.as_bytes()).is_err());
-        let activate = json!({"action":"activate","type":"control","format":TRANSFER_VERSION,"transferId":id(),"controlSeq":"1","receivedSeq":"0","consumedSeq":"0","receiveMaxFrameBytes":1024});
+        let activate = json!({
+            "action":"activate",
+            "type":"control",
+            "format":TRANSFER_VERSION,
+            "transferId":id(),
+            "controlSeq":"1",
+            "receivedSeq":"0",
+            "consumedSeq":"0",
+            "receiveMaxFrameBytes":1024
+        });
         parse_transfer_control(&serde_json::to_vec(&activate).unwrap()).unwrap();
         let mut bad = activate.clone();
         bad["receivedSeq"] = json!("1");
@@ -1810,7 +1828,17 @@ mod tests {
         transfer_frame_digest(&descriptor, &raw).unwrap();
         descriptor.sequence = U64s::new(3);
         assert!(transfer_frame_digest(&descriptor, &raw).is_err());
-        let ack = json!({"action":"end-ack","format":TRANSFER_VERSION,"type":"control","transferId":id(),"controlSeq":"3","receivedSeq":"2","consumedSeq":"2","consumedBytes":"4096","finalSeq":"2"});
+        let ack = json!({
+            "action":"end-ack",
+            "format":TRANSFER_VERSION,
+            "type":"control",
+            "transferId":id(),
+            "controlSeq":"3",
+            "receivedSeq":"2",
+            "consumedSeq":"2",
+            "consumedBytes":"4096",
+            "finalSeq":"2"
+        });
         parse_transfer_control(&serde_json::to_vec(&ack).unwrap()).unwrap();
         let mut missing_consumption = ack;
         missing_consumption["consumedSeq"] = json!("1");

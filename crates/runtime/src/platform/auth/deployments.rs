@@ -24,7 +24,12 @@ pub(super) fn native_health_capability(
     connection: &rusqlite::Connection,
 ) -> Result<trellis_protocol::CapabilityAuthority, AuthError> {
     let cap = capability(connection, SELF_HEALTH_CAPABILITY)?;
-    let mut statement = connection.prepare("SELECT api_id,action_key FROM auth_capability_actions WHERE capability_id=?1 AND identity_generation=?2")?;
+    let mut statement = connection.prepare(
+        "SELECT api_id,action_key \
+        FROM auth_capability_actions \
+        WHERE capability_id=?1 \
+        AND identity_generation=?2",
+    )?;
     let members = statement
         .query_map(
             params![SELF_HEALTH_CAPABILITY, cap.identity_generation.get()],
@@ -92,7 +97,11 @@ impl BuiltinProviderSource {
                 .values()
                 .any(|resource| !matches!(resource, trellis_idl::ResourceDefinition::Kv { .. }))
         {
-            return Err(AuthError::Invalid("built-in startup supports services with native KV declarations, not companions or other resource kinds".into()));
+            return Err(AuthError::Invalid(
+                "built-in startup supports services with native KV declarations, \
+                not companions or other resource kinds"
+                    .into(),
+            ));
         }
         let expected_digest = participant_digest(&graph, definition.identity())
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
@@ -123,9 +132,44 @@ impl BuiltinProviderSource {
         connection: &rusqlite::Connection,
         now: i64,
     ) -> Result<ProvisionedDeployment, AuthError> {
-        let row=connection.query_row(
-            "SELECT p.principal_id,p.deployment_id,p.instance_id,p.participant_id,p.state,d.state,i.installed_revision,b.installed_revision,s.participant_digest FROM auth_provisioned_identities p JOIN auth_deployments d USING(deployment_id) JOIN auth_instances i ON i.instance_id=p.instance_id AND i.deployment_id=p.deployment_id AND i.principal_id=p.principal_id JOIN auth_deployment_bindings b ON b.deployment_id=p.deployment_id JOIN auth_installed_participants s ON s.participant_id=p.participant_id AND s.revision=i.installed_revision JOIN auth_principals a ON a.principal_id=p.principal_id WHERE p.identity_key_id=?1 AND p.identity_public_key=?2 AND a.state='active' AND i.state='active' AND d.participant_id=p.participant_id AND (d.expires_at IS NULL OR d.expires_at>?3)",
-            params![self.key_id,self.public_key,now],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,String>(5)?,row.get::<_,u64>(6)?,row.get::<_,u64>(7)?,row.get::<_,String>(8)?))).optional()?;
+        let row = connection
+            .query_row(
+                "SELECT p.principal_id,p.deployment_id,p.instance_id,p.participant_id,\
+                p.state,d.state,i.installed_revision,b.installed_revision,\
+                s.participant_digest \
+                FROM auth_provisioned_identities p \
+                JOIN auth_deployments d USING(deployment_id) \
+                JOIN auth_instances i ON i.instance_id=p.instance_id \
+                AND i.deployment_id=p.deployment_id \
+                AND i.principal_id=p.principal_id \
+                JOIN auth_deployment_bindings b ON b.deployment_id=p.deployment_id \
+                JOIN auth_installed_participants s ON \
+                s.participant_id=p.participant_id \
+                AND s.revision=i.installed_revision \
+                JOIN auth_principals a ON a.principal_id=p.principal_id \
+                WHERE p.identity_key_id=?1 \
+                AND p.identity_public_key=?2 \
+                AND a.state='active' \
+                AND i.state='active' \
+                AND d.participant_id=p.participant_id \
+                AND (d.expires_at IS NULL \
+                OR d.expires_at>?3)",
+                params![self.key_id, self.public_key, now],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, u64>(6)?,
+                        row.get::<_, u64>(7)?,
+                        row.get::<_, String>(8)?,
+                    ))
+                },
+            )
+            .optional()?;
         if let Some((
             principal_id,
             deployment_id,
@@ -401,7 +445,12 @@ impl SqliteAuthorizationStore {
                 capability(connection, requested)?;
             }
             for package in &input.evidence.packages {
-                connection.execute("INSERT OR IGNORE INTO auth_package_evidence(package_digest,accepted_at) VALUES(?1,?2)",params![package.digest,now])?;
+                connection.execute(
+                    "INSERT OR IGNORE INTO \
+                    auth_package_evidence(package_digest,accepted_at) \
+                    VALUES(?1,?2)",
+                    params![package.digest, now],
+                )?;
             }
             let evidence_digest = digest(&input.evidence)?;
             connection.execute(
@@ -413,10 +462,58 @@ impl SqliteAuthorizationStore {
                     now
                 ],
             )?;
-            let unchanged: Option<u64> = existing.map(|deployment| connection.query_row("SELECT installed_revision FROM auth_deployment_bindings WHERE deployment_id=?1 AND implementation_digest=?2",params![deployment,participant_digest],|row|row.get(0)).optional()).transpose()?.flatten();
-            let revision: u64 = match unchanged { Some(revision) => revision, None => connection.query_row("SELECT coalesce(max(revision),0)+1 FROM auth_installed_participants WHERE participant_id=?1",[&input.participant_id],|row|row.get(0))? };
+            let unchanged: Option<u64> = existing
+                .map(|deployment| {
+                    connection
+                        .query_row(
+                            "SELECT installed_revision \
+                            FROM auth_deployment_bindings \
+                            WHERE deployment_id=?1 \
+                            AND implementation_digest=?2",
+                            params![deployment, participant_digest],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                })
+                .transpose()?
+                .flatten();
+            let revision: u64 = match unchanged {
+                Some(revision) => revision,
+                None => connection.query_row(
+                    "SELECT coalesce(max(revision),0)+1 \
+                    FROM auth_installed_participants \
+                    WHERE participant_id=?1",
+                    [&input.participant_id],
+                    |row| row.get(0),
+                )?,
+            };
             if unchanged.is_none() {
-                connection.execute("INSERT INTO auth_installed_participants(participant_id,revision,participant_kind,participant_digest,needs_digest,package_digest,evidence_digest,participant_path,companion_required,projection_json,installed_at,companion_request_id,companion_request_kind) VALUES(?1,?2,?3,?4,?5,?6,?7,?1,?10,?8,?9,?11,CASE WHEN ?11 IS NULL THEN NULL ELSE 'native' END)",params![input.participant_id,revision,kind,participant_digest,needs.digest(),input.evidence.root_digest,evidence_digest,json(&input.evidence)?,now,participant.companion().is_some_and(|companion| !companion.optional),participant.companion().map(|companion|companion.request.as_str())])?;
+                connection.execute(
+                    "INSERT INTO auth_installed_participants(participant_id,revision,\
+                    participant_kind,participant_digest,needs_digest,package_digest,\
+                    evidence_digest,participant_path,companion_required,projection_json,\
+                    installed_at,companion_request_id,companion_request_kind) \
+                    VALUES(?1,?2,?3,?4,?5,?6,?7,?1,?10,?8,?9,?11,CASE \
+                    WHEN ?11 IS NULL THEN NULL \
+                    ELSE 'native' END)",
+                    params![
+                        input.participant_id,
+                        revision,
+                        kind,
+                        participant_digest,
+                        needs.digest(),
+                        input.evidence.root_digest,
+                        evidence_digest,
+                        json(&input.evidence)?,
+                        now,
+                        participant
+                            .companion()
+                            .is_some_and(|companion| !companion.optional),
+                        participant
+                            .companion()
+                            .map(|companion| companion.request.as_str())
+                    ],
+                )?;
             }
             let deployment_id = existing.map(str::to_owned).unwrap_or_else(id);
             if let Some(companion) = participant.companion() {
@@ -460,18 +557,46 @@ impl SqliteAuthorizationStore {
                 let client = format!("trellis.device.{deployment_id}.companion");
                 let metadata = json(&serde_json::json!({
                     "grant_types":["urn:ietf:params:oauth:grant-type:device_code","refresh_token"],
-                    "trellis_companion":{"deploymentId":deployment_id,"requestId":companion.request.as_str(),"required":required,"optional":optional,"participantDigest":participant_digest}
+                    "trellis_companion": {
+                        "deploymentId":deployment_id,
+                        "requestId":companion.request.as_str(),
+                        "required":required,
+                        "optional":optional,
+                        "participantDigest":participant_digest
+                    }
                 }))?;
                 // This registration is derived from the accepted deployment, not
                 // caller-supplied OAuth metadata. It grants no user authority.
-                connection.execute("INSERT INTO auth_oauth_clients(client_id,kind,display_name,redirect_uris_json,development,implied_capabilities_json,requested_privileges_json,metadata_json,state,revision,created_at,updated_at) VALUES(?1,'native',?2,'[]',0,'[]','[]',?3,'active',1,?4,?4) ON CONFLICT(client_id) DO UPDATE SET metadata_json=excluded.metadata_json,display_name=excluded.display_name,revision=auth_oauth_clients.revision+1,updated_at=excluded.updated_at WHERE auth_oauth_clients.metadata_json!=excluded.metadata_json",params![client,format!("{title} companion"),metadata,now])?;
+                connection.execute(
+                    "INSERT INTO auth_oauth_clients(client_id,kind,display_name,\
+                    redirect_uris_json,development,implied_capabilities_json,\
+                    requested_privileges_json,metadata_json,state,revision,created_at,\
+                    updated_at) \
+                    VALUES(?1,'native',?2,'[]',0,'[]','[]',?3,'active',1,?4,?4) \
+                    ON CONFLICT(client_id) \
+                    DO UPDATE SET metadata_json=excluded.metadata_json,\
+                    display_name=excluded.display_name,\
+                    revision=auth_oauth_clients.revision+1,updated_at=excluded.updated_at \
+                    WHERE auth_oauth_clients.metadata_json!=excluded.metadata_json",
+                    params![client, format!("{title} companion"), metadata, now],
+                )?;
             }
             for (name, definition) in participant.resources() {
                 if let trellis_idl::ResourceDefinition::Kv {
                     history, ttl_ms, ..
                 } = definition
                 {
-                    let saved: Option<String> = connection.query_row("SELECT commitment_json FROM auth_resources WHERE owner_kind='deployment' AND owner_id=?1 AND participant_id=?2 AND kind='kv' AND local_name=?3",params![deployment_id,input.participant_id,name.to_string()],|row|row.get(0)).optional()?;
+                    let saved: Option<String> = connection
+                        .query_row(
+                            "SELECT commitment_json \
+                            FROM auth_resources \
+                            WHERE owner_kind='deployment' \
+                            AND owner_id=?1 AND participant_id=?2 \
+                            AND kind='kv' AND local_name=?3",
+                            params![deployment_id, input.participant_id, name.to_string()],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
                     if let Some(saved) = saved {
                         let saved: serde_json::Value = serde_json::from_str(&saved)?;
                         let old_history =
@@ -514,17 +639,53 @@ impl SqliteAuthorizationStore {
             }
             if existing.is_none() {
                 connection.execute(
-                    "INSERT INTO auth_deployments(deployment_id,participant_id,participant_kind,state,expires_at,title) VALUES(?1,?2,?3,'active',?4,?5)",
-                    params![deployment_id, input.participant_id, kind, input.expires_at, title],
+                    "INSERT INTO auth_deployments(deployment_id,participant_id,participant_kind,\
+                    state,expires_at,title) \
+                    VALUES(?1,?2,?3,'active',?4,?5)",
+                    params![
+                        deployment_id,
+                        input.participant_id,
+                        kind,
+                        input.expires_at,
+                        title
+                    ],
                 )?;
             }
-            connection.execute("INSERT INTO auth_deployment_bindings(deployment_id,installed_revision,implementation_digest,provided_apis_json,required_capabilities_json,optional_capabilities_json,resource_commitments_json,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,1) ON CONFLICT(deployment_id) DO UPDATE SET installed_revision=excluded.installed_revision,implementation_digest=excluded.implementation_digest,provided_apis_json=excluded.provided_apis_json,required_capabilities_json=excluded.required_capabilities_json,optional_capabilities_json=excluded.optional_capabilities_json,resource_commitments_json=excluded.resource_commitments_json,revision=auth_deployment_bindings.revision+1",params![deployment_id,revision,participant_digest,json(&provided)?,json(&required)?,json(&optional)?,json(&resource_commitments)?])?;
+            connection.execute(
+                "INSERT INTO auth_deployment_bindings(deployment_id,installed_revision,\
+                implementation_digest,provided_apis_json,required_capabilities_json,\
+                optional_capabilities_json,resource_commitments_json,revision) \
+                VALUES(?1,?2,?3,?4,?5,?6,?7,1) \
+                ON CONFLICT(deployment_id) \
+                DO UPDATE SET installed_revision=excluded.installed_revision,\
+                implementation_digest=excluded.implementation_digest,\
+                provided_apis_json=excluded.provided_apis_json,\
+                required_capabilities_json=excluded.required_capabilities_json,\
+                optional_capabilities_json=excluded.optional_capabilities_json,\
+                resource_commitments_json=excluded.resource_commitments_json,\
+                revision=auth_deployment_bindings.revision+1",
+                params![
+                    deployment_id,
+                    revision,
+                    participant_digest,
+                    json(&provided)?,
+                    json(&required)?,
+                    json(&optional)?,
+                    json(&resource_commitments)?
+                ],
+            )?;
             if unchanged.is_some() {
                 // Identical declarations retain the same allocations. Carry only
                 // ready evidence verified at the immediately preceding binding;
                 // changed, pending, detached, or already stale evidence stays fenced.
                 connection.execute(
-                    "UPDATE auth_resources SET binding_revision=binding_revision+1 WHERE owner_kind='deployment' AND owner_id=?1 AND state='ready' AND binding_revision=(SELECT revision-1 FROM auth_deployment_bindings WHERE deployment_id=?1)",
+                    "UPDATE auth_resources \
+                    SET binding_revision=binding_revision+1 \
+                    WHERE owner_kind='deployment' \
+                    AND owner_id=?1 AND state='ready' \
+                    AND binding_revision=(SELECT revision-1 \
+                    FROM auth_deployment_bindings \
+                    WHERE deployment_id=?1)",
                     [&deployment_id],
                 )?;
             }
@@ -540,7 +701,19 @@ impl SqliteAuthorizationStore {
                     .query_map([&deployment_id], |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
                 for principal in principals {
-                    connection.execute("INSERT OR IGNORE INTO auth_direct_capabilities(grant_id,principal_id,capability_id,capability_generation,revision,expires_at,created_at) VALUES(?1,?2,?3,?4,1,?5,?6)",params![id(),principal,CONSUMER_RUNTIME_CAPABILITY,cap.identity_generation.get(),input.expires_at,now])?;
+                    connection.execute(
+                        "INSERT OR IGNORE INTO auth_direct_capabilities(grant_id,principal_id,\
+                        capability_id,capability_generation,revision,expires_at,created_at) \
+                        VALUES(?1,?2,?3,?4,1,?5,?6)",
+                        params![
+                            id(),
+                            principal,
+                            CONSUMER_RUNTIME_CAPABILITY,
+                            cap.identity_generation.get(),
+                            input.expires_at,
+                            now
+                        ],
+                    )?;
                 }
             }
             Ok(deployment_id)
@@ -575,12 +748,46 @@ impl SqliteAuthorizationStore {
                 Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(raw)))
             })
             .transpose()?;
-        let (participant, kind, revision, required, optional, expiry): (String, String, u64, String, String, Option<i64>) = connection.query_row("SELECT d.participant_id,d.participant_kind,b.installed_revision,b.required_capabilities_json,b.optional_capabilities_json,d.expires_at FROM auth_deployments d JOIN auth_deployment_bindings b USING(deployment_id) WHERE deployment_id=?1 AND d.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)", params![deployment, now], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).optional()?.ok_or(AuthError::Denied)?;
+        let (participant, kind, revision, required, optional, expiry): (
+            String,
+            String,
+            u64,
+            String,
+            String,
+            Option<i64>,
+        ) = connection
+            .query_row(
+                "SELECT d.participant_id,d.participant_kind,b.installed_revision,\
+                b.required_capabilities_json,b.optional_capabilities_json,d.expires_at \
+                FROM auth_deployments d \
+                JOIN auth_deployment_bindings b USING(deployment_id) \
+                WHERE deployment_id=?1 \
+                AND d.state='active' \
+                AND (d.expires_at IS NULL \
+                OR d.expires_at>?2)",
+                params![deployment, now],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)?;
         let mut required: Vec<String> = decode(&required)?;
         if kind == "service" || kind == "device" {
             let evidence: String = connection.query_row(
-                "SELECT projection_json FROM auth_installed_participants WHERE participant_id=?1 AND revision=?2",
-                params![participant,revision], |row| row.get(0),
+                "SELECT projection_json \
+                FROM auth_installed_participants \
+                WHERE participant_id=?1 \
+                AND revision=?2",
+                params![participant, revision],
+                |row| row.get(0),
             )?;
             let graph = trellis_idl::compile_evidence(decode(&evidence)?)
                 .map_err(|error| AuthError::Invalid(error.to_string()))?;
@@ -640,12 +847,24 @@ impl SqliteAuthorizationStore {
         if known {
             return Err(AuthError::Conflict);
         }
-        connection.execute("INSERT INTO auth_principals(principal_id,kind,state,created_at,updated_at,version) VALUES(?1,?2,'active',?3,?3,1)", params![result.principal_id,kind,now])?;
+        connection.execute(
+            "INSERT INTO auth_principals(principal_id,kind,state,created_at,\
+            updated_at,version) \
+            VALUES(?1,?2,'active',?3,?3,1)",
+            params![result.principal_id, kind, now],
+        )?;
         if kind == "device" {
-            connection.execute("INSERT INTO auth_devices(principal_id,deployment_id,state,created_at,updated_at,version) VALUES(?1,?2,'active',?3,?3,1)", params![result.principal_id,deployment,now])?;
+            connection.execute(
+                "INSERT INTO auth_devices(principal_id,deployment_id,state,created_at,\
+                updated_at,version) \
+                VALUES(?1,?2,'active',?3,?3,1)",
+                params![result.principal_id, deployment, now],
+            )?;
         }
         connection.execute(
-            "INSERT INTO auth_instances(instance_id,deployment_id,principal_id,installed_revision,state,created_at,updated_at,version,title) VALUES(?1,?2,?3,?4,'active',?5,?5,1,?6)",
+            "INSERT INTO auth_instances(instance_id,deployment_id,principal_id,\
+            installed_revision,state,created_at,updated_at,version,title) \
+            VALUES(?1,?2,?3,?4,'active',?5,?5,1,?6)",
             params![
                 result.instance_id,
                 deployment,
@@ -656,7 +875,22 @@ impl SqliteAuthorizationStore {
             ],
         )?;
         if let Some(public_key) = public_key {
-            connection.execute("INSERT INTO auth_provisioned_identities(identity_key_id,principal_id,deployment_id,instance_id,participant_id,kind,identity_public_key,state,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8)", params![result.identity_key_id,result.principal_id,deployment,result.instance_id,result.participant_id,kind,public_key,now])?;
+            connection.execute(
+                "INSERT INTO auth_provisioned_identities(identity_key_id,principal_id,\
+                deployment_id,instance_id,participant_id,kind,identity_public_key,\
+                state,created_at) \
+                VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8)",
+                params![
+                    result.identity_key_id,
+                    result.principal_id,
+                    deployment,
+                    result.instance_id,
+                    result.participant_id,
+                    kind,
+                    public_key,
+                    now
+                ],
+            )?;
         } else {
             if kind != "device" {
                 return Err(AuthError::Denied);
@@ -679,7 +913,19 @@ impl SqliteAuthorizationStore {
             .collect();
         for requested in requested {
             let cap = capability(connection, requested)?;
-            connection.execute("INSERT INTO auth_direct_capabilities(grant_id,principal_id,capability_id,capability_generation,revision,expires_at,created_at) VALUES(?1,?2,?3,?4,1,?5,?6)", params![id(),result.principal_id,requested,cap.identity_generation.get(),expiry,now])?;
+            connection.execute(
+                "INSERT INTO auth_direct_capabilities(grant_id,principal_id,\
+                capability_id,capability_generation,revision,expires_at,created_at) \
+                VALUES(?1,?2,?3,?4,1,?5,?6)",
+                params![
+                    id(),
+                    result.principal_id,
+                    requested,
+                    cap.identity_generation.get(),
+                    expiry,
+                    now
+                ],
+            )?;
         }
         Ok(result)
     }

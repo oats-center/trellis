@@ -52,10 +52,10 @@ not new IDL actions, capability atoms, or wire fields that an author selects,
 and a provider does not need its own caller Subscribe grant to implement a
 route.
 
-`GrantBinding` is the single current authority record. It stores exact grants,
-platform privileges, approval mode, approved capability fingerprints, approved
-resource commitments, and the delegation ceiling. Capability-mode approval and
-exact administrative grants remain distinct. Readiness reports missing required
+Authority is current Auth policy, not a stored per-participant record: user
+capabilities from roles, direct grants, and fresh OIDC mappings, intersected
+with an application's requested and approved capabilities, or a service or
+device deployment's selection. Platform privileges are a separate finite set. Readiness reports missing required
 capabilities/resources separately from temporary provider liveness.
 
 ## Participants and selection
@@ -64,8 +64,8 @@ Top-level participants are `service`, `device`, `app`, and `agent`. Only a
 device may contain one named optional or required `app` or `agent` companion.
 That companion is the device's lexical child, not an independently bootstrapped
 top-level participant. It is activated only through the parent device flow and
-uses a separate user-owned `GrantBinding`, ordinary login session, authorization
-context, resource bindings, and connection. Parent and child authority are never
+uses a separate user-owned OAuth grant, ordinary login session, session
+authority, resource bindings, and connection. Parent and child authority are never
 merged.
 
 Companion activation exposes server-computed child consent. The user submits a

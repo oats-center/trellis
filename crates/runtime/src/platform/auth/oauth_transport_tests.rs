@@ -17,7 +17,13 @@ pub(super) fn certificate() -> Certificate {
     let root_key = directory.path().join("root-key.pem");
     let request = directory.path().join("server.csr");
     let extensions = directory.path().join("extensions.cnf");
-    std::fs::write(&extensions,"basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1,IP:127.0.0.2\n").unwrap();
+    std::fs::write(
+        &extensions,
+        "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,\
+        digitalSignature\nextendedKeyUsage=serverAuth\n\
+        subjectAltName=IP:127.0.0.1,IP:127.0.0.2\n",
+    )
+    .unwrap();
     let mut root = std::process::Command::new("openssl");
     root.args([
         "req",
@@ -125,11 +131,7 @@ public_origin = "https://127.0.0.1:3000"
         .unwrap();
     let shutdown = tokio_util::sync::CancellationToken::new();
     let stopping = shutdown.clone();
-    let router = super::super::oauth::router(
-        engine.clone(),
-        vec!["tls://127.0.0.1:4222".into()],
-        Vec::new(),
-    );
+    let router = super::super::oauth::router(engine.clone(), vec!["tls://127.0.0.1:4222".into()]);
     let server = tokio::spawn(listener.run(router, stopping));
     let metadata = format!("{origin}/.well-known/oauth-authorization-server");
     let untrusted = reqwest::Client::builder().no_proxy().build().unwrap();

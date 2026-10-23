@@ -1,9 +1,6 @@
 //! Built-in platform admission through the ordinary native service boundary.
 
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 use trellis_rs::{
     generated::ParticipantDescriptor,
@@ -22,13 +19,7 @@ pub(crate) async fn prepare_builtin_provider<C: ParticipantDescriptor>(
     operational: &async_nats::Client,
     identity_seed: &str,
 ) -> Result<ProvisionedDeployment, RuntimeError> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|value| i64::try_from(value.as_secs()).ok())
-        .ok_or_else(|| {
-            RuntimeError::Platform("current time is outside the supported range".into())
-        })?;
+    let now = crate::clock::unix_now();
     let deployment = store
         .initialize_builtin_provider::<C>(identity_seed, now)
         .map_err(|error| RuntimeError::Platform(error.to_string()))?;

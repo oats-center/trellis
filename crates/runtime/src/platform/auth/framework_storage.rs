@@ -26,16 +26,60 @@ pub(super) async fn materialize_operations(
     now: i64,
 ) -> Result<(), AuthError> {
     let plan = store.transaction(|connection| {
-        let (participant, installed_revision, binding_revision, implementations): (String,u64,u64,String) = connection.query_row(
-            "SELECT d.participant_id,b.installed_revision,b.revision,b.provided_apis_json FROM auth_deployment_bindings b JOIN auth_deployments d USING(deployment_id) WHERE d.deployment_id=?1 AND d.state='active' AND EXISTS(SELECT 1 FROM auth_instances i JOIN auth_principals p ON p.principal_id=i.principal_id WHERE i.deployment_id=b.deployment_id AND i.state='active' AND p.state='active')",
-            [deployment], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
+        let (participant, installed_revision, binding_revision, implementations): (
+            String,
+            u64,
+            u64,
+            String,
+        ) = connection.query_row(
+            "SELECT d.participant_id,b.installed_revision,b.revision,\
+            b.provided_apis_json \
+            FROM auth_deployment_bindings b \
+            JOIN auth_deployments d USING(deployment_id) \
+            WHERE d.deployment_id=?1 \
+            AND d.state='active' \
+            AND EXISTS(SELECT 1 \
+            FROM auth_instances i \
+            JOIN auth_principals p ON p.principal_id=i.principal_id \
+            WHERE i.deployment_id=b.deployment_id \
+            AND i.state='active' \
+            AND p.state='active')",
+            [deployment],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
         let implementations: Vec<ProviderImplementation> = decode(&implementations)?;
-        if !implementations.iter().any(|implementation| implementation.implemented_actions.iter().any(|action| action.kind == ApiSurfaceKind::Operation)) { return Ok(None); }
+        if !implementations.iter().any(|implementation| {
+            implementation
+                .implemented_actions
+                .iter()
+                .any(|action| action.kind == ApiSurfaceKind::Operation)
+        }) {
+            return Ok(None);
+        }
         // An admission must not use an earlier preparation while this startup
         // owner is checking durable, externally persisted storage ownership.
-        let materialized: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_resource_binding_evidence WHERE owner_kind='deployment' AND owner_id=?1 AND resource_kind='framework_operation')",[deployment],|row|row.get(0))?;
-        connection.execute("UPDATE auth_resource_binding_evidence SET state='unavailable' WHERE owner_kind='deployment' AND owner_id=?1 AND participant_id=?2 AND resource_kind='framework_operation'",params![deployment,participant])?;
-        Ok(Some((participant,installed_revision,binding_revision,materialized)))
+        let materialized: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_resource_binding_evidence \
+            WHERE owner_kind='deployment' \
+            AND owner_id=?1 AND resource_kind='framework_operation')",
+            [deployment],
+            |row| row.get(0),
+        )?;
+        connection.execute(
+            "UPDATE auth_resource_binding_evidence \
+            SET state='unavailable' \
+            WHERE owner_kind='deployment' \
+            AND owner_id=?1 AND participant_id=?2 \
+            AND resource_kind='framework_operation'",
+            params![deployment, participant],
+        )?;
+        Ok(Some((
+            participant,
+            installed_revision,
+            binding_revision,
+            materialized,
+        )))
     })?;
     let Some((participant, installed_revision, binding_revision, materialized)) = plan else {
         return Ok(());
@@ -57,7 +101,12 @@ pub(super) async fn materialize_operations(
         let stream_name = format!("{}_{bucket}", if object_store { "OBJ" } else { "KV" });
         match jetstream.get_stream(&stream_name).await {
             Ok(_) => (),
-            Err(error) if matches!(error.kind(),async_nats::jetstream::context::GetStreamErrorKind::JetStream(error) if error.error_code()==async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND) =>
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    async_nats::jetstream::context::GetStreamErrorKind::JetStream(error)
+                        if error.error_code()==async_nats::jetstream::ErrorCode::STREAM_NOT_FOUND
+                ) =>
             {
                 if materialized {
                     return Err(AuthError::Broker(format!(
@@ -118,9 +167,39 @@ pub(super) async fn materialize_operations(
         }
     }
     store.transaction(|connection| {
-        let current: Option<(u64,u64)> = connection.query_row("SELECT b.installed_revision,b.revision FROM auth_deployment_bindings b JOIN auth_deployments d USING(deployment_id) WHERE b.deployment_id=?1 AND d.state='active'",[deployment],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-        if current != Some((installed_revision,binding_revision)) { return Err(AuthError::Conflict); }
-        connection.execute("INSERT INTO auth_resource_binding_evidence(owner_kind,owner_id,participant_id,installed_revision,resource_kind,local_name,binding_id,provider_identity,actual_json,state,materialized_at) VALUES('deployment',?1,?2,?3,'framework_operation','operations',?4,?1,?5,'available',?6) ON CONFLICT(owner_kind,owner_id,participant_id,installed_revision,resource_kind,local_name) DO UPDATE SET actual_json=excluded.actual_json,state='available',materialized_at=excluded.materialized_at",params![deployment,participant,installed_revision,digest(&("framework_operation",deployment))?,json(&bindings)?,now])?;
+        let current: Option<(u64, u64)> = connection
+            .query_row(
+                "SELECT b.installed_revision,b.revision \
+                FROM auth_deployment_bindings b \
+                JOIN auth_deployments d USING(deployment_id) \
+                WHERE b.deployment_id=?1 \
+                AND d.state='active'",
+                [deployment],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if current != Some((installed_revision, binding_revision)) {
+            return Err(AuthError::Conflict);
+        }
+        connection.execute(
+            "INSERT INTO auth_resource_binding_evidence(owner_kind,owner_id,\
+            participant_id,installed_revision,resource_kind,local_name,binding_id,\
+            provider_identity,actual_json,state,materialized_at) \
+            VALUES('deployment',?1,?2,?3,'framework_operation','operations',?4,?1,\
+            ?5,'available',?6) \
+            ON CONFLICT(owner_kind,owner_id,participant_id,installed_revision,\
+            resource_kind,local_name) \
+            DO UPDATE SET actual_json=excluded.actual_json,state='available',\
+            materialized_at=excluded.materialized_at",
+            params![
+                deployment,
+                participant,
+                installed_revision,
+                digest(&("framework_operation", deployment))?,
+                json(&bindings)?,
+                now
+            ],
+        )?;
         Ok(())
     })
 }

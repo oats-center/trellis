@@ -68,9 +68,6 @@ const TARGET_DEPLOYMENT = "cs-target";
 const runtimeOptions = {
   authorization: {
     contextLifetimeSeconds: 55,
-    refreshLeadSeconds: 12,
-    refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 20,
     allowedClockSkewSeconds: 2,
   },
   // The private provisional stage is only observable through the native proxy's

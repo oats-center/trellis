@@ -1,5 +1,6 @@
 //! Credential and runtime-authority adapters over the existing Auth owners.
 
+use super::sqlite::timestamp;
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -71,7 +72,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                             &identity,
                             &verified,
                             &input,
-                            time::OffsetDateTime::now_utc().unix_timestamp(),
+                            crate::clock::unix_now(),
                         )
                     })
                     .await
@@ -89,12 +90,28 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          _: &AuthenticatedCaller,
          input: &AuthPageRequest| {
             store.transaction(|connection| {
-        SqliteAuthorizationStore::require_privilege(connection, actor, "clients.manage")?;
-        let (cursor, limit) = page_bounds(input.page.as_ref())?;
-        let mut statement = connection.prepare("SELECT client_id FROM auth_oauth_clients WHERE state!='deleted' AND client_id>?1 AND (?2 IS NULL OR instr(lower(client_id),lower(?2))>0 OR instr(lower(display_name),lower(?2))>0) ORDER BY client_id LIMIT ?3")?;
-        let ids = statement.query_map(params![cursor, input.search.as_ref().map(|value|value.as_ref()), limit+1], |row| row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        page(ids, limit, |id| read_client(connection, id))
-    })
+                SqliteAuthorizationStore::require_privilege(connection, actor, "clients.manage")?;
+                let (cursor, limit) = page_bounds(input.page.as_ref())?;
+                let mut statement = connection.prepare(
+                    "SELECT client_id FROM auth_oauth_clients \
+                    WHERE state!='deleted' \
+                    AND client_id>?1 AND (?2 IS NULL \
+                    OR instr(lower(client_id),lower(?2))>0 \
+                    OR instr(lower(display_name),lower(?2))>0) \
+                    ORDER BY client_id LIMIT ?3",
+                )?;
+                let ids = statement
+                    .query_map(
+                        params![
+                            cursor,
+                            input.search.as_ref().map(|value| value.as_ref()),
+                            limit + 1
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                page(ids, limit, |id| read_client(connection, id))
+            })
         }
     );
     query!(
@@ -146,11 +163,22 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          _: &AuthenticatedCaller,
          input: &AuthPageRequest| {
             store.transaction(|connection| {
-        let (cursor, limit) = page_bounds(input.page.as_ref())?;
-        let mut statement = connection.prepare("SELECT login_session_id FROM auth_login_sessions WHERE principal_id=?1 AND login_session_id>?2 ORDER BY login_session_id LIMIT ?3")?;
-        let ids = statement.query_map(params![actor,cursor,limit+1], |row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        page(ids, limit, |id| read_login(connection, id))
-    })
+                let (cursor, limit) = page_bounds(input.page.as_ref())?;
+                let mut statement = connection.prepare(
+                    "SELECT login_session_id \
+                    FROM auth_login_sessions \
+                    WHERE principal_id=?1 \
+                    AND login_session_id>?2 \
+                    ORDER BY login_session_id \
+                    LIMIT ?3",
+                )?;
+                let ids = statement
+                    .query_map(params![actor, cursor, limit + 1], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                page(ids, limit, |id| read_login(connection, id))
+            })
         }
     );
     mutate!(
@@ -170,16 +198,48 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          verified: &AuthenticatedCaller,
          input: &AuthDelegationsListRequest| {
             store.transaction(|connection| {
-        let owner=input.principal_id.as_ref().map(ToString::to_string).unwrap_or_else(||actor.into());
-        if owner!=actor {
-            if !verified.platform_privileges.contains(&PlatformPrivilege::PrincipalsManage) {return Err(AuthError::Denied);}
-            SqliteAuthorizationStore::require_privilege(connection,actor,"principals.manage")?;
-        }
-        let (cursor,limit)=page_bounds(input.page.as_ref())?;
-        let mut statement=connection.prepare("SELECT oauth_grant_id FROM auth_oauth_grants WHERE principal_id=?1 AND oauth_grant_id>?2 AND (?3 IS NULL OR client_id=?3) AND revoked_at IS NULL ORDER BY oauth_grant_id LIMIT ?4")?;
-        let ids=statement.query_map(params![owner,cursor,input.client_id.as_ref().map(|id|id.as_ref()),limit+1],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        page(ids,limit,|id|read_delegation(connection,id))
-    })
+                let owner = input
+                    .principal_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| actor.into());
+                if owner != actor {
+                    if !verified
+                        .platform_privileges
+                        .contains(&PlatformPrivilege::PrincipalsManage)
+                    {
+                        return Err(AuthError::Denied);
+                    }
+                    SqliteAuthorizationStore::require_privilege(
+                        connection,
+                        actor,
+                        "principals.manage",
+                    )?;
+                }
+                let (cursor, limit) = page_bounds(input.page.as_ref())?;
+                let mut statement = connection.prepare(
+                    "SELECT oauth_grant_id \
+                    FROM auth_oauth_grants \
+                    WHERE principal_id=?1 \
+                    AND oauth_grant_id>?2 \
+                    AND (?3 IS NULL OR client_id=?3) \
+                    AND revoked_at IS NULL \
+                    ORDER BY oauth_grant_id \
+                    LIMIT ?4",
+                )?;
+                let ids = statement
+                    .query_map(
+                        params![
+                            owner,
+                            cursor,
+                            input.client_id.as_ref().map(|id| id.as_ref()),
+                            limit + 1
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                page(ids, limit, |id| read_delegation(connection, id))
+            })
         }
     );
     query!(
@@ -258,7 +318,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                     request_id: login.clone(),
                     request_digest: digest(login)?,
                 };
-                let now = time::OffsetDateTime::now_utc().unix_timestamp();
+                let now = crate::clock::unix_now();
                 store.mutate(&identity, "rpc.login.logout", login, now, |connection| {
                     let scope = EnforcementScope::Login(login.clone());
                     let root = Mutation {
@@ -286,13 +346,41 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          _: &AuthenticatedCaller,
          input: &AuthConnectionsListRequest| {
             store.transaction(|connection| {
-        SqliteAuthorizationStore::require_privilege(connection, actor, "principals.manage")?;
-        let (cursor,limit)=page_bounds(input.page.as_ref())?;
-        let state = input.state.as_ref().map(serde_json::to_value).transpose()?;
-        let mut statement=connection.prepare("SELECT a.attachment_id FROM auth_attachments a JOIN auth_authorization_sessions s USING(authorization_session_id) WHERE a.attachment_id>?1 AND (?2 IS NULL OR s.principal_id=?2) AND (?3 IS NULL OR s.authorization_session_id=?3) AND (?4 IS NULL OR a.state=?4) ORDER BY a.attachment_id LIMIT ?5")?;
-        let ids=statement.query_map(params![cursor,input.principal_id.as_ref().map(ToString::to_string),input.authorization_session_id.as_ref().map(ToString::to_string),state.as_ref().and_then(|state|state.as_str()),limit+1],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        page(ids,limit,|id|read_attachment(connection,id))
-    })
+                SqliteAuthorizationStore::require_privilege(
+                    connection,
+                    actor,
+                    "principals.manage",
+                )?;
+                let (cursor, limit) = page_bounds(input.page.as_ref())?;
+                let state = input.state.as_ref().map(serde_json::to_value).transpose()?;
+                let mut statement = connection.prepare(
+                    "SELECT a.attachment_id \
+                    FROM auth_attachments a \
+                    JOIN auth_authorization_sessions s USING(authorization_session_id) \
+                    WHERE a.attachment_id>?1 \
+                    AND (?2 IS NULL OR s.principal_id=?2) \
+                    AND (?3 IS NULL OR s.authorization_session_id=?3) \
+                    AND (?4 IS NULL OR a.state=?4) \
+                    ORDER BY a.attachment_id \
+                    LIMIT ?5",
+                )?;
+                let ids = statement
+                    .query_map(
+                        params![
+                            cursor,
+                            input.principal_id.as_ref().map(ToString::to_string),
+                            input
+                                .authorization_session_id
+                                .as_ref()
+                                .map(ToString::to_string),
+                            state.as_ref().and_then(|state| state.as_str()),
+                            limit + 1
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                page(ids, limit, |id| read_attachment(connection, id))
+            })
         }
     );
     query!(
@@ -303,11 +391,42 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          _: &AuthenticatedCaller,
          input: &AuthAuthorizationSessionsListRequest| {
             store.transaction(|connection| {
-                SqliteAuthorizationStore::require_privilege(connection, actor, "principals.manage")?;
+                SqliteAuthorizationStore::require_privilege(
+                    connection,
+                    actor,
+                    "principals.manage",
+                )?;
                 let (cursor, limit) = page_bounds(input.page.as_ref())?;
                 let state = input.state.as_ref().map(serde_json::to_value).transpose()?;
-                let mut statement = connection.prepare("SELECT s.authorization_session_id FROM auth_authorization_sessions s LEFT JOIN auth_oauth_grants g ON g.oauth_grant_id=s.oauth_grant_id WHERE s.authorization_session_id>?1 AND (?2 IS NULL OR s.principal_id=?2) AND (?3 IS NULL OR json_extract(s.binding_json,'$.clientId')=?3) AND (?4 IS NULL OR g.login_session_id=?4) AND (?5 IS NULL OR s.oauth_grant_id=?5) AND (?6 IS NULL OR json_extract(s.binding_json,'$.deploymentId')=?6) AND (?7 IS NULL OR s.state=?7) ORDER BY s.authorization_session_id LIMIT ?8")?;
-                let ids = statement.query_map(params![cursor,input.principal_id.as_ref().map(ToString::to_string),input.client_id.as_ref().map(|id|id.as_ref()),input.login_session_id.as_ref().map(ToString::to_string),input.oauth_grant_id.as_ref().map(ToString::to_string),input.deployment_id.as_ref().map(ToString::to_string),state.as_ref().and_then(|state|state.as_str()),limit+1], |row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                let mut statement = connection.prepare(
+                    "SELECT s.authorization_session_id \
+                    FROM auth_authorization_sessions s \
+                    LEFT JOIN auth_oauth_grants g ON g.oauth_grant_id=s.oauth_grant_id \
+                    WHERE s.authorization_session_id>?1 \
+                    AND (?2 IS NULL OR s.principal_id=?2) \
+                    AND (?3 IS NULL OR json_extract(s.binding_json,'$.clientId')=?3) \
+                    AND (?4 IS NULL OR g.login_session_id=?4) \
+                    AND (?5 IS NULL OR s.oauth_grant_id=?5) \
+                    AND (?6 IS NULL OR json_extract(s.binding_json,'$.deploymentId')=?6) \
+                    AND (?7 IS NULL OR s.state=?7) \
+                    ORDER BY s.authorization_session_id \
+                    LIMIT ?8",
+                )?;
+                let ids = statement
+                    .query_map(
+                        params![
+                            cursor,
+                            input.principal_id.as_ref().map(ToString::to_string),
+                            input.client_id.as_ref().map(|id| id.as_ref()),
+                            input.login_session_id.as_ref().map(ToString::to_string),
+                            input.oauth_grant_id.as_ref().map(ToString::to_string),
+                            input.deployment_id.as_ref().map(ToString::to_string),
+                            state.as_ref().and_then(|state| state.as_str()),
+                            limit + 1
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
                 page(ids, limit, |id| read_authorization_session(connection, id))
             })
         }
@@ -376,7 +495,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
             store,
             verified,
             input,
-            time::OffsetDateTime::now_utc().unix_timestamp()
+            crate::clock::unix_now()
         )
     );
     query!(
@@ -442,12 +561,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                 .caller()
                 .clone();
             let renewed = tokio::task::spawn_blocking(move || {
-                renew_admission(
-                    &store,
-                    &verified,
-                    &input,
-                    time::OffsetDateTime::now_utc().unix_timestamp(),
-                )
+                renew_admission(&store, &verified, &input, crate::clock::unix_now())
             })
             .await
             .map_err(|_| rpc_error(AuthError::Unavailable))?
@@ -495,16 +609,38 @@ fn page<T>(
     })
 }
 
-fn timestamp(value: i64) -> Result<trellis_rs::generated::Timestamp, AuthError> {
-    let value = time::OffsetDateTime::from_unix_timestamp(value)
-        .map_err(|_| AuthError::Unavailable)?
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|_| AuthError::Unavailable)?;
-    trellis_rs::generated::Timestamp::parse(&value).map_err(|_| AuthError::Unavailable)
-}
-
 pub(super) fn read_client(connection: &Connection, id: &str) -> Result<AuthOAuthClient, AuthError> {
-    let (kind,title,redirects,development,implied,metadata,state,revision):(String,String,String,bool,String,String,String,u64)=connection.query_row("SELECT kind,display_name,redirect_uris_json,development,implied_capabilities_json,metadata_json,state,revision FROM auth_oauth_clients WHERE client_id=?1 AND state!='deleted'",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (kind, title, redirects, development, implied, metadata, state, revision): (
+        String,
+        String,
+        String,
+        bool,
+        String,
+        String,
+        String,
+        u64,
+    ) = connection
+        .query_row(
+            "SELECT kind,display_name,redirect_uris_json,development,\
+            implied_capabilities_json,metadata_json,state,revision \
+            FROM auth_oauth_clients \
+            WHERE client_id=?1 AND state!='deleted'",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     let metadata: serde_json::Value = decode(&metadata)?;
     Ok(AuthOAuthClient {
         client_id: id.to_owned().into(),
@@ -516,7 +652,7 @@ pub(super) fn read_client(connection: &Connection, id: &str) -> Result<AuthOAuth
         development,
         enabled: state == "active",
         implied_consent: decode(&implied)?,
-        kind: serde_json::from_value(json!(kind))?,
+        kind: kind.into(),
         redirect_uris: decode(&redirects)?,
         revision: AuthRevision(revision.into()),
         title,
@@ -530,25 +666,82 @@ pub(super) fn put_client(
     input: &AuthOAuthClientPutRequest,
     now: i64,
 ) -> Result<AuthOAuthClientGetResponse, AuthError> {
-    store.mutate(identity,"rpc.client.put",input,now,|connection| {
-        SqliteAuthorizationStore::require_privilege(connection,&identity.actor,"clients.manage")?;
-        let deleted:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1 AND state='deleted')",[input.client_id.as_ref()],|row|row.get(0))?;
-        if deleted {return Err(AuthError::Conflict);}
-        let existing:Option<(String,String)>=connection.query_row("SELECT metadata_json,requested_privileges_json FROM auth_oauth_clients WHERE client_id=?1",[input.client_id.as_ref()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-        let (mut metadata,eligible_privileges)=match existing {Some((metadata,privileges))=>(decode::<serde_json::Value>(&metadata)?,decode(&privileges)?),None=>(json!({}),vec![])};
-        metadata["description"]=json!(input.description.as_ref());
-        let authorization_code = input.kind == AuthPublicClientKind::Browser || !input.redirect_uris.is_empty();
+    store.mutate(identity, "rpc.client.put", input, now, |connection| {
+        SqliteAuthorizationStore::require_privilege(connection, &identity.actor, "clients.manage")?;
+        let deleted: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_oauth_clients \
+            WHERE client_id=?1 AND state='deleted')",
+            [input.client_id.as_ref()],
+            |row| row.get(0),
+        )?;
+        if deleted {
+            return Err(AuthError::Conflict);
+        }
+        let existing: Option<(String, String)> = connection
+            .query_row(
+                "SELECT metadata_json,requested_privileges_json \
+                FROM auth_oauth_clients \
+                WHERE client_id=?1",
+                [input.client_id.as_ref()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let (mut metadata, eligible_privileges) = match existing {
+            Some((metadata, privileges)) => (
+                decode::<serde_json::Value>(&metadata)?,
+                decode(&privileges)?,
+            ),
+            None => (json!({}), vec![]),
+        };
+        metadata["description"] = json!(input.description.as_ref());
+        let authorization_code =
+            input.kind == AuthPublicClientKind::Browser || !input.redirect_uris.is_empty();
         let mut grant_types = vec!["refresh_token"];
-        if authorization_code { grant_types.push("authorization_code"); }
-        if input.kind == AuthPublicClientKind::Native { grant_types.push("urn:ietf:params:oauth:grant-type:device_code"); }
+        if authorization_code {
+            grant_types.push("authorization_code");
+        }
+        if input.kind == AuthPublicClientKind::Native {
+            grant_types.push("urn:ietf:params:oauth:grant-type:device_code");
+        }
         metadata["grant_types"] = json!(grant_types);
-        metadata["response_types"] = if authorization_code { json!(["code"]) } else { json!([]) };
-        let registration=ClientRegistration {client_id:input.client_id.to_string(),kind:serde_json::to_value(&input.kind)?.as_str().ok_or(AuthError::Denied)?.into(),display_name:input.title.to_string(),redirect_uris:input.redirect_uris.clone(),development:input.development,implied_capabilities:input.implied_consent.iter().map(ToString::to_string).collect(),eligible_privileges,metadata,expected_revision:input.expected_revision.0};
-        let domain=Mutation {request_digest:digest(&registration)?,..identity.clone()};
-        store.register_client_in_transaction(connection,&domain,&registration,now)?;
+        metadata["response_types"] = if authorization_code {
+            json!(["code"])
+        } else {
+            json!([])
+        };
+        let registration = ClientRegistration {
+            client_id: input.client_id.to_string(),
+            kind: serde_json::to_value(&input.kind)?
+                .as_str()
+                .ok_or(AuthError::Denied)?
+                .into(),
+            display_name: input.title.to_string(),
+            redirect_uris: input.redirect_uris.clone(),
+            development: input.development,
+            implied_capabilities: input
+                .implied_consent
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            eligible_privileges,
+            metadata,
+            expected_revision: input.expected_revision.0,
+        };
+        let domain = Mutation {
+            request_digest: digest(&registration)?,
+            ..identity.clone()
+        };
+        store.register_client_in_transaction(connection, &domain, &registration, now)?;
         // Put is the supported create/update/enable operation.
-        connection.execute("UPDATE auth_oauth_clients SET state='active' WHERE client_id=?1",[input.client_id.as_ref()])?;
-        Ok(AuthOAuthClientGetResponse {client:read_client(connection,&input.client_id)?,extra:Default::default()})
+        connection.execute(
+            "UPDATE auth_oauth_clients SET state='active' WHERE client_id=?1",
+            [input.client_id.as_ref()],
+        )?;
+        Ok(AuthOAuthClientGetResponse {
+            client: read_client(connection, &input.client_id)?,
+            extra: Default::default(),
+        })
     })
 }
 
@@ -559,23 +752,76 @@ pub(super) fn change_client_state(
     state: &str,
     now: i64,
 ) -> Result<AuthMutationResult, AuthError> {
-    store.mutate(identity,if state=="deleted" {"rpc.client.delete"} else {"rpc.client.disable"},input,now,|connection| {
-        let operation=super::PolicyMutation::ClientState {client_id:input.client_id.to_string(),expected_revision:input.expected_revision.0.0,state:state.into()};
-        let revision=super::policy::apply_policy_in_transaction(connection,identity,&operation,now)?;
-        let scope=EnforcementScope::Client(input.client_id.to_string());
-        let work:String=connection.query_row("SELECT work_id FROM auth_enforcement_work WHERE scope_key=?1 ORDER BY rowid DESC LIMIT 1",[digest(&scope)?],|row|row.get(0))?;
-        Ok(AuthMutationResult {revision:AuthRevision(revision.into()),enforcement:Some(read_enforcement(connection,&work)?),extra:Default::default()})
-    })
+    store.mutate(
+        identity,
+        if state == "deleted" {
+            "rpc.client.delete"
+        } else {
+            "rpc.client.disable"
+        },
+        input,
+        now,
+        |connection| {
+            let operation = super::PolicyMutation::ClientState {
+                client_id: input.client_id.to_string(),
+                expected_revision: input.expected_revision.0 .0,
+                state: state.into(),
+            };
+            let revision =
+                super::policy::apply_policy_in_transaction(connection, identity, &operation, now)?;
+            let scope = EnforcementScope::Client(input.client_id.to_string());
+            let work: String = connection.query_row(
+                "SELECT work_id FROM auth_enforcement_work \
+                WHERE scope_key=?1 ORDER BY rowid DESC \
+                LIMIT 1",
+                [digest(&scope)?],
+                |row| row.get(0),
+            )?;
+            Ok(AuthMutationResult {
+                revision: AuthRevision(revision.into()),
+                enforcement: Some(read_enforcement(connection, &work)?),
+                extra: Default::default(),
+            })
+        },
+    )
 }
 
 fn read_login(connection: &Connection, id: &str) -> Result<AuthLoginSession, AuthError> {
-    let (principal,method,provider,created,expires,fresh,revoked):(String,String,Option<String>,i64,i64,Option<i64>,Option<i64>)=connection.query_row("SELECT principal_id,method,provider_id,created_at,expires_at,fresh_until,revoked_at FROM auth_login_sessions WHERE login_session_id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (principal, method, provider, created, expires, fresh, revoked): (
+        String,
+        String,
+        Option<String>,
+        i64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+    ) = connection
+        .query_row(
+            "SELECT principal_id,method,provider_id,created_at,expires_at,\
+            fresh_until,revoked_at \
+            FROM auth_login_sessions \
+            WHERE login_session_id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     Ok(AuthLoginSession {
         claim_fresh_until: fresh.map(timestamp).transpose()?,
         created_at: timestamp(created)?,
         expires_at: timestamp(expires)?,
         login_session_id: id.parse().map_err(|_| AuthError::Unavailable)?,
-        method: serde_json::from_value(json!(method))?,
+        method: method.into(),
         principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
         provider_id: provider
             .map(|id| id.parse().map_err(|_| AuthError::Unavailable))
@@ -634,7 +880,39 @@ pub(super) fn revoke_login(
 }
 
 fn read_attachment(connection: &Connection, id: &str) -> Result<AuthAttachment, AuthError> {
-    let (session,server,client,key,policy,state,admitted,closed):(String,String,u64,String,String,String,Option<i64>,Option<i64>)=connection.query_row("SELECT a.authorization_session_id,a.server_id,a.broker_client_id,s.session_public_key,a.transport_policy_digest,a.state,a.admitted_at,a.closed_at FROM auth_attachments a JOIN auth_authorization_sessions s USING(authorization_session_id) WHERE a.attachment_id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (session, server, client, key, policy, state, admitted, closed): (
+        String,
+        String,
+        u64,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+    ) = connection
+        .query_row(
+            "SELECT a.authorization_session_id,a.server_id,a.broker_client_id,\
+            s.session_public_key,a.transport_policy_digest,a.state,a.admitted_at,\
+            a.closed_at \
+            FROM auth_attachments a \
+            JOIN auth_authorization_sessions s USING(authorization_session_id) \
+            WHERE a.attachment_id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     Ok(AuthAttachment {
         admitted_at: admitted.map(timestamp).transpose()?,
         admitted_transport_policy_digest: policy.into(),
@@ -644,7 +922,7 @@ fn read_attachment(connection: &Connection, id: &str) -> Result<AuthAttachment, 
         closed_at: closed.map(timestamp).transpose()?,
         server_id: server,
         session_public_key: key.into(),
-        state: serde_json::from_value(json!(state))?,
+        state: state.into(),
         extra: Default::default(),
     })
 }
@@ -653,55 +931,106 @@ fn read_authorization_session(
     connection: &Connection,
     id: &str,
 ) -> Result<AuthAuthorizationSession, AuthError> {
-    let (principal,kind,binding,runtime,key,credential,grant,identity,login,created,deadline) = connection.query_row(
-        "SELECT s.principal_id,p.kind,s.binding_json,s.runtime_id,s.session_public_key,s.credential_kind,s.oauth_grant_id,s.identity_key_id,g.login_session_id,s.issued_at,s.hard_deadline FROM auth_authorization_sessions s JOIN auth_principals p USING(principal_id) LEFT JOIN auth_oauth_grants g ON g.oauth_grant_id=s.oauth_grant_id WHERE s.authorization_session_id=?1",
-        [id],
-        |row| Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-            row.get::<_, String>(4)?,
-            row.get::<_, String>(5)?,
-            row.get::<_, Option<String>>(6)?,
-            row.get::<_, Option<String>>(7)?,
-            row.get::<_, Option<String>>(8)?,
-            row.get::<_, i64>(9)?,
-            row.get::<_, i64>(10)?,
-        )),
-    ).optional()?.ok_or(AuthError::NotFound)?;
+    let (
+        principal,
+        kind,
+        binding,
+        runtime,
+        key,
+        credential,
+        grant,
+        identity,
+        login,
+        created,
+        deadline,
+    ) = connection
+        .query_row(
+            "SELECT s.principal_id,p.kind,s.binding_json,s.runtime_id,\
+            s.session_public_key,s.credential_kind,s.oauth_grant_id,\
+            s.identity_key_id,g.login_session_id,s.issued_at,s.hard_deadline \
+            FROM auth_authorization_sessions s \
+            JOIN auth_principals p USING(principal_id) \
+            LEFT JOIN auth_oauth_grants g ON g.oauth_grant_id=s.oauth_grant_id \
+            WHERE s.authorization_session_id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     let session = id.parse().map_err(|_| AuthError::Unavailable)?;
     let status = SqliteAuthorizationStore::authorization_session_status_in(connection, session)?;
-    Ok(serde_json::from_value(json!({
-        "authorizationSessionId": session, "principalId": principal, "principalKind": kind,
-        "binding": serde_json::from_str::<serde_json::Value>(&binding)?, "runtimeId": runtime,
-        "sessionPublicKey": key, "credentialKind": credential, "loginSessionId": login,
-        "oauthGrantId": grant, "identityKeyId": identity, "state": status.state,
-        "createdAt": timestamp(created)?,
+    let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
+    Ok(AuthAuthorizationSession {
+        authorization_session_id: session,
+        principal_id: ulid(&principal)?,
+        principal_kind: kind.into(),
+        binding: decode(&binding)?,
+        runtime_id: runtime,
+        session_public_key: trellis_runtime_apis::types::AuthPublicKey(key),
+        credential_kind: credential.into(),
+        login_session_id: login.as_deref().map(ulid).transpose()?,
+        oauth_grant_id: grant.as_deref().map(ulid).transpose()?,
+        identity_key_id: identity.map(trellis_runtime_apis::types::AuthKeyId),
+        state: status.state.as_str().into(),
+        created_at: timestamp(created)?,
         // Unbounded roots use the protocol-safe integer sentinel in storage,
         // not a fictitious expiry in the public management projection.
-        "notAfter": (deadline != 9_007_199_254_740_991_i64)
-            .then(|| timestamp(deadline)).transpose()?,
-        "maximumContextExpiresAt": status.maximum_context_expires_at,
-        "retiredAt": status.cutoff, "reason": status.reason,
-    }))?)
+        not_after: (deadline != 9_007_199_254_740_991_i64)
+            .then(|| timestamp(deadline))
+            .transpose()?,
+        maximum_context_expires_at: status.maximum_context_expires_at,
+        retired_at: status.cutoff,
+        reason: status.reason,
+        extra: Default::default(),
+    })
 }
 
 fn read_enforcement(
     connection: &Connection,
     id: &str,
 ) -> Result<AuthEnforcementProgress, AuthError> {
-    let (state,scanned,retired,pending,failed):(String,u64,u64,u64,u64)=connection.query_row("SELECT state,scanned_sessions,retired_sessions,pending_kicks,failed_kicks FROM auth_enforcement_work WHERE work_id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
+    let (state, scanned, retired, pending, failed): (String, u64, u64, u64, u64) = connection
+        .query_row(
+            "SELECT state,scanned_sessions,retired_sessions,pending_kicks,\
+            failed_kicks \
+            FROM auth_enforcement_work \
+            WHERE work_id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
     Ok(AuthEnforcementProgress {
         failed_kicks: failed.into(),
         pending_kicks: pending.into(),
         retired_sessions: retired.into(),
         scanned_sessions: scanned.into(),
-        state: serde_json::from_value(json!(if state == "completed" && pending > 0 {
+        state: if state == "completed" && pending > 0 {
             "running"
         } else {
-            &state
-        }))?,
+            state.as_str()
+        }
+        .into(),
         work_id: id.parse().map_err(|_| AuthError::Unavailable)?,
         extra: Default::default(),
     })
@@ -713,16 +1042,57 @@ pub(super) fn kick_connection(
     input: &AuthConnectionsKickRequest,
     now: i64,
 ) -> Result<AuthConnectionsKickResponse, AuthError> {
-    store.mutate(identity,"rpc.connection.kick",input,now,|connection| {
-        SqliteAuthorizationStore::require_privilege(connection,&identity.actor,"principals.manage")?;
-        let (server,client,session,state):(String,u64,String,String)=connection.query_row("SELECT server_id,broker_client_id,authorization_session_id,state FROM auth_attachments WHERE attachment_id=?1",[input.attachment_id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).optional()?.ok_or(AuthError::NotFound)?;
-        if state=="closed" {return Err(AuthError::Conflict);}
-        let work=enqueue_scope(connection,&EnforcementScope::Session(session.clone()),now)?;
+    store.mutate(identity, "rpc.connection.kick", input, now, |connection| {
+        SqliteAuthorizationStore::require_privilege(
+            connection,
+            &identity.actor,
+            "principals.manage",
+        )?;
+        let (server, client, session, state): (String, u64, String, String) = connection
+            .query_row(
+                "SELECT server_id,broker_client_id,authorization_session_id,state \
+                FROM auth_attachments \
+                WHERE attachment_id=?1",
+                [input.attachment_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
+            .ok_or(AuthError::NotFound)?;
+        if state == "closed" {
+            return Err(AuthError::Conflict);
+        }
+        let work = enqueue_scope(connection, &EnforcementScope::Session(session.clone()), now)?;
         // A physical kick is not logical-session retirement or policy reduction.
-        connection.execute("UPDATE auth_enforcement_work SET state='completed',completed_at=?2,pending_kicks=1 WHERE work_id=?1",params![work,now])?;
-        let action=enqueue_effect(connection,"kick",&json!({"attachmentId":input.attachment_id,"serverId":server,"brokerClientId":client,"authorizationSessionId":session,"workId":work}),None,now)?;
-        connection.execute("UPDATE auth_post_commit_actions SET enforcement_work_id=?1 WHERE action_id=?2",params![work,action])?;
-        Ok(AuthConnectionsKickResponse {attachment_id:input.attachment_id,enforcement:read_enforcement(connection,&work)?,extra:Default::default()})
+        connection.execute(
+            "UPDATE auth_enforcement_work \
+            SET state='completed',completed_at=?2,pending_kicks=1 \
+            WHERE work_id=?1",
+            params![work, now],
+        )?;
+        let action = enqueue_effect(
+            connection,
+            "kick",
+            &json!({
+                "attachmentId":input.attachment_id,
+                "serverId":server,
+                "brokerClientId":client,
+                "authorizationSessionId":session,
+                "workId":work
+            }),
+            None,
+            now,
+        )?;
+        connection.execute(
+            "UPDATE auth_post_commit_actions \
+            SET enforcement_work_id=?1 \
+            WHERE action_id=?2",
+            params![work, action],
+        )?;
+        Ok(AuthConnectionsKickResponse {
+            attachment_id: input.attachment_id,
+            enforcement: read_enforcement(connection, &work)?,
+            extra: Default::default(),
+        })
     })
 }
 
@@ -775,7 +1145,25 @@ fn require_context_owner(
     id: &str,
     verified: &AuthenticatedCaller,
 ) -> Result<(), AuthError> {
-    let owned:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_session_authorities a JOIN auth_authorization_sessions s USING(authorization_session_id) WHERE a.context_digest=?1 AND s.authorization_session_id=?2 AND s.principal_id=?3 AND s.runtime_id=?4 AND s.session_public_key=?5 AND s.state='active')",params![id,verified.authorization_session_id,verified.principal_id,verified.runtime_id,verified.session_public_key],|row|row.get(0))?;
+    let owned: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 \
+        FROM auth_session_authorities a \
+        JOIN auth_authorization_sessions s USING(authorization_session_id) \
+        WHERE a.context_digest=?1 \
+        AND s.authorization_session_id=?2 \
+        AND s.principal_id=?3 \
+        AND s.runtime_id=?4 \
+        AND s.session_public_key=?5 \
+        AND s.state='active')",
+        params![
+            id,
+            verified.authorization_session_id,
+            verified.principal_id,
+            verified.runtime_id,
+            verified.session_public_key
+        ],
+        |row| row.get(0),
+    )?;
     if owned {
         Ok(())
     } else {
@@ -790,19 +1178,53 @@ pub(super) fn renew_admission(
     now: i64,
 ) -> Result<Option<AuthAdmissionRenewResponse>, AuthError> {
     store.transaction(|connection| {
-        require_context_owner(connection,&input.context_digest,verified)?;
-        let identity=AdmissionIdentity {
-            credential:session_credential(connection,&verified.authorization_session_id)?,
-            refresh_family_id:connection.query_row("SELECT original_refresh_family_id FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&verified.authorization_session_id],|row|row.get(0))?,
-            runtime_id:verified.runtime_id.clone(),session_public_key:verified.session_public_key.clone(),inbox_prefix:verified.inbox_prefix.clone(),
+        require_context_owner(connection, &input.context_digest, verified)?;
+        let identity = AdmissionIdentity {
+            credential: session_credential(connection, &verified.authorization_session_id)?,
+            refresh_family_id: connection.query_row(
+                "SELECT original_refresh_family_id \
+                FROM auth_authorization_sessions \
+                WHERE authorization_session_id=?1",
+                [&verified.authorization_session_id],
+                |row| row.get(0),
+            )?,
+            runtime_id: verified.runtime_id.clone(),
+            session_public_key: verified.session_public_key.clone(),
+            inbox_prefix: verified.inbox_prefix.clone(),
         };
-        if !matches!(identity.credential,super::Credential::OAuthGrant(_)) {return Ok(Ok(None));}
-        let issued=match store.issue_authority_in_transaction(connection,&identity,Some(&verified.authorization_session_id),now)? {Ok(issued)=>issued,Err(error)=>return Ok(Err(error))};
-        let nkey:String=connection.query_row("SELECT ephemeral_nkey FROM auth_attachments WHERE authorization_session_id=?1 AND state IN ('pending','admitted') ORDER BY rowid DESC LIMIT 1",[&verified.authorization_session_id],|row|row.get(0)).optional()?.ok_or(AuthError::Denied)?;
-        let mut current=super::policy::evaluate(connection,&identity.credential,now)?;
-        current.not_after=current.not_after.min(issued.authority.unsigned.expires_at);
-        let signed=store.sign_oauth_admission_in(connection,&identity,&nkey,&current,now)?;
-        Ok(Ok(Some(AuthAdmissionRenewResponse {admission_credential:serde_json::to_string(&signed)?,expires_at:timestamp(signed.credential.expires_at)?,extra:Default::default()})))
+        if !matches!(identity.credential, super::Credential::OAuthGrant(_)) {
+            return Ok(Ok(None));
+        }
+        let issued = match store.issue_authority_in_transaction(
+            connection,
+            &identity,
+            Some(&verified.authorization_session_id),
+            now,
+        )? {
+            Ok(issued) => issued,
+            Err(error) => return Ok(Err(error)),
+        };
+        let nkey: String = connection
+            .query_row(
+                "SELECT ephemeral_nkey \
+                FROM auth_attachments \
+                WHERE authorization_session_id=?1 \
+                AND state IN ('pending','admitted') \
+                ORDER BY rowid DESC \
+                LIMIT 1",
+                [&verified.authorization_session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)?;
+        let mut current = super::policy::evaluate(connection, &identity.credential, now)?;
+        current.not_after = current.not_after.min(issued.authority.unsigned.expires_at);
+        let signed = store.sign_oauth_admission_in(connection, &identity, &nkey, &current, now)?;
+        Ok(Ok(Some(AuthAdmissionRenewResponse {
+            admission_credential: serde_json::to_string(&signed)?,
+            expires_at: timestamp(signed.credential.expires_at)?,
+            extra: Default::default(),
+        })))
     })?
 }
 
@@ -816,7 +1238,13 @@ pub(super) fn renew_authority(
         require_context_owner(connection, &input.context_digest, verified)?;
         let admission = AdmissionIdentity {
             credential: session_credential(connection, &verified.authorization_session_id)?,
-            refresh_family_id: connection.query_row("SELECT original_refresh_family_id FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&verified.authorization_session_id],|row|row.get(0))?,
+            refresh_family_id: connection.query_row(
+                "SELECT original_refresh_family_id \
+                FROM auth_authorization_sessions \
+                WHERE authorization_session_id=?1",
+                [&verified.authorization_session_id],
+                |row| row.get(0),
+            )?,
             runtime_id: verified.runtime_id.clone(),
             session_public_key: verified.session_public_key.clone(),
             inbox_prefix: verified.inbox_prefix.clone(),
@@ -847,7 +1275,35 @@ pub(super) fn read_delegation(
     connection: &Connection,
     id: &str,
 ) -> Result<AuthDelegation, AuthError> {
-    let (principal,client,kind,value,jkt,approved,revision):(String,String,String,String,String,String,u64)=connection.query_row("SELECT principal_id,client_id,binding_kind,binding_value,durable_dpop_jkt,approved_capabilities_json,revision FROM auth_oauth_grants WHERE oauth_grant_id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (principal, client, kind, value, jkt, approved, revision): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        u64,
+    ) = connection
+        .query_row(
+            "SELECT principal_id,client_id,binding_kind,binding_value,durable_dpop_jkt,\
+            approved_capabilities_json,revision \
+            FROM auth_oauth_grants \
+            WHERE oauth_grant_id=?1",
+            [id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     let approved: Vec<trellis_protocol::CapabilityAuthority> = decode(&approved)?;
     let choices = approved
         .into_iter()
@@ -867,7 +1323,7 @@ pub(super) fn read_delegation(
         binding: AuthDelegationBinding {
             client_id: client.into(),
             durable_dpop_jkt: Some(jkt),
-            kind: serde_json::from_value(json!(kind))?,
+            kind: kind.as_str().into(),
             origin: (kind == "browser").then_some(value),
             extra: Default::default(),
         },
@@ -909,17 +1365,40 @@ pub(super) fn revoke_delegation(
             if delegation.revision != input.expected_revision {
                 return Err(AuthError::Conflict);
             }
-            let binding:(String,String,String)=connection.query_row("SELECT client_id,binding_kind,binding_value FROM auth_oauth_grants WHERE oauth_grant_id=?1",[input.delegation_id.to_string()],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
+            let binding: (String, String, String) = connection.query_row(
+                "SELECT client_id,binding_kind,binding_value \
+                FROM auth_oauth_grants \
+                WHERE oauth_grant_id=?1",
+                [input.delegation_id.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
             // Clear remembered approval without revoking sibling grants for the
             // same app. The selected grant and its families retire below, once.
-            connection.execute("UPDATE auth_remembered_consent SET decision='declined',revision=revision+1,updated_at=?1 WHERE principal_id=?2 AND client_id=?3 AND binding_kind=?4 AND binding_value=?5",params![now,delegation.principal_id.to_string(),binding.0,binding.1,binding.2])?;
+            connection.execute(
+                "UPDATE auth_remembered_consent \
+                SET decision='declined',revision=revision+1,updated_at=?1 \
+                WHERE principal_id=?2 \
+                AND client_id=?3 AND binding_kind=?4 \
+                AND binding_value=?5",
+                params![
+                    now,
+                    delegation.principal_id.to_string(),
+                    binding.0,
+                    binding.1,
+                    binding.2
+                ],
+            )?;
             let scope = EnforcementScope::Grant(input.delegation_id.to_string());
             let root = Mutation {
                 request_digest: digest(&scope)?,
                 ..identity.clone()
             };
             let work = store.revoke_root_in_transaction(connection, &root, &scope, now)?;
-            let revision:u64=connection.query_row("SELECT revision FROM auth_oauth_grants WHERE oauth_grant_id=?1",[input.delegation_id.to_string()],|row|row.get(0))?;
+            let revision: u64 = connection.query_row(
+                "SELECT revision FROM auth_oauth_grants WHERE oauth_grant_id=?1",
+                [input.delegation_id.to_string()],
+                |row| row.get(0),
+            )?;
             Ok(AuthMutationResult {
                 revision: AuthRevision(revision.into()),
                 enforcement: Some(read_enforcement(connection, &work)?),
@@ -941,7 +1420,17 @@ pub(super) fn read_chain(
         if rotations.len() >= 128 {
             return Err(AuthError::ResourceLimit);
         }
-        let (next,bytes):(String,Vec<u8>)=connection.query_row("SELECT next_key_id,signed_bytes FROM auth_issuer_rotations WHERE previous_key_id=?1 ORDER BY sequence LIMIT 1",[&key],|row|Ok((row.get(0)?,row.get(1)?))).optional()?.ok_or(AuthError::NotFound)?;
+        let (next, bytes): (String, Vec<u8>) = connection
+            .query_row(
+                "SELECT next_key_id,signed_bytes \
+                FROM auth_issuer_rotations \
+                WHERE previous_key_id=?1 \
+                ORDER BY sequence LIMIT 1",
+                [&key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or(AuthError::NotFound)?;
         rotations.push(AuthSignedBlob(bytes.into()));
         key = next;
     }

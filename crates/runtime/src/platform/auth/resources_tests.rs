@@ -1,6 +1,7 @@
 //! Real store and broker resource materialization; registered under phase_two_tests.
 
 use super::*;
+use trellis_runtime_apis::participants::{trellis_health_runtime, trellis_platform};
 
 #[test]
 fn builtin_provider_replay_preserves_independent_roles_and_refuses_disabled_or_retired_identity() {
@@ -98,7 +99,10 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
     use tokio::io::AsyncBufReadExt;
     let f = fixture();
     let seed = URL_SAFE_NO_PAD.encode([41; 32]);
-    let deployment = f.store.initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&seed, NOW).unwrap();
+    let deployment = f
+        .store
+        .initialize_builtin_provider::<trellis_platform::Participant>(&seed, NOW)
+        .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -131,7 +135,9 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
     // No declarations really means no resources; do not invent a shared bucket
     // or skip the same installed-declaration materialization path.
     let health_seed = URL_SAFE_NO_PAD.encode([42; 32]);
-    let health = store.initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>(&health_seed,NOW).unwrap();
+    let health = store
+        .initialize_builtin_provider::<trellis_health_runtime::Participant>(&health_seed, NOW)
+        .unwrap();
     let health_bindings =
         super::super::resources::materialize_native_kv(&store, &nats, &health.deployment_id, NOW)
             .await
@@ -258,8 +264,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         }
     "#;
     use trellis_rs::generated::ParticipantDescriptor;
-    let builtin =
-        trellis_runtime_apis::participants::trellis_platform::Participant::package_evidence();
+    let builtin = trellis_platform::Participant::package_evidence();
     let builtin: PackageEvidence =
         serde_json::from_value(serde_json::to_value(builtin).unwrap()).unwrap();
     let graph = compile_project(
@@ -299,8 +304,8 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         .find(|participant| participant.name() == "Owner")
         .unwrap();
     let create: AuthDeploymentCreateRequest = serde_json::from_value(serde_json::json!({
-        "packageEvidence": package, "participantId":owner.identity().as_str(), "kind":"service", "title":"Resources", "idempotencyKey":ulid::Ulid::new().to_string()
-    })).unwrap();
+    "packageEvidence": package, "participantId":owner.identity().as_str(), "kind":"service", "title":"Resources", "idempotencyKey":ulid::Ulid::new().to_string()
+})).unwrap();
     let deployed = super::super::rpc_deployments::create_deployment(
         &store,
         &mutation(&f.admin, &create),
@@ -309,8 +314,14 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
     )
     .unwrap();
     let provision: AuthInstanceProvisionRequest = serde_json::from_value(serde_json::json!({
-        "deploymentId":deployed.deployment.deployment_id, "identityPublicKey":URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[83;32]).verifying_key().as_bytes()), "title":"Resource owner", "idempotencyKey":ulid::Ulid::new().to_string()
-    })).unwrap();
+            "deploymentId": deployed.deployment.deployment_id,
+            "identityPublicKey": URL_SAFE_NO_PAD.encode(
+                SigningKey::from_bytes(&[83; 32]).verifying_key().as_bytes()
+            ),
+            "title": "Resource owner",
+            "idempotencyKey": ulid::Ulid::new().to_string()
+    }))
+    .unwrap();
     super::super::rpc_deployments::provision_service_instance(
         &store,
         &nats,
@@ -475,7 +486,13 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
                 super::super::rpc_resources::read_resource(connection, &id)
             })
             .unwrap();
-        let input:trellis_runtime_apis::types::AuthResourceRemoveRequest=serde_json::from_value(serde_json::json!({"resourceId":resource.resource_id,"expectedRevision":resource.revision,"idempotencyKey":ulid::Ulid::new().to_string()})).unwrap();
+        let input: trellis_runtime_apis::types::AuthResourceRemoveRequest =
+            serde_json::from_value(serde_json::json!({
+                "resourceId":resource.resource_id,
+                "expectedRevision":resource.revision,
+                "idempotencyKey":ulid::Ulid::new().to_string()
+            }))
+            .unwrap();
         let identity = mutation(&f.admin, &input);
         if name == "files" {
             let original = jetstream
@@ -559,10 +576,18 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         .as_ref()
         .unwrap()
         .starts_with(&format!("{}.other.", jobs.namespace))));
-    let saved_purges:serde_json::Value=store.transaction(|connection| {
-        let encoded:String=connection.query_row("SELECT physical_id FROM auth_resource_removals WHERE json_valid(physical_id) AND json_extract(physical_id,'$.owned.namespace')=?1",[&jobs.namespace],|row|row.get(0))?;
-        Ok(serde_json::from_str(&encoded)?)
-    }).unwrap();
+    let saved_purges: serde_json::Value = store
+        .transaction(|connection| {
+            let encoded: String = connection.query_row(
+                "SELECT physical_id FROM auth_resource_removals \
+                WHERE json_valid(physical_id) \
+                AND json_extract(physical_id,'$.owned.namespace')=?1",
+                [&jobs.namespace],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&encoded)?)
+        })
+        .unwrap();
     let replacement =
         super::super::resources::materialize_native_kv(&store, &nats, &deployment, NOW + 8)
             .await

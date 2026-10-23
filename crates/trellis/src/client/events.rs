@@ -479,16 +479,16 @@ impl<'a> SqliteOutboxStore<'a> {
     pub fn create_schema(connection: &Connection) -> Result<(), EventStoreError> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS trellis_outbox_events (\
-                id TEXT PRIMARY KEY,\
-                subject TEXT NOT NULL,\
-                payload BLOB NOT NULL,\
-                headers TEXT NOT NULL,\
-                event_id TEXT NOT NULL,\
-                event_time TEXT NOT NULL,\
-                status TEXT NOT NULL,\
-                attempts INTEGER NOT NULL DEFAULT 0,\
-                claimed_until BIGINT NOT NULL DEFAULT 0,\
-                last_error TEXT\
+            id TEXT PRIMARY KEY,\
+            subject TEXT NOT NULL,\
+            payload BLOB NOT NULL,\
+            headers TEXT NOT NULL,\
+            event_id TEXT NOT NULL,\
+            event_time TEXT NOT NULL,\
+            status TEXT NOT NULL,\
+            attempts INTEGER NOT NULL DEFAULT 0,\
+            claimed_until BIGINT NOT NULL DEFAULT 0,\
+            last_error TEXT\
             );",
         )?;
         Ok(())
@@ -503,10 +503,10 @@ impl OutboxStore for SqliteOutboxStore<'_> {
         event: &PreparedTrellisEvent,
     ) -> Result<(), EventStoreError> {
         self.connection.execute(
-            "INSERT INTO trellis_outbox_events \
-                (id, subject, payload, headers, event_id, event_time, status, attempts) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0) \
-             ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO trellis_outbox_events (id, subject, payload, headers, \
+            event_id, event_time, status, attempts) \
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0) \
+            ON CONFLICT(id) DO NOTHING",
             params![
                 id,
                 event.subject(),
@@ -524,12 +524,21 @@ impl OutboxStore for SqliteOutboxStore<'_> {
         let row = self
             .connection
             .query_row(
-                "UPDATE trellis_outbox_events SET status = ?1, attempts = attempts + 1, \
-                 claimed_until = unixepoch() + ?2 WHERE id = (\
-                 SELECT id FROM trellis_outbox_events WHERE status = ?3 OR \
-                 (status = ?1 AND claimed_until <= unixepoch()) ORDER BY rowid LIMIT 1) \
-                 RETURNING id, subject, payload, headers, event_id, event_time, attempts, last_error",
-                params![OUTBOX_STATUS_IN_FLIGHT, OUTBOX_CLAIM_SECONDS, OUTBOX_STATUS_PENDING],
+                "UPDATE trellis_outbox_events \
+                SET status = ?1, attempts = attempts + 1, claimed_until = unixepoch() \
+                + ?2 \
+                WHERE id = (SELECT id \
+                FROM trellis_outbox_events \
+                WHERE status = ?3 OR (status = ?1 \
+                AND claimed_until <= unixepoch()) \
+                ORDER BY rowid LIMIT 1) \
+                RETURNING id, subject, payload, headers, event_id, event_time, \
+                attempts, last_error",
+                params![
+                    OUTBOX_STATUS_IN_FLIGHT,
+                    OUTBOX_CLAIM_SECONDS,
+                    OUTBOX_STATUS_PENDING
+                ],
                 |row| {
                     let id: String = row.get(0)?;
                     let attempts: u32 = row.get(6)?;
@@ -559,8 +568,15 @@ impl OutboxStore for SqliteOutboxStore<'_> {
         record: &OutboxEventRecord,
     ) -> Result<bool, EventStoreError> {
         Ok(self.connection.execute(
-            "UPDATE trellis_outbox_events SET status = ?1 WHERE id = ?2 AND status = ?3 AND attempts = ?4",
-            params![OUTBOX_STATUS_PUBLISHED, record.id, OUTBOX_STATUS_IN_FLIGHT, record.attempts],
+            "UPDATE trellis_outbox_events \
+            SET status = ?1 WHERE id = ?2 \
+            AND status = ?3 AND attempts = ?4",
+            params![
+                OUTBOX_STATUS_PUBLISHED,
+                record.id,
+                OUTBOX_STATUS_IN_FLIGHT,
+                record.attempts
+            ],
         )? == 1)
     }
 
@@ -570,8 +586,17 @@ impl OutboxStore for SqliteOutboxStore<'_> {
         error: &str,
     ) -> Result<bool, EventStoreError> {
         Ok(self.connection.execute(
-            "UPDATE trellis_outbox_events SET status = ?1, last_error = ?2 WHERE id = ?3 AND status = ?4 AND attempts = ?5",
-            params![OUTBOX_STATUS_PENDING, error, record.id, OUTBOX_STATUS_IN_FLIGHT, record.attempts],
+            "UPDATE trellis_outbox_events \
+            SET status = ?1, last_error = ?2 \
+            WHERE id = ?3 AND status = ?4 \
+            AND attempts = ?5",
+            params![
+                OUTBOX_STATUS_PENDING,
+                error,
+                record.id,
+                OUTBOX_STATUS_IN_FLIGHT,
+                record.attempts
+            ],
         )? == 1)
     }
 }
@@ -594,7 +619,7 @@ impl<'a> SqliteInboxStore<'a> {
     pub fn create_schema(connection: &Connection) -> Result<(), EventStoreError> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS trellis_inbox_events (\
-                event_id TEXT PRIMARY KEY\
+            event_id TEXT PRIMARY KEY\
             );",
         )?;
         Ok(())
@@ -605,7 +630,9 @@ impl<'a> SqliteInboxStore<'a> {
 impl InboxStore for SqliteInboxStore<'_> {
     async fn record_received(&mut self, event_id: &str) -> Result<InboxReceipt, EventStoreError> {
         let inserted = self.connection.execute(
-            "INSERT INTO trellis_inbox_events (event_id) VALUES (?1) ON CONFLICT(event_id) DO NOTHING",
+            "INSERT INTO trellis_inbox_events (event_id) \
+            VALUES (?1) ON CONFLICT(event_id) \
+            DO NOTHING",
             params![event_id],
         )?;
         if inserted == 0 {
@@ -642,16 +669,16 @@ impl<'a> PostgresOutboxStore<'a> {
     pub fn create_schema(client: &mut PostgresClient) -> Result<(), EventStoreError> {
         client.batch_execute(
             "CREATE TABLE IF NOT EXISTS trellis_outbox_events (\
-                id TEXT PRIMARY KEY,\
-                subject TEXT NOT NULL,\
-                payload BYTEA NOT NULL,\
-                headers TEXT NOT NULL,\
-                event_id TEXT NOT NULL,\
-                event_time TEXT NOT NULL,\
-                status TEXT NOT NULL,\
-                attempts INTEGER NOT NULL DEFAULT 0,\
-                claimed_until BIGINT NOT NULL DEFAULT 0,\
-                last_error TEXT\
+            id TEXT PRIMARY KEY,\
+            subject TEXT NOT NULL,\
+            payload BYTEA NOT NULL,\
+            headers TEXT NOT NULL,\
+            event_id TEXT NOT NULL,\
+            event_time TEXT NOT NULL,\
+            status TEXT NOT NULL,\
+            attempts INTEGER NOT NULL DEFAULT 0,\
+            claimed_until BIGINT NOT NULL DEFAULT 0,\
+            last_error TEXT\
             );",
         )?;
         Ok(())
@@ -666,10 +693,10 @@ impl OutboxStore for PostgresOutboxStore<'_> {
         event: &PreparedTrellisEvent,
     ) -> Result<(), EventStoreError> {
         self.client.execute(
-            "INSERT INTO trellis_outbox_events \
-                (id, subject, payload, headers, event_id, event_time, status, attempts) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 0) \
-             ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO trellis_outbox_events (id, subject, payload, headers, \
+            event_id, event_time, status, attempts) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 0) \
+            ON CONFLICT(id) DO NOTHING",
             &[
                 &id,
                 &event.subject(),
@@ -685,12 +712,18 @@ impl OutboxStore for PostgresOutboxStore<'_> {
 
     async fn claim_next(&mut self) -> Result<Option<OutboxEventRecord>, EventStoreError> {
         let row = self.client.query_opt(
-            "UPDATE trellis_outbox_events SET status = $1, attempts = attempts + 1, \
-             claimed_until = EXTRACT(EPOCH FROM clock_timestamp())::bigint + $2 WHERE id = (\
-             SELECT id FROM trellis_outbox_events WHERE status = $3 OR \
-             (status = $1 AND claimed_until <= EXTRACT(EPOCH FROM clock_timestamp())::bigint) \
-             ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) \
-             RETURNING id, subject, payload, headers, event_id, event_time, attempts, last_error",
+            "UPDATE trellis_outbox_events \
+            SET status = $1, attempts = attempts + 1, claimed_until = \
+            EXTRACT(EPOCH \
+            FROM clock_timestamp())::bigint + $2 \
+            WHERE id = (SELECT id \
+            FROM trellis_outbox_events \
+            WHERE status = $3 OR (status = $1 \
+            AND claimed_until <= EXTRACT(EPOCH \
+            FROM clock_timestamp())::bigint) \
+            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) \
+            RETURNING id, subject, payload, headers, event_id, event_time, \
+            attempts, last_error",
             &[
                 &OUTBOX_STATUS_IN_FLIGHT,
                 &OUTBOX_CLAIM_SECONDS,
@@ -724,8 +757,15 @@ impl OutboxStore for PostgresOutboxStore<'_> {
         record: &OutboxEventRecord,
     ) -> Result<bool, EventStoreError> {
         Ok(self.client.execute(
-            "UPDATE trellis_outbox_events SET status = $1 WHERE id = $2 AND status = $3 AND attempts = $4",
-            &[&OUTBOX_STATUS_PUBLISHED, &record.id, &OUTBOX_STATUS_IN_FLIGHT, &(record.attempts as i32)],
+            "UPDATE trellis_outbox_events \
+            SET status = $1 WHERE id = $2 \
+            AND status = $3 AND attempts = $4",
+            &[
+                &OUTBOX_STATUS_PUBLISHED,
+                &record.id,
+                &OUTBOX_STATUS_IN_FLIGHT,
+                &(record.attempts as i32),
+            ],
         )? == 1)
     }
 
@@ -735,8 +775,17 @@ impl OutboxStore for PostgresOutboxStore<'_> {
         error: &str,
     ) -> Result<bool, EventStoreError> {
         Ok(self.client.execute(
-            "UPDATE trellis_outbox_events SET status = $1, last_error = $2 WHERE id = $3 AND status = $4 AND attempts = $5",
-            &[&OUTBOX_STATUS_PENDING, &error, &record.id, &OUTBOX_STATUS_IN_FLIGHT, &(record.attempts as i32)],
+            "UPDATE trellis_outbox_events \
+            SET status = $1, last_error = $2 \
+            WHERE id = $3 AND status = $4 \
+            AND attempts = $5",
+            &[
+                &OUTBOX_STATUS_PENDING,
+                &error,
+                &record.id,
+                &OUTBOX_STATUS_IN_FLIGHT,
+                &(record.attempts as i32),
+            ],
         )? == 1)
     }
 }
@@ -767,7 +816,7 @@ impl<'a> PostgresInboxStore<'a> {
     pub fn create_schema(client: &mut PostgresClient) -> Result<(), EventStoreError> {
         client.batch_execute(
             "CREATE TABLE IF NOT EXISTS trellis_inbox_events (\
-                event_id TEXT PRIMARY KEY\
+            event_id TEXT PRIMARY KEY\
             );",
         )?;
         Ok(())
@@ -778,7 +827,9 @@ impl<'a> PostgresInboxStore<'a> {
 impl InboxStore for PostgresInboxStore<'_> {
     async fn record_received(&mut self, event_id: &str) -> Result<InboxReceipt, EventStoreError> {
         let inserted = self.client.execute(
-            "INSERT INTO trellis_inbox_events (event_id) VALUES ($1) ON CONFLICT(event_id) DO NOTHING",
+            "INSERT INTO trellis_inbox_events (event_id) \
+            VALUES ($1) ON CONFLICT(event_id) \
+            DO NOTHING",
             &[&event_id],
         )?;
         if inserted == 0 {

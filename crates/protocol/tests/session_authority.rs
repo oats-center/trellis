@@ -604,33 +604,40 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
         .join(ulid::Ulid::new().to_string());
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("response.json");
-    fs::write(&path, serde_json::to_vec(&json!({
-                "authority": signed_provider,
-                "providerSeed": URL_SAFE_NO_PAD.encode(provider_key.to_bytes()),
-        "authorityVerification": {
-            "issuer": pinned,
-            "trellisInstanceId": caller.unsigned.trellis_instance_id,
-            "audienceNatsAccount": caller.unsigned.audience_nats_account,
-            "policy": policy,
-            "purpose": "live",
-            "revocationCutoff": null
-        },
-        "verification": {
-            "response": response,
-            "proof": proof,
-            "certificate": certificate,
-            "certificateIssuer": pinned,
-            "pendingRequest": request,
-            "pendingRequestDigest": URL_SAFE_NO_PAD.encode(pending_digest),
-            "action": action,
-            "expectedDeploymentId": certificate.deployment_id,
-            "receivedSubject": response.subject,
-            "policy": policy,
-            "knownRevoked": false
-        },
-        "payload": String::from_utf8(payload.to_vec()).unwrap(),
-        "digest": URL_SAFE_NO_PAD.encode(trellis_protocol::session_response_signing_digest(&response, payload).unwrap())
-    })).unwrap()).unwrap();
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "authority": signed_provider,
+            "providerSeed": URL_SAFE_NO_PAD.encode(provider_key.to_bytes()),
+            "authorityVerification": {
+                "issuer": pinned,
+                "trellisInstanceId": caller.unsigned.trellis_instance_id,
+                "audienceNatsAccount": caller.unsigned.audience_nats_account,
+                "policy": policy,
+                "purpose": "live",
+                "revocationCutoff": null
+            },
+            "verification": {
+                "response": response,
+                "proof": proof,
+                "certificate": certificate,
+                "certificateIssuer": pinned,
+                "pendingRequest": request,
+                "pendingRequestDigest": URL_SAFE_NO_PAD.encode(pending_digest),
+                "action": action,
+                "expectedDeploymentId": certificate.deployment_id,
+                "receivedSubject": response.subject,
+                "policy": policy,
+                "knownRevoked": false
+            },
+            "payload": String::from_utf8(payload.to_vec()).unwrap(),
+            "digest": URL_SAFE_NO_PAD.encode(
+                    trellis_protocol::session_response_signing_digest(&response, payload).unwrap(),
+                )
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let output = Command::new("node")
         .current_dir(&root)
         .arg("crates/protocol/tests/session_response_wasm.ts")

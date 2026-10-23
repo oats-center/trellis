@@ -245,9 +245,6 @@ test("Rust device companion renews admitted authority and resumes after restart 
     {
       authorization: {
         contextLifetimeSeconds: 106,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 46,
       },
     },
   );

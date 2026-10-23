@@ -186,10 +186,18 @@ impl NatsJobWaiter {
                                 message = updates.next() => message?,
                                 message = lifecycle.next() => {
                                     let message = message?;
-                                    let event: JobEvent = match serde_json::from_slice(&message.payload) {
-                                        Ok(event) => event,
-                                        Err(error) => return Some((Err(jobs_message(format!("decode job lifecycle event: {error}"))), (lifecycle, updates, attempt, sequence, true))),
-                                    };
+                                    let event: JobEvent =
+                                        match serde_json::from_slice(&message.payload) {
+                                            Ok(event) => event,
+                                            Err(error) => {
+                                                return Some((
+                                                    Err(jobs_message(format!(
+                                                        "decode job lifecycle event: {error}"
+                                                    ))),
+                                                    (lifecycle, updates, attempt, sequence, true),
+                                                ))
+                                            }
+                                        };
                                     if event.job_id != job_id || event.job_type != queue_type {
                                         continue;
                                     }
@@ -197,7 +205,16 @@ impl NatsJobWaiter {
                                         attempt = event.tries;
                                         sequence = 0;
                                     }
-                                    if matches!(event.event_type, JobEventType::Completed | JobEventType::Failed | JobEventType::Cancelled | JobEventType::Expired | JobEventType::Skipped | JobEventType::Dead | JobEventType::Dismissed) {
+                                    if matches!(
+                                        event.event_type,
+                                        JobEventType::Completed
+                                            | JobEventType::Failed
+                                            | JobEventType::Cancelled
+                                            | JobEventType::Expired
+                                            | JobEventType::Skipped
+                                            | JobEventType::Dead
+                                            | JobEventType::Dismissed
+                                    ) {
                                         terminal = true;
                                     }
                                     continue;

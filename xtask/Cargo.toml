@@ -10,6 +10,7 @@ miette.workspace = true
 serde_json.workspace = true
 toml_edit = { workspace = true }
 semver.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 trellis-cli = { path = "../crates/cli", default-features = false }
 trellis-codegen-ts = { path = "../crates/codegen-ts" }

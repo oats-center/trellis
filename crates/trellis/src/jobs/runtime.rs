@@ -186,8 +186,9 @@ impl JobsRuntime {
                         if consecutive_failures >= FILTERED_REOPEN_MAX_FAILURES {
                             return Some((
                                 Err(format!(
-                                    "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' failed {consecutive_failures} consecutive times: {stream_error}"
-                                )),
+                            "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' failed \
+                            {consecutive_failures} consecutive times: {stream_error}"
+                        )),
                                 (None, consecutive_failures),
                             ));
                         }
@@ -220,10 +221,11 @@ impl JobsRuntime {
                                     }
                                     if consecutive_failures >= FILTERED_REOPEN_MAX_FAILURES {
                                         return Some((
-                                            Err(format!(
-                                                "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' could not reopen after {consecutive_failures} consecutive failures: {error}"
-                                            )),
-                                            (None, consecutive_failures),
+                                    Err(format!(
+                                        "Jobs pull consumer '{consumer_name}' on stream '{stream_name}' could \
+                                        not reopen after {consecutive_failures} consecutive failures: {error}"
+                                    )),
+                                    (None, consecutive_failures),
                                         ));
                                     }
                                     tokio::time::sleep(FILTERED_REOPEN_DELAY).await;

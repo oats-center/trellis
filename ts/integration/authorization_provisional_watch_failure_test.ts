@@ -159,9 +159,6 @@ test("failed provisional mirror preserves live delivery and real revocation enfo
     {
       authorization: {
         contextLifetimeSeconds: 60,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 26,
         allowedClockSkewSeconds: 2,
       },
       interruptibleNativeProxy: true,

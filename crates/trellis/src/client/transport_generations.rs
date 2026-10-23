@@ -2865,7 +2865,8 @@ mod tests {
         }
         assert!(
             iterations <= 1,
-            "adoption wait must be paced by the retry interval, not self-woken; ran {iterations} steps"
+            "adoption wait must be paced by the retry interval, not self-woken; ran \
+            {iterations} steps"
         );
 
         // A real condition change resolves the wait immediately.

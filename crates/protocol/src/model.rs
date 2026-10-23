@@ -100,6 +100,13 @@ impl Timestamp {
             parsed.to_offset(time::UtcOffset::UTC).format(&Rfc3339)?,
         ))
     }
+    /// The canonical timestamp for whole Unix seconds.
+    pub fn from_unix_seconds(seconds: i64) -> Result<Self, TimestampError> {
+        use time::format_description::well_known::Rfc3339;
+        let value = time::OffsetDateTime::from_unix_timestamp(seconds)
+            .map_err(|_| TimestampError::Range)?;
+        Ok(Self(value.format(&Rfc3339)?))
+    }
     /// Borrow the canonical wire string.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -146,6 +153,9 @@ pub enum TimestampError {
     /// Leap seconds cannot be represented without loss.
     #[error("leap seconds are not supported in timestamps")]
     LeapSecond,
+    /// The instant is outside the representable calendar range.
+    #[error("timestamp is outside the supported range")]
+    Range,
 }
 
 /// Validated uppercase canonical ULID.

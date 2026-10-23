@@ -6026,11 +6026,7 @@ version = "0.100.0-rc.3"
 dependencies = [
  "base64 0.22.1",
  "rand 0.10.1",
- "serde",
- "serde_json",
  "tempfile",
- "thiserror 2.0.18",
- "ulid",
 ]
 
 [[package]]
@@ -7098,6 +7094,7 @@ dependencies = [
  "miette",
  "semver",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
  "toml_edit",

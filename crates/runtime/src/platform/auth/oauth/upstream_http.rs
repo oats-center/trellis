@@ -18,10 +18,7 @@ use openidconnect::{
     PkceCodeVerifier, Scope,
 };
 use serde_json::json;
-use std::{
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Arc;
 
 pub(super) async fn providers(State(engine): State<Arc<OAuthEngine>>) -> Response {
     let result = (|| {
@@ -32,8 +29,22 @@ pub(super) async fn providers(State(engine): State<Arc<OAuthEngine>>) -> Respons
             .connection
             .lock()
             .map_err(|_| super::super::AuthError::Unavailable)?;
-        let mut statement=connection.prepare("SELECT provider_id,display_name FROM auth_oidc_providers WHERE state='active' ORDER BY display_name,provider_id")?;
-        let providers=statement.query_map([],|row|Ok(json!({"providerId":row.get::<_,String>(0)?,"displayName":row.get::<_,String>(1)?})))?.collect::<Result<Vec<_>,_>>()?;
+        let mut statement = connection.prepare(
+            "SELECT provider_id,display_name \
+            FROM auth_oidc_providers \
+            WHERE state='active' \
+            ORDER BY display_name,provider_id",
+        )?;
+        let providers = statement
+            .query_map([], |row| {
+                Ok(json!({
+                    "providerId":row.get::<_,
+                    String>(0)?,
+                    "displayName":row.get::<_,
+                    String>(1)?
+                }))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok::<_, super::super::AuthError>(providers)
     })();
     match result {
@@ -61,12 +72,7 @@ pub(super) async fn start(
     ) else {
         return error(ErrorCode::AccessDenied);
     };
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|time| time.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let session = match authority.portal_session_identity(&cookie, &csrf, now) {
         Ok(session) => session,
@@ -218,12 +224,7 @@ pub(super) async fn callback(
     ) else {
         return error(ErrorCode::AccessDenied);
     };
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|time| time.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     let authority = &engine.server.store().authority;
     let session = match authority.portal_session_identity(&cookie, &csrf, now) {
         Ok(session) => session,
@@ -330,12 +331,7 @@ pub(super) async fn callback(
             &authority.settings.upstream_tls_roots_pem,
         )
         .await;
-    let Ok(now) = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|time| time.as_secs() as i64)
-    else {
-        return error(ErrorCode::ServerError);
-    };
+    let now = crate::clock::unix_now();
     if flow.account_token.is_some() {
         return match super::account::complete_link(
             engine.server.store(),

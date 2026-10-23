@@ -159,6 +159,7 @@ impl SqliteAuthorizationStore {
                         };
                         self.publish_verification_material(material, kind, &key)
                             .await?;
+                        Ok(())
                     }
                     "session_revoke" => {
                         let session = effect.payload["authorizationSessionId"]
@@ -195,6 +196,7 @@ impl SqliteAuthorizationStore {
                                 }
                             }
                         }
+                        Ok(())
                     }
                     "kick" => {
                         close_attachment(
@@ -209,11 +211,10 @@ impl SqliteAuthorizationStore {
                                 .as_str()
                                 .ok_or(AuthError::Denied)?,
                         )
-                        .await?;
+                        .await
                     }
-                    _ => return Err(AuthError::Invalid("unknown committed effect".into())),
+                    _ => Err(AuthError::Invalid("unknown committed effect".into())),
                 }
-                Ok::<(), AuthError>(())
             }
             .await;
             // Broker waits consume this batch's claim lifetime, too.
@@ -222,7 +223,13 @@ impl SqliteAuthorizationStore {
             match result {
                 Ok(()) => completed += usize::from(self.complete_effect(&effect, settled_at)?),
                 Err(error) => {
-                    tracing::warn!(action_id=%effect.action_id,kind=%effect.kind,attempt=effect.attempts,error=%error,"Auth effect remains pending");
+                    tracing::warn!(
+                        action_id=%effect.action_id,
+                        kind=%effect.kind,
+                        attempt=effect.attempts,
+                        error=%error,
+                        "Auth effect remains pending"
+                    );
                     self.retry_effect(&effect, settled_at)?;
                     failure = Some(error);
                 }

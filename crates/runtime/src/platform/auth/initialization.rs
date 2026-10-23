@@ -181,25 +181,82 @@ impl SqliteAuthorizationStore {
                     // Use exactly the API ownership set used by production
                     // built-in provider initialization, never all accepted APIs.
                     use trellis_rs::generated::ParticipantDescriptor;
-                    use trellis_runtime_apis::participants::{trellis_platform, trellis_health_runtime, trellis_jobs_runtime, trellis_events_runtime};
+                    use trellis_runtime_apis::participants::{
+                        trellis_events_runtime, trellis_health_runtime, trellis_jobs_runtime,
+                        trellis_platform,
+                    };
                     for (apis, evidence) in [
-                        (trellis_platform::Participant::IMPLEMENTED_API_IDS, trellis_platform::Participant::package_evidence()),
-                        (trellis_health_runtime::Participant::IMPLEMENTED_API_IDS, trellis_health_runtime::Participant::package_evidence()),
-                        (trellis_jobs_runtime::Participant::IMPLEMENTED_API_IDS, trellis_jobs_runtime::Participant::package_evidence()),
-                        (trellis_events_runtime::Participant::IMPLEMENTED_API_IDS, trellis_events_runtime::Participant::package_evidence()),
+                        (
+                            trellis_platform::Participant::IMPLEMENTED_API_IDS,
+                            trellis_platform::Participant::package_evidence(),
+                        ),
+                        (
+                            trellis_health_runtime::Participant::IMPLEMENTED_API_IDS,
+                            trellis_health_runtime::Participant::package_evidence(),
+                        ),
+                        (
+                            trellis_jobs_runtime::Participant::IMPLEMENTED_API_IDS,
+                            trellis_jobs_runtime::Participant::package_evidence(),
+                        ),
+                        (
+                            trellis_events_runtime::Participant::IMPLEMENTED_API_IDS,
+                            trellis_events_runtime::Participant::package_evidence(),
+                        ),
                     ] {
                         for api in apis {
-                            let accepted:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_accepted_apis WHERE api_id=?1)",[api],|row|row.get(0))?;
+                            let accepted: bool = connection.query_row(
+                                "SELECT EXISTS(SELECT 1 FROM auth_accepted_apis WHERE api_id=?1)",
+                                [api],
+                                |row| row.get(0),
+                            )?;
                             if !accepted {
-                                let review=self.review_api_in_transaction(connection,&principal,serde_json::from_value(serde_json::to_value(evidence)?)?,api,now)?;
-                                let acceptance=super::catalog::ApiAcceptance {review_id:review.review_id,reviewed_digest:review.definition_digest,force:false,acknowledge_breakage:false,confirm_consent_meanings:false,materially_changed:Default::default(),policy_edits:Default::default()};
-                                self.accept_api_in_transaction(connection,&identity,&acceptance,now)?;
+                                let review = self.review_api_in_transaction(
+                                    connection,
+                                    &principal,
+                                    serde_json::from_value(serde_json::to_value(evidence)?)?,
+                                    api,
+                                    now,
+                                )?;
+                                let acceptance = super::catalog::ApiAcceptance {
+                                    review_id: review.review_id,
+                                    reviewed_digest: review.definition_digest,
+                                    force: false,
+                                    acknowledge_breakage: false,
+                                    confirm_consent_meanings: false,
+                                    materially_changed: Default::default(),
+                                    policy_edits: Default::default(),
+                                };
+                                self.accept_api_in_transaction(
+                                    connection,
+                                    &identity,
+                                    &acceptance,
+                                    now,
+                                )?;
                             }
-                            let mut statement=connection.prepare("SELECT capability_id FROM auth_capability_identities WHERE api_id=?1 AND state='active' ORDER BY capability_id")?;
-                            let capabilities=statement.query_map([api],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+                            let mut statement = connection.prepare(
+                                "SELECT capability_id \
+                                FROM auth_capability_identities \
+                                WHERE api_id=?1 AND state='active' \
+                                ORDER BY capability_id",
+                            )?;
+                            let capabilities = statement
+                                .query_map([api], |row| row.get::<_, String>(0))?
+                                .collect::<rusqlite::Result<Vec<_>>>()?;
                             for capability_id in capabilities {
-                                if capability_id == super::deployments::SELF_HEALTH_CAPABILITY { continue; }
-                                super::policy::apply_policy_in_transaction(connection,&identity,&super::PolicyMutation::CapabilityGrant {principal_id:principal.clone(),capability_id,expected_revision:0,expires_at:None},now)?;
+                                if capability_id == super::deployments::SELF_HEALTH_CAPABILITY {
+                                    continue;
+                                }
+                                super::policy::apply_policy_in_transaction(
+                                    connection,
+                                    &identity,
+                                    &super::PolicyMutation::CapabilityGrant {
+                                        principal_id: principal.clone(),
+                                        capability_id,
+                                        expected_revision: 0,
+                                        expires_at: None,
+                                    },
+                                    now,
+                                )?;
                             }
                         }
                     }
@@ -223,12 +280,21 @@ impl SqliteAuthorizationStore {
                     let setup_response = if password.is_none() {
                         match setup_storage {
                             Some(storage) => {
-                                let response = super::oauth::account::create_local_reset_in_transaction(connection, &principal, now)?;
-                                Some(storage.encode("administrator-setup", &principal, &response).map_err(|_| AuthError::Unavailable)?)
+                                let response =
+                                    super::oauth::account::create_local_reset_in_transaction(
+                                        connection, &principal, now,
+                                    )?;
+                                Some(
+                                    storage
+                                        .encode("administrator-setup", &principal, &response)
+                                        .map_err(|_| AuthError::Unavailable)?,
+                                )
                             }
                             None => None,
                         }
-                    } else { None };
+                    } else {
+                        None
+                    };
                     Ok(InitializationResult {
                         principal_id: principal.clone(),
                         password_hash,
@@ -278,8 +344,13 @@ impl super::OAuthStorage {
             now,
         )?;
         let url = initialized.setup_response.as_deref().map(|sealed| {
-            let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse = self.decode("administrator-setup", &initialized.principal_id, sealed).map_err(|_| AuthError::Unavailable)?;
-            Ok::<_, AuthError>(format!("{}/account/reset?token={}", self.authority.settings.oauth_origin, response.token))
+            let response: trellis_runtime_apis::__types::trellis::AuthPasswordResetCreateResponse =
+                self.decode("administrator-setup", &initialized.principal_id, sealed)
+                    .map_err(|_| AuthError::Unavailable)?;
+            Ok::<_, AuthError>(format!(
+                "{}/account/reset?token={}",
+                self.authority.settings.oauth_origin, response.token
+            ))
         }).transpose()?;
         Ok((initialized.principal_id, url))
     }
@@ -294,7 +365,10 @@ impl super::OAuthStorage {
         self.authority.transaction(|connection| {
             let (principal, password_hash): (String, Option<String>) = connection
                 .query_row(
-                    "SELECT a.principal_id, c.password_hash FROM auth_bootstrap_administrator a JOIN auth_local_credentials c ON c.principal_id=a.principal_id WHERE a.singleton=1",
+                    "SELECT a.principal_id, c.password_hash \
+                    FROM auth_bootstrap_administrator a \
+                    JOIN auth_local_credentials c ON c.principal_id=a.principal_id \
+                    WHERE a.singleton=1",
                     [],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
@@ -341,6 +415,7 @@ mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use oauth_as::{client::ClientId, store::Storage};
     use std::sync::Arc;
+    use trellis_runtime_apis::participants::trellis_platform;
 
     #[tokio::test]
     async fn seeded_clients_authenticate_and_preserve_operator_changes_on_reopen() {
@@ -359,18 +434,17 @@ mod tests {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
             }
         }
-        let config:RuntimeConfig=serde_json::from_value(serde_json::json!({
+        let config: RuntimeConfig = serde_json::from_value(serde_json::json!({
             "event_session_seed_file": directory.path().join("session.seed"),
             "auth":{
                 "instance_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV", "oauth_storage_key_file":sealing,
                 "oauth":{"origin":"http://localhost:3001","bind_address":"127.0.0.1","port":3001,
                     "transport":{"mode":"loopback_development"}},
                 "authorization":{"issuer_signing_seed_file":issuer,"context_lifetime_seconds":300,
-                    "refresh_lead_seconds":60,"refresh_jitter_seconds":15,"minimum_context_lifetime_seconds":76,
-                    "maximum_bootstrap_jwt_lifetime_seconds":3600,"allowed_clock_skew_seconds":30,
-                    "maximum_context_bytes":16384,"maximum_permissions":4096,"context_bucket":"trellis_authorization_contexts","registry_replicas":1}
+                    "allowed_clock_skew_seconds":30}
             }
-        })).unwrap();
+        }))
+        .unwrap();
         let database = SqliteStore::new(
             SubsystemName::Platform,
             SqliteStorageConfig {
@@ -422,7 +496,7 @@ mod tests {
         )
         .unwrap();
         let provider = store
-            .initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&provider_seed, 1000)
+            .initialize_builtin_provider::<trellis_platform::Participant>(&provider_seed, 1000)
             .unwrap();
         let health_grant = super::super::PolicyMutation::CapabilityGrant {
             principal_id: principal.clone(),
@@ -529,7 +603,7 @@ mod tests {
         )
         .unwrap();
         let reopened_provider = store
-            .initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&reopened_seed, 1003)
+            .initialize_builtin_provider::<trellis_platform::Participant>(&reopened_seed, 1003)
             .unwrap();
         assert_eq!(reopened_provider.identity_key_id, provider.identity_key_id);
         assert_eq!(reopened_provider.deployment_id, provider.deployment_id);

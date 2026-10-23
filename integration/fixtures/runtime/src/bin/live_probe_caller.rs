@@ -140,7 +140,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     println!(
-        "LIVE_PROBE_CALLER_RESULT {{\"busyFrames\":{},\"quietFrames\":1,\"busyStarts\":{},\"busyCleanups\":{},\"busyActive\":{},\"busyEmitted\":{},\"quietStarts\":{},\"quietCleanups\":{},\"quietActive\":{},\"quietEmitted\":{}}}",
+        "LIVE_PROBE_CALLER_RESULT {{\"busyFrames\":{},\"quietFrames\":1,\
+        \"busyStarts\":{},\"busyCleanups\":{},\"busyActive\":{},\
+        \"busyEmitted\":{},\"quietStarts\":{},\"quietCleanups\":{},\
+        \"quietActive\":{},\"quietEmitted\":{}}}",
         BUSY_TOTAL,
         busy_status.starts.0,
         busy_status.cleanups.0,

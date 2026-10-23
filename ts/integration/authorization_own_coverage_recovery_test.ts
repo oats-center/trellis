@@ -475,9 +475,6 @@ for (const scenario of ["outage", "expiry", "cancelled-renewal"] as const) {
           ? {
               authorization: {
                 contextLifetimeSeconds: 42,
-                refreshLeadSeconds: 7,
-                refreshJitterSeconds: 0,
-                minimumContextLifetimeSeconds: 16,
                 allowedClockSkewSeconds: 2,
               },
             }
@@ -623,9 +620,6 @@ test("a granted optional RPC waits for coverage rather than being classified as 
       interruptibleNativeProxy: true,
       authorization: {
         contextLifetimeSeconds: 60,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 26,
         allowedClockSkewSeconds: 2,
       },
     },

@@ -663,8 +663,16 @@ mod tests {
 
     #[test]
     fn canonical_request_digest_removes_only_signature() -> Result<(), ProtocolError> {
-        let first = json!({"requestId":"req_1","proof":{"format":SESSION_PROOF_FORMAT_V1,"signature":"first"},"nullable":null});
-        let second = json!({"nullable":null,"proof":{"signature":"second","format":SESSION_PROOF_FORMAT_V1},"requestId":"req_1"});
+        let first = json!({
+            "requestId":"req_1",
+            "proof": {"format":SESSION_PROOF_FORMAT_V1,"signature":"first"},
+            "nullable":null
+        });
+        let second = json!({
+            "nullable":null,
+            "proof": {"signature":"second","format":SESSION_PROOF_FORMAT_V1},
+            "requestId":"req_1"
+        });
         assert_eq!(
             session_proof_request_digest(&first)?,
             session_proof_request_digest(&second)?
@@ -680,7 +688,13 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_request_integers_and_weak_keys() {
-        let unsafe_request = json!({"proof":{"format":SESSION_PROOF_FORMAT_V1,"signature":encode_base64url(&[0;64])},"nested":{"counter":9_007_199_254_740_992_u64}});
+        let unsafe_request = json!({
+            "proof": {
+                "format":SESSION_PROOF_FORMAT_V1,
+                "signature":encode_base64url(&[0;64])
+                     },
+            "nested": {"counter":9_007_199_254_740_992_u64}
+        });
         assert!(matches!(
             session_proof_request_digest(&unsafe_request),
             Err(ProtocolError::SessionProof {

@@ -215,7 +215,12 @@ pub(crate) async fn install_prepared_authorization(
     let candidate = tokio::select! {
         biased;
         cause = runtime.generations.wait_terminal() => return Err(cause.client_error()),
-        result = read_own_context(&runtime.contexts, &runtime.auth, lease.nats(), Duration::from_secs(10)) => result?,
+        result = read_own_context(
+            &runtime.contexts,
+            &runtime.auth,
+            lease.nats(),
+            Duration::from_secs(10)
+        ) => result?,
     };
     drop(lease);
     let preparation = tokio::select! {
@@ -261,7 +266,12 @@ pub(crate) fn spawn_authorization_context_refresh_task(
                 _ = runtime.contexts.wait_refresh_request() => {},
                 _ = tokio::time::sleep(delay) => {},
                 result = changes.recv() => {
-                    if matches!(result, Err(tokio::sync::broadcast::error::RecvError::Closed)) { return; }
+                    if matches!(
+                        result,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed)
+                    ) {
+                        return;
+                    }
                     if let Ok(authority) = runtime.contexts.owner.own_authority() {
                         if runtime.contexts.owner.current_trust().is_ok_and(|trust| {
                             trust.issuer.key_id == authority.authority().issuer_key_id

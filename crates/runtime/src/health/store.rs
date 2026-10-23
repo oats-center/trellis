@@ -604,7 +604,9 @@ impl HealthStore {
             [cutoff_ns],
         )?;
         let historical_changes = transaction.execute(
-            "DELETE FROM health_status_intervals WHERE ended_at_ns IS NOT NULL AND ended_at_ns < ?1",
+            "DELETE FROM health_status_intervals \
+            WHERE ended_at_ns IS NOT NULL \
+            AND ended_at_ns < ?1",
             [cutoff_ns],
         )? + transaction.execute(
             "DELETE FROM health_metric_buckets WHERE bucket_start_ns < ?1",

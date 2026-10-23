@@ -51,12 +51,20 @@ impl SqliteAuthorizationStore {
         resource_id: &str,
     ) -> Result<StateDeclaration, AuthError> {
         self.transaction(|connection| {
-            let declaration: Option<(String,String,String)> = connection.query_row(
-                "SELECT commitment_json,physical_id,allocation_id FROM auth_resources WHERE resource_id=?1 AND kind='state' AND state='ready'",
-                [resource_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
-            ).optional()?;
+            let declaration: Option<(String, String, String)> = connection
+                .query_row(
+                    "SELECT commitment_json,physical_id,allocation_id \
+                    FROM auth_resources \
+                    WHERE resource_id=?1 \
+                    AND kind='state' AND state='ready'",
+                    [resource_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
             let (commitment, physical, allocation) = declaration.ok_or(AuthError::NotFound)?;
-            if physical != format!("{resource_id}.{allocation}") { return Err(AuthError::Denied); }
+            if physical != format!("{resource_id}.{allocation}") {
+                return Err(AuthError::Denied);
+            }
             let mut declaration: StateDeclaration = decode(&commitment)?;
             declaration.resource_id = physical;
             Ok(declaration)
@@ -79,21 +87,58 @@ impl SqliteAuthorizationStore {
             return Err(AuthError::Denied);
         };
         self.transaction(|connection| {
-            let projection = super::native_projection::project_instance(connection,instance_id,time::OffsetDateTime::now_utc().unix_timestamp())?;
-            let active: bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_devices WHERE principal_id=?1 AND deployment_id=?2 AND state='active')",params![principal,deployment_id],|row|row.get(0))?;
-            if !active || projection.principal_id != principal || projection.deployment_id != *deployment_id || projection.participant_id != *participant_id {return Err(AuthError::Denied);}
+            let projection = super::native_projection::project_instance(
+                connection,
+                instance_id,
+                crate::clock::unix_now(),
+            )?;
+            let active: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_devices WHERE principal_id=?1 \
+                AND deployment_id=?2 \
+                AND state='active')",
+                params![principal, deployment_id],
+                |row| row.get(0),
+            )?;
+            if !active
+                || projection.principal_id != principal
+                || projection.deployment_id != *deployment_id
+                || projection.participant_id != *participant_id
+            {
+                return Err(AuthError::Denied);
+            }
             let resources = projection.resources;
-            if bindings_digest != Some(digest(&resources)?.as_str()) { return Err(AuthError::Denied); }
-            let resource_id = resources.get("state").and_then(|state| state.get(resource_name)).and_then(Value::as_str).ok_or(AuthError::Denied)?;
-            let commitment: Option<(String,String,String)> = connection.query_row(
-                "SELECT commitment_json,physical_id,allocation_id FROM auth_resources WHERE resource_id=?1 AND owner_kind='deployment' AND owner_id=?2 AND participant_id=?3 AND local_name=?4 AND kind='state' AND state='ready'",
-                params![resource_id,deployment_id,participant_id,resource_name], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
-            ).optional()?;
+            if bindings_digest != Some(digest(&resources)?.as_str()) {
+                return Err(AuthError::Denied);
+            }
+            let resource_id = resources
+                .get("state")
+                .and_then(|state| state.get(resource_name))
+                .and_then(Value::as_str)
+                .ok_or(AuthError::Denied)?;
+            let commitment: Option<(String, String, String)> = connection
+                .query_row(
+                    "SELECT commitment_json,physical_id,allocation_id \
+                    FROM auth_resources \
+                    WHERE resource_id=?1 \
+                    AND owner_kind='deployment' \
+                    AND owner_id=?2 AND participant_id=?3 \
+                    AND local_name=?4 AND kind='state' \
+                    AND state='ready'",
+                    params![resource_id, deployment_id, participant_id, resource_name],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
             let (commitment, physical, allocation) = commitment.ok_or(AuthError::Denied)?;
-            if physical != format!("{resource_id}.{allocation}") { return Err(AuthError::Denied); }
+            if physical != format!("{resource_id}.{allocation}") {
+                return Err(AuthError::Denied);
+            }
             let mut declaration: StateDeclaration = decode(&commitment)?;
             // The installed schema belongs to the deployment; values belong to this device.
-            declaration.resource_id = format!("{physical}.{}", Self::state_namespace(principal,binding,resource_name)?.0);
+            declaration.resource_id = format!(
+                "{physical}.{}",
+                Self::state_namespace(principal, binding, resource_name)?.0
+            );
             Ok(declaration)
         })
     }
@@ -163,37 +208,98 @@ impl SqliteAuthorizationStore {
             request_id: input.idempotency_key.to_string(),
             request_digest: digest(&(&namespace, input))?,
         };
-        self.mutate(&identity, "state.register", &(&namespace, input), now, |connection| {
-            let existing: Option<(String,u64)> = connection.query_row(
-                "SELECT commitment_json,revision FROM auth_resources WHERE resource_id=?1 AND state='ready'",
-                [&resource_id], |row| Ok((row.get(0)?,row.get(1)?)),
-            ).optional()?;
-            if let Some((previous, revision)) = &existing {
-                let previous: StateDeclaration = decode(previous)?;
-                if serde_json::to_value(&previous)? == serde_json::to_value(&declaration)? {
-                    return Ok(Ok(StateRegisterResponse { revision: StateRevision(revision.to_string()), extra:Default::default() }));
+        self.mutate(
+            &identity,
+            "state.register",
+            &(&namespace, input),
+            now,
+            |connection| {
+                let existing: Option<(String, u64)> = connection
+                    .query_row(
+                        "SELECT commitment_json,revision \
+                        FROM auth_resources \
+                        WHERE resource_id=?1 \
+                        AND state='ready'",
+                        [&resource_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                if let Some((previous, revision)) = &existing {
+                    let previous: StateDeclaration = decode(previous)?;
+                    if serde_json::to_value(&previous)? == serde_json::to_value(&declaration)? {
+                        return Ok(Ok(StateRegisterResponse {
+                            revision: StateRevision(revision.to_string()),
+                            extra: Default::default(),
+                        }));
+                    }
                 }
-            }
-            let mut history = connection.prepare("SELECT commitment_json FROM auth_resource_history WHERE resource_id=?1")?;
-            for previous in history.query_map([&resource_id], |row| row.get::<_, String>(0))? {
-                let previous: StateDeclaration = decode(&previous?)?;
-                for (version, schema) in std::iter::once((&declaration.representation_version, &declaration.schema)).chain(&declaration.accepted_versions) {
-                    let old = if *version == previous.representation_version {Some(&previous.schema)} else {previous.accepted_versions.get(version)};
-                    if old.is_some_and(|old| old != schema) {return Err(AuthError::Invalid("State representation versions are immutable".into()));}
+                let mut history = connection.prepare(
+                    "SELECT commitment_json FROM auth_resource_history WHERE resource_id=?1",
+                )?;
+                for previous in history.query_map([&resource_id], |row| row.get::<_, String>(0))? {
+                    let previous: StateDeclaration = decode(&previous?)?;
+                    for (version, schema) in
+                        std::iter::once((&declaration.representation_version, &declaration.schema))
+                            .chain(&declaration.accepted_versions)
+                    {
+                        let old = if *version == previous.representation_version {
+                            Some(&previous.schema)
+                        } else {
+                            previous.accepted_versions.get(version)
+                        };
+                        if old.is_some_and(|old| old != schema) {
+                            return Err(AuthError::Invalid(
+                                "State representation versions are immutable".into(),
+                            ));
+                        }
+                    }
                 }
-            }
-            let revision = existing.as_ref().map_or(0, |(_, revision)| *revision);
-            if input.expected_revision.0 != revision.to_string() { return Ok(Err(StateRegistrationConflict {current_revision:StateRevision(revision.to_string()),extra:Default::default()})); }
-            let next = revision.checked_add(1).ok_or(AuthError::Unavailable)?;
-            let encoded = serde_json::to_string(&declaration)?;
-            if existing.is_some() {
-                connection.execute("UPDATE auth_resources SET commitment_json=?2,revision=?3,updated_at=?4 WHERE resource_id=?1",params![resource_id,encoded,next,now])?;
-            } else {
-                let allocation = id();
-                connection.execute("INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,owner_id,namespace_json,kind,local_name,commitment_json,physical_id,state,binding_revision,revision,created_at,updated_at) VALUES(?1,?2,'user',?3,?4,'state',?5,?6,?7,'ready',1,1,?8,?8)", params![resource_id,allocation,principal,serde_json::to_string(&namespace)?,declaration.resource_name,encoded,format!("{resource_id}.{allocation}"),now])?;
-            }
-            connection.execute("INSERT INTO auth_resource_history(resource_id,revision,commitment_json,state,changed_at) VALUES(?1,?2,?3,'ready',?4)",params![resource_id,next,encoded,now])?;
-            Ok(Ok(StateRegisterResponse {revision:StateRevision(next.to_string()),extra:Default::default()}))
-        })
+                let revision = existing.as_ref().map_or(0, |(_, revision)| *revision);
+                if input.expected_revision.0 != revision.to_string() {
+                    return Ok(Err(StateRegistrationConflict {
+                        current_revision: StateRevision(revision.to_string()),
+                        extra: Default::default(),
+                    }));
+                }
+                let next = revision.checked_add(1).ok_or(AuthError::Unavailable)?;
+                let encoded = serde_json::to_string(&declaration)?;
+                if existing.is_some() {
+                    connection.execute(
+                        "UPDATE auth_resources \
+                        SET commitment_json=?2,revision=?3,updated_at=?4 \
+                        WHERE resource_id=?1",
+                        params![resource_id, encoded, next, now],
+                    )?;
+                } else {
+                    let allocation = id();
+                    connection.execute(
+                        "INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,\
+                        owner_id,namespace_json,kind,local_name,commitment_json,physical_id,\
+                        state,binding_revision,revision,created_at,updated_at) \
+                        VALUES(?1,?2,'user',?3,?4,'state',?5,?6,?7,'ready',1,1,?8,?8)",
+                        params![
+                            resource_id,
+                            allocation,
+                            principal,
+                            serde_json::to_string(&namespace)?,
+                            declaration.resource_name,
+                            encoded,
+                            format!("{resource_id}.{allocation}"),
+                            now
+                        ],
+                    )?;
+                }
+                connection.execute(
+                    "INSERT INTO auth_resource_history(resource_id,revision,commitment_json,\
+                    state,changed_at) \
+                    VALUES(?1,?2,?3,'ready',?4)",
+                    params![resource_id, next, encoded, now],
+                )?;
+                Ok(Ok(StateRegisterResponse {
+                    revision: StateRevision(next.to_string()),
+                    extra: Default::default(),
+                }))
+            },
+        )
     }
 }

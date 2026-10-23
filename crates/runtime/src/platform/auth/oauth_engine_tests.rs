@@ -56,11 +56,7 @@ async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
     );
-    let router = super::super::oauth::router(
-        engine.clone(),
-        vec!["nats://127.0.0.1:4222".into()],
-        Vec::new(),
-    );
+    let router = super::super::oauth::router(engine.clone(), vec!["nats://127.0.0.1:4222".into()]);
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -73,10 +69,25 @@ async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes
     let http = reqwest::Client::new();
     let callback = "http://127.0.0.1:9123/callback";
     let verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
-    let details = serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}]).to_string();
+    let details = serde_json::json!([
+        {"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}
+    ])
+    .to_string();
     let mut revision = 0;
     for (kind, callbacks) in [("native", false), ("native", true), ("browser", true)] {
-        let mut input: trellis_runtime_apis::__types::trellis::AuthOAuthClientPutRequest = serde_json::from_value(serde_json::json!({"clientId":"managed-client","kind":kind,"title":"Managed client","description":"Flow transition","redirectUris":if callbacks {vec![callback]}else{vec![]},"development":true,"impliedConsent":[],"expectedRevision":revision.to_string(),"idempotencyKey":id()})).unwrap();
+        let mut input: trellis_runtime_apis::__types::trellis::AuthOAuthClientPutRequest =
+            serde_json::from_value(serde_json::json!({
+                "clientId":"managed-client",
+                "kind":kind,
+                "title":"Managed client",
+                "description":"Flow transition",
+                "redirectUris":if callbacks {vec![callback]}else{vec![]},
+                "development":true,
+                "impliedConsent": [],
+                "expectedRevision":revision.to_string(),
+                "idempotencyKey":id()
+            }))
+            .unwrap();
         if kind == "browser" {
             assert!(matches!(
                 super::super::rpc_credentials::put_client(
@@ -213,7 +224,16 @@ async fn cimd_client_cannot_receive_administrative_delegation_from_a_privileged_
     let f = fixture();
     let client_id = "https://public.example/client.json";
     // Public metadata cannot assert an Auth-owned companion enrollment binding.
-    let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":"Public client","redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"],"trellis_companion":{"deploymentId":id(),"requestId":"public.Companion"}});
+    let metadata = serde_json::json!({
+        "client_id":client_id,
+        "application_type":"native",
+        "client_name":"Public client",
+        "redirect_uris": ["http://127.0.0.1:9123/callback"],
+        "token_endpoint_auth_method":"none",
+        "grant_types": ["authorization_code","refresh_token"],
+        "response_types": ["code"],
+        "trellis_companion": {"deploymentId":id(),"requestId":"public.Companion"}
+    });
     let body = serde_json::to_vec(&metadata).unwrap();
     let mut policy = CimdPolicy::new();
     policy.redirect_uris_same_origin = false;
@@ -318,7 +338,15 @@ async fn provisional_client_capacity_recovers_without_breaking_an_approved_refre
         })
         .unwrap();
     let document = |client_id: &str| {
-        let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":"Reviewed public client","redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]});
+        let metadata = serde_json::json!({
+            "client_id":client_id,
+            "application_type":"native",
+            "client_name":"Reviewed public client",
+            "redirect_uris": ["http://127.0.0.1:9123/callback"],
+            "token_endpoint_auth_method":"none",
+            "grant_types": ["authorization_code","refresh_token"],
+            "response_types": ["code"]
+        });
         let body = serde_json::to_vec(&metadata).unwrap();
         let mut policy = CimdPolicy::new();
         policy.redirect_uris_same_origin = false;
@@ -348,10 +376,23 @@ async fn provisional_client_capacity_recovers_without_breaking_an_approved_refre
         .install_client_document(&document(&approved_id))
         .unwrap();
     let verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
-    let request=AuthorizationRequest::from_pairs(vec![
-        ("response_type","code".to_owned()),("client_id",approved_id.clone()),("redirect_uri","http://127.0.0.1:9123/callback".to_owned()),
-        ("code_challenge",URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))),("code_challenge_method","S256".to_owned()),
-        ("dpop_jkt",approval.durable_dpop_jkt.clone()),("authorization_details",serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}]).to_string()),
+    let request = AuthorizationRequest::from_pairs(vec![
+        ("response_type", "code".to_owned()),
+        ("client_id", approved_id.clone()),
+        ("redirect_uri", "http://127.0.0.1:9123/callback".to_owned()),
+        (
+            "code_challenge",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+        ),
+        ("code_challenge_method", "S256".to_owned()),
+        ("dpop_jkt", approval.durable_dpop_jkt.clone()),
+        (
+            "authorization_details",
+            serde_json::json!([
+                {"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}
+            ])
+            .to_string(),
+        ),
     ]);
     let code = engine
         .approve(&request, &mutation(&f.principal, &approval), &approval)
@@ -526,10 +567,7 @@ async fn oauth_preflight_uses_validated_callbacks_and_origin_rotation_cannot_eva
     let stopped = stop.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(
-                super::super::oauth::router(engine, vec![], Vec::new()),
-                stopped,
-            )
+            .run(super::super::oauth::router(engine, vec![]), stopped)
             .await
             .unwrap();
     });
@@ -602,19 +640,13 @@ async fn trusted_proxy_clients_without_origin_have_independent_budgets() {
         &super::super::oauth::OAuthTransport::LoopbackDevelopment,
     )
     .await
-    .unwrap();
+    .unwrap()
+    .forwarded_by(&["127.0.0.1/32".parse().unwrap()]);
     let stop = tokio_util::sync::CancellationToken::new();
     let stopped = stop.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(
-                super::super::oauth::router(
-                    engine,
-                    Vec::new(),
-                    vec!["127.0.0.1/32".parse().unwrap()],
-                ),
-                stopped,
-            )
+            .run(super::super::oauth::router(engine, Vec::new()), stopped)
             .await
             .unwrap();
     });
@@ -679,10 +711,7 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
     let hosted = engine.clone();
     let host = tokio::spawn(async move {
         listener
-            .run(
-                super::super::oauth::router(hosted, vec![], Vec::new()),
-                stopped,
-            )
+            .run(super::super::oauth::router(hosted, vec![]), stopped)
             .await
             .unwrap();
     });
@@ -804,7 +833,16 @@ pub(in crate::platform::auth) async fn dpop_with_nonce(
 ) -> String {
     let (_, bytes) = nkeys::from_public_key(&ephemeral.public_key()).unwrap();
     let public = serde_json::json!({"crv":"Ed25519","kty":"OKP","x":URL_SAFE_NO_PAD.encode(bytes)});
-    let mut claims = serde_json::json!({"htm":"POST","htu":token_uri,"iat":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),"jti":id(),"trellis_runtime_id":runtime,"trellis_nats_jkt":URL_SAFE_NO_PAD.encode(Sha256::digest(super::super::sqlite::json(&public).unwrap().as_bytes()))});
+    let mut claims = serde_json::json!({
+        "htm":"POST",
+        "htu":token_uri,
+        "iat":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
+        "jti":id(),
+        "trellis_runtime_id":runtime,
+        "trellis_nats_jkt": URL_SAFE_NO_PAD.encode(Sha256::digest(
+                super::super::sqlite::json(&public).unwrap().as_bytes(),
+            ))
+    });
     if let Some(nonce) = nonce {
         claims["nonce"] = serde_json::json!(nonce);
     }
@@ -867,11 +905,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );
-    let router = super::super::oauth::router(
-        engine.clone(),
-        vec!["nats://127.0.0.1:4222".into()],
-        Vec::new(),
-    );
+    let router = super::super::oauth::router(engine.clone(), vec!["nats://127.0.0.1:4222".into()]);
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -888,7 +922,15 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     let key = EcdsaP256Key::generate("device-client");
     let ephemeral = nkeys::KeyPair::new_user();
     let runtime = URL_SAFE_NO_PAD.encode([31; 16]);
-    let details=serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]},{"type":"trellis_platform_privileges","required":["principals.manage"],"optional":[]}]).to_string();
+    let details = serde_json::json!([
+        {"type":"trellis_capabilities","required":[f.read],"optional":[f.write]},
+        {
+            "type":"trellis_platform_privileges",
+            "required": ["principals.manage"],
+            "optional": []
+        }
+    ])
+    .to_string();
     let start_proof = dpop(
         &key,
         &runtime,
@@ -1268,21 +1310,25 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     let verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let request = AuthorizationRequest::from_pairs(vec![
-        ("response_type", "code".to_owned()), ("client_id","native-client".to_owned()),
-        ("redirect_uri","http://127.0.0.1:9123/callback".to_owned()),
-        ("code_challenge",challenge), ("code_challenge_method","S256".to_owned()),
-        ("dpop_jkt",approval.durable_dpop_jkt.clone()),
-        ("authorization_details",serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}]).to_string()),
+        ("response_type", "code".to_owned()),
+        ("client_id", "native-client".to_owned()),
+        ("redirect_uri", "http://127.0.0.1:9123/callback".to_owned()),
+        ("code_challenge", challenge),
+        ("code_challenge_method", "S256".to_owned()),
+        ("dpop_jkt", approval.durable_dpop_jkt.clone()),
+        (
+            "authorization_details",
+            serde_json::json!([
+                {"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}
+            ])
+            .to_string(),
+        ),
     ]);
     let authority = Arc::new(f.store);
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
     );
-    let router = super::super::oauth::router(
-        engine.clone(),
-        vec!["nats://127.0.0.1:4222".into()],
-        Vec::new(),
-    );
+    let router = super::super::oauth::router(engine.clone(), vec!["nats://127.0.0.1:4222".into()]);
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -1569,7 +1615,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     let listener = tokio::net::TcpListener::bind(origin.strip_prefix("http://").unwrap())
         .await
         .unwrap();
-    let router = super::super::oauth::router(engine.clone(), vec![], Vec::new());
+    let router = super::super::oauth::router(engine.clone(), vec![]);
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -1926,8 +1972,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[13; 32]).unwrap()).unwrap(),
     );
-    let router =
-        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new());
+    let router = super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]);
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let host = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -1946,10 +1991,27 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
     let state = id();
     let mut authorize = url::Url::parse(&format!("{origin}/authorize")).unwrap();
     authorize.query_pairs_mut().extend_pairs([
-        ("client_id","native-client".to_owned()),("redirect_uri","http://127.0.0.1:9123/callback".into()),("response_type","code".into()),
-        ("code_challenge",URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))),("code_challenge_method","S256".into()),("state",state.clone()),
-        ("dpop_jkt",key.public_jwk().thumbprint()),("trellis_dpop_jwk",serde_json::to_string(&key.public_jwk()).unwrap()),
-        ("authorization_details",serde_json::json!([{"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}]).to_string()),
+        ("client_id", "native-client".to_owned()),
+        ("redirect_uri", "http://127.0.0.1:9123/callback".into()),
+        ("response_type", "code".into()),
+        (
+            "code_challenge",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())),
+        ),
+        ("code_challenge_method", "S256".into()),
+        ("state", state.clone()),
+        ("dpop_jkt", key.public_jwk().thumbprint()),
+        (
+            "trellis_dpop_jwk",
+            serde_json::to_string(&key.public_jwk()).unwrap(),
+        ),
+        (
+            "authorization_details",
+            serde_json::json!([
+                {"type":"trellis_capabilities","required":[f.read],"optional":[f.write]}
+            ])
+            .to_string(),
+        ),
     ]);
     let response = http.get(authorize.as_str()).send().await.unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::SEE_OTHER);

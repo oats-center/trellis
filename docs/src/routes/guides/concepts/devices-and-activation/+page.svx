@@ -33,9 +33,9 @@ A device deployment is a deployment-owned record used during activation and
 online auth. It selects the installed participant, review policy, resource
 evidence, and lifecycle state for attached devices.
 
-Activated devices send identity/proof inputs at runtime. Trellis resolves the
-installed participant and current `GrantBinding` server-side before granting
-NATS access.
+Activated devices present a signed provisioned admission in NATS CONNECT.
+Auth Callout resolves the installed participant and current deployment
+server-side before granting NATS access.
 
 ## Activation portals
 

@@ -39,8 +39,7 @@ async fn start_runtime(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_sessions_me_on_full_runtime(
-) {
+async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
@@ -357,7 +356,8 @@ async fn native_cold_rotation_resumes_persisted_custody_and_calls_signed_session
             extra: Default::default(),
         };
         let me = tokio::select! {
-            result = &mut runtime => panic!("production runtime exited before signed Sessions.Me at rotation step {step}: {result:?}"),
+            result = &mut runtime => panic!("production runtime exited before signed Sessions.Me at rotation step \
+                {step}: {result:?}"),
             result = auth.sessions_me(&input) => result.unwrap_or_else(|error| panic!("signed Sessions.Me at rotation step {step}: {error:?}")),
         };
         assert_eq!(me.principal.principal_id.to_string(), identity.principal_id);

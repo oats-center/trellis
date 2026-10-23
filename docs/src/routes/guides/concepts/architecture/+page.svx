@@ -41,8 +41,9 @@ Trellis-owned contracts are implemented by the Trellis runtime even when their s
 
 This distinction matters because authorization is participant-scoped. A service,
 app, device, or CLI does not gain access because a package is installed or a
-helper exists. It gains access only through its current `GrantBinding` to an
-installed participant revision.
+helper exists. It gains access only through current Auth policy: a deployment of
+an installed participant revision, or a user's capabilities within an approved
+OAuth grant.
 
 ## Public boundaries
 

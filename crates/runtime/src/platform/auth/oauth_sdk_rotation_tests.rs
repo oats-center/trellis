@@ -4,6 +4,7 @@ use super::super::oauth::{OAuthEngine, OAuthListener, OAuthStorage, OAuthTranspo
 use super::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use trellis_runtime_apis::participants::{trellis_health_runtime, trellis_platform};
 
 async fn sdk_rotation(mode: &str) {
     use trellis_runtime_apis::participants::{
@@ -68,7 +69,12 @@ async fn sdk_rotation(mode: &str) {
             implied_capabilities: Vec::new(),
             eligible_privileges: Vec::new(),
             metadata: if kind == "native" {
-                serde_json::json!({"grant_types":["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]})
+                serde_json::json!({
+                    "grant_types": [
+                        "urn:ietf:params:oauth:grant-type:device_code",
+                        "refresh_token"
+                            ]
+                })
             } else {
                 serde_json::json!({})
             },
@@ -128,7 +134,7 @@ async fn sdk_rotation(mode: &str) {
     .unwrap();
     let mut shutdown = tokio_util::sync::CancellationToken::new();
     let mut server = tokio::spawn(listener.run(
-        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
+        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
         shutdown.clone(),
     ));
     let mut child = tokio::process::Command::new("node")
@@ -199,11 +205,7 @@ async fn sdk_rotation(mode: &str) {
                     .unwrap();
                     shutdown = tokio_util::sync::CancellationToken::new();
                     server = tokio::spawn(listener.run(
-                        super::super::oauth::router(
-                            engine,
-                            vec!["nats://127.0.0.1:4222".into()],
-                            Vec::new(),
-                        ),
+                        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
                         shutdown.clone(),
                     ));
                     let reply = serde_json::json!({"keyId":authority.issuer().unwrap().key_id});
@@ -231,8 +233,7 @@ async fn sdk_rotation(mode: &str) {
 }
 
 #[tokio::test]
-async fn node_connection_reopen_authenticates_issuer_chain_before_spending_and_retains_inflight_successor(
-) {
+async fn node_reopen_authenticates_issuer_chain_and_retains_inflight_successor() {
     sdk_rotation("native").await;
 }
 
@@ -266,8 +267,18 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         )
         .map(|initialized| initialized.principal_id)
         .unwrap();
-    let provisioned = store.initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_platform::Participant>(&URL_SAFE_NO_PAD.encode([61; 32]), now).unwrap();
-    store.initialize_builtin_provider::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>(&URL_SAFE_NO_PAD.encode([62; 32]), now).unwrap();
+    let provisioned = store
+        .initialize_builtin_provider::<trellis_platform::Participant>(
+            &URL_SAFE_NO_PAD.encode([61; 32]),
+            now,
+        )
+        .unwrap();
+    store
+        .initialize_builtin_provider::<trellis_health_runtime::Participant>(
+            &URL_SAFE_NO_PAD.encode([62; 32]),
+            now,
+        )
+        .unwrap();
     let original = store.issuer().unwrap();
     let catalog = store.current_catalog("trellis.auth@v1").unwrap();
     let health_catalog = store.current_catalog("trellis.health@v1").unwrap();
@@ -523,10 +534,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         .authorize_action(&transport, &authority, &health_catalog.api_id, &action)
         .await
         .unwrap();
-    assert_eq!(
-        materialized.digest().unwrap(),
-        health_catalog.digest().unwrap()
-    );
+    assert_eq!(materialized.digest(), health_catalog.digest().unwrap());
     assert!(materialized.authorizes(&admitted.authority, &action));
 
     // The public Node owner consumes the same production-issued root and

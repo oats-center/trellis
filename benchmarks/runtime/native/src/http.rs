@@ -257,7 +257,12 @@ async fn upload(
                 )
                 .await?;
                 let at = wall_ms();
-                Ok(json!({ "size": hasher.size, "digest": hasher.digest(), "verifiedUnixMs": at, "durableUnixMs": at }))
+                Ok(json!({
+                    "size": hasher.size,
+                    "digest": hasher.digest(),
+                    "verifiedUnixMs": at,
+                    "durableUnixMs": at
+                }))
             }
             "store" => {
                 let mut hashing = HashingReader::new(reader);
@@ -267,14 +272,22 @@ async fn upload(
                     .await?;
                 let durable = wall_ms();
                 let verified = hashing.eof_ms;
-                Ok(json!({ "size": hashing.hasher.size, "digest": hashing.hasher.digest(), "verifiedUnixMs": verified, "durableUnixMs": durable }))
+                Ok(json!({
+                    "size": hashing.hasher.size,
+                    "digest": hashing.hasher.digest(),
+                    "verifiedUnixMs": verified,
+                    "durableUnixMs": durable
+                }))
             }
             "raw" => {
                 let path = state.output.join("http-upload.bin");
                 let mut file =
                     BufWriter::with_capacity(state.chunk, tokio::fs::File::create(&path).await?);
-                tokio::io::copy_buf(&mut BufReader::with_capacity(state.chunk, reader), &mut file)
-                    .await?;
+                tokio::io::copy_buf(
+                    &mut BufReader::with_capacity(state.chunk, reader),
+                    &mut file,
+                )
+                .await?;
                 file.flush().await?;
                 drop(file);
                 let durable = wall_ms();
@@ -284,7 +297,12 @@ async fn upload(
                     &mut stored,
                 )
                 .await?;
-                Ok(json!({ "size": stored.size, "digest": stored.digest(), "verifiedUnixMs": wall_ms(), "durableUnixMs": durable }))
+                Ok(json!({
+                    "size": stored.size,
+                    "digest": stored.digest(),
+                    "verifiedUnixMs": wall_ms(),
+                    "durableUnixMs": durable
+                }))
             }
             _ => Err("unknown HTTP mode".into()),
         }

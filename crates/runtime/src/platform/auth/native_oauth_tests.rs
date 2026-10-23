@@ -148,8 +148,7 @@ async fn proxy_request(
 }
 
 #[tokio::test]
-async fn native_device_approval_refresh_and_revocation_retain_connection_identity_and_exclusive_custody(
-) {
+async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody() {
     let mut f = fixture();
     let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let backend_address = socket.local_addr().unwrap();
@@ -242,7 +241,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         .unwrap();
     let mut shutdown = tokio_util::sync::CancellationToken::new();
     let mut server = tokio::spawn(listener.run(
-        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
+        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
         shutdown.clone(),
     ));
 
@@ -461,7 +460,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
             .unwrap();
         shutdown = tokio_util::sync::CancellationToken::new();
         server = tokio::spawn(listener.run(
-            super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
+            super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
             shutdown.clone(),
         ));
         session = match suspended {
@@ -570,7 +569,7 @@ async fn native_device_approval_refresh_and_revocation_retain_connection_identit
         .unwrap();
     shutdown = tokio_util::sync::CancellationToken::new();
     server = tokio::spawn(listener.run(
-        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()], Vec::new()),
+        super::super::oauth::router(engine, vec!["nats://127.0.0.1:4222".into()]),
         shutdown.clone(),
     ));
     forward.send(()).unwrap();

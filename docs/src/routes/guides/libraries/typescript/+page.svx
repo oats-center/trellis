@@ -124,8 +124,7 @@ untouched; applications must choose a provider or authorize a fresh session.
 
 The connected client is one logical connection, even when its physical NATS
 connections change. Renewing unchanged transport authority promotes the new
-authorization context and routing credentials without replacing a healthy
-socket. Newly approved authority is adopted automatically: the SDK prepares a
+session authority without replacing a healthy socket. Newly approved authority is adopted automatically: the SDK prepares a
 successor, makes its intake ready, and selects it for fresh work. There is no
 manual transport-refresh API or upgrade notification to handle.
 

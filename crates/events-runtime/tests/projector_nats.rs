@@ -7,6 +7,9 @@ use trellis_events_runtime::{
 use trellis_rs::client::{PreparedTrellisEvent, ServiceConnectWithContractOptions, TrellisClient};
 use trellis_rs::service::EventVerificationFailure;
 use trellis_runtime_apis::apis::trellis_health_v1::events::StatusChanged;
+use trellis_runtime_apis::participants::{
+    trellis_events_runtime as events_participant, trellis_health_runtime,
+};
 use trellis_runtime_apis::types::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -15,8 +18,14 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         .start()
         .await
         .unwrap();
-    let publisher_identity = runtime.register_service::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>("projector publisher").await.unwrap();
-    let receiver_identity = runtime.register_service::<trellis_runtime_apis::participants::trellis_events_runtime::Participant>("projector receiver").await.unwrap();
+    let publisher_identity = runtime
+        .register_service::<trellis_health_runtime::Participant>("projector publisher")
+        .await
+        .unwrap();
+    let receiver_identity = runtime
+        .register_service::<events_participant::Participant>("projector receiver")
+        .await
+        .unwrap();
     let server =
         trellis_rs::auth::discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
             .await
@@ -337,10 +346,20 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
     )
     .await
     .unwrap();
-    let device = native.start_device(&serde_json::json!([
-        {"type":"trellis_capabilities","required":["trellis.auth@v1::authorizationSessionsRead", "trellis.auth@v1::authorizationSessionsRevoke"],"optional":[]},
-        {"type":"trellis_platform_privileges","required":["principals.manage"]}
-    ])).await.unwrap();
+    let device = native
+        .start_device(&serde_json::json!([
+            {
+                "type":"trellis_capabilities",
+                "required": [
+                    "trellis.auth@v1::authorizationSessionsRead",
+                    "trellis.auth@v1::authorizationSessionsRevoke"
+                            ],
+                "optional": []
+            },
+            {"type":"trellis_platform_privileges","required":["principals.manage"]}
+        ]))
+        .await
+        .unwrap();
     runtime
         .approve_device_login("trellis.cli", device.user_code())
         .await

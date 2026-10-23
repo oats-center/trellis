@@ -430,8 +430,8 @@ Trellis neither adopts nor destroys foreign-owned physical resources. Removal
 detaches access without deleting new-version data, allowing compatible approved
 reattachment. Store and file metadata listing uses opaque, query-bound keyset
 cursors with a default limit of 100 and maximum of 500. An administrator
-installs the immutable participant revision and writes a participant-scoped
-`GrantBinding`; deployment apply provisions exact resource evidence.
+creates or applies a deployment, which installs the immutable participant
+revision and provisions exact resource evidence.
 Store streaming uses demand-driven, byte-capped reads and verifies chunk order,
 size, and SHA-256 before successful EOF; partial output is not a verified object.
 Backend consumer expiry permits exact-cursor continuation on the pinned
@@ -451,8 +451,8 @@ deployment-scoped client trellis.device.<deploymentId>.companion. Registration
 grants no user authority. Its verified user caller associates the grant through
 DeviceCompanions.Attach; parent credentials cannot substitute. Removing the
 association revokes that exact grant/families, not other grants or the user login.
-Parent and child maintain separate connections and revocation. Authorization
-contexts, route JWTs, transports, grants, and issuer
+Parent and child maintain separate connections and revocation. Session
+authority, admission credentials, transports, grants, and issuer
 keys remain process-memory-only. Requests/events carry context digest, matching
 redundant `session-key`, and a message-specific proof.
 

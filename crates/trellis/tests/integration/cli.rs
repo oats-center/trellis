@@ -345,7 +345,8 @@ async fn cli_server_managed_nats() {
     let config_path = bundle.join("config.toml");
     let mut config_toml = fs::read_to_string(&config_path).expect("read bundle config");
     config_toml.push_str(&format!(
-        "\n[paths]\ndata = {data:?}\nstate = {state:?}\ncache = {cache:?}\nruntime = {runtime:?}\nlogs = {logs:?}\n",
+        "\n[paths]\ndata = {data:?}\nstate = {state:?}\ncache = \
+        {cache:?}\nruntime = {runtime:?}\nlogs = {logs:?}\n",
         data = effective_root.join("data").display().to_string(),
         state = effective_root.join("state").display().to_string(),
         cache = effective_root.join("cache").display().to_string(),
@@ -532,7 +533,8 @@ async fn cli_server_managed_nats() {
     let check_stdout_text = fs::read_to_string(&check_stdout).expect("read check stdout log");
     assert!(
         check_exit.unwrap().success(),
-        "trellis-server check failed with a preflight report:\n{check_stdout_text}\nstderr tail:\n{}",
+        "trellis-server check failed with a preflight \
+        report:\n{check_stdout_text}\nstderr tail:\n{}",
         log_tail(&check_stderr)
     );
     let report: Value = serde_json::from_str(&check_stdout_text)
@@ -1143,7 +1145,8 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
             .is_err(),
         "the generated CA must not be trusted without explicit configuration"
     );
-    // Every Console user receives the CA fingerprint to verify.
+    // Every Console and Portal user is told the installation serves its own
+    // generated certificates.
     let console = client
         .get(format!(
             "https://127.0.0.1:{http}/assets/web/runtime-config.js"
@@ -1156,7 +1159,16 @@ async fn server_serves_generated_installation_tls_and_reloads_renewed_certificat
         .text()
         .await
         .unwrap();
-    assert!(console.contains(&fingerprint), "{console}");
+    assert!(console.contains(r#""generatedTls":true"#), "{console}");
+    let portal = client
+        .get(format!("{oauth_origin}/device/complete"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(portal.contains("<html data-generated-tls"), "{portal}");
     // A real WSS upgrade reaches the broker through a verified TLS connection.
     let upgraded = client
         .get(format!("https://127.0.0.1:{websocket}/"))

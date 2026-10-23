@@ -94,13 +94,34 @@ pub(super) fn resolve_api<'a>(
 fn policy_snapshot(connection: &Connection, api: &str) -> Result<String, AuthError> {
     let mut values = Vec::new();
     for sql in [
-        "SELECT r.role_id||':'||r.identity_generation||':'||r.revision FROM auth_roles r JOIN auth_role_capabilities m ON m.role_id=r.role_id AND m.role_generation=r.identity_generation JOIN auth_capability_identities c ON c.capability_id=m.capability_id AND c.identity_generation=m.capability_generation WHERE c.api_id=?1 ORDER BY 1",
-        "SELECT DISTINCT m.mapping_id||':'||m.revision FROM auth_oidc_role_mappings m JOIN auth_oidc_mapping_roles mr ON mr.mapping_id=m.mapping_id JOIN auth_role_capabilities r ON r.role_id=mr.role_id AND r.role_generation=mr.role_generation JOIN auth_capability_identities c ON c.capability_id=r.capability_id AND c.identity_generation=r.capability_generation WHERE c.api_id=?1 ORDER BY 1",
-        "SELECT d.principal_id||':'||d.capability_id||':'||d.capability_generation||':'||d.revision FROM auth_direct_capabilities d JOIN auth_capability_identities c ON c.capability_id=d.capability_id AND c.identity_generation=d.capability_generation WHERE c.api_id=?1 ORDER BY 1",
-        "SELECT b.deployment_id||':'||b.revision FROM auth_deployment_bindings b WHERE EXISTS(SELECT 1 FROM json_each(b.provided_apis_json) WHERE json_extract(value,'$.apiId')=?1) ORDER BY 1",
-    ] {
-        values.push(connection.prepare(sql)?.query_map([api],|row|row.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
-    }
+    "SELECT r.role_id||':'||r.identity_generation||':'||r.revision FROM auth_roles r JOIN auth_role_capabilities m ON m.role_id=r.role_id AND m.role_generation=r.identity_generation JOIN auth_capability_identities c ON c.capability_id=m.capability_id AND c.identity_generation=m.capability_generation WHERE c.api_id=?1 ORDER BY 1",
+    "SELECT DISTINCT m.mapping_id||':'||m.revision \
+    FROM auth_oidc_role_mappings m \
+    JOIN auth_oidc_mapping_roles mr ON mr.mapping_id=m.mapping_id \
+    JOIN auth_role_capabilities r ON r.role_id=mr.role_id \
+    AND r.role_generation=mr.role_generation \
+    JOIN auth_capability_identities c ON c.capability_id=r.capability_id \
+    AND c.identity_generation=r.capability_generation \
+    WHERE c.api_id=?1 ORDER BY 1",
+    "SELECT d.principal_id||':'||d.capability_id||':'||d.capability_generation||':'||d.revision \
+    FROM auth_direct_capabilities d \
+    JOIN auth_capability_identities c ON c.capability_id=d.capability_id \
+    AND c.identity_generation=d.capability_generation \
+    WHERE c.api_id=?1 ORDER BY 1",
+    "SELECT b.deployment_id||':'||b.revision \
+    FROM auth_deployment_bindings b \
+    WHERE EXISTS(SELECT 1 \
+    FROM json_each(b.provided_apis_json) \
+    WHERE json_extract(value,'$.apiId')=?1) \
+    ORDER BY 1",
+] {
+    values.push(
+        connection
+            .prepare(sql)?
+            .query_map([api], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    );
+}
     digest(&values)
 }
 
@@ -132,7 +153,15 @@ impl SqliteAuthorizationStore {
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
         {
             Self::require_privilege(connection, actor, "apis.accept")?;
-            let existing:Option<(u64,u64,String)>=connection.query_row("SELECT generation,accepted_revision,definition_json FROM auth_accepted_apis WHERE api_id=?1",[api_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            let existing: Option<(u64, u64, String)> = connection
+                .query_row(
+                    "SELECT generation,accepted_revision,definition_json \
+                    FROM auth_accepted_apis \
+                    WHERE api_id=?1",
+                    [api_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
             let mut review = ApiReview {
                 review_id: id(),
                 api_id: api_id.into(),
@@ -199,13 +228,50 @@ impl SqliteAuthorizationStore {
             review.affected_roles = statement
                 .query_map([api_id], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
-            let mut statement=connection.prepare("SELECT DISTINCT m.mapping_id,m.revision FROM auth_oidc_role_mappings m JOIN auth_oidc_mapping_roles mr ON mr.mapping_id=m.mapping_id JOIN auth_role_capabilities r ON r.role_id=mr.role_id AND r.role_generation=mr.role_generation JOIN auth_capability_identities c ON c.capability_id=r.capability_id AND c.identity_generation=r.capability_generation WHERE c.api_id=?1 ORDER BY m.mapping_id")?;
+            let mut statement = connection.prepare(
+                "SELECT DISTINCT m.mapping_id,m.revision \
+                FROM auth_oidc_role_mappings m \
+                JOIN auth_oidc_mapping_roles mr ON mr.mapping_id=m.mapping_id \
+                JOIN auth_role_capabilities r ON r.role_id=mr.role_id \
+                AND r.role_generation=mr.role_generation \
+                JOIN auth_capability_identities c ON c.capability_id=r.capability_id \
+                AND c.identity_generation=r.capability_generation \
+                WHERE c.api_id=?1 ORDER BY m.mapping_id",
+            )?;
             review.affected_mappings = statement
                 .query_map([api_id], |row| Ok((row.get(0)?, row.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?;
-            review.affected_providers=connection.prepare("SELECT DISTINCT deployment_id FROM auth_provider_certificates WHERE api_id=?1 ORDER BY deployment_id")?.query_map([api_id],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?;
-            review.affected_grants=connection.prepare("SELECT DISTINCT g.oauth_grant_id FROM auth_oauth_grants g,json_each(g.approved_capabilities_json) j JOIN auth_capability_identities c ON c.capability_id=json_extract(j.value,'$.capabilityId') WHERE c.api_id=?1 AND g.revoked_at IS NULL ORDER BY g.oauth_grant_id")?.query_map([api_id],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?;
-            connection.execute("INSERT INTO auth_api_reviews(review_id,api_id,review_json,created_at,expires_at) VALUES(?1,?2,?3,?4,?5)",params![review.review_id,api_id,json(&review)?,now,now.saturating_add(900)])?;
+            review.affected_providers = connection
+                .prepare(
+                    "SELECT DISTINCT deployment_id \
+                    FROM auth_provider_certificates \
+                    WHERE api_id=?1 ORDER BY deployment_id",
+                )?
+                .query_map([api_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            review.affected_grants = connection
+                .prepare(
+                    "SELECT DISTINCT g.oauth_grant_id \
+                    FROM auth_oauth_grants g,json_each(g.approved_capabilities_json) j \
+                    JOIN auth_capability_identities c ON \
+                    c.capability_id=json_extract(j.value,'$.capabilityId') \
+                    WHERE c.api_id=?1 AND g.revoked_at IS NULL \
+                    ORDER BY g.oauth_grant_id",
+                )?
+                .query_map([api_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            connection.execute(
+                "INSERT INTO auth_api_reviews(review_id,api_id,review_json,created_at,\
+                expires_at) \
+                VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    review.review_id,
+                    api_id,
+                    json(&review)?,
+                    now,
+                    now.saturating_add(900)
+                ],
+            )?;
             Ok(review)
         }
     }
@@ -234,7 +300,16 @@ impl SqliteAuthorizationStore {
                 Self::require_privilege(connection, &identity.actor, "apis.forceReplace")?;
             }
             self.current_signer(connection)?;
-            let review:String=connection.query_row("SELECT review_json FROM auth_api_reviews WHERE review_id=?1 AND expires_at>?2 AND consumed_at IS NULL",params![acceptance.review_id,now],|row|row.get(0)).optional()?.ok_or(AuthError::Conflict)?;
+            let review: String = connection
+                .query_row(
+                    "SELECT review_json FROM auth_api_reviews \
+                    WHERE review_id=?1 AND expires_at>?2 \
+                    AND consumed_at IS NULL",
+                    params![acceptance.review_id, now],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::Conflict)?;
             let review: ApiReview = decode(&review)?;
             if acceptance.reviewed_digest != review.definition_digest
                 || (!review.compatible && !acceptance.force)
@@ -274,7 +349,23 @@ impl SqliteAuthorizationStore {
             } else {
                 review.expected_revision + 1
             };
-            let old_snapshot:Option<String>=connection.query_row("SELECT signed_bytes FROM auth_api_verification_snapshots WHERE api_id=?1 AND generation=?2 AND accepted_revision=?3",params![review.api_id,review.expected_generation,review.expected_revision],|row|row.get::<_,Vec<u8>>(0).map(|bytes|String::from_utf8_lossy(&bytes).into_owned())).optional()?;
+            let old_snapshot: Option<String> = connection
+                .query_row(
+                    "SELECT signed_bytes \
+                    FROM auth_api_verification_snapshots \
+                    WHERE api_id=?1 AND generation=?2 \
+                    AND accepted_revision=?3",
+                    params![
+                        review.api_id,
+                        review.expected_generation,
+                        review.expected_revision
+                    ],
+                    |row| {
+                        row.get::<_, Vec<u8>>(0)
+                            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                    },
+                )
+                .optional()?;
             let old_snapshot = old_snapshot
                 .map(|value| decode::<SignedCatalogSnapshot>(&value))
                 .transpose()?;
@@ -284,9 +375,34 @@ impl SqliteAuthorizationStore {
                 "DELETE FROM auth_api_actions WHERE api_id=?1",
                 [&review.api_id],
             )?;
-            connection.execute("INSERT INTO auth_accepted_apis VALUES(?1,?2,?3,?4,?5,?6,?7,1) ON CONFLICT(api_id) DO UPDATE SET generation=excluded.generation,accepted_revision=excluded.accepted_revision,definition_digest=excluded.definition_digest,definition_json=excluded.definition_json,accepted_at=excluded.accepted_at,accepted_by=excluded.accepted_by,revision=auth_accepted_apis.revision+1",params![review.api_id,generation,revision,review.definition_digest,json(&review.proposed)?,now,identity.actor])?;
+            connection.execute(
+                "INSERT INTO auth_accepted_apis \
+                VALUES(?1,?2,?3,?4,?5,?6,?7,1) \
+                ON CONFLICT(api_id) \
+                DO UPDATE SET generation=excluded.generation,\
+                accepted_revision=excluded.accepted_revision,\
+                definition_digest=excluded.definition_digest,\
+                definition_json=excluded.definition_json,\
+                accepted_at=excluded.accepted_at,accepted_by=excluded.accepted_by,\
+                revision=auth_accepted_apis.revision+1",
+                params![
+                    review.api_id,
+                    generation,
+                    revision,
+                    review.definition_digest,
+                    json(&review.proposed)?,
+                    now,
+                    identity.actor
+                ],
+            )?;
             for removed in &review.removed_capabilities {
-                connection.execute("UPDATE auth_capability_identities SET state='deleted',deleted_at=?1 WHERE capability_id=?2 AND state='active'",params![now,removed])?;
+                connection.execute(
+                    "UPDATE auth_capability_identities \
+                    SET state='deleted',deleted_at=?1 \
+                    WHERE capability_id=?2 \
+                    AND state='active'",
+                    params![now, removed],
+                )?;
             }
             let mut snapshot = SignedCatalogSnapshot {
                 format: CATALOG_SNAPSHOT_FORMAT_V1.into(),
@@ -351,20 +467,60 @@ impl SqliteAuthorizationStore {
             }
             snapshot.actions = actions.into_values().collect();
             for (name, definition) in api.capabilities() {
-                let current:Option<(u64,u64)>=connection.query_row("SELECT identity_generation,consent_revision FROM auth_capability_identities WHERE capability_id=?1 AND state='active'",[name.as_str()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
-                let identity_generation = if let Some((identity_generation, consent_revision)) =
-                    current
-                {
-                    if definition.consent_revision < consent_revision {
-                        return Err(AuthError::Invalid("consent rollback".into()));
-                    }
-                    connection.execute("UPDATE auth_capability_identities SET consent_revision=?1,title=?2,description=?3,consequence=?4 WHERE capability_id=?5 AND identity_generation=?6",params![definition.consent_revision,definition.title,definition.description,definition.consequence,name.as_str(),identity_generation])?;
-                    identity_generation
-                } else {
-                    let identity_generation:u64=connection.query_row("SELECT coalesce(max(identity_generation),0)+1 FROM auth_capability_identities WHERE capability_id=?1",[name.as_str()],|row|row.get(0))?;
-                    connection.execute("INSERT INTO auth_capability_identities VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,NULL)",params![name.as_str(),identity_generation,review.api_id,definition.consent_revision,definition.title,definition.description,definition.consequence,now])?;
-                    identity_generation
-                };
+                let current: Option<(u64, u64)> = connection
+                    .query_row(
+                        "SELECT identity_generation,consent_revision \
+                        FROM auth_capability_identities \
+                        WHERE capability_id=?1 \
+                        AND state='active'",
+                        [name.as_str()],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
+                let identity_generation =
+                    if let Some((identity_generation, consent_revision)) = current {
+                        if definition.consent_revision < consent_revision {
+                            return Err(AuthError::Invalid("consent rollback".into()));
+                        }
+                        connection.execute(
+                            "UPDATE auth_capability_identities \
+                            SET consent_revision=?1,title=?2,description=?3,consequence=?4 \
+                            WHERE capability_id=?5 \
+                            AND identity_generation=?6",
+                            params![
+                                definition.consent_revision,
+                                definition.title,
+                                definition.description,
+                                definition.consequence,
+                                name.as_str(),
+                                identity_generation
+                            ],
+                        )?;
+                        identity_generation
+                    } else {
+                        let identity_generation: u64 = connection.query_row(
+                            "SELECT coalesce(max(identity_generation),0)+1 \
+                            FROM auth_capability_identities \
+                            WHERE capability_id=?1",
+                            [name.as_str()],
+                            |row| row.get(0),
+                        )?;
+                        connection.execute(
+                            "INSERT INTO auth_capability_identities \
+                            VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,NULL)",
+                            params![
+                                name.as_str(),
+                                identity_generation,
+                                review.api_id,
+                                definition.consent_revision,
+                                definition.title,
+                                definition.description,
+                                definition.consequence,
+                                now
+                            ],
+                        )?;
+                        identity_generation
+                    };
                 let mut memberships = Vec::new();
                 for selection in &definition.allows {
                     for action in action_identity(selection) {
@@ -458,7 +614,19 @@ impl SqliteAuthorizationStore {
 
     pub(crate) fn current_catalog(&self, api_id: &str) -> Result<SignedCatalogSnapshot, AuthError> {
         self.transaction(|connection| {
-            let bytes:Vec<u8>=connection.query_row("SELECT s.signed_bytes FROM auth_accepted_apis a JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id AND s.generation=a.generation AND s.accepted_revision=a.accepted_revision WHERE a.api_id=?1",[api_id],|row|row.get(0)).optional()?.ok_or(AuthError::NotFound)?;
+            let bytes: Vec<u8> = connection
+                .query_row(
+                    "SELECT s.signed_bytes \
+                    FROM auth_accepted_apis a \
+                    JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
+                    AND s.generation=a.generation \
+                    AND s.accepted_revision=a.accepted_revision \
+                    WHERE a.api_id=?1",
+                    [api_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)?;
             Ok(serde_json::from_slice(&bytes)?)
         })
     }

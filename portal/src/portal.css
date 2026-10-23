@@ -207,6 +207,3 @@ footer {
   border-bottom: 1px solid var(--line);
   font-size: 0.875rem;
 }
-.tls-notice code {
-  overflow-wrap: anywhere;
-}

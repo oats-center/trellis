@@ -418,7 +418,12 @@ pub(super) fn grant_request(
     now: i64,
 ) -> GrantApproval {
     // RFC 7638 public P-256 thumbprint; private material never enters Auth.
-    let jwk = serde_json::json!({"kty":"EC","crv":"P-256","x":"f83OJ3D2xF4tH8Ew7k6N4dQx7mD2GxLyD6uZJq9m7tQ","y":"x_FEzRu9m36HLN1qrnUbcS1v6sV_4rxGO6ZGfStUdSU"});
+    let jwk = serde_json::json!({
+        "kty":"EC",
+        "crv":"P-256",
+        "x":"f83OJ3D2xF4tH8Ew7k6N4dQx7mD2GxLyD6uZJq9m7tQ",
+        "y":"x_FEzRu9m36HLN1qrnUbcS1v6sV_4rxGO6ZGfStUdSU"
+    });
     let jkt = URL_SAFE_NO_PAD.encode(Sha256::digest(
         super::sqlite::json(&jwk).unwrap().as_bytes(),
     ));
@@ -2127,7 +2132,18 @@ async fn real_broker_publishes_signed_cutoff_and_closes_only_the_matching_marker
         .each_ref()
         .map(|socket| socket.local_addr().unwrap().port());
     let config = directory.path().join("nats.conf");
-    std::fs::write(&config,format!("port: {port}\nhttp_port: {http}\nwebsocket {{ port: {websocket}, no_tls: true }}\njetstream {{ store_dir: '{}' }}\naccounts {{ SYS {{ users: [{{user: sys,password: pw}}] }}, APP {{ jetstream: enabled, users: [{{user: '{marker}',password: pw}},{{user: control,password: pw}}] }} }}\nsystem_account: SYS\n",directory.path().join("jetstream").display())).unwrap();
+    std::fs::write(
+        &config,
+        format!(
+            "port: {port}\nhttp_port: {http}\nwebsocket {{ port: {websocket}, \
+            no_tls: true }}\njetstream {{ store_dir: '{}' }}\naccounts {{ SYS {{ \
+            users: [{{user: sys,password: pw}}] }}, APP {{ jetstream: enabled, \
+            users: [{{user: '{marker}',password: pw}},{{user: control,password: \
+            pw}}] }} }}\nsystem_account: SYS\n",
+            directory.path().join("jetstream").display()
+        ),
+    )
+    .unwrap();
     drop(listeners);
     // CI supplies its producer-resolved executable. There is no rebuilt runtime,
     // fake broker, test-support feature, readiness bypass, or hidden skip.
@@ -2881,6 +2897,13 @@ fn sdk_dispatch_checks_signed_bytes_new_membership_and_session_retirement() {
     )
     .unwrap();
     let issuer = f.store.issuer().unwrap();
+    let catalog = trellis_protocol::AuthenticatedCatalog::authenticate(
+        catalog,
+        &issuer,
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        account_key(),
+    )
+    .unwrap();
     let policy = SessionAuthorityVerificationPolicy {
         now_unix_seconds: NOW + 1,
         allowed_clock_skew_seconds: 5,

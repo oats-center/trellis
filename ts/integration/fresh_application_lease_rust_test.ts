@@ -452,9 +452,6 @@ test("Rust fresh RPC is fenced during loss and resumes only after broker-ready i
       interruptibleNativeProxy: true,
       authorization: {
         contextLifetimeSeconds: 106,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 46,
       },
     },
   );

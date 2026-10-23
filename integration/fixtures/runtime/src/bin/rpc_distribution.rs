@@ -52,7 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut commands = BufReader::new(tokio::io::stdin()).lines();
     let result = tokio::select! {
         result = runtime.run() => result.map_err(Box::<dyn std::error::Error>::from),
-        result = commands.next_line() => result.map(|_| ()).map_err(Box::<dyn std::error::Error>::from),
+        result = commands.next_line() =>
+            result
+                    .map(|_| ())
+                    .map_err(Box::<dyn std::error::Error>::from),
     };
     owner.shutdown_native_runtime().await?;
     result

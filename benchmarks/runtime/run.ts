@@ -13,9 +13,10 @@ import { inspect, parseArgs, promisify } from "node:util";
 import { chromium } from "playwright";
 import { ulid } from "ulid";
 import { z } from "zod";
-import type {
-  TrellisTestClientParticipant,
-  TrellisTestParticipantLike,
+import {
+  type TrellisTestClientParticipant,
+  type TrellisTestParticipantLike,
+  trustedInstallationCas,
 } from "@oatscenter/trellis-testkit";
 import {
   spawnTracked,
@@ -362,6 +363,8 @@ try {
       lane === "lifecycle" ? { contextLifetimeSeconds: 120 } : undefined,
   });
   await runtime.ensureAdmin();
+  // Native Rust workers trust the same installation CA, through the environment.
+  process.env["TRELLIS_CA_CERTIFICATE"] ??= trustedInstallationCas()[0];
   if (args.diagnostics)
     stopObserver = await observeTransfer(await runtime.connectNats());
   const metadata = z

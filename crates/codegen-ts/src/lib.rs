@@ -200,7 +200,10 @@ pub fn collect_ts_package_sources(
     });
     sources.push(GeneratedTsSource {
         path: "index.ts".into(),
-        contents: "export * as apis from \"./apis/index.ts\";\nexport * as participants from \"./participants/index.ts\";\nexport * as apps from \"./apps/index.ts\";\nexport * as types from \"./types/index.ts\";\n".into(),
+        contents: "export * as apis from \"./apis/index.ts\";\nexport * as participants \
+            from \"./participants/index.ts\";\nexport * as apps from \
+            \"./apps/index.ts\";\nexport * as types from \"./types/index.ts\";\n"
+            .into(),
     });
     Ok(sources)
 }
@@ -456,7 +459,9 @@ fn render_types(package: &SemanticPackage, modules: &BTreeMap<String, String>) -
             render_type_definition(name, definition, package.identity().as_str(), modules)
         ));
         lines.push(format!(
-            "export const {name}Codec: {{ decode(value: unknown): {name}; encode(value: {name}): unknown }} = codecs.recursive<{name}>(() => codecs.named({}, {}));",
+            "export const {name}Codec: {{ decode(value: unknown): {name}; \
+            encode(value: {name}): unknown }} = codecs.recursive<{name}>(() => \
+            codecs.named({}, {}));",
             js_string(&format!("{}.{name}", package.identity())),
             render_codec_definition(definition, package.identity().as_str(), own_module, modules)
         ));
@@ -597,7 +602,9 @@ fn render_type_expression(
                 .into()
         }
         TypeExpression::CursorPage(value) => format!(
-            "{{ readonly items: Array<{}>; readonly page: {{ readonly nextCursor?: string; readonly [key: string]: unknown }}; readonly [key: string]: unknown }}",
+            "{{ readonly items: Array<{}>; readonly page: {{ readonly nextCursor?: \
+            string; readonly [key: string]: unknown }}; readonly [key: string]: \
+            unknown }}",
             render_type_expression(value, package, modules)
         ),
     }
@@ -689,9 +696,14 @@ fn render_codec_expression(
             "codecs.nullable({})",
             render_codec_expression(value, package, own_module, modules)
         ),
-        TypeExpression::CursorQuery => "codecs.model({ cursor: codecs.optional(codecs.string), limit: codecs.optional(codecs.u32) })".into(),
+        TypeExpression::CursorQuery => {
+            "codecs.model({ cursor: codecs.optional(codecs.string), limit: \
+            codecs.optional(codecs.u32) })"
+                .into()
+        }
         TypeExpression::CursorPage(value) => format!(
-            "codecs.model({{ items: codecs.list({}), page: codecs.model({{ nextCursor: codecs.optional(codecs.string) }}) }})",
+            "codecs.model({{ items: codecs.list({}), page: codecs.model({{ \
+            nextCursor: codecs.optional(codecs.string) }}) }})",
             render_codec_expression(value, package, own_module, modules)
         ),
     }
@@ -756,16 +768,23 @@ fn render_api(
         ));
         lines.push(format!("  readonly data: {data};"));
         lines.push(format!("  constructor(data: {data}) {{"));
-        lines.push("    super(data.message, { id: data.id, ...(data.context !== undefined ? { context: data.context } : {}) });".into());
+        lines.push(
+            "    super(data.message, { id: data.id, ...(data.context !== undefined \
+            ? { context: data.context } : {}) });"
+                .into(),
+        );
         lines.push("    this.data = data;".into());
         lines.push("  }".into());
         lines.push(if payload_type.is_some() {
             format!(
-                "  static fromSerializable(data: unknown): {name} {{ const error = data as SerializableErrorData; return new {name}({{ ...error, ...{name}.payloadCodec.decode(data) }} as {data}); }}"
+                "  static fromSerializable(data: unknown): {name} {{ const error = data \
+                as SerializableErrorData; return new {name}({{ ...error, \
+                ...{name}.payloadCodec.decode(data) }} as {data}); }}"
             )
         } else {
             format!(
-                "  static fromSerializable(data: unknown): {name} {{ return new {name}(data as {data}); }}"
+                "  static fromSerializable(data: unknown): {name} {{ return new \
+                {name}(data as {data}); }}"
             )
         });
         lines.push(format!(
@@ -904,29 +923,80 @@ fn render_action(
         ActionKind::Live => &api.subjects().lives[&id.name],
     });
     match action {
-        ActionDefinition::Rpc { input, output, errors, download, pagination } => format!(
-            "{{ kind: \"rpc\", descriptorName: {descriptor}, subject: {subject}, input: {}, output: {}, errors: [{}], download: {download}, pagination: {} }}",
+        ActionDefinition::Rpc {
+            input,
+            output,
+            errors,
+            download,
+            pagination,
+        } => format!(
+            "{{ kind: \"rpc\", descriptorName: {descriptor}, subject: {subject}, \
+            input: {}, output: {}, errors: [{}], download: {download}, pagination: \
+            {} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
-            errors.iter().map(|error| error.to_owned()).collect::<Vec<_>>().join(", "),
-            if pagination.is_some() { "\"cursor\"" } else { "undefined" }
+            errors
+                .iter()
+                .map(|error| error.to_owned())
+                .collect::<Vec<_>>()
+                .join(", "),
+            if pagination.is_some() {
+                "\"cursor\""
+            } else {
+                "undefined"
+            }
         ),
-        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload, stream } => format!(
-            "{{ kind: \"operation\", descriptorName: {descriptor}, subject: {subject}, input: {}, output: {}, progress: {}, update: {}, errors: [{}], signals: {{ {} }}, upload: {upload}, stream: {stream} }}",
+        ActionDefinition::Operation {
+            input,
+            output,
+            progress,
+            update,
+            errors,
+            signals,
+            upload,
+            stream,
+        } => format!(
+            "{{ kind: \"operation\", descriptorName: {descriptor}, subject: {subject}, \
+            input: {}, output: {}, progress: {}, update: {}, errors: [{}], \
+            signals: {{ {} }}, upload: {upload}, stream: {stream} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
-            progress.as_ref().map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
-            update.as_ref().or(progress.as_ref()).map(|value| type_codec(value, package, modules)).unwrap_or_else(|| "undefined".into()),
-            errors.iter().map(|error| error.to_owned()).collect::<Vec<_>>().join(", "),
-            signals.iter().map(|(name, ty)| format!("{}: {}", property_name(name), type_codec(ty, package, modules))).collect::<Vec<_>>().join(", ")
+            progress
+                .as_ref()
+                .map(|value| type_codec(value, package, modules))
+                .unwrap_or_else(|| "undefined".into()),
+            update
+                .as_ref()
+                .or(progress.as_ref())
+                .map(|value| type_codec(value, package, modules))
+                .unwrap_or_else(|| "undefined".into()),
+            errors
+                .iter()
+                .map(|error| error.to_owned())
+                .collect::<Vec<_>>()
+                .join(", "),
+            signals
+                .iter()
+                .map(|(name, ty)| format!(
+                    "{}: {}",
+                    property_name(name),
+                    type_codec(ty, package, modules)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
-        ActionDefinition::Event { payload, parameters } => format!(
-            "{{ kind: \"event\", descriptorName: {descriptor}, subject: {subject}, payload: {}, parameters: {} }}",
+        ActionDefinition::Event {
+            payload,
+            parameters,
+        } => format!(
+            "{{ kind: \"event\", descriptorName: {descriptor}, subject: {subject}, \
+            payload: {}, parameters: {} }}",
             type_codec(payload, package, modules),
             serde_json::to_string(parameters).expect("event parameters")
         ),
         ActionDefinition::Live { input, event } => format!(
-            "{{ kind: \"live\", descriptorName: {descriptor}, subject: {subject}, input: {}, event: {} }}",
+            "{{ kind: \"live\", descriptorName: {descriptor}, subject: {subject}, \
+            input: {}, event: {} }}",
             type_codec(input, package, modules),
             type_codec(event, package, modules)
         ),
@@ -957,23 +1027,73 @@ fn render_action_type(
         })
     );
     match action {
-        ActionDefinition::Rpc { input, output, errors, download, pagination } => format!(
-            "{{ {common}; readonly input: typeof {}; readonly output: typeof {}; readonly errors: readonly [{}]; readonly download: {download}; readonly pagination: {} }}",
+        ActionDefinition::Rpc {
+            input,
+            output,
+            errors,
+            download,
+            pagination,
+        } => format!(
+            "{{ {common}; readonly input: typeof {}; readonly output: typeof {}; \
+            readonly errors: readonly [{}]; readonly download: {download}; \
+            readonly pagination: {} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
-            errors.iter().map(|error| format!("typeof {error}")).collect::<Vec<_>>().join(", "),
-            if pagination.is_some() { "\"cursor\"" } else { "undefined" }
+            errors
+                .iter()
+                .map(|error| format!("typeof {error}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if pagination.is_some() {
+                "\"cursor\""
+            } else {
+                "undefined"
+            }
         ),
-        ActionDefinition::Operation { input, output, progress, update, errors, signals, upload, stream } => format!(
-            "{{ {common}; readonly input: typeof {}; readonly output: typeof {}; readonly progress: {}; readonly update: {}; readonly errors: readonly [{}]; readonly signals: {{ {} }}; readonly upload: {upload}; readonly stream: {stream} }}",
+        ActionDefinition::Operation {
+            input,
+            output,
+            progress,
+            update,
+            errors,
+            signals,
+            upload,
+            stream,
+        } => format!(
+            "{{ {common}; readonly input: typeof {}; readonly output: typeof {}; \
+            readonly progress: {}; readonly update: {}; readonly errors: readonly \
+            [{}]; readonly signals: {{ {} }}; readonly upload: {upload}; readonly \
+            stream: {stream} }}",
             type_codec(input, package, modules),
             type_codec(output, package, modules),
-            progress.as_ref().map(|value| format!("typeof {}", type_codec(value, package, modules))).unwrap_or_else(|| "undefined".into()),
-            update.as_ref().or(progress.as_ref()).map(|value| format!("typeof {}", type_codec(value, package, modules))).unwrap_or_else(|| "undefined".into()),
-            errors.iter().map(|error| format!("typeof {error}")).collect::<Vec<_>>().join(", "),
-            signals.iter().map(|(name, ty)| format!("readonly {}: typeof {}", property_name(name), type_codec(ty, package, modules))).collect::<Vec<_>>().join("; ")
+            progress
+                .as_ref()
+                .map(|value| format!("typeof {}", type_codec(value, package, modules)))
+                .unwrap_or_else(|| "undefined".into()),
+            update
+                .as_ref()
+                .or(progress.as_ref())
+                .map(|value| format!("typeof {}", type_codec(value, package, modules)))
+                .unwrap_or_else(|| "undefined".into()),
+            errors
+                .iter()
+                .map(|error| format!("typeof {error}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            signals
+                .iter()
+                .map(|(name, ty)| format!(
+                    "readonly {}: typeof {}",
+                    property_name(name),
+                    type_codec(ty, package, modules)
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
         ),
-        ActionDefinition::Event { payload, parameters } => format!(
+        ActionDefinition::Event {
+            payload,
+            parameters,
+        } => format!(
             "{{ {common}; readonly payload: typeof {}; readonly parameters: readonly {} }}",
             type_codec(payload, package, modules),
             render_string_matrix_type(parameters)
@@ -1132,8 +1252,15 @@ fn render_app_request(
             name_types.push(format!("readonly [{key}]: {};", js_string(&name)));
             name_values.push(format!("[{key}]: {}", js_string(&name)));
             let direction = js_string(direction(selected.direction));
-            action_types.push(format!("{{ readonly descriptorName: {descriptor}; readonly direction: {direction}; readonly optionalCapabilities: readonly [{alternatives}] }}"));
-            action_values.push(format!("{{ descriptorName: {descriptor}, direction: {direction}, optionalCapabilities: [{alternatives}] }}"));
+            action_types.push(format!(
+                "{{ readonly descriptorName: {descriptor}; readonly direction: \
+                {direction}; readonly optionalCapabilities: readonly [{alternatives}] \
+                }}"
+            ));
+            action_values.push(format!(
+                "{{ descriptorName: {descriptor}, direction: {direction}, \
+                optionalCapabilities: [{alternatives}] }}"
+            ));
         }
         let optional = selection
             .optional_capabilities
@@ -1141,23 +1268,53 @@ fn render_app_request(
             .map(|id| js_string(id.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
-        use_types.push(format!("{{ readonly api: typeof {}.API; readonly actions: readonly [{}]; readonly optionalCapabilities: readonly [{optional}] }}", aliases[id], action_types.join(", ")));
+        use_types.push(format!(
+            "{{ readonly api: typeof {}.API; readonly actions: readonly [{}]; \
+            readonly optionalCapabilities: readonly [{optional}] }}",
+            aliases[id],
+            action_types.join(", ")
+        ));
         use_values.push(format!(
             "{{ api: {}.API, actions: [{}], optionalCapabilities: [{optional}] }}",
             aliases[id],
             action_values.join(", ")
         ));
     }
-    lines.push("/** Developer selections and local State codecs; never principal installation evidence. */".into());
-    lines.push(format!("export const request: AppRequestDescriptor & {{ readonly id: {}; readonly kind: {}; readonly requiredCapabilities: readonly [{required}]; readonly optionalCapabilities: readonly [{optional}]; readonly uses: readonly [{}]; readonly actionNames: {{ {} }}; readonly states: {{", js_string(request.identity().as_str()), js_string(kind), use_types.join(", "), name_types.join(" ")));
+    lines.push(
+        "/** Developer selections and local State codecs; never principal \
+        installation evidence. */"
+            .into(),
+    );
+    lines.push(format!(
+        "export const request: AppRequestDescriptor & {{ readonly id: {}; \
+        readonly kind: {}; readonly requiredCapabilities: readonly \
+        [{required}]; readonly optionalCapabilities: readonly [{optional}]; \
+        readonly uses: readonly [{}]; readonly actionNames: {{ {} }}; readonly \
+        states: {{",
+        js_string(request.identity().as_str()),
+        js_string(kind),
+        use_types.join(", "),
+        name_types.join(" ")
+    ));
     for (name, state) in request.states() {
         lines.push(format!(
-            "readonly {}: {} & {{ readonly registration: {{ readonly representation: {{ readonly version: number; readonly schema: Uint8Array }}; readonly accepts: readonly {{ readonly version: number; readonly schema: Uint8Array }}[] }} }};",
+            "readonly {}: {} & {{ readonly registration: {{ readonly \
+            representation: {{ readonly version: number; readonly schema: \
+            Uint8Array }}; readonly accepts: readonly {{ readonly version: number; \
+            readonly schema: Uint8Array }}[] }} }};",
             property_name(name.as_str()),
             render_resource_type(state, modules)
         ));
     }
-    lines.push(format!("}} }} = {{ id: {}, kind: {}, requiredCapabilities: [{required}], optionalCapabilities: [{optional}], uses: [{}], actionNames: {{ {} }}, states: {{", js_string(request.identity().as_str()), js_string(kind), use_values.join(", "), name_values.join(", ")));
+    lines.push(format!(
+        "}} }} = {{ id: {}, kind: {}, requiredCapabilities: [{required}], \
+        optionalCapabilities: [{optional}], uses: [{}], actionNames: {{ {} }}, \
+        states: {{",
+        js_string(request.identity().as_str()),
+        js_string(kind),
+        use_values.join(", "),
+        name_values.join(", ")
+    ));
     for (name, state) in request.states() {
         let ResourceDefinition::State {
             schema,
@@ -1268,7 +1425,11 @@ fn render_participant(
     let types_prefix = "../../";
     let mut lines =
         vec!["import { participantDescriptor } from \"@oatscenter/trellis/generated\";".to_owned()];
-    lines.push("import type { ParticipantJobsFromResources, ParticipantKvFromResources, RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";".to_owned());
+    lines.push(
+        "import type { ParticipantJobsFromResources, ParticipantKvFromResources, \
+        RuntimeApiFromGenerated } from \"@oatscenter/trellis/generated\";"
+            .to_owned(),
+    );
     lines.push("import * as types from \"./types.ts\";".to_owned());
     lines.push("export { types };".to_owned());
     let referenced = participant
@@ -1391,7 +1552,8 @@ fn render_participant(
                 })
                 .unwrap_or_default();
             lines.push(format!(
-                "      {{ readonly descriptorName: {}; readonly direction: {}; readonly optionalCapabilities: readonly [{}]; }},",
+                "      {{ readonly descriptorName: {}; readonly direction: {}; readonly \
+                optionalCapabilities: readonly [{}]; }},",
                 js_string(&descriptor_name(&action.action)),
                 js_string(direction(action.direction)),
                 alternatives
@@ -1435,7 +1597,8 @@ fn render_participant(
     lines.push("  };".into());
     if let Some(companion) = participant.companion() {
         lines.push(format!(
-            "  readonly companion: {{ readonly request: typeof Companion.request; readonly availability: {}; }};",
+            "  readonly companion: {{ readonly request: typeof Companion.request; \
+            readonly availability: {}; }};",
             availability(companion.optional)
         ));
     }
@@ -1613,9 +1776,23 @@ fn render_participant_types(
             if optional { " | undefined" } else { "" }
         ));
     }
-    lines.push("export type ResourceHandles<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> =".into());
-    lines.push("  & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name][\"availability\"] extends \"required\" ? Name : never]: Handles[Name] }".into());
-    lines.push("  & { readonly [Name in keyof ResourceDescriptors as ResourceDescriptors[Name][\"availability\"] extends \"optional\" ? Name : never]: Handles[Name] | undefined };".into());
+    lines.push(
+        "export type ResourceHandles<Handles extends { readonly [Name in keyof \
+        ResourceDescriptors]: unknown }> ="
+            .into(),
+    );
+    lines.push(
+        "  & { readonly [Name in keyof ResourceDescriptors as \
+        ResourceDescriptors[Name][\"availability\"] extends \"required\" ? \
+        Name : never]: Handles[Name] }"
+            .into(),
+    );
+    lines.push(
+        "  & { readonly [Name in keyof ResourceDescriptors as \
+        ResourceDescriptors[Name][\"availability\"] extends \"optional\" ? \
+        Name : never]: Handles[Name] | undefined };"
+            .into(),
+    );
 
     lines.push("export type Availability = Readonly<{".into());
     lines.push("  resources: Readonly<{".into());
@@ -1646,7 +1823,11 @@ fn render_participant_types(
     }
     lines.push("  }>;".into());
     lines.push("}>;".into());
-    lines.push("export type ParticipantFacade<Handles extends { readonly [Name in keyof ResourceDescriptors]: unknown }> = Readonly<{".into());
+    lines.push(
+        "export type ParticipantFacade<Handles extends { readonly [Name in \
+        keyof ResourceDescriptors]: unknown }> = Readonly<{"
+            .into(),
+    );
     lines.push("  participant: Participant;".into());
     lines.push("  resources: ResourceHandles<Handles>;".into());
     lines.push("  availability(): Availability;".into());
@@ -1721,38 +1902,106 @@ fn participant_resource_packages(participant: &ParticipantDefinition) -> BTreeSe
 
 fn render_resource(resource: &ResourceDefinition, modules: &BTreeMap<String, String>) -> String {
     match resource {
-        ResourceDefinition::State { optional, schema, version, accepts, .. } => format!(
-            "{{ kind: \"state\", availability: {}, codec: {}, version: {version}, migrations: {{ {} }} }}",
+        ResourceDefinition::State {
+            optional,
+            schema,
+            version,
+            accepts,
+            ..
+        } => format!(
+            "{{ kind: \"state\", availability: {}, codec: {}, version: {version}, \
+            migrations: {{ {} }} }}",
             availability(*optional),
             type_codec(schema, "", modules),
             migrations(accepts, modules)
         ),
-        ResourceDefinition::Kv { optional, schema, version, accepts, history, ttl_ms, desired_max_value, .. } => format!(
-            "{{ kind: \"kv\", availability: {}, codec: {}, version: {version}, migrations: {{ {} }}, history: {history}, ttlMs: {ttl_ms}, desiredMaxValue: {} }}",
+        ResourceDefinition::Kv {
+            optional,
+            schema,
+            version,
+            accepts,
+            history,
+            ttl_ms,
+            desired_max_value,
+            ..
+        } => format!(
+            "{{ kind: \"kv\", availability: {}, codec: {}, version: {version}, \
+            migrations: {{ {} }}, history: {history}, ttlMs: {ttl_ms}, \
+            desiredMaxValue: {} }}",
             availability(*optional),
             type_codec(schema, "", modules),
             migrations(accepts, modules),
             option_number(*desired_max_value)
         ),
-        ResourceDefinition::Store { optional, ttl_ms, desired_max_object, desired_max_total, .. } => format!(
-            "{{ kind: \"store\", availability: {}, ttlMs: {ttl_ms}, desiredMaxObject: {}, desiredMaxTotal: {} }}",
-            availability(*optional), option_number(*desired_max_object), option_number(*desired_max_total)
+        ResourceDefinition::Store {
+            optional,
+            ttl_ms,
+            desired_max_object,
+            desired_max_total,
+            ..
+        } => format!(
+            "{{ kind: \"store\", availability: {}, ttlMs: {ttl_ms}, \
+            desiredMaxObject: {}, desiredMaxTotal: {} }}",
+            availability(*optional),
+            option_number(*desired_max_object),
+            option_number(*desired_max_total)
         ),
-        ResourceDefinition::Job { optional, payload, result, update, deadline_ms, retry, .. } => format!(
-            "{{ kind: \"job\", availability: {}, payload: {}, result: {}, update: {}, deadlineMs: {}, retry: {} }}",
+        ResourceDefinition::Job {
+            optional,
+            payload,
+            result,
+            update,
+            deadline_ms,
+            retry,
+            ..
+        } => format!(
+            "{{ kind: \"job\", availability: {}, payload: {}, result: {}, \
+            update: {}, deadlineMs: {}, retry: {} }}",
             availability(*optional),
             type_codec(payload, "", modules),
-            result.as_ref().map(|value| type_codec(value, "", modules)).unwrap_or_else(|| "undefined".into()),
-            update.as_ref().map(|value| type_codec(value, "", modules)).unwrap_or_else(|| "undefined".into()),
+            result
+                .as_ref()
+                .map(|value| type_codec(value, "", modules))
+                .unwrap_or_else(|| "undefined".into()),
+            update
+                .as_ref()
+                .map(|value| type_codec(value, "", modules))
+                .unwrap_or_else(|| "undefined".into()),
             option_number(*deadline_ms),
-            retry.as_ref().map(|value| serde_json::json!({"attempts":value.attempts,"backoffMs":value.backoff_ms}).to_string()).unwrap_or_else(|| "undefined".into())
+            retry
+                .as_ref()
+                .map(|value| {
+                    serde_json::json!({"attempts":value.attempts,"backoffMs":value.backoff_ms})
+                        .to_string()
+                })
+                .unwrap_or_else(|| "undefined".into())
         ),
-        ResourceDefinition::Consumer { optional, events, concurrency, replay, retry, .. } => format!(
-            "{{ kind: \"consumer\", availability: {}, events: {}, concurrency: {concurrency}, replay: {}, retry: {} }}",
+        ResourceDefinition::Consumer {
+            optional,
+            events,
+            concurrency,
+            replay,
+            retry,
+            ..
+        } => format!(
+            "{{ kind: \"consumer\", availability: {}, events: {}, concurrency: \
+            {concurrency}, replay: {}, retry: {} }}",
             availability(*optional),
-            serde_json::to_string(&events.iter().map(|(api, event)| [api.as_str(), event]).collect::<Vec<_>>()).expect("consumer events"),
+            serde_json::to_string(
+                &events
+                    .iter()
+                    .map(|(api, event)| [api.as_str(), event])
+                    .collect::<Vec<_>>()
+            )
+            .expect("consumer events"),
             js_string(&format!("{:?}", replay).to_lowercase()),
-            retry.as_ref().map(|value| serde_json::json!({"attempts":value.attempts,"backoffMs":value.backoff_ms}).to_string()).unwrap_or_else(|| "undefined".into())
+            retry
+                .as_ref()
+                .map(|value| {
+                    serde_json::json!({"attempts":value.attempts,"backoffMs":value.backoff_ms})
+                        .to_string()
+                })
+                .unwrap_or_else(|| "undefined".into())
         ),
     }
 }

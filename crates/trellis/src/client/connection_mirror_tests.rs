@@ -41,7 +41,10 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
                 trellis_auth_v1::rpc::CapabilityGrantsGrant::CALLER_CAPABILITIES[0],
                 trellis_auth_v1::rpc::SessionsRevoke::CALLER_CAPABILITIES[0]
             ],"optional":[]},
-            {"type":"trellis_platform_privileges","required":["privileges.manage","principals.manage","roles.manage"]}
+            {
+                "type":"trellis_platform_privileges",
+                "required": ["privileges.manage","principals.manage","roles.manage"]
+            }
         ]))
         .await
         .unwrap();
@@ -420,13 +423,13 @@ async fn connect_caller(
     .await
     .unwrap();
     let login = native
-        .start_device(&json!([{
-        "type":"trellis_capabilities","required":[
-            Query::CALLER_CAPABILITIES[0], trellis_auth_v1::rpc::SessionsRevoke::CALLER_CAPABILITIES[0]
-        ],"optional":[]
-        }]))
-        .await
-        .unwrap();
+    .start_device(&json!([{
+    "type":"trellis_capabilities","required":[
+        Query::CALLER_CAPABILITIES[0], trellis_auth_v1::rpc::SessionsRevoke::CALLER_CAPABILITIES[0]
+    ],"optional":[]
+    }]))
+    .await
+    .unwrap();
     runtime
         .approve_device_login("trellis.cli", login.user_code())
         .await

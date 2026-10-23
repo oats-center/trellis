@@ -186,8 +186,20 @@ async fn login(
 
 async fn administrator(runtime: &TrellisTestRuntime) -> AuthClient {
     let options = login(runtime, "trellis.cli", json!([
-        {"type":"trellis_capabilities", "required":[], "optional": CliRequest::OPTIONAL_CAPABILITIES},
-        {"type":"trellis_platform_privileges", "required":["principals.manage","roles.manage","apis.accept","clients.manage"]}
+        {
+            "type":"trellis_capabilities",
+            "required": [],
+            "optional": CliRequest::OPTIONAL_CAPABILITIES
+        },
+        {
+            "type":"trellis_platform_privileges",
+            "required": [
+                "principals.manage",
+                "roles.manage",
+                "apis.accept",
+                "clients.manage"
+                        ]
+        }
     ]), runtime.admin_username(), runtime.admin_password(), None).await;
     AuthClient::from_generated(GeneratedClient::connect_user(options).await.unwrap())
 }
@@ -322,16 +334,52 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
     drop(provider);
     let running = tokio::spawn(service.run());
     let client_id = format!("optional-{}", ulid::Ulid::new());
-    admin.o_auth_clients_put(&wire(json!({"clientId":client_id,"title":"Optional fixture","description":"Selective native consent","kind":"native","redirectUris":[],"impliedConsent":[],"development":true,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin
+        .o_auth_clients_put(&wire(json!({
+            "clientId":client_id,
+            "title":"Optional fixture",
+            "description":"Selective native consent",
+            "kind":"native",
+            "redirectUris": [],
+            "impliedConsent": [],
+            "development":true,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        })))
+        .await
+        .unwrap();
     let password = ulid::Ulid::new().to_string();
-    let user = admin.users_create(&wire(json!({"username":format!("optional-{}",ulid::Ulid::new()),"password":password,"displayName":"Optional fixture","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap().user;
+    let user = admin
+        .users_create(&wire(json!({
+            "username":format!("optional-{}",ulid::Ulid::new()),
+            "password":password,
+            "displayName":"Optional fixture",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        })))
+        .await
+        .unwrap()
+        .user;
     let principal = user.principal_id.to_string();
     let read = Request::REQUIRED_CAPABILITIES[0];
     let extend = Request::OPTIONAL_CAPABILITIES[0];
     for capability in [read, extend] {
-        admin.capability_grants_grant(&wire(json!({"principalId":principal,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+        admin
+            .capability_grants_grant(&wire(json!({
+                "principalId":principal,
+                "capabilityId":capability,
+                "expectedRevision":"0",
+                "idempotencyKey":ulid::Ulid::new().to_string()
+            })))
+            .await
+            .unwrap();
     }
-    let details = json!([{"type":"trellis_capabilities","required":Request::REQUIRED_CAPABILITIES,"optional":Request::OPTIONAL_CAPABILITIES}]);
+    let details = json!([
+        {
+            "type":"trellis_capabilities",
+            "required":Request::REQUIRED_CAPABILITIES,
+            "optional":Request::OPTIONAL_CAPABILITIES
+        }
+    ]);
     let before = broker_connections(&runtime).await;
     let base = GeneratedClient::connect_user(
         login(
@@ -416,7 +464,14 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
         .iter()
         .find(|item| item.capability.capability_id.as_ref() == extend)
         .unwrap();
-    admin.capability_grants_revoke(&wire(json!({"grantId":grant.grant_id,"expectedRevision":grant.revision,"idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin
+        .capability_grants_revoke(&wire(json!({
+            "grantId":grant.grant_id,
+            "expectedRevision":grant.revision,
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        })))
+        .await
+        .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
             let _ = base.refresh_authorization_context().await;
@@ -429,7 +484,15 @@ async fn optional_operation_approval_decline_reduction_and_authorized_expansion(
     .await
     .unwrap();
     assert_eq!(executions.load(Ordering::SeqCst), 2);
-    admin.capability_grants_grant(&wire(json!({"principalId":principal,"capabilityId":extend,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin
+        .capability_grants_grant(&wire(json!({
+            "principalId":principal,
+            "capabilityId":extend,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        })))
+        .await
+        .unwrap();
     base.refresh_authorization_context().await.unwrap();
     let expanded = retained
         .start(&OperationValue {
@@ -576,7 +639,12 @@ async fn generated_kv_is_usable_after_readiness_and_reconnection_preserves_data(
         .await
         .unwrap()
         .deployment;
-    admin.deployments_apply(&wire(json!({"deploymentId":identity.deployment_id(),"expectedRevision":deployment.revision,"packageEvidence":omitted,"idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin.deployments_apply(&wire(json!({
+        "deploymentId":identity.deployment_id(),
+        "expectedRevision":deployment.revision,
+        "packageEvidence":omitted,
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    }))).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         while current.get("retained").await.is_ok() {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -595,15 +663,29 @@ async fn generated_kv_is_usable_after_readiness_and_reconnection_preserves_data(
         .iter()
         .find(|resource| resource.local_name == "records")
         .unwrap();
-    admin.resources_remove(&wire(json!({"resourceId":allocation.resource_id,"expectedRevision":allocation.revision,"idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin.resources_remove(&wire(json!({
+        "resourceId":allocation.resource_id,
+        "expectedRevision":allocation.revision,
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    }))).await.unwrap();
     let deployment = admin
         .deployments_get(&wire(json!({"deploymentId":identity.deployment_id()})))
         .await
         .unwrap()
         .deployment;
-    admin.deployments_apply(&wire(json!({"deploymentId":identity.deployment_id(),"expectedRevision":deployment.revision,"packageEvidence":Participant::package_evidence(),"idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin.deployments_apply(&wire(json!({
+        "deploymentId":identity.deployment_id(),
+        "expectedRevision":deployment.revision,
+        "packageEvidence":Participant::package_evidence(),
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    }))).await.unwrap();
     let (seed, public_key) = trellis_rs::auth::generate_session_keypair();
-    admin.service_instances_provision(&wire(json!({"deploymentId":identity.deployment_id(),"identityPublicKey":public_key,"title":"replacement incarnation","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin.service_instances_provision(&wire(json!({
+        "deploymentId":identity.deployment_id(),
+        "identityPublicKey":public_key,
+        "title":"replacement incarnation",
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    }))).await.unwrap();
     let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
         .await
         .unwrap();

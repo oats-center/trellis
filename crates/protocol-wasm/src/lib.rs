@@ -286,9 +286,12 @@ pub fn verify_authority_metadata(
                         .map_or(0, |sequence| sequence.get()),
                     input.now_unix_seconds,
                 )?;
-                Ok(
-                    json!({"ok": true, "digest": record.digest()?, "record": record, "successor": successor}),
-                )
+                Ok(json!({
+                    "ok": true,
+                    "digest": record.digest()?,
+                    "record": record,
+                    "successor": successor
+                }))
             }
             _ => Err(JsError::new("unknown metadata kind")),
         }
@@ -1268,7 +1271,10 @@ pub fn verify_session_request(
         Ok(verified) => json_result(json!({
             "ok": true,
             "authorityDigest": verified.authority().digest(),
-            "requestProofDigest": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, verified.digest()),
+            "requestProofDigest": base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    verified.digest(),
+                ),
             "caller": verified.caller(),
         })),
         Err(error) => protocol_error_result(&error),
@@ -1308,7 +1314,10 @@ pub fn verify_session_event(
         Ok(verified) => json_result(json!({
             "ok": true,
             "authorityDigest": verified.authority().digest(),
-            "eventProofDigest": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, verified.digest()),
+            "eventProofDigest": base64::Engine::encode(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                    verified.digest(),
+                ),
             "publisherAuthority": verified.authority().authority(),
             "originalPublication": verified.original_publication(),
         })),

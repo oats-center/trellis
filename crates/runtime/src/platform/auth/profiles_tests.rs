@@ -16,7 +16,12 @@ fn profile_enrichment_never_borrows_verification_from_a_different_email() {
     let mut token = VerifiedProfile::from_claims(
         &json!({"name":"Signed token name","email":"token@example.com"}),
     );
-    token.fill(VerifiedProfile::from_claims(&json!({"name":"UserInfo name","given_name":"Given","email":"different@example.com","email_verified":true})));
+    token.fill(VerifiedProfile::from_claims(&json!({
+        "name":"UserInfo name",
+        "given_name":"Given",
+        "email":"different@example.com",
+        "email_verified":true
+    })));
     assert_eq!(token.name.as_deref(), Some("Signed token name"));
     assert_eq!(token.given_name.as_deref(), Some("Given"));
     assert_eq!(token.email.as_deref(), Some("token@example.com"));
@@ -53,7 +58,13 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
     let alice = rpc_users::create_user(&store, &mutation(&admin, &create), &create, NOW)
         .unwrap()
         .user;
-    let create: AuthUserCreateRequest = serde_json::from_value(json!({"username":"bob","displayName":"Shared name","email":"same@example.com","idempotencyKey":id()})).unwrap();
+    let create: AuthUserCreateRequest = serde_json::from_value(json!({
+        "username":"bob",
+        "displayName":"Shared name",
+        "email":"same@example.com",
+        "idempotencyKey":id()
+    }))
+    .unwrap();
     let bob = rpc_users::create_user(&store, &mutation(&admin, &create), &create, NOW)
         .unwrap()
         .user;
@@ -99,12 +110,23 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
     assert_eq!(retained.given_name.as_deref(), Some("Alice"));
     assert_eq!(retained.family_name.as_deref(), Some("Owner"));
     assert_eq!(retained.email.as_deref(), Some("same@example.com"));
-    let invalid: AuthUserProfileUpdateRequest = serde_json::from_value(json!({"email":"replace@example.com","clearEmail":true,"expectedRevision":account.profile_revision.0.0.to_string(),"idempotencyKey":id()})).unwrap();
+    let invalid: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
+        "email":"replace@example.com",
+        "clearEmail":true,
+        "expectedRevision":account.profile_revision.0.0.to_string(),
+        "idempotencyKey":id()
+    }))
+    .unwrap();
     assert!(matches!(
         rpc_users::update_profile(&store, &mutation(&actor, &invalid), &invalid, NOW + 4),
         Err(AuthError::Invalid(_))
     ));
-    let clear: AuthUserProfileUpdateRequest = serde_json::from_value(json!({"clearEmail":true,"expectedRevision":account.profile_revision.0.0.to_string(),"idempotencyKey":id()})).unwrap();
+    let clear: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
+        "clearEmail":true,
+        "expectedRevision":account.profile_revision.0.0.to_string(),
+        "idempotencyKey":id()
+    }))
+    .unwrap();
     let cleared = rpc_users::update_profile(&store, &mutation(&actor, &clear), &clear, NOW + 5)
         .unwrap()
         .user;
@@ -113,8 +135,7 @@ fn owner_profile_updates_are_replayable_revision_checked_and_durable_without_cha
 }
 
 #[test]
-fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unlink_removes_only_upstream_data(
-) {
+fn linked_profile_keeps_manual_choices_and_unlink_removes_only_upstream_data() {
     let directory = tempfile::tempdir().unwrap();
     let store = open(&directory, SigningKey::from_bytes(&[38; 32]));
     store.initialize_issuer(NOW).unwrap();
@@ -128,7 +149,13 @@ fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unl
         )
         .unwrap()
         .principal_id;
-    let create: AuthUserCreateRequest = serde_json::from_value(json!({"username":"linked","displayName":"Manual name","password":"linked profile password","idempotencyKey":id()})).unwrap();
+    let create: AuthUserCreateRequest = serde_json::from_value(json!({
+        "username":"linked",
+        "displayName":"Manual name",
+        "password":"linked profile password",
+        "idempotencyKey":id()
+    }))
+    .unwrap();
     let user = rpc_users::create_user(&store, &mutation(&admin, &create), &create, NOW)
         .unwrap()
         .user;
@@ -158,9 +185,14 @@ fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unl
             Ok(())
         })
         .unwrap();
-    let profile = VerifiedProfile::from_claims(
-        &json!({"name":"Provider name","given_name":"Linked","family_name":"Person","email":"verified@example.com","email_verified":true,"picture":"https://images.example/person.png"}),
-    );
+    let profile = VerifiedProfile::from_claims(&json!({
+        "name":"Provider name",
+        "given_name":"Linked",
+        "family_name":"Person",
+        "email":"verified@example.com",
+        "email_verified":true,
+        "picture":"https://images.example/person.png"
+    }));
     store
         .transaction(|connection| {
             ingest(connection, &actor, &provider, "subject", &profile, NOW + 1)
@@ -195,7 +227,13 @@ fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unl
             NOW + 3
         ))
         .is_err());
-    let patch: AuthUserProfileUpdateRequest = serde_json::from_value(json!({"email":"chosen@example.com","givenName":"Chosen","expectedRevision":user.account.unwrap().profile_revision.0.0.to_string(),"idempotencyKey":id()})).unwrap();
+    let patch: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
+        "email":"chosen@example.com",
+        "givenName":"Chosen",
+        "expectedRevision":user.account.unwrap().profile_revision.0.0.to_string(),
+        "idempotencyKey":id()
+    }))
+    .unwrap();
     rpc_users::update_profile(&store, &mutation(&actor, &patch), &patch, NOW + 4).unwrap();
     store
         .transaction(|connection| {
@@ -208,7 +246,12 @@ fn linked_profile_projection_preserves_missing_claims_and_manual_choices_and_unl
     assert_eq!(current.given_name.as_deref(), Some("Chosen"));
     assert_eq!(current.email.as_deref(), Some("chosen@example.com"));
     assert!(!current.email_verified);
-    let clear: AuthUserProfileUpdateRequest = serde_json::from_value(json!({"clearEmail":true,"expectedRevision":current.account.unwrap().profile_revision.0.0.to_string(),"idempotencyKey":id()})).unwrap();
+    let clear: AuthUserProfileUpdateRequest = serde_json::from_value(json!({
+        "clearEmail":true,
+        "expectedRevision":current.account.unwrap().profile_revision.0.0.to_string(),
+        "idempotencyKey":id()
+    }))
+    .unwrap();
     assert!(
         rpc_users::update_profile(&store, &mutation(&actor, &clear), &clear, NOW + 6)
             .unwrap()

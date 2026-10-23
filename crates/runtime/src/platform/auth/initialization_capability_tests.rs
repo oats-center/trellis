@@ -229,7 +229,19 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         .unwrap(),
     )
     .unwrap();
-    let source=current.packages.iter().find(|package|package.name==current.root_package).unwrap().source.replace("capability rolesRead {", "capability futureRead { title \"Future\"; description \"Future optional right.\"; consequence \"Reads future metadata.\"; consent_revision 1; allows { rpc Roles.List; } }\ncapability rolesRead {");
+    let source = current
+        .packages
+        .iter()
+        .find(|package| package.name == current.root_package)
+        .unwrap()
+        .source
+        .replace(
+            "capability rolesRead {",
+            "capability futureRead { title \"Future\"; description \"Future \
+            optional right.\"; consequence \"Reads future metadata.\"; \
+            consent_revision 1; allows { rpc Roles.List; } }\ncapability rolesRead \
+            {",
+        );
     let graph = compile_project(
         &PackageManifest {
             package: PackageMetadata {

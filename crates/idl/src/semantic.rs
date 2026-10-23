@@ -277,10 +277,6 @@ impl SemanticPackage {
     pub fn app_requests(&self) -> &BTreeMap<AppRequestId, AppRequestDefinition> {
         &self.app_requests
     }
-    /// Return source locations, excluded from semantic identity.
-    pub fn source_map(&self) -> &SourceMap {
-        &self.sources
-    }
 }
 
 /// Exact direct package dependency.

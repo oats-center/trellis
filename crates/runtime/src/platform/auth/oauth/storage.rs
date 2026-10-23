@@ -77,9 +77,46 @@ impl OAuthStorage {
         // freshness extension for new requests. Approved grants keep only the
         // client identity and protocol fields their remaining lifecycle needs.
         let clients = {
-            let mut statement = connection.prepare(
-                "SELECT c.client_id,NOT EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id) AND EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?1 AND l.revoked_at IS NULL AND l.expires_at>?1) FROM auth_cimd_clients c WHERE c.expires_at<=?1 AND NOT EXISTS(SELECT 1 FROM auth_oauth_artifacts a WHERE a.client_id=c.client_id AND a.kind IN ('authorization','upstream','device','deviceSelection','code') AND a.expires_at>?1) AND (EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id) OR NOT EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?1 AND l.revoked_at IS NULL AND l.expires_at>?1) OR c.metadata_json!=json_object('application_type',CASE c.kind WHEN 'browser' THEN 'web' ELSE 'native' END,'redirect_uris',json_extract(c.metadata_json,'$.redirect_uris'))) ORDER BY c.expires_at,c.client_id LIMIT 128"
-            ).map_err(failure)?;
+            let mut statement = connection
+                .prepare(
+                    "SELECT c.client_id,NOT EXISTS(SELECT 1 \
+                    FROM auth_oauth_clients r \
+                    WHERE r.client_id=c.client_id) \
+                    AND EXISTS(SELECT 1 \
+                    FROM auth_oauth_grants g \
+                    JOIN auth_login_sessions l USING(login_session_id) \
+                    WHERE g.client_id=c.client_id \
+                    AND g.revoked_at IS NULL \
+                    AND g.expires_at>?1 \
+                    AND l.revoked_at IS NULL \
+                    AND l.expires_at>?1) \
+                    FROM auth_cimd_clients c \
+                    WHERE c.expires_at<=?1 \
+                    AND NOT EXISTS(SELECT 1 \
+                    FROM auth_oauth_artifacts a \
+                    WHERE a.client_id=c.client_id \
+                    AND a.kind IN ('authorization','upstream','device','deviceSelection',\
+                    'code') \
+                    AND a.expires_at>?1) \
+                    AND (EXISTS(SELECT 1 \
+                    FROM auth_oauth_clients r \
+                    WHERE r.client_id=c.client_id) \
+                    OR NOT EXISTS(SELECT 1 \
+                    FROM auth_oauth_grants g \
+                    JOIN auth_login_sessions l USING(login_session_id) \
+                    WHERE g.client_id=c.client_id \
+                    AND g.revoked_at IS NULL \
+                    AND g.expires_at>?1 \
+                    AND l.revoked_at IS NULL \
+                    AND l.expires_at>?1) \
+                    OR c.metadata_json!=json_object('application_type',CASE c.kind \
+                    WHEN 'browser' THEN 'web' \
+                    ELSE 'native' END,'redirect_uris',json_extract(c.metadata_json,\
+                    '$.redirect_uris'))) \
+                    ORDER BY c.expires_at,c.client_id \
+                    LIMIT 128",
+                )
+                .map_err(failure)?;
             let rows = statement
                 .query_map([now], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
@@ -95,8 +132,26 @@ impl OAuthStorage {
                     .ok_or_else(|| StorageError::new("approved client artifact missing"))?;
                 client.name = None;
                 let sealed = self.encode("client", &hash(&client_id), &client)?;
-                connection.execute("UPDATE auth_oauth_artifacts SET sealed_record=?2,revision=revision+1 WHERE kind='client' AND lookup_hash=?1",params![hash(&client_id),sealed]).map_err(failure)?;
-                connection.execute("UPDATE auth_cimd_clients SET metadata_json=json_object('application_type',CASE kind WHEN 'browser' THEN 'web' ELSE 'native' END,'redirect_uris',json_extract(metadata_json,'$.redirect_uris')) WHERE client_id=?1",[client_id]).map_err(failure)?;
+                connection
+                    .execute(
+                        "UPDATE auth_oauth_artifacts \
+                        SET sealed_record=?2,revision=revision+1 \
+                        WHERE kind='client' \
+                        AND lookup_hash=?1",
+                        params![hash(&client_id), sealed],
+                    )
+                    .map_err(failure)?;
+                connection
+                    .execute(
+                        "UPDATE auth_cimd_clients \
+                        SET metadata_json=json_object('application_type',CASE kind \
+                        WHEN 'browser' THEN 'web' \
+                        ELSE 'native' END,'redirect_uris',json_extract(metadata_json,\
+                        '$.redirect_uris')) \
+                        WHERE client_id=?1",
+                        [client_id],
+                    )
+                    .map_err(failure)?;
             } else {
                 removed += connection
                     .execute(
@@ -112,10 +167,23 @@ impl OAuthStorage {
                     .map_err(failure)?;
             }
         }
-        removed+=connection.execute(
-                "DELETE FROM auth_oauth_artifacts WHERE rowid IN (SELECT a.rowid FROM auth_oauth_artifacts a WHERE a.kind!='client' AND a.expires_at<=?1 AND (a.kind!='refresh' OR NOT EXISTS(SELECT 1 FROM auth_oauth_families f WHERE f.family_lookup_hash=a.family_lookup_hash AND f.expires_at>?1)) ORDER BY a.expires_at,a.rowid LIMIT 256)",
+        removed += connection
+            .execute(
+                "DELETE FROM auth_oauth_artifacts \
+                WHERE rowid IN (SELECT a.rowid \
+                FROM auth_oauth_artifacts a \
+                WHERE a.kind!='client' \
+                AND a.expires_at<=?1 \
+                AND (a.kind!='refresh' \
+                OR NOT EXISTS(SELECT 1 \
+                FROM auth_oauth_families f \
+                WHERE f.family_lookup_hash=a.family_lookup_hash \
+                AND f.expires_at>?1)) \
+                ORDER BY a.expires_at,a.rowid \
+                LIMIT 256)",
                 [now],
-            ).map_err(failure)?;
+            )
+            .map_err(failure)?;
         Ok(removed)
     }
 
@@ -125,68 +193,34 @@ impl OAuthStorage {
         authority: Arc<SqliteAuthorizationStore>,
         path: &std::path::Path,
     ) -> Result<Self, StorageError> {
-        use std::io::Read as _;
-        let metadata = std::fs::symlink_metadata(path).map_err(failure)?;
-        if !metadata.is_file() {
-            return Err(StorageError::new(
-                "OAuth storage key must be a regular file",
-            ));
-        }
-        let mut options = std::fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
-        }
-        let file = options.open(path).map_err(failure)?;
-        let opened = file.metadata().map_err(failure)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt as _;
-            // SAFETY: geteuid has no arguments or borrowed memory.
-            let owner = unsafe { libc::geteuid() };
-            if metadata.dev() != opened.dev()
-                || metadata.ino() != opened.ino()
-                || opened.mode() & 0o777 != 0o600
-                || opened.uid() != owner
-                || opened.nlink() != 1
-            {
-                return Err(StorageError::new(
-                    "OAuth storage key must be an owner-only 0600 file",
-                ));
-            }
-        }
-        if !opened.is_file() || opened.len() > 128 {
-            return Err(StorageError::new(
-                "OAuth storage key must be a regular file",
-            ));
-        }
-        let mut encoded = String::new();
-        file.take(128)
-            .read_to_string(&mut encoded)
-            .map_err(failure)?;
-        let key: [u8; 32] = URL_SAFE_NO_PAD
-            .decode(encoded.trim())
-            .map_err(failure)?
-            .try_into()
-            .map_err(|_| StorageError::new("OAuth storage key must contain 32 bytes"))?;
+        let key = super::super::read_custody_key(path).map_err(failure)?;
         let storage = Self::new(authority, &key)?;
         // Authenticate real persisted ciphertext before accepting new secrets.
         // A replaced but well-formed key must not silently split installation
         // custody between two keys. No synthetic key-check record is needed.
         storage.transaction(|connection| {
-            let artifact: Option<(String, String, Vec<u8>)> = connection.query_row(
-                "SELECT kind,lookup_hash,sealed_record FROM auth_oauth_artifacts LIMIT 1",
-                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).optional().map_err(failure)?;
+            let artifact: Option<(String, String, Vec<u8>)> = connection
+                .query_row(
+                    "SELECT kind,lookup_hash,sealed_record FROM auth_oauth_artifacts LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(failure)?;
             if let Some((kind, lookup, bytes)) = artifact {
                 storage.decode::<serde_json::Value>(&kind, &lookup, &bytes)?;
             } else {
-                let provider: Option<(String, Vec<u8>)> = connection.query_row(
-                    "SELECT provider_id,sealed_client_secret FROM auth_oidc_providers WHERE sealed_client_secret IS NOT NULL LIMIT 1",
-                    [], |row| Ok((row.get(0)?, row.get(1)?)),
-                ).optional().map_err(failure)?;
+                let provider: Option<(String, Vec<u8>)> = connection
+                    .query_row(
+                        "SELECT provider_id,sealed_client_secret \
+                        FROM auth_oidc_providers \
+                        WHERE sealed_client_secret IS NOT NULL \
+                        LIMIT 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(failure)?;
                 if let Some((provider, bytes)) = provider {
                     storage.decode::<String>("upstreamSecret", &hash(&provider), &bytes)?;
                 }
@@ -321,18 +355,109 @@ impl OAuthStorage {
             return Err(AuthError::Denied);
         }
         self.authority.transaction(|connection| {
-            let registered: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)", [client.client_id.as_str()], |row|row.get(0))?;
-            if registered {return Err(AuthError::Conflict);}
-            self.cleanup_expired_in(connection,now).map_err(|_| AuthError::Unavailable)?;
-            let pending_changed:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_cimd_clients c WHERE c.client_id=?1 AND c.metadata_digest!=?2 AND EXISTS(SELECT 1 FROM auth_oauth_artifacts a WHERE a.client_id=c.client_id AND a.kind IN ('authorization','upstream','device','deviceSelection','code') AND a.expires_at>?3))",params![client.client_id.as_str(),document.revision,now],|row|row.get(0))?;
-            if pending_changed {return Err(AuthError::Conflict);}
-            let approved:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=?1 AND g.revoked_at IS NULL AND g.expires_at>?2 AND l.revoked_at IS NULL AND l.expires_at>?2)",params![client.client_id.as_str(),now],|row|row.get(0))?;
-            if !approved {
-                let (count,bytes):(i64,i64)=connection.query_row("SELECT count(*),coalesce(sum(length(CAST(c.metadata_json AS BLOB))+coalesce(length(a.sealed_record),0)),0) FROM auth_cimd_clients c LEFT JOIN auth_oauth_artifacts a ON a.client_id=c.client_id AND a.kind='client' WHERE c.client_id!=?1 AND NOT EXISTS(SELECT 1 FROM auth_oauth_clients r WHERE r.client_id=c.client_id) AND NOT EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?2 AND l.revoked_at IS NULL AND l.expires_at>?2)",params![client.client_id.as_str(),now],|row|Ok((row.get(0)?,row.get(1)?)))?;
-                if count>=128 || bytes.saturating_add(metadata.len() as i64).saturating_add(sealed.len() as i64)>16*1024*1024 {return Err(AuthError::ResourceLimit);}
+            let registered: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",
+                [client.client_id.as_str()],
+                |row| row.get(0),
+            )?;
+            if registered {
+                return Err(AuthError::Conflict);
             }
-            connection.execute("INSERT INTO auth_oauth_artifacts(lookup_hash,kind,client_id,grant_established_at_ns,sealed_record,expires_at,revision) VALUES(?1,'client',?2,?3,?4,?5,1) ON CONFLICT(kind,lookup_hash) DO UPDATE SET sealed_record=excluded.sealed_record,expires_at=excluded.expires_at,revision=revision+1",params![hash(client.client_id.as_str()),client.client_id.as_str(),nanos(document.observed_at).map_err(|_|AuthError::Unavailable)?,sealed,expires])?;
-            connection.execute("INSERT INTO auth_cimd_clients(client_id,kind,metadata_digest,metadata_json,observed_at,expires_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(client_id) DO UPDATE SET kind=excluded.kind,metadata_digest=excluded.metadata_digest,metadata_json=excluded.metadata_json,observed_at=excluded.observed_at,expires_at=excluded.expires_at",params![client.client_id.as_str(),document.kind,document.revision,metadata,observed,expires])?;
+            self.cleanup_expired_in(connection, now)
+                .map_err(|_| AuthError::Unavailable)?;
+            let pending_changed: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_cimd_clients c \
+                WHERE c.client_id=?1 \
+                AND c.metadata_digest!=?2 \
+                AND EXISTS(SELECT 1 \
+                FROM auth_oauth_artifacts a \
+                WHERE a.client_id=c.client_id \
+                AND a.kind IN ('authorization','upstream','device','deviceSelection',\
+                'code') \
+                AND a.expires_at>?3))",
+                params![client.client_id.as_str(), document.revision, now],
+                |row| row.get(0),
+            )?;
+            if pending_changed {
+                return Err(AuthError::Conflict);
+            }
+            let approved: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_oauth_grants g \
+                JOIN auth_login_sessions l USING(login_session_id) \
+                WHERE g.client_id=?1 \
+                AND g.revoked_at IS NULL \
+                AND g.expires_at>?2 \
+                AND l.revoked_at IS NULL \
+                AND l.expires_at>?2)",
+                params![client.client_id.as_str(), now],
+                |row| row.get(0),
+            )?;
+            if !approved {
+                let (count, bytes): (i64, i64) = connection.query_row(
+                    "SELECT count(*),coalesce(sum(length(CAST(c.metadata_json AS \
+                    BLOB))+coalesce(length(a.sealed_record),0)),0) \
+                    FROM auth_cimd_clients c \
+                    LEFT JOIN auth_oauth_artifacts a ON a.client_id=c.client_id \
+                    AND a.kind='client' \
+                    WHERE c.client_id!=?1 \
+                    AND NOT EXISTS(SELECT 1 \
+                    FROM auth_oauth_clients r \
+                    WHERE r.client_id=c.client_id) \
+                    AND NOT EXISTS(SELECT 1 \
+                    FROM auth_oauth_grants g \
+                    JOIN auth_login_sessions l USING(login_session_id) \
+                    WHERE g.client_id=c.client_id \
+                    AND g.revoked_at IS NULL \
+                    AND g.expires_at>?2 \
+                    AND l.revoked_at IS NULL \
+                    AND l.expires_at>?2)",
+                    params![client.client_id.as_str(), now],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                if count >= 128
+                    || bytes
+                        .saturating_add(metadata.len() as i64)
+                        .saturating_add(sealed.len() as i64)
+                        > 16 * 1024 * 1024
+                {
+                    return Err(AuthError::ResourceLimit);
+                }
+            }
+            connection.execute(
+                "INSERT INTO auth_oauth_artifacts(lookup_hash,kind,client_id,\
+                grant_established_at_ns,sealed_record,expires_at,revision) \
+                VALUES(?1,'client',?2,?3,?4,?5,1) \
+                ON CONFLICT(kind,lookup_hash) \
+                DO UPDATE SET sealed_record=excluded.sealed_record,\
+                expires_at=excluded.expires_at,revision=revision+1",
+                params![
+                    hash(client.client_id.as_str()),
+                    client.client_id.as_str(),
+                    nanos(document.observed_at).map_err(|_| AuthError::Unavailable)?,
+                    sealed,
+                    expires
+                ],
+            )?;
+            connection.execute(
+                "INSERT INTO auth_cimd_clients(client_id,kind,metadata_digest,\
+                metadata_json,observed_at,expires_at) \
+                VALUES(?1,?2,?3,?4,?5,?6) \
+                ON CONFLICT(client_id) \
+                DO UPDATE SET kind=excluded.kind,\
+                metadata_digest=excluded.metadata_digest,\
+                metadata_json=excluded.metadata_json,observed_at=excluded.observed_at,\
+                expires_at=excluded.expires_at",
+                params![
+                    client.client_id.as_str(),
+                    document.kind,
+                    document.revision,
+                    metadata,
+                    observed,
+                    expires
+                ],
+            )?;
             Ok(())
         })
     }
@@ -373,9 +498,20 @@ impl OAuthStorage {
         now: i64,
     ) -> Result<super::portal::PortalAuthorization, StorageError> {
         self.transaction(|connection| {
-            let flow: super::portal::PortalAuthorization = self.read(connection, "authorization", id)?.ok_or_else(||StorageError::new("authorization unavailable"))?;
-            if flow.session_id != session || flow.expires_at <= now {return Err(StorageError::new("authorization unavailable"));}
-            connection.execute("DELETE FROM auth_oauth_artifacts WHERE kind='authorization' AND lookup_hash=?1", [hash(id)]).map_err(failure)?;
+            let flow: super::portal::PortalAuthorization = self
+                .read(connection, "authorization", id)?
+                .ok_or_else(|| StorageError::new("authorization unavailable"))?;
+            if flow.session_id != session || flow.expires_at <= now {
+                return Err(StorageError::new("authorization unavailable"));
+            }
+            connection
+                .execute(
+                    "DELETE FROM auth_oauth_artifacts \
+                    WHERE kind='authorization' \
+                    AND lookup_hash=?1",
+                    [hash(id)],
+                )
+                .map_err(failure)?;
             Ok(flow)
         })
     }
@@ -395,7 +531,16 @@ impl OAuthStorage {
         }
         if let Some(presentation) = &mut flow.presentation {
             let lookup = hash(id);
-            let sealed: Vec<u8> = connection.query_row("SELECT sealed_record FROM auth_oauth_artifacts WHERE kind='authorization' AND lookup_hash=?1",[&lookup],|row|row.get(0)).map_err(failure)?;
+            let sealed: Vec<u8> = connection
+                .query_row(
+                    "SELECT sealed_record \
+                    FROM auth_oauth_artifacts \
+                    WHERE kind='authorization' \
+                    AND lookup_hash=?1",
+                    [&lookup],
+                    |row| row.get(0),
+                )
+                .map_err(failure)?;
             presentation.lookup_hash = lookup;
             presentation.sealed_digest = URL_SAFE_NO_PAD.encode(Sha256::digest(&sealed));
         }
@@ -426,7 +571,15 @@ impl OAuthStorage {
         current.presentation = Some(presentation);
         let lookup = hash(id);
         let sealed = self.encode("authorization", &lookup, &current)?;
-        connection.execute("UPDATE auth_oauth_artifacts SET sealed_record=?1,revision=revision+1 WHERE kind='authorization' AND lookup_hash=?2",params![sealed,lookup]).map_err(failure)?;
+        connection
+            .execute(
+                "UPDATE auth_oauth_artifacts \
+                SET sealed_record=?1,revision=revision+1 \
+                WHERE kind='authorization' \
+                AND lookup_hash=?2",
+                params![sealed, lookup],
+            )
+            .map_err(failure)?;
         Ok(())
     }
 
@@ -530,9 +683,47 @@ impl OAuthStorage {
             // Only the engine's initial refresh artifact establishes the absolute
             // family deadline. Access-token expiry is unrelated, and rotations
             // must never slide the original deadline.
-            connection.execute("INSERT INTO auth_oauth_families(family_lookup_hash,oauth_grant_id,expires_at,revision) SELECT ?1,g.oauth_grant_id,min(?3,g.expires_at,l.expires_at),1 FROM auth_oauth_grants g JOIN auth_login_sessions l ON l.login_session_id=g.login_session_id WHERE g.oauth_grant_id=?2 ON CONFLICT(family_lookup_hash) DO NOTHING", params![family,grant,expires]).map_err(failure)?;
+            connection
+                .execute(
+                    "INSERT INTO auth_oauth_families(family_lookup_hash,oauth_grant_id,\
+                    expires_at,revision) SELECT ?1,g.oauth_grant_id,min(?3,g.expires_at,\
+                    l.expires_at),1 \
+                    FROM auth_oauth_grants g \
+                    JOIN auth_login_sessions l ON l.login_session_id=g.login_session_id \
+                    WHERE g.oauth_grant_id=?2 \
+                    ON CONFLICT(family_lookup_hash) \
+                    DO NOTHING",
+                    params![family, grant, expires],
+                )
+                .map_err(failure)?;
         }
-        connection.execute("INSERT INTO auth_oauth_artifacts(lookup_hash,kind,client_id,user_code_hash,grant_established_at_ns,family_lookup_hash,oauth_grant_id,sealed_record,expires_at,revision) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(kind,lookup_hash) DO UPDATE SET client_id=excluded.client_id,user_code_hash=excluded.user_code_hash,grant_established_at_ns=excluded.grant_established_at_ns,family_lookup_hash=excluded.family_lookup_hash,oauth_grant_id=excluded.oauth_grant_id,sealed_record=excluded.sealed_record,expires_at=excluded.expires_at,revision=revision+1", params![key,record.kind,record.client,record.user_code,nanos(record.established)?,family,record.grant,sealed,record.expires.map(seconds).transpose()?.unwrap_or(i64::MAX)]).map_err(failure)?;
+        connection
+            .execute(
+                "INSERT INTO auth_oauth_artifacts(lookup_hash,kind,client_id,\
+                user_code_hash,grant_established_at_ns,family_lookup_hash,\
+                oauth_grant_id,sealed_record,expires_at,revision) \
+                VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,1) \
+                ON CONFLICT(kind,lookup_hash) \
+                DO UPDATE SET client_id=excluded.client_id,\
+                user_code_hash=excluded.user_code_hash,\
+                grant_established_at_ns=excluded.grant_established_at_ns,\
+                family_lookup_hash=excluded.family_lookup_hash,\
+                oauth_grant_id=excluded.oauth_grant_id,\
+                sealed_record=excluded.sealed_record,expires_at=excluded.expires_at,\
+                revision=revision+1",
+                params![
+                    key,
+                    record.kind,
+                    record.client,
+                    record.user_code,
+                    nanos(record.established)?,
+                    family,
+                    record.grant,
+                    sealed,
+                    record.expires.map(seconds).transpose()?.unwrap_or(i64::MAX)
+                ],
+            )
+            .map_err(failure)?;
         Ok(())
     }
 
@@ -580,7 +771,26 @@ impl OAuthStorage {
         family: Option<&str>,
         established: SystemTime,
     ) -> Result<bool, StorageError> {
-        connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_barriers WHERE (kind='family' AND scope=?1) OR (kind='client' AND scope=?2 AND recorded_at_ns>=?3)) OR EXISTS(SELECT 1 FROM auth_oauth_families WHERE family_lookup_hash=?1 AND (revoked_at IS NOT NULL OR expires_at<=?4))", params![family.map(hash),client.as_str(),nanos(established)?,seconds(SystemTime::now())?], |row| row.get(0)).map_err(failure)
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_oauth_barriers \
+                WHERE (kind='family' \
+                AND scope=?1) OR (kind='client' \
+                AND scope=?2 AND recorded_at_ns>=?3)) \
+                OR EXISTS(SELECT 1 FROM auth_oauth_families \
+                WHERE family_lookup_hash=?1 \
+                AND (revoked_at IS NOT NULL \
+                OR expires_at<=?4))",
+                params![
+                    family.map(hash),
+                    client.as_str(),
+                    nanos(established)?,
+                    seconds(SystemTime::now())?
+                ],
+                |row| row.get(0),
+            )
+            .map_err(failure)
     }
 
     fn access(&self, connection: &Connection, token: &IssuedToken) -> Result<(), StorageError> {
@@ -669,7 +879,22 @@ impl OAuthStorage {
         if scope.is_empty() {
             return Err(StorageError::new("empty OAuth revocation scope"));
         }
-        connection.execute("INSERT INTO auth_oauth_barriers VALUES (?1,?2,?3,?4) ON CONFLICT(kind,scope) DO UPDATE SET recorded_at_ns=MAX(recorded_at_ns,excluded.recorded_at_ns),expires_at=MAX(expires_at,excluded.expires_at)", params![kind,scope,nanos(window.recorded_at)?,seconds(window.until)?]).map_err(failure)?;
+        connection
+            .execute(
+                "INSERT INTO auth_oauth_barriers \
+                VALUES (?1,?2,?3,?4) \
+                ON CONFLICT(kind,scope) \
+                DO UPDATE SET recorded_at_ns=MAX(recorded_at_ns,\
+                excluded.recorded_at_ns),expires_at=MAX(expires_at,\
+                excluded.expires_at)",
+                params![
+                    kind,
+                    scope,
+                    nanos(window.recorded_at)?,
+                    seconds(window.until)?
+                ],
+            )
+            .map_err(failure)?;
         Ok(())
     }
 }
@@ -679,9 +904,19 @@ impl Storage for OAuthStorage {
         let connection = self.authority.connection.lock().map_err(failure)?;
         let registered: Option<(String, String, String, String, String)> = connection
             .query_row(
-                "SELECT state,kind,display_name,redirect_uris_json,metadata_json FROM auth_oauth_clients WHERE client_id=?1",
+                "SELECT state,kind,display_name,redirect_uris_json,metadata_json \
+                FROM auth_oauth_clients \
+                WHERE client_id=?1",
                 [client_id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()
             .map_err(failure)?;
@@ -724,7 +959,28 @@ impl Storage for OAuthStorage {
             })));
         }
         let now = seconds(SystemTime::now())?;
-        let retained:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_cimd_clients c WHERE c.client_id=?1 AND (c.expires_at>?2 OR EXISTS(SELECT 1 FROM auth_oauth_artifacts a WHERE a.client_id=c.client_id AND a.kind IN ('authorization','upstream','device','deviceSelection','code') AND a.expires_at>?2) OR EXISTS(SELECT 1 FROM auth_oauth_grants g JOIN auth_login_sessions l USING(login_session_id) WHERE g.client_id=c.client_id AND g.revoked_at IS NULL AND g.expires_at>?2 AND l.revoked_at IS NULL AND l.expires_at>?2)))",params![client_id.as_str(),now],|row|row.get(0)).map_err(failure)?;
+        let retained: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_cimd_clients c \
+                WHERE c.client_id=?1 \
+                AND (c.expires_at>?2 \
+                OR EXISTS(SELECT 1 FROM auth_oauth_artifacts a \
+                WHERE a.client_id=c.client_id \
+                AND a.kind IN ('authorization','upstream','device','deviceSelection',\
+                'code') \
+                AND a.expires_at>?2) \
+                OR EXISTS(SELECT 1 FROM auth_oauth_grants g \
+                JOIN auth_login_sessions l USING(login_session_id) \
+                WHERE g.client_id=c.client_id \
+                AND g.revoked_at IS NULL \
+                AND g.expires_at>?2 \
+                AND l.revoked_at IS NULL \
+                AND l.expires_at>?2)))",
+                params![client_id.as_str(), now],
+                |row| row.get(0),
+            )
+            .map_err(failure)?;
         if !retained {
             return Ok(None);
         }
@@ -805,7 +1061,17 @@ impl Storage for OAuthStorage {
         normalized_user_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
-        let sealed: Option<(String,Vec<u8>)> = connection.query_row("SELECT lookup_hash,sealed_record FROM auth_oauth_artifacts WHERE kind='device' AND user_code_hash=?1", [hash(normalized_user_code)], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(failure)?;
+        let sealed: Option<(String, Vec<u8>)> = connection
+            .query_row(
+                "SELECT lookup_hash,sealed_record \
+                FROM auth_oauth_artifacts \
+                WHERE kind='device' \
+                AND user_code_hash=?1",
+                [hash(normalized_user_code)],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(failure)?;
         sealed
             .map(|(key, sealed)| self.decode("device", &key, &sealed))
             .transpose()
@@ -966,12 +1232,37 @@ impl Storage for OAuthStorage {
     ) -> Result<u64, StorageError> {
         self.transaction(|connection| {
             let family = hash(family_id);
-            self.barrier(connection,"family",&family,window)?;
-            let grant: Option<String> = connection.query_row("SELECT oauth_grant_id FROM auth_oauth_families WHERE family_lookup_hash=?1", [&family], |row|row.get(0)).optional().map_err(failure)?;
+            self.barrier(connection, "family", &family, window)?;
+            let grant: Option<String> = connection
+                .query_row(
+                    "SELECT oauth_grant_id \
+                    FROM auth_oauth_families \
+                    WHERE family_lookup_hash=?1",
+                    [&family],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(failure)?;
             let now = seconds(window.recorded_at)?;
-            connection.execute("UPDATE auth_oauth_families SET revoked_at=coalesce(revoked_at,?2),revision=revision+1 WHERE family_lookup_hash=?1 AND revoked_at IS NULL", params![family,now]).map_err(failure)?;
-            if let Some(grant) = grant { enqueue_scope(connection,&EnforcementScope::Grant(grant),now).map_err(failure)?; }
-            connection.execute("DELETE FROM auth_oauth_artifacts WHERE family_lookup_hash=?1", [family]).map(|count|count as u64).map_err(failure)
+            connection
+                .execute(
+                    "UPDATE auth_oauth_families \
+                    SET revoked_at=coalesce(revoked_at,?2),revision=revision+1 \
+                    WHERE family_lookup_hash=?1 \
+                    AND revoked_at IS NULL",
+                    params![family, now],
+                )
+                .map_err(failure)?;
+            if let Some(grant) = grant {
+                enqueue_scope(connection, &EnforcementScope::Grant(grant), now).map_err(failure)?;
+            }
+            connection
+                .execute(
+                    "DELETE FROM auth_oauth_artifacts WHERE family_lookup_hash=?1",
+                    [family],
+                )
+                .map(|count| count as u64)
+                .map_err(failure)
         })
     }
 
@@ -983,10 +1274,41 @@ impl Storage for OAuthStorage {
         let now = SystemTime::now();
         self.transaction(|connection| {
             let key = hash(replay_id);
-            connection.execute("DELETE FROM auth_oauth_artifacts WHERE kind='dpopReplay' AND lookup_hash=?1 AND expires_at<=?2", params![key,seconds(now)?]).map_err(failure)?;
-            let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oauth_artifacts WHERE kind='dpopReplay' AND lookup_hash=?1)", [&key], |row|row.get(0)).map_err(failure)?;
-            if present { return Ok(false); }
-            self.write(connection,Record { kind:"dpopReplay",key:replay_id,value:&(),client:None,grant:None,family:None,user_code:None,established:now,expires:Some(expires_at) })?;
+            connection
+                .execute(
+                    "DELETE FROM auth_oauth_artifacts \
+                    WHERE kind='dpopReplay' \
+                    AND lookup_hash=?1 AND expires_at<=?2",
+                    params![key, seconds(now)?],
+                )
+                .map_err(failure)?;
+            let present: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 \
+                    FROM auth_oauth_artifacts \
+                    WHERE kind='dpopReplay' \
+                    AND lookup_hash=?1)",
+                    [&key],
+                    |row| row.get(0),
+                )
+                .map_err(failure)?;
+            if present {
+                return Ok(false);
+            }
+            self.write(
+                connection,
+                Record {
+                    kind: "dpopReplay",
+                    key: replay_id,
+                    value: &(),
+                    client: None,
+                    grant: None,
+                    family: None,
+                    user_code: None,
+                    established: now,
+                    expires: Some(expires_at),
+                },
+            )?;
             Ok(true)
         })
     }
@@ -1055,7 +1377,15 @@ mod tests {
                 .unwrap();
         let key = EcdsaP256Key::generate("pending-cimd");
         let document = |client_id: &str, name: &str| {
-            let metadata = serde_json::json!({"client_id":client_id,"application_type":"native","client_name":name,"redirect_uris":["http://127.0.0.1:9123/callback"],"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]});
+            let metadata = serde_json::json!({
+                "client_id":client_id,
+                "application_type":"native",
+                "client_name":name,
+                "redirect_uris": ["http://127.0.0.1:9123/callback"],
+                "token_endpoint_auth_method":"none",
+                "grant_types": ["authorization_code","refresh_token"],
+                "response_types": ["code"]
+            });
             let body = serde_json::to_vec(&metadata).unwrap();
             let mut policy = CimdPolicy::new();
             policy.redirect_uris_same_origin = false;
@@ -1080,10 +1410,28 @@ mod tests {
                 .store()
                 .install_client_document(&document(&client_id, "Reviewed client"))
                 .unwrap();
-            let pairs=vec![
-                ("response_type".into(),"code".into()),("client_id".into(),client_id.clone()),("redirect_uri".into(),"http://127.0.0.1:9123/callback".into()),
-                ("code_challenge".into(),URL_SAFE_NO_PAD.encode(Sha256::digest(b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"))),("code_challenge_method".into(),"S256".into()),
-                ("dpop_jkt".into(),key.public_jwk().thumbprint()),("authorization_details".into(),serde_json::json!([{"type":"trellis_capabilities","required":[],"optional":[]}]).to_string()),
+            let pairs = vec![
+                ("response_type".into(), "code".into()),
+                ("client_id".into(), client_id.clone()),
+                (
+                    "redirect_uri".into(),
+                    "http://127.0.0.1:9123/callback".into(),
+                ),
+                (
+                    "code_challenge".into(),
+                    URL_SAFE_NO_PAD.encode(Sha256::digest(
+                        b"abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG",
+                    )),
+                ),
+                ("code_challenge_method".into(), "S256".into()),
+                ("dpop_jkt".into(), key.public_jwk().thumbprint()),
+                (
+                    "authorization_details".into(),
+                    serde_json::json!([
+                        {"type":"trellis_capabilities","required":[],"optional":[]}
+                    ])
+                    .to_string(),
+                ),
             ];
             let request = AuthorizationRequest::from_pairs(
                 pairs

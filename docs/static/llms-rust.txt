@@ -331,7 +331,7 @@ evidence, exact authority, resources, signed context, and broker permissions
 server-side. The CONNECT proof contains no caller-selected deployment or API.
 Authorization state is process-memory-only and is refreshed
 proactively as SDK-owned maintenance. Renewing unchanged transport authority
-promotes context and routing credentials without replacing a healthy socket.
+promotes the new session authority without replacing a healthy socket.
 Newly approved authority is adopted automatically on a readied successor; safe
 accepted work retains its receiving connection until it settles. No manual
 transport-refresh API, upgrade notification, or context-store parameter exists.

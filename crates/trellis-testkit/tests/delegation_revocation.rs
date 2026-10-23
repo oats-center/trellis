@@ -28,9 +28,21 @@ async fn delegation_revocation_is_atomic_idempotent_and_grant_scoped() {
         )
         .await
         .unwrap();
-        let device = native.start_device(&serde_json::json!([
-            {"type":"trellis_capabilities","required":["trellis.auth@v1::accountRead", "trellis.auth@v1::delegationsRead", "trellis.auth@v1::delegationsRevoke", "trellis.auth@v1::sessionsRead"],"optional":[]}
-        ])).await.unwrap();
+        let device = native
+            .start_device(&serde_json::json!([
+                {
+                    "type":"trellis_capabilities",
+                    "required": [
+                        "trellis.auth@v1::accountRead",
+                        "trellis.auth@v1::delegationsRead",
+                        "trellis.auth@v1::delegationsRevoke",
+                        "trellis.auth@v1::sessionsRead"
+                                ],
+                    "optional": []
+                }
+            ]))
+            .await
+            .unwrap();
         runtime
             .approve_device_login("trellis.cli", device.user_code())
             .await

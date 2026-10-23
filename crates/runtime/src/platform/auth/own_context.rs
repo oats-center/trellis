@@ -3,11 +3,7 @@
 use futures_util::StreamExt as _;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
-use std::{
-    future::Future,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{future::Future, sync::Arc, time::Duration};
 use trellis_protocol::{
     sign_admission_context, verify_admission_get, AdmissionContext, SignedAdmissionContext,
     SignedAdmissionGet, ADMISSION_GET_DOMAIN_V1,
@@ -69,76 +65,155 @@ impl OwnContextService {
                 _=&mut shutdown=>break,
                 completed=requests.join_next(), if !requests.is_empty()=> {
                     match completed {
-                        Some(Err(_))=>return Err(AuthError::Unavailable),
-                        Some(Ok(Err(_)))=>tracing::warn!("own-context response publication unavailable"),
-                        _=>{}
+                        Some(Err(_)) => return Err(AuthError::Unavailable),
+                        Some(Ok(Err(_))) => {
+                            tracing::warn!("own-context response publication unavailable")
+                        }
+                        _ => {}
                     }
                 }
                 message=self.subscriber.next()=> {
-                    let Some(message)=message else {return Err(AuthError::Unavailable);};
-                    let Some(reply)=message.reply else {continue;};
+                    let Some(message) = message else {
+                        return Err(AuthError::Unavailable);
+                    };
+                    let Some(reply) = message.reply else {
+                        continue;
+                    };
                     // Never use Auth's operational publish rights as a deputy for
                     // an arbitrary reply destination, including error/overload paths.
-                    if message.payload.len()>4096 {continue;}
-                    let Ok(request)=serde_json::from_slice::<SignedAdmissionGet>(&message.payload) else {continue;};
-                    let Ok(inbox)=trellis_protocol::admission_inbox_prefix(&request.request.session_public_key) else {continue;};
-                    if trellis_protocol::admission_get_subject(&request.request.session_public_key).ok().as_deref()!=Some(message.subject.as_str())
-                        || !reply.starts_with(&format!("{inbox}.")) || reply.len()>512
-                        || reply.split('.').any(|part|part.is_empty() || part.contains(['*','>']) || part.chars().any(char::is_whitespace)) {continue;}
-                    if requests.len()>=32 {
+                    if message.payload.len() > 4096 {
                         continue;
                     }
-                    let store=self.store.clone();
-                    let client=self.client.clone();
-                    let material=self.material.clone();
+                    let Ok(request) =
+                        serde_json::from_slice::<SignedAdmissionGet>(&message.payload)
+                    else {
+                        continue;
+                    };
+                    let Ok(inbox) = trellis_protocol::admission_inbox_prefix(
+                        &request.request.session_public_key,
+                    ) else {
+                        continue;
+                    };
+                    if trellis_protocol::admission_get_subject(&request.request.session_public_key)
+                        .ok()
+                        .as_deref()
+                        != Some(message.subject.as_str())
+                        || !reply.starts_with(&format!("{inbox}."))
+                        || reply.len() > 512
+                        || reply.split('.').any(|part| {
+                            part.is_empty()
+                                || part.contains(['*', '>'])
+                                || part.chars().any(char::is_whitespace)
+                        })
+                    {
+                        continue;
+                    }
+                    if requests.len() >= 32 {
+                        continue;
+                    }
+                    let store = self.store.clone();
+                    let client = self.client.clone();
+                    let material = self.material.clone();
                     requests.spawn(async move {
-                        let destination=reply.clone();
-                        let publication_store=store.clone();
-                        let result=tokio::task::spawn_blocking(move || {
-                            SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|time|i64::try_from(time.as_secs()).ok())
-                                .ok_or(AuthError::Unavailable)
-                                .and_then(|now|store.own_context_with_digest(&message.payload,message.subject.as_str(),destination.as_str(),now))
-                                .and_then(|(response,digest)| {
-                                    let authority=trellis_protocol::parse_session_authority(response.response.session_authority.as_bytes(),trellis_protocol::MAX_SESSION_AUTHORITY_BYTES)?;
-                                    let dependencies=authority.unsigned.apis.iter()
-                                        .map(|api|("catalog",api.catalog_snapshot_digest.clone()))
-                                        .chain(authority.unsigned.provider_bindings.iter().map(|binding|("provider",binding.provider_certificate_digest.clone())))
+                        let destination = reply.clone();
+                        let publication_store = store.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            store
+                                .own_context_with_digest(
+                                    &message.payload,
+                                    message.subject.as_str(),
+                                    destination.as_str(),
+                                    crate::clock::unix_now(),
+                                )
+                                .and_then(|(response, digest)| {
+                                    let authority = trellis_protocol::parse_session_authority(
+                                        response.response.session_authority.as_bytes(),
+                                        trellis_protocol::MAX_SESSION_AUTHORITY_BYTES,
+                                    )?;
+                                    let dependencies = authority
+                                        .unsigned
+                                        .apis
+                                        .iter()
+                                        .map(|api| ("catalog", api.catalog_snapshot_digest.clone()))
+                                        .chain(authority.unsigned.provider_bindings.iter().map(
+                                            |binding| {
+                                                (
+                                                    "provider",
+                                                    binding.provider_certificate_digest.clone(),
+                                                )
+                                            },
+                                        ))
                                         .collect::<Vec<_>>();
-                                    Ok((serde_json::to_vec(&response)?,digest,dependencies))
+                                    Ok((serde_json::to_vec(&response)?, digest, dependencies))
                                 })
-                        }).await.map_err(|_|AuthError::Unavailable)?;
+                        })
+                        .await
+                        .map_err(|_| AuthError::Unavailable)?;
                         // The bootstrap envelope has no signed negative variant.
                         // Failed verification and overload remain transport failures,
                         // never unsigned credential-revocation instructions.
-                         let Ok((bytes,digest,dependencies))=result else {return Ok(());};
+                        let Ok((bytes, digest, dependencies)) = result else {
+                            return Ok(());
+                        };
                         // A successful own-context reply makes application I/O immediately usable.
-                         // Publish its exact immutable dependency closure before exposing that reply; the durable
-                        // outbox remains the crash-recovery owner and may idempotently repeat this put.
-                         for (kind,key) in dependencies {
-                             publication_store.publish_verification_material(&material,kind,&key).await?;
-                         }
-                         publication_store.publish_verification_material(&material,"authority",&digest).await?;
-                        client.publish(reply,bytes.into()).await.map_err(|_|AuthError::Unavailable)
+                        // Publish its exact immutable dependency closure before exposing that
+                        // reply; the durable
+                        // outbox remains the crash-recovery owner and may idempotently repeat this
+                        // put.
+                        for (kind, key) in dependencies {
+                            publication_store
+                                .publish_verification_material(&material, kind, &key)
+                                .await?;
+                        }
+                        publication_store
+                            .publish_verification_material(&material, "authority", &digest)
+                            .await?;
+                        client
+                            .publish(reply, bytes.into())
+                            .await
+                            .map_err(|_| AuthError::Unavailable)
                     });
                 }
                 message=self.metadata.next()=> {
-                    let Some(message)=message else {return Err(AuthError::Unavailable)};
-                    let Some(reply)=message.reply else {continue};
+                    let Some(message) = message else {
+                        return Err(AuthError::Unavailable);
+                    };
+                    let Some(reply) = message.reply else { continue };
                     // NATS admission ACLs restrict this subject to admitted users;
                     // never reflect their unsigned lookup into API/control subjects.
-                    if message.payload.is_empty() || message.payload.len()>4096 || reply.len()>512
-                        || !reply.starts_with("_INBOX.") || reply.split('.').count()<3
-                        || reply.split('.').any(|part|part.is_empty() || part.contains(['*','>']) || part.chars().any(char::is_whitespace))
-                        || requests.len()>=32 {continue}
-                    let store=self.store.clone();let client=self.client.clone();
+                    if message.payload.is_empty()
+                        || message.payload.len() > 4096
+                        || reply.len() > 512
+                        || !reply.starts_with("_INBOX.")
+                        || reply.split('.').count() < 3
+                        || reply.split('.').any(|part| {
+                            part.is_empty()
+                                || part.contains(['*', '>'])
+                                || part.chars().any(char::is_whitespace)
+                        })
+                        || requests.len() >= 32
+                    {
+                        continue;
+                    }
+                    let store = self.store.clone();
+                    let client = self.client.clone();
                     requests.spawn(async move {
-                        let destination=reply.clone();
-                        let result=tokio::task::spawn_blocking(move || {
-                            let now=SystemTime::now().duration_since(UNIX_EPOCH).ok().and_then(|time|i64::try_from(time.as_secs()).ok()).ok_or(AuthError::Unavailable)?;
-                            store.issuer_metadata(&message.payload,message.subject.as_str(),destination.as_str(),now)
-                        }).await.map_err(|_|AuthError::Unavailable)?;
-                        let Ok(bytes)=result else {return Ok(())};
-                        client.publish(reply,bytes.into()).await.map_err(|_|AuthError::Unavailable)
+                        let destination = reply.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            store.issuer_metadata(
+                                &message.payload,
+                                message.subject.as_str(),
+                                destination.as_str(),
+                                crate::clock::unix_now(),
+                            )
+                        })
+                        .await
+                        .map_err(|_| AuthError::Unavailable)?;
+                        let Ok(bytes) = result else { return Ok(()) };
+                        client
+                            .publish(reply, bytes.into())
+                            .await
+                            .map_err(|_| AuthError::Unavailable)
                     });
                 }
             }
@@ -358,16 +433,53 @@ impl SqliteAuthorizationStore {
         }
         let companion = if let Some(definition) = installed.companion() {
             let client = format!("trellis.device.{deployment}.companion");
-            let grant: Option<String> = connection.query_row(
-                "SELECT c.oauth_grant_id FROM auth_device_companions c JOIN auth_oauth_grants g USING(oauth_grant_id) JOIN auth_login_sessions l USING(login_session_id) JOIN auth_principals p ON p.principal_id=g.principal_id WHERE c.instance_id=?1 AND c.state='active' AND c.companion_request_id=?2 AND g.client_id=?3 AND g.binding_kind='native' AND g.revoked_at IS NULL AND g.expires_at>?4 AND l.revoked_at IS NULL AND l.expires_at>?4 AND p.state='active' AND EXISTS(SELECT 1 FROM auth_oauth_families f WHERE f.oauth_grant_id=g.oauth_grant_id AND f.revoked_at IS NULL AND f.expires_at>?4)",
-                params![instance,definition.request.as_str(),client,authority.issued_at],|row|row.get(0)).optional()?;
-            grant.map(|grant| json!({"requestId":definition.request.as_str(),"oauthGrantId":grant,"clientId":client,"required":!definition.optional}))
+            let grant: Option<String> = connection
+                .query_row(
+                    "SELECT c.oauth_grant_id \
+                    FROM auth_device_companions c \
+                    JOIN auth_oauth_grants g USING(oauth_grant_id) \
+                    JOIN auth_login_sessions l USING(login_session_id) \
+                    JOIN auth_principals p ON p.principal_id=g.principal_id \
+                    WHERE c.instance_id=?1 \
+                    AND c.state='active' \
+                    AND c.companion_request_id=?2 \
+                    AND g.client_id=?3 AND g.binding_kind='native' \
+                    AND g.revoked_at IS NULL \
+                    AND g.expires_at>?4 \
+                    AND l.revoked_at IS NULL \
+                    AND l.expires_at>?4 \
+                    AND p.state='active' \
+                    AND EXISTS(SELECT 1 \
+                    FROM auth_oauth_families f \
+                    WHERE f.oauth_grant_id=g.oauth_grant_id \
+                    AND f.revoked_at IS NULL \
+                    AND f.expires_at>?4)",
+                    params![
+                        instance,
+                        definition.request.as_str(),
+                        client,
+                        authority.issued_at
+                    ],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            grant.map(|grant| {
+                json!({
+                    "requestId":definition.request.as_str(),
+                    "oauthGrantId":grant,
+                    "clientId":client,
+                    "required":!definition.optional
+                })
+            })
         } else {
             None
         };
-        Ok(Some(
-            json!({"participantId":participant,"participantDigest":digest,"resourceRuntime":runtime,"companion":companion}),
-        ))
+        Ok(Some(json!({
+            "participantId":participant,
+            "participantDigest":digest,
+            "resourceRuntime":runtime,
+            "companion":companion
+        })))
     }
 
     /// The signed bootstrap identifies bounded immutable-material resolution;
@@ -417,42 +529,105 @@ impl SqliteAuthorizationStore {
         verify_admission_get(&request, subject, reply, &self.settings.instance_id, now)?;
         self.transaction(|connection| {
             self.current_signer(connection)?;
-            let count:i64=connection.query_row(
-                "SELECT count(DISTINCT s.authorization_session_id) FROM auth_authorization_sessions s JOIN auth_attachments a USING(authorization_session_id) WHERE s.runtime_id=?1 AND s.session_public_key=?2 AND s.state='active' AND a.state IN ('pending','admitted')",
-                params![request.request.runtime_id,request.request.session_public_key],|row|row.get(0))?;
+            let count: i64 = connection.query_row(
+                "SELECT count(DISTINCT s.authorization_session_id) \
+                FROM auth_authorization_sessions s \
+                JOIN auth_attachments a USING(authorization_session_id) \
+                WHERE s.runtime_id=?1 \
+                AND s.session_public_key=?2 \
+                AND s.state='active' \
+                AND a.state IN ('pending','admitted')",
+                params![
+                    request.request.runtime_id,
+                    request.request.session_public_key
+                ],
+                |row| row.get(0),
+            )?;
             // A key reused across different bindings is ambiguous, not permission
             // to choose whichever principal has the most authority.
-            if count!=1 {return Err(AuthError::Denied);}
-            let record:Option<(String,String,String)>=connection.query_row(
-                "SELECT s.authorization_session_id,a.attachment_id,a.transport_policy_json FROM auth_authorization_sessions s JOIN auth_attachments a USING(authorization_session_id) WHERE s.runtime_id=?1 AND s.session_public_key=?2 AND a.attachment_id=?3 AND s.state='active' AND a.state IN ('pending','admitted')",
-                params![request.request.runtime_id,request.request.session_public_key,request.request.attachment_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
-            let (session,attachment,admitted)=record.ok_or(AuthError::Denied)?;
-            let identity=AdmissionIdentity {
-                credential:session_credential(connection,&session)?,
-                refresh_family_id:connection.query_row("SELECT original_refresh_family_id FROM auth_authorization_sessions WHERE authorization_session_id=?1",[&session],|row|row.get(0))?,
-                runtime_id:request.request.runtime_id.clone(),
-                session_public_key:request.request.session_public_key.clone(),
-                inbox_prefix:trellis_protocol::admission_inbox_prefix(&request.request.session_public_key)?,
+            if count != 1 {
+                return Err(AuthError::Denied);
+            }
+            let record: Option<(String, String, String)> = connection
+                .query_row(
+                    "SELECT s.authorization_session_id,a.attachment_id,\
+                    a.transport_policy_json \
+                    FROM auth_authorization_sessions s \
+                    JOIN auth_attachments a USING(authorization_session_id) \
+                    WHERE s.runtime_id=?1 \
+                    AND s.session_public_key=?2 \
+                    AND a.attachment_id=?3 \
+                    AND s.state='active' \
+                    AND a.state IN ('pending','admitted')",
+                    params![
+                        request.request.runtime_id,
+                        request.request.session_public_key,
+                        request.request.attachment_id
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let (session, attachment, admitted) = record.ok_or(AuthError::Denied)?;
+            let identity = AdmissionIdentity {
+                credential: session_credential(connection, &session)?,
+                refresh_family_id: connection.query_row(
+                    "SELECT original_refresh_family_id \
+                    FROM auth_authorization_sessions \
+                    WHERE authorization_session_id=?1",
+                    [&session],
+                    |row| row.get(0),
+                )?,
+                runtime_id: request.request.runtime_id.clone(),
+                session_public_key: request.request.session_public_key.clone(),
+                inbox_prefix: trellis_protocol::admission_inbox_prefix(
+                    &request.request.session_public_key,
+                )?,
             };
-            if !reply.starts_with(&format!("{}.",identity.inbox_prefix)) {return Err(AuthError::Denied);}
-            let issued=match self.issue_authority_in_transaction(connection,&identity,Some(&session),now)? {
-                Ok(issued)=>issued,
-                Err(error)=>return Ok(Err(error)),
+            if !reply.starts_with(&format!("{}.", identity.inbox_prefix)) {
+                return Err(AuthError::Denied);
+            }
+            let issued = match self.issue_authority_in_transaction(
+                connection,
+                &identity,
+                Some(&session),
+                now,
+            )? {
+                Ok(issued) => issued,
+                Err(error) => return Ok(Err(error)),
             };
-            let desired=self.compile_transport(connection,&issued.authority.unsigned)?;
-            let admitted:trellis_protocol::TransportAuthorizationV1=serde_json::from_str(&admitted)?;
+            let desired = self.compile_transport(connection, &issued.authority.unsigned)?;
+            let admitted: trellis_protocol::TransportAuthorizationV1 =
+                serde_json::from_str(&admitted)?;
             admitted.validate()?;
-            let registry=self.attachment_registry(connection,&issued.authority.unsigned,&desired,&admitted,&attachment)?;
-            let response=sign_admission_context(AdmissionContext {
-                format:ADMISSION_GET_DOMAIN_V1.into(),issuer_key_id:self.current_issuer(connection)?.key_id,
-                trellis_instance_id:self.settings.instance_id.clone(),audience_nats_account:self.settings.account.clone(),
-                runtime_id:request.request.runtime_id,request_nonce:request.request.request_nonce,
-                request_subject:subject.into(),reply_subject:reply.into(),
-                session_authority:super::sqlite::json(&issued.authority)?,
-                registry,
-                issued_at:now,expires_at:issued.authority.unsigned.expires_at.min(now.saturating_add(30)),
-            },&self.current_signer(connection)?)?;
-            Ok(Ok((response,issued.digest)))
+            let registry = self.attachment_registry(
+                connection,
+                &issued.authority.unsigned,
+                &desired,
+                &admitted,
+                &attachment,
+            )?;
+            let response = sign_admission_context(
+                AdmissionContext {
+                    format: ADMISSION_GET_DOMAIN_V1.into(),
+                    issuer_key_id: self.current_issuer(connection)?.key_id,
+                    trellis_instance_id: self.settings.instance_id.clone(),
+                    audience_nats_account: self.settings.account.clone(),
+                    runtime_id: request.request.runtime_id,
+                    request_nonce: request.request.request_nonce,
+                    request_subject: subject.into(),
+                    reply_subject: reply.into(),
+                    session_authority: super::sqlite::json(&issued.authority)?,
+                    registry,
+                    issued_at: now,
+                    expires_at: issued
+                        .authority
+                        .unsigned
+                        .expires_at
+                        .min(now.saturating_add(30)),
+                },
+                &self.current_signer(connection)?,
+            )?;
+            Ok(Ok((response, issued.digest)))
         })?
     }
 }

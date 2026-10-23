@@ -601,7 +601,8 @@ fn require_version_base(
         Ok(())
     } else {
         Err(miette!(
-            "{} {label} uses version {version}, but release tag requires base version {expected_base_version}",
+            "{} {label} uses version {version}, but release tag requires base \
+            version {expected_base_version}",
             path.display()
         ))
     }

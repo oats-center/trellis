@@ -46,6 +46,7 @@ pub use sandbox::{remove_retained_workdirs, WorkdirRetention};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trellis_runtime_apis::participants::trellis_health_runtime;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn crashed_ready_server_fails_shutdown_and_retains_failure_diagnostics() {
@@ -325,12 +326,12 @@ mod tests {
     async fn signed_native_heartbeat_projects_provider_identity() {
         use trellis_runtime_apis::{apis::trellis_health_v1, types::*};
         let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
-        let identity = runtime.register_service::<trellis_runtime_apis::participants::trellis_health_runtime::Participant>("health acceptance provider").await.unwrap();
+        let identity = runtime
+            .register_service::<trellis_health_runtime::Participant>("health acceptance provider")
+            .await
+            .unwrap();
         let publication_started_at = time::OffsetDateTime::now_utc();
-        let provider =
-            trellis_runtime_apis::participants::trellis_health_runtime::Participant::connect(
-                identity.connect_options(),
-            )
+        let provider = trellis_health_runtime::Participant::connect(identity.connect_options())
             .await
             .unwrap();
         let caller = runtime
@@ -436,7 +437,10 @@ mod tests {
             .await
             .unwrap_err();
         let trellis_rs::client::CallError::Declared(error) = missing else {
-            panic!("unprivileged native registration must return a verified declared error, not a transport failure")
+            panic!(
+                "unprivileged native registration must return a verified declared error, \
+                not a transport failure"
+            )
         };
         let trellis_runtime_apis::apis::trellis_auth_v1::rpc::UsersGetError::AuthError(error) =
             error.as_ref()

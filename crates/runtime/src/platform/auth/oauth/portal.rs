@@ -170,7 +170,21 @@ impl SqliteAuthorizationStore {
             return Err(AuthError::Denied);
         }
         let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        connection.query_row("SELECT portal_session_id FROM auth_portal_sessions WHERE cookie_hash=?1 AND csrf_hash=?2 AND expires_at>?3",params![URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes())),URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes())),now],|row|row.get(0)).optional()?.ok_or(AuthError::Denied)
+        connection
+            .query_row(
+                "SELECT portal_session_id \
+                FROM auth_portal_sessions \
+                WHERE cookie_hash=?1 \
+                AND csrf_hash=?2 AND expires_at>?3",
+                params![
+                    URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes())),
+                    URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes())),
+                    now
+                ],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)
     }
     /// Closes the authenticated login and commits its enforcement work. Browser
     /// cookie deletion is cosmetic; retained cookies and grants fail immediately.
@@ -180,14 +194,38 @@ impl SqliteAuthorizationStore {
         login: &PortalLogin,
         now: i64,
     ) -> Result<(), AuthError> {
-        self.mutate(identity, "login.logout", &login.login_session_id, now, |connection| {
-            if identity.actor != login.principal_id {return Err(AuthError::Denied);}
-            let changed = connection.execute("UPDATE auth_login_sessions SET revoked_at=?1,revision=revision+1 WHERE login_session_id=?2 AND principal_id=?3 AND revoked_at IS NULL", params![now, login.login_session_id, identity.actor])?;
-            if changed != 1 {return Err(AuthError::Denied);}
-            connection.execute("DELETE FROM auth_portal_sessions WHERE login_session_id=?1", [&login.login_session_id])?;
-            enqueue_scope(connection, &EnforcementScope::Login(login.login_session_id.clone()), now)?;
-            Ok(())
-        })
+        self.mutate(
+            identity,
+            "login.logout",
+            &login.login_session_id,
+            now,
+            |connection| {
+                if identity.actor != login.principal_id {
+                    return Err(AuthError::Denied);
+                }
+                let changed = connection.execute(
+                    "UPDATE auth_login_sessions \
+                    SET revoked_at=?1,revision=revision+1 \
+                    WHERE login_session_id=?2 \
+                    AND principal_id=?3 \
+                    AND revoked_at IS NULL",
+                    params![now, login.login_session_id, identity.actor],
+                )?;
+                if changed != 1 {
+                    return Err(AuthError::Denied);
+                }
+                connection.execute(
+                    "DELETE FROM auth_portal_sessions WHERE login_session_id=?1",
+                    [&login.login_session_id],
+                )?;
+                enqueue_scope(
+                    connection,
+                    &EnforcementScope::Login(login.login_session_id.clone()),
+                    now,
+                )?;
+                Ok(())
+            },
+        )
     }
 
     /// Creates a guest session with separate cookie and CSRF secrets. Only their
@@ -201,8 +239,16 @@ impl SqliteAuthorizationStore {
         let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
         let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));
         self.transaction(|connection| {
-            connection.execute("DELETE FROM auth_portal_sessions WHERE expires_at<=?1", [now])?;
-            connection.execute("INSERT INTO auth_portal_sessions(portal_session_id,cookie_hash,csrf_hash,created_at,expires_at) VALUES(?1,?2,?3,?4,?5)", params![session_id,cookie_hash,csrf_hash,now,now+600])?;
+            connection.execute(
+                "DELETE FROM auth_portal_sessions WHERE expires_at<=?1",
+                [now],
+            )?;
+            connection.execute(
+                "INSERT INTO auth_portal_sessions(portal_session_id,cookie_hash,\
+                csrf_hash,created_at,expires_at) \
+                VALUES(?1,?2,?3,?4,?5)",
+                params![session_id, cookie_hash, csrf_hash, now, now + 600],
+            )?;
             Ok(())
         })?;
         Ok(PortalCookie {
@@ -234,13 +280,45 @@ impl SqliteAuthorizationStore {
             URL_SAFE_NO_PAD.encode(Sha256::digest(replacement_cookie.as_bytes()));
         let (session_id, principal, hash, version): (String, String, String, u64) = {
             let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-            let session: String = connection.query_row("SELECT portal_session_id FROM auth_portal_sessions WHERE cookie_hash=?1 AND csrf_hash=?2 AND expires_at>?3 AND login_session_id IS NULL", params![cookie_hash,csrf_hash,now], |row| row.get(0)).optional()?.ok_or(AuthError::Denied)?;
-            let credentials = connection.query_row("SELECT c.principal_id,c.password_hash,c.version FROM auth_local_credentials c JOIN auth_principals p ON p.principal_id=c.principal_id WHERE c.normalized_username=?1 AND c.password_hash IS NOT NULL AND p.state='active'", [username.to_lowercase()], |row| Ok((row.get::<_,String>(0)?, row.get::<_,String>(1)?, row.get::<_,u64>(2)?))).optional()?;
+            let session: String = connection
+                .query_row(
+                    "SELECT portal_session_id \
+                    FROM auth_portal_sessions \
+                    WHERE cookie_hash=?1 \
+                    AND csrf_hash=?2 AND expires_at>?3 \
+                    AND login_session_id IS NULL",
+                    params![cookie_hash, csrf_hash, now],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::Denied)?;
+            let credentials = connection
+                .query_row(
+                    "SELECT c.principal_id,c.password_hash,c.version \
+                    FROM auth_local_credentials c \
+                    JOIN auth_principals p ON p.principal_id=c.principal_id \
+                    WHERE c.normalized_username=?1 \
+                    AND c.password_hash IS NOT NULL \
+                    AND p.state='active'",
+                    [username.to_lowercase()],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, u64>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
             let Some((principal, hash, version)) = credentials else {
                 drop(connection);
                 // Perform the normal hash work for absent/disabled users too.
                 // This zero-result hash is not a credential or a fallback login.
-                let dummy = PasswordHash::new("$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").map_err(|_|AuthError::Unavailable)?;
+                let dummy = PasswordHash::new(
+                    "$argon2id$v=19$m=19456,t=2,\
+                    p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                )
+                .map_err(|_| AuthError::Unavailable)?;
                 let _ = Argon2::default().verify_password(password.as_bytes(), &dummy);
                 return Err(AuthError::Denied);
             };
@@ -257,13 +335,53 @@ impl SqliteAuthorizationStore {
             request_digest: digest(&input)?,
         };
         self.mutate(&mutation, "login.local", &input, now, |connection| {
-            let valid: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_local_credentials c JOIN auth_principals p ON p.principal_id=c.principal_id WHERE c.principal_id=?1 AND c.version=?2 AND c.password_hash=?3 AND p.state='active')", params![principal,version,hash], |row| row.get(0))?;
-            if !valid {return Err(AuthError::Denied);}
+            let valid: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_local_credentials c \
+                JOIN auth_principals p ON p.principal_id=c.principal_id \
+                WHERE c.principal_id=?1 \
+                AND c.version=?2 AND c.password_hash=?3 \
+                AND p.state='active')",
+                params![principal, version, hash],
+                |row| row.get(0),
+            )?;
+            if !valid {
+                return Err(AuthError::Denied);
+            }
             let login_session_id = id();
             let expires_at = now + i64::from(self.settings.login_lifetime_seconds);
-            connection.execute("INSERT INTO auth_login_sessions(login_session_id,principal_id,method,verified_roles_json,observed_at,observation_order,expires_at,created_at,revision) VALUES(?1,?2,'local','[]',?3,1,?4,?3,1)", params![login_session_id,principal,now,expires_at])?;
-            if connection.execute("UPDATE auth_portal_sessions SET cookie_hash=?1,login_session_id=?2,expires_at=?3 WHERE portal_session_id=?4 AND cookie_hash=?5 AND csrf_hash=?6 AND expires_at>?7 AND login_session_id IS NULL", params![replacement_hash,login_session_id,expires_at,session_id,cookie_hash,csrf_hash,now])? != 1 {return Err(AuthError::Denied);}
-            Ok(PortalLogin {session_id:session_id.clone(),principal_id:principal.clone(),login_session_id,expires_at})
+            connection.execute(
+                "INSERT INTO auth_login_sessions(login_session_id,principal_id,method,\
+                verified_roles_json,observed_at,observation_order,expires_at,\
+                created_at,revision) \
+                VALUES(?1,?2,'local','[]',?3,1,?4,?3,1)",
+                params![login_session_id, principal, now, expires_at],
+            )?;
+            if connection.execute(
+                "UPDATE auth_portal_sessions \
+                SET cookie_hash=?1,login_session_id=?2,expires_at=?3 \
+                WHERE portal_session_id=?4 \
+                AND cookie_hash=?5 AND csrf_hash=?6 \
+                AND expires_at>?7 AND login_session_id IS NULL",
+                params![
+                    replacement_hash,
+                    login_session_id,
+                    expires_at,
+                    session_id,
+                    cookie_hash,
+                    csrf_hash,
+                    now
+                ],
+            )? != 1
+            {
+                return Err(AuthError::Denied);
+            }
+            Ok(PortalLogin {
+                session_id: session_id.clone(),
+                principal_id: principal.clone(),
+                login_session_id,
+                expires_at,
+            })
         })
     }
 
@@ -278,6 +396,29 @@ impl SqliteAuthorizationStore {
         let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
         let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));
         let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        connection.query_row("SELECT p.portal_session_id,l.principal_id,l.login_session_id,l.expires_at FROM auth_portal_sessions p JOIN auth_login_sessions l ON l.login_session_id=p.login_session_id JOIN auth_principals u ON u.principal_id=l.principal_id WHERE p.cookie_hash=?1 AND p.csrf_hash=?2 AND p.expires_at>?3 AND l.expires_at>?3 AND l.revoked_at IS NULL AND u.state='active'", params![cookie_hash,csrf_hash,now], |row| Ok(PortalLogin {session_id:row.get(0)?,principal_id:row.get(1)?,login_session_id:row.get(2)?,expires_at:row.get(3)?})).optional()?.ok_or(AuthError::Denied)
+        connection
+            .query_row(
+                "SELECT p.portal_session_id,l.principal_id,l.login_session_id,\
+                l.expires_at \
+                FROM auth_portal_sessions p \
+                JOIN auth_login_sessions l ON l.login_session_id=p.login_session_id \
+                JOIN auth_principals u ON u.principal_id=l.principal_id \
+                WHERE p.cookie_hash=?1 \
+                AND p.csrf_hash=?2 AND p.expires_at>?3 \
+                AND l.expires_at>?3 \
+                AND l.revoked_at IS NULL \
+                AND u.state='active'",
+                params![cookie_hash, csrf_hash, now],
+                |row| {
+                    Ok(PortalLogin {
+                        session_id: row.get(0)?,
+                        principal_id: row.get(1)?,
+                        login_session_id: row.get(2)?,
+                        expires_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)
     }
 }

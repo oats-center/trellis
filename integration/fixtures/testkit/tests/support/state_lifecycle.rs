@@ -1,5 +1,7 @@
 //! State through ordinary OAuth admission, generated clients and the production provider.
 
+use runtime_trellis::participants::runtime_trellis_provider;
+use trellis_rs::generated::ParticipantDescriptor;
 use super::{administrator, login, wire};
 use futures_util::StreamExt;
 use serde_json::json;
@@ -32,7 +34,8 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
     .await;
     let base = GeneratedClient::connect_user(options).await.unwrap();
     let client = Client::from_generated(base.clone());
-    let evidence = <runtime_trellis::participants::runtime_trellis_provider::Participant as trellis_rs::generated::ParticipantDescriptor>::package_evidence();
+    let evidence =
+        <runtime_trellis_provider::Participant as ParticipantDescriptor>::package_evidence();
     let graph =
         trellis_idl::compile_evidence(wire(serde_json::to_value(evidence).unwrap())).unwrap();
     let reference = trellis_idl::TypeRef {
@@ -51,9 +54,13 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
         schema: Bytes(serde_json::to_vec(&schema).unwrap()),
         extra: Default::default(),
     };
-    let registration = wire(
-        json!({"resourceName":"saved","representation":representation,"accepts":[],"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}),
-    );
+    let registration = wire(json!({
+        "resourceName":"saved",
+        "representation":representation,
+        "accepts": [],
+        "expectedRevision":"0",
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    }));
     client.register(&registration).await.unwrap();
     let mut stale_registration = registration.clone();
     stale_registration.representation.version = 2.into();
@@ -93,13 +100,35 @@ async fn native_state_registration_cas_watch_and_client_isolation() {
         .unwrap();
     assert_eq!(changed.value, value);
     assert_eq!(changed.revision, written.revision);
-    assert!(client.put(&wire(json!({"resourceName":"saved","representationVersion":1,"mode":"replace","revision":"0","value":value}))).await.is_err());
+    assert!(client
+        .put(&wire(json!({
+            "resourceName":"saved",
+            "representationVersion":1,
+            "mode":"replace",
+            "revision":"0",
+            "value":value
+        })))
+        .await
+        .is_err());
     assert_eq!(
         client.get(&get).await.unwrap().entry.unwrap().revision,
         written.revision
     );
     let other_id = format!("state-{}", ulid::Ulid::new());
-    admin.o_auth_clients_put(&wire(json!({"clientId":other_id,"title":"Independent State client","description":"Namespace isolation","kind":"native","redirectUris":[],"impliedConsent":[],"development":true,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin
+        .o_auth_clients_put(&wire(json!({
+            "clientId":other_id,
+            "title":"Independent State client",
+            "description":"Namespace isolation",
+            "kind":"native",
+            "redirectUris": [],
+            "impliedConsent": [],
+            "development":true,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        })))
+        .await
+        .unwrap();
     let other_options = login(
         &runtime,
         &other_id,

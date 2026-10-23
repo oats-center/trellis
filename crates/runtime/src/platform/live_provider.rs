@@ -238,7 +238,18 @@ pub fn resolve_live_provider_seed_file(
     if let Some(path) = explicit {
         return Ok(path);
     }
-    let parent = config.event_session_seed_file.as_ref().and_then(|path| path.parent()).filter(|parent| !parent.as_os_str().is_empty()).ok_or_else(|| RuntimeError::Platform(format!("live_provider_seed_files.{} is required when the event session seed file has no parent directory", role.config_key())))?;
+    let parent = config
+        .event_session_seed_file
+        .as_ref()
+        .and_then(|path| path.parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            RuntimeError::Platform(format!(
+                "live_provider_seed_files.{} is required when the event session seed \
+                file has no parent directory",
+                role.config_key()
+            ))
+        })?;
     Ok(parent
         .join("live-providers")
         .join(format!("{}.seed", role.config_key())))

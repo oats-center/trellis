@@ -68,10 +68,6 @@ fn token() -> Result<String, AuthError> {
     getrandom::fill(&mut bytes).map_err(|_| AuthError::Unavailable)?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
-fn now() -> i64 {
-    time::OffsetDateTime::now_utc().unix_timestamp()
-}
-
 fn reset_requester(
     connection: &Connection,
     actor: &str,
@@ -81,7 +77,18 @@ fn reset_requester(
     use super::super::{authorization_sessions::credential_snapshot, Credential};
     use trellis_protocol::PlatformPrivilege;
     SqliteAuthorizationStore::require_privilege(connection, actor, "principals.manage")?;
-    let (grant, identity, accepted): (Option<String>, Option<String>, String) = connection.query_row("SELECT oauth_grant_id,identity_key_id,approved_privileges_json FROM auth_authorization_sessions WHERE authorization_session_id=?1 AND principal_id=?2 AND state='active' AND hard_deadline>?3", params![session, actor, now], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?.ok_or(AuthError::Denied)?;
+    let (grant, identity, accepted): (Option<String>, Option<String>, String) = connection
+        .query_row(
+            "SELECT oauth_grant_id,identity_key_id,approved_privileges_json \
+            FROM auth_authorization_sessions \
+            WHERE authorization_session_id=?1 \
+            AND principal_id=?2 \
+            AND state='active' AND hard_deadline>?3",
+            params![session, actor, now],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or(AuthError::Denied)?;
     let accepted: Vec<PlatformPrivilege> = serde_json::from_str(&accepted)?;
     if !accepted.contains(&PlatformPrivilege::PrincipalsManage) {
         return Err(AuthError::Denied);
@@ -110,7 +117,28 @@ fn action(connection: &Connection, token: &str, kind: &str, now: i64) -> Result<
     {
         return Err(AuthError::Denied);
     }
-    let (id, target, provider, expires, payload): (String, String, Option<String>, i64, String) = connection.query_row("SELECT flow_id,target_principal_id,target_provider_id,expires_at,payload_json FROM auth_account_flows WHERE token_hash=?1 AND kind=?2 AND state='pending' AND expires_at>?3", params![hash(token), kind, now], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?.ok_or(AuthError::Denied)?;
+    let (id, target, provider, expires, payload): (String, String, Option<String>, i64, String) =
+        connection
+            .query_row(
+                "SELECT flow_id,target_principal_id,target_provider_id,expires_at,\
+                payload_json \
+                FROM auth_account_flows \
+                WHERE token_hash=?1 \
+                AND kind=?2 AND state='pending' \
+                AND expires_at>?3",
+                params![hash(token), kind, now],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)?;
     Ok(Action {
         id,
         target,
@@ -133,19 +161,71 @@ pub(crate) fn create_reset(
         identity.request_id.as_str(),
         "password_reset",
     ))?;
-    let sealed: Vec<u8> = storage.authority.mutate(identity, "rpc.users.passwordReset.create", input, now, |connection| {
-        reset_requester(connection, &identity.actor, requester_session, now)?;
-        let target = input.user_id.to_string();
-        let protected: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)", [&target], |row| row.get(0))?;
-        if protected { return Err(AuthError::Denied); }
-        let (username, version): (Option<String>, Option<u64>) = connection.query_row("SELECT coalesce(c.normalized_username,(SELECT provider_subject FROM auth_provider_identities WHERE principal_id=p.principal_id AND provider='local')),c.version FROM auth_principals p LEFT JOIN auth_local_credentials c USING(principal_id) WHERE p.principal_id=?1 AND p.kind='user' AND p.state='active'", [&target], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(AuthError::NotFound)?;
-        let username = username.ok_or(AuthError::Denied)?;
-        let token = token()?;
-        let payload = Payload { actor: identity.actor.clone(), reset_authority: Some(PasswordResetAuthority::AuthorizationSession(requester_session.to_owned())), username: Some(username), credential_version: version, provider_revision: None, protected, handoff: None };
-        insert(connection, &token, "password_reset", &target, None, &payload, now)?;
-        let response = AuthPasswordResetCreateResponse { token, expires_at: super::super::rpc_users::timestamp(now + 300)?, extra: Default::default() };
-        storage.encode("account-response", &lookup, &response).map_err(|_| AuthError::Unavailable)
-    })?;
+    let sealed: Vec<u8> = storage.authority.mutate(
+        identity,
+        "rpc.users.passwordReset.create",
+        input,
+        now,
+        |connection| {
+            reset_requester(connection, &identity.actor, requester_session, now)?;
+            let target = input.user_id.to_string();
+            let protected: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_bootstrap_administrator \
+                WHERE principal_id=?1)",
+                [&target],
+                |row| row.get(0),
+            )?;
+            if protected {
+                return Err(AuthError::Denied);
+            }
+            let (username, version): (Option<String>, Option<u64>) = connection
+                .query_row(
+                    "SELECT coalesce(c.normalized_username,(SELECT provider_subject \
+                    FROM auth_provider_identities \
+                    WHERE principal_id=p.principal_id \
+                    AND provider='local')),c.version \
+                    FROM auth_principals p \
+                    LEFT JOIN auth_local_credentials c USING(principal_id) \
+                    WHERE p.principal_id=?1 \
+                    AND p.kind='user' AND p.state='active'",
+                    [&target],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)?;
+            let username = username.ok_or(AuthError::Denied)?;
+            let token = token()?;
+            let payload = Payload {
+                actor: identity.actor.clone(),
+                reset_authority: Some(PasswordResetAuthority::AuthorizationSession(
+                    requester_session.to_owned(),
+                )),
+                username: Some(username),
+                credential_version: version,
+                provider_revision: None,
+                protected,
+                handoff: None,
+            };
+            insert(
+                connection,
+                &token,
+                "password_reset",
+                &target,
+                None,
+                &payload,
+                now,
+            )?;
+            let response = AuthPasswordResetCreateResponse {
+                token,
+                expires_at: super::super::sqlite::timestamp(now + 300)?,
+                extra: Default::default(),
+            };
+            storage
+                .encode("account-response", &lookup, &response)
+                .map_err(|_| AuthError::Unavailable)
+        },
+    )?;
     storage
         .decode("account-response", &lookup, &sealed)
         .map_err(|_| AuthError::Unavailable)
@@ -163,18 +243,73 @@ pub(crate) fn create_link(
         identity.request_id.as_str(),
         "identity_link",
     ))?;
-    let sealed: Vec<u8> = storage.authority.mutate(identity, "rpc.users.identityLink.create", input, now, |connection| {
-        let user: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind='user' AND state='active')", [&identity.actor], |row| row.get(0))?;
-        if !user { return Err(AuthError::Denied); }
-        let provider = input.provider_id.to_string();
-        let revision: u64 = connection.query_row("SELECT revision FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'", [&provider], |row| row.get(0)).optional()?.ok_or(AuthError::NotFound)?;
-        let protected: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)", [&identity.actor], |row| row.get(0))?;
-        let token = token()?;
-        let payload = Payload { actor: identity.actor.clone(), reset_authority: None, username: None, credential_version: None, provider_revision: Some(revision), protected, handoff: None };
-        insert(connection, &token, "identity_link", &identity.actor, Some(&provider), &payload, now)?;
-        let response = AuthIdentityLinkCreateResponse { authorization_url: format!("{}/account/link?token={token}", storage.authority.settings.oauth_origin), expires_at: super::super::rpc_users::timestamp(now + 300)?, extra: Default::default() };
-        storage.encode("account-response", &lookup, &response).map_err(|_| AuthError::Unavailable)
-    })?;
+    let sealed: Vec<u8> = storage.authority.mutate(
+        identity,
+        "rpc.users.identityLink.create",
+        input,
+        now,
+        |connection| {
+            let user: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_principals \
+                WHERE principal_id=?1 \
+                AND kind='user' AND state='active')",
+                [&identity.actor],
+                |row| row.get(0),
+            )?;
+            if !user {
+                return Err(AuthError::Denied);
+            }
+            let provider = input.provider_id.to_string();
+            let revision: u64 = connection
+                .query_row(
+                    "SELECT revision FROM auth_oidc_providers \
+                    WHERE provider_id=?1 \
+                    AND state='active'",
+                    [&provider],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)?;
+            let protected: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_bootstrap_administrator \
+                WHERE principal_id=?1)",
+                [&identity.actor],
+                |row| row.get(0),
+            )?;
+            let token = token()?;
+            let payload = Payload {
+                actor: identity.actor.clone(),
+                reset_authority: None,
+                username: None,
+                credential_version: None,
+                provider_revision: Some(revision),
+                protected,
+                handoff: None,
+            };
+            insert(
+                connection,
+                &token,
+                "identity_link",
+                &identity.actor,
+                Some(&provider),
+                &payload,
+                now,
+            )?;
+            let response = AuthIdentityLinkCreateResponse {
+                authorization_url: format!(
+                    "{}/account/link?token={token}",
+                    storage.authority.settings.oauth_origin
+                ),
+                expires_at: super::super::sqlite::timestamp(now + 300)?,
+                extra: Default::default(),
+            };
+            storage
+                .encode("account-response", &lookup, &response)
+                .map_err(|_| AuthError::Unavailable)
+        },
+    )?;
     storage
         .decode("account-response", &lookup, &sealed)
         .map_err(|_| AuthError::Unavailable)
@@ -187,10 +322,19 @@ pub(crate) fn create_local_reset_in_transaction(
     principal: &str,
     now: i64,
 ) -> Result<AuthPasswordResetCreateResponse, AuthError> {
-    let (username, version): (String, u64) = connection.query_row(
-        "SELECT c.normalized_username,c.version FROM auth_local_credentials c JOIN auth_principals p USING(principal_id) WHERE c.principal_id=?1 AND p.state='active' AND p.kind='user'",
-        [principal], |row| Ok((row.get(0)?, row.get(1)?)),
-    ).optional()?.ok_or(AuthError::NotFound)?;
+    let (username, version): (String, u64) = connection
+        .query_row(
+            "SELECT c.normalized_username,c.version \
+            FROM auth_local_credentials c \
+            JOIN auth_principals p USING(principal_id) \
+            WHERE c.principal_id=?1 \
+            AND p.state='active' \
+            AND p.kind='user'",
+            [principal],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     let protected = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
         [principal],
@@ -206,7 +350,14 @@ pub(crate) fn create_local_reset_in_transaction(
         protected,
         handoff: None,
     };
-    connection.execute("UPDATE auth_account_flows SET state='revoked',version=version+1 WHERE target_principal_id=?1 AND kind='password_reset' AND state='pending'", [principal])?;
+    connection.execute(
+        "UPDATE auth_account_flows \
+        SET state='revoked',version=version+1 \
+        WHERE target_principal_id=?1 \
+        AND kind='password_reset' \
+        AND state='pending'",
+        [principal],
+    )?;
     insert(
         connection,
         &token,
@@ -218,7 +369,7 @@ pub(crate) fn create_local_reset_in_transaction(
     )?;
     Ok(AuthPasswordResetCreateResponse {
         token,
-        expires_at: super::super::rpc_users::timestamp(now + 300)?,
+        expires_at: super::super::sqlite::timestamp(now + 300)?,
         extra: Default::default(),
     })
 }
@@ -232,7 +383,22 @@ fn insert(
     payload: &Payload,
     now: i64,
 ) -> Result<(), AuthError> {
-    connection.execute("INSERT INTO auth_account_flows(flow_id,kind,token_hash,target_principal_id,target_provider_id,payload_json,state,created_at,expires_at,version) VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?8,1)", params![id(), kind, hash(token), target, provider, serde_json::to_string(payload)?, now, now + 300])?;
+    connection.execute(
+        "INSERT INTO auth_account_flows(flow_id,kind,token_hash,\
+        target_principal_id,target_provider_id,payload_json,state,created_at,\
+        expires_at,version) \
+        VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,?8,1)",
+        params![
+            id(),
+            kind,
+            hash(token),
+            target,
+            provider,
+            serde_json::to_string(payload)?,
+            now,
+            now + 300
+        ],
+    )?;
     Ok(())
 }
 
@@ -291,43 +457,122 @@ pub(crate) fn complete_reset(
         .portal_session_identity(cookie, csrf, now)?;
     storage.authority.transaction(|connection| {
         let action = action(connection, token, "password_reset", now)?;
-        let session: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_portal_sessions WHERE cookie_hash=?1 AND csrf_hash=?2 AND expires_at>?3)", params![hash(cookie), hash(csrf), now], |row| row.get(0))?;
-        if !session { return Err(AuthError::Denied); }
-        let protected: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)", [&action.target], |row| row.get(0))?;
-        let active: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_principals WHERE principal_id=?1 AND kind='user' AND state='active')", [&action.target], |row| row.get(0))?;
-        if protected != action.payload.protected || !active { return Err(AuthError::Denied); }
+        let session: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_portal_sessions \
+            WHERE cookie_hash=?1 \
+            AND csrf_hash=?2 AND expires_at>?3)",
+            params![hash(cookie), hash(csrf), now],
+            |row| row.get(0),
+        )?;
+        if !session {
+            return Err(AuthError::Denied);
+        }
+        let protected: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_bootstrap_administrator \
+            WHERE principal_id=?1)",
+            [&action.target],
+            |row| row.get(0),
+        )?;
+        let active: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_principals \
+            WHERE principal_id=?1 \
+            AND kind='user' AND state='active')",
+            [&action.target],
+            |row| row.get(0),
+        )?;
+        if protected != action.payload.protected || !active {
+            return Err(AuthError::Denied);
+        }
         match &action.payload.reset_authority {
             Some(PasswordResetAuthority::AuthorizationSession(session)) => {
-                if protected { return Err(AuthError::Denied); }
+                if protected {
+                    return Err(AuthError::Denied);
+                }
                 reset_requester(connection, &action.payload.actor, session, now)?;
             }
-            Some(PasswordResetAuthority::LocalOperator) if action.payload.actor == action.target => {}
+            Some(PasswordResetAuthority::LocalOperator)
+                if action.payload.actor == action.target => {}
             _ => return Err(AuthError::Denied),
         }
         let revision = action.payload.credential_version.unwrap_or(0);
         match action.payload.credential_version {
             Some(version) => {
-                if connection.execute("UPDATE auth_local_credentials SET password_hash=?1,version=version+1,password_changed_at=?2,updated_at=?2,failed_attempts=0,locked_until=NULL WHERE principal_id=?3 AND version=?4", params![replacement, now, action.target, version])? != 1 { return Err(AuthError::Conflict); }
+                if connection.execute(
+                    "UPDATE auth_local_credentials \
+                    SET password_hash=?1,version=version+1,password_changed_at=?2,\
+                    updated_at=?2,failed_attempts=0,locked_until=NULL \
+                    WHERE principal_id=?3 \
+                    AND version=?4",
+                    params![replacement, now, action.target, version],
+                )? != 1
+                {
+                    return Err(AuthError::Conflict);
+                }
             }
             None => {
-                let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_local_credentials WHERE principal_id=?1)", [&action.target], |row| row.get(0))?;
-                if present { return Err(AuthError::Conflict); }
-                connection.execute("INSERT INTO auth_local_credentials(principal_id,normalized_username,password_hash,hash_profile,password_changed_at,failed_attempts,updated_at,version) VALUES(?1,?2,?3,1,?4,0,?4,1)", params![action.target, action.payload.username, replacement, now])?;
+                let present: bool = connection.query_row(
+                    "SELECT EXISTS(SELECT 1 \
+                    FROM auth_local_credentials \
+                    WHERE principal_id=?1)",
+                    [&action.target],
+                    |row| row.get(0),
+                )?;
+                if present {
+                    return Err(AuthError::Conflict);
+                }
+                connection.execute(
+                    "INSERT INTO auth_local_credentials(principal_id,normalized_username,\
+                    password_hash,hash_profile,password_changed_at,failed_attempts,\
+                    updated_at,version) \
+                    VALUES(?1,?2,?3,1,?4,0,?4,1)",
+                    params![action.target, action.payload.username, replacement, now],
+                )?;
             }
         }
         let scope = super::super::revocation::EnforcementScope::Principal(action.target.clone());
         let audit = serde_json::json!({"flowId": action.id, "credentialRevision": revision + 1});
-        let mut statement = connection.prepare("SELECT login_session_id FROM auth_login_sessions WHERE principal_id=?1 AND revoked_at IS NULL")?;
-        let logins = statement.query_map([&action.target], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut statement = connection.prepare(
+            "SELECT login_session_id \
+            FROM auth_login_sessions \
+            WHERE principal_id=?1 \
+            AND revoked_at IS NULL",
+        )?;
+        let logins = statement
+            .query_map([&action.target], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         for login in logins {
             let root = super::super::revocation::EnforcementScope::Login(login);
-            let identity = Mutation { actor: action.payload.actor.clone(), request_id: id(), request_digest: digest(&root)? };
-            storage.authority.revoke_root_in_transaction(connection, &identity, &root, now)?;
+            let identity = Mutation {
+                actor: action.payload.actor.clone(),
+                request_id: id(),
+                request_digest: digest(&root)?,
+            };
+            storage
+                .authority
+                .revoke_root_in_transaction(connection, &identity, &root, now)?;
         }
         SqliteAuthorizationStore::policy_changed(connection, &scope, now)?;
         consume(connection, &action.id, now)?;
-        let identity = Mutation { actor: action.payload.actor, request_id: action.id.clone(), request_digest: digest(&audit)? };
-        connection.execute("INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,target_id,data_json,created_at) VALUES(?1,?2,'account.passwordReset.complete',?3,?4,?5)", params![id(),identity.actor,action.target,serde_json::to_string(&audit)?,now])?;
+        let identity = Mutation {
+            actor: action.payload.actor,
+            request_id: action.id.clone(),
+            request_digest: digest(&audit)?,
+        };
+        connection.execute(
+            "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\
+            target_id,data_json,created_at) \
+            VALUES(?1,?2,'account.passwordReset.complete',?3,?4,?5)",
+            params![
+                id(),
+                identity.actor,
+                action.target,
+                serde_json::to_string(&audit)?,
+                now
+            ],
+        )?;
         Ok(())
     })
 }
@@ -347,21 +592,102 @@ pub(super) fn complete_link(
     }
     storage.authority.transaction(|connection| {
         let action = action(connection, token, "identity_link", now)?;
-        if action.target != login.principal_id || action.payload.actor != login.principal_id || action.id != flow.authorization_transaction || action.provider.as_deref() != Some(&flow.provider.provider_id) || action.payload.provider_revision != Some(flow.provider.revision) || verified.expires_at <= now || !action.payload.handoff.as_ref().is_some_and(|handoff| handoff.used && handoff.session == flow.session_id) { return Err(AuthError::Denied); }
-        let live: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_portal_sessions s JOIN auth_login_sessions l ON l.login_session_id=s.login_session_id JOIN auth_principals p ON p.principal_id=l.principal_id JOIN auth_oidc_providers o ON o.provider_id=?1 WHERE s.portal_session_id=?2 AND l.principal_id=?3 AND l.revoked_at IS NULL AND l.expires_at>?4 AND s.expires_at>?4 AND p.state='active' AND o.state='active' AND o.revision=?5 AND s.cookie_hash=?6 AND s.csrf_hash=?7)", params![flow.provider.provider_id, login.session_id, action.target, now, flow.provider.revision, hash(cookie), hash(csrf)], |row| row.get(0))?;
-        if !live { return Err(AuthError::Denied); }
-        let already_linked = SqliteAuthorizationStore::link_oidc_identity_in(connection, &action.target, &flow.provider.provider_id, &verified.subject, now)?;
-        super::super::profiles::ingest(connection, &action.target, &flow.provider.provider_id, &verified.subject, &verified.profile, now)?;
+        if action.target != login.principal_id
+            || action.payload.actor != login.principal_id
+            || action.id != flow.authorization_transaction
+            || action.provider.as_deref() != Some(&flow.provider.provider_id)
+            || action.payload.provider_revision != Some(flow.provider.revision)
+            || verified.expires_at <= now
+            || !action
+                .payload
+                .handoff
+                .as_ref()
+                .is_some_and(|handoff| handoff.used && handoff.session == flow.session_id)
+        {
+            return Err(AuthError::Denied);
+        }
+        let live: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 \
+            FROM auth_portal_sessions s \
+            JOIN auth_login_sessions l ON l.login_session_id=s.login_session_id \
+            JOIN auth_principals p ON p.principal_id=l.principal_id \
+            JOIN auth_oidc_providers o ON o.provider_id=?1 \
+            WHERE s.portal_session_id=?2 \
+            AND l.principal_id=?3 \
+            AND l.revoked_at IS NULL \
+            AND l.expires_at>?4 \
+            AND s.expires_at>?4 \
+            AND p.state='active' \
+            AND o.state='active' \
+            AND o.revision=?5 AND s.cookie_hash=?6 \
+            AND s.csrf_hash=?7)",
+            params![
+                flow.provider.provider_id,
+                login.session_id,
+                action.target,
+                now,
+                flow.provider.revision,
+                hash(cookie),
+                hash(csrf)
+            ],
+            |row| row.get(0),
+        )?;
+        if !live {
+            return Err(AuthError::Denied);
+        }
+        let already_linked = SqliteAuthorizationStore::link_oidc_identity_in(
+            connection,
+            &action.target,
+            &flow.provider.provider_id,
+            &verified.subject,
+            now,
+        )?;
+        super::super::profiles::ingest(
+            connection,
+            &action.target,
+            &flow.provider.provider_id,
+            &verified.subject,
+            &verified.profile,
+            now,
+        )?;
         consume(connection, &action.id, now)?;
-        let audit = serde_json::json!({"flowId":action.id,"providerId":flow.provider.provider_id,"identityAlreadyLinked":already_linked});
-        let identity = Mutation { actor: login.principal_id, request_id: flow.request_id.clone(), request_digest: digest(&audit)? };
-        connection.execute("INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,target_id,data_json,created_at) VALUES(?1,?2,'account.identityLink.complete',?3,?4,?5)", params![id(),identity.actor,action.target,serde_json::to_string(&audit)?,now])?;
+        let audit = serde_json::json!({
+            "flowId":action.id,
+            "providerId":flow.provider.provider_id,
+            "identityAlreadyLinked":already_linked
+        });
+        let identity = Mutation {
+            actor: login.principal_id,
+            request_id: flow.request_id.clone(),
+            request_digest: digest(&audit)?,
+        };
+        connection.execute(
+            "INSERT INTO auth_security_audit(audit_id,actor_principal_id,kind,\
+            target_id,data_json,created_at) \
+            VALUES(?1,?2,'account.identityLink.complete',?3,?4,?5)",
+            params![
+                id(),
+                identity.actor,
+                action.target,
+                serde_json::to_string(&audit)?,
+                now
+            ],
+        )?;
         Ok(())
     })
 }
 
 fn consume(connection: &Connection, id: &str, now: i64) -> Result<(), AuthError> {
-    if connection.execute("UPDATE auth_account_flows SET state='consumed',consumed_at=?1,version=version+1 WHERE flow_id=?2 AND state='pending' AND expires_at>?1", params![now, id])? != 1 { return Err(AuthError::Denied); }
+    if connection.execute(
+        "UPDATE auth_account_flows \
+        SET state='consumed',consumed_at=?1,version=version+1 \
+        WHERE flow_id=?2 AND state='pending' \
+        AND expires_at>?1",
+        params![now, id],
+    )? != 1
+    {
+        return Err(AuthError::Denied);
+    }
     Ok(())
 }
 
@@ -382,12 +708,9 @@ pub(super) async fn page(
         if headers.contains_key(axum::http::header::ORIGIN) && !portal_origin(&engine, &headers) {
             return error(ErrorCode::AccessDenied);
         }
-        let action = match engine
-            .server
-            .store()
-            .authority
-            .transaction(|connection| action(connection, token, "identity_link", now()))
-        {
+        let action = match engine.server.store().authority.transaction(|connection| {
+            action(connection, token, "identity_link", crate::clock::unix_now())
+        }) {
             Ok(action) => action,
             Err(_) => return error(ErrorCode::AccessDenied),
         };
@@ -421,7 +744,7 @@ pub(super) async fn page(
     let storage = engine.server.store();
     let action = match storage
         .authority
-        .transaction(|connection| action(connection, token, flow_kind, now()))
+        .transaction(|connection| action(connection, token, flow_kind, crate::clock::unix_now()))
     {
         Ok(action) => action,
         Err(_) => return error(ErrorCode::AccessDenied),
@@ -432,7 +755,7 @@ pub(super) async fn page(
     let (cookie, csrf) = match current.filter(|(cookie, csrf)| {
         storage
             .authority
-            .portal_session_identity(cookie, csrf, now())
+            .portal_session_identity(cookie, csrf, crate::clock::unix_now())
             .is_ok()
     }) {
         Some(current) => {
@@ -440,7 +763,10 @@ pub(super) async fn page(
             current
         }
         None => {
-            let session = match storage.authority.create_portal_session(now()) {
+            let session = match storage
+                .authority
+                .create_portal_session(crate::clock::unix_now())
+            {
                 Ok(session) => session,
                 Err(_) => return error(ErrorCode::ServerError),
             };
@@ -457,7 +783,10 @@ pub(super) async fn page(
             ),
         )
     } else {
-        match storage.authority.portal_login(&cookie, &csrf, now()) {
+        match storage
+            .authority
+            .portal_login(&cookie, &csrf, crate::clock::unix_now())
+        {
             Ok(login) if login.principal_id == action.target => (
                 "Link sign-in identity",
                 format!(
@@ -502,21 +831,45 @@ pub(super) async fn submit(
     };
     if kind == "link" {
         let storage = engine.server.store();
-        let now = now();
+        let now = crate::clock::unix_now();
         let reviewed = (|| {
             let login = storage.authority.portal_login(&cookie, csrf, now)?;
             let replacement = self::token()?;
             storage.authority.transaction(|connection| {
                 let mut action = action(connection, token, "identity_link", now)?;
-                if action.target != login.principal_id || action.payload.actor != login.principal_id || action.payload.handoff.is_some() {
+                if action.target != login.principal_id
+                    || action.payload.actor != login.principal_id
+                    || action.payload.handoff.is_some()
+                {
                     return Err(AuthError::Denied);
                 }
-                let revision: Option<u64> = connection.query_row("SELECT revision FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'", [&action.provider], |row| row.get(0)).optional()?;
+                let revision: Option<u64> = connection
+                    .query_row(
+                        "SELECT revision FROM auth_oidc_providers \
+                        WHERE provider_id=?1 \
+                        AND state='active'",
+                        [&action.provider],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
                 if revision.is_none() || revision != action.payload.provider_revision {
                     return Err(AuthError::Denied);
                 }
-                action.payload.handoff = Some(LinkHandoff { session: login.session_id, expires: action.expires.min(now + 60), used: false });
-                connection.execute("UPDATE auth_account_flows SET token_hash=?1,payload_json=?2,version=version+1 WHERE flow_id=?3", params![hash(&replacement), serde_json::to_string(&action.payload)?, action.id])?;
+                action.payload.handoff = Some(LinkHandoff {
+                    session: login.session_id,
+                    expires: action.expires.min(now + 60),
+                    used: false,
+                });
+                connection.execute(
+                    "UPDATE auth_account_flows \
+                    SET token_hash=?1,payload_json=?2,version=version+1 \
+                    WHERE flow_id=?3",
+                    params![
+                        hash(&replacement),
+                        serde_json::to_string(&action.payload)?,
+                        action.id
+                    ],
+                )?;
                 Ok(replacement)
             })
         })();
@@ -546,21 +899,32 @@ pub(super) async fn submit(
     let password = password.clone();
     if kind == "reset" {
         let reset_engine = engine.clone();
-        let result =
-            tokio::task::spawn_blocking(move || {
-                let engine = reset_engine;
-                engine
-                    .server
-                    .store()
-                    .authority
-                    .portal_session_identity(&cookie, &csrf, now())?;
-                engine.server.store().authority.transaction(|connection| {
-                    action(connection, &token, "password_reset", now())
-                })?;
-                let hash = hash_password(&password)?;
-                complete_reset(engine.server.store(), &token, &cookie, &csrf, &hash, now())
-            })
-            .await;
+        let result = tokio::task::spawn_blocking(move || {
+            let engine = reset_engine;
+            engine.server.store().authority.portal_session_identity(
+                &cookie,
+                &csrf,
+                crate::clock::unix_now(),
+            )?;
+            engine.server.store().authority.transaction(|connection| {
+                action(
+                    connection,
+                    &token,
+                    "password_reset",
+                    crate::clock::unix_now(),
+                )
+            })?;
+            let hash = hash_password(&password)?;
+            complete_reset(
+                engine.server.store(),
+                &token,
+                &cookie,
+                &csrf,
+                &hash,
+                crate::clock::unix_now(),
+            )
+        })
+        .await;
         return match result {
             Ok(Ok(())) => html(
                 &engine,
@@ -582,18 +946,21 @@ pub(super) async fn submit(
         let csrf_cookie = csrf.clone();
         let destination = format!("/account/link?token={token}");
         let result = tokio::task::spawn_blocking(move || {
-            let action = engine
-                .server
-                .store()
-                .authority
-                .transaction(|connection| action(connection, &token, "identity_link", now()))?;
+            let action = engine.server.store().authority.transaction(|connection| {
+                action(
+                    connection,
+                    &token,
+                    "identity_link",
+                    crate::clock::unix_now(),
+                )
+            })?;
             let login = engine.server.store().authority.portal_local_login(
                 &cookie,
                 &csrf,
                 &new_cookie,
                 (&username, &password),
                 &id(),
-                now(),
+                crate::clock::unix_now(),
             )?;
             if login.principal_id != action.target {
                 return Err(AuthError::Denied);
@@ -615,25 +982,15 @@ pub(super) async fn submit(
 }
 
 pub(super) fn html(engine: &OAuthEngine, title: &str, body: &str) -> Response {
-    // Every account page tells the user when this installation serves its own
-    // private CA, with the fingerprint to verify out of band.
-    let notice = engine.generated_tls_notice();
-    let notice = if notice.is_null() {
-        String::new()
+    let notice = if engine.generated_tls() {
+        "<p role=\"status\">This Trellis is using self-generated certificates \
+and may not be suitable for production.</p>"
     } else {
-        let fingerprint = notice["caSha256Fingerprint"].as_str().map_or_else(
-            || "Its certificates could not be read; contact your operator.".to_owned(),
-            |fingerprint| {
-                format!("Trust it only if this SHA-256 fingerprint matches the one your operator published: <code>{fingerprint}</code>.")
-            },
-        );
-        let expiry = notice["leafNotAfter"]
-            .as_str()
-            .map(|expiry| format!(" The server certificate expires {expiry}."))
-            .unwrap_or_default();
-        format!("<p role=\"status\">This Trellis uses a private certificate authority generated at installation. {fingerprint}{expiry}</p>")
+        ""
     };
-    let mut response = Html(format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{title}</title></head><body>{notice}<main><h1>{title}</h1>{body}</main></body></html>")).into_response();
+    let mut response = Html(format!("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta \
+name=\"viewport\" content=\"width=device-width,\
+initial-scale=1\"><title>{title}</title></head><body>{notice}<main><h1>{title}</h1>{body}</main></body></html>")).into_response();
     use axum::http::{header, HeaderValue};
     response
         .headers_mut()
@@ -785,7 +1142,7 @@ mod tests {
         let f = fixture();
         let authority = Arc::new(f.store);
         let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
-        let now = now();
+        let now = crate::clock::unix_now();
         let first = authority
             .transaction(|connection| create_local_reset_in_transaction(connection, &f.admin, now))
             .unwrap();
@@ -876,7 +1233,7 @@ mod tests {
             claim_freshness_seconds: 300,
             expected_revision: 0,
         };
-        let now = now();
+        let now = crate::clock::unix_now();
         authority
             .transaction(|connection| {
                 authority.register_oidc_provider_in_transaction(
@@ -1026,7 +1383,7 @@ mod tests {
             )
             .is_err());
             if expires {
-                let after_handoff_deadline = super::now().saturating_add(61);
+                let after_handoff_deadline = crate::clock::unix_now().saturating_add(61);
                 assert!(link_session(
                     engine.server.store(),
                     &handoff,

@@ -923,17 +923,15 @@ impl<T> ConsumerPump<T> {
                             self.max_data_body_bytes,
                         ) else {
                             if let Ok(telemetry) = self.core.telemetry.lock() {
-                                telemetry.rejection(
-                                    super::telemetry::LiveRejection::InvalidProtocol,
-                                );
+                                telemetry
+                                    .rejection(super::telemetry::LiveRejection::InvalidProtocol);
                             }
                             continue;
                         };
                         if !verify_provider_frame(&self.control, &message, &frame) {
                             if let Ok(telemetry) = self.core.telemetry.lock() {
-                                telemetry.rejection(
-                                    super::telemetry::LiveRejection::InvalidSignature,
-                                );
+                                telemetry
+                                    .rejection(super::telemetry::LiveRejection::InvalidSignature);
                             }
                             continue;
                         }
@@ -1022,10 +1020,14 @@ impl<T> ConsumerPump<T> {
                                 let ack = tokio::select! {
                                     _ = self.cancellation.cancelled() => {
                                         self.core.discard_queue();
-                                        self.core.commit_end(LiveEnd::new(LiveEndReason::Cancelled, None));
+                                        self.core.commit_end(LiveEnd::new(
+                                            LiveEndReason::Cancelled,
+                                            None,
+                                        ));
                                         return;
                                     }
-                                    result = self.control.send_control(&pulse, control_seq) => result,
+                                    result = self.control.send_control(&pulse, control_seq) =>
+                                        result,
                                 };
                                 // Only a matching, authenticated pulse ack commits
                                 // activation or renews the fresh-round-trip clock.
@@ -1069,10 +1071,12 @@ impl<T> ConsumerPump<T> {
                                 let end = match &end.terminal.error {
                                     Some(error) => LiveEnd::new(
                                         end.terminal.reason,
-                                        Some(std::sync::Arc::new(super::types::LiveStreamError::new(
-                                            error.code,
-                                            error.message.clone(),
-                                        ))),
+                                        Some(std::sync::Arc::new(
+                                            super::types::LiveStreamError::new(
+                                                error.code,
+                                                error.message.clone(),
+                                            ),
+                                        )),
                                     ),
                                     None => LiveEnd::new(end.terminal.reason, None),
                                 };

@@ -102,7 +102,13 @@ pub(crate) async fn resolve(
                 "apple-darwin"
             };
             let target = format!("{}-{platform}", std::env::consts::ARCH);
-            let asset = manifest.targets.get(&target).ok_or_else(|| error(TrellisTestErrorKind::MissingBinary, "no accepted native archive for this target; use explicit production executable paths in a source checkout"))?;
+            let asset = manifest.targets.get(&target).ok_or_else(|| {
+                error(
+                    TrellisTestErrorKind::MissingBinary,
+                    "no accepted native archive for this target; use explicit production \
+                    executable paths in a source checkout",
+                )
+            })?;
             if asset.archive != format!("trellis-{}-{target}.tar.gz", manifest.version) {
                 return Err(error(
                     TrellisTestErrorKind::InvalidConfiguration,

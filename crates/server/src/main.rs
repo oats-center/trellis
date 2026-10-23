@@ -93,7 +93,8 @@ struct ServerArgs {
     /// Shared verified managed-NATS executable cache; requires managed NATS.
     #[arg(long, global = true)]
     local_nats_cache: Option<PathBuf>,
-    /// Create a dedicated Unix process group so a supervisor can terminate this host and its children together.
+    /// Create a dedicated Unix process group so a supervisor can terminate this host and its
+    /// children together.
     #[arg(long, global = true)]
     isolated_process_group: bool,
     /// Native NATS endpoint advertised to clients only; repeatable.
@@ -204,7 +205,11 @@ impl StartupPolicy {
         if (admin_username.is_some() || admin_password.is_some() || admin_password_stdin)
             && operation != Operation::Run
         {
-            return Err(miette!("--admin-username, --admin-password, and --admin-password-stdin are startup options; use --username and --password options with bootstrap-admin"));
+            return Err(miette!(
+                "--admin-username, --admin-password, and --admin-password-stdin are \
+                startup options; use --username and --password options with \
+                bootstrap-admin"
+            ));
         }
         let paths = if server.system {
             ServerPaths::system(server.config)?
@@ -504,7 +509,10 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             || policy.reset_admin
             || !matches!(policy.mode, RuntimeMode::All | RuntimeMode::Platform)
         {
-            return Err(miette!("initial administrator options require a fresh platform startup and cannot be combined with --reset-admin"));
+            return Err(miette!(
+                "initial administrator options require a fresh platform startup and \
+                cannot be combined with --reset-admin"
+            ));
         }
         let password = resolve_bootstrap_password(
             policy.admin_password.as_deref(),

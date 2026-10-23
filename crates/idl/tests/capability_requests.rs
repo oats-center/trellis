@@ -67,7 +67,13 @@ fn compile(source: &str) -> miette::Result<PackageGraph> {
 
 #[test]
 fn capability_selection_exposes_only_selected_surfaces_and_round_trips() {
-    let source = format!("{SOURCE}\napp ReaderApp {{\nuse documents {{ required capability read; capability export; }}\nstate cache {{ title \"Cache\"; description \"Local document encoding.\"; schema Document; }}\n}}\ndevice ReaderDevice {{ agent optional NativeReader {{ use documents {{ required capability read; }} }} }}");
+    let source = format!(
+        "{SOURCE}\napp ReaderApp {{\nuse documents {{ required capability read; \
+        capability export; }}\nstate cache {{ title \"Cache\"; description \
+        \"Local document encoding.\"; schema Document; }}\n}}\ndevice \
+        ReaderDevice {{ agent optional NativeReader {{ use documents {{ \
+        required capability read; }} }} }}"
+    );
     let graph = compile(&source).unwrap();
     let participant = graph
         .root_package()
@@ -109,7 +115,8 @@ fn duplicate_requests_normalize_and_required_selection_wins() {
     let required = SOURCE.replace("capability export;", "required capability export;");
     let duplicated = SOURCE.replace(
         "required capability read; capability export;",
-        "capability read; required capability export; required capability read; capability export; required capability read;",
+        "capability read; required capability export; required capability read; \
+        capability export; required capability read;",
     );
     assert_eq!(
         compile(&required).unwrap().root_digest(),
@@ -119,7 +126,11 @@ fn duplicate_requests_normalize_and_required_selection_wins() {
 
 #[test]
 fn application_requests_refuse_private_resource_ownership() {
-    let source = format!("{SOURCE}\napp ReaderApp {{ use documents {{ required capability read; }} kv cache {{ title \"Cache\"; description \"Private cache.\"; schema Document; }} }}");
+    let source = format!(
+        "{SOURCE}\napp ReaderApp {{ use documents {{ required capability read; \
+        }} kv cache {{ title \"Cache\"; description \"Private cache.\"; schema \
+        Document; }} }}"
+    );
     assert!(compile(&source).is_err());
 }
 

@@ -316,9 +316,6 @@ test("Rust terminates accepted work on shared coverage loss before replacement r
       interruptibleNativeProxy: true,
       authorization: {
         contextLifetimeSeconds: 106,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 46,
       },
     },
   );

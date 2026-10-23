@@ -357,7 +357,8 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
             let ca = trellis_runtime::tls::inspect_certificate(&path).into_diagnostic()?;
             if !output::is_json(format) {
                 output::print_warning(&format!(
-                    "trusting only the CA {} for this deployment; confirm its SHA-256 fingerprint matches the one its operator published:\n  {}",
+                    "trusting only the CA {} for this deployment; confirm its SHA-256 \
+                    fingerprint matches the one its operator published:\n  {}",
                     path.display(),
                     ca.sha256_fingerprint
                 ));

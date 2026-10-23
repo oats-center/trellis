@@ -37,12 +37,7 @@ pub(crate) fn register_policy_aggregate_rpc<P: ParticipantDescriptor>(
                     )
                     .map_err(rpc_error)?;
                     tokio::task::spawn_blocking(move || {
-                        $aggregate(
-                            &store,
-                            &identity,
-                            &input,
-                            time::OffsetDateTime::now_utc().unix_timestamp(),
-                        )
+                        $aggregate(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
                     .map_err(|_| rpc_error(AuthError::Unavailable))?
@@ -159,19 +154,52 @@ pub(super) fn put_mapping(
     input: &AuthOIDCRoleMappingPutRequest,
     now: i64,
 ) -> Result<AuthOIDCRoleMappingPutResponse, AuthError> {
-    store.mutate(identity, "rpc.oidcRoleMappings.put", input, now, |connection| {
-        let mapping_id = input.mapping_id.as_ref().map(ToString::to_string).unwrap_or_else(id);
-        let config: String = connection.query_row("SELECT config_json FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'", [input.provider_id.to_string()], |row| row.get(0)).optional()?.ok_or(AuthError::NotFound)?;
-        let config: serde_json::Value = decode(&config)?;
-        let claim_name = config.get("roleClaim").and_then(serde_json::Value::as_str).ok_or_else(|| AuthError::Invalid("provider has no role claim".into()))?;
-        apply_policy_in_transaction(connection, identity, &PolicyMutation::OidcMappingPut {
-            mapping_id: mapping_id.clone(), provider_id: input.provider_id.to_string(),
-            claim_name: claim_name.into(), claim_value: input.external_role.to_string(),
-            role_ids: input.role_ids.iter().map(ToString::to_string).collect(),
-            expected_revision: input.expected_revision.0,
-        }, now)?;
-        Ok(AuthOIDCRoleMappingPutResponse { mapping: read_mapping(connection, &mapping_id)?, enforcement: None, extra: Default::default() })
-    })
+    store.mutate(
+        identity,
+        "rpc.oidcRoleMappings.put",
+        input,
+        now,
+        |connection| {
+            let mapping_id = input
+                .mapping_id
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(id);
+            let config: String = connection
+                .query_row(
+                    "SELECT config_json FROM auth_oidc_providers \
+                    WHERE provider_id=?1 \
+                    AND state='active'",
+                    [input.provider_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(AuthError::NotFound)?;
+            let config: serde_json::Value = decode(&config)?;
+            let claim_name = config
+                .get("roleClaim")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| AuthError::Invalid("provider has no role claim".into()))?;
+            apply_policy_in_transaction(
+                connection,
+                identity,
+                &PolicyMutation::OidcMappingPut {
+                    mapping_id: mapping_id.clone(),
+                    provider_id: input.provider_id.to_string(),
+                    claim_name: claim_name.into(),
+                    claim_value: input.external_role.to_string(),
+                    role_ids: input.role_ids.iter().map(ToString::to_string).collect(),
+                    expected_revision: input.expected_revision.0,
+                },
+                now,
+            )?;
+            Ok(AuthOIDCRoleMappingPutResponse {
+                mapping: read_mapping(connection, &mapping_id)?,
+                enforcement: None,
+                extra: Default::default(),
+            })
+        },
+    )
 }
 
 pub(super) fn read_assignments(
@@ -196,7 +224,14 @@ pub(super) fn read_assignments(
         .as_ref()
         .map(|value| value.as_ref())
         .unwrap_or("");
-    let mut statement = connection.prepare("SELECT assignment_id FROM auth_platform_assignments WHERE assignment_id>?1 AND instr(principal_id,?2)>0 ORDER BY assignment_id LIMIT ?3")?;
+    let mut statement = connection.prepare(
+        "SELECT assignment_id \
+        FROM auth_platform_assignments \
+        WHERE assignment_id>?1 \
+        AND instr(principal_id,?2)>0 \
+        ORDER BY assignment_id \
+        LIMIT ?3",
+    )?;
     let mut ids = statement
         .query_map(params![cursor, search, limit + 1], |row| {
             row.get::<_, String>(0)

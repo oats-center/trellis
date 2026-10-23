@@ -425,7 +425,8 @@ impl SqliteJobsStore {
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
         connection.execute(
-            "INSERT OR IGNORE INTO projection_metadata (name, value) VALUES ('projection_id', lower(hex(randomblob(16))))",
+            "INSERT OR IGNORE INTO projection_metadata (name, value) \
+            VALUES ('projection_id', lower(hex(randomblob(16))))",
             [],
         )?;
         connection
@@ -466,7 +467,9 @@ impl SqliteJobsStore {
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
         connection.execute(
-            "UPDATE projection_metadata SET value = max(CAST(value AS INTEGER), ?1) WHERE name = 'last_projected_sequence'",
+            "UPDATE projection_metadata \
+            SET value = max(CAST(value AS INTEGER), ?1) \
+            WHERE name = 'last_projected_sequence'",
             [stream_sequence],
         )?;
         Ok(())
@@ -582,29 +585,6 @@ impl SqliteJobsStore {
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
         project_timeline_event_on_connection(&connection, event, raw_event, projected, reason)
-    }
-
-    /// Upsert one observed job error into the fingerprint aggregate projection.
-    pub fn upsert_error_projection(
-        &self,
-        service: &str,
-        job_type: &str,
-        state: JobState,
-        timestamp: &str,
-        detail: &JobErrorDetail,
-    ) -> Result<(), SqliteJobsStoreError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| SqliteJobsStoreError::Poisoned)?;
-        upsert_error_projection_on_connection(
-            &connection,
-            service,
-            job_type,
-            state,
-            timestamp,
-            detail,
-        )
     }
 
     /// Project one wait-edge lifecycle event into the current active waits table.
@@ -738,7 +718,9 @@ impl SqliteJobsStore {
         }
         query_params.push(SqlValue::Text(job.id.clone()));
         let reverse_wait_clause = format!(
-            "EXISTS (SELECT 1 FROM jobs_wait_projection w WHERE w.id = j.id AND w.target_kind = 'job' AND w.target_id = ?{})",
+            "EXISTS (SELECT 1 FROM jobs_wait_projection w \
+            WHERE w.id = j.id AND w.target_kind = 'job' \
+            AND w.target_id = ?{})",
             query_params.len()
         );
         match_arms.push(format!("WHEN {reverse_wait_clause} THEN 'wait'"));
@@ -799,17 +781,20 @@ impl SqliteJobsStore {
         query_params.push(sql_u64(limit));
         let limit_param = query_params.len();
         let sql = format!(
-            "SELECT j.job_json, j.runtime_ms, j.queue_age_anchor_nanos, m.concurrency_key, \
-                    {RUNTIME_BAND_SQL}, j.last_error_fingerprint, \
-                    CASE {} ELSE NULL END AS matched_by \
-             FROM jobs_projection j \
-               LEFT JOIN jobs_metadata_projection m \
-                 ON m.service = j.service AND m.job_type = j.job_type AND m.id = j.id \
-               LEFT JOIN jobs_lineage_projection l \
-                 ON l.service = j.service AND l.job_type = j.job_type AND l.id = j.id \
-               WHERE j.id <> ?1 AND ({}) \
-              ORDER BY j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC \
-              LIMIT ?{limit_param}",
+            "SELECT j.job_json, j.runtime_ms, j.queue_age_anchor_nanos, \
+                m.concurrency_key, {RUNTIME_BAND_SQL}, j.last_error_fingerprint, CASE \
+                {} \
+                ELSE NULL END AS matched_by \
+                FROM jobs_projection j \
+                LEFT JOIN jobs_metadata_projection m ON m.service = j.service \
+                AND m.job_type = j.job_type \
+                AND m.id = j.id LEFT \
+                JOIN jobs_lineage_projection l ON l.service = j.service \
+                AND l.job_type = j.job_type \
+                AND l.id = j.id WHERE j.id <> ?1 \
+                AND ({}) ORDER BY j.updated_at_nanos DESC, j.service ASC, j.job_type \
+                ASC, j.id ASC \
+                LIMIT ?{limit_param}",
             match_arms.join(" "),
             clauses.join(" OR ")
         );
@@ -855,32 +840,6 @@ impl SqliteJobsStore {
         Ok(entries)
     }
 
-    /// Fetch projected admin metadata by globally addressable admin job id.
-    pub fn get_job_metadata_by_global_id(
-        &self,
-        id: &str,
-    ) -> Result<Option<JobProjectionMetadata>, SqliteJobsStoreError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| SqliteJobsStoreError::Poisoned)?;
-        Ok(connection
-            .query_row(
-                r#"
-                SELECT concurrency_key, concurrency_key_hash, concurrency_instance_id,
-                       concurrency_heartbeat_at, concurrency_lease_expires_at,
-                       concurrency_stale_takeover_count, queue_policy_outcome,
-                       queue_policy_reason, queue_policy_existing_job_id,
-                       queue_policy_replaced_job_id
-                FROM jobs_metadata_projection
-                WHERE id = ?1
-                "#,
-                params![id],
-                metadata_from_row,
-            )
-            .optional()?)
-    }
-
     /// List projected jobs with stable offset pagination.
     pub fn list_jobs(&self, filter: &ListJobsFilter) -> Result<JobsPage, SqliteJobsStoreError> {
         let (mut where_sql, mut query_params) = list_jobs_where_clause(filter);
@@ -897,7 +856,11 @@ impl SqliteJobsStore {
         let count = u64::try_from(count).unwrap_or(0);
 
         if let Some((updated_at, service, job_type, id)) = &filter.after {
-            let predicate = "(updated_at_nanos < ? OR (updated_at_nanos = ? AND (service > ? OR (service = ? AND (job_type > ? OR (job_type = ? AND id > ?))))))";
+            let predicate = "(updated_at_nanos < ? \
+                OR (updated_at_nanos = ? \
+                AND (service > ? OR (service = ? \
+                AND (job_type > ? OR (job_type = ? \
+                AND id > ?))))))";
             where_sql = if where_sql.is_empty() {
                 format!(" WHERE {predicate}")
             } else {
@@ -916,8 +879,8 @@ impl SqliteJobsStore {
         query_params.push(sql_u64(filter.limit.saturating_add(1)));
         let list_sql = format!(
             "SELECT job_json FROM jobs_projection{where_sql} \
-                   ORDER BY updated_at_nanos DESC, service ASC, job_type ASC, id ASC \
-                   LIMIT ?"
+                ORDER BY updated_at_nanos DESC, service ASC, job_type ASC, id ASC \
+                LIMIT ?"
         );
         let mut statement = connection.prepare(&list_sql)?;
         let rows = statement.query_map(params_from_iter(query_params.iter()), |row| {
@@ -984,9 +947,10 @@ impl SqliteJobsStore {
         }
         query_params.push(sql_u64(filter.limit.saturating_add(1)));
         let list_sql = format!(
-            "SELECT j.job_json, j.runtime_ms, j.queue_age_anchor_nanos, m.concurrency_key, \
-                    {RUNTIME_BAND_SQL}, j.last_error_fingerprint \
-             {from_sql}{where_sql} ORDER BY {} LIMIT ?",
+            "SELECT j.job_json, j.runtime_ms, j.queue_age_anchor_nanos, \
+                m.concurrency_key, {RUNTIME_BAND_SQL}, j.last_error_fingerprint \
+                {from_sql}{where_sql} \
+                ORDER BY {} LIMIT ?",
             workbench_order_sql(filter.sort)
         );
         let mut statement = connection.prepare(&list_sql)?;
@@ -1054,10 +1018,14 @@ impl SqliteJobsStore {
         };
         let sql = format!(
             "SELECT {key_sql} AS key, {label_sql} AS label, COUNT(*) AS count, \
-                    SUM(CASE WHEN j.state IN ('pending', 'retry') THEN 1 ELSE 0 END) AS depth, \
-                    CAST(SUM(CASE WHEN j.state IN ('failed', 'dead') THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS failure_rate, \
-                    MAX(j.updated_at) AS latest_updated_at, MIN(j.created_at) AS oldest_created_at, {state_sql} AS state \
-             {from_sql}{where_sql} GROUP BY key ORDER BY {order_sql}"
+                SUM(CASE \
+                WHEN j.state IN ('pending', 'retry') THEN 1 \
+                ELSE 0 END) AS depth, CAST(SUM(CASE \
+                WHEN j.state IN ('failed', 'dead') THEN 1 \
+                ELSE 0 END) AS REAL) / COUNT(*) AS failure_rate, MAX(j.updated_at) AS \
+                latest_updated_at, MIN(j.created_at) AS oldest_created_at, {state_sql} \
+                AS state {from_sql}{where_sql} \
+                GROUP BY key ORDER BY {order_sql}"
         );
         let connection = self
             .connection
@@ -1101,13 +1069,21 @@ impl SqliteJobsStore {
         let (key_sql, label_sql, _) = workbench_group_sql(filter.group_by);
         let sql = format!(
             "SELECT {key_sql} AS key, {label_sql} AS label, j.state, COUNT(*) AS count, \
-                    SUM(CASE WHEN j.state IN ('pending', 'retry') THEN 1 ELSE 0 END) AS queued, \
-                    SUM(CASE WHEN j.state = 'active' THEN 1 ELSE 0 END) AS running, \
-                    SUM(CASE WHEN j.state = 'failed' THEN 1 ELSE 0 END) AS failed, \
-                    SUM(CASE WHEN j.state = 'dead' THEN 1 ELSE 0 END) AS dead, \
-                    SUM(CASE WHEN j.state = 'active' AND j.runtime_ms >= 60000 THEN 1 ELSE 0 END) AS slow, \
-                    MIN(j.created_at) AS oldest_created_at, MAX(j.updated_at) AS latest_updated_at \
-             {from_sql}{where_sql} GROUP BY key, j.state ORDER BY count DESC, key ASC"
+            SUM(CASE \
+            WHEN j.state IN ('pending', 'retry') THEN 1 \
+            ELSE 0 END) AS queued, SUM(CASE \
+            WHEN j.state = 'active' THEN 1 \
+            ELSE 0 END) AS running, SUM(CASE \
+            WHEN j.state = 'failed' THEN 1 \
+            ELSE 0 END) AS failed, SUM(CASE \
+            WHEN j.state = 'dead' THEN 1 \
+            ELSE 0 END) AS dead, SUM(CASE \
+            WHEN j.state = 'active' \
+            AND j.runtime_ms >= 60000 THEN 1 \
+            ELSE 0 END) AS slow, MIN(j.created_at) AS oldest_created_at, \
+            MAX(j.updated_at) AS latest_updated_at {from_sql}{where_sql} \
+            GROUP BY key, j.state \
+            ORDER BY count DESC, key ASC"
         );
         let connection = self
             .connection
@@ -1132,8 +1108,19 @@ impl SqliteJobsStore {
                 ))
             })?;
             for row in rows {
-                let (key, label, state, count, queued, running, failed, dead, slow, oldest, latest) =
-                    row?;
+                let (
+                    key,
+                    label,
+                    state,
+                    count,
+                    queued,
+                    running,
+                    failed,
+                    dead,
+                    slow,
+                    oldest_created,
+                    latest_updated,
+                ) = row?;
                 let count = i64_to_u64(count).unwrap_or(0);
                 let entry = groups
                     .entry(key.clone())
@@ -1150,8 +1137,8 @@ impl SqliteJobsStore {
                         failure_rate: None,
                         runtime: JobsMetricsLatency::default(),
                         queue_wait: JobsMetricsLatency::default(),
-                        oldest_created_at: oldest.clone(),
-                        latest_updated_at: latest.clone(),
+                        oldest_created_at: oldest_created.clone(),
+                        latest_updated_at: latest_updated.clone(),
                     });
                 entry.total = entry.total.saturating_add(count);
                 entry.by_state.insert(state, count);
@@ -1160,11 +1147,11 @@ impl SqliteJobsStore {
                 add_optional_count(&mut entry.failed, failed.and_then(i64_to_u64));
                 add_optional_count(&mut entry.dead, dead.and_then(i64_to_u64));
                 add_optional_count(&mut entry.slow, slow.and_then(i64_to_u64));
-                if entry.oldest_created_at.as_ref() > oldest.as_ref() {
-                    entry.oldest_created_at = oldest;
+                if entry.oldest_created_at.as_ref() > oldest_created.as_ref() {
+                    entry.oldest_created_at = oldest_created;
                 }
-                if entry.latest_updated_at.as_ref() < latest.as_ref() {
-                    entry.latest_updated_at = latest;
+                if entry.latest_updated_at.as_ref() < latest_updated.as_ref() {
+                    entry.latest_updated_at = latest_updated;
                 }
             }
         }
@@ -1433,7 +1420,9 @@ impl SqliteJobsStore {
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
         connection
             .query_row(
-                "SELECT record_json FROM worker_presence_projection WHERE service = ?1 AND job_type = ?2 AND instance_id = ?3",
+                "SELECT record_json FROM worker_presence_projection \
+                WHERE service = ?1 AND job_type = ?2 \
+                AND instance_id = ?3",
                 params![service, job_type, instance_id],
                 |row| row.get::<_, String>(0),
             )
@@ -1464,10 +1453,10 @@ impl SqliteJobsStore {
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
         let (ready, oldest_anchor): (i64, Option<i64>) = connection.query_row(
             "SELECT COUNT(*), MIN(queue_age_anchor_nanos) FROM jobs_projection \
-             WHERE state = 'pending' \
-             AND queue_age_anchor_nanos IS NOT NULL \
-             AND queue_age_anchor_nanos <= ?1 \
-             AND (deadline_nanos IS NULL OR deadline_nanos > ?1)",
+            WHERE state = 'pending' \
+            AND queue_age_anchor_nanos IS NOT NULL \
+            AND queue_age_anchor_nanos <= ?1 \
+            AND (deadline_nanos IS NULL OR deadline_nanos > ?1)",
             rusqlite::params![now_nanos],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
@@ -1508,7 +1497,8 @@ impl SqliteJobsStore {
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
         let mut statement = connection.prepare(
-            "SELECT record_json FROM worker_presence_projection ORDER BY service ASC, job_type ASC, instance_id ASC",
+            "SELECT record_json FROM worker_presence_projection \
+            ORDER BY service ASC, job_type ASC, instance_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         let mut workers = Vec::new();
@@ -1560,7 +1550,7 @@ pub(crate) fn upsert_job_on_connection(
         })?;
     let old_fts = fts_row_for_job(connection, &job.service, &job.job_type, &job.id)?;
     connection.execute(
-        r#"
+    r#"
         INSERT INTO jobs_projection
             (service, job_type, id, state, created_at, updated_at, updated_at_nanos,
              request_id, trace_id, traceparent, started_at_nanos, completed_at_nanos,
@@ -1587,30 +1577,30 @@ pub(crate) fn upsert_job_on_connection(
             payload_json = excluded.payload_json,
             job_json = excluded.job_json
         "#,
-        params![
-            job.service,
-            job.job_type,
-            job.id,
-            state,
-            job.created_at,
-            job.updated_at,
-            updated_at_nanos,
-            job.context.request_id,
-            job.context.trace_id,
-            job.context.traceparent,
-            started_at_nanos,
-            completed_at_nanos,
-            created_at_nanos,
-            runtime_ms,
-            queue_age_anchor_nanos,
-            job.last_error.as_deref(),
-            last_error_fingerprint,
-            job.deadline,
-            deadline_nanos,
-            payload_json,
-            job_json
-        ],
-    )?;
+    params![
+        job.service,
+        job.job_type,
+        job.id,
+        state,
+        job.created_at,
+        job.updated_at,
+        updated_at_nanos,
+        job.context.request_id,
+        job.context.trace_id,
+        job.context.traceparent,
+        started_at_nanos,
+        completed_at_nanos,
+        created_at_nanos,
+        runtime_ms,
+        queue_age_anchor_nanos,
+        job.last_error.as_deref(),
+        last_error_fingerprint,
+        job.deadline,
+        deadline_nanos,
+        payload_json,
+        job_json
+    ],
+)?;
     let new_fts = fts_row_for_job(connection, &job.service, &job.job_type, &job.id)?;
     replace_fts_row(connection, old_fts.as_ref(), new_fts.as_ref())?;
     Ok(())
@@ -1719,7 +1709,7 @@ pub(crate) fn apply_job_metadata_patch_on_connection(
         .map(|count| i64::try_from(count).unwrap_or(i64::MAX));
     let old_fts = fts_row_for_job(connection, service, job_type, id)?;
     connection.execute(
-        r#"
+    r#"
         INSERT INTO jobs_metadata_projection
             (service, job_type, id, concurrency_key, concurrency_key_hash, concurrency_instance_id,
              concurrency_heartbeat_at, concurrency_lease_expires_at, concurrency_stale_takeover_count,
@@ -1740,36 +1730,36 @@ pub(crate) fn apply_job_metadata_patch_on_connection(
             updated_at = excluded.updated_at,
             updated_at_nanos = excluded.updated_at_nanos
         "#,
-        params![
-            service,
-            job_type,
-            id,
-            concurrency.as_ref().map(|metadata| metadata.key.as_str()),
-            concurrency.as_ref().map(|metadata| metadata.key_hash.as_str()),
-            concurrency
-                .as_ref()
-                .and_then(|metadata| metadata.instance_id.as_deref()),
-            concurrency
-                .as_ref()
-                .and_then(|metadata| metadata.heartbeat_at.as_deref()),
-            concurrency
-                .as_ref()
-                .and_then(|metadata| metadata.lease_expires_at.as_deref()),
-            stale_takeover_count,
-            queue_policy.as_ref().map(|metadata| metadata.outcome.as_str()),
-            queue_policy
-                .as_ref()
-                .and_then(|metadata| metadata.reason.as_deref()),
-            queue_policy
-                .as_ref()
-                .and_then(|metadata| metadata.existing_job_id.as_deref()),
-            queue_policy
-                .as_ref()
-                .and_then(|metadata| metadata.replaced_job_id.as_deref()),
-            timestamp,
-            timestamp_str_nanos(timestamp),
-        ],
-    )?;
+    params![
+        service,
+        job_type,
+        id,
+        concurrency.as_ref().map(|metadata| metadata.key.as_str()),
+        concurrency.as_ref().map(|metadata| metadata.key_hash.as_str()),
+        concurrency
+            .as_ref()
+            .and_then(|metadata| metadata.instance_id.as_deref()),
+        concurrency
+            .as_ref()
+            .and_then(|metadata| metadata.heartbeat_at.as_deref()),
+        concurrency
+            .as_ref()
+            .and_then(|metadata| metadata.lease_expires_at.as_deref()),
+        stale_takeover_count,
+        queue_policy.as_ref().map(|metadata| metadata.outcome.as_str()),
+        queue_policy
+            .as_ref()
+            .and_then(|metadata| metadata.reason.as_deref()),
+        queue_policy
+            .as_ref()
+            .and_then(|metadata| metadata.existing_job_id.as_deref()),
+        queue_policy
+            .as_ref()
+            .and_then(|metadata| metadata.replaced_job_id.as_deref()),
+        timestamp,
+        timestamp_str_nanos(timestamp),
+    ],
+)?;
     let new_fts = fts_row_for_job(connection, service, job_type, id)?;
     replace_fts_row(connection, old_fts.as_ref(), new_fts.as_ref())?;
     Ok(())
@@ -2312,14 +2302,25 @@ fn decode_job_json(json: &str) -> Result<Job, SqliteJobsStoreError> {
 }
 
 const MAX_FTS_SEARCH_CHARS: usize = 512;
-const RUNTIME_BAND_SQL: &str = "CASE WHEN j.state IN ('pending', 'retry') THEN 'queued' WHEN j.state = 'active' THEN CASE WHEN j.runtime_ms >= 60000 THEN 'slow' ELSE 'running' END ELSE 'terminal' END";
+const RUNTIME_BAND_SQL: &str = "CASE WHEN j.state IN ('pending', 'retry') THEN 'queued' \
+    WHEN j.state = 'active' THEN CASE \
+    WHEN j.runtime_ms >= 60000 THEN 'slow' \
+    ELSE 'running' END ELSE 'terminal' \
+    END";
 
 fn workbench_from_where_clause(
     filter: &JobsWorkbenchFilter,
 ) -> Result<(String, String, Vec<SqlValue>), SqliteJobsStoreError> {
     let mut clauses = Vec::new();
     let mut params = Vec::new();
-    let from_sql = "FROM jobs_projection j LEFT JOIN jobs_metadata_projection m ON m.service = j.service AND m.job_type = j.job_type AND m.id = j.id LEFT JOIN jobs_lineage_projection l ON l.service = j.service AND l.job_type = j.job_type AND l.id = j.id".to_string();
+    let from_sql = "FROM jobs_projection j \
+        LEFT JOIN jobs_metadata_projection m ON m.service = j.service \
+        AND m.job_type = j.job_type \
+        AND m.id = j.id LEFT \
+        JOIN jobs_lineage_projection l ON l.service = j.service \
+        AND l.job_type = j.job_type \
+        AND l.id = j.id"
+        .to_string();
 
     if let Some(service) = &filter.service {
         clauses.push("j.service = ?".to_string());
@@ -2407,10 +2408,12 @@ fn sanitize_fts_query(value: Option<&str>) -> Result<Option<String>, SqliteJobsS
 fn workbench_order_sql(sort: JobsWorkbenchSort) -> &'static str {
     match (sort.field, sort.descending) {
         (JobsWorkbenchSortField::QueueAge, false) => {
-            "CASE WHEN j.state IN ('pending', 'retry') THEN j.created_at_nanos END ASC, j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
+            "CASE WHEN j.state IN ('pending', 'retry') THEN j.created_at_nanos END ASC, \
+            j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
         }
         (JobsWorkbenchSortField::QueueAge, true) => {
-            "CASE WHEN j.state IN ('pending', 'retry') THEN j.created_at_nanos END DESC, j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
+            "CASE WHEN j.state IN ('pending', 'retry') THEN j.created_at_nanos END \
+                DESC, j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
         }
         (JobsWorkbenchSortField::Runtime, false) => {
             "j.runtime_ms ASC, j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
@@ -2419,10 +2422,12 @@ fn workbench_order_sql(sort: JobsWorkbenchSort) -> &'static str {
             "j.runtime_ms DESC, j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
         }
         (JobsWorkbenchSortField::Retries, false) => {
-            "json_extract(j.job_json, '$.tries') ASC, j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
+            "json_extract(j.job_json, '$.tries') ASC, j.updated_at_nanos DESC, \
+            j.service ASC, j.job_type ASC, j.id ASC"
         }
         (JobsWorkbenchSortField::Retries, true) => {
-            "json_extract(j.job_json, '$.tries') DESC, j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC"
+            "json_extract(j.job_json, '$.tries') DESC, j.updated_at_nanos DESC, \
+            j.service ASC, j.job_type ASC, j.id ASC"
         }
         (_, false) => "j.updated_at_nanos ASC, j.service ASC, j.job_type ASC, j.id ASC",
         (_, true) => "j.updated_at_nanos DESC, j.service ASC, j.job_type ASC, j.id ASC",
@@ -2465,7 +2470,11 @@ fn workbench_after_predicate(
         JobsWorkbenchSortField::Retries => "json_extract(j.job_json, '$.tries')",
         _ => "j.updated_at_nanos",
     };
-    let tie = "(j.updated_at_nanos < ? OR (j.updated_at_nanos = ? AND (j.service > ? OR (j.service = ? AND (j.job_type > ? OR (j.job_type = ? AND j.id > ?))))))";
+    let tie = "(j.updated_at_nanos < ? \
+        OR (j.updated_at_nanos = ? \
+        AND (j.service > ? OR (j.service = ? \
+        AND (j.job_type > ? \
+        OR (j.job_type = ? AND j.id > ?))))))";
     let mut params = Vec::new();
     let predicate = match (primary, sort.descending) {
         (Some(primary), false) => {
@@ -2518,7 +2527,14 @@ fn metrics_jobs_where_clause(
 ) -> Result<(String, String, Vec<SqlValue>), SqliteJobsStoreError> {
     let mut clauses = Vec::new();
     let mut params = Vec::new();
-    let from_sql = "FROM jobs_projection j LEFT JOIN jobs_metadata_projection m ON m.service = j.service AND m.job_type = j.job_type AND m.id = j.id LEFT JOIN jobs_lineage_projection l ON l.service = j.service AND l.job_type = j.job_type AND l.id = j.id".to_string();
+    let from_sql = "FROM jobs_projection j \
+        LEFT JOIN jobs_metadata_projection m ON m.service = j.service \
+        AND m.job_type = j.job_type \
+        AND m.id = j.id LEFT \
+        JOIN jobs_lineage_projection l ON l.service = j.service \
+        AND l.job_type = j.job_type \
+        AND l.id = j.id"
+        .to_string();
 
     if let Some(service) = &filter.service {
         clauses.push("j.service = ?".to_string());
@@ -2605,7 +2621,14 @@ fn collect_event_counts(
         timestamp_nanos(filter.since),
         filter.step_nanos,
     );
-    let event_from_sql = from_sql.replacen("FROM jobs_projection j", "FROM jobs_events_projection e JOIN jobs_projection j ON j.service = e.service AND j.job_type = e.job_type AND j.id = e.id", 1);
+    let event_from_sql = from_sql.replacen(
+        "FROM jobs_projection j",
+        "FROM jobs_events_projection e \
+        JOIN jobs_projection j ON j.service = e.service \
+        AND j.job_type = e.job_type \
+        AND j.id = e.id",
+        1,
+    );
     let mut clauses = Vec::new();
     if !where_sql.is_empty() {
         clauses.push(where_sql.trim_start_matches(" WHERE ").to_string());
@@ -2616,8 +2639,9 @@ fn collect_event_counts(
     params.push(SqlValue::Integer(timestamp_nanos(filter.since)));
     params.push(SqlValue::Integer(timestamp_nanos(filter.until)));
     let sql = format!(
-        "SELECT {time_bucket_sql} AS bucket, {key_sql} AS key, {label_sql} AS label, e.event_type, COUNT(*) \
-         {event_from_sql} WHERE {} GROUP BY bucket, key, e.event_type",
+        "SELECT {time_bucket_sql} AS bucket, {key_sql} AS key, {label_sql} AS \
+        label, e.event_type, COUNT(*) {event_from_sql} \
+        WHERE {} GROUP BY bucket, key, e.event_type",
         clauses.join(" AND ")
     );
     let mut statement = connection.prepare(&sql)?;
@@ -2668,7 +2692,7 @@ fn collect_latency_buckets(
     }
     let sql = format!(
         "SELECT {} AS bucket, {key_sql} AS key, {label_sql} AS label, {value_sql} \
-         {from_sql}{where_sql} ORDER BY bucket ASC, key ASC, {value_sql} ASC",
+        {from_sql}{where_sql} ORDER BY bucket ASC, key ASC, {value_sql} ASC",
         bucket_sql(
             time_column,
             timestamp_nanos(filter.since),
@@ -3037,22 +3061,22 @@ mod tests {
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
         connection.execute(
-            r#"
+    r#"
             INSERT INTO jobs_projection
                 (service, job_type, id, state, created_at, updated_at, updated_at_nanos, deadline, deadline_nanos, payload_json, job_json)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, ?8, ?9)
             "#,
-            params![
-                service,
-                job_type,
-                id,
-                job_state_token(state),
-                "2026-01-01T00:00:00Z",
-                updated_at,
-                timestamp_str_nanos(updated_at),
-                "{}",
-                job_json,
-            ],
+    params![
+        service,
+        job_type,
+        id,
+        job_state_token(state),
+        "2026-01-01T00:00:00Z",
+        updated_at,
+        timestamp_str_nanos(updated_at),
+        "{}",
+        job_json,
+    ],
         )?;
         Ok(())
     }
@@ -3066,7 +3090,10 @@ mod tests {
         let connection = store.connection.lock().expect("connection lock");
         let tables: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('jobs_projection', 'jobs_events_projection', 'projection_metadata')",
+                "SELECT COUNT(*) FROM sqlite_master \
+                WHERE type = 'table' \
+                AND name IN ('jobs_projection', 'jobs_events_projection', \
+                'projection_metadata')",
                 [],
                 |row| row.get(0),
             )

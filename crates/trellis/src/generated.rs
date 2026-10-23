@@ -1563,6 +1563,7 @@ impl PackageEvidence {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
     use std::fmt;
 
     use serde::{Deserialize, Serialize};
@@ -1577,7 +1578,7 @@ mod tests {
                 2 => (vec![3], None),
                 _ => panic!("fetched beyond terminal page"),
             };
-            Ok::<_, crate::client::CallError<std::convert::Infallible>>((items, step + 1, next))
+            Ok::<_, crate::client::CallError<Infallible>>((items, step + 1, next))
         });
         assert_eq!(
             super::cursor_items(pages, |items| items)
@@ -1592,19 +1593,16 @@ mod tests {
     async fn cursor_traversal_rejects_repeated_initial_cursor_and_preserves_fetch_errors() {
         use futures_util::StreamExt;
         let mut pages = super::cursor_pages((), Some("initial".into()), |()| async {
-            Ok::<_, crate::client::CallError<std::convert::Infallible>>((
-                vec![99],
-                (),
-                Some("initial".into()),
-            ))
+            Ok::<_, crate::client::CallError<Infallible>>((vec![99], (), Some("initial".into())))
         });
-        assert!(
-            matches!(pages.next().await, Some(Err(super::PaginationError::RepeatedCursor(cursor))) if cursor == "initial")
-        );
+        assert!(matches!(
+            pages.next().await,
+            Some(Err(super::PaginationError::RepeatedCursor(cursor))) if cursor == "initial"
+        ));
         assert!(pages.next().await.is_none());
 
         let pages = super::cursor_pages((), None, |()| async {
-            Err::<(Vec<u8>, (), Option<String>), crate::client::CallError<std::convert::Infallible>>(
+            Err::<(Vec<u8>, (), Option<String>), crate::client::CallError<Infallible>>(
                 crate::client::CallError::Timeout,
             )
         });

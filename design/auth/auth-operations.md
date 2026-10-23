@@ -1,22 +1,24 @@
 # Design: Auth Operations
 
-Status: operational requirements after WO-02.
+Status: Revision 7 operational requirements.
 
 ## Configuration
 
-Runtime Auth configuration includes:
+Runtime Auth configuration (`[auth]`) includes:
 
-- online issuer seed path;
-- authorization-context lifetime;
-- route/NATS JWT lifetime;
-- browser flow, login, enrollment, and one-use-secret lifetimes;
-- password hashing and rate-limit policy; and
-- exact NATS/KV endpoint and retention configuration.
+- `instance_id`, the installation identity retained across restarts;
+- `oauth_storage_key_file`, the OAuth storage custody key;
+- `[auth.authorization]`: `issuer_signing_seed_file`,
+  `context_lifetime_seconds`, `allowed_clock_skew_seconds`, and
+  `oauth_admission_lifetime_seconds`;
+- `[auth.oauth]`: the dedicated listener's `origin`, `bind_address`, `port`,
+  `transport`, and `trusted_proxies`; and
+- `[auth.local_identity]`: `enabled` and `password_min_length`.
 
-Route/NATS JWT lifetime is shorter than authorization-context lifetime. User
-login expiry bounds contexts issued for that login. Native services/devices are
-bounded by credential, grant, resource, issuer, and context evidence rather than
-a login TTL.
+Login, OAuth token, device-code, portal, and request-admission lifetimes and
+budgets are fixed in the runtime, not configured. User login expiry bounds
+authority issued for that login. Native services and devices are bounded by
+credential, deployment, resource, and issuer evidence rather than a login TTL.
 
 There is no offline trust-root, certificate, manifest, or rollback-floor
 configuration.
@@ -31,8 +33,9 @@ configuration.
 - complete first-admin setup;
 - provision service/device identities and retain one-use secrets only until
   consumed;
-- verify context KV retention is unbounded for Auth-owned history;
-- verify context/revocation replay completes before readiness; and
+- verify the revocation bucket allows per-entry TTLs at least as long as the
+  latest issued authority;
+- verify authority/revocation publication completes before readiness; and
 - monitor post-commit backlog, issuer expiry, rejected proofs, and failed kicks.
 
 ## Revocation
@@ -56,7 +59,7 @@ issuer seed rather than generating one silently.
 
 Service/device durable identity rotation is performed through provisioning
 lifecycle, not by mutating private keys in Trellis. Session keys are ephemeral
-and rotate on bootstrap/login attempts.
+and rotate on every CONNECT admission and login.
 
 ## Recovery
 

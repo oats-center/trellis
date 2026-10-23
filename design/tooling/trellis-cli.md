@@ -1,6 +1,6 @@
 # Design: Trellis CLI
 
-Status: authoritative command and project-tooling model after WO-02.
+Status: Revision 7 command and project-tooling model.
 
 ## Principles
 

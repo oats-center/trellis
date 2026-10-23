@@ -33,7 +33,10 @@ impl SqliteAuthorizationStore {
         )?;
         let resources = {
             let mut statement = transaction.prepare(
-                "SELECT kind, state, count(*) FROM auth_resources GROUP BY kind, state ORDER BY kind, state",
+                "SELECT kind, state, count(*) \
+                FROM auth_resources \
+                GROUP BY kind, state \
+                ORDER BY kind, state",
             )?;
             let rows = statement.query_map([], |row| {
                 Ok((

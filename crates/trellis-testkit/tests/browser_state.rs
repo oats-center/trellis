@@ -35,10 +35,24 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
     )
     .await
     .unwrap();
-    let device = native.start_device(&serde_json::json!([
-        {"type":"trellis_capabilities","required":["trellis.auth@v1::usersCreate","trellis.auth@v1::capabilityGrantsGrant","trellis.auth@v1::oauthClientsPut"],"optional":[]},
-        {"type":"trellis_platform_privileges","required":["principals.manage","roles.manage","clients.manage"]}
-    ])).await.unwrap();
+    let device = native
+        .start_device(&serde_json::json!([
+            {
+                "type":"trellis_capabilities",
+                "required": [
+                    "trellis.auth@v1::usersCreate",
+                    "trellis.auth@v1::capabilityGrantsGrant",
+                    "trellis.auth@v1::oauthClientsPut"
+                            ],
+                "optional": []
+            },
+            {
+                "type":"trellis_platform_privileges",
+                "required": ["principals.manage","roles.manage","clients.manage"]
+            }
+        ]))
+        .await
+        .unwrap();
     runtime
         .approve_device_login("trellis.cli", device.user_code())
         .await

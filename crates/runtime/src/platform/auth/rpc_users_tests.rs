@@ -1007,7 +1007,17 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
         NOW + 4,
     )
     .unwrap();
-    let grant: String = store.transaction(|connection| Ok(connection.query_row("SELECT oauth_grant_id FROM auth_authorization_sessions WHERE authorization_session_id=?1", [&session], |row| row.get(0))?)).unwrap();
+    let grant: String = store
+        .transaction(|connection| {
+            Ok(connection.query_row(
+                "SELECT oauth_grant_id \
+                FROM auth_authorization_sessions \
+                WHERE authorization_session_id=?1",
+                [&session],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
     let root = EnforcementScope::Grant(grant);
     crate::platform::auth::phase_two_tests::revoke_root(
         &store,

@@ -21,7 +21,7 @@ Default to adding or updating integration tests when a change affects:
 - public Trellis HTTP or RPC APIs
 - NATS subjects, auth-callout, proofs, or transport permissions
 - contracts, generated SDKs, manifests, or permission derivation
-- service bootstrap, device activation, participant installation, or GrantBinding mutation
+- service bootstrap, device activation, participant installation, or authorization policy mutation
 - jobs, operations, events, live observations, state, resources, or transfer behavior
 - Rust/TypeScript cross-runtime behavior
 
@@ -44,12 +44,17 @@ Cargo and Node discover executable tests directly. Hidden skips and separate
 test registries are forbidden.
 
 The Rust workspace also executes real Node and Chromium OAuth consumers and a
-real upstream Dex provider. Install the npm workspace and Playwright Chromium
-before that catalog, and set `TRELLIS_TEST_DEX_BIN` to the producer-built Dex
-executable. Check builds Dex once from its pinned source revision, supplies the
-prebuilt CLI, server, Events fixture, and pinned NATS executable, and installs
-the browser dependencies in the execution job; tests do not rebuild those
-executables.
+real upstream Dex provider. Install the npm workspace and Playwright Chromium,
+then run the whole catalog with:
+
+```sh
+scripts/run-rust-tests.sh
+```
+
+Locally it acquires the pinned NATS server, builds the pinned Dex revision
+(`scripts/acquire-test-dex.sh`, which needs Go), builds the CLI, server, and
+Events fixture, and sets every test executable variable. Check stages the same
+executables once and runs the same script; tests never rebuild them.
 
 If the full integration suites cannot be run, record the reason and the last focused checks that did run.
 

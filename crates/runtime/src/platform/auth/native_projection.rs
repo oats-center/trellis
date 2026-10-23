@@ -30,16 +30,47 @@ pub(super) fn project_instance(
     instance: &str,
     now: i64,
 ) -> Result<NativeInstanceProjection, AuthError> {
-    let row = connection.query_row(
-        "SELECT i.deployment_id,d.participant_id,i.principal_id,p.participant_digest,p.projection_json,c.projection_json,b.resource_commitments_json,i.installed_revision=b.installed_revision,b.required_capabilities_json,b.optional_capabilities_json,b.provided_apis_json
-         FROM auth_instances i JOIN auth_principals u ON u.principal_id=i.principal_id
+    let row = connection
+        .query_row(
+            "SELECT i.deployment_id,d.participant_id,i.principal_id,\
+                p.participant_digest,p.projection_json,c.projection_json,\
+                b.resource_commitments_json,i.installed_revision=b.installed_revision,\
+                b.required_capabilities_json,b.optional_capabilities_json,\
+                b.provided_apis_json
+         FROM auth_instances i \
+                JOIN auth_principals u ON u.principal_id=i.principal_id
          JOIN auth_deployments d ON d.deployment_id=i.deployment_id
          JOIN auth_deployment_bindings b ON b.deployment_id=i.deployment_id
-         JOIN auth_installed_participants p ON p.participant_id=d.participant_id AND p.revision=i.installed_revision
-         JOIN auth_installed_participants c ON c.participant_id=d.participant_id AND c.revision=b.installed_revision
-         WHERE i.instance_id=?1 AND i.state='active' AND u.state='active' AND d.state='active' AND (d.expires_at IS NULL OR d.expires_at>?2)",
-        params![instance,now], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,String>(5)?,row.get::<_,String>(6)?,row.get::<_,bool>(7)?,row.get::<_,String>(8)?,row.get::<_,String>(9)?,row.get::<_,String>(10)?)),
-    ).optional()?;
+         JOIN auth_installed_participants p ON \
+                p.participant_id=d.participant_id \
+                AND p.revision=i.installed_revision
+         JOIN auth_installed_participants c ON \
+                c.participant_id=d.participant_id \
+                AND c.revision=b.installed_revision
+         WHERE i.instance_id=?1 \
+                AND i.state='active' \
+                AND u.state='active' \
+                AND d.state='active' \
+                AND (d.expires_at IS NULL \
+                OR d.expires_at>?2)",
+            params![instance, now],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, bool>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, String>(10)?,
+                ))
+            },
+        )
+        .optional()?;
     let (
         deployment_id,
         participant_id,

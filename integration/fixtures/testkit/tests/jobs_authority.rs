@@ -120,7 +120,12 @@ async fn private_jobs_execute_and_history_is_deployment_scoped() {
         128,
         "history must page a real operation's retained observations"
     );
-    let continuation = serde_json::from_value(json!({"queue":"work","jobId":job.identity().id,"fromSequence":page.next_sequence,"throughSequence":page.through_sequence})).unwrap();
+    let continuation = serde_json::from_value(json!({
+        "queue":"work",
+        "jobId":job.identity().id,
+        "fromSequence":page.next_sequence,
+        "throughSequence":page.through_sequence
+    })).unwrap();
     let end = history_first.history(&continuation).await.unwrap();
     assert_eq!(page.through_sequence, end.through_sequence);
     assert!(end.next_sequence.is_none());

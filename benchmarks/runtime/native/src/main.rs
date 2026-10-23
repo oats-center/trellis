@@ -255,7 +255,13 @@ async fn snapshot_resources(options: &Options) -> Result<Vec<Value>, Error> {
             .split_whitespace()
             .collect();
         let memory = tokio::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).await?;
-        let mut row = json!({ "pid": pid, "role": process["role"], "startTicks": stat[19].parse::<u64>()?, "userCpuSeconds": stat[11].parse::<f64>()? / options.cpu_ticks as f64, "systemCpuSeconds": stat[12].parse::<f64>()? / options.cpu_ticks as f64 });
+        let mut row = json!({
+            "pid": pid,
+            "role": process["role"],
+            "startTicks": stat[19].parse::<u64>()?,
+            "userCpuSeconds": stat[11].parse::<f64>()? / options.cpu_ticks as f64,
+            "systemCpuSeconds": stat[12].parse::<f64>()? / options.cpu_ticks as f64
+        });
         for (source, key) in [("Rss:", "rssKiB"), ("Pss:", "pssKiB")] {
             row[key] = json!(memory
                 .lines()
@@ -283,7 +289,7 @@ async fn main() -> Result<(), Error> {
     let metrics = metrics::install(&options.output, &options.role);
     match options.role.as_str() {
         "provider" | "storage" => {
-            let server = discover_native_oauth(&options.trellis_url).await?;
+            let server = discover_native_oauth(&options.trellis_url, &trust_roots()).await?;
             let mut service = Participant::connect(ServiceConnectOptions::new(
                 server.nats_servers,
                 server.trust,
@@ -554,7 +560,7 @@ async fn main() -> Result<(), Error> {
         "http" => {
             // Store mode uses the provider's own `files` store through the same
             // identity; no handlers are registered, so no Trellis traffic lands here.
-            let server = discover_native_oauth(&options.trellis_url).await?;
+            let server = discover_native_oauth(&options.trellis_url, &trust_roots()).await?;
             let mut service = Participant::connect(ServiceConnectOptions::new(
                 server.nats_servers,
                 server.trust,
@@ -575,7 +581,13 @@ async fn main() -> Result<(), Error> {
             let mut stop =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
             tokio::select! {
-                result = http::serve(options.output.clone(), options.sizes.clone(), options.http_chunk_bytes, files, tls) => result?,
+                result = http::serve(
+                    options.output.clone(),
+                    options.sizes.clone(),
+                    options.http_chunk_bytes,
+                    files,
+                    tls
+                ) => result?,
                 _ = stop.recv() => {}
             }
             drop(service);
@@ -585,7 +597,7 @@ async fn main() -> Result<(), Error> {
             let mut windows = Vec::new();
             let started = Instant::now();
             let unix = now();
-            let server = discover_native_oauth(&options.trellis_url).await?;
+            let server = discover_native_oauth(&options.trellis_url, &trust_roots()).await?;
             let scope = NativeCredentialScope {
                 issuer: server.issuer.clone(),
                 instance_id: server.trust.instance_id.clone(),
@@ -615,7 +627,11 @@ async fn main() -> Result<(), Error> {
                     .await?;
                 println!(
                     "NATIVE_LOGIN {}",
-                    json!({ "clientId": scope.client_id, "userCode": device.user_code(), "verificationUri": device.verification_uri() })
+                    json!({
+                        "clientId": scope.client_id,
+                        "userCode": device.user_code(),
+                        "verificationUri": device.verification_uri()
+                    })
                 );
                 std::io::stdout().flush()?;
                 device.complete().await?
@@ -952,7 +968,15 @@ async fn main() -> Result<(), Error> {
                         samples.push(sample);
                         let after = snapshot_resources(&options).await?;
                         if index >= options.warmups {
-                            windows.push(json!({ "scenario": scenario_name, "transport": transport, "calls": 1, "bytes": size, "durationMs": duration_ms, "before": before, "after": after }));
+                            windows.push(json!({
+                                "scenario": scenario_name,
+                                "transport": transport,
+                                "calls": 1,
+                                "bytes": size,
+                                "durationMs": duration_ms,
+                                "before": before,
+                                "after": after
+                            }));
                         }
                         // Checkpoint raw failures even if a later workload or process fails.
                         tokio::fs::write(
@@ -1079,4 +1103,12 @@ async fn main() -> Result<(), Error> {
     }
     metrics.shutdown()?;
     Ok(())
+}
+
+/// The installation CA the benchmark driver trusts, passed through the environment.
+fn trust_roots() -> Vec<PathBuf> {
+    std::env::var_os("TRELLIS_CA_CERTIFICATE")
+        .map(PathBuf::from)
+        .into_iter()
+        .collect()
 }

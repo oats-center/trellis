@@ -1056,15 +1056,35 @@ impl TrellisTestRuntime {
                 "native application does not belong to this runtime",
             ));
         }
-        let (session, nats_servers) = tokio::time::timeout(self.timeouts.request, crate::admin::login_client(
-            &self.oauth_origin,
-            &self.trust_roots,
-            &self.workdir.join("credentials").join(&app.client_id).join(ulid::Ulid::new().to_string()),
-            &app.client_id,
-            &serde_json::json!([{"type":"trellis_capabilities","required":P::REQUIRED_CAPABILITIES,"optional":P::OPTIONAL_CAPABILITIES}]),
-            username,
-            password,
-        )).await.map_err(|_| request_timeout("logging in a native application", TrellisTestStage::ClientLogin))??;
+        let (session, nats_servers) = tokio::time::timeout(
+            self.timeouts.request,
+            crate::admin::login_client(
+                &self.oauth_origin,
+                &self.trust_roots,
+                &self
+                    .workdir
+                    .join("credentials")
+                    .join(&app.client_id)
+                    .join(ulid::Ulid::new().to_string()),
+                &app.client_id,
+                &serde_json::json!([
+                    {
+                        "type":"trellis_capabilities",
+                        "required":P::REQUIRED_CAPABILITIES,
+                        "optional":P::OPTIONAL_CAPABILITIES
+                    }
+                ]),
+                username,
+                password,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            request_timeout(
+                "logging in a native application",
+                TrellisTestStage::ClientLogin,
+            )
+        })??;
         Ok(TestClientIdentity {
             name: app.name.clone(),
             client_id: app.client_id.clone(),
@@ -1130,7 +1150,8 @@ fn validate_admin_credentials(username: &str, password: &str) -> Result<(), Trel
         return Err(TrellisTestError::new(
             TrellisTestErrorKind::InvalidConfiguration,
             TrellisTestStage::Validation,
-            "administrator username must be nonempty without controls and password at least 8 characters without line breaks",
+            "administrator username must be nonempty without controls and password \
+            at least 8 characters without line breaks",
         ));
     }
     Ok(())

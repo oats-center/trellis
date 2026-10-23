@@ -1,5 +1,6 @@
 //! Native policy RPC projections over the authoritative authorization store.
 
+use super::sqlite::timestamp;
 use std::sync::Arc;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -79,12 +80,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                     )
                     .map_err(rpc_error)?;
                     tokio::task::spawn_blocking(move || {
-                        $aggregate(
-                            &store,
-                            &identity,
-                            &input,
-                            time::OffsetDateTime::now_utc().unix_timestamp(),
-                        )
+                        $aggregate(&store, &identity, &input, crate::clock::unix_now())
                     })
                     .await
                     .map_err(|_| rpc_error(AuthError::Unavailable))?
@@ -177,7 +173,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                     read_effective_access(
                         connection,
                         &input.principal_id.to_string(),
-                        time::OffsetDateTime::now_utc().unix_timestamp(),
+                        crate::clock::unix_now(),
                     )
                 })
             })
@@ -247,23 +243,48 @@ pub(super) fn assign_role(
     input: &AuthRoleAssignRequest,
     now: i64,
 ) -> Result<AuthRoleAssignResponse, AuthError> {
-    store.mutate(identity, "rpc.roleAssignments.assign", input, now, |connection| {
-        let principal_id = input.principal_id.to_string();
-        let role_id = input.role_id.to_string();
-        let command = PolicyMutation::RoleAssign {
-            principal_id: principal_id.clone(),
-            role_id: role_id.clone(),
-            expected_revision: input.expected_revision.0,
-            expires_at: input.expires_at.as_ref().map(|value| {
-                time::OffsetDateTime::parse(value.as_str(), &time::format_description::well_known::Rfc3339)
-                    .map(|value| value.unix_timestamp()).map_err(|_| AuthError::Invalid("invalid expiry".into()))
-            }).transpose()?,
-        };
-        super::policy::apply_policy_in_transaction(connection, identity, &command, now)?;
-        let (generation, _) = super::policy::role(connection, &role_id)?;
-        let assignment_id: String = connection.query_row("SELECT assignment_id FROM auth_role_assignments WHERE principal_id=?1 AND role_id=?2 AND role_generation=?3", params![principal_id, role_id, generation], |row| row.get(0))?;
-        Ok(AuthRoleAssignResponse { assignment: read_assignment(connection, &assignment_id)?, enforcement: None, extra: Default::default() })
-    })
+    store.mutate(
+        identity,
+        "rpc.roleAssignments.assign",
+        input,
+        now,
+        |connection| {
+            let principal_id = input.principal_id.to_string();
+            let role_id = input.role_id.to_string();
+            let command = PolicyMutation::RoleAssign {
+                principal_id: principal_id.clone(),
+                role_id: role_id.clone(),
+                expected_revision: input.expected_revision.0,
+                expires_at: input
+                    .expires_at
+                    .as_ref()
+                    .map(|value| {
+                        time::OffsetDateTime::parse(
+                            value.as_str(),
+                            &time::format_description::well_known::Rfc3339,
+                        )
+                        .map(|value| value.unix_timestamp())
+                        .map_err(|_| AuthError::Invalid("invalid expiry".into()))
+                    })
+                    .transpose()?,
+            };
+            super::policy::apply_policy_in_transaction(connection, identity, &command, now)?;
+            let (generation, _) = super::policy::role(connection, &role_id)?;
+            let assignment_id: String = connection.query_row(
+                "SELECT assignment_id \
+                FROM auth_role_assignments \
+                WHERE principal_id=?1 \
+                AND role_id=?2 AND role_generation=?3",
+                params![principal_id, role_id, generation],
+                |row| row.get(0),
+            )?;
+            Ok(AuthRoleAssignResponse {
+                assignment: read_assignment(connection, &assignment_id)?,
+                enforcement: None,
+                extra: Default::default(),
+            })
+        },
+    )
 }
 
 pub(super) fn revoke_assignment(
@@ -306,23 +327,52 @@ pub(super) fn grant_capability(
     input: &AuthCapabilityGrantRequest,
     now: i64,
 ) -> Result<AuthCapabilityGrantResponse, AuthError> {
-    store.mutate(identity, "rpc.capabilityGrants.grant", input, now, |connection| {
-        let principal_id = input.principal_id.to_string();
-        let capability_id = input.capability_id.to_string();
-        let command = PolicyMutation::CapabilityGrant {
-            principal_id: principal_id.clone(),
-            capability_id: capability_id.clone(),
-            expected_revision: input.expected_revision.0,
-            expires_at: input.expires_at.as_ref().map(|value| {
-                time::OffsetDateTime::parse(value.as_str(), &time::format_description::well_known::Rfc3339)
-                    .map(|value| value.unix_timestamp()).map_err(|_| AuthError::Invalid("invalid expiry".into()))
-            }).transpose()?,
-        };
-        super::policy::apply_policy_in_transaction(connection, identity, &command, now)?;
-        let capability = super::policy::capability(connection, &capability_id)?;
-        let grant_id: String = connection.query_row("SELECT grant_id FROM auth_direct_capabilities WHERE principal_id=?1 AND capability_id=?2 AND capability_generation=?3", params![principal_id, capability_id, capability.identity_generation.get()], |row| row.get(0))?;
-        Ok(AuthCapabilityGrantResponse { grant: read_grant(connection, &grant_id)?, enforcement: None, extra: Default::default() })
-    })
+    store.mutate(
+        identity,
+        "rpc.capabilityGrants.grant",
+        input,
+        now,
+        |connection| {
+            let principal_id = input.principal_id.to_string();
+            let capability_id = input.capability_id.to_string();
+            let command = PolicyMutation::CapabilityGrant {
+                principal_id: principal_id.clone(),
+                capability_id: capability_id.clone(),
+                expected_revision: input.expected_revision.0,
+                expires_at: input
+                    .expires_at
+                    .as_ref()
+                    .map(|value| {
+                        time::OffsetDateTime::parse(
+                            value.as_str(),
+                            &time::format_description::well_known::Rfc3339,
+                        )
+                        .map(|value| value.unix_timestamp())
+                        .map_err(|_| AuthError::Invalid("invalid expiry".into()))
+                    })
+                    .transpose()?,
+            };
+            super::policy::apply_policy_in_transaction(connection, identity, &command, now)?;
+            let capability = super::policy::capability(connection, &capability_id)?;
+            let grant_id: String = connection.query_row(
+                "SELECT grant_id FROM auth_direct_capabilities \
+                WHERE principal_id=?1 \
+                AND capability_id=?2 \
+                AND capability_generation=?3",
+                params![
+                    principal_id,
+                    capability_id,
+                    capability.identity_generation.get()
+                ],
+                |row| row.get(0),
+            )?;
+            Ok(AuthCapabilityGrantResponse {
+                grant: read_grant(connection, &grant_id)?,
+                enforcement: None,
+                extra: Default::default(),
+            })
+        },
+    )
 }
 
 pub(super) fn revoke_grant(
@@ -363,7 +413,24 @@ fn read_assignment(
     connection: &Connection,
     assignment_id: &str,
 ) -> Result<AuthRoleAssignment, AuthError> {
-    let (principal, role, generation, revision, expiry) = connection.query_row("SELECT principal_id,role_id,role_generation,revision,expires_at FROM auth_role_assignments WHERE assignment_id=?1", [assignment_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?, row.get::<_, u64>(3)?, row.get::<_, Option<i64>>(4)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (principal, role, generation, revision, expiry) = connection
+        .query_row(
+            "SELECT principal_id,role_id,role_generation,revision,expires_at \
+            FROM auth_role_assignments \
+            WHERE assignment_id=?1",
+            [assignment_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     Ok(AuthRoleAssignment {
         assignment_id: assignment_id.parse().map_err(|_| AuthError::Unavailable)?,
         principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
@@ -376,7 +443,25 @@ fn read_assignment(
 }
 
 fn read_grant(connection: &Connection, grant_id: &str) -> Result<AuthCapabilityGrant, AuthError> {
-    let (principal, capability, generation, revision, expiry) = connection.query_row("SELECT principal_id,capability_id,capability_generation,revision,expires_at FROM auth_direct_capabilities WHERE grant_id=?1", [grant_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?, row.get::<_, u64>(3)?, row.get::<_, Option<i64>>(4)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (principal, capability, generation, revision, expiry) = connection
+        .query_row(
+            "SELECT principal_id,capability_id,capability_generation,revision,\
+            expires_at \
+            FROM auth_direct_capabilities \
+            WHERE grant_id=?1",
+            [grant_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     Ok(AuthCapabilityGrant {
         grant_id: grant_id.parse().map_err(|_| AuthError::Unavailable)?,
         principal_id: principal.parse().map_err(|_| AuthError::Unavailable)?,
@@ -396,7 +481,15 @@ pub(super) fn read_assignments(
     input: &AuthRoleAssignmentsListRequest,
 ) -> Result<AuthRoleAssignmentsListResponse, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare("SELECT assignment_id FROM auth_role_assignments WHERE assignment_id>?1 AND (?2 IS NULL OR principal_id=?2) AND (?3 IS NULL OR role_id=?3) ORDER BY assignment_id LIMIT ?4")?;
+    let mut statement = connection.prepare(
+        "SELECT assignment_id \
+        FROM auth_role_assignments \
+        WHERE assignment_id>?1 \
+        AND (?2 IS NULL OR principal_id=?2) \
+        AND (?3 IS NULL OR role_id=?3) \
+        ORDER BY assignment_id \
+        LIMIT ?4",
+    )?;
     let mut ids = statement
         .query_map(
             params![
@@ -424,7 +517,13 @@ pub(super) fn read_grants(
     input: &AuthCapabilityGrantsListRequest,
 ) -> Result<AuthCapabilityGrantsListResponse, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare("SELECT grant_id FROM auth_direct_capabilities WHERE grant_id>?1 AND (?2 IS NULL OR principal_id=?2) AND (?3 IS NULL OR capability_id=?3) ORDER BY grant_id LIMIT ?4")?;
+    let mut statement = connection.prepare(
+        "SELECT grant_id FROM auth_direct_capabilities \
+        WHERE grant_id>?1 AND (?2 IS NULL \
+        OR principal_id=?2) \
+        AND (?3 IS NULL OR capability_id=?3) \
+        ORDER BY grant_id LIMIT ?4",
+    )?;
     let mut ids = statement
         .query_map(
             params![
@@ -447,15 +546,6 @@ pub(super) fn read_grants(
     })
 }
 
-fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp, AuthError> {
-    time::OffsetDateTime::from_unix_timestamp(seconds)
-        .map_err(|_| AuthError::Unavailable)?
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|_| AuthError::Unavailable)?
-        .parse()
-        .map_err(|_| AuthError::Unavailable)
-}
-
 fn page_bounds(page: Option<&CursorQuery>) -> Result<(&str, usize), AuthError> {
     let limit = page.and_then(|page| page.limit).unwrap_or(50);
     if !(1..=200).contains(&limit) {
@@ -472,7 +562,14 @@ pub(super) fn read_roles(
     input: &AuthPageRequest,
 ) -> Result<AuthRolesListResponse, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare("SELECT role_id FROM auth_roles WHERE state='active' AND role_id>?1 AND (?2 IS NULL OR instr(lower(title),lower(?2))>0 OR instr(lower(description),lower(?2))>0) ORDER BY role_id LIMIT ?3")?;
+    let mut statement = connection.prepare(
+        "SELECT role_id FROM auth_roles \
+        WHERE state='active' \
+        AND role_id>?1 AND (?2 IS NULL \
+        OR instr(lower(title),lower(?2))>0 \
+        OR instr(lower(description),lower(?2))>0) \
+        ORDER BY role_id LIMIT ?3",
+    )?;
     let mut ids = statement
         .query_map(
             params![
@@ -496,8 +593,29 @@ pub(super) fn read_roles(
 }
 
 pub(super) fn read_role(connection: &Connection, role_id: &str) -> Result<AuthRole, AuthError> {
-    let (generation, revision, title, description) = connection.query_row("SELECT identity_generation,revision,title,description FROM auth_roles WHERE role_id=?1 AND state='active'", [role_id], |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))).optional()?.ok_or(AuthError::NotFound)?;
-    let mut statement = connection.prepare("SELECT capability_id,capability_generation FROM auth_role_capabilities WHERE role_id=?1 AND role_generation=?2 ORDER BY capability_id")?;
+    let (generation, revision, title, description) = connection
+        .query_row(
+            "SELECT identity_generation,revision,title,description \
+            FROM auth_roles WHERE role_id=?1 \
+            AND state='active'",
+            [role_id],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
+    let mut statement = connection.prepare(
+        "SELECT capability_id,capability_generation \
+        FROM auth_role_capabilities \
+        WHERE role_id=?1 AND role_generation=?2 \
+        ORDER BY capability_id",
+    )?;
     let capabilities = statement
         .query_map(params![role_id, generation], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
@@ -527,7 +645,18 @@ pub(super) fn read_capabilities(
     input: &AuthCapabilitiesListRequest,
 ) -> Result<AuthCapabilitiesListResponse, AuthError> {
     let (cursor, limit) = page_bounds(input.page.as_ref())?;
-    let mut statement = connection.prepare("SELECT capability_id FROM auth_capability_identities WHERE state='active' AND capability_id>?1 AND (?2 IS NULL OR api_id=?2) AND (?3 IS NULL OR instr(lower(title),lower(?3))>0 OR instr(lower(description),lower(?3))>0 OR instr(lower(capability_id),lower(?3))>0) ORDER BY capability_id LIMIT ?4")?;
+    let mut statement = connection.prepare(
+        "SELECT capability_id \
+        FROM auth_capability_identities \
+        WHERE state='active' \
+        AND capability_id>?1 \
+        AND (?2 IS NULL OR api_id=?2) \
+        AND (?3 IS NULL OR instr(lower(title),lower(?3))>0 \
+        OR instr(lower(description),lower(?3))>0 \
+        OR instr(lower(capability_id),lower(?3))>0) \
+        ORDER BY capability_id \
+        LIMIT ?4",
+    )?;
     let mut ids = statement
         .query_map(
             params![
@@ -555,8 +684,37 @@ fn read_capability(
     connection: &Connection,
     capability_id: &str,
 ) -> Result<AuthCapabilityDefinition, AuthError> {
-    let (generation, consent_revision, api_id, title, description, consequence) = connection.query_row("SELECT identity_generation,consent_revision,api_id,title,description,consequence FROM auth_capability_identities WHERE capability_id=?1 AND state='active'", [capability_id], |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?))).optional()?.ok_or(AuthError::NotFound)?;
-    let mut statement = connection.prepare("SELECT a.descriptor_json FROM auth_capability_actions c JOIN auth_api_actions a ON a.api_id=c.api_id AND a.generation=c.api_generation AND a.action_key=c.action_key WHERE c.capability_id=?1 AND c.identity_generation=?2 ORDER BY a.action_key")?;
+    let (generation, consent_revision, api_id, title, description, consequence) = connection
+        .query_row(
+            "SELECT identity_generation,consent_revision,api_id,title,description,\
+            consequence \
+            FROM auth_capability_identities \
+            WHERE capability_id=?1 \
+            AND state='active'",
+            [capability_id],
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
+    let mut statement = connection.prepare(
+        "SELECT a.descriptor_json \
+        FROM auth_capability_actions c \
+        JOIN auth_api_actions a ON a.api_id=c.api_id \
+        AND a.generation=c.api_generation \
+        AND a.action_key=c.action_key \
+        WHERE c.capability_id=?1 \
+        AND c.identity_generation=?2 \
+        ORDER BY a.action_key",
+    )?;
     let allows = statement
         .query_map(params![capability_id, generation], |row| {
             row.get::<_, String>(0)
@@ -584,67 +742,93 @@ pub(super) fn read_effective_access(
     principal_id: &str,
     now: i64,
 ) -> Result<AuthEffectiveAccessResponse, AuthError> {
-    let (kind, state, revision, created_at, title) = connection.query_row("SELECT p.kind,p.state,p.version,p.created_at,coalesce(u.display_name,p.principal_id) FROM auth_principals p LEFT JOIN auth_user_profiles u ON u.principal_id=p.principal_id WHERE p.principal_id=?1", [principal_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, u64>(2)?, row.get::<_, i64>(3)?, row.get::<_, String>(4)?))).optional()?.ok_or(AuthError::NotFound)?;
+    let (kind, state, revision, created_at, title) = connection
+        .query_row(
+            "SELECT p.kind,p.state,p.version,p.created_at,coalesce(u.display_name,\
+            p.principal_id) \
+            FROM auth_principals p \
+            LEFT JOIN auth_user_profiles u ON u.principal_id=p.principal_id \
+            WHERE p.principal_id=?1",
+            [principal_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(AuthError::NotFound)?;
     let principal = AuthPrincipal {
         principal_id: principal_id.parse().map_err(|_| AuthError::Unavailable)?,
-        kind: serde_json::from_value(serde_json::Value::String(kind))?,
+        kind: kind.into(),
         enabled: state == "active",
         revision: AuthRevision(revision.into()),
-        created_at: time::OffsetDateTime::from_unix_timestamp(created_at)
-            .map_err(|_| AuthError::Unavailable)?
-            .format(&time::format_description::well_known::Rfc3339)
-            .map_err(|_| AuthError::Unavailable)?
-            .parse()
-            .map_err(|_| AuthError::Unavailable)?,
+        created_at: timestamp(created_at)?,
         title,
         extra: Default::default(),
     };
     let entitlements = super::policy::entitlements(connection, principal_id, None, now)?;
     let capabilities = entitlements
         .into_iter()
-        .map(|(id, super::policy::Entitlement { deadline, sources: origins })| {
-            let definition = read_capability(connection, &id)?;
-            let sources = origins
-                .into_iter()
-                .map(|origin| {
-                    let role_id = origin
-                        .strip_prefix("role:")
-                        .map(|value| value.parse().map_err(|_| AuthError::Unavailable))
-                        .transpose()?;
-                    Ok(AuthCapabilitySource {
-                        kind: if role_id.is_some() {
-                            AuthCapabilitySourceKind::Role
-                        } else {
-                            AuthCapabilitySourceKind::Direct
-                        },
-                        role_id,
-                        grant_id: if origin == "direct" {
-                            let grant_id: String = connection.query_row("SELECT grant_id FROM auth_direct_capabilities WHERE principal_id=?1 AND capability_id=?2 AND capability_generation=?3", params![principal_id, id, definition.identity.identity_generation.0.0], |row| row.get(0))?;
-                            Some(grant_id.parse().map_err(|_| AuthError::Unavailable)?)
-                        } else { None },
-                        mapping_id: None,
-                        provider_id: None,
-                        extra: Default::default(),
+        .map(
+            |(
+                id,
+                super::policy::Entitlement {
+                    deadline,
+                    sources: origins,
+                },
+            )| {
+                let definition = read_capability(connection, &id)?;
+                let sources = origins
+                    .into_iter()
+                    .map(|origin| {
+                        let role_id = origin
+                            .strip_prefix("role:")
+                            .map(|value| value.parse().map_err(|_| AuthError::Unavailable))
+                            .transpose()?;
+                        Ok(AuthCapabilitySource {
+                            kind: if role_id.is_some() {
+                                AuthCapabilitySourceKind::Role
+                            } else {
+                                AuthCapabilitySourceKind::Direct
+                            },
+                            role_id,
+                            grant_id: if origin == "direct" {
+                                let grant_id: String = connection.query_row(
+                                    "SELECT grant_id FROM auth_direct_capabilities \
+                                    WHERE principal_id=?1 \
+                                    AND capability_id=?2 \
+                                    AND capability_generation=?3",
+                                    params![
+                                        principal_id,
+                                        id,
+                                        definition.identity.identity_generation.0 .0
+                                    ],
+                                    |row| row.get(0),
+                                )?;
+                                Some(grant_id.parse().map_err(|_| AuthError::Unavailable)?)
+                            } else {
+                                None
+                            },
+                            mapping_id: None,
+                            provider_id: None,
+                            extra: Default::default(),
+                        })
                     })
+                    .collect::<Result<Vec<_>, AuthError>>()?;
+                let expires_at = deadline.map(timestamp).transpose()?;
+                Ok(AuthEffectiveCapability {
+                    definition,
+                    sources,
+                    expires_at,
+                    extra: Default::default(),
                 })
-                .collect::<Result<Vec<_>, AuthError>>()?;
-            let expires_at = deadline
-                .map(|value| {
-                    time::OffsetDateTime::from_unix_timestamp(value)
-                        .map_err(|_| AuthError::Unavailable)?
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .map_err(|_| AuthError::Unavailable)?
-                        .parse()
-                        .map_err(|_| AuthError::Unavailable)
-                })
-                .transpose()?;
-            Ok(AuthEffectiveCapability {
-                definition,
-                sources,
-                expires_at,
-                extra: Default::default(),
-            })
-        })
+            },
+        )
         .collect::<Result<Vec<_>, AuthError>>()?;
     let mut statement = connection.prepare(
         "SELECT privilege FROM auth_platform_privileges WHERE principal_id=?1 ORDER BY privilege",

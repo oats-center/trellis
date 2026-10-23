@@ -1,39 +1,45 @@
-Authorization is expressed by installed participants and participant-scoped
-`GrantBinding` records. This page keeps its historical URL so existing links do
-not break; the retired deployment-authority proposal/materialization model no
-longer exists.
+Authorization is current Auth policy, evaluated each time Auth issues signed
+session authority. No stored per-participant record grants access by itself.
 
 ## Installed participant revisions
 
-`Auth.Participants.Install` stores immutable verified source-package evidence and
-the exact participant lexical path. Installing a participant defines what may be granted; it
-does not grant anything by itself.
+Creating or applying a deployment installs an immutable participant revision
+from verified source-package evidence and the participant's exact lexical path.
+An installed revision defines what may be selected; it does not grant anything.
 
-## Identity grants
+## Accepted APIs
 
-`Auth.Grants.Set` writes one binding for an identity and participant. The
-binding selects an installed revision, approval mode, approved capability consent
-fingerprints, resource commitments, delegation ceiling, exact derived grants,
-and finite platform privileges. Writes require `expectedRevision`.
+One accepted definition exists per API major. `Auth.Apis.Review` authenticates
+package evidence and computes compatibility and capability changes;
+`Auth.Apis.Accept` commits the reviewed definition with any accompanying policy
+edits. Request verification uses the exact accepted catalog the caller's
+authority references.
 
-Effective application authority is:
+## Effective authority
+
+For users and the applications they sign in to:
 
 ```text
-selected participant actions
-  intersect approved current-consent capabilities
-  intersect delegation ceilings
-  intersect usable approved resource commitments
+role, direct, and fresh OIDC entitlements
+  intersect the application's requested capabilities
+  intersect the OAuth grant's approved capabilities and consent revisions
 ```
+
+For services and devices, authority is bounded by the deployed participant's
+selected capabilities and usable resource commitments. Platform privileges
+(`principals.manage`, `roles.manage`, `apis.accept`, `apis.forceReplace`,
+`clients.manage`, `privileges.manage`) are a separate finite set, delegated to
+registered clients only through explicit consent.
 
 NATS subjects, API packages, resource names, and client-provided artifacts never
 add authority.
 
 ## Deployments and resources
 
-`Auth.Deployments.Apply` is the direct deployment mutation. It validates the
-installed participant and creates/adopts declared resource bindings. Required
-missing evidence prevents context issuance; unavailable optional evidence
-removes only affected optional grants.
+`Auth.Deployments.Create` and `Auth.Deployments.Apply` install the participant
+revision and create or adopt declared resource bindings. Required missing
+evidence prevents authority issuance; unavailable optional evidence removes only
+the affected optional capabilities.
 
 Services receive typed resource handles from `TrellisService.connect(...)`.
 They do not fetch raw bindings or derive physical names.
@@ -61,24 +67,18 @@ that manual choice; startup never chooses or resumes deletion automatically.
 
 ## Administration
 
-The `Admin` platform privilege gates Auth administrative RPCs. It is carried in
-the current participant-scoped binding and does not imply all application
-permissions. First-admin setup atomically grants Admin for the built-in CLI and
-Console participants; the activation Portal receives no Admin binding.
-
-The CLI uses `participants install`, `identity grants get/list/set/revoke`,
-`issuers list/rotate/revoke`, and direct `svc`/`dev` apply/get commands. Console
-shows installed revisions, current bindings, deployments, resources, logins,
-connections, and issuer state. There are no plans, proposals, acceptance, or
-reconcile actions.
+The CLI manages deployments with `trellis svc` and `trellis dev`
+(`create`, `apply`, `enable`, `disable`, `remove`, `instances`, `provision`),
+API catalogs with `trellis apis` (`list`, `get`, `review`, `accept`,
+`force-replace`), and issuers with `trellis issuers`. Console shows the same
+deployments, resources, logins, connections, and issuer state.
 
 ## Runtime issuance
 
-Auth rereads current identity/login, binding, installed revision, resources, and
-issuer inside the signing transaction. It stores the exact signed context and
-issuance snapshot by digest, then returns server-owned runtime and transport
-data. Auth Callout repeats the current-state comparison before issuing a
-short-lived NATS JWT.
-
-Every mutation and idempotency replay is authorized in the same SQL transaction
-against the actor's current binding revision and Admin privilege.
+Services and devices present a signed provisioned admission in NATS CONNECT;
+browser and native apps present a DPoP-bound OAuth admission. Auth Callout
+rereads current identity, login, grant, deployment, installed revision,
+resources, and issuer inside one transaction, signs
+`trellis.session-authority.v1`, and returns exact transport permissions. Every
+mutation and idempotency replay is authorized in the same SQL transaction against
+the actor's current capabilities and privileges.

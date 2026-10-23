@@ -406,7 +406,11 @@ fn publish_generated_directories(outputs: &[(&Path, &Path, &Path)]) -> Result<()
                     }
                 }
             }
-            return Err(miette::miette!("generated output publication failed: {error}; restoration errors: {recovery_errors:?}; any unrestored last-good output remains in its backup"));
+            return Err(miette::miette!(
+                "generated output publication failed: {error}; restoration errors: \
+                {recovery_errors:?}; any unrestored last-good output remains in its \
+                backup"
+            ));
         }
     }
     for (_, _, backup) in outputs {
@@ -448,12 +452,12 @@ fn generate_protocol_wasm() -> Result<()> {
         })
         .unwrap_or_else(|| root.join("target"));
     let output = root.join("ts/packages/trellis/auth/protocol_wasm");
-    if output.exists() {
-        std::fs::remove_dir_all(&output).into_diagnostic()?;
-    }
     // Callers load `client`; services and devices load `provider`, a superset
     // with the exports only request-serving participants need.
     for (variant, features) in [("client", None), ("provider", Some("provider"))] {
+        // The two feature sets link to the same cdylib name, so a shared
+        // target directory would relink both on every install.
+        let variant_target = target.join(format!("protocol-wasm-{variant}"));
         let mut build = Command::new("cargo");
         build.current_dir(&root).args([
             "build",
@@ -464,6 +468,7 @@ fn generate_protocol_wasm() -> Result<()> {
             "--profile",
             "protocol-wasm",
         ]);
+        build.arg("--target-dir").arg(&variant_target);
         if let Some(features) = features {
             build.args(["--features", features]);
         }
@@ -476,8 +481,29 @@ fn generate_protocol_wasm() -> Result<()> {
                 "protocol WASM {variant} build failed with {status}"
             ));
         }
-        let input = target.join("wasm32-unknown-unknown/protocol-wasm/trellis_protocol_wasm.wasm");
+        let input =
+            variant_target.join("wasm32-unknown-unknown/protocol-wasm/trellis_protocol_wasm.wasm");
         let directory = output.join(variant);
+        // Skip bindings and size optimization when this exact module and this
+        // generator already produced the output.
+        let stamp = {
+            use sha2::Digest as _;
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(std::fs::read(&input).into_diagnostic()?);
+            hasher.update(include_bytes!("main.rs"));
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let stamp_path = directory.join(".input-sha256");
+        if std::fs::read_to_string(&stamp_path).is_ok_and(|current| current == stamp) {
+            continue;
+        }
+        if directory.exists() {
+            std::fs::remove_dir_all(&directory).into_diagnostic()?;
+        }
         std::fs::create_dir_all(&directory).into_diagnostic()?;
         let mut bindgen = wasm_bindgen_cli_support::Bindgen::new();
         bindgen
@@ -501,6 +527,7 @@ fn generate_protocol_wasm() -> Result<()> {
             .enable_feature(wasm_opt::Feature::SignExt)
             .run(&wasm, &wasm)
             .map_err(|error| miette::miette!("wasm-opt {variant}: {error}"))?;
+        std::fs::write(&stamp_path, stamp).into_diagnostic()?;
     }
     Ok(())
 }

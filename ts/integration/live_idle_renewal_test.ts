@@ -117,9 +117,6 @@ test(
         // The shortest policy the runtime accepts with its 30 s clock skew.
         authorization: {
           contextLifetimeSeconds: 61,
-          refreshLeadSeconds: 15,
-          refreshJitterSeconds: 0,
-          minimumContextLifetimeSeconds: 31,
         },
       },
     );

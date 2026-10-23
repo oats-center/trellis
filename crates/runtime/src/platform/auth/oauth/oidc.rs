@@ -322,7 +322,31 @@ impl super::super::SqliteAuthorizationStore {
         provider: &str,
     ) -> Result<ConfiguredProvider, AuthError> {
         let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        let (issuer,client_id,revision,secret,config):(String,String,u64,Option<Vec<u8>>,String)=connection.query_row("SELECT issuer,client_id,revision,sealed_client_secret,config_json FROM auth_oidc_providers WHERE provider_id=?1 AND state='active'",[provider],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional()?.ok_or(AuthError::Denied)?;
+        let (issuer, client_id, revision, secret, config): (
+            String,
+            String,
+            u64,
+            Option<Vec<u8>>,
+            String,
+        ) = connection
+            .query_row(
+                "SELECT issuer,client_id,revision,sealed_client_secret,config_json \
+                FROM auth_oidc_providers \
+                WHERE provider_id=?1 \
+                AND state='active'",
+                [provider],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(AuthError::Denied)?;
         #[derive(Deserialize)]
         struct Options {
             #[serde(default)]
@@ -362,7 +386,16 @@ impl super::super::SqliteAuthorizationStore {
     ) -> Result<super::portal::PortalLogin, AuthError> {
         let principal = {
             let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-            connection.query_row("SELECT principal_id FROM auth_provider_identities WHERE provider=?1 AND provider_subject=?2",params![flow.provider.provider_id,identity.subject],|row|row.get::<_,String>(0)).optional()?.ok_or(AuthError::Denied)?
+            connection
+                .query_row(
+                    "SELECT principal_id \
+                    FROM auth_provider_identities \
+                    WHERE provider=?1 AND provider_subject=?2",
+                    params![flow.provider.provider_id, identity.subject],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or(AuthError::Denied)?
         };
         let input = (
             &flow.session_id,
@@ -380,15 +413,69 @@ impl super::super::SqliteAuthorizationStore {
         let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
         let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));
         let replacement_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(replacement.as_bytes()));
-        self.mutate(&mutation,"login.oidc",&input,now,|connection| {
-            let current:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM auth_oidc_providers WHERE provider_id=?1 AND issuer=?2 AND client_id=?3 AND revision=?4 AND state='active')",params![flow.provider.provider_id,flow.provider.issuer,flow.provider.client_id,flow.provider.revision],|row|row.get(0))?;
-            if !current {return Err(AuthError::Denied);}
-            let expires_at=identity.expires_at.min(now.saturating_add(i64::from(self.settings.login_lifetime_seconds)));
-            let login=super::super::VerifiedLogin {principal_id:principal.clone(),provider_id:Some(flow.provider.provider_id.clone()),upstream_issuer:Some(flow.provider.issuer.clone()),upstream_subject:Some(identity.subject.clone()),verified_claims:Some(identity.claims.clone()),expires_at};
-            let login_session_id=Self::record_verified_login_in(connection,&login,now)?;
-            super::super::profiles::ingest(connection, &principal, &flow.provider.provider_id, &identity.subject, &identity.profile, now)?;
-            if connection.execute("UPDATE auth_portal_sessions SET cookie_hash=?1,login_session_id=?2,expires_at=?3 WHERE portal_session_id=?4 AND cookie_hash=?5 AND csrf_hash=?6 AND expires_at>?7 AND login_session_id IS NULL",params![replacement_hash,login_session_id,expires_at,flow.session_id,cookie_hash,csrf_hash,now])?!=1 {return Err(AuthError::Denied);}
-            Ok(super::portal::PortalLogin {session_id:flow.session_id.clone(),principal_id:principal.clone(),login_session_id,expires_at})
+        self.mutate(&mutation, "login.oidc", &input, now, |connection| {
+            let current: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 \
+                FROM auth_oidc_providers \
+                WHERE provider_id=?1 \
+                AND issuer=?2 AND client_id=?3 \
+                AND revision=?4 AND state='active')",
+                params![
+                    flow.provider.provider_id,
+                    flow.provider.issuer,
+                    flow.provider.client_id,
+                    flow.provider.revision
+                ],
+                |row| row.get(0),
+            )?;
+            if !current {
+                return Err(AuthError::Denied);
+            }
+            let expires_at = identity
+                .expires_at
+                .min(now.saturating_add(i64::from(self.settings.login_lifetime_seconds)));
+            let login = super::super::VerifiedLogin {
+                principal_id: principal.clone(),
+                provider_id: Some(flow.provider.provider_id.clone()),
+                upstream_issuer: Some(flow.provider.issuer.clone()),
+                upstream_subject: Some(identity.subject.clone()),
+                verified_claims: Some(identity.claims.clone()),
+                expires_at,
+            };
+            let login_session_id = Self::record_verified_login_in(connection, &login, now)?;
+            super::super::profiles::ingest(
+                connection,
+                &principal,
+                &flow.provider.provider_id,
+                &identity.subject,
+                &identity.profile,
+                now,
+            )?;
+            if connection.execute(
+                "UPDATE auth_portal_sessions \
+                SET cookie_hash=?1,login_session_id=?2,expires_at=?3 \
+                WHERE portal_session_id=?4 \
+                AND cookie_hash=?5 AND csrf_hash=?6 \
+                AND expires_at>?7 AND login_session_id IS NULL",
+                params![
+                    replacement_hash,
+                    login_session_id,
+                    expires_at,
+                    flow.session_id,
+                    cookie_hash,
+                    csrf_hash,
+                    now
+                ],
+            )? != 1
+            {
+                return Err(AuthError::Denied);
+            }
+            Ok(super::portal::PortalLogin {
+                session_id: flow.session_id.clone(),
+                principal_id: principal.clone(),
+                login_session_id,
+                expires_at,
+            })
         })
     }
 }

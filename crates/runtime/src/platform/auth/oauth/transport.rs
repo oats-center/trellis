@@ -53,6 +53,13 @@ impl OAuthListener {
         })
     }
 
+    /// Accept `X-Forwarded-For` from these proxies in front of the listener.
+    pub(crate) fn forwarded_by(self, trusted: &[ipnet::IpNet]) -> Self {
+        Self {
+            listener: self.listener.forwarded_by(trusted),
+        }
+    }
+
     /// Serve only the OAuth router. No Console router, application assets, or
     /// general-purpose reverse proxy is mounted on this listener.
     pub(crate) async fn run(

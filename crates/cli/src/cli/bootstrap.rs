@@ -145,24 +145,12 @@ pub struct InitConfigArgs {
     /// Authorization context lifetime in seconds.
     #[arg(long)]
     pub auth_context_lifetime_seconds: Option<u64>,
-    /// Authorization refresh lead in seconds.
-    #[arg(long)]
-    pub auth_refresh_lead_seconds: Option<u64>,
-    /// Earlier-only authorization refresh jitter in seconds.
-    #[arg(long)]
-    pub auth_refresh_jitter_seconds: Option<u64>,
-    /// Minimum authorization context lifetime in seconds.
-    #[arg(long)]
-    pub auth_minimum_context_lifetime_seconds: Option<u64>,
     /// Maximum signed OAuth admission lifetime in seconds.
     #[arg(long)]
     pub auth_oauth_admission_lifetime_seconds: Option<u64>,
     /// Authorization clock-skew allowance in seconds.
     #[arg(long)]
     pub auth_allowed_clock_skew_seconds: Option<u64>,
-    /// Private JSON provider input file; repeatable, duplicate IDs are rejected.
-    #[arg(long)]
-    pub oauth_providers_file: Vec<PathBuf>,
 }
 
 #[cfg(feature = "runtime")]

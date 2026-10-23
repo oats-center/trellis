@@ -154,7 +154,8 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             tokio::select! {
                 result = &mut invalidation_loop => result,
                 result = &mut owner_loop => result,
-                result = &mut api_loop => result.map_err(|error| RuntimeError::Health(error.to_string())),
+                result = &mut api_loop =>
+                    result.map_err(|error| RuntimeError::Health(error.to_string())),
                 () = task_stop.stopped() => Ok(()),
             }
         };
@@ -328,10 +329,19 @@ async fn run_owner(
         tokio::select! {
             message = messages.next() => {
                 let Some(message) = message else {
-                    return Err(RuntimeError::Health("health projector consumer ended".to_string()));
+                    return Err(RuntimeError::Health(
+                        "health projector consumer ended".to_string(),
+                    ));
                 };
                 let message = message.map_err(|error| RuntimeError::Health(error.to_string()))?;
-                project_message(&nats, &store, &config.invalidation_subject, &event_owner, message).await?;
+                project_message(
+                    &nats,
+                    &store,
+                    &config.invalidation_subject,
+                    &event_owner,
+                    message,
+                )
+                .await?;
             }
             _ = deadlines.tick() => {
                 if let Some(commit) = store.expire_due(now_ns()).map_err(map_runtime_store_error)? {

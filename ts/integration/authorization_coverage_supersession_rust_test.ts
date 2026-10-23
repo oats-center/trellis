@@ -243,9 +243,6 @@ test("Rust preserves accepted Live during blocked preparation and publishes gran
       interruptibleNativeProxy: true,
       authorization: {
         contextLifetimeSeconds: 76,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 46,
       },
     },
   );

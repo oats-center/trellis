@@ -264,7 +264,8 @@ where
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "the endpoint consumes its exact subscriptions, pinned lease, backend and completion sender"
+    reason = "the endpoint consumes its exact subscriptions, pinned lease, \
+        backend and completion sender"
 )]
 async fn run_upload<C, F>(
     client: Arc<TrellisClient>,
@@ -341,89 +342,249 @@ where
                 _ = &mut expiry => return Err(error("upload grant expired")),
                 _ = lease.wait_lost() => return Err(error("upload pinned transport lost")),
                 failure = wire::authority_failure(&local, &peer) => return Err(failure),
-                _ = changes.recv() => { peer.guard.check_now().map_err(|e| error(format!("upload authority lost: {e:?}")))?; },
-                _ = local_changes.recv() => { local.guard.reconcile().await.map_err(|e| error(format!("upload local authority lost: {e:?}")))?; },
+                _ = changes.recv() => {
+                    peer.guard
+                        .check_now()
+                        .map_err(|e| error(format!("upload authority lost: {e:?}")))?;
+                },
+                _ = local_changes.recv() => {
+                    local
+                        .guard
+                        .reconcile()
+                        .await
+                        .map_err(|e| error(format!("upload local authority lost: {e:?}")))?;
+                },
                 backend = async { session.upload_future.as_mut().ok_or_else(|| error("upload backend missing"))?.await }, if activated && !stream => {
                     session.upload_future.take();
-                    let failure = match backend { Err(failure) => failure, Ok(_) => error("upload backend returned before validated completion") };
-                    if let Some(sender) = sender.take() { let _ = sender.send((Err(failure), None)); }
+                    let failure = match backend {
+                        Err(failure) => failure,
+                        Ok(_) => error("upload backend returned before validated completion"),
+                    };
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send((Err(failure), None));
+                    }
                     return Err(error("upload backend ended before completion"));
                 },
                 changed = session.consumed.changed(), if activated => {
                     if changed.is_err() {
                         let failure = session.early_backend_failure().await;
-                        if let Some(sender) = sender.take() { let _ = sender.send((Err(failure), None)); }
+                        if let Some(sender) = sender.take() {
+                            let _ = sender.send((Err(failure), None));
+                        }
                         return Err(error("upload backend ended before completion"));
                     }
                     let consumed = session.consumption();
-                    if consumed.seq > progress_seq { on_progress(session.progress()); progress_seq = consumed.seq; }
-                    scheduler.note_pending(tokio::time::Instant::now(), consumed.seq - reported_seq, consumed.bytes - reported_bytes);
+                    if consumed.seq > progress_seq {
+                        on_progress(session.progress());
+                        progress_seq = consumed.seq;
+                    }
+                    scheduler.note_pending(
+                        tokio::time::Instant::now(),
+                        consumed.seq - reported_seq,
+                        consumed.bytes - reported_bytes,
+                    );
                 },
                 _ = credit_due(&scheduler), if activated => {
                     let consumed = session.consumption();
-                    publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Credit { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), received_seq: U64s::new(session.received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed.seq), consumed_bytes: U64s::new(consumed.bytes) }).await?;
-                    reported_seq = consumed.seq; reported_bytes = consumed.bytes; scheduler.clear();
+                    publish_signal(
+                        lease.nats(),
+                        &client,
+                        &local.guard,
+                        &grant.signal_subject,
+                        TransferDirection::Send,
+                        TransferSignal::Credit {
+                            format: TransferFormat::V1,
+                            transfer_id: grant.transfer_id.clone(),
+                            received_seq: U64s::new(
+                                session.received.highest_sent.load(Ordering::Acquire),
+                            ),
+                            consumed_seq: U64s::new(consumed.seq),
+                            consumed_bytes: U64s::new(consumed.bytes),
+                        },
+                    )
+                    .await?;
+                    reported_seq = consumed.seq;
+                    reported_bytes = consumed.bytes;
+                    scheduler.clear();
                 },
                 _ = &mut cancelled => {
                     session.abort().await;
                     return Err(error("operation upload cancelled"));
                 },
                 message = control.next() => {
-                    let message = message.ok_or_else(|| error("upload control subscription closed"))?;
-                    let descriptor = match wire::descriptor(&message, &grant.transfer_id, TransferDirection::Send) { Ok(value) => value, Err(_) => continue };
-                    if descriptor.kind != TransferFrameKind::Control { continue; }
-                    if let Err(error) = peer.verify_caller(&message, &descriptor, &grant.provider.connection_id, &grant.signal_subject).await {
+                    let message =
+                        message.ok_or_else(|| error("upload control subscription closed"))?;
+                    let descriptor = match wire::descriptor(
+                        &message,
+                        &grant.transfer_id,
+                        TransferDirection::Send,
+                    ) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    };
+                    if descriptor.kind != TransferFrameKind::Control {
+                        continue;
+                    }
+                    if let Err(error) = peer
+                        .verify_caller(
+                            &message,
+                            &descriptor,
+                            &grant.provider.connection_id,
+                            &grant.signal_subject,
+                        )
+                        .await
+                    {
                         tracing::debug!(%error, "rejected upload control authority");
                         continue;
                     }
                     let body = parse_transfer_control(&message.payload).map_err(error)?;
                     let seq = body.control_seq().get();
                     if seq == control_seq {
-                        if control_body.as_ref() != Some(&message.payload) { return Err(error("upload control conflict")); }
-                    } else if seq != control_seq + 1 { return Err(error("upload control gap")); }
-                    control_seq = seq; control_body = Some(message.payload.clone());
+                        if control_body.as_ref() != Some(&message.payload) {
+                            return Err(error("upload control conflict"));
+                        }
+                    } else if seq != control_seq + 1 {
+                        return Err(error("upload control gap"));
+                    }
+                    control_seq = seq;
+                    control_body = Some(message.payload.clone());
                     match body {
-                        TransferControl::Activate { receive_max_frame_bytes, receive_window_frames, .. } => {
+                        TransferControl::Activate {
+                            receive_max_frame_bytes,
+                            receive_window_frames,
+                            ..
+                        } => {
                             // The provider receives an upload; its grant is the window.
-                            if receive_window_frames.is_some() { return Err(error("upload activation must not declare a receive window")); }
-                            if activated && activate_body.as_ref() != Some(&message.payload) { return Err(error("upload activation conflict")); }
+                            if receive_window_frames.is_some() {
+                                return Err(error(
+                                    "upload activation must not declare a receive window",
+                                ));
+                            }
+                            if activated && activate_body.as_ref() != Some(&message.payload) {
+                                return Err(error("upload activation conflict"));
+                            }
                             if !activated {
-                                session.plan.grant.max_frame_bytes = session.plan.grant.max_frame_bytes.min(receive_max_frame_bytes);
+                                session.plan.grant.max_frame_bytes = session
+                                    .plan
+                                    .grant
+                                    .max_frame_bytes
+                                    .min(receive_max_frame_bytes);
                                 if let Some(store) = store.take() {
                                     session.start(store)?;
                                 } else if !stream {
                                     return Err(error("upload store already started"));
                                 }
-                                activated = true; activate_body = Some(message.payload.clone());
+                                activated = true;
+                                activate_body = Some(message.payload.clone());
                             }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Activated { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(1), request_id: wire::header(message.headers.as_ref().ok_or_else(|| error("headers missing"))?, "request-id")?, max_frame_bytes: session.plan.grant.max_frame_bytes, window_frames: grant.window_frames, window_bytes: grant.window_bytes }).await?;
-                        },
+                            publish_signal(
+                                lease.nats(),
+                                &client,
+                                &local.guard,
+                                &grant.signal_subject,
+                                TransferDirection::Send,
+                                TransferSignal::Activated {
+                                    format: TransferFormat::V1,
+                                    transfer_id: grant.transfer_id.clone(),
+                                    control_seq: U64s::new(1),
+                                    request_id: wire::header(
+                                        message
+                                            .headers
+                                            .as_ref()
+                                            .ok_or_else(|| error("headers missing"))?,
+                                        "request-id",
+                                    )?,
+                                    max_frame_bytes: session.plan.grant.max_frame_bytes,
+                                    window_frames: grant.window_frames,
+                                    window_bytes: grant.window_bytes,
+                                },
+                            )
+                            .await?;
+                        }
                         TransferControl::Cancel { .. } => {
                             session.abort().await;
-                            if let Some(sender) = sender.take() { let _ = sender.send((Err(ServerError::TransferCancelled { transfer_id: grant.transfer_id.clone() }), None)); }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Cancelled { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone() }).await?;
+                            if let Some(sender) = sender.take() {
+                                let _ = sender.send((
+                                    Err(ServerError::TransferCancelled {
+                                        transfer_id: grant.transfer_id.clone(),
+                                    }),
+                                    None,
+                                ));
+                            }
+                            publish_signal(
+                                lease.nats(),
+                                &client,
+                                &local.guard,
+                                &grant.signal_subject,
+                                TransferDirection::Send,
+                                TransferSignal::Cancelled {
+                                    format: TransferFormat::V1,
+                                    transfer_id: grant.transfer_id.clone(),
+                                },
+                            )
+                            .await?;
                             return Ok(());
-                        },
+                        }
                         _ => return Err(error("unsupported upload control")),
                     }
                 },
                 message = data.next() => {
-                    let message = message.ok_or_else(|| error("upload data subscription closed"))?;
-                    let descriptor = match wire::descriptor(&message, &grant.transfer_id, TransferDirection::Send) { Ok(value) => value, Err(_) => continue };
-                    if peer.verify_caller(&message, &descriptor, &grant.provider.connection_id, &grant.signal_subject).await.is_err() { continue; }
-                    if !activated { return Err(error("upload DATA before activation")); }
+                    let message =
+                        message.ok_or_else(|| error("upload data subscription closed"))?;
+                    let descriptor = match wire::descriptor(
+                        &message,
+                        &grant.transfer_id,
+                        TransferDirection::Send,
+                    ) {
+                        Ok(value) => value,
+                        Err(_) => continue,
+                    };
+                    if peer
+                        .verify_caller(
+                            &message,
+                            &descriptor,
+                            &grant.provider.connection_id,
+                            &grant.signal_subject,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        continue;
+                    }
+                    if !activated {
+                        return Err(error("upload DATA before activation"));
+                    }
                     match descriptor.kind {
-                        TransferFrameKind::Data => session.admit(descriptor.sequence.get(), message.payload)?,
+                        TransferFrameKind::Data => {
+                            session.admit(descriptor.sequence.get(), message.payload)?
+                        }
                         TransferFrameKind::Complete => {
-                            let complete = parse_transfer_complete(&message.payload).map_err(error)?;
+                            let complete =
+                                parse_transfer_complete(&message.payload).map_err(error)?;
                             let commit_key = session.plan.key.clone();
-                            let indeterminate = |message: &str| ServerError::StoreCommitIndeterminate { key: commit_key.clone(), message: message.into() };
+                            let indeterminate =
+                                |message: &str| ServerError::StoreCommitIndeterminate {
+                                    key: commit_key.clone(),
+                                    message: message.into(),
+                                };
                             let result = {
                                 let finish = async {
                                     if stream {
-                                        session.finish_stream(complete.final_seq.get(), complete.size, &complete.digest).await
+                                        session
+                                            .finish_stream(
+                                                complete.final_seq.get(),
+                                                complete.size,
+                                                &complete.digest,
+                                            )
+                                            .await
                                     } else {
-                                        session.finish(complete.final_seq.get(), complete.size, &complete.digest).await
+                                        session
+                                            .finish(
+                                                complete.final_seq.get(),
+                                                complete.size,
+                                                &complete.digest,
+                                            )
+                                            .await
                                     }
                                 };
                                 tokio::pin!(finish);
@@ -431,41 +592,130 @@ where
                                     tokio::select! {
                                         biased;
                                         result = &mut finish => break result,
-                                        _ = lease.wait_lost() => break Err(indeterminate("upload pinned transport lost during commit")),
+                                        _ = lease.wait_lost() => {
+                                            break Err(indeterminate("upload pinned transport lost during commit"))
+                                        }
                                         _ = &mut expiry => break Err(indeterminate("upload grant expired during commit")),
-                                        _ = wire::authority_failure(&local, &peer) => break Err(indeterminate("upload authority expired during commit")),
-                                        _ = changes.recv() => { if peer.guard.check_now().is_err() { break Err(indeterminate("upload authority lost during commit")); } },
-                                        _ = local_changes.recv() => { if local.guard.reconcile().await.is_err() { break Err(indeterminate("upload local authority lost during commit")); } },
+                                        _ = wire::authority_failure(&local, &peer) => {
+                                            break Err(indeterminate("upload authority expired during commit"))
+                                        }
+                                        _ = changes.recv() => {
+                                            if peer.guard.check_now().is_err() {
+                                                break Err(indeterminate("upload authority lost during commit"));
+                                            }
+                                        }
+                                        _ = local_changes.recv() => {
+                                            if local.guard.reconcile().await.is_err() {
+                                                break Err(indeterminate(
+                                                    "upload local authority lost during commit",
+                                                ));
+                                            }
+                                        }
                                         message = control.next() => {
-                                            let Some(message) = message else { break Err(indeterminate("upload control subscription closed during commit")); };
-                                            let descriptor = match wire::descriptor(&message, &grant.transfer_id, TransferDirection::Send) { Ok(value) => value, Err(_) => continue };
-                                            if descriptor.kind != TransferFrameKind::Control || peer.verify_caller(&message, &descriptor, &grant.provider.connection_id, &grant.signal_subject).await.is_err() { continue; }
-                                            let body = parse_transfer_control(&message.payload).map_err(error)?;
-                                            if body.control_seq().get() != control_seq + 1 { break Err(indeterminate("upload control sequence conflict during commit")); }
-                                            if matches!(body, TransferControl::Cancel { .. }) { break Err(indeterminate("upload cancellation raced backend commit")); }
+                                            let Some(message) = message else {
+                                                break Err(indeterminate(
+                                                    "upload control subscription closed during commit",
+                                                ));
+                                            };
+                                            let descriptor = match wire::descriptor(
+                                                &message,
+                                                &grant.transfer_id,
+                                                TransferDirection::Send,
+                                            ) {
+                                                Ok(value) => value,
+                                                Err(_) => continue,
+                                            };
+                                            if descriptor.kind != TransferFrameKind::Control
+                                                || peer
+                                                    .verify_caller(
+                                                        &message,
+                                                        &descriptor,
+                                                        &grant.provider.connection_id,
+                                                        &grant.signal_subject,
+                                                    )
+                                                    .await
+                                                    .is_err()
+                                            {
+                                                continue;
+                                            }
+                                            let body = parse_transfer_control(&message.payload)
+                                                .map_err(error)?;
+                                            if body.control_seq().get() != control_seq + 1 {
+                                                break Err(indeterminate(
+                                                    "upload control sequence conflict during commit",
+                                                ));
+                                            }
+                                            if matches!(body, TransferControl::Cancel { .. }) {
+                                                break Err(indeterminate(
+                                                    "upload cancellation raced backend commit",
+                                                ));
+                                            }
                                             break Err(indeterminate("unexpected upload control during commit"));
-                                        },
+                                        }
                                     }
                                 }
                             };
-                             let info = match result { Ok(info) => info, Err(error) => { tracing::warn!(%error, "transfer upload backend commit failed"); if let Some(sender) = sender.take() { let _ = sender.send((Err(error), None)); } return Err(wire::error("upload backend commit failed")); } };
+                            let info = match result {
+                                Ok(info) => info,
+                                Err(error) => {
+                                    tracing::warn!(%error, "transfer upload backend commit failed");
+                                    if let Some(sender) = sender.take() {
+                                        let _ = sender.send((Err(error), None));
+                                    }
+                                    return Err(wire::error("upload backend commit failed"));
+                                }
+                            };
                             let consumed = session.consumption();
                             on_progress(session.progress());
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Credit { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), received_seq: complete.final_seq, consumed_seq: complete.final_seq, consumed_bytes: U64s::new(consumed.bytes) }).await?;
+                            publish_signal(
+                                lease.nats(),
+                                &client,
+                                &local.guard,
+                                &grant.signal_subject,
+                                TransferDirection::Send,
+                                TransferSignal::Credit {
+                                    format: TransferFormat::V1,
+                                    transfer_id: grant.transfer_id.clone(),
+                                    received_seq: complete.final_seq,
+                                    consumed_seq: complete.final_seq,
+                                    consumed_bytes: U64s::new(consumed.bytes),
+                                },
+                            )
+                            .await?;
                             let (persisted, done) = oneshot::channel();
-                            sender.take().ok_or_else(|| error("upload completion owner missing"))?.send((Ok(info.clone()), Some(persisted))).map_err(|_| error("upload completion owner closed"))?;
+                            sender
+                                .take()
+                                .ok_or_else(|| error("upload completion owner missing"))?
+                                .send((Ok(info.clone()), Some(persisted)))
+                                .map_err(|_| error("upload completion owner closed"))?;
                             tokio::select! {
                                 result = done => result.map_err(|_| error("Operation completion barrier closed"))??,
                                 _ = lease.wait_lost() => return Err(error("upload pinned transport lost during Operation commit")),
                                 _ = &mut expiry => return Err(error("upload expired during Operation commit")),
-                                failure = wire::authority_failure(&local, &peer) => return Err(failure),
+                                failure = wire::authority_failure(&local, &peer) =>
+                                    return Err(failure),
                             }
                             // A stream handler sees end of file only now, after
                             // its delivery is durably recorded.
-                            if stream { session.release_eof().await?; }
-                            publish_signal(lease.nats(), &client, &local.guard, &grant.signal_subject, TransferDirection::Send, TransferSignal::Committed { format: TransferFormat::V1, transfer_id: grant.transfer_id.clone(), final_seq: complete.final_seq, info }).await?;
+                            if stream {
+                                session.release_eof().await?;
+                            }
+                            publish_signal(
+                                lease.nats(),
+                                &client,
+                                &local.guard,
+                                &grant.signal_subject,
+                                TransferDirection::Send,
+                                TransferSignal::Committed {
+                                    format: TransferFormat::V1,
+                                    transfer_id: grant.transfer_id.clone(),
+                                    final_seq: complete.final_seq,
+                                    info,
+                                },
+                            )
+                            .await?;
                             return Ok(());
-                        },
+                        }
                         _ => return Err(error("unexpected upload frame")),
                     }
                 },

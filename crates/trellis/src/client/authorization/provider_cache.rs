@@ -1360,7 +1360,8 @@ impl AuthorizationOwner {
         Ok(Arc::clone(catalog))
     }
 
-    /// Resolve certified implementation rights; caller capability membership grants no provider rights.
+    /// Resolve certified implementation rights; caller capability membership grants no provider
+    /// rights.
     pub async fn authorize_provider(
         &self,
         transport: &async_nats::Client,
@@ -2020,8 +2021,11 @@ impl AuthorizationOwner {
         let status = input.status.response();
         if status.request.trellis_instance_id != self.trust.instance_id
             || status.request.audience_nats_account != self.trust.account
-            || !matches!(&status.request.query, IssuerMetadataQuery::AuthorityStatus { authorization_session_id }
-                if authorization_session_id == &signed.unsigned.authorization_session_id)
+            || !matches!(
+                &status.request.query,
+                IssuerMetadataQuery::AuthorityStatus { authorization_session_id }
+                    if authorization_session_id == &signed.unsigned.authorization_session_id
+            )
         {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "historical status scope mismatch".into(),
@@ -2803,24 +2807,46 @@ impl AuthorizationOwner {
                 }
                 update = updates.next() => {
                     let Some(Ok(entry)) = update else {
-                        return Err(TrellisClientError::AuthorizationUnavailable("revocation mirror disconnected".into()));
+                        return Err(TrellisClientError::AuthorizationUnavailable(
+                            "revocation mirror disconnected".into(),
+                        ));
                     };
-                    let info = entry.info().map_err(|_| TrellisClientError::AuthorizationUnavailable("revocation mirror metadata invalid".into()))?;
-                    let snapshot_complete = info.pending == 0 && info.consumer_sequence >= initial_delivered;
-                    let key = entry.subject.strip_prefix(&format!("$KV.{REVOCATION_BUCKET}."));
-                    let deleted = entry.headers.as_ref().and_then(|headers| headers.get("KV-Operation")).is_some_and(|value| matches!(value.as_str(), "DEL" | "PURGE"));
+                    let info = entry.info().map_err(|_| {
+                        TrellisClientError::AuthorizationUnavailable(
+                            "revocation mirror metadata invalid".into(),
+                        )
+                    })?;
+                    let snapshot_complete =
+                        info.pending == 0 && info.consumer_sequence >= initial_delivered;
+                    let key = entry
+                        .subject
+                        .strip_prefix(&format!("$KV.{REVOCATION_BUCKET}."));
+                    let deleted = entry
+                        .headers
+                        .as_ref()
+                        .and_then(|headers| headers.get("KV-Operation"))
+                        .is_some_and(|value| matches!(value.as_str(), "DEL" | "PURGE"));
                     if !deleted && entry.payload.len() <= MAX_SESSION_AUTHORITY_BYTES {
-                        if let Ok(record) = serde_json::from_slice::<SignedSessionRevocation>(&entry.payload) {
+                        if let Ok(record) =
+                            serde_json::from_slice::<SignedSessionRevocation>(&entry.payload)
+                        {
                             if key == Some(record.authorization_session_id.as_str()) {
                                 // Bad signed inputs never erase prior retirement evidence.
                                 // Capacity failure has already made acceptance unavailable.
-                                if let Err(error @ TrellisClientError::AuthorizationUnavailable(_)) = self.observe_revocation(transport, record).await { return Err(error); }
+                                if let Err(
+                                    error @ TrellisClientError::AuthorizationUnavailable(_),
+                                ) = self.observe_revocation(transport, record).await
+                                {
+                                    return Err(error);
+                                }
                             }
                         }
                     }
                     if snapshot_complete && ready.is_some() {
                         coverage.ready()?;
-                        if let Some(ready) = ready.take() { let _ = ready.send(()); }
+                        if let Some(ready) = ready.take() {
+                            let _ = ready.send(());
+                        }
                     }
                 }
             }

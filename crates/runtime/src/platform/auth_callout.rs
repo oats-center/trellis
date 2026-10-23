@@ -1,11 +1,6 @@
 //! Store-backed NATS admission. Application authority is never a CONNECT token.
 
-use std::{
-    fs,
-    path::Path,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 
 use async_nats::HeaderMap;
 use base64::{
@@ -230,21 +225,56 @@ impl AuthCallout {
             tokio::select! {
                 ()=stop.stopped()=>break,
                 completed=requests.join_next(),if !requests.is_empty()=> {
-                    if let Some(result)=completed {if let Err(error)=result.map_err(|error|RuntimeError::Platform(error.to_string()))? {tracing::warn!(%error,"callout request rejected or response unavailable");}}
+                    if let Some(result) = completed {
+                        if let Err(error) =
+                            result.map_err(|error| RuntimeError::Platform(error.to_string()))?
+                        {
+                            tracing::warn!(%error,"callout request rejected or response unavailable");
+                        }
+                    }
                 }
                 message=self.subscriber.next(),if requests.len()<MAX_CONCURRENT_REQUESTS=> {
-                    let Some(message)=message else {return Err(RuntimeError::Platform("authorization callout subscription closed".into()));};
-                    let client=self.client.clone();let store=self.store.clone();let keys=self.keys.clone();
-                    requests.spawn(async move {process(client,store,keys,message).await});
+                    let Some(message) = message else {
+                        return Err(RuntimeError::Platform(
+                            "authorization callout subscription closed".into(),
+                        ));
+                    };
+                    let client = self.client.clone();
+                    let store = self.store.clone();
+                    let keys = self.keys.clone();
+                    requests.spawn(async move { process(client, store, keys, message).await });
                 }
                 message=self.disconnects.next()=> {
-                    let Some(message)=message else {return Err(RuntimeError::Platform("authorization disconnect subscription closed".into()));};
-                    let Ok(event)=serde_json::from_slice::<DisconnectEvent>(&message.payload) else {continue;};
-                    if let (Some(DisconnectedServer{id:Some(server)}),Some(DisconnectedClient{id:Some(cid),user_nkey:Some(key)}))=(event.server,event.client) {
-                        if message.subject.as_str()!=format!("$SYS.ACCOUNT.{}.DISCONNECT",self.keys.target_account) {continue;}
-                        let store=self.store.clone();
-                        tokio::task::spawn_blocking(move ||store.disconnect_attachment(&server,cid,&key,now_seconds()?)).await
-                            .map_err(|error|RuntimeError::Platform(error.to_string()))?.map_err(|error|RuntimeError::Platform(error.to_string()))?;
+                    let Some(message) = message else {
+                        return Err(RuntimeError::Platform(
+                            "authorization disconnect subscription closed".into(),
+                        ));
+                    };
+                    let Ok(event) = serde_json::from_slice::<DisconnectEvent>(&message.payload)
+                    else {
+                        continue;
+                    };
+                    if let (
+                        Some(DisconnectedServer { id: Some(server) }),
+                        Some(DisconnectedClient {
+                            id: Some(cid),
+                            user_nkey: Some(key),
+                        }),
+                    ) = (event.server, event.client)
+                    {
+                        if message.subject.as_str()
+                            != format!("$SYS.ACCOUNT.{}.DISCONNECT", self.keys.target_account)
+                        {
+                            continue;
+                        }
+                        let store = self.store.clone();
+                        let now = crate::clock::unix_now();
+                        tokio::task::spawn_blocking(move || {
+                            store.disconnect_attachment(&server, cid, &key, now)
+                        })
+                        .await
+                        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+                        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                     }
                 }
             }
@@ -291,13 +321,13 @@ async fn process(
     )
     .map_err(|_| AuthError::Denied)?;
     let request = &claims.payload().request;
-    let now = now_seconds()?;
+    let now = crate::clock::unix_now();
     if claims.iss != request.server.id
         || claims.sub != keys.auth_account
         || claims.aud.as_deref() != Some("nats-authorization-request")
         || claims.exp.is_none_or(|expiry| expiry <= now)
         || claims.nbf.is_some_and(|time| time > now)
-        || claims.iat > now.saturating_add(5) as u64
+        || claims.iat > now.saturating_add(i64::from(store.settings.clock_skew_seconds)) as u64
         || request.server.xkey.as_deref() != Some(xkey.public_key().as_str())
         || request.client_info.id == 0
         || request.client_info.host.is_empty()
@@ -325,7 +355,7 @@ async fn process(
             &request.user_nkey,
             &request.server.id,
             request.client_info.id,
-            now_seconds()?,
+            crate::clock::unix_now(),
         )?;
         signing.authorized_user_jwt(&request.user_nkey, &policy, &attachment.attachment_id)
     });
@@ -411,16 +441,6 @@ fn issuer_account(claims: &Claims<User>) -> String {
         .clone()
         .unwrap_or_else(|| claims.iss.clone())
 }
-fn now_seconds() -> Result<i64, AuthError> {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| AuthError::Unavailable)?
-            .as_secs(),
-    )
-    .map_err(|_| AuthError::Unavailable)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

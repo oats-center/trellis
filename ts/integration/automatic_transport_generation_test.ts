@@ -163,9 +163,6 @@ test("a grown finite capability adopts a new generation without disrupting in-fl
       interruptibleNativeProxy: true,
       authorization: {
         contextLifetimeSeconds: 60,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 26,
         allowedClockSkewSeconds: 2,
       },
     },

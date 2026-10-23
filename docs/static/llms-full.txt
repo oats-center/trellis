@@ -587,11 +587,12 @@ Creation replay keeps the original sealed response and never revives an action.
 Last-sign-in-method and protected-administrator checks remain.
 `Auth.Connections.List` accepts `principalId` to filter physical connections.
 
-The server resolves assignment, installed artifacts, grants, resources, online
-issuer, route JWT, inbox, and exact transports. Clients verify that response.
+Auth Callout resolves the deployment, installed artifacts, capabilities,
+resources, online issuer, inbox, and exact transport permissions, and returns
+signed session authority. Clients verify that response.
 The libraries own proofs, context verification, proactive refresh, and transport
-maintenance. Renewing unchanged transport authority promotes context and routing
-credentials without replacing a healthy socket. Newly approved authority is
+maintenance. Renewing unchanged transport authority promotes the new session authority
+without replacing a healthy socket. Newly approved authority is
 adopted automatically on a readied successor, while safe accepted work retains
 its receiving connection. Retain the logical client, generated facades, and
 still-bound resources across these changes; no manual transport refresh or
@@ -607,7 +608,7 @@ watch migration preserves cached authority and existing leases; actual
 revocation still fails closed. Jobs and durable event intake keep bounded
 capacity across generations, with each delivery retaining its receiving
 connection through disposition. Raw NATS connections are physical attachments,
-not generation-aware application handles. Authorization contexts, route JWTs,
+not generation-aware application handles. Session authority, admission credentials,
 transport endpoints, grants, clock offset, and issuer keys are
 process-memory-only. Browser IndexedDB version 3 persists only the initiating
 session seed, nullable login metadata, pending signed intent/intent ID, and
@@ -948,8 +949,9 @@ match the spawned native host, not another runtime at the selected port.
 
 A missing generated method usually means the action was not selected or SDKs
 need regeneration. Authorization failures require inspecting the installed
-participant revision, current participant-scoped `GrantBinding`, required
-resource evidence, principal/login state, and online issuer, not constructing a
+participant revision, the principal's capabilities and the client's approved
+consent or the deployment's selection, required resource evidence,
+principal/login state, and online issuer, not constructing a
 raw subject or granting access in application code.
 
 For runtime operation, see `/guides/starting-trellis`. For a complete service,

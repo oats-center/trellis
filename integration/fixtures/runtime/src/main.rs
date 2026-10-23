@@ -35,7 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "{}",
             serde_json::to_string(
-                &serde_json::json!({"participantId":participant_id,"packageEvidence":package_evidence})
+                &serde_json::json!({
+                    "participantId":participant_id,
+                    "packageEvidence":package_evidence
+                })
             )?
         );
         return Ok(());

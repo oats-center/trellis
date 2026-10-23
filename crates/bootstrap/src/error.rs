@@ -6,9 +6,6 @@ use thiserror::Error;
 /// Error returned while generating bootstrap output.
 #[derive(Debug, Diagnostic, Error)]
 pub enum BootstrapError {
-    /// Provider JSON is invalid; input values are intentionally not echoed.
-    #[error("invalid OAuth provider input; check provider types and required fields")]
-    InvalidOAuthInput,
     /// Authorization timing cannot form a usable signed context.
     #[error("invalid bootstrap authorization policy: {0}")]
     InvalidAuthorization(String),
@@ -82,7 +79,9 @@ pub enum NatsConfigError {
     },
     /// A required listener was not declared.
     #[error(
-        "managed NATS config {path} does not declare a top-level {listener} listener; the managed bundle requires explicit supported listener literals"
+        "managed NATS config {path} does not declare a top-level {listener} \
+        listener; the managed bundle requires explicit supported listener \
+        literals"
     )]
     MissingListener {
         /// Path to the managed bundle's `nats.conf`.
@@ -106,7 +105,9 @@ pub enum NatsConfigError {
     },
     /// A listener value was not a supported numeric host:port literal.
     #[error(
-        "managed NATS config {path} has an unsupported {listener} value {value:?} on line {line}; the managed bundle requires explicit supported listener literals"
+        "managed NATS config {path} has an unsupported {listener} value \
+        {value:?} on line {line}; the managed bundle requires explicit \
+        supported listener literals"
     )]
     InvalidListener {
         /// Path to the managed bundle's `nats.conf`.

@@ -4,21 +4,19 @@ Tests protect observable behavior, security/data integrity, exact wire
 compatibility, and real regressions. Executable Cargo and Node tests are the
 catalog; there is no matrix, shared-runtime assignment, or custom scheduler.
 
-Prepare generated artifacts and build the two binaries once:
+Prepare generated artifacts once, then run each catalog through its runner:
 
 ```sh
 cargo xtask install
-cargo build --manifest-path Cargo.toml -p trellis-server -p trellis-cli
-export TRELLIS_TEST_SERVER_BIN="$PWD/target/debug/trellis-server"
-export TRELLIS_TEST_CLI_BIN="$PWD/target/debug/trellis"
-```
-
-Use ordinary discovery and native filters:
-
-```sh
-cargo test --manifest-path Cargo.toml --workspace
+scripts/run-rust-tests.sh
 npm run test:integration
 ```
+
+Neither runner needs a preset environment. `scripts/run-rust-tests.sh` acquires
+the pinned NATS server and Dex identity provider (Go is required to build Dex),
+builds the CLI, server, and Events fixture, sets the test executable variables,
+and accepts ordinary filters after `--`, for example
+`scripts/run-rust-tests.sh -- upstream_oidc`.
 
 The ordinary `npm run test:integration` runner executes four
 test files concurrently by default. Set `TRELLIS_TEST_CONCURRENCY` to override that limit.

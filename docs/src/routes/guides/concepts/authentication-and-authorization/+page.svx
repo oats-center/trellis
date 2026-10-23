@@ -93,22 +93,15 @@ Capabilities are approval and explanation groups. Approval is constrained by
 current policy and is converted to exact selected grants; it is not itself a
 runtime permission token.
 
-## GrantBinding
+## Effective authority
 
-A `GrantBinding` is the only current authority record. It is scoped to one
-identity and one participant and contains:
-
-- the installed participant revision;
-- exact derived permission atoms;
-- approval mode, approved capability fingerprints, approved resource
-  commitments, and delegation ceiling; and
-- finite platform privileges such as `Admin`.
-
-Grant writes use an expected revision and reject atoms absent from the installed
-participant. `Admin` authorizes administrative APIs but does not imply arbitrary
-application permissions. Capability approvals are policy inputs, not a second
-current GrantSet. Resource desires are hints, not approval; provisioning runs
-post-commit and exposes bindings only after validating actual configuration.
+Auth computes a user's capabilities from roles, direct capability grants, and
+fresh OIDC role mappings. An application acts only within that set, intersected
+with the capabilities it requested and those the user approved in its OAuth
+grant. Services and devices are bounded by their deployment. Platform privileges
+such as `principals.manage` are a separate finite set and never imply
+application capabilities. Auth evaluates this policy whenever it issues signed
+session authority; see [Participant grants](/guides/concepts/deployment-authority).
 
 ## Managing users and access in Console
 
@@ -126,17 +119,11 @@ password; completing the flow does, and revokes their existing login sessions.
 Identity-link flows also target the selected user. Removing a sign-in method
 cannot remove the last method or bypass protected-administrator safeguards.
 
-Access grants select an installed participant revision and its concrete
-permissions. Capabilities explain related permissions; capability groups are
-one-time presets when editing an exact grant, not ongoing group memberships.
-An exact grant can initiate provisioning of newly approved resources; runtime
-access remains subject to resource readiness. Read-only resource permissions do
-not imply write access.
-
-Saving an exact snapshot replaces policy-based approval, and later changes to a
-group do not automatically update it. Platform administration is a separate
-privilege, not all application permissions. Service and device access belongs to
-their deployment; changing it can affect other instances in that deployment.
+The access section assigns direct capability grants and roles. A role grants
+its capabilities for as long as the user holds it, so changing a role changes
+every member's access. Platform privileges are separate and never imply
+application capabilities. Service and device access belongs to their
+deployment; changing it can affect other instances in that deployment.
 
 End a session to revoke that login. Disconnect a connection to terminate a
 physical connection; these are distinct actions.
@@ -179,10 +166,10 @@ cache hit.
 
 ## Bootstrap and NATS
 
-Services and devices send identity/proof inputs only. Auth resolves assignment,
-package/participant evidence, exact grants, resources, route JWT, inbox, and NATS
-endpoints server-side. The runtime verifies that complete response before its
-first CONNECT.
+Services and devices send a signed provisioned admission in NATS CONNECT. Auth
+Callout resolves the deployment, participant evidence, capabilities, resources,
+and inbox server-side and returns signed session authority with exact transport
+permissions, which the runtime verifies.
 
 A client CONNECTs with its session NKey signature and its
 `trellis.oauth-admission.v1` or `trellis.provisioned-admission.v1` credential;
@@ -266,7 +253,7 @@ capability and resource selections. Changed consent or authority makes that
 approval stale and Auth rejects it. Auth commits the approval and device
 authority before creating the child login session.
 
-The companion then runs as the user with its own `GrantBinding`, login session,
-authorization context, resources, and connection. Parent and child grants,
+The companion then runs as the user with its own OAuth grant, login session,
+session authority, resources, and connection. Parent and child grants,
 connections, expiry, and revocation remain separate; device credentials never
 substitute for unavailable user authority.

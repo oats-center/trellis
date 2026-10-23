@@ -9,16 +9,7 @@ import {
   verifySessionProof,
 } from "./session_proof.ts";
 import { base64urlDecode, base64urlEncode, sha256 } from "./utils.ts";
-import vectors from "../../../../integration/fixtures/protocol/authorization-context/vectors.json" with { type: "json" };
-
-type Chain = {
-  sessionSeed: string;
-  sessionPublicKey: string;
-  requestProofInputHex: string;
-  requestProofDigest: string;
-  requestProof: string;
-  eventProofDigest: string;
-};
+import vectors from "../../../../integration/fixtures/protocol/ed25519/vectors.json" with { type: "json" };
 
 function fromHex(hex: string): Uint8Array {
   return new Uint8Array(
@@ -33,7 +24,7 @@ function toHex(bytes: Uint8Array): string {
 }
 
 test("portable Ed25519 interoperates with the Rust protocol boundary", async () => {
-  const chain: Chain = vectors.completeChain;
+  const chain = vectors;
   const portable = portableBackend();
 
   // A proof produced by the Rust protocol is accepted by the portable verifier.
@@ -79,7 +70,7 @@ test("portable Ed25519 interoperates with the Rust protocol boundary", async () 
 });
 
 test("portable SHA-256 reproduces the pinned protocol digest", async () => {
-  const chain: Chain = vectors.completeChain;
+  const chain = vectors;
   const portable = portableBackend();
   assert.deepEqual(
     base64urlEncode(await portable.sha256(fromHex(chain.requestProofInputHex))),

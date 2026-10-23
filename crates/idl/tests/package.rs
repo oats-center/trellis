@@ -409,13 +409,18 @@ fn shared_schema_changes_update_only_affected_participant_needs() {
         ("api", "api.trellis"),
         ("app", "app.trellis"),
     ]);
-    let api = API.replace(
-        "  event Changed {",
-        "  rpc Again { input GetInput; output PagedOrders; errors [Missing]; pagination cursor; }\n  event Changed {",
-    ).replace(
-        "    capability read {",
-        "    capability again { title \"Read again\"; description \"Read another page.\"; consequence \"Order data is shared.\"; consent_revision 1; allows { rpc Again; } }\n    capability read {",
-    );
+    let api = API
+        .replace(
+            "  event Changed {",
+            "  rpc Again { input GetInput; output PagedOrders; errors [Missing]; \
+            pagination cursor; }\n  event Changed {",
+        )
+        .replace(
+            "    capability read {",
+            "    capability again { title \"Read again\"; description \"Read \
+            another page.\"; consequence \"Order data is shared.\"; \
+            consent_revision 1; allows { rpc Again; } }\n    capability read {",
+        );
     let compile = |types: &str| {
         compile_project(
             &package_manifest,
@@ -495,7 +500,8 @@ fn marks_only_direct_recursive_model_edges() {
         vec![source(
             "types",
             "types.trellis",
-            "model Node { next?: Node; children: list<Node>; } model Left { right: Right; } model Right { left: Left; }",
+            "model Node { next?: Node; children: list<Node>; } model Left { right: \
+            Right; } model Right { left: Left; }",
         )],
         BTreeMap::new(),
     )
@@ -983,7 +989,8 @@ fn resource_compatibility_uses_schema_revisions_and_retains_history() {
                     "app",
                     "app.trellis",
                     &format!(
-                        "import {{ V1, V2 }} from types; device Client {{ state value {{ title \"Value\"; description \"Stored value.\"; {body} }} }}"
+                        "import {{ V1, V2 }} from types; device Client {{ state value {{ title \
+                        \"Value\"; description \"Stored value.\"; {body} }} }}"
                     ),
                 ),
             ],
@@ -1192,7 +1199,13 @@ api state@v1 {
     );
     let graph = compile_project(
         &app_manifest,
-        vec![source("source", "source.trellis", "import { state } from trellis;\nmodel Saved { value: string; }\napp Client { use state { required capability read; } state saved { title \"Saved\"; description \"Saved value.\"; schema Saved; } }")],
+        vec![source(
+            "source",
+            "source.trellis",
+            "import { state } from trellis;\nmodel Saved { value: string; }\napp \
+            Client { use state { required capability read; } state saved { title \
+            \"Saved\"; description \"Saved value.\"; schema Saved; } }",
+        )],
         BTreeMap::from([("trellis".into(), state_graph)]),
     )
     .unwrap();

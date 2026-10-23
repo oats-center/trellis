@@ -118,8 +118,19 @@ async fn detached_state_retains_values_and_delayed_destroy_cannot_erase_replacem
         serde_json::from_value(serde_json::to_value(Participant::package_evidence()).unwrap())
             .unwrap();
     let source = package.packages[0].source.clone();
-    let package=evidence(format!("{source}\nmodel RemovalValue {{ value: string; }} device RemovalDevice {{ state saved {{ title \"Saved\"; description \"Retained device data\"; schema RemovalValue; version 1; }} }}"));
-    let create:AuthDeploymentCreateRequest=serde_json::from_value(serde_json::json!({"packageEvidence":package,"participantId":"trellis.RemovalDevice","kind":"device","title":"State removal","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap();
+    let package = evidence(format!(
+        "{source}\nmodel RemovalValue {{ value: string; }} device RemovalDevice \
+        {{ state saved {{ title \"Saved\"; description \"Retained device \
+        data\"; schema RemovalValue; version 1; }} }}"
+    ));
+    let create: AuthDeploymentCreateRequest = serde_json::from_value(serde_json::json!({
+        "packageEvidence":package,
+        "participantId":"trellis.RemovalDevice",
+        "kind":"device",
+        "title":"State removal",
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    }))
+    .unwrap();
     let store = Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32])));
     let deployment = super::super::rpc_deployments::create_deployment(
         &store,
@@ -131,7 +142,12 @@ async fn detached_state_retains_values_and_delayed_destroy_cannot_erase_replacem
     .deployment
     .deployment_id
     .to_string();
-    let provision:AuthInstanceProvisionRequest=serde_json::from_value(serde_json::json!({"deploymentId":deployment,"identityPublicKey":URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[92;32]).verifying_key().as_bytes()),"title":"Device","idempotencyKey":ulid::Ulid::new().to_string()})).unwrap();
+    let provision:AuthInstanceProvisionRequest=serde_json::from_value(serde_json::json!({
+        "deploymentId":deployment,
+        "identityPublicKey":URL_SAFE_NO_PAD.encode(SigningKey::from_bytes(&[92;32]).verifying_key().as_bytes()),
+        "title":"Device",
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    })).unwrap();
     super::super::rpc_deployments::provision_instance(
         &store,
         &mutation(&f.admin, &provision),
@@ -572,9 +588,15 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
         idempotency_key: super::super::sqlite::id().into(),
         ..apply.clone()
     };
-    assert!(
-        matches!(super::super::rpc_deployments::apply_deployment(&store,&mutation(&f.admin,&shrink),&shrink,NOW+3),Err(AuthError::Invalid(code)) if code=="potential_data_loss")
-    );
+    assert!(matches!(
+        super::super::rpc_deployments::apply_deployment(
+            &store,
+            &mutation(&f.admin, &shrink),
+            &shrink,
+            NOW + 3
+        ),
+        Err(AuthError::Invalid(code)) if code=="potential_data_loss"
+    ));
     let detach = AuthDeploymentApplyRequest {
         expected_revision: current.revision,
         idempotency_key: super::super::sqlite::id().into(),
@@ -762,7 +784,12 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     );
     forwarding.abort();
     // A kind change detaches the old identity while preserving its data.
-    let changed_kind = evidence(format!("{}store connections {{ title \"Connections\"; description \"Connection blobs\"; ttl 0; }}{}", &source[..start], &source[end..]));
+    let changed_kind = evidence(format!(
+        "{}store connections {{ title \"Connections\"; description \"Connection \
+blobs\"; ttl 0; }}{}",
+        &source[..start],
+        &source[end..]
+    ));
     let current = store
         .transaction(|connection| {
             super::super::rpc_deployments::read_deployment(connection, &provider.deployment_id)

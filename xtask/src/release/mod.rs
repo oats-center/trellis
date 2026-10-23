@@ -193,7 +193,8 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
                 let version_base = version_base(&version)?;
                 if version != checked_version && version_base != checked_version {
                     return Err(miette!(
-                        "requested release version {version} has base version {version_base}, but release-managed versions use {checked_version}"
+                        "requested release version {version} has base version {version_base}, \
+                        but release-managed versions use {checked_version}"
                     ));
                 }
                 check_changelog(repo_root, &version, since.as_deref())?;
@@ -283,11 +284,14 @@ mod tests {
     fn pretag_check_command_specs_construct_gh_invocations() {
         assert_eq!(
             command_text(&pretag_dispatch_command("v0.9.0", "main")),
-            "gh workflow run .github/workflows/release.yml --ref main -f tag=v0.9.0 -f publish=false"
+            "gh workflow run .github/workflows/release.yml --ref main -f tag=v0.9.0 \
+            -f publish=false"
         );
         assert_eq!(
             command_text(&pretag_list_command("main")),
-            "gh run list --workflow .github/workflows/release.yml --event workflow_dispatch --branch main --limit 20 --json databaseId --jq '.[].databaseId'"
+            "gh run list --workflow .github/workflows/release.yml --event \
+            workflow_dispatch --branch main --limit 20 --json databaseId --jq \
+            '.[].databaseId'"
         );
         assert_eq!(
             command_text(&pretag_watch_command("12345")),
@@ -325,7 +329,9 @@ mod tests {
             .expect("mkdir manifest parent");
         fs::write(
             &manifest,
-            "{\n  \"name\": \"@oatscenter/trellis-testkit\",\n  \"version\": \"0.8.2\",\n  \"dependencies\": {\n    \"@oatscenter/trellis\": \"^0.8.2\",\n    \"zod\": \"^4.0.0\"\n  }\n}\n",
+            "{\n  \"name\": \"@oatscenter/trellis-testkit\",\n  \"version\": \
+            \"0.8.2\",\n  \"dependencies\": {\n    \"@oatscenter/trellis\": \
+            \"^0.8.2\",\n    \"zod\": \"^4.0.0\"\n  }\n}\n",
         )
         .expect("write manifest");
         prepare_release(
@@ -353,7 +359,10 @@ mod tests {
         fs::create_dir_all(&root).expect("mkdir repo");
         fs::write(
             root.join("Cargo.toml"),
-            "[workspace.package]\nversion = \"0.100.0\"\n[workspace.dependencies]\ntrellis-models = { path = \"crates/models\", version = \"0.100.0\" }\ntrellis-protocol = { path = \"crates/protocol\", version = \"0.100.0\" }\n",
+            "[workspace.package]\nversion = \"0.100.0\"\n[workspace.dependencies]\n\
+            trellis-models = { path = \"crates/models\", version = \"0.100.0\" }\n\
+            trellis-protocol = { path = \"crates/protocol\", version = \"0.100.0\" \
+            }\n",
         )
         .expect("write workspace manifest");
         let projects = [
@@ -386,7 +395,9 @@ mod tests {
         fs::create_dir_all(generated.parent().unwrap()).unwrap();
         fs::write(
             &generated,
-            "{\n  \"name\": \"native-contract-client\",\n  \"version\": \"0.42.0\",\n  \"trellisGenerated\": true,\n  \"dependencies\": {\n    \"@oatscenter/trellis\": \"^0.100.0\"\n  }\n}\n",
+            "{\n  \"name\": \"native-contract-client\",\n  \"version\": \"0.42.0\",\
+            \n  \"trellisGenerated\": true,\n  \"dependencies\": {\n    \
+            \"@oatscenter/trellis\": \"^0.100.0\"\n  }\n}\n",
         )
         .unwrap();
         prepare_release(
@@ -512,7 +523,9 @@ mod tests {
 
     #[test]
     fn rewrite_cargo_manifest_updates_workspace_and_internal_dependencies() {
-        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { path = \"../trellis\", version = \"0.8.2\" }\ntrellis-protocol = \"0.8.2\"\nserde = { version = \"1.0\" }\n";
+        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs \
+            = { path = \"../trellis\", version = \"0.8.2\" }\ntrellis-protocol = \
+            \"0.8.2\"\nserde = { version = \"1.0\" }\n";
         let updated = rewrite_cargo_manifest_versions(
             original,
             "0.8.2",
@@ -541,7 +554,8 @@ mod tests {
 
     #[test]
     fn rewrite_cargo_manifest_preserves_non_release_sentinel_version() {
-        let original = "[package]\nname = \"console-trellis\"\nversion = \"0.0.0\"\n\n[dependencies]\ntrellis-rs = { version = \"0.8.2\" }\n";
+        let original = "[package]\nname = \"console-trellis\"\nversion = \"0.0.0\"\n\n\
+            [dependencies]\ntrellis-rs = { version = \"0.8.2\" }\n";
         let updated = rewrite_cargo_manifest_versions(
             original,
             "0.8.2",
@@ -559,7 +573,9 @@ mod tests {
 
     #[test]
     fn rewrite_cargo_manifest_for_release_preserves_local_generated_dependency_versions() {
-        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs = { version = \"0.8.2\" }\ntrellis-protocol = \"0.8.2\"\nconsole-trellis = { path = \"trellis\", version = \"0.0.0\" }\n";
+        let original = "[workspace.package]\nversion = \"0.8.2\"\n\n[dependencies]\ntrellis-rs \
+            = { version = \"0.8.2\" }\ntrellis-protocol = \"0.8.2\"\n\
+            console-trellis = { path = \"trellis\", version = \"0.0.0\" }\n";
         let updated = rewrite_cargo_manifest_versions_for_release(
             original,
             "0.8.2-rc.1",
@@ -588,7 +604,8 @@ mod tests {
 
     #[test]
     fn rewrite_npm_dependency_versions_preserves_ranges() {
-        let original = "{\n  \"dependencies\": {\n    \"@oatscenter/result\": \"^0.8.2\",\n    \"@oatscenter/trellis\": \"~0.8.2\"\n  }\n}\n";
+        let original = "{\n  \"dependencies\": {\n    \"@oatscenter/result\": \"^0.8.2\",\
+            \n    \"@oatscenter/trellis\": \"~0.8.2\"\n  }\n}\n";
         let updated = rewrite_js_internal_npm_dependency_versions(
             original,
             "0.8.2",

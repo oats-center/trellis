@@ -105,26 +105,9 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     options.runtime.bind_address = args.bind_address;
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
         context_lifetime_seconds: args.auth_context_lifetime_seconds,
-        refresh_lead_seconds: args.auth_refresh_lead_seconds,
-        refresh_jitter_seconds: args.auth_refresh_jitter_seconds,
-        minimum_context_lifetime_seconds: args.auth_minimum_context_lifetime_seconds,
         oauth_admission_lifetime_seconds: args.auth_oauth_admission_lifetime_seconds,
         allowed_clock_skew_seconds: args.auth_allowed_clock_skew_seconds,
     };
-    for path in &args.oauth_providers_file {
-        for (id, provider) in
-            trellis_bootstrap::read_oauth_providers(path).map_err(bootstrap_report)?
-        {
-            if options
-                .runtime
-                .oauth_providers
-                .insert(id, provider)
-                .is_some()
-            {
-                return Err(miette!("duplicate OAuth provider id in input files"));
-            }
-        }
-    }
     options.nats.nats_port = args.nats_port;
     options.nats.monitor_port = args.nats_monitor_port;
     options.nats.websocket_port = args.nats_ws_port;
@@ -239,10 +222,11 @@ fn warn_generated_tls(
     leaf_not_after: time::OffsetDateTime,
 ) {
     output::print_warning(&format!(
-        "this installation uses Trellis-generated TLS from its own private CA.\n  \
-         Browsers and native clients must trust {} explicitly.\n  \
-         Verify this SHA-256 fingerprint out of band before trusting it:\n  {fingerprint}\n  \
-         Leaf certificates expire {}; renew them with `trellis tls renew`.",
+        "this installation uses Trellis-generated TLS from its own private \
+        CA.\n  Browsers and native clients must trust {} explicitly.\n  Verify \
+        this SHA-256 fingerprint out of band before trusting it:\n  \
+        {fingerprint}\n  Leaf certificates expire {}; renew them with `trellis \
+        tls renew`.",
         ca.display(),
         rfc3339(leaf_not_after),
     ));
@@ -279,7 +263,9 @@ pub(super) fn tls(format: OutputFormat, command: TlsCommand) -> miette::Result<(
                 ));
             }
             output::print_info(
-                "the runtime reloads replaced certificates automatically; reload NATS (`nats-server --signal reload` or restart its unit) to serve its replacement",
+                "the runtime reloads replaced certificates automatically; reload NATS \
+                (`nats-server --signal reload` or restart its unit) to serve its \
+                replacement",
             );
             Ok(())
         }
@@ -333,7 +319,6 @@ mod tests {
     use super::init_config_command;
     use crate::cli::{Cli, InitConfigArgs, InitSubcommand, OutputFormat, TopLevelCommand};
     use clap::Parser as _;
-    use std::fs;
     use std::path::Path;
 
     #[test]
@@ -354,12 +339,6 @@ mod tests {
                 "127.0.0.1",
                 "--auth-context-lifetime-seconds",
                 "90",
-                "--auth-refresh-lead-seconds",
-                "10",
-                "--auth-refresh-jitter-seconds",
-                "2",
-                "--auth-minimum-context-lifetime-seconds",
-                "43",
                 "--auth-oauth-admission-lifetime-seconds",
                 "12",
                 "--auth-allowed-clock-skew-seconds",
@@ -391,15 +370,7 @@ mod tests {
             &["wss://localhost:8183"]
         );
         let auth = config.resolve_authorization().unwrap();
-        assert_eq!(
-            (
-                auth.context_lifetime_seconds,
-                auth.refresh_lead_seconds,
-                auth.refresh_jitter_seconds,
-                auth.minimum_context_lifetime_seconds
-            ),
-            (90, 10, 2, 43)
-        );
+        assert_eq!(auth.context_lifetime_seconds, 90);
         assert_eq!(auth.oauth_admission_lifetime_seconds, 12);
         assert_eq!(auth.allowed_clock_skew_seconds, 2);
     }
@@ -475,47 +446,6 @@ mod tests {
                 "{name}: rejected configuration must not write output"
             );
         }
-    }
-
-    #[test]
-    fn oauth_provider_files_round_trip_and_rejected_input_preserves_existing_bundle() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let input = temp.path().join("providers.json");
-        fs::write(&input, r#"{"identity":{"type":"oidc","issuer":"https://identity.example.test","clientId":"consumer","clientSecret":"private-provider-secret","scopes":["openid","email"],"roleClaims":["/roles"]}}"#).unwrap();
-        let out = temp.path().join("bundle");
-        let input_path = input.to_str().unwrap();
-        let (config, _) = generate_bundle(&out, &["--oauth-providers-file", input_path]);
-        let provider = &config.oauth.as_ref().unwrap().providers["identity"];
-        assert_eq!(
-            provider.issuer.as_deref(),
-            Some("https://identity.example.test")
-        );
-        assert_eq!(provider.client_id.as_deref(), Some("consumer"));
-        assert_eq!(
-            provider.client_secret.as_deref(),
-            Some("private-provider-secret")
-        );
-        assert_eq!(provider.scopes.as_ref().unwrap(), &["openid", "email"]);
-        assert_eq!(provider.role_claims, ["/roles"]);
-        let before = fs::read(out.join("config.toml")).unwrap();
-        let duplicate = init_config_args(
-            &out,
-            &[
-                "--force",
-                "--oauth-providers-file",
-                input_path,
-                "--oauth-providers-file",
-                input_path,
-            ],
-        );
-        init_config_command(OutputFormat::Json, &duplicate).expect_err("duplicate providers");
-        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
-        fs::write(&input, r#"{"identity":{"type":"oidc","clientId":"consumer","clientSecret":{"value":"do-not-echo-this-secret"}}}"#).unwrap();
-        let invalid = init_config_args(&out, &["--force", "--oauth-providers-file", input_path]);
-        let error =
-            init_config_command(OutputFormat::Json, &invalid).expect_err("invalid private input");
-        assert!(!format!("{error:?}").contains("do-not-echo-this-secret"));
-        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
     }
 
     fn init_config_args(out: &Path, flags: &[&str]) -> InitConfigArgs {

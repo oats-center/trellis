@@ -71,12 +71,11 @@ Environment variables and their names are this example's configuration
 interface, not a Trellis requirement. Pass the same typed options from a file,
 secret manager, CLI parser, or application configuration system if preferred.
 
-`connect()` proves the provisioned identity, verifies the server-owned installed
-participant and GrantBinding, and resolves Trellis resources.
-`handleCreate()` registers the provider. `wait()` supervises the running
-service; `stop()` closes its resources. Authorization contexts and route
-credentials remain in process memory and are refreshed proactively as SDK-owned
-maintenance. Renewal of unchanged transport authority does not replace a healthy
+`connect()` proves the provisioned identity in NATS CONNECT, verifies the signed
+session authority Auth issues for its deployment, and resolves Trellis
+resources. `handleCreate()` registers the provider. `wait()` supervises the
+running service; `stop()` closes its resources. Session authority remains in
+process memory and is refreshed proactively as SDK-owned maintenance. Renewal of unchanged transport authority does not replace a healthy
 socket. The SDK adopts newly approved authority automatically, moving fresh
 intake to a ready successor while safe accepted work finishes on its receiving
 connection. Retain the service and its resource handles across these changes; no

@@ -159,9 +159,6 @@ test("a service drains accepted RPCs across growth and renews in place after rea
     {
       authorization: {
         contextLifetimeSeconds: 60,
-        refreshLeadSeconds: 15,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 26,
         allowedClockSkewSeconds: 2,
       },
     },

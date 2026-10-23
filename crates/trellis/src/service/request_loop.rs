@@ -1324,7 +1324,12 @@ where
         tokio::select! {
             message = stream.next() => {
                 let Some(message) = message else {
-                    tracing::info!(retired, in_flight = in_flight.len(), connection_state = ?client.connection_state(), "service request subscriptions exhausted");
+                    tracing::info!(
+                        retired,
+                        in_flight = in_flight.len(),
+                        connection_state = ?client.connection_state(),
+                        "service request subscriptions exhausted"
+                    );
                     break;
                 };
                 let mut request = decode_nats_request(&message);
@@ -1337,9 +1342,22 @@ where
                         Ok(DispatchResponse::Reply(dispatched)) => {
                             let reply_to = dispatched.reply_to.clone();
                             let request_id = dispatched.annotations.request_id.clone();
-                            tracing::debug!(%subject, %reply_to, request_id = ?request_id, "publishing service request reply");
-                            if let Err(error) = publish_response(client, handler, *dispatched).await {
-                                tracing::warn!(%subject, %reply_to, request_id = ?request_id, %error, "service request reply publish failed");
+                            tracing::debug!(
+                                %subject,
+                                %reply_to,
+                                request_id = ?request_id,
+                                "publishing service request reply"
+                            );
+                            if let Err(error) =
+                                publish_response(client, handler, *dispatched).await
+                            {
+                                tracing::warn!(
+                                    %subject,
+                                    %reply_to,
+                                    request_id = ?request_id,
+                                    %error,
+                                    "service request reply publish failed"
+                                );
                                 return Err(error);
                             }
                         }
@@ -1349,7 +1367,7 @@ where
                         }
                     }
                     Ok::<(), ServerError>(())
-                });
+                            });
             }
             result = in_flight.next(), if !in_flight.is_empty() => {
                 // One callback failing must not cancel its accepted siblings.
@@ -1360,7 +1378,11 @@ where
                 }
             }
             () = &mut retire, if !retired => {
-                tracing::info!(in_flight = in_flight.len(), connection_state = ?client.connection_state(), "service request retirement requested");
+                tracing::info!(
+                    in_flight = in_flight.len(),
+                    connection_state = ?client.connection_state(),
+                    "service request retirement requested"
+                );
                 retired = true;
                 // Stop new broker deliveries on every subscription via the
                 // upstream drain, then keep polling so every message the broker
@@ -1707,7 +1729,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let login = native.start_device(&serde_json::json!([{"type":"trellis_capabilities","required":StatusChanged::SUBSCRIBE_CAPABILITIES,"optional":[]}])).await.unwrap();
+        let login = native
+            .start_device(&serde_json::json!([
+                {
+                    "type":"trellis_capabilities",
+                    "required":StatusChanged::SUBSCRIBE_CAPABILITIES,
+                    "optional": []
+                }
+            ]))
+            .await
+            .unwrap();
         runtime
             .approve_device_login("trellis.cli", login.user_code())
             .await
@@ -2038,8 +2069,8 @@ mod tests {
         // a malformed/nested opening cannot slip past a body discriminator.
         let mut request = test_request("test.live");
         request.payload = Bytes::from_static(
-            br#"{"format":"trellis.live.v1","type":"open","openId":"c29tZS1ub25jZS0xNg","receiveMaxPayloadBytes":1048576,"input":{}}"#,
-        );
+                br#"{"format":"trellis.live.v1","type":"open","openId":"c29tZS1ub25jZS0xNg","receiveMaxPayloadBytes":1048576,"input":{}}"#,
+            );
         let dropped = dispatch_all(&host, request)
             .await
             .expect("dispatch should not fail");

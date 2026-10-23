@@ -39,7 +39,7 @@ pub(super) fn asset(path: &str) -> Response {
         .into_response()
 }
 
-pub(super) fn page(callback: Option<&str>) -> Response {
+pub(super) fn page(engine: &super::OAuthEngine, callback: Option<&str>) -> Response {
     let mut form_action = String::from("'self'");
     if let Some(callback) = callback {
         let Ok(callback) = url::Url::parse(callback) else {
@@ -52,13 +52,20 @@ pub(super) fn page(callback: Option<&str>) -> Response {
         form_action.push_str(&callback.origin().ascii_serialization());
     }
     let csp = format!(
-        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
-         base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action {form_action}"
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src \
+        'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; \
+        form-action {form_action}"
     );
     let Ok(csp) = HeaderValue::from_str(&csp) else {
         return super::http::error(oauth_as::error::ErrorCode::ServerError);
     };
     let mut response = asset("index.html");
+    if let Some(file) = PortalAssets::get("index.html").filter(|_| engine.generated_tls()) {
+        // The Portal shows its not-for-production banner from this marker.
+        *response.body_mut() = String::from_utf8_lossy(&file.data)
+            .replacen("<html", "<html data-generated-tls", 1)
+            .into();
+    }
     response
         .headers_mut()
         .insert(header::CONTENT_SECURITY_POLICY, csp);

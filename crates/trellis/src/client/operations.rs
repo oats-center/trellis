@@ -14,6 +14,9 @@ use crate::client::TrellisClientError;
 use crate::live::subscription::{LiveMapDecision, LiveSubscription};
 use crate::service::schema_validation::PreparedSchema;
 
+/// Live subscription to one operation's progress, output, and updates.
+type OperationWatch<P, O, U> = LiveSubscription<OperationEvent<P, O, U>>;
+
 /// Client-owned validation keeps the existing automatic draft for live updates.
 #[derive(Debug)]
 struct ClientOperationSchemas {
@@ -424,7 +427,9 @@ impl<'a, T, D> OperationInvoker<'a, T, D> {
             || data.operation != D::KEY
         {
             return Err(TrellisClientError::OperationProtocol(
-                "operation reference must include its id, service, owner deployment, and matching operation".to_string(),
+                "operation reference must include its id, service, owner deployment, \
+                and matching operation"
+                    .to_string(),
             ));
         }
 
@@ -550,7 +555,9 @@ where
                 || parsed_id.to_string() != invocation_id
             {
                 return Err(TrellisClientError::OperationProtocol(
-                    "targeted operation requires a canonical deployment identity and invocation ULID".into(),
+                    "targeted operation requires a canonical deployment identity and \
+                    invocation ULID"
+                        .into(),
                 ));
             }
         }
@@ -744,7 +751,8 @@ impl<'a, T, D> StartedOperationTransfer<'a, T, D> {
 }
 
 impl<'a, T, D> OperationTransferStartError<'a, T, D> {
-    /// Return the accepted operation reference when the operation was accepted before upload failed.
+    /// Return the accepted operation reference when the operation was accepted before upload
+    /// failed.
     pub fn operation_ref(&self) -> Option<&OperationRef<'a, T, D>> {
         match self {
             Self::Start(_) => None,
@@ -997,18 +1005,14 @@ where
     /// Open a live Operation observation without declared update envelopes.
     pub async fn live(
         &self,
-    ) -> Result<LiveSubscription<OperationEvent<D::Progress, D::Output, Value>>, TrellisClientError>
-    {
+    ) -> Result<OperationWatch<D::Progress, D::Output, Value>, TrellisClientError> {
         self.open_operation_watch::<Value>(false).await
     }
 
     /// Observe durable lifecycle events plus declared live-only updates.
     pub async fn live_with_updates(
         &self,
-    ) -> Result<
-        LiveSubscription<OperationEvent<D::Progress, D::Output, D::Update>>,
-        TrellisClientError,
-    >
+    ) -> Result<OperationWatch<D::Progress, D::Output, D::Update>, TrellisClientError>
     where
         D::UpdateEvidence: HasOperationUpdates,
     {
@@ -1039,7 +1043,7 @@ where
     async fn open_operation_watch<TUpdate>(
         &self,
         include_updates: bool,
-    ) -> Result<LiveSubscription<OperationEvent<D::Progress, D::Output, TUpdate>>, TrellisClientError>
+    ) -> Result<OperationWatch<D::Progress, D::Output, TUpdate>, TrellisClientError>
     where
         TUpdate: DeserializeOwned + Send + 'static,
     {
@@ -1083,8 +1087,11 @@ where
             deadline,
         )
         .await?;
-        if !matches!(&prepared.peer.binding, trellis_protocol::SessionBinding::Service { deployment_id, .. } if deployment_id == &self.data.deployment_id)
-        {
+        if !matches!(
+            &prepared.peer.binding,
+            trellis_protocol::SessionBinding::Service { deployment_id, .. }
+                if deployment_id == &self.data.deployment_id
+        ) {
             return Err(TrellisClientError::LiveProtocol(
                 "operation watch provider does not match the retained owner deployment".into(),
             ));

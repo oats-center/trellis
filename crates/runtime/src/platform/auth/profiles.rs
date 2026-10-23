@@ -101,20 +101,51 @@ pub(super) struct Profile {
 }
 
 pub(super) fn read(connection: &Connection, principal: &str) -> Result<Profile, AuthError> {
-    Ok(connection.query_row(
-        "SELECT coalesce(display_name,principal_id),given_name,family_name,display_name_source,given_name_source,family_name_source,email,email_verified,email_source,email_provider_id,oidc_picture_url,avatar_override_url,gravatar_enabled,version FROM auth_user_profiles WHERE principal_id=?1",
-        [principal], |row| Ok(Profile {
-            display_name: row.get(0)?, given_name: row.get(1)?, family_name: row.get(2)?,
-            display_source: row.get(3)?, given_source: row.get(4)?, family_source: row.get(5)?,
-            email: row.get(6)?, email_verified: row.get(7)?, email_source: row.get(8)?, email_provider: row.get(9)?,
-            picture: row.get(10)?, avatar_override: row.get(11)?, gravatar_enabled: row.get(12)?, revision: row.get(13)?,
-        }),
-    ).optional()?.unwrap_or(Profile {
-        display_name: principal.to_owned(), given_name: None, family_name: None,
-        display_source: "default".into(), given_source: "unset".into(), family_source: "unset".into(),
-        email: None, email_verified: false, email_source: "unset".into(), email_provider: None,
-        picture: None, avatar_override: None, gravatar_enabled: true, revision: 1,
-    }))
+    Ok(connection
+        .query_row(
+            "SELECT coalesce(display_name,principal_id),given_name,family_name,\
+            display_name_source,given_name_source,family_name_source,email,\
+            email_verified,email_source,email_provider_id,oidc_picture_url,\
+            avatar_override_url,gravatar_enabled,version \
+            FROM auth_user_profiles \
+            WHERE principal_id=?1",
+            [principal],
+            |row| {
+                Ok(Profile {
+                    display_name: row.get(0)?,
+                    given_name: row.get(1)?,
+                    family_name: row.get(2)?,
+                    display_source: row.get(3)?,
+                    given_source: row.get(4)?,
+                    family_source: row.get(5)?,
+                    email: row.get(6)?,
+                    email_verified: row.get(7)?,
+                    email_source: row.get(8)?,
+                    email_provider: row.get(9)?,
+                    picture: row.get(10)?,
+                    avatar_override: row.get(11)?,
+                    gravatar_enabled: row.get(12)?,
+                    revision: row.get(13)?,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or(Profile {
+            display_name: principal.to_owned(),
+            given_name: None,
+            family_name: None,
+            display_source: "default".into(),
+            given_source: "unset".into(),
+            family_source: "unset".into(),
+            email: None,
+            email_verified: false,
+            email_source: "unset".into(),
+            email_provider: None,
+            picture: None,
+            avatar_override: None,
+            gravatar_enabled: true,
+            revision: 1,
+        }))
 }
 
 /// Recompute nonmanual fields from verified, still-linked identities and apply
@@ -191,7 +222,15 @@ pub(super) fn write(
             current.gravatar_enabled = enabled;
         }
     }
-    let mut profiles = connection.prepare("SELECT i.provider,i.profile_json FROM auth_provider_identities i JOIN auth_oidc_providers p ON p.provider_id=i.provider WHERE i.principal_id=?1 AND p.state='active' AND i.profile_json IS NOT NULL ORDER BY i.last_seen_at DESC,i.identity_id DESC")?;
+    let mut profiles = connection.prepare(
+        "SELECT i.provider,i.profile_json \
+        FROM auth_provider_identities i \
+        JOIN auth_oidc_providers p ON p.provider_id=i.provider \
+        WHERE i.principal_id=?1 \
+        AND p.state='active' \
+        AND i.profile_json IS NOT NULL \
+        ORDER BY i.last_seen_at DESC,i.identity_id DESC",
+    )?;
     let mut upstream = VerifiedProfile::default();
     let mut email_provider = None;
     for row in profiles.query_map([principal], |row| {
@@ -253,8 +292,44 @@ pub(super) fn write(
             "DELETE FROM auth_avatar_cache WHERE principal_id=?1",
             [principal],
         )?;
-        connection.execute("INSERT INTO auth_user_profiles(principal_id,display_name,given_name,family_name,display_name_source,given_name_source,family_name_source,email,email_verified,email_source,email_provider_id,oidc_picture_url,avatar_override_url,gravatar_enabled,created_at,updated_at,version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15,?16) ON CONFLICT(principal_id) DO UPDATE SET display_name=excluded.display_name,given_name=excluded.given_name,family_name=excluded.family_name,display_name_source=excluded.display_name_source,given_name_source=excluded.given_name_source,family_name_source=excluded.family_name_source,email=excluded.email,email_verified=excluded.email_verified,email_source=excluded.email_source,email_provider_id=excluded.email_provider_id,oidc_picture_url=excluded.oidc_picture_url,avatar_override_url=excluded.avatar_override_url,gravatar_enabled=excluded.gravatar_enabled,updated_at=excluded.updated_at,version=excluded.version",
-            params![principal,current.display_name,current.given_name,current.family_name,current.display_source,current.given_source,current.family_source,current.email,current.email_verified,current.email_source,current.email_provider,current.picture,current.avatar_override,current.gravatar_enabled,now,current.revision])?;
+        connection.execute(
+            "INSERT INTO auth_user_profiles(principal_id,display_name,given_name,\
+            family_name,display_name_source,given_name_source,family_name_source,\
+            email,email_verified,email_source,email_provider_id,oidc_picture_url,\
+            avatar_override_url,gravatar_enabled,created_at,updated_at,version) \
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15,?16) \
+            ON CONFLICT(principal_id) \
+            DO UPDATE SET display_name=excluded.display_name,\
+            given_name=excluded.given_name,family_name=excluded.family_name,\
+            display_name_source=excluded.display_name_source,\
+            given_name_source=excluded.given_name_source,\
+            family_name_source=excluded.family_name_source,email=excluded.email,\
+            email_verified=excluded.email_verified,\
+            email_source=excluded.email_source,\
+            email_provider_id=excluded.email_provider_id,\
+            oidc_picture_url=excluded.oidc_picture_url,\
+            avatar_override_url=excluded.avatar_override_url,\
+            gravatar_enabled=excluded.gravatar_enabled,\
+            updated_at=excluded.updated_at,version=excluded.version",
+            params![
+                principal,
+                current.display_name,
+                current.given_name,
+                current.family_name,
+                current.display_source,
+                current.given_source,
+                current.family_source,
+                current.email,
+                current.email_verified,
+                current.email_source,
+                current.email_provider,
+                current.picture,
+                current.avatar_override,
+                current.gravatar_enabled,
+                now,
+                current.revision
+            ],
+        )?;
     }
     Ok(current)
 }
@@ -269,12 +344,34 @@ pub(super) fn ingest(
     verified: &VerifiedProfile,
     now: i64,
 ) -> Result<(), AuthError> {
-    let retained: Option<String> = connection.query_row("SELECT profile_json FROM auth_provider_identities WHERE principal_id=?1 AND provider=?2 AND provider_subject=?3", params![principal,provider,subject], |row| row.get(0)).optional()?.ok_or(AuthError::Denied)?;
+    let retained: Option<String> = connection
+        .query_row(
+            "SELECT profile_json \
+            FROM auth_provider_identities \
+            WHERE principal_id=?1 \
+            AND provider=?2 AND provider_subject=?3",
+            params![principal, provider, subject],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(AuthError::Denied)?;
     let mut profile = verified.clone();
     if let Some(retained) = retained {
         profile.fill(serde_json::from_str(&retained)?);
     }
-    connection.execute("UPDATE auth_provider_identities SET profile_json=?1,last_seen_at=?2 WHERE principal_id=?3 AND provider=?4 AND provider_subject=?5", params![serde_json::to_string(&profile)?,now,principal,provider,subject])?;
+    connection.execute(
+        "UPDATE auth_provider_identities \
+        SET profile_json=?1,last_seen_at=?2 \
+        WHERE principal_id=?3 \
+        AND provider=?4 AND provider_subject=?5",
+        params![
+            serde_json::to_string(&profile)?,
+            now,
+            principal,
+            provider,
+            subject
+        ],
+    )?;
     write(connection, principal, None, now)?;
     Ok(())
 }

@@ -136,7 +136,11 @@ async fn activate(
         subscribe.push(coordinates.data.to_owned());
     }
     let deadline = client.transport_deadline();
-    let lease = tokio::select! { biased; _ = cancelled(cancellation) => return Err(TrellisClientError::TransferCancelled), result = client.acquire_transport(&publish, &subscribe, deadline) => result? };
+    let lease = tokio::select! {
+        biased;
+        _ = cancelled(cancellation) => return Err(TrellisClientError::TransferCancelled),
+        result = client.acquire_transport(&publish, &subscribe, deadline) => result?
+    };
     let mut signals = lease
         .nats()
         .subscribe(coordinates.signal.to_owned())
@@ -232,21 +236,54 @@ async fn activate(
         loop {
             let message = tokio::select! {
                 _ = cancelled(cancellation), if !cancelled_sent => {
-                    local.guard.reconcile().await.map_err(|error| fail(format!("activation cancellation authority: {error:?}")))?;
+                    local.guard.reconcile().await.map_err(|error| {
+                        fail(format!("activation cancellation authority: {error:?}"))
+                    })?;
                     // Activation has not returned: no DATA has been authenticated or consumed.
-                    let body = TransferControl::Cancel { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: coordinates.id.into(), control_seq: U64s::new(2), received_seq: U64s::new(0), consumed_seq: U64s::new(0), consumed_bytes: U64s::new(0) };
+                    let body = TransferControl::Cancel {
+                        format: TransferFormat::V1,
+                        kind: TransferControlKind::Control,
+                        transfer_id: coordinates.id.into(),
+                        control_seq: U64s::new(2),
+                        received_seq: U64s::new(0),
+                        consumed_seq: U64s::new(0),
+                        consumed_bytes: U64s::new(0),
+                    };
                     let payload = Bytes::from(serde_json::to_vec(&body)?);
-                    let descriptor = TransferFrameDescriptor { transfer_id: coordinates.id.into(), direction: coordinates.direction, sequence: U64s::new(2), kind: TransferFrameKind::Control, terminal: None };
-                    let headers = wire::caller_headers(client, &coordinates.action, coordinates.control, coordinates.signal, &descriptor, &payload).map_err(fail)?;
+                    let descriptor = TransferFrameDescriptor {
+                        transfer_id: coordinates.id.into(),
+                        direction: coordinates.direction,
+                        sequence: U64s::new(2),
+                        kind: TransferFrameKind::Control,
+                        terminal: None,
+                    };
+                    let headers = wire::caller_headers(
+                        client,
+                        &coordinates.action,
+                        coordinates.control,
+                        coordinates.signal,
+                        &descriptor,
+                        &payload,
+                    )
+                    .map_err(fail)?;
                     let header_bytes = transfer::telemetry::header_bytes(&headers);
-                    lease.nats().publish_with_reply_and_headers(coordinates.control.to_owned(), coordinates.signal.to_owned(), headers, payload.clone()).await.map_err(fail)?;
+                    lease
+                        .nats()
+                        .publish_with_reply_and_headers(
+                            coordinates.control.to_owned(),
+                            coordinates.signal.to_owned(),
+                            headers,
+                            payload.clone(),
+                        )
+                        .await
+                        .map_err(fail)?;
                     transfer::telemetry::frame(&descriptor, header_bytes, &payload, "client");
                     cancelled_sent = true;
                     continue;
                 },
                 message = signals.next() => message,
             }
-                .ok_or_else(|| fail("transfer signal subscription closed"))?;
+            .ok_or_else(|| fail("transfer signal subscription closed"))?;
             if message.subject.as_str() != coordinates.signal {
                 continue;
             }
@@ -305,7 +342,8 @@ async fn activate(
     };
     let (peer, max_frame, window_frames, window_bytes) = tokio::select! {
         _ = lease.wait_lost() => return Err(fail("transfer pinned transport lost during activation")),
-        result = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), wait) => result.map_err(|_| TrellisClientError::Timeout)??,
+        result = tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), wait) =>
+            result.map_err(|_| TrellisClientError::Timeout)??,
     };
     Ok(Active {
         lease,
@@ -457,71 +495,229 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
     let outcome = async {
         loop {
             if let Some(bytes) = &staged {
-                if window.validate_frame_slot(bytes.len() as u64, active.max_frame).is_ok() {
-                    if let Some(wait) = credit_wait.take() { crate::telemetry::lifecycle::Observation::finish(wait, "ok"); }
-                    active.local.guard.reconcile().await.map_err(|e| fail(format!("upload local authority: {e:?}")))?;
-                    active.peer.guard.check_now().map_err(|e| fail(format!("upload peer authority: {e:?}")))?;
-                    let seq = window.next_frame_seq().map_err(|e| fail(format!("upload sequence: {e:?}")))?;
-                    let bytes = staged.take().ok_or_else(|| fail("upload staged frame missing"))?;
-                    let next = transferred.checked_add(bytes.len() as u64).ok_or_else(|| fail("upload size overflow"))?;
-                    if grant.max_bytes.is_some_and(|max| next > max) { return Err(fail("upload exceeds object limit")); }
-                    let descriptor = TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Send, sequence: U64s::new(seq), kind: TransferFrameKind::Data, terminal: None };
-                    let headers = wire::caller_headers(client, &coordinates.action, &grant.data_subject, &grant.signal_subject, &descriptor, &bytes).map_err(fail)?;
+                if window
+                    .validate_frame_slot(bytes.len() as u64, active.max_frame)
+                    .is_ok()
+                {
+                    if let Some(wait) = credit_wait.take() {
+                        crate::telemetry::lifecycle::Observation::finish(wait, "ok");
+                    }
+                    active
+                        .local
+                        .guard
+                        .reconcile()
+                        .await
+                        .map_err(|e| fail(format!("upload local authority: {e:?}")))?;
+                    active
+                        .peer
+                        .guard
+                        .check_now()
+                        .map_err(|e| fail(format!("upload peer authority: {e:?}")))?;
+                    let seq = window
+                        .next_frame_seq()
+                        .map_err(|e| fail(format!("upload sequence: {e:?}")))?;
+                    let bytes = staged
+                        .take()
+                        .ok_or_else(|| fail("upload staged frame missing"))?;
+                    let next = transferred
+                        .checked_add(bytes.len() as u64)
+                        .ok_or_else(|| fail("upload size overflow"))?;
+                    if grant.max_bytes.is_some_and(|max| next > max) {
+                        return Err(fail("upload exceeds object limit"));
+                    }
+                    let descriptor = TransferFrameDescriptor {
+                        transfer_id: grant.transfer_id.clone(),
+                        direction: TransferDirection::Send,
+                        sequence: U64s::new(seq),
+                        kind: TransferFrameKind::Data,
+                        terminal: None,
+                    };
+                    let headers = wire::caller_headers(
+                        client,
+                        &coordinates.action,
+                        &grant.data_subject,
+                        &grant.signal_subject,
+                        &descriptor,
+                        &bytes,
+                    )
+                    .map_err(fail)?;
                     hasher.update(&bytes);
                     let len = bytes.len() as u64;
                     let header_bytes = transfer::telemetry::header_bytes(&headers);
-                    active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, bytes.bytes.clone()).await.map_err(fail)?;
+                    active
+                        .lease
+                        .nats()
+                        .publish_with_reply_and_headers(
+                            grant.data_subject.clone(),
+                            grant.signal_subject.clone(),
+                            headers,
+                            bytes.bytes.clone(),
+                        )
+                        .await
+                        .map_err(fail)?;
                     transfer::telemetry::frame(&descriptor, header_bytes, &bytes, "client");
-                    window.commit_frame(seq, len).map_err(|e| fail(format!("upload sender window: {e:?}")))?;
+                    window
+                        .commit_frame(seq, len)
+                        .map_err(|e| fail(format!("upload sender window: {e:?}")))?;
                     transferred = next;
                     continue;
                 }
-                credit_wait.get_or_insert_with(|| transfer::telemetry::wait(TransferDirection::Send, "client", "credit"));
+                credit_wait.get_or_insert_with(|| {
+                    transfer::telemetry::wait(TransferDirection::Send, "client", "credit")
+                });
             }
             if source_done && !complete_sent && staged.is_none() && !cancelled_sent {
-                let body = TransferComplete { format: TransferFormat::V1, kind: TransferCompleteKind::Complete, transfer_id: grant.transfer_id.clone(), final_seq: U64s::new(window.highest_sent.load(Ordering::Acquire)), size: transferred, digest: format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize())) };
+                let body = TransferComplete {
+                    format: TransferFormat::V1,
+                    kind: TransferCompleteKind::Complete,
+                    transfer_id: grant.transfer_id.clone(),
+                    final_seq: U64s::new(window.highest_sent.load(Ordering::Acquire)),
+                    size: transferred,
+                    digest: format!(
+                        "SHA-256={}",
+                        URL_SAFE_NO_PAD.encode(hasher.clone().finalize())
+                    ),
+                };
                 let payload = Bytes::from(serde_json::to_vec(&body)?);
-                let descriptor = TransferFrameDescriptor { transfer_id: grant.transfer_id.clone(), direction: TransferDirection::Send, sequence: body.final_seq, kind: TransferFrameKind::Complete, terminal: None };
-                let headers = wire::caller_headers(client, &coordinates.action, &grant.data_subject, &grant.signal_subject, &descriptor, &payload).map_err(fail)?;
-                active.lease.nats().publish_with_reply_and_headers(grant.data_subject.clone(), grant.signal_subject.clone(), headers, payload).await.map_err(fail)?;
+                let descriptor = TransferFrameDescriptor {
+                    transfer_id: grant.transfer_id.clone(),
+                    direction: TransferDirection::Send,
+                    sequence: body.final_seq,
+                    kind: TransferFrameKind::Complete,
+                    terminal: None,
+                };
+                let headers = wire::caller_headers(
+                    client,
+                    &coordinates.action,
+                    &grant.data_subject,
+                    &grant.signal_subject,
+                    &descriptor,
+                    &payload,
+                )
+                .map_err(fail)?;
+                active
+                    .lease
+                    .nats()
+                    .publish_with_reply_and_headers(
+                        grant.data_subject.clone(),
+                        grant.signal_subject.clone(),
+                        headers,
+                        payload,
+                    )
+                    .await
+                    .map_err(fail)?;
                 complete_sent = true;
             }
             tokio::select! {
                 _ = &mut expiry => return Err(fail("upload grant expired")),
                 _ = active.lease.wait_lost() => return Err(fail("upload pinned transport lost")),
-                failure = wire::authority_failure(&active.local, &active.peer) => return Err(fail(failure)),
-                _ = changes.recv() => { active.peer.guard.check_now().map_err(|e| fail(format!("upload authority lost: {e:?}")))?; },
-                _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("upload local authority lost: {e:?}")))?; },
+                failure = wire::authority_failure(&active.local, &active.peer) =>
+                    return Err(fail(failure)),
+                _ = changes.recv() => {
+                    active
+                        .peer
+                        .guard
+                        .check_now()
+                        .map_err(|e| fail(format!("upload authority lost: {e:?}")))?;
+                },
+                _ = local_changes.recv() => {
+                    active
+                        .local
+                        .guard
+                        .reconcile()
+                        .await
+                        .map_err(|e| fail(format!("upload local authority lost: {e:?}")))?;
+                },
                 _ = cancelled(cancellation), if !cancelled_sent => {
-                    publish_control(client, &active, &coordinates, TransferControl::Cancel { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(2), received_seq: U64s::new(window.highest_received.load(Ordering::Acquire)), consumed_seq: U64s::new(window.highest_consumed.load(Ordering::Acquire)), consumed_bytes: U64s::new(consumed_bytes) }).await?;
+                    publish_control(
+                        client,
+                        &active,
+                        &coordinates,
+                        TransferControl::Cancel {
+                            format: TransferFormat::V1,
+                            kind: TransferControlKind::Control,
+                            transfer_id: grant.transfer_id.clone(),
+                            control_seq: U64s::new(2),
+                            received_seq: U64s::new(
+                                window.highest_received.load(Ordering::Acquire),
+                            ),
+                            consumed_seq: U64s::new(
+                                window.highest_consumed.load(Ordering::Acquire),
+                            ),
+                            consumed_bytes: U64s::new(consumed_bytes),
+                        },
+                    )
+                    .await?;
                     cancelled_sent = true;
                     staged.take();
                 },
-                bytes = transfer::read_ready_frame(reader, active.max_frame as usize), if !source_done && staged.is_none() && !cancelled_sent => {
+                bytes = transfer::read_ready_frame(reader, active.max_frame as usize),
+                    if !source_done && staged.is_none() && !cancelled_sent =>
+                {
                     let bytes = bytes?;
-                    if bytes.is_empty() { source_done = true; }
-                    else { staged = Some(transfer::telemetry::Payload::new(bytes, TransferDirection::Send, "client")); }
+                    if bytes.is_empty() {
+                        source_done = true;
+                    } else {
+                        staged = Some(transfer::telemetry::Payload::new(
+                            bytes,
+                            TransferDirection::Send,
+                            "client",
+                        ));
+                    }
                 },
                 message = active.signals.next() => {
-                    let message = message.ok_or_else(|| fail("upload signal subscription closed"))?;
+                    let message =
+                        message.ok_or_else(|| fail("upload signal subscription closed"))?;
                     match verified_signal(&active.peer, message, &coordinates).await? {
-                        Some(TransferSignal::Credit { received_seq, consumed_seq, consumed_bytes: bytes, .. }) => {
-                            if bytes.get() < consumed_bytes || bytes.get() > transferred { return Err(fail("invalid upload consumed byte cursor")); }
-                            window.apply_credit(received_seq.get(), consumed_seq.get(), Some(bytes.get())).map_err(|e| fail(format!("upload credit: {e:?}")))?;
+                        Some(TransferSignal::Credit {
+                            received_seq,
+                            consumed_seq,
+                            consumed_bytes: bytes,
+                            ..
+                        }) => {
+                            if bytes.get() < consumed_bytes || bytes.get() > transferred {
+                                return Err(fail("invalid upload consumed byte cursor"));
+                            }
+                            window
+                                .apply_credit(
+                                    received_seq.get(),
+                                    consumed_seq.get(),
+                                    Some(bytes.get()),
+                                )
+                                .map_err(|e| fail(format!("upload credit: {e:?}")))?;
                             consumed_bytes = bytes.get();
-                        },
-                        Some(TransferSignal::Committed { final_seq, info, .. }) => {
-                            if !complete_sent || final_seq.get() != window.highest_sent.load(Ordering::Acquire) || info.size != transferred || !transfer::transfer_digests_match(&info.digest, &format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize()))) { return Err(fail("upload committed metadata mismatch")); }
+                        }
+                        Some(TransferSignal::Committed {
+                            final_seq, info, ..
+                        }) => {
+                            if !complete_sent
+                                || final_seq.get() != window.highest_sent.load(Ordering::Acquire)
+                                || info.size != transferred
+                                || !transfer::transfer_digests_match(
+                                    &info.digest,
+                                    &format!(
+                                        "SHA-256={}",
+                                        URL_SAFE_NO_PAD.encode(hasher.clone().finalize())
+                                    ),
+                                )
+                            {
+                                return Err(fail("upload committed metadata mismatch"));
+                            }
                             return Ok(info);
-                        },
-                        Some(TransferSignal::Cancelled { .. }) if cancelled_sent => return Err(TrellisClientError::TransferCancelled),
-                        Some(TransferSignal::Error { code, .. }) => return Err(fail(format!("upload failed: {code:?}"))),
-                        _ => {},
+                        }
+                        Some(TransferSignal::Cancelled { .. }) if cancelled_sent => {
+                            return Err(TrellisClientError::TransferCancelled)
+                        }
+                        Some(TransferSignal::Error { code, .. }) => {
+                            return Err(fail(format!("upload failed: {code:?}")))
+                        }
+                        _ => {}
                     }
                 },
             }
         }
-    }.await;
+    }
+    .await;
     drop(credit_wait);
     if outcome.is_err() && !cancelled_sent {
         let _ = publish_control(
@@ -630,67 +826,217 @@ pub(crate) async fn get_download_grant_into_with_cancel<W: AsyncWrite + Unpin + 
                 loop {
                     tokio::select! {
                         result = &mut write => { result?; break; },
-                        _ = cancelled(cancellation) => return Err(TrellisClientError::TransferCancelled),
+                        _ = cancelled(cancellation) =>
+                            return Err(TrellisClientError::TransferCancelled),
                         _ = active.lease.wait_lost() => return Err(fail("download pinned transport lost")),
-                        failure = wire::authority_failure(&active.local, &active.peer) => return Err(fail(failure)),
+                        failure = wire::authority_failure(&active.local, &active.peer) =>
+                            return Err(fail(failure)),
                         _ = &mut expiry => return Err(fail("download grant expired")),
-                        _ = changes.recv() => { active.peer.guard.check_now().map_err(|e| fail(format!("download authority lost: {e:?}")))?; },
-                        _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("download local authority lost: {e:?}")))?; },
+                        _ = changes.recv() => {
+                            active
+                                .peer
+                                .guard
+                                .check_now()
+                                .map_err(|e| fail(format!("download authority lost: {e:?}")))?;
+                        },
+                        _ = local_changes.recv() => {
+                            active.local.guard.reconcile().await.map_err(|e| {
+                                fail(format!("download local authority lost: {e:?}"))
+                            })?;
+                        },
                         _ = transfer::credit_due(&scheduler) => {
-                            control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
-                            publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
-                            reported = consumed; reported_bytes = transferred; scheduler.clear();
+                            control_seq = control_seq
+                                .checked_add(1)
+                                .ok_or_else(|| fail("control sequence overflow"))?;
+                            publish_control(
+                                client,
+                                &active,
+                                &coordinates,
+                                TransferControl::Credit {
+                                    format: TransferFormat::V1,
+                                    kind: TransferControlKind::Control,
+                                    transfer_id: grant.transfer_id.clone(),
+                                    control_seq: U64s::new(control_seq),
+                                    received_seq: U64s::new(
+                                        received.highest_sent.load(Ordering::Acquire),
+                                    ),
+                                    consumed_seq: U64s::new(consumed),
+                                    consumed_bytes: U64s::new(transferred),
+                                },
+                            )
+                            .await?;
+                            reported = consumed;
+                            reported_bytes = transferred;
+                            scheduler.clear();
                         },
                         message = active.signals.next() => {
-                            match verified_signal(&active.peer, message.ok_or_else(|| fail("download signal subscription closed"))?, &coordinates).await? {
-                                Some(TransferSignal::Error { code, .. }) => return Err(fail(format!("download failed: {code:?}"))),
-                                Some(TransferSignal::Cancelled { .. }) => return Err(TrellisClientError::TransferCancelled),
-                                _ => {},
+                            match verified_signal(
+                                &active.peer,
+                                message
+                                    .ok_or_else(|| fail("download signal subscription closed"))?,
+                                &coordinates,
+                            )
+                            .await?
+                            {
+                                Some(TransferSignal::Error { code, .. }) => {
+                                    return Err(fail(format!("download failed: {code:?}")))
+                                }
+                                Some(TransferSignal::Cancelled { .. }) => {
+                                    return Err(TrellisClientError::TransferCancelled)
+                                }
+                                _ => {}
                             }
                         },
                         message = data.next() => {
-                            let message = message.ok_or_else(|| fail("download data subscription closed"))?;
-                            admit_download(&active.peer, message, &coordinates, &received, &mut queue, &mut eof, &mut admitted_bytes, grant.info.size).await?;
+                            let message =
+                                message.ok_or_else(|| fail("download data subscription closed"))?;
+                            admit_download(
+                                &active.peer,
+                                message,
+                                &coordinates,
+                                &received,
+                                &mut queue,
+                                &mut eof,
+                                &mut admitted_bytes,
+                                grant.info.size,
+                            )
+                            .await?;
                         },
                     }
                 }
                 hasher.update(&bytes);
-                transferred = transferred.checked_add(bytes.len() as u64).ok_or_else(|| fail("download size overflow"))?;
+                transferred = transferred
+                    .checked_add(bytes.len() as u64)
+                    .ok_or_else(|| fail("download size overflow"))?;
                 consumed = seq;
-                received.apply_credit(received.highest_sent.load(Ordering::Acquire), consumed, Some(transferred)).map_err(|e| fail(format!("download consumer window: {e:?}")))?;
-                scheduler.note_pending(tokio::time::Instant::now(), consumed - reported, transferred - reported_bytes);
+                received
+                    .apply_credit(
+                        received.highest_sent.load(Ordering::Acquire),
+                        consumed,
+                        Some(transferred),
+                    )
+                    .map_err(|e| fail(format!("download consumer window: {e:?}")))?;
+                scheduler.note_pending(
+                    tokio::time::Instant::now(),
+                    consumed - reported,
+                    transferred - reported_bytes,
+                );
             }
             if queue.is_empty() {
                 if let Some(terminal) = &eof {
-                    if terminal.final_seq.get() != consumed || terminal.size != transferred || transferred != grant.info.size || !transfer::transfer_digests_match(&terminal.digest, &grant.info.digest) || !transfer::transfer_digests_match(&terminal.digest, &format!("SHA-256={}", URL_SAFE_NO_PAD.encode(hasher.clone().finalize()))) { return Err(fail("download EOF integrity mismatch")); }
-                    control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
-                    publish_control(client, &active, &coordinates, TransferControl::EndAck { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: terminal.final_seq, consumed_seq: terminal.final_seq, consumed_bytes: U64s::new(transferred), final_seq: terminal.final_seq }).await?;
+                    if terminal.final_seq.get() != consumed
+                        || terminal.size != transferred
+                        || transferred != grant.info.size
+                        || !transfer::transfer_digests_match(&terminal.digest, &grant.info.digest)
+                        || !transfer::transfer_digests_match(
+                            &terminal.digest,
+                            &format!(
+                                "SHA-256={}",
+                                URL_SAFE_NO_PAD.encode(hasher.clone().finalize())
+                            ),
+                        )
+                    {
+                        return Err(fail("download EOF integrity mismatch"));
+                    }
+                    control_seq = control_seq
+                        .checked_add(1)
+                        .ok_or_else(|| fail("control sequence overflow"))?;
+                    publish_control(
+                        client,
+                        &active,
+                        &coordinates,
+                        TransferControl::EndAck {
+                            format: TransferFormat::V1,
+                            kind: TransferControlKind::Control,
+                            transfer_id: grant.transfer_id.clone(),
+                            control_seq: U64s::new(control_seq),
+                            received_seq: terminal.final_seq,
+                            consumed_seq: terminal.final_seq,
+                            consumed_bytes: U64s::new(transferred),
+                            final_seq: terminal.final_seq,
+                        },
+                    )
+                    .await?;
                     active.lease.nats().flush().await.map_err(fail)?;
                     return Ok(grant.info.clone());
                 }
             }
             if scheduler.is_due(tokio::time::Instant::now()) {
-                control_seq = control_seq.checked_add(1).ok_or_else(|| fail("control sequence overflow"))?;
-                publish_control(client, &active, &coordinates, TransferControl::Credit { format: TransferFormat::V1, kind: TransferControlKind::Control, transfer_id: grant.transfer_id.clone(), control_seq: U64s::new(control_seq), received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)), consumed_seq: U64s::new(consumed), consumed_bytes: U64s::new(transferred) }).await?;
-                reported = consumed; reported_bytes = transferred; scheduler.clear();
+                control_seq = control_seq
+                    .checked_add(1)
+                    .ok_or_else(|| fail("control sequence overflow"))?;
+                publish_control(
+                    client,
+                    &active,
+                    &coordinates,
+                    TransferControl::Credit {
+                        format: TransferFormat::V1,
+                        kind: TransferControlKind::Control,
+                        transfer_id: grant.transfer_id.clone(),
+                        control_seq: U64s::new(control_seq),
+                        received_seq: U64s::new(received.highest_sent.load(Ordering::Acquire)),
+                        consumed_seq: U64s::new(consumed),
+                        consumed_bytes: U64s::new(transferred),
+                    },
+                )
+                .await?;
+                reported = consumed;
+                reported_bytes = transferred;
+                scheduler.clear();
             }
-            if !queue.is_empty() { continue; }
+            if !queue.is_empty() {
+                continue;
+            }
             tokio::select! {
                 _ = cancelled(cancellation) => return Err(TrellisClientError::TransferCancelled),
                 _ = active.lease.wait_lost() => return Err(fail("download pinned transport lost")),
-                failure = wire::authority_failure(&active.local, &active.peer) => return Err(fail(failure)),
+                failure = wire::authority_failure(&active.local, &active.peer) =>
+                    return Err(fail(failure)),
                 _ = &mut expiry => return Err(fail("download grant expired")),
-                _ = changes.recv() => { active.peer.guard.check_now().map_err(|e| fail(format!("download authority lost: {e:?}")))?; },
-                _ = local_changes.recv() => { active.local.guard.reconcile().await.map_err(|e| fail(format!("download local authority lost: {e:?}")))?; },
+                _ = changes.recv() => {
+                    active
+                        .peer
+                        .guard
+                        .check_now()
+                        .map_err(|e| fail(format!("download authority lost: {e:?}")))?;
+                },
+                _ = local_changes.recv() => {
+                    active
+                        .local
+                        .guard
+                        .reconcile()
+                        .await
+                        .map_err(|e| fail(format!("download local authority lost: {e:?}")))?;
+                },
                 _ = transfer::credit_due(&scheduler) => {},
                 message = data.next() => {
-                    admit_download(&active.peer, message.ok_or_else(|| fail("download data subscription closed"))?, &coordinates, &received, &mut queue, &mut eof, &mut admitted_bytes, grant.info.size).await?;
+                    admit_download(
+                        &active.peer,
+                        message.ok_or_else(|| fail("download data subscription closed"))?,
+                        &coordinates,
+                        &received,
+                        &mut queue,
+                        &mut eof,
+                        &mut admitted_bytes,
+                        grant.info.size,
+                    )
+                    .await?;
                 },
                 message = active.signals.next() => {
-                    match verified_signal(&active.peer, message.ok_or_else(|| fail("download signal subscription closed"))?, &coordinates).await? {
-                        Some(TransferSignal::Error { code, .. }) => return Err(fail(format!("download failed: {code:?}"))),
-                        Some(TransferSignal::Cancelled { .. }) => return Err(TrellisClientError::TransferCancelled),
-                        _ => {},
+                    match verified_signal(
+                        &active.peer,
+                        message.ok_or_else(|| fail("download signal subscription closed"))?,
+                        &coordinates,
+                    )
+                    .await?
+                    {
+                        Some(TransferSignal::Error { code, .. }) => {
+                            return Err(fail(format!("download failed: {code:?}")))
+                        }
+                        Some(TransferSignal::Cancelled { .. }) => {
+                            return Err(TrellisClientError::TransferCancelled)
+                        }
+                        _ => {}
                     }
                 },
             }

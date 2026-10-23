@@ -189,10 +189,25 @@ async fn typescript_observes_v2_operation_updates_from_an_implementation_only_ru
         .iter()
         .chain(Request::OPTIONAL_CAPABILITIES)
     {
-        admin.capability_grants_grant(&wire(json!({"principalId":me.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+        admin.capability_grants_grant(&wire(json!({
+            "principalId":me.principal.principal_id,
+            "capabilityId":capability,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        }))).await.unwrap();
     }
     let client_id = ulid::Ulid::new().to_string();
-    admin.o_auth_clients_put(&wire(json!({"clientId":client_id,"title":"Node interoperability caller","description":"v2 Operation updates","kind":"native","redirectUris":[],"impliedConsent":[],"development":true,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+    admin.o_auth_clients_put(&wire(json!({
+        "clientId":client_id,
+        "title":"Node interoperability caller",
+        "description":"v2 Operation updates",
+        "kind":"native",
+        "redirectUris": [],
+        "impliedConsent": [],
+        "development":true,
+        "expectedRevision":"0",
+        "idempotencyKey":ulid::Ulid::new().to_string()
+    }))).await.unwrap();
     let mut caller = tokio::process::Command::new("node")
         .args([
             "--experimental-transform-types",
@@ -206,7 +221,12 @@ async fn typescript_observes_v2_operation_updates_from_an_implementation_only_ru
         .spawn()
         .unwrap();
     let mut input = caller.stdin.take().unwrap();
-    input.write_all(format!("{}\n", json!({"issuer":runtime.oauth_origin(),"username":runtime.admin_username(),"password":runtime.admin_password(),"clientId":client_id})).as_bytes()).await.unwrap();
+    input.write_all(format!("{}\n", json!({
+        "issuer":runtime.oauth_origin(),
+        "username":runtime.admin_username(),
+        "password":runtime.admin_password(),
+        "clientId":client_id
+    })).as_bytes()).await.unwrap();
     drop(input);
     let result = tokio::time::timeout(Duration::from_secs(60), caller.wait_with_output())
         .await

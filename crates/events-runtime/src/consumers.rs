@@ -264,7 +264,12 @@ fn consumer_row(
     json!({
         "stream": info.stream_name,
         "consumerName": info.name,
-        "resourceId": info.config.metadata.get(CONSUMER_METADATA_RESOURCE_ID).cloned().unwrap_or_else(|| info.name.clone()),
+        "resourceId": info
+                .config
+                .metadata
+                .get(CONSUMER_METADATA_RESOURCE_ID)
+                .cloned()
+                .unwrap_or_else(|| info.name.clone()),
         "filterSubjects": filter_subjects,
         "status": status,
         "managedBy": managed_by,

@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use trellis_protocol::SessionBinding;
 
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -779,33 +780,39 @@ where
                         }
                         if durable == "cancelled" {
                             crate::telemetry::instruments::record_family_duration(
-                                crate::telemetry::instruments::DurationFamily::OperationCancellationCleanup,
-                                cancellation_started.unwrap_or_else(std::time::Instant::now).elapsed(),
-                                &[crate::telemetry::KeyValue::new("trellis.route", route)],
-                            );
+                    crate::telemetry::instruments::DurationFamily::OperationCancellationCleanup,
+                    cancellation_started.unwrap_or_else(std::time::Instant::now).elapsed(),
+                    &[crate::telemetry::KeyValue::new("trellis.route", route)],
+                        );
                         }
                         break durable;
                     }
                     changed = cancellation.next() => {
                         match changed {
                             Some(Ok(current)) if !fence.matches(&current.record) => {
-                                cancel_sender.send_replace(Some(OperationCancellationReason::OwnershipLost));
+                                cancel_sender
+                                    .send_replace(Some(OperationCancellationReason::OwnershipLost));
                                 let _ = execution.await;
                                 break "lease_lost";
                             }
                             Some(Ok(current)) if current.record.cancellation_requested => {
                                 cancellation_started.get_or_insert_with(std::time::Instant::now);
-                                cancel_sender.send_replace(Some(OperationCancellationReason::Requested));
+                                cancel_sender
+                                    .send_replace(Some(OperationCancellationReason::Requested));
                             }
                             Some(Ok(_)) => {}
                             Some(Err(error)) => {
-                                cancel_sender.send_replace(Some(OperationCancellationReason::ServiceStopping));
+                                cancel_sender.send_replace(Some(
+                                    OperationCancellationReason::ServiceStopping,
+                                ));
                                 tracing::warn!(%error, "operation cancellation watch failed");
                                 let _ = execution.await;
                                 break "error";
                             }
                             None => {
-                                cancel_sender.send_replace(Some(OperationCancellationReason::ServiceStopping));
+                                cancel_sender.send_replace(Some(
+                                    OperationCancellationReason::ServiceStopping,
+                                ));
                                 let _ = execution.await;
                                 break "interrupted";
                             }
@@ -819,11 +826,20 @@ where
                         let renewed = {
                             let _guard = guard;
                             let now = now_ms();
-                            repository.renew(&claimed.record.invocation_id, &fence.executor_id, fence.owner_epoch, now, now + 30_000).await
+                            repository
+                                .renew(
+                                    &claimed.record.invocation_id,
+                                    &fence.executor_id,
+                                    fence.owner_epoch,
+                                    now,
+                                    now + 30_000,
+                                )
+                                .await
                         };
                         record_ownership_event("renew", renewed.is_ok());
                         if renewed.is_err() {
-                            cancel_sender.send_replace(Some(OperationCancellationReason::OwnershipLost));
+                            cancel_sender
+                                .send_replace(Some(OperationCancellationReason::OwnershipLost));
                             let _ = execution.await;
                             break "lease_lost";
                         }
@@ -958,18 +974,21 @@ where
                                         )?;
                                     if upload.state == "committed" {
                                         let objects = staging.list_objects().await?;
-                                        if objects.into_iter().any(|object| {
-                                             object.key == upload.staging_key
-                                                 && Some(object.size) == upload.size
-                                                 && object.digest.as_deref().is_some_and(|digest| {
-                                                     upload.digest.as_deref().is_some_and(|expected| {
-                                                         super::transfer::transfer_digests_match(
-                                                             digest, expected,
-                                                         )
-                                                     })
-                                                 })
-                                        }) {
-                                             return Ok(Some(claimed));
+                                        let committed = objects.into_iter().any(|object| {
+                                            object.key == upload.staging_key
+                                                && Some(object.size) == upload.size
+                                                && object
+                                                    .digest
+                                                    .as_deref()
+                                                    .zip(upload.digest.as_deref())
+                                                    .is_some_and(|(digest, expected)| {
+                                                        super::transfer::transfer_digests_match(
+                                                            digest, expected,
+                                                        )
+                                                    })
+                                        });
+                                        if committed {
+                                            return Ok(Some(claimed));
                                         }
                                         return Err(ServerError::Nats(
                                             "committed operation upload metadata does not match staging"
@@ -1990,203 +2009,218 @@ where
                     let (terminal_tx, terminal_rx) = tokio::sync::oneshot::channel();
                     let terminal_tx = Some(terminal_tx);
                     stream::select(
-                        stream::unfold(
-                            (durable, false, terminal_tx, deployment_id, context),
-                            |(mut durable, stopped, mut terminal_tx, deployment_id, context)| async move {
-                                if stopped {
-                                    return None;
-                                }
-                                let record = durable.next().await?;
-                                let mut stopped = record.as_ref().is_ok_and(|record| record.record.snapshot.state.is_terminal());
-                                let result = record.and_then(|record| {
-                                    Self::authorize_record(
-                                        &deployment_id,
-                                        &context,
-                                        &record.record,
-                                        PermissionAction::Observe,
-                                    )?;
-                                    typed_snapshot(record.record.snapshot)
-                                }).map(OperationLiveEvent::Snapshot);
-                                stopped |= result.is_err();
-                                if stopped {
-                                    if let Some(terminal_tx) = terminal_tx.take() {
-                                        let _ = terminal_tx.send(());
-                                    }
-                                }
-                                Some((result, (durable, stopped, terminal_tx, deployment_id, context)))
-                            },
-                        ),
-                        stream::unfold(
-                            (
-                                updates,
-                                update_operation_id,
-                                repository,
-                                update_deployment_id,
-                                validator,
-                                provider_participant_id,
-                                observation_lease,
-                                schemas,
-                            ),
-                            move |(
-                                mut updates,
-                                update_operation_id,
-                                repository,
-                                update_deployment_id,
-                                validator,
-                                provider_participant_id,
-                                observation_lease,
-                                schemas,
-                            )| async move {
-                                loop {
-                                    let message = updates.next().await?;
-                                    let Some(reply_to) =
-                                        message.reply.as_ref().map(ToString::to_string)
-                                    else {
-                                        continue;
-                                    };
-                                    let Some(session_request) = message.headers.as_ref()
-                                        .and_then(|headers| headers.get("Trellis-Session-Request"))
-                                        .and_then(|value| serde_json::from_str::<trellis_protocol::SessionRequest>(value.as_str()).ok())
-                                    else { continue; };
-                                    if session_request.api_id != D::API_ID
-                                        || session_request.action != D::KEY.split_once(":operation:").expect("generated canonical Operation identity").1
-                                    { continue; }
-                                    let request = RequestContext {
-                                        session_request: Some(session_request),
-                                        subject: message.subject.to_string(),
-                                        reply_to: Some(reply_to),
-                                        session_key: message
-                                            .headers
-                                            .as_ref()
-                                            .and_then(|headers| headers.get("session-key"))
-                                            .map(|value| value.as_str().to_owned()),
-                                        proof: message
-                                            .headers
-                                            .as_ref()
-                                            .and_then(|headers| headers.get("proof"))
-                                            .map(|value| value.as_str().to_owned()),
-                                        authorization_context: message
-                                            .headers
-                                            .as_ref()
-                                            .and_then(|headers| {
-                                                headers.get("authorization-context")
-                                            })
-                                            .map(|value| value.as_str().to_owned()),
-                                        iat: message
-                                            .headers
-                                            .as_ref()
-                                            .and_then(|headers| headers.get("iat"))
-                                            .and_then(|value| value.as_str().parse().ok()),
-                                        request_id: message
-                                            .headers
-                                            .as_ref()
-                                            .and_then(|headers| headers.get("request-id"))
-                                            .map(|value| value.as_str().to_owned()),
-                                        ..RequestContext::default()
-                                    };
-                                    let Ok(validation) = validator
-                                        .validate_possession(
-                                            &request.subject,
-                                            &message.payload,
-                                            &request,
-                                        )
-                                        .await
-                                    else {
-                                        continue;
-                                    };
-                                    let Some(caller) =
-                                        validation.caller.filter(|_| validation.allowed)
-                                    else {
-                                        continue;
-                                    };
-                                    if !matches!(&caller.binding,
-                                        trellis_protocol::SessionBinding::Service { participant_id, deployment_id, .. }
-                                            | trellis_protocol::SessionBinding::Device { participant_id, deployment_id, .. }
-                                        if participant_id == &provider_participant_id && deployment_id == &update_deployment_id)
-                                    {
-                                        continue;
-                                    }
-                                    let Ok(envelope) =
-                                        serde_json::from_slice::<OperationUpdateEnvelope>(
-                                            &message.payload,
-                                        )
-                                    else {
-                                        continue;
-                                    };
-                                    let Ok(epoch) = envelope.owner_epoch.parse::<u64>() else {
-                                        continue;
-                                    };
-                                    let Ok(sequence) = envelope.sequence.parse::<u64>() else {
-                                        continue;
-                                    };
-                                    if epoch == 0
-                                        || sequence == 0
-                                        || epoch.to_string() != envelope.owner_epoch
-                                        || sequence.to_string() != envelope.sequence
-                                    {
-                                        continue;
-                                    }
-                                    let Ok(Some(current)) =
-                                        repository.get(&update_operation_id).await
-                                    else {
-                                        continue;
-                                    };
-                                    if envelope.operation_id != update_operation_id
-                                        || envelope.api_id != D::API_ID
-                                        || envelope.operation != D::KEY
-                                        || envelope.deployment_id != update_deployment_id
-                                        || current.record.owner_epoch != epoch
-                                        || current.record.owner_executor_id.as_deref()
-                                            != Some(&envelope.owner_executor_id)
-                                        || current.record.owner_connection_id.as_deref()
-                                            != Some(&envelope.owner_connection_id)
-                                        || caller.runtime_id != envelope.owner_connection_id
-                                        || current
-                                            .record
-                                            .lease_expires_at_ms
-                                            .is_none_or(|expiry| expiry <= now_ms())
-                                        || current.record.snapshot.state.is_terminal()
-                                        || current.record.cancellation_requested
-                                        || current.record.api_id != D::API_ID
-                                        || current.record.operation != D::KEY
-                                        || current.record.deployment_id != update_deployment_id
-                                    {
-                                        continue;
-                                    }
-                                    if schemas.update.as_ref().is_none_or(|schema| {
-                                        schema.validate(&envelope.update).is_err()
-                                    }) {
-                                        continue;
-                                    }
-                                    let result = serde_json::from_value(envelope.update)
-                                        .map(|update| {
-                                            OperationLiveEvent::Update(
-                                                crate::client::OperationUpdateEvent {
-                                                    operation_id: update_operation_id.clone(),
-                                                    sequence,
-                                                    timestamp: envelope.occurred_at,
-                                                    update,
-                                                },
-                                            )
-                                        })
-                                        .map_err(ServerError::from);
-                                    return Some((
-                                        result,
-                                        (
-                                            updates,
-                                            update_operation_id,
-                                            repository,
-                                            update_deployment_id,
-                                            validator,
-                                            provider_participant_id,
-                                            observation_lease,
-                                            schemas,
-                                        ),
-                                    ));
-                                }
-                            },
-                        )
-                        .take_until(terminal_rx),
+                stream::unfold(
+                    (durable, false, terminal_tx, deployment_id, context),
+                    |(mut durable, stopped, mut terminal_tx, deployment_id, context)| async move {
+                        if stopped {
+                            return None;
+                        }
+                        let record = durable.next().await?;
+                        let mut stopped = record
+                            .as_ref()
+                            .is_ok_and(|record| record.record.snapshot.state.is_terminal());
+                        let result = record
+                            .and_then(|record| {
+                                Self::authorize_record(
+                                    &deployment_id,
+                                    &context,
+                                    &record.record,
+                                    PermissionAction::Observe,
+                                )?;
+                                typed_snapshot(record.record.snapshot)
+                            })
+                            .map(OperationLiveEvent::Snapshot);
+                        stopped |= result.is_err();
+                        if stopped {
+                            if let Some(terminal_tx) = terminal_tx.take() {
+                                let _ = terminal_tx.send(());
+                            }
+                        }
+                        Some((
+                            result,
+                            (durable, stopped, terminal_tx, deployment_id, context),
+                        ))
+                    },
+                ),
+                stream::unfold(
+                    (
+                        updates,
+                        update_operation_id,
+                        repository,
+                        update_deployment_id,
+                        validator,
+                        provider_participant_id,
+                        observation_lease,
+                        schemas,
+                    ),
+                    move |(
+                        mut updates,
+                        update_operation_id,
+                        repository,
+                        update_deployment_id,
+                        validator,
+                        provider_participant_id,
+                        observation_lease,
+                        schemas,
+                    )| async move {
+                        loop {
+                            let message = updates.next().await?;
+                            let Some(reply_to) = message.reply.as_ref().map(ToString::to_string)
+                            else {
+                                continue;
+                            };
+                            let Some(session_request) = message
+                                .headers
+                                .as_ref()
+                                .and_then(|headers| headers.get("Trellis-Session-Request"))
+                                .and_then(|value| {
+                                    serde_json::from_str::<trellis_protocol::SessionRequest>(
+                                        value.as_str(),
+                                    )
+                                    .ok()
+                                })
+                            else {
+                                continue;
+                            };
+                            if session_request.api_id != D::API_ID
+                                || session_request.action
+                                    != D::KEY
+                                        .split_once(":operation:")
+                                        .expect("generated canonical Operation identity")
+                                        .1
+                            {
+                                continue;
+                            }
+                            let request = RequestContext {
+                                session_request: Some(session_request),
+                                subject: message.subject.to_string(),
+                                reply_to: Some(reply_to),
+                                session_key: message
+                                    .headers
+                                    .as_ref()
+                                    .and_then(|headers| headers.get("session-key"))
+                                    .map(|value| value.as_str().to_owned()),
+                                proof: message
+                                    .headers
+                                    .as_ref()
+                                    .and_then(|headers| headers.get("proof"))
+                                    .map(|value| value.as_str().to_owned()),
+                                authorization_context: message
+                                    .headers
+                                    .as_ref()
+                                    .and_then(|headers| headers.get("authorization-context"))
+                                    .map(|value| value.as_str().to_owned()),
+                                iat: message
+                                    .headers
+                                    .as_ref()
+                                    .and_then(|headers| headers.get("iat"))
+                                    .and_then(|value| value.as_str().parse().ok()),
+                                request_id: message
+                                    .headers
+                                    .as_ref()
+                                    .and_then(|headers| headers.get("request-id"))
+                                    .map(|value| value.as_str().to_owned()),
+                                ..RequestContext::default()
+                            };
+                            let Ok(validation) = validator
+                                .validate_possession(&request.subject, &message.payload, &request)
+                                .await
+                            else {
+                                continue;
+                            };
+                            let Some(caller) = validation.caller.filter(|_| validation.allowed)
+                            else {
+                                continue;
+                            };
+                            if !matches!(
+                                &caller.binding,
+                                SessionBinding::Service { participant_id, deployment_id, .. }
+                                    | SessionBinding::Device { participant_id, deployment_id, .. }
+                                    if participant_id == &provider_participant_id
+                                        && deployment_id == &update_deployment_id
+                            ) {
+                                continue;
+                            }
+                            let Ok(envelope) =
+                                serde_json::from_slice::<OperationUpdateEnvelope>(&message.payload)
+                            else {
+                                continue;
+                            };
+                            let Ok(epoch) = envelope.owner_epoch.parse::<u64>() else {
+                                continue;
+                            };
+                            let Ok(sequence) = envelope.sequence.parse::<u64>() else {
+                                continue;
+                            };
+                            if epoch == 0
+                                || sequence == 0
+                                || epoch.to_string() != envelope.owner_epoch
+                                || sequence.to_string() != envelope.sequence
+                            {
+                                continue;
+                            }
+                            let Ok(Some(current)) = repository.get(&update_operation_id).await
+                            else {
+                                continue;
+                            };
+                            if envelope.operation_id != update_operation_id
+                                || envelope.api_id != D::API_ID
+                                || envelope.operation != D::KEY
+                                || envelope.deployment_id != update_deployment_id
+                                || current.record.owner_epoch != epoch
+                                || current.record.owner_executor_id.as_deref()
+                                    != Some(&envelope.owner_executor_id)
+                                || current.record.owner_connection_id.as_deref()
+                                    != Some(&envelope.owner_connection_id)
+                                || caller.runtime_id != envelope.owner_connection_id
+                                || current
+                                    .record
+                                    .lease_expires_at_ms
+                                    .is_none_or(|expiry| expiry <= now_ms())
+                                || current.record.snapshot.state.is_terminal()
+                                || current.record.cancellation_requested
+                                || current.record.api_id != D::API_ID
+                                || current.record.operation != D::KEY
+                                || current.record.deployment_id != update_deployment_id
+                            {
+                                continue;
+                            }
+                            if schemas
+                                .update
+                                .as_ref()
+                                .is_none_or(|schema| schema.validate(&envelope.update).is_err())
+                            {
+                                continue;
+                            }
+                            let result = serde_json::from_value(envelope.update)
+                                .map(|update| {
+                                    OperationLiveEvent::Update(
+                                        crate::client::OperationUpdateEvent {
+                                            operation_id: update_operation_id.clone(),
+                                            sequence,
+                                            timestamp: envelope.occurred_at,
+                                            update,
+                                        },
+                                    )
+                                })
+                                .map_err(ServerError::from);
+                            return Some((
+                                result,
+                                (
+                                    updates,
+                                    update_operation_id,
+                                    repository,
+                                    update_deployment_id,
+                                    validator,
+                                    provider_participant_id,
+                                    observation_lease,
+                                    schemas,
+                                ),
+                            ));
+                        }
+                    },
+                )
+                .take_until(terminal_rx),
                     )
                     .boxed()
                 }

@@ -315,10 +315,10 @@ with the generated participant, provisioned identity seed, and Trellis URL;
 Optional `runtime` controls service logging (including `false` to disable it),
 default request timeout, event stream selection, no-responder retry, and health
 heartbeat interval. Deployment/instance assignment, installed
-package/participant evidence, exact grants, resources, signed context, route
-JWT, and transport endpoints are resolved server-side. Authorization state is
+package/participant evidence, capabilities, resources, signed session authority,
+and transport permissions are resolved server-side. Authorization state is
 process-memory-only and is refreshed proactively as SDK-owned maintenance.
-Renewing unchanged transport authority promotes context and routing credentials
+Renewing unchanged transport authority promotes the new session authority
 without replacing a healthy socket. Newly approved authority is adopted
 automatically on a readied successor; safe accepted work keeps its receiving
 connection until it settles. No manual transport-refresh API or upgrade

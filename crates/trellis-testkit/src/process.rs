@@ -115,7 +115,14 @@ pub(crate) async fn run(
             return if status.success() {
                 Ok(())
             } else {
-                Err(TrellisTestError::new(TrellisTestErrorKind::Bootstrap, stage, format!("production command failed with {status}; inspect the retained private command log")))
+                Err(TrellisTestError::new(
+                    TrellisTestErrorKind::Bootstrap,
+                    stage,
+                    format!(
+                        "production command failed with {status}; inspect the retained private \
+                        command log"
+                    ),
+                ))
             };
         }
         tokio::time::sleep(Duration::from_millis(25)).await;

@@ -292,7 +292,8 @@ pub enum ServiceRuntimeError {
 
     /// More than one durable event consumer group matched the requested event subject.
     #[error(
-        "event subject '{subject}' is declared in multiple event consumer groups: {}; specify a group",
+        "event subject '{subject}' is declared in multiple event consumer \
+        groups: {}; specify a group",
         groups.join(", ")
     )]
     AmbiguousEventConsumerGroup {
@@ -320,7 +321,8 @@ pub enum ServiceRuntimeError {
 
     /// A bound durable listener count must be at least one.
     #[error(
-        "event consumer group '{group}' has invalid listener concurrency {concurrency}; expected >= 1"
+        "event consumer group '{group}' has invalid listener concurrency \
+        {concurrency}; expected >= 1"
     )]
     InvalidEventListenerConcurrency {
         /// Event consumer group name.
@@ -331,7 +333,8 @@ pub enum ServiceRuntimeError {
 
     /// Registrations sharing one durable consumer must use the same local count.
     #[error(
-        "event consumer group '{group}' already uses listener concurrency {existing}; requested {requested}"
+        "event consumer group '{group}' already uses listener concurrency \
+        {existing}; requested {requested}"
     )]
     EventListenerConcurrencyMismatch {
         /// Event consumer group name.
@@ -1389,7 +1392,8 @@ impl<C> ConnectedServiceRuntime<C> {
 
     /// Register one operation business handler and record its runtime-owned lifecycle routes.
     ///
-    /// Starts accept canonical and explicitly deployment-bound subjects; controls retain their owner.
+    /// Starts accept canonical and explicitly deployment-bound subjects; controls retain their
+    /// owner.
     pub fn register_operation_handler<D, F, Fut>(&mut self, handler: F)
     where
         D: OperationDescriptor + 'static,
@@ -1664,7 +1668,8 @@ where
         if !ephemeral_event_authorized(service.event_subscribe_needs, &event_name) {
             return Err(ServiceRuntimeError::Client(
                 TrellisClientError::EventSubscriptionProtocol(format!(
-                    "ephemeral event delivery for '{event_name}' requires an Event Subscribe authority; a declared consumer grants durable delivery only"
+                    "ephemeral event delivery for '{event_name}' requires an Event \
+                    Subscribe authority; a declared consumer grants durable delivery only"
                 )),
             ));
         }
@@ -1730,17 +1735,23 @@ where
                     };
                     let attempt_span = tracing::info_span!(parent: None, "trellis.event.attempt.start", "trellis.route" = route);
                     if let Some(headers) = message.headers.as_ref() {
-                        let pairs: Vec<_> = headers.iter().flat_map(|(name, values)| {
-                            values.iter().map(move |value| (name.to_string(), value.as_str().to_owned()))
-                        }).collect();
+                        let pairs: Vec<_> = headers
+                            .iter()
+                            .flat_map(|(name, values)| {
+                                values
+                                    .iter()
+                                    .map(move |value| (name.to_string(), value.as_str().to_owned()))
+                            })
+                            .collect();
                         let carrier = crate::telemetry::propagation::extract_context(&pairs);
                         let linked = carrier.span().span_context().clone();
                         if linked.is_valid() {
                             attempt_span.add_link(linked);
                         }
                     }
-                    let attempt_context = opentelemetry::Context::new()
-                        .with_remote_span_context(attempt_span.context().span().span_context().clone());
+                    let attempt_context = opentelemetry::Context::new().with_remote_span_context(
+                        attempt_span.context().span().span_context().clone(),
+                    );
                     drop(attempt_span);
                     if let Err(source) = async { handler(event, context.clone()).await }
                         .with_context(attempt_context)
@@ -2444,7 +2455,8 @@ async fn run_durable_event_pull_loop(
                 };
                 if result.is_err() {
                     if delivery >= config.max_deliver {
-                        // Exhaustion belongs to the broker advisory path; never ACK a failed delivery.
+                        // Exhaustion belongs to the broker advisory path; never ACK a failed
+                        // delivery.
                         let result = message.nak_after(Duration::ZERO).await;
                         for earlier in completed.drain(..) {
                             earlier.finish("ok");

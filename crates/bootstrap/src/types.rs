@@ -1,7 +1,5 @@
-use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::PathBuf;
-use trellis_runtime::OAuthProviderConfig;
 
 use crate::{
     DEFAULT_AUTH_ACCOUNT, DEFAULT_NATS_MONITOR_PORT, DEFAULT_NATS_PORT, DEFAULT_NATS_SERVER_URL,
@@ -128,8 +126,6 @@ pub struct TrellisRuntimeBootstrapConfig {
     pub bind_address: Option<IpAddr>,
     /// Authorization timing without access to generated signing material.
     pub authorization: BootstrapAuthorizationPolicy,
-    /// OAuth providers consumed by the production runtime.
-    pub oauth_providers: BTreeMap<String, OAuthProviderConfig>,
 }
 
 impl Default for TrellisRuntimeBootstrapConfig {
@@ -149,7 +145,6 @@ impl Default for TrellisRuntimeBootstrapConfig {
             extra_origins: Vec::new(),
             bind_address: None,
             authorization: BootstrapAuthorizationPolicy::default(),
-            oauth_providers: BTreeMap::new(),
         }
     }
 }
@@ -191,12 +186,6 @@ pub struct SuppliedTls {
 pub struct BootstrapAuthorizationPolicy {
     /// Signed context lifetime in seconds.
     pub context_lifetime_seconds: Option<u64>,
-    /// Seconds before expiry at which refresh begins.
-    pub refresh_lead_seconds: Option<u64>,
-    /// Maximum earlier-only refresh jitter in seconds.
-    pub refresh_jitter_seconds: Option<u64>,
-    /// Minimum acceptable context lifetime in seconds.
-    pub minimum_context_lifetime_seconds: Option<u64>,
     /// Signed OAuth admission lifetime in seconds (production default: 300).
     pub oauth_admission_lifetime_seconds: Option<u64>,
     /// Authorization clock-skew allowance in seconds (production default: 30).

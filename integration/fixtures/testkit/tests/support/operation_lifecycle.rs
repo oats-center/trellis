@@ -65,7 +65,12 @@ async fn transient_previews_preserve_durable_progress_through_completion() {
     let admin = administrator(&runtime).await;
     let me = admin.sessions_me(&wire(json!({}))).await.unwrap();
     for capability in Request::REQUIRED_CAPABILITIES {
-        admin.capability_grants_grant(&wire(json!({"principalId":me.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+        admin.capability_grants_grant(&wire(json!({
+            "principalId":me.principal.principal_id,
+            "capabilityId":capability,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        }))).await.unwrap();
     }
     let identity = runtime
         .register_client::<Request>("preview-caller")
@@ -131,7 +136,10 @@ async fn transient_previews_preserve_durable_progress_through_completion() {
     assert_eq!(durable.output.unwrap().value, "final output");
     let mut terminal_watch = restored.live().await.unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
-        assert!(matches!(terminal_watch.next().await.unwrap().unwrap(), OperationEvent::Completed { snapshot } if snapshot.state == OperationState::Completed));
+        assert!(matches!(
+            terminal_watch.next().await.unwrap().unwrap(),
+            OperationEvent::Completed { snapshot } if snapshot.state == OperationState::Completed
+        ));
         assert!(terminal_watch.next().await.is_none());
     }).await.unwrap();
     terminal_watch.close().await.unwrap();
@@ -197,7 +205,12 @@ async fn signed_cancel_waits_for_the_handlers_joined_blocking_child() {
         .iter()
         .chain(Request::OPTIONAL_CAPABILITIES)
     {
-        admin.capability_grants_grant(&wire(json!({"principalId":me.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+        admin.capability_grants_grant(&wire(json!({
+            "principalId":me.principal.principal_id,
+            "capabilityId":capability,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        }))).await.unwrap();
     }
     let identity = runtime
         .register_client::<Request>("cancel-caller")
@@ -310,7 +323,15 @@ async fn rust_successor_resumes_interrupted_cancellation_before_terminal_acknowl
         .iter()
         .chain(Request::OPTIONAL_CAPABILITIES)
     {
-        admin.capability_grants_grant(&wire(json!({"principalId":me.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+        admin
+            .capability_grants_grant(&wire(json!({
+                "principalId":me.principal.principal_id,
+                "capabilityId":capability,
+                "expectedRevision":"0",
+                "idempotencyKey":ulid::Ulid::new().to_string()
+            })))
+            .await
+            .unwrap();
     }
     let caller_identity = runtime
         .register_client::<Request>("rust-cleanup-caller")
@@ -333,7 +354,9 @@ async fn rust_successor_resumes_interrupted_cancellation_before_terminal_acknowl
     tokio::pin!(cancellation);
     tokio::select! {
         result = &mut cancellation => panic!("cleanup completed before interruption: {result:?}"),
-        result = tokio::time::timeout(Duration::from_secs(10), cleanup_rx) => { result.unwrap().unwrap(); }
+        result = tokio::time::timeout(Duration::from_secs(10), cleanup_rx) => {
+            result.unwrap().unwrap();
+        }
     }
     stop_tx.send(()).unwrap();
     tokio::task::spawn_blocking(move || first.join().unwrap())
@@ -396,7 +419,12 @@ async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_kill
         .iter()
         .chain(Request::OPTIONAL_CAPABILITIES)
     {
-        admin.capability_grants_grant(&wire(json!({"principalId":me.principal.principal_id,"capabilityId":capability,"expectedRevision":"0","idempotencyKey":ulid::Ulid::new().to_string()}))).await.unwrap();
+        admin.capability_grants_grant(&wire(json!({
+            "principalId":me.principal.principal_id,
+            "capabilityId":capability,
+            "expectedRevision":"0",
+            "idempotencyKey":ulid::Ulid::new().to_string()
+        }))).await.unwrap();
     }
     let caller_identity = runtime
         .register_client::<Request>("recovery-caller")
@@ -430,7 +458,11 @@ async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_kill
             .kill_on_drop(true);
         (
             process.spawn().unwrap(),
-            json!({"trellisUrl":runtime.oauth_origin(),"seed":identity.seed(),"holdCleanup":hold_cleanup}),
+            json!({
+                "trellisUrl":runtime.oauth_origin(),
+                "seed":identity.seed(),
+                "holdCleanup":hold_cleanup
+            }),
         )
     };
     let (mut worker, configuration) = start_worker(true);
@@ -467,7 +499,11 @@ async fn cancelled_operation_recovers_cleanup_after_its_provider_process_is_kill
         result = &mut cancellation => panic!("worker cleanup must still be pending: {result:?}"),
         observed = tokio::time::timeout(Duration::from_secs(15), async {
             while let Some(line) = events.next_line().await.unwrap() {
-                if serde_json::from_str::<serde_json::Value>(&line).is_ok_and(|value| value["stage"] == "cleaning") { return; }
+                if serde_json::from_str::<serde_json::Value>(&line)
+                    .is_ok_and(|value| value["stage"] == "cleaning")
+                {
+                    return;
+                }
             }
             panic!("provider exited before cancellation acknowledgement");
         }) => { observed.unwrap(); }

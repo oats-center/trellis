@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use trellis_runtime::{
     AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig, ListenerTransport,
     LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthConfig, OAuthListenerConfig, RuntimeConfig, StorageConfig,
-    SubsystemConfig, TlsConfig,
+    NatsRuntimeConfig, OAuthListenerConfig, RuntimeConfig, StorageConfig, SubsystemConfig,
+    TlsConfig,
 };
 
 use crate::tls::{BUNDLE_CA_CERTIFICATE, RUNTIME_CERTIFICATE, RUNTIME_PRIVATE_KEY};
@@ -133,22 +133,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                     .authorization
                     .context_lifetime_seconds
                     .unwrap_or(300),
-                refresh_lead_seconds: options
-                    .runtime
-                    .authorization
-                    .refresh_lead_seconds
-                    .unwrap_or(60),
-                refresh_jitter_seconds: options
-                    .runtime
-                    .authorization
-                    .refresh_jitter_seconds
-                    .unwrap_or(15),
-                minimum_context_lifetime_seconds: options
-                    .runtime
-                    .authorization
-                    .minimum_context_lifetime_seconds
-                    .unwrap_or(76),
-                maximum_bootstrap_jwt_lifetime_seconds: 3_600,
                 allowed_clock_skew_seconds: options
                     .runtime
                     .authorization
@@ -159,14 +143,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                     .authorization
                     .oauth_admission_lifetime_seconds
                     .unwrap_or(300),
-                maximum_context_bytes: 65_536,
-                maximum_permissions: 4_096,
-                context_bucket: "trellis_authorization_contexts".to_owned(),
-                registry_replicas: 1,
             }),
-        }),
-        oauth: (!options.runtime.oauth_providers.is_empty()).then(|| OAuthConfig {
-            providers: options.runtime.oauth_providers.clone(),
         }),
         platform: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),

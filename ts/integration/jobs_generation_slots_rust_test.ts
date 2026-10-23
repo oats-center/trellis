@@ -761,9 +761,6 @@ async function verifyJobsSlots(cancelOverlap: boolean): Promise<void> {
     {
       authorization: {
         contextLifetimeSeconds: 55,
-        refreshLeadSeconds: 12,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 20,
         allowedClockSkewSeconds: 2,
       },
       interruptibleNativeProxy: true,
@@ -1081,9 +1078,6 @@ test("Rust retained G1 JobRefs read wait and cancel after physical G1 reap", asy
     {
       authorization: {
         contextLifetimeSeconds: 55,
-        refreshLeadSeconds: 12,
-        refreshJitterSeconds: 0,
-        minimumContextLifetimeSeconds: 20,
         allowedClockSkewSeconds: 2,
       },
       interruptibleNativeProxy: true,

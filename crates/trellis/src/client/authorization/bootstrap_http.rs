@@ -16,7 +16,9 @@ pub fn canonical_trellis_origin(trellis_url: &str) -> Result<String, TrellisClie
         || url.fragment().is_some()
     {
         return Err(TrellisClientError::Bootstrap(
-            "Trellis URL must be an absolute HTTP(S) URL without embedded credentials, query, or fragment".into(),
+            "Trellis URL must be an absolute HTTP(S) URL without embedded credentials, \
+            query, or fragment"
+                .into(),
         ));
     }
     Ok(url.origin().ascii_serialization())

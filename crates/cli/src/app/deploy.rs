@@ -502,8 +502,13 @@ async fn provision_service(
             .collect::<Vec<_>>();
         match candidates.as_slice() {
             [existing] => return print_service_provision_result(format, existing, None, true),
-            [] if current.is_empty() => {},
-            _ => return Err(miette::miette!("existing service identity is ambiguous or different; use --new or --instance-seed to select it")),
+            [] if current.is_empty() => {}
+            _ => {
+                return Err(miette::miette!(
+                    "existing service identity is ambiguous or different; use --new or \
+                    --instance-seed to select it"
+                ))
+            }
         }
     }
     let (seed, key) = match (&args.instance_seed, supplied_key) {
@@ -684,7 +689,8 @@ fn print_service_provision_result<T: serde::Serialize>(
         output::print_info(&format!("instanceSeed={seed}"));
     } else if reused {
         output::print_info(
-            "Trellis cannot recover the original private seed; reuse the existing provisioned identity",
+            "Trellis cannot recover the original private seed; reuse the existing \
+            provisioned identity",
         );
     }
     Ok(())
@@ -850,7 +856,8 @@ fn find_deployment_entry(
         0 => Err(miette::miette!("deployment not found: {deployment_id}")),
         1 => Ok(matches.into_iter().next().expect("exactly one match")),
         count => Err(miette::miette!(
-            "deployment name '{deployment_id}' is ambiguous: {count} deployments match; use a deployment ID"
+            "deployment name '{deployment_id}' is ambiguous: {count} deployments \
+            match; use a deployment ID"
         )),
     }
 }

@@ -23,7 +23,15 @@ impl PushMetricExporter for Exporter {
                                 .attributes()
                                 .map(|kv| (kv.key.to_string(), json!(kv.value.to_string())))
                                 .collect();
-                            rows.push(json!({ "name": metric.name(), "attributes": attributes, "count": point.count(), "sum": point.sum(), "max": point.max(), "bounds": point.bounds().collect::<Vec<_>>(), "buckets": point.bucket_counts().collect::<Vec<_>>() }));
+                            rows.push(json!({
+                                "name": metric.name(),
+                                "attributes": attributes,
+                                "count": point.count(),
+                                "sum": point.sum(),
+                                "max": point.max(),
+                                "bounds": point.bounds().collect::<Vec<_>>(),
+                                "buckets": point.bucket_counts().collect::<Vec<_>>()
+                            }));
                         }
                     }
                     // Cumulative counters, e.g. Transfer payload/wire/control bytes.
@@ -33,7 +41,11 @@ impl PushMetricExporter for Exporter {
                                 .attributes()
                                 .map(|kv| (kv.key.to_string(), json!(kv.value.to_string())))
                                 .collect();
-                            rows.push(json!({ "name": metric.name(), "attributes": attributes, "value": point.value() }));
+                            rows.push(json!({
+                                "name": metric.name(),
+                                "attributes": attributes,
+                                "value": point.value()
+                            }));
                         }
                     }
                     _ => {}
