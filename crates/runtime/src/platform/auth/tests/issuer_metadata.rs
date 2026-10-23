@@ -8,12 +8,11 @@ use trellis_protocol::{
 fn public_metadata_retains_signed_cutoff_and_authenticates_rotated_issuer_without_new_trust() {
     let f = fixture();
     let issued =
-        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &f.admission, None, NOW)
-            .unwrap();
+        crate::platform::auth::tests::issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let original = f.store.issuer().unwrap();
     let scope =
         EnforcementScope::Session(issued.authority.unsigned.authorization_session_id.clone());
-    crate::platform::auth::phase_two_tests::revoke_root(
+    crate::platform::auth::tests::revoke_root(
         &f.store,
         &mutation(&f.admin, &scope),
         &scope,
@@ -89,7 +88,7 @@ fn public_metadata_retains_signed_cutoff_and_authenticates_rotated_issuer_withou
         )
         .is_err());
     let rotation =
-        crate::platform::auth::phase_two_tests::rotate_issuer(&f.store, &f.admin, NOW + 3).unwrap();
+        crate::platform::auth::tests::rotate_issuer(&f.store, &f.admin, NOW + 3).unwrap();
     // Restart with the original bootstrap key; committed successor custody wins.
     let store = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
     let current = store.issuer().unwrap();

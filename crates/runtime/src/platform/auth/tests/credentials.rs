@@ -77,7 +77,7 @@ fn physical_kick_queues_exact_attachment_without_retiring_its_logical_session() 
     let nkey = nkeys::KeyPair::new_from_raw(nkeys::KeyPairType::User, [9; 32])
         .unwrap()
         .public_key();
-    let credential = crate::platform::auth::phase_two_tests::fixture_admission(&f, &nkey, NOW);
+    let credential = crate::platform::auth::tests::fixture_admission(&f, &nkey, NOW);
     let (attachment, _) = f
         .store
         .admit_connection(&credential, &nkey, &nkey, "server-a", 17, NOW)
@@ -95,7 +95,7 @@ fn physical_kick_queues_exact_attachment_without_retiring_its_logical_session() 
         kicked
     );
     while f.store.enforce_next_page(NOW + 2).unwrap().is_some() {}
-    let renewed = crate::platform::auth::phase_two_tests::issue_authority(
+    let renewed = crate::platform::auth::tests::issue_authority(
         &f.store,
         &f.admission,
         Some(&session),
@@ -189,13 +189,12 @@ fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibil
 fn ordinary_user_can_revoke_own_grant_but_cannot_revoke_another_login() {
     let f = fixture();
     let issued =
-        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &f.admission, None, NOW)
-            .unwrap();
+        crate::platform::auth::tests::issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let Credential::OAuthGrant(grant) = &f.admission.credential else {
         panic!("OAuth fixture")
     };
     let scope = EnforcementScope::Grant(grant.clone());
-    crate::platform::auth::phase_two_tests::revoke_root(
+    crate::platform::auth::tests::revoke_root(
         &f.store,
         &mutation(&f.principal, &scope),
         &scope,
@@ -203,17 +202,12 @@ fn ordinary_user_can_revoke_own_grant_but_cannot_revoke_another_login() {
     )
     .unwrap();
     assert!(matches!(
-        crate::platform::auth::phase_two_tests::issue_authority(
-            &f.store,
-            &f.admission,
-            None,
-            NOW + 2
-        ),
+        crate::platform::auth::tests::issue_authority(&f.store, &f.admission, None, NOW + 2),
         Err(AuthError::Denied)
     ));
     while f.store.enforce_next_page(NOW + 2).unwrap().is_some() {}
     assert!(matches!(
-        crate::platform::auth::phase_two_tests::issue_authority(
+        crate::platform::auth::tests::issue_authority(
             &f.store,
             &f.admission,
             Some(&issued.authority.unsigned.authorization_session_id),
@@ -240,7 +234,7 @@ fn ordinary_user_can_revoke_own_grant_but_cannot_revoke_another_login() {
         .unwrap();
     let other = EnforcementScope::Login(login);
     assert!(matches!(
-        crate::platform::auth::phase_two_tests::revoke_root(
+        crate::platform::auth::tests::revoke_root(
             &f.store,
             &mutation(&f.principal, &other),
             &other,

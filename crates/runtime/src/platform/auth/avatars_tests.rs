@@ -1,9 +1,9 @@
 use super::*;
 use crate::platform::auth::{
     oauth::{OAuthEngine, OAuthStorage},
-    phase_two_tests::{mutation, open},
     rpc_users,
     sqlite::id,
+    tests::{mutation, open},
 };
 use ed25519_dalek::SigningKey;
 use serde_json::json;

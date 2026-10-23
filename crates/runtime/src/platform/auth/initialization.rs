@@ -510,7 +510,7 @@ mod tests {
             request_digest: digest(&health_grant).unwrap(),
         };
         assert!(matches!(
-            crate::platform::auth::phase_two_tests::apply_policy(
+            crate::platform::auth::tests::apply_policy(
                 &store,
                 &grant_identity,
                 &health_grant,
@@ -633,7 +633,7 @@ mod tests {
             expected_revision: 2,
             state: "disabled".into(),
         };
-        crate::platform::auth::phase_two_tests::apply_policy(
+        crate::platform::auth::tests::apply_policy(
             &store,
             &Mutation {
                 actor: principal.clone(),
@@ -649,7 +649,7 @@ mod tests {
             expected_revision: 2,
             state: "disabled".into(),
         };
-        crate::platform::auth::phase_two_tests::apply_policy(
+        crate::platform::auth::tests::apply_policy(
             &store,
             &Mutation {
                 actor: principal.clone(),
@@ -699,8 +699,7 @@ mod tests {
             .await
             .is_err());
         let rotation =
-            crate::platform::auth::phase_two_tests::rotate_issuer(&store, &principal, 1006)
-                .unwrap();
+            crate::platform::auth::tests::rotate_issuer(&store, &principal, 1006).unwrap();
         assert_eq!(
             store.runtime_authorization_trust().unwrap().issuer.key_id,
             rotation.next_key_id

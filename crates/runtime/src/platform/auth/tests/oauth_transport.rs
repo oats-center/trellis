@@ -182,7 +182,7 @@ public_origin = "https://127.0.0.1:3000"
         .is_err());
     // Once the retained signer retires, this already-running listener must not
     // keep advertising the old startup trust snapshot to new clients.
-    let rotation = crate::platform::auth::phase_two_tests::rotate_issuer(
+    let rotation = crate::platform::auth::tests::rotate_issuer(
         &engine.server.store().authority,
         &admin,
         NOW + 1,

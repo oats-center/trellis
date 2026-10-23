@@ -5,8 +5,8 @@ use std::{
 };
 
 use super::super::oauth::{OAuthEngine, OAuthStorage, TokenError, TrellisTokenResponse};
-use super::super::phase_two_tests::*;
 use super::super::sqlite::id;
+use super::super::tests::*;
 use super::super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
@@ -30,13 +30,8 @@ async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes
         expected_revision: 0,
         expires_at: None,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
-        &f.store,
-        &mutation(&f.admin, &grant),
-        &grant,
-        now,
-    )
-    .unwrap();
+    crate::platform::auth::tests::apply_policy(&f.store, &mutation(&f.admin, &grant), &grant, now)
+        .unwrap();
     let guest = f.store.create_portal_session(now).unwrap();
     let login = f
         .store
@@ -202,7 +197,7 @@ async fn managed_client_updates_select_flows_and_redeem_native_and_browser_codes
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(status, reqwest::StatusCode::OK, "{kind}: {body}");
         let tokens: TrellisTokenResponse = serde_json::from_value(body).unwrap();
-        let issued = crate::platform::auth::phase_two_tests::admit_credential(
+        let issued = crate::platform::auth::tests::admit_credential(
             &authority,
             tokens.trellis_admission.as_bytes(),
             &ephemeral.public_key(),
@@ -280,14 +275,14 @@ async fn cimd_client_cannot_receive_administrative_delegation_from_a_privileged_
         .approve_grant(&mutation(&f.admin, &approval), &approval, now)
         .unwrap();
     let mut admission = f.admission.clone();
-    admission.refresh_family_id = Some(crate::platform::auth::phase_two_tests::oauth_family(
+    admission.refresh_family_id = Some(crate::platform::auth::tests::oauth_family(
         &storage.authority,
         &grant,
         now,
         now + 3600,
     ));
     admission.credential = Credential::OAuthGrant(grant);
-    assert!(crate::platform::auth::phase_two_tests::issue_authority(
+    assert!(crate::platform::auth::tests::issue_authority(
         &storage.authority,
         &admission,
         None,
@@ -534,7 +529,7 @@ async fn provisional_client_capacity_recovers_without_breaking_an_approved_refre
         )
         .await
         .unwrap();
-    assert!(crate::platform::auth::phase_two_tests::admit_credential(
+    assert!(crate::platform::auth::tests::admit_credential(
         &engine.server.store().authority,
         refreshed.trellis_admission.as_bytes(),
         &ephemeral.public_key(),
@@ -797,7 +792,7 @@ async fn chromium_portal_device_approval_produces_usable_bound_admission() {
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::OK);
     let tokens: TrellisTokenResponse = response.json().await.unwrap();
-    let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+    let admitted = crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),
@@ -1225,7 +1220,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         granted["authorization_details"][1]["required"],
         serde_json::json!(["principals.manage"])
     );
-    let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+    let admitted = crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),
@@ -1554,7 +1549,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let initial = crate::platform::auth::phase_two_tests::admit_credential(
+    let initial = crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),
@@ -1571,14 +1566,14 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
             .collect::<Vec<_>>(),
         [f.read.as_str()]
     );
-    assert!(crate::platform::auth::phase_two_tests::admit_credential(
+    assert!(crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &nkeys::KeyPair::new_user().public_key(),
         now
     )
     .is_err());
-    assert!(crate::platform::auth::phase_two_tests::admit_credential(
+    assert!(crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),
@@ -1685,7 +1680,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let resumed = crate::platform::auth::phase_two_tests::admit_credential(
+    let resumed = crate::platform::auth::tests::admit_credential(
         &authority,
         next.trellis_admission.as_bytes(),
         &next_ephemeral.public_key(),
@@ -1735,7 +1730,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         session_public_key: resumed.authority.unsigned.session_public_key.clone(),
         inbox_prefix: resumed.authority.unsigned.inbox_prefix.clone(),
     };
-    let renewed = crate::platform::auth::phase_two_tests::issue_authority(
+    let renewed = crate::platform::auth::tests::issue_authority(
         &authority,
         &identity,
         Some(&resumed.authority.unsigned.authorization_session_id),
@@ -1743,14 +1738,14 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     )
     .unwrap();
     assert_eq!(renewed.authority.unsigned.expires_at, absolute_expiry);
-    assert!(crate::platform::auth::phase_two_tests::issue_authority(
+    assert!(crate::platform::auth::tests::issue_authority(
         &authority,
         &identity,
         Some(&resumed.authority.unsigned.authorization_session_id),
         absolute_expiry
     )
     .is_err());
-    assert!(crate::platform::auth::phase_two_tests::issue_authority(
+    assert!(crate::platform::auth::tests::issue_authority(
         &authority,
         &identity,
         None,
@@ -1830,14 +1825,14 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
         )
         .await
         .is_err());
-    assert!(crate::platform::auth::phase_two_tests::admit_credential(
+    assert!(crate::platform::auth::tests::admit_credential(
         &authority,
         next.trellis_admission.as_bytes(),
         &next_ephemeral.public_key(),
         now
     )
     .is_err());
-    assert!(crate::platform::auth::phase_two_tests::admit_credential(
+    assert!(crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),
@@ -1845,7 +1840,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     )
     .is_err());
     while authority.enforce_next_page(now).unwrap().is_some() {}
-    assert!(crate::platform::auth::phase_two_tests::issue_authority(
+    assert!(crate::platform::auth::tests::issue_authority(
         &authority,
         &AdmissionIdentity {
             refresh_family_id: Some(admission.credential.refresh_family_id.clone()),
@@ -1864,7 +1859,7 @@ async fn oauth_code_refresh_and_runtime_admission_survive_restart_without_regran
     drop(engine);
     drop(authority);
     let reopened = open(&f.directory, SigningKey::from_bytes(&[42; 32]));
-    assert!(crate::platform::auth::phase_two_tests::admit_credential(
+    assert!(crate::platform::auth::tests::admit_credential(
         &reopened,
         next.trellis_admission.as_bytes(),
         &next_ephemeral.public_key(),
@@ -1955,13 +1950,8 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         expected_revision: 0,
         expires_at: None,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
-        &f.store,
-        &mutation(&f.admin, &grant),
-        &grant,
-        now,
-    )
-    .unwrap();
+    crate::platform::auth::tests::apply_policy(&f.store, &mutation(&f.admin, &grant), &grant, now)
+        .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
@@ -2157,7 +2147,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         description: "This role is not part of the displayed authorization".into(),
         capabilities: vec![f.read.clone()],
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
+    crate::platform::auth::tests::apply_policy(
         &authority,
         &mutation(&f.admin, &unrelated),
         &unrelated,
@@ -2225,7 +2215,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let issued = crate::platform::auth::phase_two_tests::admit_credential(
+    let issued = crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),
@@ -2251,7 +2241,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         expected_revision: 0,
         expires_at: None,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
+    crate::platform::auth::tests::apply_policy(
         &authority,
         &mutation(&f.admin, &grant_write),
         &grant_write,
@@ -2336,7 +2326,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
         .await
         .unwrap();
     assert_eq!(logout.status(), reqwest::StatusCode::OK);
-    assert!(crate::platform::auth::phase_two_tests::admit_credential(
+    assert!(crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),

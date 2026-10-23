@@ -131,8 +131,7 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
         inbox_prefix: "_INBOX.bootstrap".into(),
     };
     let issued =
-        crate::platform::auth::phase_two_tests::issue_authority(&store, &admission, None, NOW + 3)
-            .unwrap();
+        crate::platform::auth::tests::issue_authority(&store, &admission, None, NOW + 3).unwrap();
     assert!(issued
         .authority
         .unsigned
@@ -342,8 +341,7 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         inbox_prefix: "_INBOX.replay".into(),
     };
     let issued =
-        crate::platform::auth::phase_two_tests::issue_authority(&store, &admission, None, NOW + 3)
-            .unwrap();
+        crate::platform::auth::tests::issue_authority(&store, &admission, None, NOW + 3).unwrap();
     assert!(issued
         .authority
         .unsigned

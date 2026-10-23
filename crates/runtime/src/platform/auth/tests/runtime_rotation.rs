@@ -389,7 +389,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         let store =
             SqliteAuthorizationStore::open(&storage, &config, &identity.audience_nats_account)
                 .unwrap();
-        let rotation = crate::platform::auth::phase_two_tests::rotate_issuer(
+        let rotation = crate::platform::auth::tests::rotate_issuer(
             &store,
             &identity.principal_id,
             SystemTime::now()

@@ -18,8 +18,7 @@ mod transport;
 mod upstream_http;
 
 #[cfg(test)]
-#[path = "../oauth_engine_tests.rs"]
-pub(super) mod oauth_engine_tests;
+pub(super) mod engine_tests;
 
 #[cfg(test)]
 pub(super) use crate::config::ListenerTransport as OAuthTransport;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::platform::auth::phase_two_tests::{mutation, open, NOW};
+use crate::platform::auth::tests::{mutation, open, NOW};
 use ed25519_dalek::SigningKey;
 
 fn reset_session(
@@ -10,7 +10,7 @@ fn reset_session(
     password: &str,
 ) -> String {
     use crate::platform::auth::lifecycle::ClientRegistration;
-    use crate::platform::auth::phase_two_tests::grant_request;
+    use crate::platform::auth::tests::grant_request;
     use crate::platform::auth::{AdmissionIdentity, Credential};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     let client = ClientRegistration {
@@ -56,7 +56,7 @@ fn reset_session(
         .approve_grant(&mutation(actor, &approval), &approval, NOW)
         .unwrap();
     let admission = AdmissionIdentity {
-        refresh_family_id: Some(crate::platform::auth::phase_two_tests::oauth_family(
+        refresh_family_id: Some(crate::platform::auth::tests::oauth_family(
             store,
             &grant,
             NOW,
@@ -68,7 +68,7 @@ fn reset_session(
             .encode(SigningKey::from_bytes(&[51; 32]).verifying_key().as_bytes()),
         inbox_prefix: "_INBOX.resetRequester".into(),
     };
-    crate::platform::auth::phase_two_tests::issue_authority(store, &admission, None, NOW)
+    crate::platform::auth::tests::issue_authority(store, &admission, None, NOW)
         .unwrap()
         .authority
         .unsigned
@@ -863,13 +863,8 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
         privileges: vec![PlatformPrivilege::PrincipalsManage],
         expected_revision: 0,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
-        &store,
-        &mutation(&admin, &grant),
-        &grant,
-        NOW,
-    )
-    .unwrap();
+    crate::platform::auth::tests::apply_policy(&store, &mutation(&admin, &grant), &grant, NOW)
+        .unwrap();
     let session = reset_session(
         &store,
         &admin,
@@ -903,7 +898,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
         assignment_id: assignment,
         expected_revision: 1,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
+    crate::platform::auth::tests::apply_policy(
         &store,
         &mutation(&admin, &revoke),
         &revoke,
@@ -934,13 +929,8 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
             NOW + 1
         )
         .is_ok());
-    crate::platform::auth::phase_two_tests::apply_policy(
-        &store,
-        &mutation(&admin, &grant),
-        &grant,
-        NOW + 2,
-    )
-    .unwrap();
+    crate::platform::auth::tests::apply_policy(&store, &mutation(&admin, &grant), &grant, NOW + 2)
+        .unwrap();
     complete_reset(
         &storage,
         &reset.token,
@@ -1019,13 +1009,8 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
         })
         .unwrap();
     let root = EnforcementScope::Grant(grant);
-    crate::platform::auth::phase_two_tests::revoke_root(
-        &store,
-        &mutation(&admin, &root),
-        &root,
-        NOW + 5,
-    )
-    .unwrap();
+    crate::platform::auth::tests::revoke_root(&store, &mutation(&admin, &root), &root, NOW + 5)
+        .unwrap();
     assert!(matches!(
         complete_reset(
             &storage,

@@ -103,7 +103,7 @@ async fn upstream_oidc_verifies_nonce_and_maps_real_signed_group_claims_into_tre
     }
     let dex = std::env::var_os("TRELLIS_TEST_DEX_BIN")
         .expect("TRELLIS_TEST_DEX_BIN must point to the producer-built production Dex binary");
-    let certificate = super::oauth_transport_tests::certificate();
+    let certificate = super::oauth_transport::certificate();
     let idp_socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let idp_address = idp_socket.local_addr().unwrap();
     drop(idp_socket);
@@ -397,13 +397,8 @@ staticPasswords:
         capabilities: vec![f.write.clone()],
         expected_revision: 0,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
-        &authority,
-        &mutation(&f.admin, &role),
-        &role,
-        NOW,
-    )
-    .unwrap();
+    crate::platform::auth::tests::apply_policy(&authority, &mutation(&f.admin, &role), &role, NOW)
+        .unwrap();
     let reader_role = id();
     let reader = PolicyMutation::RolePut {
         role_id: reader_role.clone(),
@@ -412,7 +407,7 @@ staticPasswords:
         capabilities: vec![f.read.clone()],
         expected_revision: 0,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
+    crate::platform::auth::tests::apply_policy(
         &authority,
         &mutation(&f.admin, &reader),
         &reader,
@@ -428,7 +423,7 @@ staticPasswords:
         role_ids: vec![group_role, reader_role],
         expected_revision: 0,
     };
-    crate::platform::auth::phase_two_tests::apply_policy(
+    crate::platform::auth::tests::apply_policy(
         &authority,
         &mutation(&f.admin, &mapping),
         &mapping,
@@ -706,7 +701,7 @@ staticPasswords:
             let grant = authority
                 .approve_grant(&mutation(&f.admin, &approval), &approval, current)
                 .unwrap();
-            let admitted = crate::platform::auth::phase_two_tests::issue_authority(
+            let admitted = crate::platform::auth::tests::issue_authority(
                 &authority,
                 &AdmissionIdentity {
                     refresh_family_id: Some(super::oauth_family(
@@ -986,9 +981,13 @@ staticPasswords:
         .into_owned();
     let ephemeral = nkeys::KeyPair::new_user();
     let runtime = URL_SAFE_NO_PAD.encode([18; 16]);
-    let proof =
-        super::oauth_engine_tests::dpop(&key, &runtime, &ephemeral, &format!("{origin}/token"))
-            .await;
+    let proof = super::super::oauth::engine_tests::dpop(
+        &key,
+        &runtime,
+        &ephemeral,
+        &format!("{origin}/token"),
+    )
+    .await;
     let token_request = http.post(format!("{origin}/token")).form(&[
         ("grant_type", "authorization_code"),
         ("client_id", "native-client"),
@@ -1014,7 +1013,7 @@ staticPasswords:
         challenge.json::<serde_json::Value>().await.unwrap()["error"],
         "use_dpop_nonce"
     );
-    let proof = super::oauth_engine_tests::dpop_with_nonce(
+    let proof = super::super::oauth::engine_tests::dpop_with_nonce(
         &key,
         &runtime,
         &ephemeral,
@@ -1032,7 +1031,7 @@ staticPasswords:
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+    let admitted = crate::platform::auth::tests::admit_credential(
         &authority,
         tokens.trellis_admission.as_bytes(),
         &ephemeral.public_key(),

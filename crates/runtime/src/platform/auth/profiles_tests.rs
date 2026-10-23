@@ -1,8 +1,8 @@
 use super::*;
 use crate::platform::auth::{
-    phase_two_tests::{mutation, open, NOW},
     rpc_users,
     sqlite::id,
+    tests::{mutation, open, NOW},
     SqliteAuthorizationStore,
 };
 use ed25519_dalek::SigningKey;

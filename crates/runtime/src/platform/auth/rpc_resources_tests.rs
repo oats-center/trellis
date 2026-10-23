@@ -1,5 +1,5 @@
 //! Resource lifecycle at the real SQLite and JetStream boundaries.
-use super::super::phase_two_tests::{fixture, mutation, open, NOW};
+use super::super::tests::{fixture, mutation, open, NOW};
 use super::*;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;

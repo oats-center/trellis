@@ -1027,13 +1027,13 @@ mod tests {
     use super::*;
     use crate::platform::auth::{
         lifecycle::OidcProviderRegistration,
-        phase_two_tests::{fixture, mutation},
+        tests::{fixture, mutation},
     };
 
     #[test]
     fn passwordless_administrator_setup_survives_reopen_and_does_not_replace_completed_credentials()
     {
-        use crate::platform::auth::phase_two_tests::{open, NOW};
+        use crate::platform::auth::tests::{open, NOW};
         use ed25519_dalek::SigningKey;
         let directory = tempfile::tempdir().unwrap();
         let authority = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));

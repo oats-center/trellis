@@ -108,7 +108,7 @@ fn signed_live_renewal_keeps_exact_family_key_and_session_and_callout_accepts_it
             NOW,
         )
         .unwrap();
-    let issued = crate::platform::auth::phase_two_tests::issue_authority(
+    let issued = crate::platform::auth::tests::issue_authority(
         &f.store,
         &f.admission,
         Some(&attachment.authorization_session_id),
@@ -167,8 +167,7 @@ fn signed_live_renewal_keeps_exact_family_key_and_session_and_callout_accepts_it
     // Even another live context using the same public key does not own this digest.
     let mut peer = f.admission.clone();
     peer.runtime_id = URL_SAFE_NO_PAD.encode([71; 16]);
-    let peer = crate::platform::auth::phase_two_tests::issue_authority(&f.store, &peer, None, NOW)
-        .unwrap();
+    let peer = crate::platform::auth::tests::issue_authority(&f.store, &peer, None, NOW).unwrap();
     let peer_input = AuthAdmissionRenewRequest {
         context_digest: peer.digest.into(),
         extra: Default::default(),
@@ -244,7 +243,7 @@ fn exact_family_expiry_or_revocation_retires_without_using_another_live_family()
                 NOW,
             )
             .unwrap();
-        let issued = crate::platform::auth::phase_two_tests::issue_authority(
+        let issued = crate::platform::auth::tests::issue_authority(
             &f.store,
             &f.admission,
             Some(&attachment.authorization_session_id),
@@ -297,7 +296,7 @@ fn exact_family_expiry_or_revocation_retires_without_using_another_live_family()
             .unwrap()
             .unwrap();
         assert_eq!(cutoff.effective_cutoff, now);
-        assert!(crate::platform::auth::phase_two_tests::issue_authority(
+        assert!(crate::platform::auth::tests::issue_authority(
             &f.store,
             &f.admission,
             Some(&attachment.authorization_session_id),
@@ -322,4 +321,166 @@ fn exact_family_expiry_or_revocation_retires_without_using_another_live_family()
         assert!(effects.iter().any(|effect| effect.kind == "kick"
             && effect.payload["attachmentId"] == attachment.attachment_id));
     }
+}
+
+#[tokio::test]
+async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authority() {
+    use oauth_as::authorization::AuthorizationRequest;
+    use oauth_as::server::{AuthorizationServer, ServerConfig, TokenRequest, UserApproval};
+    use oauth_as::store::Storage;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let f = fixture();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let grant = approve(&f.store, &f.principal, &f.read, &f.write, now);
+    let key_directory = tempfile::tempdir().unwrap();
+    trellis_local_bootstrap::generate_local_oauth_storage_key(key_directory.path()).unwrap();
+    let sealing_key_file = key_directory.path().join("oauth-storage.key");
+    let mut config = ServerConfig::new("https://auth.example", "https://auth.example/oauth/device");
+    config.refresh_token_ttl = Some(std::time::Duration::from_secs(3600));
+    let engine = AuthorizationServer::new(
+        config.clone(),
+        super::super::oauth::OAuthStorage::open(f.store, &sealing_key_file).unwrap(),
+    );
+    let verifier = URL_SAFE_NO_PAD.encode([31; 32]);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let request = AuthorizationRequest::from_pairs([
+        ("client_id", "native-client"),
+        ("response_type", "code"),
+        ("redirect_uri", "http://127.0.0.1:9123/callback"),
+        ("code_challenge_method", "S256"),
+        ("code_challenge", challenge.as_str()),
+    ]);
+    let request = engine
+        .validate_authorization_request(&request)
+        .await
+        .unwrap();
+    let authorization = engine
+        .issue_authorization_code(UserApproval::granted(&request, &grant))
+        .await
+        .unwrap();
+    let issued = engine
+        .token(TokenRequest::AuthorizationCode {
+            client_id: oauth_as::ClientId::new("native-client"),
+            client_secret: None,
+            code: authorization.code,
+            redirect_uri: Some("http://127.0.0.1:9123/callback".into()),
+            code_verifier: Some(verifier),
+        })
+        .await
+        .unwrap();
+    let refresh = issued.refresh_token.unwrap();
+    drop(engine);
+
+    // Startup must not begin writing a second set of ciphertext after key loss
+    // or replacement. Check against the OAuth records created by redemption.
+    let authority = Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32])));
+    let key_bytes = std::fs::read(&sealing_key_file).unwrap();
+    assert!(
+        trellis_local_bootstrap::generate_local_oauth_storage_key(key_directory.path()).is_err()
+    );
+    std::fs::write(&sealing_key_file, URL_SAFE_NO_PAD.encode([84; 32])).unwrap();
+    assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+    std::fs::write(&sealing_key_file, "invalid key").unwrap();
+    assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+    std::fs::remove_file(&sealing_key_file).unwrap();
+    assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err());
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&sealing_key_file)
+            .unwrap();
+        file.write_all(&key_bytes).unwrap();
+        drop(file);
+        std::fs::set_permissions(&sealing_key_file, std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        assert!(
+            super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err()
+        );
+        std::fs::set_permissions(&sealing_key_file, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        let link = key_directory.path().join("linked.key");
+        std::os::unix::fs::symlink(&sealing_key_file, &link).unwrap();
+        assert!(super::super::oauth::OAuthStorage::open(authority.clone(), &link).is_err());
+        let alias = key_directory.path().join("hardlinked.key");
+        std::fs::hard_link(&sealing_key_file, &alias).unwrap();
+        assert!(
+            super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err()
+        );
+        std::fs::remove_file(alias).unwrap();
+        let mut oversized = key_bytes.clone();
+        oversized.extend(vec![b' '; 256]);
+        std::fs::write(&sealing_key_file, oversized).unwrap();
+        assert!(
+            super::super::oauth::OAuthStorage::open(authority.clone(), &sealing_key_file).is_err()
+        );
+        std::fs::write(&sealing_key_file, &key_bytes).unwrap();
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&sealing_key_file, &key_bytes).unwrap();
+    drop(authority);
+
+    // Reopen the real, migrated database through the production constructor.
+    // There is no memory mirror or restored test-only OAuth state.
+    let engine = AuthorizationServer::new(
+        config,
+        super::super::oauth::OAuthStorage::open(
+            Arc::new(open(&f.directory, SigningKey::from_bytes(&[42; 32]))),
+            &sealing_key_file,
+        )
+        .unwrap(),
+    );
+    let rotated = engine
+        .token(TokenRequest::RefreshToken {
+            client_id: oauth_as::ClientId::new("native-client"),
+            client_secret: None,
+            refresh_token: refresh.clone(),
+            scope: None,
+        })
+        .await
+        .unwrap();
+    let mut admission = f.admission;
+    admission.refresh_family_id = Some(
+        engine
+            .store()
+            .get_refresh_token(rotated.refresh_token.as_deref().unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .family_id
+            .clone(),
+    );
+    admission.credential = Credential::OAuthGrant(grant);
+    issue_authority(&engine.store().authority, &admission, None, now).unwrap();
+    assert!(engine
+        .token(TokenRequest::RefreshToken {
+            client_id: oauth_as::ClientId::new("native-client"),
+            client_secret: None,
+            refresh_token: refresh,
+            scope: None,
+        })
+        .await
+        .is_err());
+    assert!(engine
+        .store()
+        .get_token(&rotated.access_token)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(engine
+        .store()
+        .get_refresh_token(&rotated.refresh_token.unwrap())
+        .await
+        .unwrap()
+        .is_none());
+    assert!(issue_authority(&engine.store().authority, &admission, None, now).is_err());
 }

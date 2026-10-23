@@ -386,7 +386,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         assert_eq!(session.auth.session_nkey().unwrap(), nkey);
         assert_eq!(session.admission.credential.oauth_grant_id, grant);
         assert_eq!(session.admission.credential.refresh_family_id, family);
-        let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+        let admitted = crate::platform::auth::tests::admit_credential(
             &authority,
             &serde_json::to_vec(&session.admission).unwrap(),
             &nkey,
@@ -424,8 +424,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs() as i64;
-            crate::platform::auth::phase_two_tests::rotate_issuer(&authority, &f.admin, now)
-                .unwrap();
+            crate::platform::auth::tests::rotate_issuer(&authority, &f.admin, now).unwrap();
             let settings = authority.settings.clone();
             authority = Arc::new(
                 SqliteAuthorizationStore::from_connection(
@@ -506,7 +505,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         assert_eq!(session.admission.credential.oauth_grant_id, grant);
         assert_eq!(session.admission.credential.refresh_family_id, family);
         let nkey = session.auth.session_nkey().unwrap();
-        let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+        let admitted = crate::platform::auth::tests::admit_credential(
             &authority,
             &serde_json::to_vec(&session.admission).unwrap(),
             &nkey,
@@ -540,7 +539,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         .unwrap();
     shutdown.cancel();
     server.await.unwrap().unwrap();
-    crate::platform::auth::phase_two_tests::rotate_issuer(
+    crate::platform::auth::tests::rotate_issuer(
         &authority,
         &f.admin,
         SystemTime::now()
@@ -690,7 +689,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
             .is_err()
     );
     let revocation = EnforcementScope::Grant(grant);
-    crate::platform::auth::phase_two_tests::revoke_root(
+    crate::platform::auth::tests::revoke_root(
         &authority,
         &mutation(&f.admin, &revocation),
         &revocation,

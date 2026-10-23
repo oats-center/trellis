@@ -57,4 +57,4 @@ pub(crate) use sqlite::{AuthError, Mutation, SqliteAuthorizationStore};
 use crate::config::warn_oauth_cookie_isolation;
 
 #[cfg(test)]
-mod phase_two_tests;
+mod tests;

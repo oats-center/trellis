@@ -1,5 +1,5 @@
 use super::*;
-use crate::platform::auth::phase_two_tests::{fixture, mutation, NOW};
+use crate::platform::auth::tests::{fixture, mutation, NOW};
 
 #[test]
 fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_cannot_revive_identity()
@@ -7,9 +7,8 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use sha2::{Digest as _, Sha256};
     let f = fixture();
-    let source =
-        crate::platform::auth::phase_two_tests::SOURCE.replace("service Reader", "device Reader");
-    crate::platform::auth::phase_two_tests::accept(&f.store, &f.admin, &source, false, NOW);
+    let source = crate::platform::auth::tests::SOURCE.replace("service Reader", "device Reader");
+    crate::platform::auth::tests::accept(&f.store, &f.admin, &source, false, NOW);
     let evidence: AuthPackageEvidence = f
         .store
         .transaction(|connection| {
@@ -67,8 +66,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         URL_SAFE_NO_PAD.encode(Sha256::digest(public.as_bytes())),
     );
     let issued =
-        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &admission, None, NOW)
-            .unwrap();
+        crate::platform::auth::tests::issue_authority(&f.store, &admission, None, NOW).unwrap();
     assert_eq!(
         issued.authority.unsigned.principal_kind,
         trellis_protocol::PrincipalKind::Device
@@ -82,8 +80,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     };
     let unchanged_identity = mutation(&f.admin, &unchanged);
     let applied = apply_deployment(&f.store, &unchanged_identity, &unchanged, NOW + 1).unwrap();
-    crate::platform::auth::phase_two_tests::issue_authority(&f.store, &admission, None, NOW + 1)
-        .unwrap();
+    crate::platform::auth::tests::issue_authority(&f.store, &admission, None, NOW + 1).unwrap();
     assert!(matches!(
         apply_deployment(
             &f.store,
@@ -97,7 +94,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         "required capability read; capability write;",
         "required capability read; required capability write;",
     );
-    crate::platform::auth::phase_two_tests::accept(&f.store, &f.admin, &changed, false, NOW + 2);
+    crate::platform::auth::tests::accept(&f.store, &f.admin, &changed, false, NOW + 2);
     let evidence = f
         .store
         .transaction(|connection| {
@@ -119,13 +116,8 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
         ..unchanged.clone()
     };
     let applied = apply_deployment(&f.store, &mutation(&f.admin, &apply), &apply, NOW + 2).unwrap();
-    let pinned = crate::platform::auth::phase_two_tests::issue_authority(
-        &f.store,
-        &admission,
-        None,
-        NOW + 2,
-    )
-    .unwrap();
+    let pinned =
+        crate::platform::auth::tests::issue_authority(&f.store, &admission, None, NOW + 2).unwrap();
     assert_eq!(
         pinned.authority.unsigned.capabilities,
         issued.authority.unsigned.capabilities
@@ -177,12 +169,7 @@ fn device_aggregate_compatible_apply_preserves_pinned_authority_and_remove_canno
     )
     .unwrap();
     assert!(matches!(
-        crate::platform::auth::phase_two_tests::issue_authority(
-            &f.store,
-            &admission,
-            None,
-            NOW + 4
-        ),
+        crate::platform::auth::tests::issue_authority(&f.store, &admission, None, NOW + 4),
         Err(AuthError::Denied)
     ));
     let enable = AuthDeploymentMutationRequest {
@@ -355,8 +342,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         URL_SAFE_NO_PAD.encode(Sha256::digest(public.as_bytes())),
     );
     let issued =
-        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &admission, None, NOW)
-            .unwrap();
+        crate::platform::auth::tests::issue_authority(&f.store, &admission, None, NOW).unwrap();
     let ephemeral = nkeys::KeyPair::new_user();
     let signed = trellis_protocol::sign_provisioned_admission(
         trellis_protocol::ProvisionedAdmission {
@@ -372,7 +358,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         &client_key,
     )
     .unwrap();
-    let connected = crate::platform::auth::phase_two_tests::issue_provisioned_authority(
+    let connected = crate::platform::auth::tests::issue_provisioned_authority(
         &f.store,
         &serde_json::to_vec(&signed).unwrap(),
         &ephemeral.public_key(),
@@ -388,15 +374,13 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         &ed25519_dalek::SigningKey::from_bytes(&[29; 32]),
     )
     .unwrap();
-    assert!(
-        crate::platform::auth::phase_two_tests::issue_provisioned_authority(
-            &f.store,
-            &serde_json::to_vec(&impostor).unwrap(),
-            &ephemeral.public_key(),
-            NOW
-        )
-        .is_err()
-    );
+    assert!(crate::platform::auth::tests::issue_provisioned_authority(
+        &f.store,
+        &serde_json::to_vec(&impostor).unwrap(),
+        &ephemeral.public_key(),
+        NOW
+    )
+    .is_err());
     let replacement_key = AuthInstanceProvisionRequest {
         identity_public_key: Some(
             URL_SAFE_NO_PAD
@@ -424,7 +408,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         Err(AuthError::Conflict)
     ));
     assert_eq!(
-        crate::platform::auth::phase_two_tests::issue_provisioned_authority(
+        crate::platform::auth::tests::issue_provisioned_authority(
             &f.store,
             &serde_json::to_vec(&signed).unwrap(),
             &ephemeral.public_key(),
@@ -464,12 +448,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
         .unwrap()
         .is_some());
     assert!(matches!(
-        crate::platform::auth::phase_two_tests::issue_authority(
-            &f.store,
-            &admission,
-            None,
-            NOW + 1
-        ),
+        crate::platform::auth::tests::issue_authority(&f.store, &admission, None, NOW + 1),
         Err(AuthError::Denied)
     ));
     assert!(matches!(
@@ -498,8 +477,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     .unwrap();
     let mut fresh = admission.clone();
     fresh.runtime_id = URL_SAFE_NO_PAD.encode([24; 16]);
-    crate::platform::auth::phase_two_tests::issue_authority(&f.store, &fresh, None, NOW + 2)
-        .unwrap();
+    crate::platform::auth::tests::issue_authority(&f.store, &fresh, None, NOW + 2).unwrap();
     assert_eq!(
         change_instance(
             &f.store,
@@ -527,7 +505,7 @@ fn typed_creation_and_provisioning_bind_admission_and_lifecycle_replay() {
     .unwrap();
     fresh.runtime_id = URL_SAFE_NO_PAD.encode([25; 16]);
     assert!(matches!(
-        crate::platform::auth::phase_two_tests::issue_authority(&f.store, &fresh, None, NOW + 3),
+        crate::platform::auth::tests::issue_authority(&f.store, &fresh, None, NOW + 3),
         Err(AuthError::Denied)
     ));
     let resurrection = AuthInstanceMutationRequest {
@@ -870,7 +848,7 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
             &key,
         )
         .unwrap();
-        let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+        let admitted = crate::platform::auth::tests::admit_credential(
             &store,
             &serde_json::to_vec(&signed).unwrap(),
             &ephemeral.public_key(),

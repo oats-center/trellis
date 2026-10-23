@@ -10,7 +10,7 @@ async fn sdk_rotation(mode: &str) {
     use trellis_runtime_apis::participants::{
         trellis_events_runtime, trellis_health_runtime, trellis_jobs_runtime, trellis_platform,
     };
-    let certificate = super::oauth_transport_tests::certificate();
+    let certificate = super::oauth_transport::certificate();
     let mut f = fixture();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -175,10 +175,8 @@ async fn sdk_rotation(mode: &str) {
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_secs() as i64;
-                        crate::platform::auth::phase_two_tests::rotate_issuer(
-                            &authority, &f.admin, now,
-                        )
-                        .unwrap();
+                        crate::platform::auth::tests::rotate_issuer(&authority, &f.admin, now)
+                            .unwrap();
                         authority = Arc::new(
                             SqliteAuthorizationStore::from_connection(
                                 rusqlite::Connection::open(f.directory.path().join("platform.db"))
@@ -290,8 +288,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
             &store.settings.account,
         )
         .unwrap();
-    let rotation =
-        crate::platform::auth::phase_two_tests::rotate_issuer(&store, &admin, now).unwrap();
+    let rotation = crate::platform::auth::tests::rotate_issuer(&store, &admin, now).unwrap();
     // This is the real forward-verified successor that cold custody retains,
     // not a discovery-selected key or injected authorization context.
     let current = rotation
@@ -392,7 +389,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         &SigningKey::from_bytes(&[61; 32]),
     )
     .unwrap();
-    let admitted = crate::platform::auth::phase_two_tests::admit_credential(
+    let admitted = crate::platform::auth::tests::admit_credential(
         &store,
         &serde_json::to_vec(&credential).unwrap(),
         &ephemeral.public_key(),
@@ -650,7 +647,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     );
 
     let compromised = EnforcementScope::Issuer(original.key_id.clone());
-    crate::platform::auth::phase_two_tests::revoke_root(
+    crate::platform::auth::tests::revoke_root(
         &store,
         &mutation(&admin, &compromised),
         &compromised,
@@ -737,7 +734,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
 
     // Loading a historical key cannot advance the pin or its rotation sequence.
     // A genuine next rotation must still be accepted at the original next slot.
-    let next = crate::platform::auth::phase_two_tests::rotate_issuer(
+    let next = crate::platform::auth::tests::rotate_issuer(
         &store,
         &admin,
         SystemTime::now()

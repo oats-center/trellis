@@ -397,7 +397,7 @@ fn policy_lists_apply_filters_and_resume_without_duplicating_items() {
 #[test]
 fn grant_ids_survive_updates_replay_after_revoke_and_reject_stale_tuple_ids() {
     let f = fixture();
-    let principal = crate::platform::auth::phase_two_tests::create_user(&f.store, &f.admin, NOW);
+    let principal = crate::platform::auth::tests::create_user(&f.store, &f.admin, NOW);
     let grant = AuthCapabilityGrantRequest {
         principal_id: principal.parse().unwrap(),
         capability_id: f.read.clone().into(),
