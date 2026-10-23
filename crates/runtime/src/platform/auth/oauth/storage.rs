@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::platform::auth::sqlite::Connection;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use oauth_as::authorization::{AuthorizationCodeRecord, AuthorizationCodeState};
 use oauth_as::client::{Client, ClientAuth, ClientId};
@@ -11,7 +12,7 @@ use oauth_as::device::{normalize_user_code, DeviceGrant, DeviceGrantState};
 use oauth_as::store::{RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -333,7 +334,7 @@ impl OAuthStorage {
         code: &str,
     ) -> Result<super::device::DeviceSelection, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
-        self.read(&connection, "deviceSelection", code)?
+        self.read(Connection::new(&connection), "deviceSelection", code)?
             .ok_or_else(|| StorageError::new("device request unavailable"))
     }
 
@@ -524,7 +525,7 @@ impl OAuthStorage {
     ) -> Result<super::portal::PortalAuthorization, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
         let mut flow: super::portal::PortalAuthorization = self
-            .read(&connection, "authorization", id)?
+            .read(Connection::new(&connection), "authorization", id)?
             .ok_or_else(|| StorageError::new("authorization unavailable"))?;
         if flow.session_id != session || flow.expires_at <= now {
             return Err(StorageError::new("authorization unavailable"));
@@ -610,7 +611,7 @@ impl OAuthStorage {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(failure)?;
-        let result = action(&transaction)?;
+        let result = action(Connection::new(&transaction))?;
         transaction.commit().map_err(failure)?;
         Ok(result)
     }
@@ -984,7 +985,7 @@ impl Storage for OAuthStorage {
         if !retained {
             return Ok(None);
         }
-        self.read(&connection, "client", client_id.as_str())
+        self.read(Connection::new(&connection), "client", client_id.as_str())
             .map(|client| client.map(Arc::new))
     }
 
@@ -1053,7 +1054,7 @@ impl Storage for OAuthStorage {
         device_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
-        self.read(&connection, "device", device_code)
+        self.read(Connection::new(&connection), "device", device_code)
     }
 
     async fn find_device_grant_by_user_code(
@@ -1153,7 +1154,7 @@ impl Storage for OAuthStorage {
 
     async fn get_token(&self, token: &str) -> Result<Option<Arc<IssuedToken>>, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
-        self.read(&connection, "token", token)
+        self.read(Connection::new(&connection), "token", token)
             .map(|record| record.map(Arc::new))
     }
 
@@ -1184,7 +1185,7 @@ impl Storage for OAuthStorage {
         token: &str,
     ) -> Result<Option<Arc<RefreshTokenRecord>>, StorageError> {
         let connection = self.authority.connection.lock().map_err(failure)?;
-        self.read(&connection, "refresh", token)
+        self.read(Connection::new(&connection), "refresh", token)
             .map(|record| record.map(Arc::new))
     }
 
@@ -1341,7 +1342,8 @@ mod tests {
     #[tokio::test]
     async fn live_consent_transactions_pin_client_capacity_until_their_own_expiry() {
         let directory = tempfile::tempdir().unwrap();
-        let mut connection = Connection::open(directory.path().join("platform.db")).unwrap();
+        let mut connection =
+            rusqlite::Connection::open(directory.path().join("platform.db")).unwrap();
         let migration = refinery::Migration::unapplied(
             "V1000__platform_init",
             include_str!("../../../storage/sqlite/platform/V1000__platform_init.sql"),

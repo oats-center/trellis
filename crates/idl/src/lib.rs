@@ -213,8 +213,8 @@ pub struct PackageEvidence {
 }
 
 // Only successful compilations of exactly equal complete evidence are reusable.
-// Keep compilation and graph cloning outside the lock; concurrent misses may
-// compile twice, but never serialize unrelated evidence behind the compiler.
+// Keep compilation outside the lock; concurrent misses may compile twice, but
+// never serialize unrelated evidence behind the compiler.
 static COMPILED_EVIDENCE: Mutex<VecDeque<(PackageEvidence, Arc<PackageGraph>)>> =
     Mutex::new(VecDeque::new());
 
@@ -223,11 +223,12 @@ static COMPILED_EVIDENCE: Mutex<VecDeque<(PackageEvidence, Arc<PackageGraph>)>> 
 /// A bounded process-local cache reuses successful compilations only when the
 /// complete evidence matches, including every source byte and dependency. Claimed
 /// digests alone never authorize reuse. No policy or authorization state is cached.
+/// The graph is shared with the cache, so a hit costs no copy.
 ///
 /// # Errors
 ///
 /// Returns an error when the closure is incomplete, cyclic, malformed, or digest-invalid.
-pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGraph> {
+pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<Arc<PackageGraph>> {
     let cached = COMPILED_EVIDENCE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -235,7 +236,7 @@ pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGrap
         .find(|(input, _)| input == &evidence)
         .map(|(_, graph)| Arc::clone(graph));
     if let Some(graph) = cached {
-        return Ok((*graph).clone());
+        return Ok(graph);
     }
     if !evidence
         .packages
@@ -272,7 +273,7 @@ pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGrap
             "evidence root digest does not match recompiled semantics"
         ));
     }
-    let retained = Arc::new(graph.clone());
+    let graph = Arc::new(graph);
     let mut cache = COMPILED_EVIDENCE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -280,7 +281,7 @@ pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGrap
         if cache.len() == 16 {
             cache.pop_front();
         }
-        cache.push_back((evidence, retained));
+        cache.push_back((evidence, Arc::clone(&graph)));
     }
     Ok(graph)
 }

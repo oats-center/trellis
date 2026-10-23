@@ -45,6 +45,7 @@ rust-embed = "8"
 sha2.workspace = true
 tempfile = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true, features = ["backup"] }
+ref-cast = "1.0"
 refinery = { workspace = true, optional = true }
 reqwest.workspace = true
 x509-parser.workspace = true

@@ -3,7 +3,8 @@
 use super::sqlite::timestamp;
 use std::sync::Arc;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::platform::auth::sqlite::Connection;
+use rusqlite::{params, OptionalExtension};
 use serde_json::json;
 use trellis_protocol::{AuthenticatedCaller, PlatformPrivilege};
 use trellis_rs::{

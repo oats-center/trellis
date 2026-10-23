@@ -429,7 +429,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
             let settings = authority.settings.clone();
             authority = Arc::new(
                 SqliteAuthorizationStore::from_connection(
-                    Connection::open(f.directory.path().join("platform.db")).unwrap(),
+                    rusqlite::Connection::open(f.directory.path().join("platform.db")).unwrap(),
                     authority.signer.clone(),
                     settings,
                     authority.custody_directory.clone(),
@@ -551,7 +551,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
     .unwrap();
     authority = Arc::new(
         SqliteAuthorizationStore::from_connection(
-            Connection::open(f.directory.path().join("platform.db")).unwrap(),
+            rusqlite::Connection::open(f.directory.path().join("platform.db")).unwrap(),
             authority.signer.clone(),
             authority.settings.clone(),
             authority.custody_directory.clone(),

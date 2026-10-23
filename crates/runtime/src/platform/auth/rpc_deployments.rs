@@ -6,7 +6,8 @@ use trellis_rs::generated::TrellisError;
 use trellis_rs::service::{DeclaredRpcError, ServerError};
 use trellis_runtime_apis::apis::trellis_auth_v1::errors::ValidationError as AuthValidationError;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::platform::auth::sqlite::Connection;
+use rusqlite::{params, OptionalExtension};
 use trellis_protocol::PlatformPrivilege;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{

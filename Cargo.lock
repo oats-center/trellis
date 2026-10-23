@@ -6153,6 +6153,7 @@ dependencies = [
  "oauth-as",
  "openidconnect",
  "rcgen",
+ "ref-cast",
  "refinery",
  "reqwest 0.13.5",
  "ring",

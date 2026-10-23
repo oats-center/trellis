@@ -70,7 +70,7 @@ pub(crate) struct TrellisTokenResponse {
 impl SqliteAuthorizationStore {
     pub(in crate::platform::auth) fn oauth_family_deadline_in(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         grant: &str,
         family: &str,
         now: i64,
@@ -97,7 +97,7 @@ impl SqliteAuthorizationStore {
     /// never a rotated refresh secret or a different family's lifetime.
     pub(in crate::platform::auth) fn sign_oauth_admission_in(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         identity: &AdmissionIdentity,
         ephemeral_nkey: &str,
         current: &super::super::policy::Evaluation,
@@ -188,7 +188,7 @@ impl SqliteAuthorizationStore {
 
     pub(in crate::platform::auth) fn provisioned_admission_identity_in(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         credential: &[u8],
         ephemeral_nkey: &str,
         inbox_prefix: &str,
@@ -235,7 +235,7 @@ impl SqliteAuthorizationStore {
 
     pub(in crate::platform::auth) fn oauth_admission_identity_in(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         credential: &[u8],
         ephemeral_nkey: &str,
         inbox_prefix: &str,

@@ -181,7 +181,8 @@ async fn sdk_rotation(mode: &str) {
                         .unwrap();
                         authority = Arc::new(
                             SqliteAuthorizationStore::from_connection(
-                                Connection::open(f.directory.path().join("platform.db")).unwrap(),
+                                rusqlite::Connection::open(f.directory.path().join("platform.db"))
+                                    .unwrap(),
                                 authority.signer.clone(),
                                 authority.settings.clone(),
                                 authority.custody_directory.clone(),
@@ -304,7 +305,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
         .unwrap();
     let store = Arc::new(
         SqliteAuthorizationStore::from_connection(
-            Connection::open(directory.path().join("platform.db")).unwrap(),
+            rusqlite::Connection::open(directory.path().join("platform.db")).unwrap(),
             store.signer.clone(),
             store.settings.clone(),
             store.custody_directory.clone(),
@@ -540,7 +541,12 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     // The public Node owner consumes the same production-issued root and
     // registry over the real broker, without an injected verified context.
     let registry = store
-        .transaction(|connection| store.admission_registry(connection))
+        .transaction(|connection| {
+            super::super::own_context::admission_registry(
+                connection,
+                &store.current_issuer(connection)?,
+            )
+        })
         .unwrap();
     let input_path = directory.path().join("cold-catalog.json");
     // Real protocol signatures isolate the escalation: the retired K1 key can

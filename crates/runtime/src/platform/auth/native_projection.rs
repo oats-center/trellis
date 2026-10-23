@@ -1,6 +1,8 @@
 //! Revision-pinned native authority over current deployment materialization.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use std::sync::Arc;
+
+use rusqlite::{params, OptionalExtension};
 use serde_json::Value;
 use trellis_idl::{
     ActionKind, ActionSelection, InteractionDirection, PackageGraph, ResourceDefinition,
@@ -8,19 +10,32 @@ use trellis_idl::{
 
 use super::authorization_sessions::ProviderImplementation;
 use super::catalog::{action_identity, resolve_api};
-use super::sqlite::{decode, AuthError};
+use super::sqlite::{decode, AuthError, Connection};
 
+#[derive(Debug)]
 pub(super) struct NativeInstanceProjection {
     pub deployment_id: String,
     pub participant_id: String,
     pub participant_digest: String,
     pub principal_id: String,
-    pub graph: Option<PackageGraph>,
+    /// Compiled only when a pinned revision was compared with its replacement.
+    pub graph: Option<Arc<PackageGraph>>,
     pub evidence: String,
     pub resources: Value,
     pub required: Vec<String>,
     pub optional: Vec<String>,
     pub provided: Vec<ProviderImplementation>,
+}
+
+impl NativeInstanceProjection {
+    /// The installed revision's package graph.
+    pub(super) fn graph(&self) -> Result<Arc<PackageGraph>, AuthError> {
+        match &self.graph {
+            Some(graph) => Ok(Arc::clone(graph)),
+            None => trellis_idl::compile_evidence(decode(&self.evidence)?)
+                .map_err(|error| AuthError::Invalid(error.to_string())),
+        }
+    }
 }
 
 /// Project the immutable instance vocabulary without granting a newer binary's

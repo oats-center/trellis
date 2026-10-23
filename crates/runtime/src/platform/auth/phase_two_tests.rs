@@ -2,7 +2,6 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
-use rusqlite::Connection;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use trellis_idl::{
@@ -219,7 +218,7 @@ pub(super) fn oauth_family(
     use oauth_as::{store::Storage, token::RefreshTokenRecord, ScopeSet};
     let path = store.connection.lock().unwrap().path().unwrap().to_owned();
     let authority = SqliteAuthorizationStore::from_connection(
-        Connection::open(path).unwrap(),
+        rusqlite::Connection::open(path).unwrap(),
         store.signer.clone(),
         store.settings.clone(),
         store.custody_directory.clone(),
@@ -300,7 +299,7 @@ fn evidence(source: &str) -> PackageEvidence {
 }
 
 pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuthorizationStore {
-    let mut connection = Connection::open(directory.path().join("platform.db")).unwrap();
+    let mut connection = rusqlite::Connection::open(directory.path().join("platform.db")).unwrap();
     let migration = refinery::Migration::unapplied(
         "V1000__platform_init",
         include_str!("../../storage/sqlite/platform/V1000__platform_init.sql"),

@@ -18,7 +18,7 @@ use super::sqlite::{decode, digest, json, AuthError, SqliteAuthorizationStore};
 
 /// Detach omitted allocations without deleting any provider data.
 pub(super) fn detach_deployment_resources(
-    connection: &rusqlite::Connection,
+    connection: &crate::platform::auth::sqlite::Connection,
     deployment: &str,
     keep: &BTreeSet<(String, String)>,
     now: i64,

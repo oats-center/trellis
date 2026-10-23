@@ -685,7 +685,10 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         path: "contract.trellis".into(),
                         source: omitted,
                     }],
-                    BTreeMap::from([("trellis".into(), builtin_graph)]),
+                    BTreeMap::from([(
+                        "trellis".into(),
+                        std::sync::Arc::unwrap_or_clone(builtin_graph),
+                    )]),
                 )
                 .unwrap();
                 let mut packages = builtin.packages;

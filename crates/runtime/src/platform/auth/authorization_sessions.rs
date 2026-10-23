@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -14,9 +14,13 @@ use trellis_protocol::{
     SESSION_AUTHORITY_FORMAT_V1,
 };
 
+use super::native_projection::NativeInstanceProjection;
+use super::own_context::admission_registry;
 use super::policy::{evaluate, CapabilitySelection};
 use super::revocation::{enqueue_effect, retire_session};
-use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
+use super::sqlite::{
+    decode, digest, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Credential {
@@ -64,6 +68,8 @@ pub(super) struct CredentialSnapshot {
     pub(super) platform_privilege_deadline: Option<i64>,
     /// Shared credential lifetime, independent of selected permission limits.
     pub(super) not_after: i64,
+    /// The installed instance a native credential is bound to.
+    pub(super) native: Option<Arc<NativeInstanceProjection>>,
 }
 
 /// Grant-local approval supersedes remembered choices observed at creation.
@@ -318,6 +324,7 @@ pub(super) fn credential_snapshot(
                 platform_privileges: privileges,
                 platform_privilege_deadline,
                 not_after: deadline,
+                native: None,
             })
         }
         Credential::ProvisionedIdentity(identity) => {
@@ -355,8 +362,9 @@ pub(super) fn credential_snapshot(
                 .optional()?;
             let (principal, deployment, instance, participant, kind, deadline) =
                 row.ok_or(AuthError::Denied)?;
-            let projection =
-                super::native_projection::project_instance(connection, &instance, now)?;
+            let projection = Arc::new(super::native_projection::project_instance(
+                connection, &instance, now,
+            )?);
             let (principal_kind, binding) = match kind.as_str() {
                 "service" => (
                     PrincipalKind::Service,
@@ -389,20 +397,20 @@ pub(super) fn credential_snapshot(
                 }
                 _ => return Err(AuthError::Denied),
             };
-            let provided = projection.provided;
-            let providers = provided
-                .into_iter()
+            let providers = projection
+                .provided
+                .iter()
                 .map(|provider| AuthorityProvider {
-                    api_id: provider.api_id,
+                    api_id: provider.api_id.clone(),
                     generation: U64s::new(provider.generation),
                     deployment_id: deployment.clone(),
-                    implementation_digest: provider.implementation_digest,
+                    implementation_digest: provider.implementation_digest.clone(),
                     provider_certificate_digest: String::new(),
                 })
                 .collect();
-            let resources = projection.resources;
+            let resources = &projection.resources;
             super::deployments::native_health_capability(connection)?;
-            let mut required = projection.required;
+            let mut required = projection.required.clone();
             if principal_kind == PrincipalKind::Device
                 && resources
                     .get("state")
@@ -455,15 +463,16 @@ pub(super) fn credential_snapshot(
                 login_session_id: None,
                 selection: CapabilitySelection {
                     required,
-                    optional: projection.optional,
+                    optional: projection.optional.clone(),
                 },
                 approved: None,
                 consent_deadlines: BTreeMap::new(),
                 providers,
-                resource_bindings_digest: Some(digest(&resources)?),
+                resource_bindings_digest: Some(digest(resources)?),
                 platform_privileges: vec![],
                 platform_privilege_deadline: None,
                 not_after: deadline.unwrap_or(i64::MAX),
+                native: Some(projection),
             })
         }
     }
@@ -565,6 +574,20 @@ pub(super) fn loses_authority(
     Ok(false)
 }
 
+/// What issuance read and derived inside one transaction. Admission and
+/// ContextGet reuse it for the transport policy and the signed bootstrap
+/// instead of evaluating the credential and projecting the instance again.
+pub(crate) struct AdmissionPlan {
+    pub(super) signer: SigningKey,
+    pub(super) issuer: AuthorityIssuerKey,
+    /// The installed instance a native credential is bound to.
+    pub(super) native: Option<Arc<NativeInstanceProjection>>,
+    /// Issuance limit of the evaluated credential.
+    pub(super) not_after: i64,
+    /// The issued authority's canonical signed bytes.
+    pub(super) authority_json: String,
+}
+
 impl SqliteAuthorizationStore {
     pub(super) fn issue_authority_in_transaction(
         &self,
@@ -573,7 +596,20 @@ impl SqliteAuthorizationStore {
         renew_session: Option<&str>,
         now: i64,
     ) -> Result<Result<IssuedAuthority, AuthError>, AuthError> {
-        self.current_signer(connection)?;
+        Ok(self
+            .issue_admission_in_transaction(connection, admission, renew_session, now)?
+            .map(|(issued, _)| issued))
+    }
+
+    pub(super) fn issue_admission_in_transaction(
+        &self,
+        connection: &Connection,
+        admission: &AdmissionIdentity,
+        renew_session: Option<&str>,
+        now: i64,
+    ) -> Result<Result<(IssuedAuthority, AdmissionPlan), AuthError>, AuthError> {
+        let signer = self.current_signer(connection)?;
+        let issuer = super::sqlite::issuer_key(&signer);
         if let Some(session) = renew_session {
             let exact: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 \
@@ -826,8 +862,7 @@ impl SqliteAuthorizationStore {
             ..
         } = &current.binding
         {
-            let provided =
-                super::native_projection::project_instance(connection, instance_id, now)?.provided;
+            let provided = &current.native.as_deref().ok_or(AuthError::Denied)?.provided;
             for provider in &mut providers {
                 let implementation = provided
                     .iter()
@@ -847,7 +882,7 @@ impl SqliteAuthorizationStore {
                 }
                 let certificate = SignedProviderCertificate {
                     format: PROVIDER_CERTIFICATE_FORMAT_V1.into(),
-                    issuer_key_id: self.current_issuer(connection)?.key_id,
+                    issuer_key_id: issuer.key_id.clone(),
                     trellis_instance_id: self.settings.instance_id.clone(),
                     audience_nats_account: self.settings.account.clone(),
                     principal_id: current.principal_id.clone(),
@@ -865,7 +900,7 @@ impl SqliteAuthorizationStore {
                     critical: vec![],
                     signature: String::new(),
                 }
-                .sign(&self.current_signer(connection)?)?;
+                .sign(&signer)?;
                 provider.provider_certificate_digest = certificate.digest()?;
                 connection.execute(
                     "INSERT OR IGNORE INTO auth_provider_certificates \
@@ -878,7 +913,7 @@ impl SqliteAuthorizationStore {
                         provider.api_id,
                         provider.generation.get(),
                         provider.implementation_digest,
-                        self.current_issuer(connection)?.key_id,
+                        issuer.key_id.clone(),
                         json(&certificate.implemented_actions)?,
                         json(&certificate)?.as_bytes(),
                         now,
@@ -931,10 +966,12 @@ impl SqliteAuthorizationStore {
                 }),
             );
         }
+        let native = current.native;
+        let not_after = current.not_after;
         let authority = sign_session_authority(
             UnsignedSessionAuthority {
                 format: SESSION_AUTHORITY_FORMAT_V1.into(),
-                issuer_key_id: self.current_issuer(connection)?.key_id,
+                issuer_key_id: issuer.key_id.clone(),
                 trellis_instance_id: self.settings.instance_id.clone(),
                 audience_nats_account: self.settings.account.clone(),
                 principal_id: current.principal_id.clone(),
@@ -957,44 +994,25 @@ impl SqliteAuthorizationStore {
                 extensions,
                 critical: vec![],
             },
-            &self.current_signer(connection)?,
+            &signer,
         )?;
-        let digest = authority.digest()?;
-        // Validate the actual signed first-response envelope before committing
-        // either the authority or the attachment that can make it usable. Only
-        // the fresh nonce and reply suffix are unknown here; reserve their full
-        // supported lengths, rather than copying catalog history into bootstrap.
-        trellis_protocol::sign_admission_context(
-            trellis_protocol::AdmissionContext {
-                format: trellis_protocol::ADMISSION_GET_DOMAIN_V1.into(),
-                issuer_key_id: self.current_issuer(connection)?.key_id,
-                trellis_instance_id: self.settings.instance_id.clone(),
-                audience_nats_account: self.settings.account.clone(),
-                runtime_id: admission.runtime_id.clone(),
-                request_nonce: URL_SAFE_NO_PAD.encode([0u8; 16]),
-                request_subject: trellis_protocol::admission_get_subject(
-                    &admission.session_public_key,
-                )?,
-                reply_subject: format!(
-                    "{}.{:A<width$}",
-                    admission.inbox_prefix,
-                    "",
-                    width = 511usize.saturating_sub(admission.inbox_prefix.len())
-                ),
-                session_authority: json(&authority)?,
-                registry: self.admission_registry(connection)?,
-                issued_at: now,
-                expires_at: expires_at.min(now.saturating_add(30)),
-            },
-            &self.current_signer(connection)?,
+        // Canonical signed bytes, stored and served exactly; the digest addresses them.
+        let authority_json = json(&authority)?;
+        let digest = super::sqlite::text_digest(&authority_json);
+        super::own_context::ensure_first_reply_fits(
+            &self.settings,
+            &issuer.key_id,
+            &authority.unsigned,
+            &authority_json,
+            admission_registry(connection, &issuer)?,
         )?;
         connection.execute(
             "INSERT OR IGNORE INTO auth_session_authorities VALUES(?1,?2,?3,?4,?5,?6,?6,?7,?8)",
             params![
                 digest,
                 session,
-                self.current_issuer(connection)?.key_id,
-                json(&authority)?.as_bytes(),
+                issuer.key_id,
+                authority_json.as_bytes(),
                 json(&authority.unsigned.apis)?,
                 now,
                 expires_at,
@@ -1005,7 +1023,7 @@ impl SqliteAuthorizationStore {
             "UPDATE auth_authorization_issuers \
             SET maximum_acceptance_deadline=max(maximum_acceptance_deadline,?1) \
             WHERE key_id=?2",
-            params![maximum_acceptance, self.current_issuer(connection)?.key_id],
+            params![maximum_acceptance, issuer.key_id],
         )?;
         enqueue_effect(
             connection,
@@ -1014,7 +1032,16 @@ impl SqliteAuthorizationStore {
             None,
             now,
         )?;
-        Ok(Ok(IssuedAuthority { authority, digest }))
+        Ok(Ok((
+            IssuedAuthority { authority, digest },
+            AdmissionPlan {
+                signer,
+                issuer,
+                native,
+                not_after,
+                authority_json,
+            },
+        )))
     }
 
     pub(super) fn catalog_in_transaction(
@@ -1217,7 +1244,7 @@ impl SqliteAuthorizationStore {
     }
 
     pub(super) fn resolve_issuer_in(
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         key_id: &str,
     ) -> Result<AuthorityIssuerKey, AuthError> {
         let (public, state): (String, String) = connection

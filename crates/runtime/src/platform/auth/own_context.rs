@@ -10,7 +10,8 @@ use trellis_protocol::{
 };
 
 use super::{
-    authorization_sessions::{session_credential, AdmissionIdentity},
+    authorization_sessions::{session_credential, AdmissionIdentity, AdmissionPlan},
+    native_projection::NativeInstanceProjection,
     AuthError, SqliteAuthorizationStore,
 };
 
@@ -346,18 +347,21 @@ impl SqliteAuthorizationStore {
 
     pub(super) fn attachment_registry(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
+        plan: &AdmissionPlan,
         authority: &trellis_protocol::UnsignedSessionAuthority,
         desired: &trellis_protocol::TransportAuthorizationV1,
         admitted: &trellis_protocol::TransportAuthorizationV1,
         attachment: &str,
     ) -> Result<Value, AuthError> {
-        let mut registry = self.admission_registry(connection)?;
+        let mut registry = admission_registry(connection, &plan.issuer)?;
         registry["transportAuthorization"] = serde_json::to_value(desired)?;
         registry["admittedTransportAuthorization"] = serde_json::to_value(admitted)?;
         registry["attachmentId"] = Value::String(attachment.into());
-        if let Some(bootstrap) = self.native_bootstrap(connection, authority)? {
-            registry["authorization"] = bootstrap;
+        if let Some(native) = plan.native.as_deref() {
+            if let Some(bootstrap) = self.native_bootstrap(connection, authority, native)? {
+                registry["authorization"] = bootstrap;
+            }
         }
         Ok(registry)
     }
@@ -367,8 +371,9 @@ impl SqliteAuthorizationStore {
     /// a resource that the installed native participant requires.
     pub(super) fn native_bootstrap(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         authority: &trellis_protocol::UnsignedSessionAuthority,
+        projection: &NativeInstanceProjection,
     ) -> Result<Option<Value>, AuthError> {
         let (deployment, instance, participant) = match &authority.binding {
             trellis_protocol::SessionBinding::Service {
@@ -383,24 +388,18 @@ impl SqliteAuthorizationStore {
             } => (deployment_id, instance_id, participant_id),
             _ => return Ok(None),
         };
-        let projection =
-            super::native_projection::project_instance(connection, instance, authority.issued_at)?;
         if projection.deployment_id != *deployment
             || projection.participant_id != *participant
             || projection.principal_id != authority.principal_id
         {
             return Err(AuthError::Denied);
         }
-        let digest = projection.participant_digest;
-        let resources = projection.resources;
-        if Some(super::sqlite::digest(&resources)?) != authority.resource_bindings_digest {
+        let digest = &projection.participant_digest;
+        let resources = &projection.resources;
+        if Some(super::sqlite::digest(resources)?) != authority.resource_bindings_digest {
             return Err(AuthError::Denied);
         }
-        let graph = match projection.graph {
-            Some(graph) => graph,
-            None => trellis_idl::compile_evidence(serde_json::from_str(&projection.evidence)?)
-                .map_err(|error| AuthError::Invalid(error.to_string()))?,
-        };
+        let graph = projection.graph()?;
         let installed = graph
             .packages()
             .values()
@@ -408,7 +407,7 @@ impl SqliteAuthorizationStore {
             .find(|value| value.identity().as_str() == participant)
             .ok_or(AuthError::Denied)?;
         let runtime: trellis_rs::service::ServiceResourceBindings =
-            serde_json::from_value(resources).map_err(|error| {
+            serde_json::from_value(resources.clone()).map_err(|error| {
                 AuthError::Invalid(format!(
                     "invalid committed native resource bindings: {error}"
                 ))
@@ -480,25 +479,6 @@ impl SqliteAuthorizationStore {
             "resourceRuntime":runtime,
             "companion":companion
         })))
-    }
-
-    /// The signed bootstrap identifies bounded immutable-material resolution;
-    /// it never grows with the catalog or the installation's issuer history.
-    pub(super) fn admission_registry(
-        &self,
-        connection: &rusqlite::Connection,
-    ) -> Result<Value, AuthError> {
-        let sequence: u64 = connection.query_row(
-            "SELECT coalesce(max(sequence),0) FROM auth_issuer_rotations",
-            [],
-            |row| row.get(0),
-        )?;
-        Ok(json!({
-            "materialBucket": super::broker::MATERIAL_BUCKET,
-            "revocationBucket": super::broker::REVOCATION_BUCKET,
-            "issuer": self.current_issuer(connection)?,
-            "rotationSequence": sequence.to_string(),
-        }))
     }
 
     /// Verify possession and actual NATS routing before reading any context.
@@ -586,7 +566,7 @@ impl SqliteAuthorizationStore {
             if !reply.starts_with(&format!("{}.", identity.inbox_prefix)) {
                 return Err(AuthError::Denied);
             }
-            let issued = match self.issue_authority_in_transaction(
+            let (issued, plan) = match self.issue_admission_in_transaction(
                 connection,
                 &identity,
                 Some(&session),
@@ -595,12 +575,13 @@ impl SqliteAuthorizationStore {
                 Ok(issued) => issued,
                 Err(error) => return Ok(Err(error)),
             };
-            let desired = self.compile_transport(connection, &issued.authority.unsigned)?;
+            let desired = self.compile_transport(connection, &plan, &issued.authority.unsigned)?;
             let admitted: trellis_protocol::TransportAuthorizationV1 =
                 serde_json::from_str(&admitted)?;
             admitted.validate()?;
             let registry = self.attachment_registry(
                 connection,
+                &plan,
                 &issued.authority.unsigned,
                 &desired,
                 &admitted,
@@ -609,7 +590,7 @@ impl SqliteAuthorizationStore {
             let response = sign_admission_context(
                 AdmissionContext {
                     format: ADMISSION_GET_DOMAIN_V1.into(),
-                    issuer_key_id: self.current_issuer(connection)?.key_id,
+                    issuer_key_id: plan.issuer.key_id.clone(),
                     trellis_instance_id: self.settings.instance_id.clone(),
                     audience_nats_account: self.settings.account.clone(),
                     runtime_id: request.request.runtime_id,
@@ -625,9 +606,65 @@ impl SqliteAuthorizationStore {
                         .expires_at
                         .min(now.saturating_add(30)),
                 },
-                &self.current_signer(connection)?,
+                &plan.signer,
             )?;
             Ok(Ok((response, issued.digest)))
         })?
     }
+}
+
+/// The signed bootstrap identifies bounded immutable-material resolution;
+/// it never grows with the catalog or the installation's issuer history.
+pub(super) fn admission_registry(
+    connection: &crate::platform::auth::sqlite::Connection,
+    issuer: &trellis_protocol::AuthorityIssuerKey,
+) -> Result<Value, AuthError> {
+    let sequence: u64 = connection.query_row(
+        "SELECT coalesce(max(sequence),0) FROM auth_issuer_rotations",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(json!({
+        "materialBucket": super::broker::MATERIAL_BUCKET,
+        "revocationBucket": super::broker::REVOCATION_BUCKET,
+        "issuer": issuer,
+        "rotationSequence": sequence.to_string(),
+    }))
+}
+
+/// Reject, before anything commits, an authority whose first ContextGet reply
+/// could not be delivered. The request's nonce and reply suffix are unknown
+/// until then, so reserve the longest reply subject a request may use.
+pub(super) fn ensure_first_reply_fits(
+    settings: &super::sqlite::AuthSettings,
+    issuer_key_id: &str,
+    authority: &trellis_protocol::UnsignedSessionAuthority,
+    authority_json: &str,
+    registry: Value,
+) -> Result<(), AuthError> {
+    const MAXIMUM_REPLY_SUBJECT_BYTES: usize = 512;
+    let prefix = &authority.inbox_prefix;
+    trellis_protocol::check_admission_context(&AdmissionContext {
+        format: ADMISSION_GET_DOMAIN_V1.into(),
+        issuer_key_id: issuer_key_id.into(),
+        trellis_instance_id: settings.instance_id.clone(),
+        audience_nats_account: settings.account.clone(),
+        runtime_id: authority.runtime_id.clone(),
+        request_nonce: base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            [0u8; 16],
+        ),
+        request_subject: trellis_protocol::admission_get_subject(&authority.session_public_key)?,
+        reply_subject: format!(
+            "{prefix}.{}",
+            "x".repeat(MAXIMUM_REPLY_SUBJECT_BYTES.saturating_sub(prefix.len() + 1))
+        ),
+        session_authority: authority_json.into(),
+        registry,
+        issued_at: authority.issued_at,
+        expires_at: authority
+            .expires_at
+            .min(authority.issued_at.saturating_add(30)),
+    })?;
+    Ok(())
 }

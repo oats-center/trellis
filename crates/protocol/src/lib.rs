@@ -28,8 +28,8 @@ pub mod transfer;
 pub mod transport_authorization;
 
 pub use admission::{
-    admission_get_subject, admission_inbox_prefix, sign_admission_context, sign_admission_get,
-    sign_oauth_admission, sign_provisioned_admission, verify_admission_context,
+    admission_get_subject, admission_inbox_prefix, check_admission_context, sign_admission_context,
+    sign_admission_get, sign_oauth_admission, sign_provisioned_admission, verify_admission_context,
     verify_admission_get, verify_oauth_admission, verify_provisioned_admission, AdmissionContext,
     AdmissionGet, OAuthAdmission, OAuthAdmissionBinding, ProvisionedAdmission,
     SignedAdmissionContext, SignedAdmissionGet, SignedOAuthAdmission, SignedProvisionedAdmission,

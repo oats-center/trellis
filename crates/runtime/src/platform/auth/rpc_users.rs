@@ -3,8 +3,9 @@
 use super::sqlite::timestamp;
 use std::sync::Arc;
 
+use crate::platform::auth::sqlite::Connection;
 use argon2::{password_hash::SaltString, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use trellis_protocol::PlatformPrivilege;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{

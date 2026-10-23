@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -11,7 +11,7 @@ use trellis_protocol::{CapabilityAuthority, PlatformPrivilege};
 use super::authorization_sessions::GrantConsentBasis;
 use super::policy::{capability, entitlements, CapabilitySelection};
 use super::revocation::{enqueue_scope, EnforcementScope};
-use super::sqlite::{decode, id, json, AuthError, Mutation, SqliteAuthorizationStore};
+use super::sqlite::{decode, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ClientRegistration {
@@ -76,7 +76,7 @@ pub(crate) struct GrantApproval {
 
 impl SqliteAuthorizationStore {
     pub(super) fn bootstrap_administrator_in_transaction(
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         principal: &str,
         username: &str,
         password: Option<&str>,
@@ -153,7 +153,7 @@ impl SqliteAuthorizationStore {
 
     pub(super) fn register_client_in_transaction(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         identity: &Mutation,
         registration: &ClientRegistration,
         now: i64,
@@ -328,7 +328,7 @@ impl SqliteAuthorizationStore {
     }
 
     pub(super) fn record_verified_login_in(
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         login: &VerifiedLogin,
         now: i64,
     ) -> Result<String, AuthError> {
@@ -428,7 +428,7 @@ impl SqliteAuthorizationStore {
 
     pub(super) fn register_oidc_provider_in_transaction(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         identity: &Mutation,
         registration: &OidcProviderRegistration,
         now: i64,

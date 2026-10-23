@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use trellis_idl::{
     api_digest, compare_implementation, compile_evidence, ActionKind, ActionSelection,
@@ -14,7 +14,9 @@ use trellis_protocol::{
 
 use super::policy::{apply_policy, PolicyMutation};
 use super::revocation::EnforcementScope;
-use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
+use super::sqlite::{
+    decode, digest, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ApiReview {

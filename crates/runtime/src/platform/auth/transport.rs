@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 use trellis_protocol::transfer;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::platform::auth::sqlite::Connection;
+use rusqlite::{params, OptionalExtension};
 use trellis_idl::{compile_evidence, ActionDefinition, PackageEvidence};
 use trellis_protocol::{
     ApiSurfaceKind, PermissionAction, SessionBinding, TransportAuthorizationV1,
@@ -11,6 +12,7 @@ use trellis_protocol::{
 };
 
 use super::{
+    authorization_sessions::AdmissionPlan,
     catalog::resolve_api,
     sqlite::{decode, AuthError, SqliteAuthorizationStore},
 };
@@ -19,19 +21,10 @@ impl SqliteAuthorizationStore {
     pub(super) fn compile_transport(
         &self,
         connection: &Connection,
+        plan: &AdmissionPlan,
         authority: &UnsignedSessionAuthority,
     ) -> Result<TransportAuthorizationV1, AuthError> {
-        let native = match &authority.binding {
-            SessionBinding::Service { instance_id, .. }
-            | SessionBinding::Device { instance_id, .. } => {
-                Some(super::native_projection::project_instance(
-                    connection,
-                    instance_id,
-                    authority.issued_at,
-                )?)
-            }
-            _ => None,
-        };
+        let native = plan.native.as_deref();
         let mut publish = BTreeSet::from([trellis_protocol::admission_get_subject(
             &authority.session_public_key,
         )?]);
@@ -46,7 +39,6 @@ impl SqliteAuthorizationStore {
             stream_access(&mut publish, &format!("KV_{bucket}"), false)?;
             subscribe.insert(format!("$KV.{bucket}.>"));
         }
-        let own = &authority.authorization_session_id;
         // Live data routes carry the authenticated logical runtime ID. The
         // authorization-session ID is for cutoffs, not a transport subject.
         let own_runtime = &authority.runtime_id;
@@ -99,7 +91,7 @@ impl SqliteAuthorizationStore {
                 .iter()
                 .filter(|binding| binding.api_id == reference.api_id)
             {
-                let projection = native.as_ref().ok_or(AuthError::Denied)?;
+                let projection = native.ok_or(AuthError::Denied)?;
                 if projection.deployment_id != binding.deployment_id {
                     return Err(AuthError::Denied);
                 }
@@ -353,7 +345,7 @@ impl SqliteAuthorizationStore {
             SessionBinding::Service { .. } | SessionBinding::Device { .. }
         ) {
             let bootstrap = self
-                .native_bootstrap(connection, authority)?
+                .native_bootstrap(connection, authority, native.ok_or(AuthError::Denied)?)?
                 .ok_or(AuthError::Denied)?;
             let resources: trellis_rs::service::ServiceResourceBindings =
                 serde_json::from_value(bootstrap["resourceRuntime"].clone())?;
@@ -478,11 +470,6 @@ impl SqliteAuthorizationStore {
                 }
             }
         }
-        let current = super::policy::evaluate(
-            connection,
-            &super::authorization_sessions::session_credential(connection, own)?,
-            authority.issued_at,
-        )?;
         let policy = TransportAuthorizationV1 {
             format: TRANSPORT_AUTHORIZATION_FORMAT_V1.into(),
             account: self.settings.account.clone(),
@@ -492,7 +479,7 @@ impl SqliteAuthorizationStore {
                 max_messages: 65_535,
                 ttl_ms: 120_000,
             }),
-            hard_expires_at: (current.not_after != i64::MAX).then_some(current.not_after),
+            hard_expires_at: (plan.not_after != i64::MAX).then_some(plan.not_after),
         };
         policy.validate()?;
         Ok(policy)

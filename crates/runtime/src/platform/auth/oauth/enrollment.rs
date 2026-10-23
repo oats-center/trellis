@@ -1,8 +1,9 @@
 //! Device enrollment and companion association share Auth's authoritative store.
 use std::sync::Arc;
 
+use crate::platform::auth::sqlite::Connection;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use trellis_runtime_apis::__types::trellis::AuthDeviceEnrollmentRequest;

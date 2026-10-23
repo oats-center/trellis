@@ -885,7 +885,18 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
         // the producer's binding projection, including empty declaration sets.
         let bootstrap = store
             .transaction(|connection| {
-                store.native_bootstrap(connection, &admitted.authority.unsigned)
+                let authority = &admitted.authority.unsigned;
+                let trellis_protocol::SessionBinding::Service { instance_id, .. } =
+                    &authority.binding
+                else {
+                    unreachable!("a service admission is service-bound");
+                };
+                let projection = crate::platform::auth::native_projection::project_instance(
+                    connection,
+                    instance_id,
+                    authority.issued_at,
+                )?;
+                store.native_bootstrap(connection, authority, &projection)
             })
             .unwrap()
             .unwrap();

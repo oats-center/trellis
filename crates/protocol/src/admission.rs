@@ -173,6 +173,31 @@ mod attachment_proof_tests {
         )
         .is_err());
     }
+    #[test]
+    fn unsigned_size_check_matches_the_signed_reply() {
+        let key = SigningKey::from_bytes(&[37; 32]);
+        let public = URL_SAFE_NO_PAD.encode(key.verifying_key().as_bytes());
+        let response = AdmissionContext {
+            format: crate::ADMISSION_GET_DOMAIN_V1.into(),
+            issuer_key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(key.verifying_key().as_bytes())),
+            trellis_instance_id: "01JY0000000000000000000001".into(),
+            audience_nats_account: "A".into(),
+            runtime_id: URL_SAFE_NO_PAD.encode([8; 16]),
+            request_nonce: URL_SAFE_NO_PAD.encode([7; 16]),
+            request_subject: admission_get_subject(&public).unwrap(),
+            reply_subject: format!("{}.reply", admission_inbox_prefix(&public).unwrap()),
+            session_authority: "{}".into(),
+            registry: serde_json::json!({ "attachmentId": "01JY0000000000000000000002" }),
+            issued_at: 100,
+            expires_at: 130,
+        };
+        let unsigned = serde_json::to_vec(&response).unwrap().len();
+        let signed = sign_admission_context(response, &key).unwrap();
+        assert_eq!(
+            serde_json::to_vec(&signed).unwrap().len(),
+            unsigned + SIGNED_ENVELOPE_BYTES
+        );
+    }
 }
 
 /// Private inbox namespace derived from the ephemeral session key.
@@ -335,7 +360,23 @@ pub fn verify_admission_get(
     .map_err(|_| invalid())
 }
 
-fn admission_context_digest(response: &AdmissionContext) -> Result<[u8; 32], ProtocolError> {
+/// Bytes a signature adds around a reply: `{"response":…,"signature":"…"}`
+/// with an 86-character base64url Ed25519 signature.
+const SIGNED_ENVELOPE_BYTES: usize = r#"{"response":,"signature":""}"#.len() + 86;
+
+/// Check an unsigned reply against every limit that signing enforces, without
+/// canonicalizing or signing it. The installation uses this to reject an
+/// authority whose first reply could never be delivered.
+pub fn check_admission_context(response: &AdmissionContext) -> Result<(), ProtocolError> {
+    validate_admission_context(response)?;
+    let bytes = serde_json::to_vec(response).map_err(|_| invalid())?.len();
+    if bytes.saturating_add(SIGNED_ENVELOPE_BYTES) > MAX_ADMISSION_RESPONSE_BYTES {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn validate_admission_context(response: &AdmissionContext) -> Result<(), ProtocolError> {
     canonical::<16>(&response.runtime_id)?;
     canonical::<16>(&response.request_nonce)?;
     if response.format != crate::ADMISSION_GET_DOMAIN_V1
@@ -350,6 +391,11 @@ fn admission_context_digest(response: &AdmissionContext) -> Result<[u8; 32], Pro
     {
         return Err(invalid());
     }
+    Ok(())
+}
+
+fn admission_context_digest(response: &AdmissionContext) -> Result<[u8; 32], ProtocolError> {
+    validate_admission_context(response)?;
     let value = serde_json::to_value(response).map_err(|_| invalid())?;
     if serde_json::to_vec(&value).map_err(|_| invalid())?.len() > MAX_ADMISSION_RESPONSE_BYTES {
         return Err(invalid());
@@ -367,15 +413,12 @@ pub fn sign_admission_context(
     {
         return Err(invalid());
     }
+    check_admission_context(&response)?;
     let digest = admission_context_digest(&response)?;
-    let signed = SignedAdmissionContext {
+    Ok(SignedAdmissionContext {
         response,
         signature: URL_SAFE_NO_PAD.encode(signer.sign(&digest).to_bytes()),
-    };
-    if serde_json::to_vec(&signed)?.len() > MAX_ADMISSION_RESPONSE_BYTES {
-        return Err(invalid());
-    }
-    Ok(signed)
+    })
 }
 
 /// Verify an installation reply against the pinned issuer and original request.

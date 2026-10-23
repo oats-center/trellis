@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use trellis_protocol::{
     AuthorityApi, AuthorityProvider, CapabilityAuthority, PlatformPrivilege, SessionBinding, U64s,
@@ -8,7 +8,7 @@ use trellis_protocol::{
 
 use super::authorization_sessions::Credential;
 use super::revocation::EnforcementScope;
-use super::sqlite::{decode, json, AuthError, Mutation, SqliteAuthorizationStore};
+use super::sqlite::{decode, json, AuthError, Connection, Mutation, SqliteAuthorizationStore};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct CapabilitySelection {
@@ -35,6 +35,8 @@ pub(crate) struct Evaluation {
     /// Issuance limit for the complete current set, not a shared root limit.
     pub(crate) not_after: i64,
     pub(crate) explanations: BTreeMap<String, Vec<String>>,
+    /// The installed instance a native credential is bound to.
+    pub(super) native: Option<std::sync::Arc<super::native_projection::NativeInstanceProjection>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -292,6 +294,7 @@ pub(super) fn evaluate(
             .not_after
             .min(root.platform_privilege_deadline.unwrap_or(i64::MAX)),
         explanations: BTreeMap::new(),
+        native: root.native,
     };
     let required: BTreeSet<_> = result.selection.required.iter().cloned().collect();
     let selected: BTreeSet<_> = required

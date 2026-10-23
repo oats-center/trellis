@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trellis_protocol::{SignedSessionRevocation, SESSION_REVOCATION_FORMAT_V1};
@@ -6,7 +6,9 @@ use trellis_runtime_apis::{apis::trellis_auth_v1::events, types::AuthSecurityEve
 
 use super::authorization_sessions::{loses_authority, session_credential};
 use super::policy::evaluate;
-use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
+use super::sqlite::{
+    decode, digest, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
+};
 
 fn enqueue_attachment_event<D>(
     connection: &Connection,
@@ -360,12 +362,12 @@ impl SqliteAuthorizationStore {
                     )?,
                 _ => return Err(AuthError::Denied),
             };
-            let issued =
-                match self.issue_authority_in_transaction(connection, &identity, None, now)? {
+            let (issued, plan) =
+                match self.issue_admission_in_transaction(connection, &identity, None, now)? {
                     Ok(issued) => issued,
                     Err(error) => return Ok(Err(error)),
                 };
-            let policy = self.compile_transport(connection, &issued.authority.unsigned)?;
+            let policy = self.compile_transport(connection, &plan, &issued.authority.unsigned)?;
             let attachment = Attachment {
                 attachment_id: id(),
                 server_id: server_id.into(),
@@ -385,41 +387,18 @@ impl SqliteAuthorizationStore {
             // authority issuance and attachment creation, not just ContextGet.
             let registry = self.attachment_registry(
                 connection,
+                &plan,
                 &issued.authority.unsigned,
                 &policy,
                 &policy,
                 &attachment.attachment_id,
             )?;
-            trellis_protocol::sign_admission_context(
-                trellis_protocol::AdmissionContext {
-                    format: trellis_protocol::ADMISSION_GET_DOMAIN_V1.into(),
-                    issuer_key_id: self.current_issuer(connection)?.key_id,
-                    trellis_instance_id: self.settings.instance_id.clone(),
-                    audience_nats_account: self.settings.account.clone(),
-                    runtime_id: issued.authority.unsigned.runtime_id.clone(),
-                    request_nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD
-                        .encode([0u8; 16]),
-                    request_subject: trellis_protocol::admission_get_subject(
-                        &issued.authority.unsigned.session_public_key,
-                    )?,
-                    reply_subject: format!(
-                        "{}.{}",
-                        issued.authority.unsigned.inbox_prefix,
-                        "x".repeat(
-                            512usize
-                                .saturating_sub(issued.authority.unsigned.inbox_prefix.len() + 1)
-                        )
-                    ),
-                    session_authority: json(&issued.authority)?,
-                    registry,
-                    issued_at: now,
-                    expires_at: issued
-                        .authority
-                        .unsigned
-                        .expires_at
-                        .min(now.saturating_add(30)),
-                },
-                &self.current_signer(connection)?,
+            super::own_context::ensure_first_reply_fits(
+                &self.settings,
+                &plan.issuer.key_id,
+                &issued.authority.unsigned,
+                &plan.authority_json,
+                registry,
             )?;
             connection.execute(
                 "INSERT INTO auth_attachments(attachment_id,server_id,broker_client_id,\

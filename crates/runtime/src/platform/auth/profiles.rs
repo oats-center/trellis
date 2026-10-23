@@ -1,6 +1,7 @@
 //! Local presentation data, independent of login identity and authorization.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use crate::platform::auth::sqlite::Connection;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use trellis_runtime_apis::AuthUserProfileUpdateRequest;
 

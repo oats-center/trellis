@@ -1,6 +1,6 @@
 //! Snapshot projection at the actual SQLite effect lifecycle boundary.
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::OpenFlags;
 
 use super::{fixture, SqliteAuthorizationStore, NOW};
 
@@ -10,7 +10,7 @@ fn read_only_snapshots_track_issued_authority_effects_and_completion() {
     crate::platform::auth::phase_two_tests::issue_authority(&f.store, &f.admission, None, NOW)
         .unwrap();
     let reader = SqliteAuthorizationStore::from_connection(
-        Connection::open_with_flags(
+        rusqlite::Connection::open_with_flags(
             f.directory.path().join("platform.db"),
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         )

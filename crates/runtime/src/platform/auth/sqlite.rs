@@ -5,7 +5,8 @@ use std::{
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use ed25519_dalek::SigningKey;
-use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use ref_cast::RefCast;
+use rusqlite::{params, CachedStatement, OptionalExtension, Params, Row, TransactionBehavior};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use trellis_protocol::{
@@ -13,6 +14,50 @@ use trellis_protocol::{
 };
 
 use super::revocation::{enqueue_scope, EnforcementScope};
+
+/// Auth's view of its SQLite connection.
+///
+/// Every statement Auth runs is constant text, so `query_row`, `execute`, and
+/// `prepare` go through the connection's prepared-statement cache instead of
+/// parsing and planning the SQL again on each call. Everything else is the
+/// ordinary rusqlite connection.
+#[derive(RefCast)]
+#[repr(transparent)]
+pub(crate) struct Connection(rusqlite::Connection);
+
+/// Covers the distinct statements of one busy path, such as admission, with room to spare.
+const STATEMENT_CACHE_CAPACITY: usize = 256;
+
+impl Connection {
+    pub(crate) fn new(connection: &rusqlite::Connection) -> &Self {
+        Self::ref_cast(connection)
+    }
+
+    pub(crate) fn query_row<T, P: Params, F: FnOnce(&Row<'_>) -> rusqlite::Result<T>>(
+        &self,
+        sql: &str,
+        params: P,
+        row: F,
+    ) -> rusqlite::Result<T> {
+        self.0.prepare_cached(sql)?.query_row(params, row)
+    }
+
+    pub(crate) fn execute<P: Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
+        self.0.prepare_cached(sql)?.execute(params)
+    }
+
+    pub(crate) fn prepare(&self, sql: &str) -> rusqlite::Result<CachedStatement<'_>> {
+        self.0.prepare_cached(sql)
+    }
+}
+
+impl std::ops::Deref for Connection {
+    type Target = rusqlite::Connection;
+
+    fn deref(&self) -> &rusqlite::Connection {
+        &self.0
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AuthError {
@@ -60,7 +105,7 @@ pub(crate) struct AuthSettings {
 
 /// Auth's existing platform database owns all policy and effect transactions.
 pub(crate) struct SqliteAuthorizationStore {
-    pub(super) connection: Mutex<Connection>,
+    pub(super) connection: Mutex<rusqlite::Connection>,
     pub(super) signer: SigningKey,
     pub(super) custody_directory: PathBuf,
     current_key: Mutex<Option<(String, SigningKey)>>,
@@ -89,7 +134,12 @@ pub(super) fn json(value: &impl Serialize) -> Result<String, AuthError> {
 }
 
 pub(super) fn digest(value: &impl Serialize) -> Result<String, AuthError> {
-    Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(json(value)?.as_bytes())))
+    Ok(text_digest(&json(value)?))
+}
+
+/// Content address of already canonical JSON text.
+pub(super) fn text_digest(canonical: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(canonical.as_bytes()))
 }
 
 pub(super) fn decode<T: DeserializeOwned>(value: &str) -> Result<T, AuthError> {
@@ -99,6 +149,16 @@ pub(super) fn decode<T: DeserializeOwned>(value: &str) -> Result<T, AuthError> {
 /// The wire timestamp for a stored Unix-seconds instant.
 pub(super) fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp, AuthError> {
     trellis_rs::generated::Timestamp::from_unix_seconds(seconds).map_err(|_| AuthError::Unavailable)
+}
+
+/// The active issuer key that `signer` signs for.
+pub(super) fn issuer_key(signer: &SigningKey) -> AuthorityIssuerKey {
+    let key = signer.verifying_key();
+    AuthorityIssuerKey {
+        key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(key.as_bytes())),
+        public_key: URL_SAFE_NO_PAD.encode(key.as_bytes()),
+        state: AuthorityIssuerState::Active,
+    }
 }
 
 pub(super) fn id() -> String {
@@ -208,7 +268,7 @@ impl SqliteAuthorizationStore {
     }
 
     fn from_configured_connection(
-        connection: Connection,
+        connection: rusqlite::Connection,
         config: &crate::RuntimeConfig,
         account: &str,
     ) -> Result<Self, crate::supervisor::RuntimeError> {
@@ -292,7 +352,7 @@ impl SqliteAuthorizationStore {
     /// Takes an ordinarily initialized platform connection. Initialization and
     /// schema checks remain owned by the normal storage migration runner.
     pub(crate) fn from_connection(
-        connection: Connection,
+        connection: rusqlite::Connection,
         signer: SigningKey,
         settings: AuthSettings,
         custody_directory: PathBuf,
@@ -322,6 +382,7 @@ impl SqliteAuthorizationStore {
         }
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         Ok(Self {
             connection: Mutex::new(connection),
             signer,
@@ -333,30 +394,19 @@ impl SqliteAuthorizationStore {
     }
 
     fn initial_issuer(&self) -> AuthorityIssuerKey {
-        let key = self.signer.verifying_key();
-        AuthorityIssuerKey {
-            key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(key.as_bytes())),
-            public_key: URL_SAFE_NO_PAD.encode(key.as_bytes()),
-            state: AuthorityIssuerState::Active,
-        }
+        issuer_key(&self.signer)
     }
 
     pub(crate) fn issuer(&self) -> Result<AuthorityIssuerKey, AuthError> {
         let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        self.current_issuer(&connection)
+        self.current_issuer(Connection::new(&connection))
     }
 
     pub(super) fn current_issuer(
         &self,
         connection: &Connection,
     ) -> Result<AuthorityIssuerKey, AuthError> {
-        let signer = self.current_signer(connection)?;
-        let key = signer.verifying_key();
-        Ok(AuthorityIssuerKey {
-            key_id: URL_SAFE_NO_PAD.encode(Sha256::digest(key.as_bytes())),
-            public_key: URL_SAFE_NO_PAD.encode(key.as_bytes()),
-            state: AuthorityIssuerState::Active,
-        })
+        Ok(issuer_key(&self.current_signer(connection)?))
     }
 
     /// Capture the configured native trust pin and its persisted rotation position.
@@ -364,7 +414,8 @@ impl SqliteAuthorizationStore {
         &self,
     ) -> Result<trellis_rs::client::RuntimeAuthorizationTrust, AuthError> {
         let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        let issuer = self.current_issuer(&connection)?;
+        let connection = Connection::new(&connection);
+        let issuer = self.current_issuer(connection)?;
         let (current, rotation_sequence): (bool, u64) = connection.query_row(
             "SELECT EXISTS(SELECT 1 \
             FROM auth_authorization_issuers \
@@ -400,7 +451,7 @@ impl SqliteAuthorizationStore {
     ) -> Result<T, AuthError> {
         let mut connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let result = operation(&transaction)?;
+        let result = operation(Connection::new(&transaction))?;
         transaction.commit()?;
         Ok(result)
     }

@@ -10,6 +10,7 @@ use super::{
     oidc::{UpstreamFlow, VerifiedIdentity},
     OAuthEngine, OAuthStorage,
 };
+use crate::platform::auth::sqlite::Connection;
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
@@ -18,7 +19,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use oauth_as::error::ErrorCode;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::sync::Arc;

@@ -21,7 +21,7 @@ pub(super) const CONSUMER_RUNTIME_CAPABILITY: &str = "trellis.events@v1::consume
 
 /// The automatically assigned runtime right must never expand into domain actions.
 pub(super) fn native_health_capability(
-    connection: &rusqlite::Connection,
+    connection: &crate::platform::auth::sqlite::Connection,
 ) -> Result<trellis_protocol::CapabilityAuthority, AuthError> {
     let cap = capability(connection, SELF_HEALTH_CAPABILITY)?;
     let mut statement = connection.prepare(
@@ -129,7 +129,7 @@ impl BuiltinProviderSource {
 
     fn lookup<C: trellis_rs::generated::ParticipantDescriptor>(
         &self,
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         now: i64,
     ) -> Result<ProvisionedDeployment, AuthError> {
         let row = connection
@@ -352,7 +352,7 @@ impl SqliteAuthorizationStore {
     /// a principal or allocating resources. Resource producers commit actual
     /// bindings separately before the credential can be admitted.
     pub(super) fn install_deployment_in_transaction(
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         input: &DeploymentProvisioning,
         existing: Option<&str>,
         title: &str,
@@ -723,7 +723,7 @@ impl SqliteAuthorizationStore {
     /// Provision one immutable credential/principal/instance aggregate against
     /// the exact installed deployment revision and approved capability selection.
     pub(super) fn provision_instance_in_transaction(
-        connection: &rusqlite::Connection,
+        connection: &crate::platform::auth::sqlite::Connection,
         deployment: &str,
         public_key: Option<&str>,
         title: &str,

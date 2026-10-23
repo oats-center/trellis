@@ -4,8 +4,9 @@ use super::{
     rpc::{caller, mutation, rpc_error},
     sqlite::{digest, AuthError, Mutation, SqliteAuthorizationStore},
 };
+use crate::platform::auth::sqlite::Connection;
 use async_nats::jetstream::{context::GetStreamErrorKind, stream::ConsumerErrorKind, ErrorCode};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
 use trellis_protocol::PlatformPrivilege;
 use trellis_rs::generated::ParticipantDescriptor;
