@@ -157,15 +157,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
 .await.map_err(rpc_error)
         }
     });
-    provider.register_authority_status(move |context, input| {
-        let store = store.clone();
-        async move {
-            caller(&context, None).map_err(rpc_error)?;
-            blocking(move || store.authorization_session_status(input.authorization_session_id))
-                .await
-                .map_err(rpc_error)
-        }
-    });
 }
 
 /// Read the caller authorized by the registered route, including only privileges

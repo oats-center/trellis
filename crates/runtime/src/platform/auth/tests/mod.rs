@@ -543,3 +543,15 @@ pub(super) fn fixture() -> Fixture {
 fn drain(store: &SqliteAuthorizationStore, now: i64) {
     while store.enforce_next_page(now).unwrap().is_some() {}
 }
+
+/// The signed-metadata status of one logical session.
+pub(super) fn session_status(
+    store: &SqliteAuthorizationStore,
+    session: &str,
+) -> trellis_protocol::AuthorizationSessionStatus {
+    store
+        .read(|connection| {
+            SqliteAuthorizationStore::authorization_session_status_in(connection, session)
+        })
+        .unwrap()
+}

@@ -62,12 +62,6 @@ import {
   AuthAuthorityRenewResponse,
   AuthAdmissionRenewRequest,
   AuthAdmissionRenewResponse,
-  AuthAuthorityResolveRequest,
-  AuthAuthorityResolveResponse,
-  AuthAuthorityStatusRequest,
-  AuthAuthorityStatusResponse,
-  AuthIssuerChainRequest,
-  AuthIssuerChainResponse,
   AuthIssuerRotateRequest,
   AuthIssuerRotateResponse,
   AuthIssuerRevokeRequest,
@@ -188,9 +182,6 @@ api auth@v1 {
   // request, change the ephemeral key, or renew a retired session.
   rpc Authority.Renew { input AuthAuthorityRenewRequest; output AuthAuthorityRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Admission.Renew { input AuthAdmissionRenewRequest; output AuthAdmissionRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  rpc Authority.Resolve { input AuthAuthorityResolveRequest; output AuthAuthorityResolveResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  rpc Authority.Status { input AuthAuthorityStatusRequest; output AuthAuthorityStatusResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  rpc Issuers.ResolveChain { input AuthIssuerChainRequest; output AuthIssuerChainResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Sessions.Me { input AuthEmpty; output AuthSessionsMeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Sessions.Logout { input AuthEmpty; output AuthSessionsLogoutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 

@@ -71,14 +71,14 @@ the exact request, response, and error types.
 
 | Family                | RPCs                                                                                                                                                                             |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Own authority         | `Authority.Resolve`, `Authority.Renew`, `Authority.Status`, `Admission.Renew`                                                                                                    |
+| Own authority         | `Authority.Renew`, `Admission.Renew`                                                                                                                                             |
 | APIs and capabilities | `Apis.List/Get/Review/Accept/ForceReplace`, `Capabilities.List`                                                                                                                  |
 | Capability grants     | `CapabilityGrants.Grant/List/Revoke`, `Delegations.List/Review/Revoke`                                                                                                           |
 | Roles and privileges  | `Roles.*`, `RoleAssignments.*`, `PlatformPrivileges.*`, `PlatformDelegations.*`                                                                                                  |
 | Principals            | `Principals.EffectiveAccess`                                                                                                                                                     |
 | OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`                                                                                                                                       |
 | Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                          |
-| Issuers               | `Issuers.Rotate`, `Issuers.ResolveChain`, `Issuers.Revoke`                                                                                                                       |
+| Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                               |
 | Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`                                                                                                                        |
 | Service instances     | `ServiceInstances.Provision/List/Disable/Enable/Remove`                                                                                                                          |
 | Devices               | `Devices.Provision/List/Disable/Enable/Remove`, `Devices.Reviews.*`, `DeviceCompanions.Attach/Revoke`                                                                            |

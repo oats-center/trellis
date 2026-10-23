@@ -36,10 +36,11 @@ import {
   verifySessionResponseWasm,
   type IssuerMetadataQuery,
   type IssuerMetadataResponse,
+  authorizationSessionStatusSchema,
+  signedBytes,
 } from "./protocol_wasm.ts";
 import { payloadSha256 } from "./message_digests.ts";
 import { type JsonValue } from "./utils.ts";
-import { AuthAuthorityStatusResponseCodec } from "../internal_sdk/generated/types/_internal/p0.js";
 import { requestIssuerMetadata } from "./issuer_metadata.ts";
 
 const authorityLeaseToken = Symbol("verified authority lease");
@@ -930,7 +931,7 @@ export class SessionAuthorityOwner {
         });
         if (metadata.result.kind !== "value")
           throw new Error("historical revocation resolution unavailable");
-        const status = AuthAuthorityStatusResponseCodec.decode(
+        const status = authorizationSessionStatusSchema.parse(
           JSON.parse(metadata.result.payload),
         );
         if (status.authorizationSessionId !== hints.authorizationSessionId)
@@ -938,7 +939,7 @@ export class SessionAuthorityOwner {
         if (status.revocation) {
           const revocation = await this.#verifyMetadata(
             "revocation",
-            status.revocation,
+            signedBytes(status.revocation),
           );
           if (
             revocation.record.authorizationSessionId !==
@@ -1331,14 +1332,14 @@ export class SessionAuthorityOwner {
         query.kind === "authorityStatus" &&
         response.result.kind === "value"
       ) {
-        const status = AuthAuthorityStatusResponseCodec.decode(
+        const status = authorizationSessionStatusSchema.parse(
           JSON.parse(response.result.payload),
         );
         if (status.authorizationSessionId !== query.authorizationSessionId)
           throw new Error("issuer metadata status identity mismatch");
         if (status.revocation)
           await this.observeRevocation(
-            status.revocation,
+            signedBytes(status.revocation),
             query.authorizationSessionId,
             () =>
               epoch === this.#mirrorEpoch &&

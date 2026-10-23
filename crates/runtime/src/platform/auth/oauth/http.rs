@@ -309,7 +309,7 @@ async fn avatar(State(engine): State<Arc<OAuthEngine>>, Path(token): Path<String
 async fn issuer_chain(
     State(engine): State<Arc<OAuthEngine>>,
     query: Result<
-        Query<trellis_runtime_apis::types::AuthIssuerChainRequest>,
+        Query<trellis_protocol::IssuerChainRequest>,
         axum::extract::rejection::QueryRejection,
     >,
 ) -> Response {
@@ -331,10 +331,14 @@ async fn issuer_chain(
                     return Err(super::super::AuthError::Denied);
                 }
             }
-            let chain = super::super::rpc_credentials::read_chain(connection, &input)?;
-            for bytes in &chain.rotations {
+            let chain = super::super::rpc_credentials::read_chain(
+                connection,
+                &input.pinned_key_id,
+                &input.target_key_id,
+            )?;
+            for signed in &chain.rotations {
                 let rotation: trellis_protocol::SignedIssuerRotation =
-                    serde_json::from_slice(bytes.as_ref())?;
+                    serde_json::from_str(signed)?;
                 if super::super::SqliteAuthorizationStore::resolve_issuer_in(
                     connection,
                     &rotation.next_key_id,

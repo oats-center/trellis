@@ -155,7 +155,7 @@ and verifies its echoed signed registry ID; overlapping sockets never select
 the newest attachment as a fallback.
 
 Already admitted connections resolve public verification metadata through the
-read-only `trellis.auth.metadata.get` bootstrap, not administrative Authority.Status.
+read-only `trellis.auth.metadata.get` bootstrap; there is no typed Auth RPC for it.
 SDKs verify issuer signatures, pinned rotation trust, retained nonce/routing and
 freshness; missing/unavailable responses never clear revocation or grant authority.
 

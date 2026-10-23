@@ -2,14 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 import { apps } from "../../trellis-testkit/trellis/index.js";
-import {
-  AuthAuthorityResolveResponseCodec,
-  AuthAuthorityStatusResponseCodec,
-  AuthIssuerChainResponseCodec,
-} from "../../trellis-testkit/trellis/types/index.js";
 import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_auth.ts";
 import { connectNativeSession } from "../native.ts";
-import { createSessionAuthorityHandleWasm } from "../auth/protocol_wasm.ts";
+import {
+  authorityMaterialSchema,
+  authorizationSessionStatusSchema,
+  createSessionAuthorityHandleWasm,
+  issuerChainSchema,
+  signedBytes,
+} from "../auth/protocol_wasm.ts";
 
 test(
   "an admitted client without administrative authority resolves signed verification metadata",
@@ -45,7 +46,7 @@ test(
           if (status.result.kind !== "value")
             throw new Error("signed status unavailable");
           assert.equal(
-            AuthAuthorityStatusResponseCodec.decode(
+            authorizationSessionStatusSchema.parse(
               JSON.parse(status.result.payload),
             ).authorizationSessionId,
             lease.authority.authorizationSessionId,
@@ -57,11 +58,11 @@ test(
           assert.equal(resolved.result.kind, "value");
           if (resolved.result.kind !== "value")
             throw new Error("signed authority unavailable");
-          const material = AuthAuthorityResolveResponseCodec.decode(
+          const material = authorityMaterialSchema.parse(
             JSON.parse(resolved.result.payload),
           );
           const verified = await createSessionAuthorityHandleWasm({
-            authorityBytes: material.authority,
+            authorityBytes: signedBytes(material.authority),
             verification: {
               issuer: connected.owner.trustSnapshot.issuer,
               trellisInstanceId: connected.owner.instanceId,
@@ -84,7 +85,7 @@ test(
           assert.equal(chain.result.kind, "value");
           if (chain.result.kind !== "value")
             throw new Error("signed issuer chain unavailable");
-          AuthIssuerChainResponseCodec.decode(JSON.parse(chain.result.payload));
+          issuerChainSchema.parse(JSON.parse(chain.result.payload));
           lease.assertCurrent();
         } finally {
           lease.release();

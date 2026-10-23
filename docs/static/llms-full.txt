@@ -187,7 +187,6 @@ IssuerMetadataRequest/SignedIssuerMetadata messages resolve only requested
 authority material, logical status/cutoff, or pinned issuer rotation chains.
 Clients verify signatures, retained nonce/subject/reply/scope and freshness using
 pinned trust; Missing/Unavailable never clears revocation or grants authority.
-Administrative Authority.Status remains a separate protected typed RPC.
 
 Revision 7 Auth unions valid entitlements and intersects them with declared
 selection and approved consent in one authoritative transaction. Signed logical

@@ -1,7 +1,6 @@
 use super::*;
 use trellis_protocol::{
-    verify_issuer_metadata, IssuerMetadataQuery, IssuerMetadataRequest, IssuerMetadataResult,
-    ISSUER_METADATA_SUBJECT,
+    verify_issuer_metadata, IssuerMetadataQuery, IssuerMetadataRequest, ISSUER_METADATA_SUBJECT,
 };
 
 #[test]
@@ -46,13 +45,11 @@ fn public_metadata_retains_signed_cutoff_and_authenticates_rotated_issuer_withou
         NOW + 2,
     )
     .unwrap();
-    let IssuerMetadataResult::Value { payload } = verified.result() else {
+    let Some(trellis_protocol::IssuerMetadataValue::Status(status)) = verified.value() else {
         panic!("retired status remains retained")
     };
-    let status: trellis_runtime_apis::types::AuthAuthorityStatusResponse =
-        serde_json::from_str(payload).unwrap();
     let cutoff: trellis_protocol::SignedSessionRevocation =
-        serde_json::from_slice(&status.revocation.unwrap().0 .0).unwrap();
+        serde_json::from_str(status.revocation.as_deref().unwrap()).unwrap();
     cutoff
         .verify(
             &original,
@@ -137,13 +134,11 @@ fn public_metadata_retains_signed_cutoff_and_authenticates_rotated_issuer_withou
         NOW + 4,
     )
     .unwrap();
-    let IssuerMetadataResult::Value { payload } = verified.result() else {
+    let Some(trellis_protocol::IssuerMetadataValue::Chain(chain)) = verified.value() else {
         panic!("rotation proof is resolvable")
     };
-    let chain: trellis_runtime_apis::types::AuthIssuerChainResponse =
-        serde_json::from_str(payload).unwrap();
     assert_eq!(chain.rotations.len(), 1);
     let resolved: trellis_protocol::SignedIssuerRotation =
-        serde_json::from_slice(&chain.rotations[0].0 .0).unwrap();
+        serde_json::from_str(&chain.rotations[0]).unwrap();
     assert_eq!(resolved, rotation);
 }

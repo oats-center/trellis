@@ -1201,9 +1201,14 @@ fn issuer_metadata_authenticates_public_material_and_absence_for_one_exchange() 
             context_digest: authority.digest().unwrap(),
         },
     };
-    let subject = "rpc.trellis.auth.Authority.Resolve";
+    let subject = trellis_protocol::ISSUER_METADATA_SUBJECT;
     let reply = "_INBOX.runtime.metadata";
-    let payload = serde_json::to_string(&authority).unwrap();
+    let material = trellis_protocol::AuthorityMaterial {
+        authority: serde_json::to_string(&authority).unwrap(),
+        catalogs: vec![],
+        providers: vec![],
+    };
+    let payload = serde_json::to_string(&material).unwrap();
     let signed = sign_issuer_metadata(
         IssuerMetadata {
             format: ISSUER_METADATA_DOMAIN_V1.into(),
@@ -1234,6 +1239,10 @@ fn issuer_metadata_authenticates_public_material_and_absence_for_one_exchange() 
     let verified = verify(&bytes, &request, reply).unwrap();
     assert!(
         matches!(verified.result(), IssuerMetadataResult::Value { payload: got } if got == &payload)
+    );
+    assert_eq!(
+        verified.value(),
+        Some(&trellis_protocol::IssuerMetadataValue::Authority(material))
     );
     let mut changed = signed.clone();
     changed.response.result = IssuerMetadataResult::Missing;

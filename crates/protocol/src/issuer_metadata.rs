@@ -111,19 +111,98 @@ pub struct SignedIssuerMetadata {
     pub signature: String,
 }
 
+/// `AuthorityResolve` answer: one immutable authority and the signed material
+/// that verifies it. Each entry is the exact signed JSON text the issuer stored.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthorityMaterial {
+    /// Signed session authority.
+    pub authority: String,
+    /// Signed catalog snapshot of each API the authority references, in order.
+    pub catalogs: Vec<String>,
+    /// Signed provider certificate of each provider binding, in order.
+    pub providers: Vec<String>,
+}
+
+/// Lifecycle of a logical authorization session.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AuthorizationSessionState {
+    /// Still issuing authority.
+    Active,
+    /// Replaced by a newer session for the same binding.
+    Superseded,
+    /// Retired with a signed cutoff.
+    Revoked,
+}
+
+/// `AuthorityStatus` answer: the session's state and, once it is no longer
+/// active, its signed revocation cutoff.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AuthorizationSessionStatus {
+    /// Logical session the query named.
+    pub authorization_session_id: String,
+    /// Current lifecycle state.
+    pub state: AuthorizationSessionState,
+    /// Exact signed revocation JSON, once the issuer has recorded a cutoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation: Option<String>,
+}
+
+/// `IssuerChain` answer, also served over HTTP for cold-start trust recovery.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IssuerChain {
+    /// Exact signed rotation JSON from the pinned key to the target, oldest first.
+    pub rotations: Vec<String>,
+}
+
+/// HTTP issuer-chain query: rotations linking a trusted key to a selected key.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IssuerChainRequest {
+    /// Previously trusted issuer key digest.
+    pub pinned_key_id: String,
+    /// Requested issuer key digest; it is not itself a trust anchor.
+    pub target_key_id: String,
+}
+
+/// A verified answer, decoded for the query that asked for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IssuerMetadataValue {
+    /// A historical, non-active issuer key.
+    IssuerKey(AuthorityIssuerKey),
+    /// Immutable authority material.
+    Authority(AuthorityMaterial),
+    /// Logical session status.
+    Status(AuthorizationSessionStatus),
+    /// Rotation chain.
+    Chain(IssuerChain),
+}
+
 /// Metadata authenticated for one exact retained exchange.
 #[derive(Debug)]
-pub struct VerifiedIssuerMetadata(SignedIssuerMetadata);
+pub struct VerifiedIssuerMetadata {
+    signed: SignedIssuerMetadata,
+    value: Option<IssuerMetadataValue>,
+}
 
 impl VerifiedIssuerMetadata {
     /// Verified public result; callers must not turn unavailability into absence.
     pub fn result(&self) -> &IssuerMetadataResult {
-        &self.0.response.result
+        &self.signed.response.result
+    }
+
+    /// The decoded answer, or `None` when the issuer reported the object missing
+    /// or unavailable.
+    pub fn value(&self) -> Option<&IssuerMetadataValue> {
+        self.value.as_ref()
     }
 
     /// Authenticated complete statement for public-material decoding and caching.
     pub fn response(&self) -> &IssuerMetadata {
-        &self.0.response
+        &self.signed.response
     }
 }
 
@@ -282,18 +361,52 @@ pub fn verify_issuer_metadata(
                 "invalid issuer metadata signature",
             )
         })?;
-    if let (IssuerMetadataQuery::IssuerKey { key_id }, IssuerMetadataResult::Value { payload }) =
-        (&request.query, &response.result)
-    {
-        let historical: AuthorityIssuerKey = serde_json::from_str(payload)?;
-        historical.verifying_key()?;
-        if historical.key_id != *key_id || historical.state == AuthorityIssuerState::Active {
-            return Err(authorization_error(
-                AuthorizationErrorCode::ScopeMismatch,
-                [],
-                "invalid historical issuer statement",
-            ));
+    let value = match &response.result {
+        IssuerMetadataResult::Value { payload } => Some(decode_value(&request.query, payload)?),
+        IssuerMetadataResult::Missing | IssuerMetadataResult::Unavailable => None,
+    };
+    Ok(VerifiedIssuerMetadata { signed, value })
+}
+
+/// Decode a signed payload as the answer to `query`, rejecting one that answers
+/// a different question.
+fn decode_value(
+    query: &IssuerMetadataQuery,
+    payload: &str,
+) -> Result<IssuerMetadataValue, ProtocolError> {
+    let mismatch = |reason| authorization_error(AuthorizationErrorCode::ScopeMismatch, [], reason);
+    let malformed = |_| {
+        authorization_error(
+            AuthorizationErrorCode::InvalidFormat,
+            [],
+            "invalid issuer metadata payload",
+        )
+    };
+    Ok(match query {
+        IssuerMetadataQuery::IssuerKey { key_id } => {
+            let historical: AuthorityIssuerKey =
+                serde_json::from_str(payload).map_err(malformed)?;
+            historical.verifying_key()?;
+            if historical.key_id != *key_id || historical.state == AuthorityIssuerState::Active {
+                return Err(mismatch("invalid historical issuer statement"));
+            }
+            IssuerMetadataValue::IssuerKey(historical)
         }
-    }
-    Ok(VerifiedIssuerMetadata(signed))
+        IssuerMetadataQuery::AuthorityResolve { .. } => {
+            IssuerMetadataValue::Authority(serde_json::from_str(payload).map_err(malformed)?)
+        }
+        IssuerMetadataQuery::AuthorityStatus {
+            authorization_session_id,
+        } => {
+            let status: AuthorizationSessionStatus =
+                serde_json::from_str(payload).map_err(malformed)?;
+            if status.authorization_session_id != *authorization_session_id {
+                return Err(mismatch("status for another authorization session"));
+            }
+            IssuerMetadataValue::Status(status)
+        }
+        IssuerMetadataQuery::IssuerChain { .. } => {
+            IssuerMetadataValue::Chain(serde_json::from_str(payload).map_err(malformed)?)
+        }
+    })
 }

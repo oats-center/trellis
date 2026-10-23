@@ -789,10 +789,14 @@ attachment; foreign, disconnected, and missing attachments deny.
 
 Already admitted Trellis connections may publish bounded public verification
 lookups to `trellis.auth.metadata.get`, regardless of administrative capability.
-This dedicated read-only bootstrap uses the existing IssuerMetadataRequest and
-SignedIssuerMetadata protocol for AuthorityResolve, AuthorityStatus, and
-IssuerChain. Administrative Authority.Status remains a separate protected typed
-RPC, never an alternate decoder or alias. The responder shares OwnContext's
+This dedicated read-only bootstrap uses the IssuerMetadataRequest and
+SignedIssuerMetadata protocol for IssuerKey, AuthorityResolve, AuthorityStatus,
+and IssuerChain. It is the only NATS path for this material; there are no typed
+Auth RPCs for it. Its answers are protocol types (`AuthorityMaterial`,
+`AuthorizationSessionStatus`, `IssuerChain`) carrying the exact signed JSON of
+each artifact, and verification decodes them for the query that asked. The
+HTTP issuer chain serves the same `IssuerChain` for clients that have no NATS
+connection yet. The responder shares OwnContext's
 lifecycle and bounded concurrency; the ordinary Callout ACL grants only the
 exact metadata subject. There is no anonymous listener or account admission.
 Replies are bounded and restricted to ordinary `_INBOX.*` destinations, with
@@ -847,10 +851,7 @@ actual bindings, using configured native endpoints, the store's issuer pin, and
 the provisioned identity seed through ordinary Callout and signed own-context.
 
 The host must start Callout, ContextGet, and registry publication before invoking
-that helper, and own its returned service runtime. Its generated
-`Authority.Status` handler projects the persisted logical lifecycle and retained
-signed cutoff. The SDK's separate historical issuer-metadata exchange is not
-this typed management RPC. Operation repositories and staging stores participate
+that helper, and own its returned service runtime. Operation repositories and staging stores participate
 in deployment resource materialization and are committed before provider
 admission. Missing previously committed storage fails closed rather than being
 recreated empty.

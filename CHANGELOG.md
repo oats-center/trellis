@@ -73,6 +73,14 @@ and this project adheres to
 
 ### Changed
 
+- Signed issuer-metadata answers are `trellis-protocol` types:
+  `AuthorityMaterial`, `AuthorizationSessionStatus`, and `IssuerChain`, each
+  carrying the exact signed JSON of its artifacts. `verify_issuer_metadata`
+  decodes the answer for the query and exposes it as
+  `VerifiedIssuerMetadata::value`; TypeScript exports matching schemas. The
+  HTTP issuer chain returns `IssuerChain`, and the status answer carries only
+  the session ID, state, and signed revocation.
+
 - Native admission is about 2.8 times faster (6.5 ms to 2.3 ms per connection
   in a release build), and its first ContextGet 2.6 times (6.4 ms to 2.4 ms).
   Auth caches its prepared SQL statements, evaluates each admission once, signs
@@ -154,6 +162,10 @@ and this project adheres to
 - **Breaking:** `discover_native_oauth` takes the trusted root certificates.
 
 ### Removed
+
+- The `Authority.Resolve`, `Authority.Status`, and `Issuers.ResolveChain` Auth
+  RPCs and their models. Clients already read this material through the signed
+  `trellis.auth.metadata.get` exchange and the HTTP issuer chain, which remain.
 
 - **Breaking:** `AuthEnforcementState.failed`. Enforcement never gives up: a
   page or kick that fails is retried, and `failedKicks` reports kicks that

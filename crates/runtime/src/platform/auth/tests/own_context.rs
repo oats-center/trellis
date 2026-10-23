@@ -359,11 +359,8 @@ fn context_get_retires_expired_or_revoked_credentials_before_the_enforcement_wor
         assert_eq!(cutoff.effective_cutoff, now);
         if revoked {
             assert_eq!(
-                f.store
-                    .authorization_session_status(session.parse().unwrap())
-                    .unwrap()
-                    .state,
-                trellis_runtime_apis::types::AuthAuthorizationSessionState::Revoked,
+                crate::platform::auth::tests::session_status(&f.store, session).state,
+                trellis_protocol::AuthorizationSessionState::Revoked,
             );
         }
         assert_eq!(

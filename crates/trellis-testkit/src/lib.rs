@@ -188,7 +188,7 @@ mod tests {
         use futures_util::StreamExt as _;
         use trellis_protocol::{
             verify_issuer_metadata, IssuerMetadataQuery, IssuerMetadataRequest,
-            IssuerMetadataResult, ISSUER_METADATA_SUBJECT,
+            IssuerMetadataResult, IssuerMetadataValue, ISSUER_METADATA_SUBJECT,
         };
         let mut runtime = TrellisTestRuntime::builder().start().await.unwrap();
         let identity = runtime
@@ -250,39 +250,34 @@ mod tests {
                 now,
             )
             .unwrap();
-            let IssuerMetadataResult::Value { payload } = verified.result() else {
-                panic!("real admitted caller must resolve public verification material")
-            };
-            match &request.query {
-                IssuerMetadataQuery::IssuerKey { .. } => {
+            let value = verified
+                .value()
+                .expect("real admitted caller must resolve public verification material");
+            match value {
+                IssuerMetadataValue::IssuerKey(_) => {
                     unreachable!("this caller exercises context, session and rotation reads")
                 }
-                IssuerMetadataQuery::AuthorityResolve { .. } => {
-                    let resolved: trellis_runtime_apis::types::AuthAuthorityResolveResponse =
-                        serde_json::from_str(payload).unwrap();
+                IssuerMetadataValue::Authority(material) => {
                     assert_eq!(
-                        trellis_protocol::parse_session_authority(&resolved.authority.0 .0, 65536)
-                            .unwrap(),
+                        trellis_protocol::parse_session_authority(
+                            material.authority.as_bytes(),
+                            65536
+                        )
+                        .unwrap(),
                         context
                     );
                 }
-                IssuerMetadataQuery::AuthorityStatus { .. } => {
-                    let resolved: trellis_runtime_apis::types::AuthAuthorityStatusResponse =
-                        serde_json::from_str(payload).unwrap();
+                IssuerMetadataValue::Status(status) => {
                     assert_eq!(
-                        resolved.authorization_session_id.to_string(),
+                        status.authorization_session_id,
                         context.unsigned.authorization_session_id
                     );
                     assert_eq!(
-                        resolved.state,
-                        trellis_runtime_apis::types::AuthAuthorizationSessionState::Active
+                        status.state,
+                        trellis_protocol::AuthorizationSessionState::Active
                     );
                 }
-                IssuerMetadataQuery::IssuerChain { .. } => {
-                    let resolved: trellis_runtime_apis::types::AuthIssuerChainResponse =
-                        serde_json::from_str(payload).unwrap();
-                    assert!(resolved.rotations.is_empty());
-                }
+                IssuerMetadataValue::Chain(chain) => assert!(chain.rotations.is_empty()),
             }
             let mut substituted = request.clone();
             substituted.request_nonce = URL_SAFE_NO_PAD.encode([91; 16]);

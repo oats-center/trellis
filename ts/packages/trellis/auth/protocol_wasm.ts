@@ -5,6 +5,7 @@ import type {
 } from "./protocol_wasm/client/trellis_protocol_wasm.js";
 import * as clientProtocolWasm from "./protocol_wasm/client/trellis_protocol_wasm.js";
 import type * as ProviderProtocolWasm from "./protocol_wasm/provider/trellis_protocol_wasm.js";
+import { z } from "zod";
 import { base64urlDecode, type JsonValue } from "./utils.ts";
 
 type JsonObject = { [key: string]: JsonValue };
@@ -552,6 +553,42 @@ export type IssuerMetadataResponse = {
   result:
     { kind: "value"; payload: string } | { kind: "missing" | "unavailable" };
 };
+
+/** Exact signed JSON text of one issuer-signed artifact. */
+const signedText = z.string().min(1);
+
+/** `authorityResolve` answer: an immutable authority and its signed material. */
+export const authorityMaterialSchema = z
+  .object({
+    authority: signedText,
+    catalogs: z.array(signedText),
+    providers: z.array(signedText),
+  })
+  .strict();
+export type AuthorityMaterial = z.infer<typeof authorityMaterialSchema>;
+
+/** `authorityStatus` answer: a logical session's state and any signed cutoff. */
+export const authorizationSessionStatusSchema = z
+  .object({
+    authorizationSessionId: z.string(),
+    state: z.enum(["active", "superseded", "revoked"]),
+    revocation: signedText.optional(),
+  })
+  .strict();
+export type AuthorizationSessionStatus = z.infer<
+  typeof authorizationSessionStatusSchema
+>;
+
+/** `issuerChain` answer and the HTTP issuer-chain response, oldest rotation first. */
+export const issuerChainSchema = z
+  .object({ rotations: z.array(signedText).max(128) })
+  .strict();
+export type IssuerChain = z.infer<typeof issuerChainSchema>;
+
+/** The bytes the verifiers take for a signed artifact's JSON text. */
+export function signedBytes(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
 
 /** Read the shared protocol's admitted-only metadata route. */
 export async function issuerMetadataSubjectWasm(): Promise<string> {

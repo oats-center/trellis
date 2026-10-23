@@ -453,20 +453,6 @@ model AuthAuthorityRenewResponse {
 }
 model AuthAdmissionRenewRequest { contextDigest: AuthDigest; }
 model AuthAdmissionRenewResponse { admissionCredential: string; expiresAt: timestamp; }
-model AuthAuthorityResolveRequest { contextDigest: AuthDigest; }
-model AuthAuthorityResolveResponse { authority: AuthSignedBlob; catalog: AuthSignedBlob; providers: list<AuthSignedBlob>; }
-model AuthAuthorityStatusRequest { authorizationSessionId: ulid; }
-model AuthAuthorityStatusResponse {
-  authorizationSessionId: ulid;
-  state: AuthAuthorizationSessionState;
-  cutoff?: timestamp;
-  reason?: AuthRevocationReason;
-  maximumContextExpiresAt?: timestamp;
-  revocation?: AuthSignedBlob;
-  enforcement?: AuthEnforcementProgress;
-}
-model AuthIssuerChainRequest { pinnedKeyId: AuthKeyId; targetKeyId: AuthKeyId; }
-model AuthIssuerChainResponse { rotations: list<AuthSignedBlob>; }
 model AuthIssuerRotateRequest { expectedCurrentKeyId: AuthKeyId; idempotencyKey: AuthIdempotencyKey; }
 model AuthIssuerRotateResponse { keyId: AuthKeyId; rotation: AuthSignedBlob; }
 model AuthIssuerRevokeRequest { keyId: AuthKeyId; idempotencyKey: AuthIdempotencyKey; }

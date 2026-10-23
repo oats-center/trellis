@@ -688,16 +688,11 @@ fn typed_status_reports_committed_retirement_and_keeps_issued_authority() {
     let f = fixture();
     let issued =
         crate::platform::auth::tests::issue_authority(&f.store, &f.admission, None, NOW).unwrap();
-    let session = issued
-        .authority
-        .unsigned
-        .authorization_session_id
-        .parse()
-        .unwrap();
-    let before = f.store.authorization_session_status(session).unwrap();
+    let session = issued.authority.unsigned.authorization_session_id.clone();
+    let before = crate::platform::auth::tests::session_status(&f.store, &session);
     assert_eq!(
         before.state,
-        trellis_runtime_apis::types::AuthAuthorizationSessionState::Active
+        trellis_protocol::AuthorizationSessionState::Active
     );
     let scope = super::super::EnforcementScope::Grant(f.grant.clone());
     crate::platform::auth::tests::revoke_root(
@@ -708,24 +703,14 @@ fn typed_status_reports_committed_retirement_and_keeps_issued_authority() {
     )
     .unwrap();
     while f.store.enforce_next_page(NOW + 1).unwrap().is_some() {}
-    let status = f
-        .store
-        .authorization_session_status(
-            issued
-                .authority
-                .unsigned
-                .authorization_session_id
-                .parse()
-                .unwrap(),
-        )
-        .unwrap();
+    let status = crate::platform::auth::tests::session_status(&f.store, &session);
     let evidence = status.revocation.unwrap();
     let cutoff: trellis_protocol::SignedSessionRevocation =
-        serde_json::from_slice(&evidence.0 .0).unwrap();
+        serde_json::from_str(&evidence).unwrap();
     assert_eq!(cutoff.effective_cutoff, NOW + 1);
     assert_eq!(
         status.state,
-        trellis_runtime_apis::types::AuthAuthorizationSessionState::Revoked
+        trellis_protocol::AuthorizationSessionState::Revoked
     );
     assert_eq!(
         crate::platform::auth::tests::resolve_authority(&f.store, &issued.digest).unwrap(),

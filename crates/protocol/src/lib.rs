@@ -61,9 +61,10 @@ pub use catalog::{
 pub use error::{AuthorizationErrorCode, ProtocolError, SessionProofErrorCode};
 pub use identifiers::validate_api_id;
 pub use issuer_metadata::{
-    sign_issuer_metadata, verify_issuer_metadata, IssuerMetadata, IssuerMetadataQuery,
-    IssuerMetadataRequest, IssuerMetadataResult, SignedIssuerMetadata, VerifiedIssuerMetadata,
-    ISSUER_METADATA_SUBJECT,
+    sign_issuer_metadata, verify_issuer_metadata, AuthorityMaterial, AuthorizationSessionState,
+    AuthorizationSessionStatus, IssuerChain, IssuerChainRequest, IssuerMetadata,
+    IssuerMetadataQuery, IssuerMetadataRequest, IssuerMetadataResult, IssuerMetadataValue,
+    SignedIssuerMetadata, VerifiedIssuerMetadata, ISSUER_METADATA_SUBJECT,
 };
 pub use live::{
     build_live_server_proof_input, derive_live_data_subject, derive_live_observe_subject,

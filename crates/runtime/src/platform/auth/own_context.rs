@@ -307,25 +307,13 @@ impl SqliteAuthorizationStore {
                 }
                 IssuerMetadataQuery::AuthorityStatus {
                     authorization_session_id,
-                } => {
-                    let session = authorization_session_id
-                        .parse()
-                        .map_err(|_| AuthError::Denied)?;
-                    Self::authorization_session_status_in(connection, session)
-                        .and_then(|value| Ok(serde_json::to_string(&value)?))
-                }
+                } => Self::authorization_session_status_in(connection, authorization_session_id)
+                    .and_then(|value| Ok(serde_json::to_string(&value)?)),
                 IssuerMetadataQuery::IssuerChain {
                     pinned_key_id,
                     target_key_id,
-                } => super::rpc_credentials::read_chain(
-                    connection,
-                    &trellis_runtime_apis::types::AuthIssuerChainRequest {
-                        pinned_key_id: pinned_key_id.clone().into(),
-                        target_key_id: target_key_id.clone().into(),
-                        extra: Default::default(),
-                    },
-                )
-                .and_then(|value| Ok(serde_json::to_string(&value)?)),
+                } => super::rpc_credentials::read_chain(connection, pinned_key_id, target_key_id)
+                    .and_then(|value| Ok(serde_json::to_string(&value)?)),
             };
             response.result = match result {
                 Ok(payload) => IssuerMetadataResult::Value { payload },

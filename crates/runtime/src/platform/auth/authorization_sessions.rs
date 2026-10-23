@@ -478,6 +478,11 @@ pub(super) fn credential_snapshot(
     }
 }
 
+/// Stored signed artifacts are canonical JSON text.
+pub(super) fn signed_text(bytes: Vec<u8>) -> Result<String, AuthError> {
+    String::from_utf8(bytes).map_err(|_| AuthError::Unavailable)
+}
+
 pub(super) fn session_credential(
     connection: &Connection,
     session: &str,
@@ -1062,70 +1067,34 @@ impl SqliteAuthorizationStore {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    /// Read the persisted logical lifecycle and its immutable retirement evidence
-    /// in one snapshot for the ordinary typed Authority.Status RPC.
-    pub(crate) fn authorization_session_status(
-        &self,
-        session: trellis_rs::generated::Ulid,
-    ) -> Result<trellis_runtime_apis::types::AuthAuthorityStatusResponse, AuthError> {
-        self.transaction(|connection| Self::authorization_session_status_in(connection, session))
-    }
-
+    /// The persisted logical lifecycle and its signed retirement evidence, read in
+    /// one snapshot for the signed metadata protocol.
     pub(super) fn authorization_session_status_in(
         connection: &Connection,
-        session: trellis_rs::generated::Ulid,
-    ) -> Result<trellis_runtime_apis::types::AuthAuthorityStatusResponse, AuthError> {
-        use trellis_runtime_apis::types::{AuthAuthorityStatusResponse, AuthSignedBlob};
-        let (state, latest, cutoff, reason, revocation): (
-            String,
-            i64,
-            Option<i64>,
-            Option<String>,
-            Option<Vec<u8>>,
-        ) = connection
+        session: &str,
+    ) -> Result<trellis_protocol::AuthorizationSessionStatus, AuthError> {
+        use trellis_protocol::AuthorizationSessionState;
+        let (state, revocation): (String, Option<Vec<u8>>) = connection
             .query_row(
-                "SELECT s.state,s.latest_context_expiry,r.effective_cutoff,r.reason,\
-                r.signed_bytes \
+                "SELECT s.state,r.signed_bytes \
                 FROM auth_authorization_sessions s \
                 LEFT JOIN auth_authorization_revocations r \
                 USING(authorization_session_id) \
                 WHERE s.authorization_session_id=?1",
-                [session.to_string()],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                [session],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?
             .ok_or(AuthError::NotFound)?;
-        let mut timestamps = Vec::new();
-        for value in [Some(latest), cutoff].into_iter().flatten() {
-            timestamps.push(super::sqlite::timestamp(value)?);
-        }
-        Ok(AuthAuthorityStatusResponse {
-            authorization_session_id: session,
-            state: state.into(),
-            maximum_context_expires_at: Some(timestamps.remove(0)),
-            cutoff: timestamps.pop(),
-            reason: match reason.as_deref() {
-                Some("session_revoked") => {
-                    Some(trellis_runtime_apis::types::AuthRevocationReason::ExplicitRevoke)
-                }
-                Some("policy_reduction" | "admission_reduction") => {
-                    Some(trellis_runtime_apis::types::AuthRevocationReason::PolicyReduced)
-                }
-                // Preserve the exact internal classification in signed evidence;
-                // do not invent a narrower public reason for a generic cutoff.
-                _ => None,
+        Ok(trellis_protocol::AuthorizationSessionStatus {
+            authorization_session_id: session.into(),
+            state: match state.as_str() {
+                "active" => AuthorizationSessionState::Active,
+                "superseded" => AuthorizationSessionState::Superseded,
+                "revoked" => AuthorizationSessionState::Revoked,
+                _ => return Err(AuthError::Unavailable),
             },
-            revocation: revocation.map(|bytes| AuthSignedBlob(bytes.into())),
-            enforcement: None,
-            extra: Default::default(),
+            revocation: revocation.map(signed_text).transpose()?,
         })
     }
 

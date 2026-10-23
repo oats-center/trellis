@@ -281,18 +281,12 @@ fn union_survives_one_entitlement_path_and_required_loss_retires_the_session() {
     );
     drain(&f.store, NOW + 2);
     assert_eq!(
-        f.store
-            .authorization_session_status(
-                issued
-                    .authority
-                    .unsigned
-                    .authorization_session_id
-                    .parse()
-                    .unwrap()
-            )
-            .unwrap()
-            .state,
-        trellis_runtime_apis::types::AuthAuthorizationSessionState::Superseded,
+        crate::platform::auth::tests::session_status(
+            &f.store,
+            &issued.authority.unsigned.authorization_session_id
+        )
+        .state,
+        trellis_protocol::AuthorizationSessionState::Superseded,
     );
     assert!(f
         .store

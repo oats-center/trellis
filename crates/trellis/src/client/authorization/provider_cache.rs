@@ -1926,8 +1926,7 @@ impl AuthorizationOwner {
     }
 
     /// Resolve fresh issuer-signed logical-session status for a retained publisher.
-    /// The dedicated admitted-connection metadata bootstrap returns signed
-    /// evidence; administrative Authority.Status remains a protected typed RPC.
+    /// The admitted-connection metadata exchange returns signed evidence.
     pub async fn historical_status(
         &self,
         transport: &async_nats::Client,
@@ -2004,8 +2003,6 @@ impl AuthorizationOwner {
         transport: &async_nats::Client,
         input: HistoricalEventVerificationInput<'_>,
     ) -> Result<VerifiedAuthorizationEvent, TrellisClientError> {
-        use crate::__types::trellis::{AuthAuthorityStatusResponse, AuthAuthorizationSessionState};
-
         let material = self
             .material(
                 transport,
@@ -2031,15 +2028,14 @@ impl AuthorizationOwner {
                 "historical status scope mismatch".into(),
             ));
         }
-        let IssuerMetadataResult::Value { payload } = input.status.result() else {
+        let Some(trellis_protocol::IssuerMetadataValue::Status(resolved)) = input.status.value()
+        else {
             return Err(TrellisClientError::AuthorizationUnavailable(
                 "historical status unavailable".into(),
             ));
         };
-        let resolved: AuthAuthorityStatusResponse = serde_json::from_str(payload)?;
-        if resolved.authorization_session_id.to_string() != signed.unsigned.authorization_session_id
-            || matches!(resolved.state, AuthAuthorizationSessionState::Unknown(_))
-            || (resolved.state != AuthAuthorizationSessionState::Active
+        if resolved.authorization_session_id != signed.unsigned.authorization_session_id
+            || (resolved.state != trellis_protocol::AuthorizationSessionState::Active
                 && resolved.revocation.is_none())
         {
             return Err(TrellisClientError::AuthorizationUnavailable(
@@ -2048,7 +2044,8 @@ impl AuthorizationOwner {
         }
         let revocation: Option<SignedSessionRevocation> = resolved
             .revocation
-            .map(|blob| serde_json::from_slice(&blob.0 .0))
+            .as_deref()
+            .map(serde_json::from_str)
             .transpose()?;
         let issuer = self
             .issuer(transport, &signed.unsigned.issuer_key_id)

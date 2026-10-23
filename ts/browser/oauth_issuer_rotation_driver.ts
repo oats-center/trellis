@@ -11,7 +11,7 @@ import { chromium, type Page } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { build } from "vite";
 import { z } from "zod";
-import { AuthIssuerChainResponseCodec } from "../packages/trellis-testkit/trellis/types/index.js";
+import { issuerChainSchema } from "../packages/trellis/auth/protocol_wasm.ts";
 import { apps } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { loginNativeTestClient } from "../packages/trellis-testkit/src/admin/native_auth.ts";
 import {
@@ -115,30 +115,22 @@ const proxy = createServer(tls, async (incoming, outgoing) => {
             response.statusCode === 200 &&
             chain !== "valid"
           ) {
-            const real = AuthIssuerChainResponseCodec.decode(
-              JSON.parse(bytes.toString()),
-            );
+            const real = issuerChainSchema.parse(JSON.parse(bytes.toString()));
             assert.ok(
               real.rotations.length > 0,
               "tampering requires a real signed successor",
             );
             if (chain === "missing") real.rotations.splice(0);
             else {
-              const rotation = JSON.parse(
-                Buffer.from(real.rotations[0]).toString(),
-              );
+              const rotation = JSON.parse(real.rotations[0]);
               assert.equal(typeof rotation.signature, "string");
               rotation.signature =
                 (rotation.signature[0] === "A" ? "B" : "A") +
                 rotation.signature.slice(1);
-              real.rotations[0] = new Uint8Array(
-                Buffer.from(JSON.stringify(rotation)),
-              );
+              real.rotations[0] = JSON.stringify(rotation);
             }
             tampered[chain]++;
-            bytes = Buffer.from(
-              JSON.stringify(AuthIssuerChainResponseCodec.encode(real)),
-            );
+            bytes = Buffer.from(JSON.stringify(real));
           }
           const headers = { ...response.headers };
           delete headers["transfer-encoding"];

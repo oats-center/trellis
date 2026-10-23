@@ -81,7 +81,7 @@ and verifies its echoed signed registry ID; overlapping sockets never select
 the newest attachment as a fallback.
 
 Already admitted connections use `trellis.auth.metadata.get` for issuer-signed
-public verification lookups, never administrative Authority.Status. Verify the
+public verification lookups; there is no typed Auth RPC for them. Verify the
 retained exchange and pinned issuer/rotation trust; broker delivery and missing
 or unavailable responses cannot grant authority or clear known revocation.
 

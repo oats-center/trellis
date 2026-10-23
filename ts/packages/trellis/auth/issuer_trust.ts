@@ -1,5 +1,5 @@
-import { AuthIssuerChainResponseCodec } from "../internal_sdk/generated/types/index.js";
 import { AuthError } from "../errors/AuthError.ts";
+import { issuerChainSchema, signedBytes } from "./protocol_wasm.ts";
 import {
   SessionAuthorityOwner,
   type RuntimeAuthorizationTrust,
@@ -65,13 +65,11 @@ export async function authenticateIssuerChain(
         bytes.set(chunk, offset);
         offset += chunk.length;
       }
-      const chain = AuthIssuerChainResponseCodec.decode(
+      const chain = issuerChainSchema.parse(
         JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
       );
-      if (chain.rotations.length > 128)
-        throw new Error("issuer chain budget exceeded");
       for (const rotation of chain.rotations)
-        await owner.acceptIssuerRotation(rotation);
+        await owner.acceptIssuerRotation(signedBytes(rotation));
     }
     const verified = owner.trustForCredential(anchor);
     if (

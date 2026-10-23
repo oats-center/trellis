@@ -435,8 +435,6 @@ impl NativeOAuthClient {
     }
 
     async fn refresh_trust(&mut self) -> Result<(), NativeOAuthError> {
-        use crate::__types::trellis::{AuthIssuerChainRequest, AuthIssuerChainResponse};
-
         let scope = self
             .lease
             .lock()
@@ -456,10 +454,9 @@ impl NativeOAuthClient {
         let mut authenticated = self.trust.clone();
         let mut verified_rotations = Vec::new();
         if target.issuer.key_id != authenticated.issuer.key_id {
-            let request = AuthIssuerChainRequest {
-                pinned_key_id: authenticated.issuer.key_id.clone().into(),
-                target_key_id: target.issuer.key_id.clone().into(),
-                extra: Default::default(),
+            let request = trellis_protocol::IssuerChainRequest {
+                pinned_key_id: authenticated.issuer.key_id.clone(),
+                target_key_id: target.issuer.key_id.clone(),
             };
             let mut uri = url::Url::parse(&format!(
                 "{}/.well-known/trellis/issuer-chain",
@@ -489,15 +486,15 @@ impl NativeOAuthClient {
                 }
                 bytes.extend_from_slice(&chunk);
             }
-            let chain: AuthIssuerChainResponse =
+            let chain: trellis_protocol::IssuerChain =
                 serde_json::from_slice(&bytes).map_err(|_| NativeOAuthError::TrustUnavailable)?;
             if chain.rotations.len() > 128 {
                 return Err(NativeOAuthError::TrustUnavailable);
             }
             let now = time::OffsetDateTime::now_utc().unix_timestamp();
             let mut seen = std::collections::BTreeSet::from([authenticated.issuer.key_id.clone()]);
-            for blob in chain.rotations {
-                let rotation: SignedIssuerRotation = serde_json::from_slice(&blob.0 .0)
+            for signed in chain.rotations {
+                let rotation: SignedIssuerRotation = serde_json::from_str(&signed)
                     .map_err(|_| NativeOAuthError::TrustUnavailable)?;
                 authenticated.issuer = rotation
                     .verify_successor(

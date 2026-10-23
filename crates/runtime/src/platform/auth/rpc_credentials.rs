@@ -474,15 +474,6 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          now| kick_connection(store, identity, input, now)
     );
     query!(
-        register_authority_resolve,
-        None,
-        |store: &SqliteAuthorizationStore,
-         _: &str,
-         _: &AuthenticatedCaller,
-         input: &AuthAuthorityResolveRequest| store
-            .transaction(|connection| read_authority(connection, &input.context_digest))
-    );
-    query!(
         register_authority_renew,
         None,
         |store: &SqliteAuthorizationStore,
@@ -494,15 +485,6 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
             input,
             crate::clock::unix_now()
         )
-    );
-    query!(
-        register_issuers_resolve_chain,
-        None,
-        |store: &SqliteAuthorizationStore,
-         _: &str,
-         _: &AuthenticatedCaller,
-         input: &AuthIssuerChainRequest| store
-            .transaction(|connection| read_chain(connection, input))
     );
     mutate!(
         register_issuers_revoke,
@@ -967,8 +949,17 @@ fn read_authorization_session(
         )
         .optional()?
         .ok_or(AuthError::NotFound)?;
+    let (state, latest, cutoff, reason): (String, i64, Option<i64>, Option<String>) = connection
+        .query_row(
+            "SELECT s.state,s.latest_context_expiry,r.effective_cutoff,r.reason \
+            FROM auth_authorization_sessions s \
+            LEFT JOIN auth_authorization_revocations r \
+            USING(authorization_session_id) \
+            WHERE s.authorization_session_id=?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
     let session = id.parse().map_err(|_| AuthError::Unavailable)?;
-    let status = SqliteAuthorizationStore::authorization_session_status_in(connection, session)?;
     let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
     Ok(AuthAuthorizationSession {
         authorization_session_id: session,
@@ -981,16 +972,26 @@ fn read_authorization_session(
         login_session_id: login.as_deref().map(ulid).transpose()?,
         oauth_grant_id: grant.as_deref().map(ulid).transpose()?,
         identity_key_id: identity.map(trellis_runtime_apis::types::AuthKeyId),
-        state: status.state.as_str().into(),
+        state: state.into(),
         created_at: timestamp(created)?,
         // Unbounded roots use the protocol-safe integer sentinel in storage,
         // not a fictitious expiry in the public management projection.
         not_after: (deadline != 9_007_199_254_740_991_i64)
             .then(|| timestamp(deadline))
             .transpose()?,
-        maximum_context_expires_at: status.maximum_context_expires_at,
-        retired_at: status.cutoff,
-        reason: status.reason,
+        maximum_context_expires_at: Some(timestamp(latest)?),
+        retired_at: cutoff.map(timestamp).transpose()?,
+        reason: match reason.as_deref() {
+            Some("session_revoked") => {
+                Some(trellis_runtime_apis::types::AuthRevocationReason::ExplicitRevoke)
+            }
+            Some("policy_reduction" | "admission_reduction") => {
+                Some(trellis_runtime_apis::types::AuthRevocationReason::PolicyReduced)
+            }
+            // Preserve the exact internal classification in signed evidence;
+            // do not invent a narrower public reason for a generic cutoff.
+            _ => None,
+        },
         extra: Default::default(),
     })
 }
@@ -1095,7 +1096,8 @@ pub(super) fn kick_connection(
 pub(super) fn read_authority(
     connection: &Connection,
     id: &str,
-) -> Result<AuthAuthorityResolveResponse, AuthError> {
+) -> Result<trellis_protocol::AuthorityMaterial, AuthError> {
+    use super::authorization_sessions::signed_text;
     let bytes: Vec<u8> = connection
         .query_row(
             "SELECT signed_bytes FROM auth_session_authorities WHERE context_digest=?1",
@@ -1115,10 +1117,9 @@ pub(super) fn read_authority(
             [&provider.provider_certificate_digest],
             |row| row.get(0),
         )?;
-        providers.push(AuthSignedBlob(bytes.into()));
+        providers.push(signed_text(bytes)?);
     }
-    // SessionAuthority has one snapshot reference per API. The contract's blob
-    // carries their existing signed snapshot collection, not unsigned catalogs.
+    // SessionAuthority has one snapshot reference per API.
     let mut catalogs = Vec::new();
     for api in &authority.unsigned.apis {
         let bytes: Vec<u8> = connection.query_row(
@@ -1126,13 +1127,12 @@ pub(super) fn read_authority(
             [&api.catalog_snapshot_digest],
             |row| row.get(0),
         )?;
-        catalogs.push(serde_json::from_slice::<serde_json::Value>(&bytes)?);
+        catalogs.push(signed_text(bytes)?);
     }
-    Ok(AuthAuthorityResolveResponse {
-        authority: AuthSignedBlob(bytes.into()),
-        catalog: AuthSignedBlob(canonical_json(&catalogs)?.into_bytes().into()),
+    Ok(trellis_protocol::AuthorityMaterial {
+        authority: signed_text(bytes)?,
+        catalogs,
         providers,
-        extra: Default::default(),
     })
 }
 
@@ -1254,12 +1254,22 @@ pub(super) fn renew_authority(
             Ok(issued) => issued,
             Err(error) => return Ok(Err(error)),
         };
-        let response = read_authority(connection, &issued.digest)?;
+        let material = read_authority(connection, &issued.digest)?;
+        // The catalog blob carries every referenced snapshot as one canonical array.
+        let catalogs = material
+            .catalogs
+            .iter()
+            .map(|catalog| serde_json::from_str::<serde_json::Value>(catalog))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Ok(AuthAuthorityRenewResponse {
-            authority: response.authority,
-            catalog: response.catalog,
+            authority: AuthSignedBlob(material.authority.into_bytes().into()),
+            catalog: AuthSignedBlob(canonical_json(&catalogs)?.into_bytes().into()),
             context_digest: issued.digest.into(),
-            providers: response.providers,
+            providers: material
+                .providers
+                .into_iter()
+                .map(|provider| AuthSignedBlob(provider.into_bytes().into()))
+                .collect(),
             extra: Default::default(),
         }))
     })?
@@ -1406,13 +1416,14 @@ pub(super) fn revoke_delegation(
 
 pub(super) fn read_chain(
     connection: &Connection,
-    input: &AuthIssuerChainRequest,
-) -> Result<AuthIssuerChainResponse, AuthError> {
-    SqliteAuthorizationStore::resolve_issuer_in(connection, &input.pinned_key_id)?;
-    SqliteAuthorizationStore::resolve_issuer_in(connection, &input.target_key_id)?;
-    let mut key = input.pinned_key_id.to_string();
+    pinned: &str,
+    target: &str,
+) -> Result<trellis_protocol::IssuerChain, AuthError> {
+    SqliteAuthorizationStore::resolve_issuer_in(connection, pinned)?;
+    SqliteAuthorizationStore::resolve_issuer_in(connection, target)?;
+    let mut key = pinned.to_owned();
     let mut rotations = Vec::new();
-    while key != input.target_key_id.as_ref() {
+    while key != target {
         if rotations.len() >= 128 {
             return Err(AuthError::ResourceLimit);
         }
@@ -1427,11 +1438,8 @@ pub(super) fn read_chain(
             )
             .optional()?
             .ok_or(AuthError::NotFound)?;
-        rotations.push(AuthSignedBlob(bytes.into()));
+        rotations.push(super::authorization_sessions::signed_text(bytes)?);
         key = next;
     }
-    Ok(AuthIssuerChainResponse {
-        rotations,
-        extra: Default::default(),
-    })
+    Ok(trellis_protocol::IssuerChain { rotations })
 }

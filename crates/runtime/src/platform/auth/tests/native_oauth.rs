@@ -113,8 +113,7 @@ async fn proxy_request(
     if parts.uri.path() == "/.well-known/trellis/issuer-chain"
         && status == axum::http::StatusCode::OK
     {
-        let mut chain: trellis_runtime_apis::types::AuthIssuerChainResponse =
-            serde_json::from_slice(&bytes).unwrap();
+        let mut chain: trellis_protocol::IssuerChain = serde_json::from_slice(&bytes).unwrap();
         match control.chain {
             ChainTampering::None => {}
             ChainTampering::Missing => {
@@ -122,16 +121,16 @@ async fn proxy_request(
                 chain.rotations.clear();
             }
             ChainTampering::Forged => {
-                let blob = &mut chain.rotations[0];
+                let signed = &mut chain.rotations[0];
                 let mut rotation: trellis_protocol::SignedIssuerRotation =
-                    serde_json::from_slice(&blob.0 .0).unwrap();
+                    serde_json::from_str(signed).unwrap();
                 let replacement = if rotation.signature.starts_with('A') {
                     "B"
                 } else {
                     "A"
                 };
                 rotation.signature.replace_range(..1, replacement);
-                blob.0 .0 = serde_json::to_vec(&rotation).unwrap();
+                *signed = serde_json::to_string(&rotation).unwrap();
             }
         }
         bytes = serde_json::to_vec(&chain).unwrap();
