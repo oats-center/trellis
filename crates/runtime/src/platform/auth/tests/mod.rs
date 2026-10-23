@@ -22,6 +22,7 @@ mod catalog;
 mod consent;
 mod credentials;
 mod enforcement;
+mod groups;
 mod initialization;
 mod issuance;
 mod issuer_metadata;

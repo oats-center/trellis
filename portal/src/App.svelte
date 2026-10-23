@@ -6,7 +6,10 @@
     title: string;
     description: string;
     consequence: string;
-    /** A `trellis.*` capability to manage this Trellis installation. */
+    /** A group stands for the capabilities it lists. */
+    kind: "capability" | "group";
+    members: { capabilityId: string; title: string }[] | null;
+    /** Manages this Trellis installation. */
     administrative: boolean;
     required: boolean;
     available: boolean;
@@ -349,6 +352,10 @@
             </div>
             <code>{capability.capabilityId}</code>
             <p>{capability.description}</p>
+            {#if capability.members?.length}<p>
+                <strong>Includes:</strong>
+                {capability.members.map((member) => member.title).join(", ")}
+              </p>{/if}
             {#if capability.consequence}<p>
                 <strong>Effect:</strong>
                 {capability.consequence}

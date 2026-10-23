@@ -272,7 +272,10 @@ The compiler reads one coherent SQLite transaction. It unions independently
 valid role, direct, and fresh verified-OIDC entitlement paths before
 intersecting them with the application/deployment selection and the OAuth
 grant's approved capability identities and consent revisions. Services/devices
-are bounded by their deployed native participant selection. The initialized
+are bounded by their deployed native participant selection. A held group
+counts as its current members; a selected group yields the members the
+principal holds, and for an OAuth grant only those of the consent revision the
+user approved, less any since removed. The initialized
 administrator additionally holds every administrative capability inherently.
 
 The result includes approved capabilities, required-missing and

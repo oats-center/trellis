@@ -696,14 +696,12 @@ impl SqliteAuthorizationStore {
                 Some(&approval.login_session_id),
                 now,
             )?;
-            if approval.presentation.is_some()
-                && approval
-                    .selection
-                    .required
-                    .iter()
-                    .any(|name| !entitled.contains_key(name))
-            {
-                return Err(AuthError::ConsentChanged);
+            if approval.presentation.is_some() {
+                for name in &approval.selection.required {
+                    if !super::policy::covers(connection, &entitled, name, true)? {
+                        return Err(AuthError::ConsentChanged);
+                    }
+                }
             }
             let selected: BTreeSet<_> = approval
                 .selection
@@ -729,7 +727,12 @@ impl SqliteAuthorizationStore {
                 // original declines always win and are retained in the grant.
                 let accepted = (choices.contains(name) || implied.contains(name))
                     && !declined.contains(name)
-                    && entitled.contains_key(name);
+                    && super::policy::covers(
+                        connection,
+                        &entitled,
+                        name,
+                        approval.selection.required.contains(name),
+                    )?;
                 if !accepted && approval.selection.required.contains(name) {
                     return Err(AuthError::RequiredMissing);
                 }
@@ -740,7 +743,7 @@ impl SqliteAuthorizationStore {
                     }
                     Err(error) => return Err(error),
                 };
-                let administrative = super::administration::is_administrative(name);
+                let administrative = super::administration::administrative(connection, name)?;
                 if accepted && administrative {
                     if (safeguards.registered_clients_only && !registered)
                         || (safeguards.confirm_on_consent && !approval.administration_confirmed)

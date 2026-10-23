@@ -365,32 +365,39 @@ impl<'a> Parser<'a> {
             let start = self.current_span().start;
             let head = self.word_text()?;
             if head != "group" {
-                values.push(self.capability(start, &head, None)?);
+                values.push(self.capability(start, &head)?);
                 continue;
             }
             let name = self.ident()?;
             self.token(TokenKind::LBrace)?;
             let mut group = CapabilityGroup {
-                name: name.clone(),
+                name,
                 title: String::new(),
                 description: String::new(),
+                consequence: String::new(),
+                consent_revision: None,
+                members: Vec::new(),
                 span: start..start,
             };
-            let mut members = BTreeSet::new();
+            let mut fields = BTreeSet::new();
             while !self.at(TokenKind::RBrace) {
-                let member_start = self.current_span().start;
-                let member = self.word_text()?;
-                match member.as_str() {
-                    "title" | "description" if !members.insert(member.clone()) => {
-                        return Err(
-                            self.error_previous(format!("duplicate group member '{member}'"))
-                        );
-                    }
+                let field = self.word_text()?;
+                if field != "capability" && !fields.insert(field.clone()) {
+                    return Err(self.error_previous(format!("duplicate group member '{field}'")));
+                }
+                match field.as_str() {
                     "title" => group.title = self.string_statement()?,
                     "description" => group.description = self.string_statement()?,
-                    "capability" => {
-                        values.push(self.capability(member_start, &member, Some(&name))?)
+                    "consequence" => group.consequence = self.string_statement()?,
+                    "consent_revision" => {
+                        let revision = self.integer()?;
+                        if revision == 0 {
+                            return Err(self.error_previous("consent_revision must be positive"));
+                        }
+                        self.token(TokenKind::Semi)?;
+                        group.consent_revision = Some(revision);
                     }
+                    "capability" => group.members.push(self.name_statement()?),
                     other => {
                         return Err(
                             self.error_previous(format!("unsupported group member '{other}'"))
@@ -406,16 +413,10 @@ impl<'a> Parser<'a> {
         Ok((values, groups))
     }
 
-    fn capability(
-        &mut self,
-        start: usize,
-        head: &str,
-        group: Option<&str>,
-    ) -> miette::Result<Capability> {
+    fn capability(&mut self, start: usize, head: &str) -> miette::Result<Capability> {
         let (public, name) = match head {
-            "public" if group.is_none() => (true, "public".to_owned()),
+            "public" => (true, "public".to_owned()),
             "capability" => (false, self.capability_name()?),
-            _ if group.is_some() => return Err(self.error_previous("expected 'capability'")),
             _ => return Err(self.error_previous("expected 'public', 'capability', or 'group'")),
         };
         self.token(TokenKind::LBrace)?;
@@ -426,7 +427,6 @@ impl<'a> Parser<'a> {
             description: String::new(),
             consequence: String::new(),
             consent_revision: None,
-            group: group.map(str::to_owned),
             administrative: false,
             allows: Vec::new(),
             span: start..start,
@@ -493,8 +493,22 @@ impl<'a> Parser<'a> {
                         self.token(TokenKind::LBrace)?;
                         while !self.at(TokenKind::RBrace) {
                             let required = self.eat_word("required");
-                            self.word("capability")?;
+                            // Capabilities are `area.action`; groups are one name.
+                            let kind = self.word_text()?;
                             let name = self.name_statement()?;
+                            match kind.as_str() {
+                                "capability" if name.contains('.') || name == "public" => {}
+                                "group" if !name.contains('.') => {}
+                                "capability" | "group" => {
+                                    return Err(self
+                                        .error_previous(format!("'{name}' is not a {kind} name")))
+                                }
+                                _ => {
+                                    return Err(
+                                        self.error_previous("expected 'capability' or 'group'")
+                                    )
+                                }
+                            }
                             if required {
                                 required_capabilities.push(name);
                             } else {

@@ -55,7 +55,6 @@ import { TcpProxy } from "../packages/trellis-testkit/src/runtime.ts";
 type Runtime = TrellisTestRuntime;
 
 /** Qualified API identity the fixture declares for the growth capability. */
-const GROWTH_API = "runtime-trellis.transport_growth@v1";
 
 /**
  * One deployment carries one participant assignment, so the subject and its

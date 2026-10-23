@@ -263,6 +263,12 @@ export function selectedActionAvailabilityError(
     : undefined;
 }
 
+/** Group IDs are `api.vN:name`; capability names are `area.action`. */
+function isGroup(id: string): boolean {
+  const name = id.slice(id.lastIndexOf(":") + 1);
+  return !name.includes(".") && name !== "public";
+}
+
 /** Flat caller surface inferred from a generated participant's selected actions. */
 export type CallerRuntime<TContract extends GeneratedCaller> =
   CallerSelectedActionSurface<TContract> & {
@@ -306,11 +312,13 @@ export function createCallerRuntime<TContract extends GeneratedCaller>(
         const capabilities: Record<string, boolean> = {};
         for (const selection of contract.uses) {
           for (const capability of selection.optionalCapabilities) {
+            // An authority carries a group's members, not the group itself.
             capabilities[capability] =
               snapshot !== undefined &&
-              snapshot.capabilities.some(
-                (granted) => granted.capabilityId === capability,
-              ) &&
+              (isGroup(capability) ||
+                snapshot.capabilities.some(
+                  (granted) => granted.capabilityId === capability,
+                )) &&
               selections
                 .filter((action) =>
                   action.optionalCapabilities.includes(capability),

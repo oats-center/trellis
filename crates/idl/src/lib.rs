@@ -172,52 +172,61 @@ mod tests {
         )
     }
 
-    #[test]
-    fn capability_groups_present_without_changing_api_identity() {
-        let read = r#"capability files.read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
-        let write = r#"capability files.write { consent_revision 1; title "Change files"; description "Write files."; consequence "Changes files."; allows { rpc Put; } }"#;
-        let grouped = compile(grouped_contract(&format!(
-            r#"group files {{ title "Files"; description "Your stored files."; {read} }} {write}"#
-        )))
-        .unwrap();
-        let api = grouped.root_package().apis().values().next().unwrap();
-        assert_eq!(api.capability_groups()["files"].title, "Files");
-        let groups: Vec<_> = api
-            .capabilities()
-            .values()
-            .map(|capability| capability.group.as_deref())
-            .collect();
-        assert_eq!(groups, [Some("files"), None]);
+    const READ: &str = r#"capability files.read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
+    const WRITE: &str = r#"capability files.write { consent_revision 1; title "Change files"; description "Write files."; consequence "Changes files."; allows { rpc Put; } }"#;
 
-        // The presentation form keeps groups; regrouping never changes identity.
+    #[test]
+    fn groups_bundle_capabilities_and_are_part_of_the_api_meaning() {
+        let group = r#"group editor { title "Editor"; description "Read and change files."; consequence "Can change files."; consent_revision 1; capability files.read; capability files.write; }"#;
+        let grouped = compile(grouped_contract(&format!("{READ} {WRITE} {group}"))).unwrap();
+        let api = grouped.root_package().apis().values().next().unwrap();
+        let id = crate::CapabilityId::new("fixture.files.v1:editor");
+        let members: Vec<_> = api.groups()[&id]
+            .members
+            .iter()
+            .map(crate::CapabilityId::as_str)
+            .collect();
+        assert_eq!(
+            members,
+            [
+                "fixture.files.v1:files.read",
+                "fixture.files.v1:files.write"
+            ]
+        );
+        assert_eq!(api.selection_allows(&id).unwrap().len(), 2);
+
+        // Both canonical forms keep groups, and a group changes the API digest.
         let canonical =
             canonical_package(&grouped, grouped.root(), CanonicalMode::Presentation).unwrap();
         let round_trip = compile(&canonical).unwrap();
-        let api = round_trip.root_package().apis().values().next().unwrap();
-        assert_eq!(
-            api.capability_groups()["files"].description,
-            "Your stored files."
-        );
-        let ungrouped = compile(grouped_contract(&format!("{read} {write}"))).unwrap();
-        assert_eq!(grouped.root_digest(), ungrouped.root_digest());
-        assert_eq!(round_trip.root_digest(), ungrouped.root_digest());
+        assert_eq!(round_trip.root_digest(), grouped.root_digest());
+        let ungrouped = compile(grouped_contract(&format!("{READ} {WRITE}"))).unwrap();
+        assert_ne!(grouped.root_digest(), ungrouped.root_digest());
     }
 
     #[test]
-    fn capability_groups_require_presentation_text_and_members() {
-        let read = r#"capability files.read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
-        let untitled = compile(grouped_contract(&format!(
-            r#"group files {{ description "Files."; {read} }}"#
-        )))
-        .unwrap_err();
-        assert!(untitled
-            .to_string()
-            .contains("requires title and description"));
-        let empty = compile(grouped_contract(&format!(
-            r#"group files {{ title "Files"; description "Files."; }} {read}"#
-        )))
-        .unwrap_err();
-        assert!(empty.to_string().contains("contains no capabilities"));
+    fn groups_require_consent_text_revision_and_own_capabilities() {
+        for (group, message) in [
+            (
+                r#"group editor { description "D"; consequence "C"; consent_revision 1; capability files.read; }"#,
+                "requires title, description, and consequence",
+            ),
+            (
+                r#"group editor { title "T"; description "D"; consequence "C"; capability files.read; }"#,
+                "requires consent_revision",
+            ),
+            (
+                r#"group editor { title "T"; description "D"; consequence "C"; consent_revision 1; }"#,
+                "has no capabilities",
+            ),
+            (
+                r#"group editor { title "T"; description "D"; consequence "C"; consent_revision 1; capability files.missing; }"#,
+                "not a capability of this API",
+            ),
+        ] {
+            let error = compile(grouped_contract(&format!("{READ} {group}"))).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
     }
 
     #[test]

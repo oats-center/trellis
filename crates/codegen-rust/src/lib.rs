@@ -1543,9 +1543,9 @@ fn render_app_request(
                 Some(ActionDefinition::Rpc { download: true, .. })
             );
             if !selection.required_capabilities.iter().any(|capability| {
-                api.definition().capabilities()[capability]
-                    .allows
-                    .contains(selected)
+                api.definition()
+                    .selection_allows(capability)
+                    .is_some_and(|allows| allows.contains(selected))
             }) {
                 optional_actions.push(optional_action(
                     id.as_str(),
@@ -2362,13 +2362,12 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
         {
             for capability in &selection.optional_capabilities {
                 let expression = definition
-                    .capabilities()
-                    .get(capability)
-                    .map(|capability| {
+                    .selection_allows(capability)
+                    .map(|allows| {
                         selection
                             .actions
                             .iter()
-                            .filter(|selected| capability.allows.contains(selected))
+                            .filter(|selected| allows.contains(selected))
                             .map(|selected| {
                                 format!(
                                     "snapshot.allows_action({})",
@@ -2391,10 +2390,16 @@ fn render_availability(graph: &PackageGraph, participant: &ParticipantDefinition
                         }
                     })
                     .unwrap_or_else(|| "false".into());
-                let expression = format!(
-                    "snapshot.allows_capability({:?}) && ({expression})",
-                    capability.as_str()
-                );
+                // An authority carries a group's member capabilities, not the
+                // group, so a group is available when its actions are.
+                let expression = if definition.groups().contains_key(capability) {
+                    expression
+                } else {
+                    format!(
+                        "snapshot.allows_capability({:?}) && ({expression})",
+                        capability.as_str()
+                    )
+                };
                 fields.insert(
                     capability.as_str().to_owned(),
                     (format!("capability {}", capability.as_str()), expression),

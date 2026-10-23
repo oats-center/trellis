@@ -712,50 +712,39 @@ async fn consent_data(
                 if let Some((api, generation)) = api {
                     api_generations.insert(api, generation);
                 }
-                type Metadata = (String, String, String, String, String, String, String);
-                let metadata: Option<Metadata> = connection
+                let metadata: Option<(String, String, String)> = connection
                     .query_row(
-                        "SELECT c.title,c.description,c.consequence,c.api_id,c.group_name,\
-                        g.title,g.description \
-                        FROM auth_capability_identities c \
-                        JOIN auth_capability_groups g \
-                        ON g.api_id=c.api_id AND g.group_name=c.group_name \
-                        WHERE c.capability_id=?1 \
-                        AND c.state='active'",
+                        "SELECT title,description,consequence \
+                        FROM auth_capability_identities \
+                        WHERE capability_id=?1 AND state='active'",
                         [capability],
-                        |row| {
-                            Ok((
-                                row.get(0)?,
-                                row.get(1)?,
-                                row.get(2)?,
-                                row.get(3)?,
-                                row.get(4)?,
-                                row.get(5)?,
-                                row.get(6)?,
-                            ))
-                        },
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()?;
-                let (title, description, consequence, group) = match metadata {
-                    Some((title, description, consequence, api, name, group_title, group_text)) => {
-                        (
-                            title,
-                            description,
-                            consequence,
-                            serde_json::json!({
-                                "id": if name.is_empty() { api } else { format!("{api}::{name}") },
-                                "title": group_title,
-                                "description": group_text,
-                            }),
-                        )
-                    }
-                    None => (
+                let (title, description, consequence) = metadata.unwrap_or_else(|| {
+                    (
                         capability.clone(),
                         "This capability is not installed.".into(),
                         String::new(),
-                        serde_json::Value::Null,
-                    ),
-                };
+                    )
+                });
+                // A group is shown with the capabilities it stands for.
+                let members = super::super::policy::current_members(connection, capability)?
+                    .map(|members| {
+                        members
+                            .iter()
+                            .map(|member| {
+                                let title: String = connection.query_row(
+                                    "SELECT title FROM auth_capability_identities \
+                                    WHERE capability_id=?1 AND state='active'",
+                                    [member],
+                                    |row| row.get(0),
+                                )?;
+                                Ok(serde_json::json!({"capabilityId": member, "title": title}))
+                            })
+                            .collect::<Result<Vec<_>, super::super::AuthError>>()
+                    })
+                    .transpose()?;
                 let remembered: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 \
                 FROM auth_remembered_consent d \
@@ -780,18 +769,24 @@ async fn consent_data(
                     ],
                     |row| row.get(0),
                 )?;
-                let administrative = super::super::administration::is_administrative(capability);
+                let administrative =
+                    super::super::administration::administrative(connection, capability)?;
+                let required = requested.capabilities.required.contains(capability);
                 // An unregistered app never receives administration.
-                let available = entitled.contains_key(capability)
-                    && (!administrative || registered || !administration.registered_clients_only);
+                let available =
+                    super::super::policy::covers(connection, &entitled, capability, required)?
+                        && (!administrative
+                            || registered
+                            || !administration.registered_clients_only);
                 capabilities.push(serde_json::json!({
                     "capabilityId":capability,
                     "title":title,
                     "description":description,
                     "consequence":consequence,
-                    "group":group,
+                    "kind": if members.is_some() { "group" } else { "capability" },
+                    "members":members,
                     "administrative":administrative,
-                    "required":requested.capabilities.required.contains(capability),
+                    "required":required,
                     "available":available,
                     "selected": requested.capabilities.required.contains(capability)
                             || (remembered && available)

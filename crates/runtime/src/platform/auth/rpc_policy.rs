@@ -669,61 +669,58 @@ pub(super) fn read_capabilities(
     })
 }
 
-fn read_capability(
+pub(super) fn read_capability(
     connection: &Connection,
     capability_id: &str,
 ) -> Result<AuthCapabilityDefinition, AuthError> {
-    let (generation, consent_revision, api_id, title, description, consequence, group) = connection
+    let (generation, consent_revision, api_id, title, description, consequence, kind) = connection
         .query_row(
-            "SELECT c.identity_generation,c.consent_revision,c.api_id,c.title,\
-            c.description,c.consequence,c.group_name,g.title,g.description \
-            FROM auth_capability_identities c \
-            JOIN auth_capability_groups g \
-            ON g.api_id=c.api_id AND g.group_name=c.group_name \
-            WHERE c.capability_id=?1 \
-            AND c.state='active'",
+            "SELECT identity_generation,consent_revision,api_id,title,\
+            description,consequence,kind \
+            FROM auth_capability_identities \
+            WHERE capability_id=?1 \
+            AND state='active'",
             [capability_id],
             |row| {
-                let api_id = row.get::<_, String>(2)?;
-                let name = row.get::<_, String>(6)?;
                 Ok((
                     row.get::<_, u64>(0)?,
                     row.get::<_, u64>(1)?,
-                    api_id.clone(),
+                    row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
-                    AuthCapabilityGroup {
-                        id: if name.is_empty() {
-                            api_id
-                        } else {
-                            format!("{api_id}::{name}")
-                        },
-                        title: row.get(7)?,
-                        description: row.get(8)?,
-                        extra: Default::default(),
-                    },
+                    row.get::<_, String>(6)?,
                 ))
             },
         )
         .optional()?
         .ok_or(AuthError::NotFound)?;
-    let mut statement = connection.prepare(
-        "SELECT a.descriptor_json \
-        FROM auth_capability_actions c \
-        JOIN auth_api_actions a ON a.api_id=c.api_id \
-        AND a.generation=c.api_generation \
-        AND a.action_key=c.action_key \
-        WHERE c.capability_id=?1 \
-        AND c.identity_generation=?2 \
-        ORDER BY a.action_key",
-    )?;
-    let allows = statement
-        .query_map(params![capability_id, generation], |row| {
-            row.get::<_, String>(0)
-        })?
-        .map(|row| Ok(serde_json::from_str(&row?)?))
-        .collect::<Result<Vec<AuthActionSummary>, AuthError>>()?;
+    let members = super::policy::current_members(connection, capability_id)?.unwrap_or_default();
+    // A group allows what its current members allow.
+    let mut allows = Vec::new();
+    for member in if members.is_empty() {
+        vec![capability_id.to_owned()]
+    } else {
+        members.clone()
+    } {
+        let mut statement = connection.prepare(
+            "SELECT a.descriptor_json \
+            FROM auth_capability_actions c \
+            JOIN auth_capability_identities i ON i.capability_id=c.capability_id \
+            AND i.identity_generation=c.identity_generation AND i.state='active' \
+            JOIN auth_api_actions a ON a.api_id=c.api_id \
+            AND a.generation=c.api_generation \
+            AND a.action_key=c.action_key \
+            WHERE c.capability_id=?1 \
+            ORDER BY a.action_key",
+        )?;
+        for row in statement.query_map([&member], |row| row.get::<_, String>(0))? {
+            let summary: AuthActionSummary = serde_json::from_str(&row?)?;
+            if !allows.contains(&summary) {
+                allows.push(summary);
+            }
+        }
+    }
     Ok(AuthCapabilityDefinition {
         identity: AuthCapabilityIdentity {
             capability_id: capability_id.to_owned().into(),
@@ -735,7 +732,8 @@ fn read_capability(
         title,
         description,
         consequence,
-        group,
+        kind: kind.into(),
+        members,
         allows,
         extra: Default::default(),
     })

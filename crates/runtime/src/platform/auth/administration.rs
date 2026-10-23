@@ -42,6 +42,13 @@ pub(crate) fn is_administrative(capability: &str) -> bool {
         .any(|administration| administration.capability_id() == capability)
 }
 
+/// Whether a capability is administrative, or a group contains one.
+pub(super) fn administrative(connection: &Connection, id: &str) -> Result<bool, AuthError> {
+    Ok(is_administrative(id)
+        || super::policy::current_members(connection, id)?
+            .is_some_and(|members| members.iter().any(|member| is_administrative(member))))
+}
+
 impl SqliteAuthorizationStore {
     /// Recheck inside the mutation's transaction that `actor` still holds
     /// `administration` through a live entitlement path: a direct grant, a role,
@@ -65,8 +72,14 @@ impl SqliteAuthorizationStore {
         actor: &str,
         capabilities: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), AuthError> {
-        if capabilities.into_iter().any(is_administrative) {
-            Self::require_administration(connection, actor, Administration::ManagePlatform)?;
+        for capability in capabilities {
+            if administrative(connection, capability)? {
+                return Self::require_administration(
+                    connection,
+                    actor,
+                    Administration::ManagePlatform,
+                );
+            }
         }
         Ok(())
     }

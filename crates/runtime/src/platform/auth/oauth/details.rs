@@ -43,7 +43,6 @@ impl RequestedAuthority {
                         let (api, capability) =
                             trellis_idl::split_capability_id(name).ok_or_else(invalid)?;
                         if name.len() > 1024
-                            || (!capability.contains('.') && capability != "public")
                             || trellis_protocol::validate_api_id(&api).is_err()
                             || capability.is_empty()
                             || !capability.bytes().all(|byte| {

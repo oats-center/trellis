@@ -136,28 +136,36 @@ Auth must enforce the same rule when accepting a force replacement. API
 generation, accepted revision, and action/membership introduction revisions are
 Auth-owned acceptance metadata, never authored counters.
 
-Capabilities may be placed in presentation groups. People choose access by
-group, so a group should name something they recognise ("Orders", "Users"),
-and capability titles inside it can stay short ("See orders", "Cancel
-orders"):
+A group is a developer-defined bundle of an API's capabilities. It is granted,
+assigned to roles, mapped from identity providers, requested by participants,
+and consented to exactly like a capability, and it stands for its members:
 
 ```trellis
 capabilities {
-  group orders {
-    title "Orders";
-    description "Customer orders and their status.";
-    capability read { ... }
-    capability create { ... }
+  capability orders.read { ... }
+  capability orders.cancel { ... }
+  group support {
+    title "Support";
+    description "Look up and cancel customer orders.";
+    consequence "Can see and cancel any order.";
+    consent_revision 1;
+    capability orders.read;
+    capability orders.cancel;
   }
 }
+service Desk { use orders { required group support; } }
 ```
 
-Groups require a nonempty `title` and `description` and at least one
-capability; names are unique within the API. Group membership and text are
-presentation metadata: they appear in presentation canonical source but not in
-semantic source, so regrouping never changes a package digest, capability
-identity, or consent revision. Auth stores each accepted API's groups and
-presents ungrouped capabilities under the API's own title and description.
+A group's ID is the API prefix and its one-word name,
+`acme.orders.v1:support`. It needs a title, description, consequence,
+`consent_revision`, and at least one member, and lists only capabilities of the
+same API. Groups are part of the API's meaning, so they are in both canonical
+forms and change its digest. Whoever holds a group through a grant, role, or
+mapping holds its current members, so a membership change reaches them at once.
+Adding members requires a higher `consent_revision`: an app keeps the members
+its user consented to until the user approves again, while removed members are
+gone everywhere. A group containing an administrative capability is
+administrative.
 
 Resource headers are `state`, `kv`, `store`, `job`, or `consumer`, optionally
 followed by `optional`, then a local name. Bodies require nonempty `title` and
@@ -215,7 +223,7 @@ unknown-symbol arm.
 Canonical source has presentation-preserving and semantic modes using the same
 parser. A canonical compilation unit may include frozen `package` and
 `dependency` prelude declarations. Semantic mode removes nonsemantic metadata
-(including capability groups) and source-layout choices while retaining package/dependency identity,
+and source-layout choices while retaining package/dependency identity,
 capability consent text, capability allows, and machine declarations.
 
 The package digest is base64url SHA-256 of semantic canonical UTF-8 source.

@@ -260,3 +260,52 @@ app Reader {
         );
     }
 }
+
+#[test]
+fn selecting_a_group_selects_what_its_members_allow() {
+    let source = SOURCE
+        .replace(
+            "  }\n}\nservice Reader",
+            "    group editor { title \"Editor\"; description \"Read and write.\"; \
+             consequence \"Changes documents.\"; consent_revision 1; \
+             capability documents.read; capability documents.write; }\n  }\n}\nservice Reader",
+        )
+        .replace(
+            "required capability documents.read; capability documents.export;",
+            "required group editor;",
+        );
+    let graph = compile(&source).unwrap();
+    let selection = graph
+        .root_package()
+        .participants()
+        .values()
+        .next()
+        .unwrap()
+        .uses()
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        selection
+            .required_capabilities
+            .iter()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        ["capability-fixture.documents.v1:editor"]
+    );
+    let actions: Vec<_> = selection
+        .actions
+        .iter()
+        .map(|selected| selected.action.name.as_str())
+        .collect();
+    assert_eq!(actions, ["Get", "Put"]);
+    // A group is named without an area; the keyword must match.
+    for wrong in [
+        "required capability editor;",
+        "required group documents.read;",
+    ] {
+        let source = source.replace("required group editor;", wrong);
+        assert!(compile(&source).is_err(), "{wrong}");
+    }
+}

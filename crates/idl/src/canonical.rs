@@ -180,16 +180,21 @@ pub(crate) fn selected_surface_digest_cached(
         (false, &selection.optional_capabilities),
     ] {
         for id in capabilities {
-            let capability = api.capabilities.get(id).ok_or_else(|| {
-                miette!(
-                    "selected capability '{id}' is absent from API '{}'",
-                    api.identity
-                )
-            })?;
+            let consent_revision = api
+                .capabilities
+                .get(id)
+                .map(|capability| capability.consent_revision)
+                .or_else(|| api.groups.get(id).map(|group| group.consent_revision))
+                .ok_or_else(|| {
+                    miette!(
+                        "selected capability '{id}' is absent from API '{}'",
+                        api.identity
+                    )
+                })?;
             append_digest_field(&mut output, if required { "required" } else { "optional" });
             append_digest_field(&mut output, id.as_str());
-            append_digest_field(&mut output, &capability.consent_revision.to_string());
-            for action in &capability.allows {
+            append_digest_field(&mut output, &consent_revision.to_string());
+            for action in api.selection_allows(id).unwrap_or_default() {
                 append_digest_field(&mut output, &selection_key(action));
             }
         }
@@ -500,31 +505,47 @@ fn render_api(api: &ApiDefinition, mode: CanonicalMode, imports: &Imports) -> St
         render_action(&mut output, id, action, imports);
     }
     output.push_str("  capabilities {\n");
-    // Groups are presentation metadata, so the semantic form never carries them.
-    if mode == CanonicalMode::Presentation {
-        for (name, docs) in &api.capability_groups {
-            writeln!(output, "    group {name} {{").unwrap();
-            writeln!(output, "      title {};", quote(&docs.title)).unwrap();
-            writeln!(output, "      description {};", quote(&docs.description)).unwrap();
-            for (id, capability) in &api.capabilities {
-                if capability.group.as_deref() == Some(name) {
-                    let mut block = String::new();
-                    render_capability(&mut block, id, capability, mode);
-                    for line in block.lines() {
-                        writeln!(output, "  {line}").unwrap();
-                    }
-                }
-            }
-            output.push_str("    }\n");
-        }
-    }
     for (id, capability) in &api.capabilities {
-        if mode != CanonicalMode::Presentation || capability.group.is_none() {
-            render_capability(&mut output, id, capability, mode);
-        }
+        render_capability(&mut output, id, capability, mode);
+    }
+    // Groups grant their members, so both forms carry them.
+    for (id, group) in &api.groups {
+        render_group(&mut output, id, group, mode);
     }
     output.push_str("  }\n}\n");
     output
+}
+
+fn render_group(
+    block: &mut String,
+    id: &CapabilityId,
+    group: &CapabilityGroupDefinition,
+    mode: CanonicalMode,
+) {
+    writeln!(
+        block,
+        "    group {} {{",
+        crate::semantic::capability_name(id.as_str())
+    )
+    .unwrap();
+    let title = if mode == CanonicalMode::Presentation {
+        group.title.as_str()
+    } else {
+        "_"
+    };
+    writeln!(block, "      title {};", quote(title)).unwrap();
+    writeln!(block, "      description {};", quote(&group.description)).unwrap();
+    writeln!(block, "      consequence {};", quote(&group.consequence)).unwrap();
+    writeln!(block, "      consent_revision {};", group.consent_revision).unwrap();
+    for member in &group.members {
+        writeln!(
+            block,
+            "      capability {};",
+            crate::semantic::capability_name(member.as_str())
+        )
+        .unwrap();
+    }
+    block.push_str("    }\n");
 }
 
 fn render_capability(
@@ -763,21 +784,19 @@ fn render_uses(
 ) {
     for (api, selections) in uses {
         writeln!(output, "  use {} {{", imports.api(api)).unwrap();
-        for capability in &selections.required_capabilities {
-            writeln!(
-                output,
-                "    required capability {};",
-                crate::semantic::capability_name(capability.as_str())
-            )
-            .unwrap();
-        }
-        for capability in &selections.optional_capabilities {
-            writeln!(
-                output,
-                "    capability {};",
-                crate::semantic::capability_name(capability.as_str())
-            )
-            .unwrap();
+        for (prefix, selected) in [
+            ("required ", &selections.required_capabilities),
+            ("", &selections.optional_capabilities),
+        ] {
+            for capability in selected {
+                let name = crate::semantic::capability_name(capability.as_str());
+                let kind = if name.contains('.') || name == "public" {
+                    "capability"
+                } else {
+                    "group"
+                };
+                writeln!(output, "    {prefix}{kind} {name};").unwrap();
+            }
         }
         output.push_str("  }\n");
     }

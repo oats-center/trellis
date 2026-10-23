@@ -242,7 +242,7 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                         .as_ref()
                         .expect("connected client")
                         .availability()
-                        .runtime_trellis_transport_growth_v1_extend
+                        .runtime_trellis_transport_growth_v1_growth_extend
                 ))?;
             }
             "START_ADVANCE" => {

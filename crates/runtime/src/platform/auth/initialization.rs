@@ -227,7 +227,7 @@ impl SqliteAuthorizationStore {
                             let mut statement = connection.prepare(
                                 "SELECT capability_id \
                                 FROM auth_capability_identities \
-                                WHERE api_id=?1 AND state='active' \
+                                WHERE api_id=?1 AND state='active' AND kind='capability' \
                                 ORDER BY capability_id",
                             )?;
                             let capabilities = statement

@@ -21,6 +21,14 @@ and this project adheres to
   inherently and cannot lose them. The IDL `administrative;` marker declares
   them and is reserved to the built-in `trellis` package, and Auth refuses any
   other API in the `trellis.` namespace.
+- Capability groups. An API declares `group name { title; description;
+consequence; consent_revision; capability …; }` bundles of its own
+  capabilities, with IDs like `trellis.auth.v1:account`. Groups are granted,
+  assigned to roles, mapped, requested (`use api { group name; }`), and
+  consented to like capabilities. Holders get the group's current members live;
+  growing a group needs a higher consent revision, and an app keeps the members
+  its user approved until asked again. Built-in groups: `account` and
+  `administration` (Auth), `operator` (Events, Jobs), `monitor` (Health).
 - `[auth.administration]` safeguards for delegating administration to an app,
   each on by default: `confirm_on_consent` (a separate Portal confirmation
   step), `require_peer_approval` (another `trellis.auth.v1:platform.manage` holder
@@ -90,6 +98,8 @@ and this project adheres to
 
 ### Changed
 
+- **Breaking:** Presentation-only capability groups are gone; groups now grant
+  their members.
 - **Breaking:** Capability IDs are `<package>.<api>.v<major>:<area>.<action>`,
   for example `trellis.auth.v1:users.edit`, and contracts name capabilities
   `area.action` (`capability sessions.read { … }`). Auth's one-RPC

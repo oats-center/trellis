@@ -43,30 +43,26 @@ api core@v1 {
   }
 
   capabilities {
-    group runtime {
-      title "Trellis runtime";
-      description "Runtime status and storage Trellis manages.";
-      capability authority.read {
-        title "See runtime status";
-        description "Check which Trellis features are ready.";
-        consequence "Can see runtime readiness.";
-        consent_revision 1;
-        allows { rpc Surface.Status; }
-      }
-      capability resources.read {
-        title "See managed resources";
-        description "See Trellis-managed storage and its status.";
-        consequence "Can see resource settings and history.";
-        consent_revision 1;
-        allows { rpc Resources.Inspect; rpc Resources.Query; }
-      }
-      capability resources.destroy {
-        title "Delete managed resources";
-        description "Permanently delete Trellis-managed storage.";
-        consequence "Permanently deletes data.";
-        consent_revision 1;
-        allows { rpc Resources.Destroy; }
-      }
+    capability authority.read {
+      title "See runtime status";
+      description "Check which Trellis features are ready.";
+      consequence "Can see runtime readiness.";
+      consent_revision 1;
+      allows { rpc Surface.Status; }
+    }
+    capability resources.read {
+      title "See managed resources";
+      description "See Trellis-managed storage and its status.";
+      consequence "Can see resource settings and history.";
+      consent_revision 1;
+      allows { rpc Resources.Inspect; rpc Resources.Query; }
+    }
+    capability resources.destroy {
+      title "Delete managed resources";
+      description "Permanently delete Trellis-managed storage.";
+      consequence "Permanently deletes data.";
+      consent_revision 1;
+      allows { rpc Resources.Destroy; }
     }
   }
 }

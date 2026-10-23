@@ -4,13 +4,13 @@ use crate::{
     project::PackageManifest,
     semantic::{
         ActionDefinition, ActionId, ActionKind, ActionSelection, ApiDefinition, ApiId, AppKind,
-        AppRequestDefinition, AppRequestId, Bounds, CapabilityDefinition, CapabilityId,
-        CompanionDefinition, Documentation, HistoricRepresentation, InteractionDirection,
-        InteractionSelection, KeyConcurrency, KeyConcurrencyPolicy, NumericBound, PackageGraph,
-        PackageId, Pagination, ParticipantDefinition, ParticipantId, ParticipantKind,
-        ParticipantNeeds, Primitive, Replay, ResolvedDependency, ResourceDefinition, ResourceName,
-        RetryPolicy, SemanticPackage, SourceSpan, SourceUnit, TypeDefinition, TypeExpression,
-        TypeId, TypeRef,
+        AppRequestDefinition, AppRequestId, Bounds, CapabilityDefinition,
+        CapabilityGroupDefinition, CapabilityId, CompanionDefinition, Documentation,
+        HistoricRepresentation, InteractionDirection, InteractionSelection, KeyConcurrency,
+        KeyConcurrencyPolicy, NumericBound, PackageGraph, PackageId, Pagination,
+        ParticipantDefinition, ParticipantId, ParticipantKind, ParticipantNeeds, Primitive, Replay,
+        ResolvedDependency, ResourceDefinition, ResourceName, RetryPolicy, SemanticPackage,
+        SourceSpan, SourceUnit, TypeDefinition, TypeExpression, TypeId, TypeRef,
     },
 };
 use miette::{miette, IntoDiagnostic};
@@ -783,7 +783,7 @@ fn capability_id(api: &ApiId, name: &str) -> CapabilityId {
 /// Resolve a capability a participant names on a used API.
 fn named_capability(api: &ApiDefinition, name: &str) -> miette::Result<CapabilityId> {
     let id = capability_id(&api.identity, name);
-    if api.capabilities.contains_key(&id) {
+    if api.capabilities.contains_key(&id) || api.groups.contains_key(&id) {
         Ok(id)
     } else {
         Err(miette!("unknown capability '{id}'"))
@@ -847,32 +847,6 @@ fn resolve_api(
             ));
         }
     }
-    let mut capability_groups = BTreeMap::new();
-    for group in &raw.capability_groups {
-        if !canonical_unit && (group.title.is_empty() || group.description.is_empty()) {
-            return Err(miette!(
-                "capability group '{}' requires title and description",
-                group.name
-            ));
-        }
-        if !raw
-            .capabilities
-            .iter()
-            .any(|capability| capability.group.as_deref() == Some(&group.name))
-        {
-            return Err(miette!(
-                "capability group '{}' contains no capabilities",
-                group.name
-            ));
-        }
-        let docs = Documentation {
-            title: group.title.clone(),
-            description: group.description.clone(),
-        };
-        if capability_groups.insert(group.name.clone(), docs).is_some() {
-            return Err(miette!("duplicate capability group '{}'", group.name));
-        }
-    }
     let mut capabilities = BTreeMap::new();
     for capability in &raw.capabilities {
         if !capability.public
@@ -917,7 +891,6 @@ fn resolve_api(
                     title: capability.title.clone(),
                     description: capability.description.clone(),
                     consequence: capability.consequence.clone(),
-                    group: capability.group.clone(),
                     administrative: capability.administrative,
                     allows,
                     public: capability.public,
@@ -926,6 +899,50 @@ fn resolve_api(
             .is_some()
         {
             return Err(miette!("duplicate capability '{}'", capability.name));
+        }
+    }
+    let mut groups = BTreeMap::new();
+    for group in &raw.capability_groups {
+        if !canonical_unit
+            && (group.title.is_empty()
+                || group.description.is_empty()
+                || group.consequence.is_empty())
+        {
+            return Err(miette!(
+                "group '{}' requires title, description, and consequence",
+                group.name
+            ));
+        }
+        let mut members = BTreeSet::new();
+        for member in &group.members {
+            let id = capability_id(&identity, member);
+            if member == "public" || !capabilities.contains_key(&id) {
+                return Err(miette!(
+                    "group '{}' names '{member}', which is not a capability of this API",
+                    group.name
+                ));
+            }
+            if !members.insert(id) {
+                return Err(miette!("group '{}' names '{member}' twice", group.name));
+            }
+        }
+        if members.is_empty() {
+            return Err(miette!("group '{}' has no capabilities", group.name));
+        }
+        let definition = CapabilityGroupDefinition {
+            consent_revision: group
+                .consent_revision
+                .ok_or_else(|| miette!("group '{}' requires consent_revision", group.name))?,
+            title: group.title.clone(),
+            description: group.description.clone(),
+            consequence: group.consequence.clone(),
+            members,
+        };
+        if groups
+            .insert(capability_id(&identity, &group.name), definition)
+            .is_some()
+        {
+            return Err(miette!("duplicate group '{}'", group.name));
         }
     }
     let subjects = derive_api_subjects(&identity, &raw.name, raw.major, &actions)?;
@@ -941,7 +958,7 @@ fn resolve_api(
         errors,
         actions,
         capabilities,
-        capability_groups,
+        groups,
         subjects,
     })
 }
@@ -1355,10 +1372,10 @@ fn resolve_authoring(
             .iter()
             .chain(&selected.optional_capabilities)
         {
-            let Some(capability) = api.capabilities.get(capability_id) else {
+            let Some(allows) = api.selection_allows(capability_id) else {
                 return Err(miette!("unknown capability '{capability_id}'"));
             };
-            selected.actions.extend(capability.allows.iter().cloned());
+            selected.actions.extend(allows.into_iter().cloned());
         }
     }
     let mut resources = BTreeMap::new();
@@ -2171,13 +2188,16 @@ fn derive_participant_needs(
         required_capabilities.extend(selection.required_capabilities.iter().cloned());
         optional_capabilities.extend(selection.optional_capabilities.iter().cloned());
         for selected in &selection.actions {
-            let required_action = selection
-                .required_capabilities
-                .iter()
-                .any(|id| api.capabilities[id].allows.contains(selected));
+            let required_action = selection.required_capabilities.iter().any(|id| {
+                api.selection_allows(id)
+                    .is_some_and(|allows| allows.contains(selected))
+            });
+            // An authority carries a group's members, so a selected group
+            // offers the members that allow this action.
             let optional_alternatives = selection
                 .optional_capabilities
                 .iter()
+                .flat_map(|id| api.members(id).unwrap_or_default())
                 .filter(|id| api.capabilities[*id].allows.contains(selected))
                 .cloned()
                 .collect::<BTreeSet<_>>();

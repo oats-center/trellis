@@ -494,18 +494,22 @@ CREATE TABLE auth_capability_identities (
     state TEXT NOT NULL CHECK (state IN ('active', 'deleted')),
     created_at INTEGER NOT NULL,
     deleted_at INTEGER,
-    group_name TEXT NOT NULL DEFAULT '',
+    -- A group is granted like a capability and stands for its members.
+    kind TEXT NOT NULL CHECK (kind IN ('capability', 'group')),
     PRIMARY KEY (capability_id, identity_generation),
     CHECK ((state = 'deleted') = (deleted_at IS NOT NULL))
 );
--- Presentation groups for consent and access screens. The '' group of each API
--- holds its ungrouped capabilities under the API's own title.
-CREATE TABLE auth_capability_groups (
-    api_id TEXT NOT NULL REFERENCES auth_accepted_apis(api_id),
-    group_name TEXT NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    PRIMARY KEY (api_id, group_name)
+-- A group's members at each consent revision. Holders through grants, roles and
+-- mappings get the current revision's members; an app keeps the members of the
+-- revision its user consented to, less any since removed.
+CREATE TABLE auth_capability_group_members (
+    group_id TEXT NOT NULL,
+    group_generation INTEGER NOT NULL,
+    consent_revision INTEGER NOT NULL CHECK (consent_revision >= 1),
+    capability_id TEXT NOT NULL,
+    PRIMARY KEY (group_id, group_generation, consent_revision, capability_id),
+    FOREIGN KEY (group_id, group_generation)
+        REFERENCES auth_capability_identities(capability_id, identity_generation)
 );
 CREATE UNIQUE INDEX auth_capability_active_identity ON auth_capability_identities(capability_id)
 WHERE state = 'active';

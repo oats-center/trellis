@@ -145,6 +145,60 @@ pub(super) struct Entitlement {
     pub(super) sources: Vec<String>,
 }
 
+/// The current members of an active group, or `None` for a capability.
+pub(super) fn current_members(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<Vec<String>>, AuthError> {
+    let group: Option<(u64, u64)> = connection
+        .query_row(
+            "SELECT identity_generation,consent_revision FROM auth_capability_identities \
+            WHERE capability_id=?1 AND state='active' AND kind='group'",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    group
+        .map(|(generation, revision)| members_at(connection, id, generation, revision))
+        .transpose()
+}
+
+/// Whether entitlements cover a selected capability or group: for a group,
+/// any current member, or every one when `whole`.
+pub(super) fn covers(
+    connection: &Connection,
+    entitled: &BTreeMap<String, Entitlement>,
+    id: &str,
+    whole: bool,
+) -> Result<bool, AuthError> {
+    Ok(match current_members(connection, id)? {
+        Some(members) if whole => {
+            !members.is_empty() && members.iter().all(|member| entitled.contains_key(member))
+        }
+        Some(members) => members.iter().any(|member| entitled.contains_key(member)),
+        None => entitled.contains_key(id),
+    })
+}
+
+/// A group's active members as of one consent revision.
+pub(super) fn members_at(
+    connection: &Connection,
+    id: &str,
+    generation: u64,
+    consent_revision: u64,
+) -> Result<Vec<String>, AuthError> {
+    Ok(connection
+        .prepare(
+            "SELECT m.capability_id FROM auth_capability_group_members m \
+            JOIN auth_capability_identities c ON c.capability_id=m.capability_id \
+            AND c.state='active' \
+            WHERE m.group_id=?1 AND m.group_generation=?2 AND m.consent_revision=?3 \
+            ORDER BY m.capability_id",
+        )?
+        .query_map(params![id, generation, consent_revision], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
 /// The one entitlement union used by display, approval, issuance and enforcement.
 /// Deadlines are unioned per capability: losing one path cannot remove another.
 pub(super) fn entitlements(
@@ -251,6 +305,14 @@ pub(super) fn entitlements(
             ));
         }
     }
+    // Holding a group is holding its current members.
+    let mut expanded = Vec::new();
+    for (id, deadline, source) in &sources {
+        for member in current_members(connection, id)?.unwrap_or_default() {
+            expanded.push((member, *deadline, source.clone()));
+        }
+    }
+    sources.extend(expanded);
     for (capability, deadline, source) in sources {
         values
             .entry(capability)
@@ -311,6 +373,61 @@ pub(super) fn evaluate(
             Err(AuthError::NotFound) => None,
             Err(error) => return Err(error),
         };
+        let is_required = required.contains(&selected);
+        let consent_deadline = root.consent_deadlines.get(&selected).copied();
+        if let (Some(current), Some(members)) =
+            (current.as_ref(), current_members(connection, &selected)?)
+        {
+            // A group stands for its members. An app keeps the members of the
+            // revision its user consented to, less any since removed.
+            let consented = match root.approved.as_ref() {
+                None => Some(members.clone()),
+                Some(approved) => approved
+                    .iter()
+                    .find(|approval| {
+                        approval.capability_id == selected
+                            && approval.identity_generation == current.identity_generation
+                    })
+                    .map(|approval| {
+                        if approval.consent_revision == current.consent_revision {
+                            Ok(members.clone())
+                        } else {
+                            members_at(
+                                connection,
+                                &selected,
+                                current.identity_generation.get(),
+                                approval.consent_revision.get(),
+                            )
+                            .map(|old| {
+                                old.into_iter()
+                                    .filter(|member| members.contains(member))
+                                    .collect::<Vec<_>>()
+                            })
+                        }
+                    })
+                    .transpose()?,
+            };
+            let consented = consented.unwrap_or_default();
+            let mut granted = 0;
+            for member in &consented {
+                if let Some(entitlement) = entitled.get(member) {
+                    grant(
+                        connection,
+                        &mut result,
+                        &mut apis,
+                        member,
+                        capability(connection, member)?,
+                        entitlement,
+                        consent_deadline,
+                    )?;
+                    granted += 1;
+                }
+            }
+            if is_required && (consented.is_empty() || granted < consented.len()) {
+                result.required_missing.push(selected);
+            }
+            continue;
+        }
         let consent = !(selected == super::deployments::SELF_HEALTH_CAPABILITY
             && result.principal_kind == trellis_protocol::PrincipalKind::User)
             && current.as_ref().is_some_and(|current| {
@@ -318,45 +435,19 @@ pub(super) fn evaluate(
                     .as_ref()
                     .is_none_or(|approved| approved.contains(current))
             });
-        if let (Some(current), Some(Entitlement { deadline, sources }), true) =
+        if let (Some(current), Some(entitlement), true) =
             (current, entitled.get(&selected), consent)
         {
-            // Entitlement unions and consent bounds apply only to this right.
-            if let Some(deadline) = deadline
-                .iter()
-                .chain(root.consent_deadlines.get(&selected))
-                .min()
-            {
-                result
-                    .capability_deadlines
-                    .insert(selected.clone(), *deadline);
-                result.not_after = result.not_after.min(*deadline);
-            }
-            result
-                .explanations
-                .insert(selected.clone(), sources.clone());
-            let api: AuthorityApi = connection.query_row(
-                "SELECT a.api_id,a.generation,a.accepted_revision,s.snapshot_digest \
-                FROM auth_capability_identities c \
-                JOIN auth_accepted_apis a USING(api_id) \
-                JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
-                AND s.generation=a.generation \
-                AND s.accepted_revision=a.accepted_revision \
-                WHERE c.capability_id=?1 \
-                AND c.state='active'",
-                [&selected],
-                |row| {
-                    Ok(AuthorityApi {
-                        api_id: row.get(0)?,
-                        generation: U64s::new(row.get(1)?),
-                        accepted_revision: U64s::new(row.get(2)?),
-                        catalog_snapshot_digest: row.get(3)?,
-                    })
-                },
+            grant(
+                connection,
+                &mut result,
+                &mut apis,
+                &selected,
+                current,
+                entitlement,
+                consent_deadline,
             )?;
-            apis.insert(api.api_id.clone(), api);
-            result.capabilities.push(current);
-        } else if required.contains(&selected) {
+        } else if is_required {
             result.required_missing.push(selected);
         }
     }
@@ -390,6 +481,59 @@ pub(super) fn evaluate(
         return Err(AuthError::Denied);
     }
     Ok(result)
+}
+
+/// Add one entitled, consented capability to an evaluation.
+fn grant(
+    connection: &Connection,
+    result: &mut Evaluation,
+    apis: &mut BTreeMap<String, AuthorityApi>,
+    id: &str,
+    authority: CapabilityAuthority,
+    entitlement: &Entitlement,
+    consent_deadline: Option<i64>,
+) -> Result<(), AuthError> {
+    // Entitlement unions and consent bounds apply only to this right.
+    if let Some(deadline) = entitlement.deadline.iter().chain(&consent_deadline).min() {
+        let current = result
+            .capability_deadlines
+            .entry(id.to_owned())
+            .or_insert(*deadline);
+        *current = (*current).min(*deadline);
+        result.not_after = result.not_after.min(*deadline);
+    }
+    result
+        .explanations
+        .entry(id.to_owned())
+        .or_default()
+        .extend(entitlement.sources.iter().cloned());
+    let api: AuthorityApi = connection.query_row(
+        "SELECT a.api_id,a.generation,a.accepted_revision,s.snapshot_digest \
+        FROM auth_capability_identities c \
+        JOIN auth_accepted_apis a USING(api_id) \
+        JOIN auth_api_verification_snapshots s ON s.api_id=a.api_id \
+        AND s.generation=a.generation \
+        AND s.accepted_revision=a.accepted_revision \
+        WHERE c.capability_id=?1 \
+        AND c.state='active'",
+        [id],
+        |row| {
+            Ok(AuthorityApi {
+                api_id: row.get(0)?,
+                generation: U64s::new(row.get(1)?),
+                accepted_revision: U64s::new(row.get(2)?),
+                catalog_snapshot_digest: row.get(3)?,
+            })
+        },
+    )?;
+    apis.insert(api.api_id.clone(), api);
+    if !result.capabilities.contains(&authority) {
+        result.capabilities.push(authority);
+        result
+            .capabilities
+            .sort_by(|left, right| left.capability_id.cmp(&right.capability_id));
+    }
+    Ok(())
 }
 
 /// Apply policy and its enforcement intents within the caller's aggregate transaction.
@@ -891,6 +1035,11 @@ fn administrative_capabilities_involved(
         | PolicyMutation::PrincipalState { .. }
         | PolicyMutation::ConsentRevoke { .. } => {}
     }
-    capabilities.retain(|capability| super::administration::is_administrative(capability));
-    Ok(capabilities)
+    let mut involved = Vec::new();
+    for capability in capabilities {
+        if super::administration::administrative(connection, &capability)? {
+            involved.push(capability);
+        }
+    }
+    Ok(involved)
 }

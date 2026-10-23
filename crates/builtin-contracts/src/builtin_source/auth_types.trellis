@@ -76,19 +76,18 @@ model AuthActionSummary {
 }
 // The presentation group people choose access by; ungrouped capabilities
 // belong to their API's own group.
-model AuthCapabilityGroup {
-  id: string;
-  title: string;
-  description: string;
-}
+enum AuthCapabilityKind { capability; group; }
+// A capability, or a developer-defined group that stands for its members.
 model AuthCapabilityDefinition {
   identity: AuthCapabilityIdentity;
+  kind: AuthCapabilityKind;
   apiId: AuthApiId;
   consentRevision: AuthRevision;
   title: string;
   description: string;
   consequence: string;
-  group: AuthCapabilityGroup;
+  // A group's current member capabilities.
+  members: list<string>;
   allows: list<AuthActionSummary>;
 }
 model AuthCapabilitiesListRequest {

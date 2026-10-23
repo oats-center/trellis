@@ -154,6 +154,76 @@ fn builtin_api_digests() -> &'static BTreeMap<String, String> {
     })
 }
 
+/// The consent meaning of a capability or group.
+struct Meaning<'a> {
+    consent_revision: u64,
+    title: &'a str,
+    description: &'a str,
+    consequence: &'a str,
+}
+
+/// Update an active capability or group identity's meaning, or start a new
+/// identity generation, and return the generation.
+fn upsert_identity(
+    connection: &Connection,
+    api_id: &str,
+    id: &str,
+    kind: &str,
+    meaning: Meaning<'_>,
+    now: i64,
+) -> Result<u64, AuthError> {
+    let current: Option<(u64, u64)> = connection
+        .query_row(
+            "SELECT identity_generation,consent_revision \
+            FROM auth_capability_identities \
+            WHERE capability_id=?1 AND state='active'",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((generation, consent_revision)) = current {
+        if meaning.consent_revision < consent_revision {
+            return Err(AuthError::Invalid("consent rollback".into()));
+        }
+        connection.execute(
+            "UPDATE auth_capability_identities \
+            SET consent_revision=?1,title=?2,description=?3,consequence=?4 \
+            WHERE capability_id=?5 AND identity_generation=?6",
+            params![
+                meaning.consent_revision,
+                meaning.title,
+                meaning.description,
+                meaning.consequence,
+                id,
+                generation
+            ],
+        )?;
+        return Ok(generation);
+    }
+    let generation: u64 = connection.query_row(
+        "SELECT coalesce(max(identity_generation),0)+1 \
+        FROM auth_capability_identities WHERE capability_id=?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    connection.execute(
+        "INSERT INTO auth_capability_identities \
+        VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,NULL,?9)",
+        params![
+            id,
+            generation,
+            api_id,
+            meaning.consent_revision,
+            meaning.title,
+            meaning.description,
+            meaning.consequence,
+            now,
+            kind
+        ],
+    )?;
+    Ok(generation)
+}
+
 impl SqliteAuthorizationStore {
     pub(crate) fn review_api(
         &self,
@@ -229,6 +299,29 @@ impl SqliteAuthorizationStore {
                     .into_iter()
                     .map(|issue| format!("{}: {}", issue.path, issue.message))
                     .collect();
+                for (group, definition) in old.definition().groups() {
+                    match candidate.definition().groups().get(group) {
+                        None => review.removed_capabilities.push(group.to_string()),
+                        Some(next) if next.consent_revision < definition.consent_revision => {
+                            return Err(AuthError::Invalid(
+                                "consent revision cannot decrease".into(),
+                            ))
+                        }
+                        Some(next)
+                            if next.consent_revision == definition.consent_revision
+                                && !next.members.is_subset(&definition.members) =>
+                        {
+                            return Err(AuthError::Invalid(format!(
+                                "group '{group}' gains capabilities, so its consent_revision \
+                                must increase"
+                            )))
+                        }
+                        Some(next) if next.consent_revision != definition.consent_revision => {
+                            review.consent_changes.push(group.to_string())
+                        }
+                        _ => {}
+                    }
+                }
                 for (capability, definition) in old.definition().capabilities() {
                     match candidate.definition().capabilities().get(capability) {
                         None => review.removed_capabilities.push(capability.to_string()),
@@ -510,81 +603,20 @@ impl SqliteAuthorizationStore {
                 )?;
             }
             snapshot.actions = actions.into_values().collect();
-            connection.execute(
-                "DELETE FROM auth_capability_groups WHERE api_id=?1",
-                [&review.api_id],
-            )?;
-            let docs = api.documentation();
-            let groups = std::iter::once(("", &docs.title, &docs.description)).chain(
-                api.capability_groups()
-                    .iter()
-                    .map(|(name, docs)| (name.as_str(), &docs.title, &docs.description)),
-            );
-            for (name, title, description) in groups {
-                connection.execute(
-                    "INSERT INTO auth_capability_groups VALUES(?1,?2,?3,?4)",
-                    params![review.api_id, name, title, description],
-                )?;
-            }
             for (name, definition) in api.capabilities() {
-                let group = definition.group.as_deref().unwrap_or_default();
-                let current: Option<(u64, u64)> = connection
-                    .query_row(
-                        "SELECT identity_generation,consent_revision \
-                        FROM auth_capability_identities \
-                        WHERE capability_id=?1 \
-                        AND state='active'",
-                        [name.as_str()],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
-                let identity_generation =
-                    if let Some((identity_generation, consent_revision)) = current {
-                        if definition.consent_revision < consent_revision {
-                            return Err(AuthError::Invalid("consent rollback".into()));
-                        }
-                        connection.execute(
-                            "UPDATE auth_capability_identities \
-                            SET consent_revision=?1,title=?2,description=?3,consequence=?4,\
-                            group_name=?7 \
-                            WHERE capability_id=?5 \
-                            AND identity_generation=?6",
-                            params![
-                                definition.consent_revision,
-                                definition.title,
-                                definition.description,
-                                definition.consequence,
-                                name.as_str(),
-                                identity_generation,
-                                group
-                            ],
-                        )?;
-                        identity_generation
-                    } else {
-                        let identity_generation: u64 = connection.query_row(
-                            "SELECT coalesce(max(identity_generation),0)+1 \
-                            FROM auth_capability_identities \
-                            WHERE capability_id=?1",
-                            [name.as_str()],
-                            |row| row.get(0),
-                        )?;
-                        connection.execute(
-                            "INSERT INTO auth_capability_identities \
-                            VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,NULL,?9)",
-                            params![
-                                name.as_str(),
-                                identity_generation,
-                                review.api_id,
-                                definition.consent_revision,
-                                definition.title,
-                                definition.description,
-                                definition.consequence,
-                                now,
-                                group
-                            ],
-                        )?;
-                        identity_generation
-                    };
+                let identity_generation = upsert_identity(
+                    connection,
+                    &review.api_id,
+                    name.as_str(),
+                    "capability",
+                    Meaning {
+                        consent_revision: definition.consent_revision,
+                        title: &definition.title,
+                        description: &definition.description,
+                        consequence: &definition.consequence,
+                    },
+                    now,
+                )?;
                 let mut memberships = Vec::new();
                 for selection in &definition.allows {
                     for action in action_identity(selection) {
@@ -628,6 +660,38 @@ impl SqliteAuthorizationStore {
                     consent_revision: U64s::new(definition.consent_revision),
                     memberships,
                 });
+            }
+            for (id, group) in api.groups() {
+                let generation = upsert_identity(
+                    connection,
+                    &review.api_id,
+                    id.as_str(),
+                    "group",
+                    Meaning {
+                        consent_revision: group.consent_revision,
+                        title: &group.title,
+                        description: &group.description,
+                        consequence: &group.consequence,
+                    },
+                    now,
+                )?;
+                // Members only shrink within one consent revision.
+                connection.execute(
+                    "DELETE FROM auth_capability_group_members \
+                    WHERE group_id=?1 AND group_generation=?2 AND consent_revision=?3",
+                    params![id.as_str(), generation, group.consent_revision],
+                )?;
+                for member in &group.members {
+                    connection.execute(
+                        "INSERT INTO auth_capability_group_members VALUES(?1,?2,?3,?4)",
+                        params![
+                            id.as_str(),
+                            generation,
+                            group.consent_revision,
+                            member.as_str()
+                        ],
+                    )?;
+                }
             }
             for edit in &acceptance.policy_edits {
                 if !matches!(

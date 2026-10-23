@@ -1223,17 +1223,30 @@ fn render_app_request(
         let mut action_types = Vec::new();
         let mut action_values = Vec::new();
         for selected in &selection.actions {
-            let required = selection
-                .required_capabilities
-                .iter()
-                .any(|capability| api.capabilities()[capability].allows.contains(selected));
+            let required = selection.required_capabilities.iter().any(|capability| {
+                api.selection_allows(capability)
+                    .is_some_and(|allows| allows.contains(selected))
+            });
+            // An authority carries a group's members, so a selected group
+            // contributes itself and the members that allow this action.
             let alternatives = if required {
                 String::new()
             } else {
                 selection
                     .optional_capabilities
                     .iter()
-                    .filter(|capability| api.capabilities()[*capability].allows.contains(selected))
+                    .filter(|capability| {
+                        api.selection_allows(capability)
+                            .is_some_and(|allows| allows.contains(selected))
+                    })
+                    .flat_map(|capability| {
+                        let mut ids = api.members(capability).unwrap_or_default();
+                        ids.retain(|member| api.capabilities()[*member].allows.contains(selected));
+                        ids.push(capability);
+                        ids
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
                     .map(|id| js_string(id.as_str()))
                     .collect::<Vec<_>>()
                     .join(", ")

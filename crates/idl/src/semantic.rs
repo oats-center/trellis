@@ -420,7 +420,7 @@ pub struct ApiDefinition {
     pub(crate) errors: BTreeMap<String, Option<TypeRef>>,
     pub(crate) actions: BTreeMap<ActionId, ActionDefinition>,
     pub(crate) capabilities: BTreeMap<CapabilityId, CapabilityDefinition>,
-    pub(crate) capability_groups: BTreeMap<String, Documentation>,
+    pub(crate) groups: BTreeMap<CapabilityId, CapabilityGroupDefinition>,
     pub(crate) subjects: trellis_protocol::DerivedApiSubjects,
 }
 
@@ -458,9 +458,30 @@ impl ApiDefinition {
         &self.capabilities
     }
 
-    /// Return presentation groups for capabilities, keyed by API-local group name.
-    pub fn capability_groups(&self) -> &BTreeMap<String, Documentation> {
-        &self.capability_groups
+    /// Return the developer-defined capability groups.
+    pub fn groups(&self) -> &BTreeMap<CapabilityId, CapabilityGroupDefinition> {
+        &self.groups
+    }
+
+    /// The capabilities a selected capability or group stands for.
+    pub fn members<'a>(&'a self, id: &'a CapabilityId) -> Option<Vec<&'a CapabilityId>> {
+        if self.capabilities.contains_key(id) {
+            Some(vec![id])
+        } else {
+            self.groups
+                .get(id)
+                .map(|group| group.members.iter().collect())
+        }
+    }
+
+    /// Every action a selected capability or group allows.
+    pub fn selection_allows(&self, id: &CapabilityId) -> Option<BTreeSet<&ActionSelection>> {
+        Some(
+            self.members(id)?
+                .into_iter()
+                .flat_map(|member| &self.capabilities[member].allows)
+                .collect(),
+        )
     }
 
     /// Return protocol-derived subjects for every API action.
@@ -569,6 +590,23 @@ pub enum Pagination {
     Cursor,
 }
 
+/// A developer-defined bundle of an API's capabilities. Holders get the
+/// group's current members, so a membership change reaches them directly.
+#[derive(Clone, Debug)]
+pub struct CapabilityGroupDefinition {
+    /// Explicit revision of the delegated meaning shown for consent; it must
+    /// increase whenever members are added.
+    pub consent_revision: u64,
+    /// Presentation title.
+    pub title: String,
+    /// Consent description.
+    pub description: String,
+    /// Consent consequence.
+    pub consequence: String,
+    /// Member capabilities of the same API.
+    pub members: BTreeSet<CapabilityId>,
+}
+
 /// Capability policy and consent text.
 #[derive(Clone, Debug)]
 pub struct CapabilityDefinition {
@@ -580,8 +618,6 @@ pub struct CapabilityDefinition {
     pub description: String,
     /// Consent consequence.
     pub consequence: String,
-    /// API-local presentation group, when the capability declares one.
-    pub group: Option<String>,
     /// Manages the Trellis installation itself. Only the builtin `trellis`
     /// package declares these.
     pub administrative: bool,

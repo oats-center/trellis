@@ -97,6 +97,9 @@ pub(crate) struct CapabilityGroup {
     pub name: String,
     pub title: String,
     pub description: String,
+    pub consequence: String,
+    pub consent_revision: Option<u64>,
+    pub members: Vec<String>,
     pub span: Range<usize>,
 }
 
@@ -124,7 +127,6 @@ pub(crate) struct Capability {
     pub description: String,
     pub consequence: String,
     pub consent_revision: Option<u64>,
-    pub group: Option<String>,
     pub administrative: bool,
     pub allows: Vec<Selection>,
     pub span: Range<usize>,
