@@ -146,6 +146,11 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
               credential = next.admission;
               return credential;
             },
+          }).catch((cause: unknown) => {
+            // Name the endpoints so a failed dial can be traced to its address.
+            throw cause instanceof AuthError || cause instanceof TransportError
+              ? cause
+              : new UnexpectedError({ cause }).withContext({ servers });
           });
           try {
             // The shared path matches signed OAuth identity before promotion.
@@ -282,7 +287,9 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
         }
       } catch (cause) {
         return Result.err(
-          cause instanceof AuthError || cause instanceof TransportError
+          cause instanceof AuthError ||
+            cause instanceof TransportError ||
+            cause instanceof UnexpectedError
             ? cause
             : new UnexpectedError({ cause }),
         );
