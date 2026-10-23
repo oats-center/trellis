@@ -1,6 +1,7 @@
 //! RFC 8628 stays in the OAuth engine. This sealed host extension binds the
 //! requested Trellis authority to the persistent DPoP key before code issuance.
 
+use super::super::sqlite::blocking;
 use super::super::{GrantApproval, Mutation};
 use super::{OAuthEngine, RequestedAuthority, TokenBinding};
 use axum::{
@@ -65,22 +66,24 @@ pub(super) async fn start(
 
 pub(super) async fn page(State(engine): State<Arc<OAuthEngine>>, headers: HeaderMap) -> Response {
     let now = crate::clock::unix_now();
-    let authority = &engine.server.store().authority;
-    let existing = super::http::portal_cookie(&headers, "__Host-trellis-portal")
-        .zip(super::http::portal_cookie(
-            &headers,
-            "__Host-trellis-portal-csrf",
-        ))
-        .is_some_and(|(cookie, csrf)| {
+    let authority = engine.server.store().authority.clone();
+    let cookies = super::http::portal_cookie(&headers, "__Host-trellis-portal").zip(
+        super::http::portal_cookie(&headers, "__Host-trellis-portal-csrf"),
+    );
+    let guest = blocking(move || {
+        if cookies.is_some_and(|(cookie, csrf)| {
             authority
                 .portal_session_identity(&cookie, &csrf, now)
                 .is_ok()
-        });
-    if existing {
-        return super::assets::page(&engine, None);
-    }
-    match authority.create_portal_session(now) {
-        Ok(guest) => super::http::cookie_response(
+        }) {
+            return Ok(None);
+        }
+        authority.create_portal_session(now).map(Some)
+    })
+    .await;
+    match guest {
+        Ok(None) => super::assets::page(&engine, None),
+        Ok(Some(guest)) => super::http::cookie_response(
             &guest.cookie,
             Some(&guest.csrf),
             600,
@@ -115,8 +118,13 @@ pub(super) async fn begin(
         return super::http::error(ErrorCode::InvalidRequest);
     }
     let now = crate::clock::unix_now();
-    let authority = &engine.server.store().authority;
-    let session = match authority.portal_session_identity(&cookie, csrf, now) {
+    let authority = engine.server.store().authority.clone();
+    let (identity_cookie, identity_csrf) = (cookie.clone(), csrf.clone());
+    let session = match blocking(move || {
+        authority.portal_session_identity(&identity_cookie, &identity_csrf, now)
+    })
+    .await
+    {
         Ok(session) => session,
         Err(_) => return super::http::error(ErrorCode::AccessDenied),
     };
@@ -140,36 +148,40 @@ pub(super) async fn begin(
     {
         return super::http::error(ErrorCode::InvalidRequest);
     }
-    let selection = match engine.server.store().device_selection(&grant.device_code) {
-        Ok(selection) => selection,
-        Err(_) => return super::http::error(ErrorCode::InvalidRequest),
-    };
-    let transaction = super::super::sqlite::id();
-    let flow = super::portal::PortalAuthorization {
-        presentation: None,
-        session_id: session,
-        request: super::portal::ConsentRequest::Device {
-            device_code: grant.device_code,
-        },
-        public_jwk: selection.public_jwk,
-        expires_at: grant
-            .expires_at
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|time| time.as_secs() as i64)
-            .unwrap_or(now),
-    };
-    if engine
-        .server
-        .store()
-        .store_authorization(&transaction, &flow, grant.client_id.as_str())
-        .is_err()
-    {
-        return super::http::error(ErrorCode::ServerError);
-    }
-    let page = if authority.portal_login(&cookie, csrf, now).is_ok() {
-        "consent"
-    } else {
-        "login"
+    let store = engine.server.store().clone();
+    let csrf = csrf.clone();
+    let started = blocking(move || {
+        let selection = store
+            .device_selection(&grant.device_code)
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        let transaction = super::super::sqlite::id();
+        let flow = super::portal::PortalAuthorization {
+            presentation: None,
+            session_id: session,
+            request: super::portal::ConsentRequest::Device {
+                device_code: grant.device_code,
+            },
+            public_jwk: selection.public_jwk,
+            expires_at: grant
+                .expires_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|time| time.as_secs() as i64)
+                .unwrap_or(now),
+        };
+        store
+            .store_authorization(&transaction, &flow, grant.client_id.as_str())
+            .map_err(|_| ErrorCode::ServerError)?;
+        let page = if store.authority.portal_login(&cookie, &csrf, now).is_ok() {
+            "consent"
+        } else {
+            "login"
+        };
+        Ok((page, transaction))
+    })
+    .await;
+    let (page, transaction) = match started {
+        Ok(started) => started,
+        Err(code) => return super::http::error(code),
     };
     Redirect::to(&format!("/{page}?transaction={transaction}")).into_response()
 }
@@ -187,18 +199,23 @@ impl OAuthEngine {
     ) -> Result<DeviceAuthorizationResponse, ErrorResponse> {
         let requested = RequestedAuthority::parse(details)?;
         self.prepare_client(client_id).await?;
-        self.server
-            .store()
-            .authority
-            .transaction(|connection| {
+        let authority = self.server.store().authority.clone();
+        let (client, selection) = (
+            client_id.as_str().to_owned(),
+            requested.capabilities.clone(),
+        );
+        blocking(move || {
+            authority.transaction(|connection| {
                 super::enrollment::validate_selection(
                     connection,
-                    client_id.as_str(),
-                    &requested.capabilities.required,
-                    &requested.capabilities.optional,
+                    &client,
+                    &selection.required,
+                    &selection.optional,
                 )
             })
-            .map_err(|_| ErrorResponse::new(ErrorCode::InvalidRequest))?;
+        })
+        .await
+        .map_err(|_| ErrorResponse::new(ErrorCode::InvalidRequest))?;
         let uri = format!(
             "{}/device_authorization",
             self.server.store().authority.settings.oauth_origin

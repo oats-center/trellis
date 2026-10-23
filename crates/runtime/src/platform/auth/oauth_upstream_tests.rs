@@ -319,9 +319,12 @@ staticPasswords:
         .to_owned();
 
     let mut f = fixture();
-    f.store.settings.oauth_origin = origin.clone();
-    f.store.settings.upstream_tls_roots_pem = vec![certificate.pem.clone()];
-    let authority = Arc::new(f.store);
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store)
+        .unwrap()
+        .settings
+        .upstream_tls_roots_pem = vec![certificate.pem.clone()];
+    let authority = f.store;
     let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
     let provider = id();
     let registration = super::super::lifecycle::OidcProviderRegistration {

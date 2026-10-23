@@ -28,6 +28,7 @@ use trellis_protocol::{
     OAUTH_ADMISSION_FORMAT_V1,
 };
 
+use super::super::sqlite::blocking;
 use super::super::{
     policy::evaluate, AdmissionIdentity, AuthError, Credential, GrantApproval, Mutation,
     SqliteAuthorizationStore,
@@ -444,23 +445,21 @@ impl OAuthEngine {
     /// Intake may retrieve an unknown public client's metadata. Admission and
     /// renewal use the already approved durable grant, never an HTTP fetch.
     pub(crate) async fn prepare_client(&self, client: &ClientId) -> Result<(), ErrorResponse> {
-        let state: Option<String> = {
-            let connection = self
-                .server
-                .store()
-                .authority
-                .connection
-                .lock()
-                .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
-            connection
-                .query_row(
-                    "SELECT state FROM auth_oauth_clients WHERE client_id=?1",
-                    [client.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?
-        };
+        let authority = self.server.store().authority.clone();
+        let client_id = client.as_str().to_owned();
+        let state: Option<String> = blocking(move || {
+            authority.read(|connection| {
+                Ok(connection
+                    .query_row(
+                        "SELECT state FROM auth_oauth_clients WHERE client_id=?1",
+                        [&client_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?)
+            })
+        })
+        .await
+        .map_err(|_| ErrorResponse::new(ErrorCode::ServerError))?;
         if let Some(state) = state {
             return if state == "active" {
                 Ok(())
@@ -473,9 +472,9 @@ impl OAuthEngine {
             .get(client.as_str())
             .await
             .map_err(|_| ErrorResponse::new(ErrorCode::InvalidClient))?;
-        self.server
-            .store()
-            .install_client_document(&document)
+        let store = self.server.store().clone();
+        blocking(move || store.install_client_document(&document))
+            .await
             .map_err(|error| {
                 ErrorResponse::new(match error {
                     AuthError::ResourceLimit | AuthError::Conflict => {
@@ -528,49 +527,51 @@ impl OAuthEngine {
             }
         }
         let now = crate::clock::unix_now();
-        let grant = self
-            .server
-            .store()
-            .authority
-            .approve_grant(identity, approval, now)
-            .map_err(super::portal::ApprovalError::from)?;
-        // OAuth reports what was actually granted, not unchecked request JSON.
-        let actual = self
-            .server
-            .store()
-            .authority
-            .transaction(|connection| {
-                let current = evaluate(connection, &Credential::OAuthGrant(grant.clone()), now)?;
-                if !current.required_missing.is_empty() {
-                    return Err(AuthError::RequiredMissing);
-                }
-                let approved: Vec<_> = current
-                    .capabilities
-                    .iter()
-                    .map(|capability| capability.capability_id.clone())
-                    .collect();
-                let mut details = vec![serde_json::json!({
-                    "type":"trellis_capabilities",
-                    "required":approval.selection.required,
-                    "optional": approved
-                            .into_iter()
-                            .filter(|name| !approval.selection.required.contains(name))
-                            .collect::<Vec<_>>()
-                })];
-                if !approval.privileges.is_empty() {
-                    details.push(serde_json::json!({
-                    "type":"trellis_platform_privileges",
-                    "required":requested.required_privileges,
-                    "optional": approval
-                            .privileges
-                            .iter()
-                            .filter(|privilege| !requested.required_privileges.contains(privilege))
-                            .collect::<Vec<_>>()
-                }));
-                }
-                Ok(serde_json::to_string(&details)?)
-            })
-            .map_err(|_| rejected())?;
+        let authority = self.server.store().authority.clone();
+        let (identity, approval) = (identity.clone(), approval.clone());
+        let required_privileges = requested.required_privileges.clone();
+        let (grant, actual) = blocking(move || {
+            let grant = authority
+                .approve_grant(&identity, &approval, now)
+                .map_err(super::portal::ApprovalError::from)?;
+            // OAuth reports what was actually granted, not unchecked request JSON.
+            let actual = authority
+                .transaction(|connection| {
+                    let current =
+                        evaluate(connection, &Credential::OAuthGrant(grant.clone()), now)?;
+                    if !current.required_missing.is_empty() {
+                        return Err(AuthError::RequiredMissing);
+                    }
+                    let approved: Vec<_> = current
+                        .capabilities
+                        .iter()
+                        .map(|capability| capability.capability_id.clone())
+                        .collect();
+                    let mut details = vec![serde_json::json!({
+                        "type":"trellis_capabilities",
+                        "required":approval.selection.required,
+                        "optional": approved
+                                .into_iter()
+                                .filter(|name| !approval.selection.required.contains(name))
+                                .collect::<Vec<_>>()
+                    })];
+                    if !approval.privileges.is_empty() {
+                        details.push(serde_json::json!({
+                            "type":"trellis_platform_privileges",
+                            "required":required_privileges,
+                            "optional": approval
+                                    .privileges
+                                    .iter()
+                                    .filter(|privilege| !required_privileges.contains(privilege))
+                                    .collect::<Vec<_>>()
+                        }));
+                    }
+                    Ok(serde_json::to_string(&details)?)
+                })
+                .map_err(|_| super::portal::ApprovalError::from(rejected()))?;
+            Ok::<_, super::portal::ApprovalError>((grant, actual))
+        })
+        .await?;
         validated.authorization_details = oauth_as::rar::AuthorizationDetails::parse(&actual)?;
         self.server
             .issue_authorization_code(UserApproval::granted(&validated, grant))
@@ -622,10 +623,10 @@ impl OAuthEngine {
             ..
         } = &request
         {
-            let selection = self
-                .server
-                .store()
-                .device_selection(device_code)
+            let store = self.server.store().clone();
+            let device_code = device_code.clone();
+            let selection = blocking(move || store.device_selection(&device_code))
+                .await
                 .map_err(|_| rejected())?;
             if selection.persistent_dpop_jkt != binding.persistent_dpop_jkt
                 || selection.client_id != client_id.as_str()
@@ -644,15 +645,14 @@ impl OAuthEngine {
         if token.jkt.as_deref() != Some(binding.persistent_dpop_jkt.as_str()) {
             return Err(rejected().into());
         }
-        let grant = token.subject.as_deref().ok_or_else(rejected)?;
-        let family = token.family_id.as_deref().ok_or_else(rejected)?;
+        let grant = token.subject.clone().ok_or_else(rejected)?;
+        let family = token.family_id.clone().ok_or_else(rejected)?;
         let now = crate::clock::unix_now();
-        let signed = self
-            .server
-            .store()
-            .authority
-            .transaction(|connection| {
-                self.server.store().authority.current_signer(connection)?;
+        let authority = self.server.store().authority.clone();
+        let signed = blocking(move || {
+            let grant = grant.as_str();
+            authority.transaction(|connection| {
+                authority.current_signer(connection)?;
                 let current = evaluate(connection, &Credential::OAuthGrant(grant.into()), now)?;
                 if !current.required_missing.is_empty() {
                     return Err(AuthError::RequiredMissing);
@@ -661,14 +661,14 @@ impl OAuthEngine {
                     .map_err(|_| AuthError::Denied)?;
                 let identity = AdmissionIdentity {
                     credential: Credential::OAuthGrant(grant.into()),
-                    refresh_family_id: Some(family.into()),
+                    refresh_family_id: Some(family),
                     runtime_id: binding.runtime_id,
                     session_public_key: URL_SAFE_NO_PAD.encode(key),
                     inbox_prefix: trellis_protocol::admission_inbox_prefix(
                         &URL_SAFE_NO_PAD.encode(key),
                     )?,
                 };
-                let signed = self.server.store().authority.sign_oauth_admission_in(
+                let signed = authority.sign_oauth_admission_in(
                     connection,
                     &identity,
                     &binding.ephemeral_nkey,
@@ -718,7 +718,9 @@ impl OAuthEngine {
                 let actual = serde_json::Value::Array(actual);
                 Ok((signed, actual, expires))
             })
-            .map_err(|_| rejected())?;
+        })
+        .await
+        .map_err(|_| rejected())?;
         response.expires_in = response.expires_in.min((signed.2 - now) as u64);
         response.authorization_details =
             oauth_as::rar::AuthorizationDetails::parse(&signed.1.to_string())?;

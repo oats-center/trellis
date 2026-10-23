@@ -5,6 +5,7 @@ use super::super::{
     sqlite::{digest, id},
     AuthError, Mutation, SqliteAuthorizationStore,
 };
+use super::with_store;
 use super::{
     http::{cookie_response, error, fields, portal_cookie, portal_origin},
     oidc::{UpstreamFlow, VerifiedIdentity},
@@ -709,9 +710,14 @@ pub(super) async fn page(
         if headers.contains_key(axum::http::header::ORIGIN) && !portal_origin(&engine, &headers) {
             return error(ErrorCode::AccessDenied);
         }
-        let action = match engine.server.store().authority.transaction(|connection| {
-            action(connection, token, "identity_link", crate::clock::unix_now())
-        }) {
+        let link = token.clone();
+        let action = match with_store(&engine, move |store| {
+            store.authority.transaction(|connection| {
+                action(connection, &link, "identity_link", crate::clock::unix_now())
+            })
+        })
+        .await
+        {
             Ok(action) => action,
             Err(_) => return error(ErrorCode::AccessDenied),
         };
@@ -742,39 +748,44 @@ pub(super) async fn page(
         "link" => "identity_link",
         _ => return error(ErrorCode::InvalidRequest),
     };
-    let storage = engine.server.store();
-    let action = match storage
-        .authority
-        .transaction(|connection| action(connection, token, flow_kind, crate::clock::unix_now()))
-    {
-        Ok(action) => action,
-        Err(_) => return error(ErrorCode::AccessDenied),
-    };
     let current = portal_cookie(&headers, "__Host-trellis-portal")
         .zip(portal_cookie(&headers, "__Host-trellis-portal-csrf"));
-    let guest;
-    let (cookie, csrf) = match current.filter(|(cookie, csrf)| {
-        storage
+    let flow_token = token.clone();
+    let prepared = with_store(&engine, move |storage| {
+        let now = crate::clock::unix_now();
+        let action = storage
             .authority
-            .portal_session_identity(cookie, csrf, crate::clock::unix_now())
-            .is_ok()
-    }) {
-        Some(current) => {
-            guest = None;
-            current
-        }
-        None => {
-            let session = match storage
+            .transaction(|connection| action(connection, &flow_token, flow_kind, now))
+            .map_err(|_| ErrorCode::AccessDenied)?;
+        let (current, guest) = match current.filter(|(cookie, csrf)| {
+            storage
                 .authority
-                .create_portal_session(crate::clock::unix_now())
-            {
-                Ok(session) => session,
-                Err(_) => return error(ErrorCode::ServerError),
-            };
-            let current = (session.cookie.clone(), session.csrf.clone());
-            guest = Some(session);
-            current
-        }
+                .portal_session_identity(cookie, csrf, now)
+                .is_ok()
+        }) {
+            Some(current) => (current, None),
+            None => {
+                let session = storage
+                    .authority
+                    .create_portal_session(now)
+                    .map_err(|_| ErrorCode::ServerError)?;
+                (
+                    (session.cookie.clone(), session.csrf.clone()),
+                    Some(session),
+                )
+            }
+        };
+        let signed_in = storage
+            .authority
+            .portal_login(&current.0, &current.1, now)
+            .ok()
+            .map(|login| login.principal_id);
+        Ok((action, current, guest, signed_in))
+    })
+    .await;
+    let (action, (_, csrf), guest, signed_in) = match prepared {
+        Ok(prepared) => prepared,
+        Err(code) => return error(code),
     };
     let (title, body) = if kind == "reset" {
         (
@@ -784,18 +795,15 @@ pub(super) async fn page(
             ),
         )
     } else {
-        match storage
-            .authority
-            .portal_login(&cookie, &csrf, crate::clock::unix_now())
-        {
-            Ok(login) if login.principal_id == action.target => (
+        match signed_in {
+            Some(principal) if principal == action.target => (
                 "Link sign-in identity",
                 format!(
                     r#"<form method="post" action="/portal/account/link"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><button>Continue to identity provider</button></form>"#
                 ),
             ),
-            Ok(_) => return error(ErrorCode::AccessDenied),
-            Err(_) => (
+            Some(_) => return error(ErrorCode::AccessDenied),
+            None => (
                 "Sign in to link an identity",
                 format!(
                     r#"<form method="post" action="/portal/account/login"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label>Username <input name="username" autocomplete="username" required></label><label>Password <input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form>"#
@@ -831,13 +839,13 @@ pub(super) async fn submit(
         return error(ErrorCode::AccessDenied);
     };
     if kind == "link" {
-        let storage = engine.server.store();
         let now = crate::clock::unix_now();
-        let reviewed = (|| {
-            let login = storage.authority.portal_login(&cookie, csrf, now)?;
+        let (token, csrf) = (token.clone(), csrf.clone());
+        let reviewed = with_store(&engine, move |storage| {
+            let login = storage.authority.portal_login(&cookie, &csrf, now)?;
             let replacement = self::token()?;
             storage.authority.transaction(|connection| {
-                let mut action = action(connection, token, "identity_link", now)?;
+                let mut action = action(connection, &token, "identity_link", now)?;
                 if action.target != login.principal_id
                     || action.payload.actor != login.principal_id
                     || action.payload.handoff.is_some()
@@ -873,7 +881,8 @@ pub(super) async fn submit(
                 )?;
                 Ok(replacement)
             })
-        })();
+        })
+        .await;
         return match reviewed {
             Ok(token) => {
                 let mut response = html(
@@ -1141,7 +1150,7 @@ mod tests {
     #[test]
     fn local_operator_admin_reset_replaces_the_password_and_rejects_old_links_and_replay() {
         let f = fixture();
-        let authority = Arc::new(f.store);
+        let authority = f.store;
         let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
         let now = crate::clock::unix_now();
         let first = authority
@@ -1221,7 +1230,7 @@ mod tests {
     #[tokio::test]
     async fn reviewed_link_handoff_rejects_other_sessions_stale_csrf_expiry_and_replay() {
         let f = fixture();
-        let authority = Arc::new(f.store);
+        let authority = f.store;
         let storage = OAuthStorage::new(authority.clone(), &[19; 32]).unwrap();
         let provider = id();
         let registration = OidcProviderRegistration {

@@ -33,3 +33,16 @@ pub(crate) use http::router;
 pub(super) use portal::ConsentPresentation;
 pub(crate) use storage::OAuthStorage;
 pub(crate) use transport::OAuthListener;
+
+/// Run a handler's synchronous storage work on the blocking pool.
+pub(super) async fn with_store<T, E>(
+    engine: &OAuthEngine,
+    work: impl FnOnce(&OAuthStorage) -> Result<T, E> + Send + 'static,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: From<super::AuthError> + Send + 'static,
+{
+    let store = engine.server.store().clone();
+    super::sqlite::blocking(move || work(&store)).await
+}

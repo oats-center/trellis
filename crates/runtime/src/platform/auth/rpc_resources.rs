@@ -29,7 +29,7 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
             let actor =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
             tokio::task::spawn_blocking(move || {
-                store.transaction(|connection| {
+                store.transaction(move |connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
                         &actor,
@@ -50,7 +50,7 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
             let actor =
                 caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
             tokio::task::spawn_blocking(move || {
-                store.transaction(|connection| {
+                store.transaction(move |connection| {
                     SqliteAuthorizationStore::require_privilege(
                         connection,
                         &actor,
@@ -543,26 +543,29 @@ pub(super) async fn remove_resource(
                 value = serde_json::json!({"owned":owned,"purges":purges});
                 // Capture the cutoff once under the existing lease before destruction.
                 // Every retry uses this same cutoff, including a delayed execution.
-                store.transaction(|connection| {
-                    if connection.execute(
-                        "UPDATE auth_resource_removals \
+                let (actor, request_id, owner, encoded, previous) = (
+                    identity.actor.clone(),
+                    identity.request_id.clone(),
+                    execution_owner.clone(),
+                    serde_json::to_string(&value)?,
+                    physical.clone(),
+                );
+                store
+                    .transaction_blocking(move |connection| {
+                        if connection.execute(
+                            "UPDATE auth_resource_removals \
                         SET physical_id=?4 WHERE actor_id=?1 \
                         AND request_id=?2 AND execution_owner=?3 \
                         AND state='executing' \
                         AND physical_id=?5",
-                        params![
-                            identity.actor,
-                            identity.request_id,
-                            execution_owner,
-                            serde_json::to_string(&value)?,
-                            physical
-                        ],
-                    )? != 1
-                    {
-                        return Err(AuthError::Conflict);
-                    }
-                    Ok(())
-                })?;
+                            params![actor, request_id, owner, encoded, previous],
+                        )? != 1
+                        {
+                            return Err(AuthError::Conflict);
+                        }
+                        Ok(())
+                    })
+                    .await?;
             }
             for (stream_name, name) in targets {
                 let stream = jetstream
@@ -644,7 +647,7 @@ pub(super) async fn remove_resource(
         let store = store.clone();
         let identity = identity.clone();
         tokio::task::spawn_blocking(move || {
-            store.transaction(|connection| {
+            store.transaction(move |connection| {
                 connection.execute(
                     "UPDATE auth_resource_removals \
                     SET state='accepted',execution_owner=NULL,lease_until=NULL \
@@ -663,7 +666,7 @@ pub(super) async fn remove_resource(
     let store = store.clone();
     let identity = identity.clone();
     tokio::task::spawn_blocking(move || {
-        store.transaction(|connection| {
+        store.transaction(move |connection| {
             if connection.execute(
                 "UPDATE auth_resource_removals \
                 SET state='completed',execution_owner=NULL,lease_until=NULL \

@@ -242,14 +242,16 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                             }
                             Err(error) => return Err(RuntimeError::Platform(error.to_string())),
                         }
-                        store
-                            .prune_expired_artifacts(now)
-                            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
-                        engine
-                            .server
-                            .store()
-                            .cleanup_expired(now)
-                            .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+                        let (pruned, cleaned) = (store.clone(), engine.server.store().clone());
+                        auth::blocking(move || {
+                            pruned.prune_expired_artifacts(now)?;
+                            cleaned
+                                .cleanup_expired(now)
+                                .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
+                            Ok::<_, auth::AuthError>(())
+                        })
+                        .await
+                        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                     }
                 }
             }

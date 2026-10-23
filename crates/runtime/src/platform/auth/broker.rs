@@ -1,11 +1,11 @@
 //! Exact broker effects using the runtime's operational system-account client.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_nats::{jetstream::kv, Client};
 use serde::Deserialize;
 
-use super::sqlite::{json, AuthError, SqliteAuthorizationStore};
+use super::sqlite::{blocking, json, AuthError, SqliteAuthorizationStore};
 
 pub(crate) const ATTACHMENT_MARKER_PREFIX: &str = "trellis.auth.v1:";
 pub(crate) const MATERIAL_BUCKET: &str = "TRELLIS_AUTH_MATERIAL";
@@ -102,7 +102,7 @@ pub(crate) async fn close_attachment(
 impl SqliteAuthorizationStore {
     /// Publish committed immutable verification material and await its broker acknowledgment.
     pub(crate) async fn publish_verification_material(
-        &self,
+        self: &Arc<Self>,
         material: &kv::Store,
         kind: &str,
         key: &str,
@@ -114,7 +114,11 @@ impl SqliteAuthorizationStore {
             "rotation" => "rotation",
             _ => return Err(AuthError::Invalid("unknown verification material".into())),
         };
-        let bytes = self.resolve_verification_material(kind, key)?;
+        let store = Arc::clone(self);
+        let (selected_kind, selected_key) = (kind.to_owned(), key.to_owned());
+        let bytes =
+            blocking(move || store.resolve_verification_material(&selected_kind, &selected_key))
+                .await?;
         material
             .put(format!("{prefix}.{key}"), bytes.into())
             .await
@@ -128,15 +132,19 @@ impl SqliteAuthorizationStore {
     /// Advance one bounded enforcement page and deliver committed broker effects.
     /// Count progress in both phases so drains cannot stop at effect-free pages.
     pub(crate) async fn process_effects(
-        &self,
+        self: &Arc<Self>,
         material: &kv::Store,
         revocations: &kv::Store,
         system: &Client,
         now: i64,
     ) -> Result<usize, AuthError> {
         let started = std::time::Instant::now();
-        let enforcement_progress = self.enforce_next_page(now)?.is_some();
-        let effects = self.claim_effects(8, now, 10, false)?;
+        let store = Arc::clone(self);
+        let (enforcement_progress, effects) = blocking(move || {
+            let progress = store.enforce_next_page(now)?.is_some();
+            Ok::<_, AuthError>((progress, store.claim_effects(8, now, 10, false)?))
+        })
+        .await?;
         // An empty enforcement page still advances durable work. In particular,
         // startup must drain bootstrap scopes before accepting policy mutations.
         let mut completed = usize::from(enforcement_progress);
@@ -165,8 +173,10 @@ impl SqliteAuthorizationStore {
                         let session = effect.payload["authorizationSessionId"]
                             .as_str()
                             .ok_or(AuthError::Denied)?;
-                        let signed = self
-                            .resolve_revocation(session)?
+                        let store = Arc::clone(self);
+                        let lookup = session.to_owned();
+                        let signed = blocking(move || store.resolve_revocation(&lookup))
+                            .await?
                             .ok_or(AuthError::NotFound)?;
                         if signed.latest_context_expiry > now {
                             let ttl = Duration::from_secs(
@@ -221,7 +231,12 @@ impl SqliteAuthorizationStore {
             let settled_at =
                 now.saturating_add(i64::try_from(started.elapsed().as_secs()).unwrap_or(i64::MAX));
             match result {
-                Ok(()) => completed += usize::from(self.complete_effect(&effect, settled_at)?),
+                Ok(()) => {
+                    let store = Arc::clone(self);
+                    completed += usize::from(
+                        blocking(move || store.complete_effect(&effect, settled_at)).await?,
+                    );
+                }
                 Err(error) => {
                     tracing::warn!(
                         action_id=%effect.action_id,
@@ -230,7 +245,8 @@ impl SqliteAuthorizationStore {
                         error=%error,
                         "Auth effect remains pending"
                     );
-                    self.retry_effect(&effect, settled_at)?;
+                    let store = Arc::clone(self);
+                    blocking(move || store.retry_effect(&effect, settled_at)).await?;
                     failure = Some(error);
                 }
             }

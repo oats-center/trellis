@@ -106,9 +106,17 @@ pub(crate) struct AuthSettings {
 /// Auth's existing platform database owns all policy and effect transactions.
 pub(crate) struct SqliteAuthorizationStore {
     pub(super) connection: Mutex<rusqlite::Connection>,
+    /// A read-only connection to the same WAL database, so reads neither wait
+    /// for nor delay the writer. Without WAL, reads share the writer.
+    reader: Option<Mutex<rusqlite::Connection>>,
     pub(super) signer: SigningKey,
     pub(super) custody_directory: PathBuf,
     current_key: Mutex<Option<(String, SigningKey)>>,
+    /// Origins of every usable client's redirect URIs, answered from memory
+    /// for CORS and rebuilt after any commit that changed a client row.
+    client_origins: std::sync::RwLock<Arc<std::collections::BTreeSet<String>>>,
+    /// Set by SQLite's update hook when a statement writes a client table.
+    clients_changed: Arc<std::sync::atomic::AtomicBool>,
     pub(super) avatar_signer: std::sync::OnceLock<Arc<super::avatars::AvatarSigner>>,
     pub(crate) settings: AuthSettings,
 }
@@ -149,6 +157,87 @@ pub(super) fn decode<T: DeserializeOwned>(value: &str) -> Result<T, AuthError> {
 /// The wire timestamp for a stored Unix-seconds instant.
 pub(super) fn timestamp(seconds: i64) -> Result<trellis_rs::generated::Timestamp, AuthError> {
     trellis_rs::generated::Timestamp::from_unix_seconds(seconds).map_err(|_| AuthError::Unavailable)
+}
+
+/// Run synchronous Auth storage work on Tokio's blocking pool.
+///
+/// Every store call takes the connection mutex and can wait behind password
+/// hashing or IDL compilation, so async code reaches the store only through here.
+/// Polled outside a Tokio runtime there is no async worker to protect, and the
+/// work runs inline.
+pub(crate) async fn blocking<T, E>(
+    work: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: From<AuthError> + Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return work();
+    }
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "Auth storage task failed");
+            Err(AuthError::Unavailable.into())
+        })
+}
+
+/// A locked read connection.
+pub(crate) struct Reader<'a>(std::sync::MutexGuard<'a, rusqlite::Connection>);
+
+impl std::ops::Deref for Reader<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        Connection::new(&self.0)
+    }
+}
+
+/// Open a read-only companion connection when the database runs in WAL mode;
+/// in any other journal mode a reader would block the writer's commits.
+fn open_reader(
+    connection: &rusqlite::Connection,
+) -> Result<Option<rusqlite::Connection>, AuthError> {
+    let Some(path) = connection.path().filter(|path| !path.is_empty()) else {
+        return Ok(None);
+    };
+    let mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        return Ok(None);
+    }
+    let reader = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    reader.busy_timeout(std::time::Duration::from_secs(5))?;
+    reader.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
+    Ok(Some(reader))
+}
+
+/// Origins of active registered clients' and validated CIMD clients' redirect URIs.
+fn client_origins_in(
+    connection: &Connection,
+) -> Result<std::collections::BTreeSet<String>, AuthError> {
+    let mut statement = connection.prepare(
+        "SELECT j.value FROM auth_oauth_clients c,\
+        json_each(c.redirect_uris_json) j \
+        WHERE c.state='active' \
+        UNION ALL SELECT j.value \
+        FROM auth_cimd_clients c,json_each(c.metadata_json,'$.redirect_uris') \
+        j \
+        WHERE NOT EXISTS(SELECT 1 \
+        FROM auth_oauth_clients r \
+        WHERE r.client_id=c.client_id)",
+    )?;
+    let uris = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut origins = std::collections::BTreeSet::new();
+    for uri in uris {
+        if let Ok(uri) = url::Url::parse(&uri?) {
+            origins.insert(uri.origin().ascii_serialization());
+        }
+    }
+    Ok(origins)
 }
 
 /// The active issuer key that `signer` signs for.
@@ -383,11 +472,25 @@ impl SqliteAuthorizationStore {
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
+        let clients_changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let changed = Arc::clone(&clients_changed);
+        connection.update_hook(Some(
+            move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
+                if matches!(table, "auth_oauth_clients" | "auth_cimd_clients") {
+                    changed.store(true, std::sync::atomic::Ordering::Release);
+                }
+            },
+        ))?;
+        let client_origins = client_origins_in(Connection::new(&connection))?;
+        let reader = open_reader(&connection)?.map(Mutex::new);
         Ok(Self {
             connection: Mutex::new(connection),
+            reader,
             signer,
             custody_directory,
             current_key: Mutex::new(None),
+            client_origins: std::sync::RwLock::new(Arc::new(client_origins)),
+            clients_changed,
             avatar_signer: std::sync::OnceLock::new(),
             settings,
         })
@@ -453,7 +556,66 @@ impl SqliteAuthorizationStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let result = operation(Connection::new(&transaction))?;
         transaction.commit()?;
+        self.after_commit(&connection);
         Ok(result)
+    }
+
+    /// `transaction` for async callers, run on the blocking pool.
+    pub(crate) async fn transaction_blocking<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&Connection) -> Result<T, AuthError> + Send + 'static,
+    ) -> Result<T, AuthError> {
+        let store = Arc::clone(self);
+        blocking(move || store.transaction(operation)).await
+    }
+
+    /// Refresh state derived from committed rows. Runs while the committing
+    /// caller still holds the connection, so no other write can interleave.
+    pub(super) fn after_commit(&self, connection: &rusqlite::Connection) {
+        use std::sync::atomic::Ordering;
+        if !self.clients_changed.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        match client_origins_in(Connection::new(connection)) {
+            Ok(origins) => match self.client_origins.write() {
+                Ok(mut current) => *current = Arc::new(origins),
+                Err(_) => self.clients_changed.store(true, Ordering::Release),
+            },
+            Err(error) => {
+                tracing::error!(%error, "cannot refresh OAuth client origins");
+                self.clients_changed.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// Whether `origin` serves a redirect URI of a usable client.
+    pub(crate) fn allows_client_origin(&self, origin: &str) -> bool {
+        self.client_origins
+            .read()
+            .is_ok_and(|origins| origins.contains(origin))
+    }
+
+    /// A consistent snapshot for work that never writes. It takes no write
+    /// lock, so it does not wait for or delay writers.
+    pub(super) fn read<T>(
+        &self,
+        operation: impl FnOnce(&Connection) -> Result<T, AuthError>,
+    ) -> Result<T, AuthError> {
+        let mut connection = self.reader()?;
+        let transaction = connection
+            .0
+            .transaction_with_behavior(TransactionBehavior::Deferred)?;
+        operation(Connection::new(&transaction))
+    }
+
+    /// The connection for a single read-only statement outside a transaction.
+    pub(super) fn reader(&self) -> Result<Reader<'_>, AuthError> {
+        self.reader
+            .as_ref()
+            .unwrap_or(&self.connection)
+            .lock()
+            .map(Reader)
+            .map_err(|_| AuthError::Unavailable)
     }
 
     pub(super) fn current_signer(&self, connection: &Connection) -> Result<SigningKey, AuthError> {

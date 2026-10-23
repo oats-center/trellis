@@ -131,7 +131,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
     let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
         .await
         .unwrap();
-    let store = Arc::new(f.store);
+    let store = f.store;
     // No declarations really means no resources; do not invent a shared bucket
     // or skip the same installed-declaration materialization path.
     let health_seed = URL_SAFE_NO_PAD.encode([42; 32]);

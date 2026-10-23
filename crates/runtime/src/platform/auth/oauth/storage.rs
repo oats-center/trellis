@@ -19,9 +19,10 @@ use sha2::{Digest, Sha256};
 use super::super::revocation::enqueue_scope;
 use super::super::{AuthError, EnforcementScope, SqliteAuthorizationStore};
 
+#[derive(Clone)]
 pub(crate) struct OAuthStorage {
     pub(crate) authority: Arc<SqliteAuthorizationStore>,
-    sealing_key: LessSafeKey,
+    sealing_key: Arc<LessSafeKey>,
 }
 
 struct Record<'a, T> {
@@ -64,6 +65,20 @@ fn nanos(value: SystemTime) -> Result<i64, StorageError> {
 
 fn failure(error: impl std::fmt::Display) -> StorageError {
     StorageError::new(error.to_string())
+}
+
+impl From<AuthError> for StorageError {
+    fn from(error: AuthError) -> Self {
+        failure(error)
+    }
+}
+
+/// An HTTP handler whose blocking storage work could not run answers as a
+/// server failure.
+impl From<AuthError> for oauth_as::ErrorCode {
+    fn from(_: AuthError) -> Self {
+        oauth_as::ErrorCode::ServerError
+    }
 }
 
 impl OAuthStorage {
@@ -596,10 +611,10 @@ impl OAuthStorage {
         });
         Ok(Self {
             authority,
-            sealing_key: LessSafeKey::new(
+            sealing_key: Arc::new(LessSafeKey::new(
                 UnboundKey::new(&AES_256_GCM, key)
                     .map_err(|_| StorageError::new("invalid OAuth sealing key"))?,
-            ),
+            )),
         })
     }
 
@@ -613,6 +628,7 @@ impl OAuthStorage {
             .map_err(failure)?;
         let result = action(Connection::new(&transaction))?;
         transaction.commit().map_err(failure)?;
+        self.authority.after_commit(&connection);
         Ok(result)
     }
 
@@ -902,67 +918,74 @@ impl OAuthStorage {
 
 impl Storage for OAuthStorage {
     async fn get_client(&self, client_id: &ClientId) -> Result<Option<Arc<Client>>, StorageError> {
-        let connection = self.authority.connection.lock().map_err(failure)?;
-        let registered: Option<(String, String, String, String, String)> = connection
-            .query_row(
-                "SELECT state,kind,display_name,redirect_uris_json,metadata_json \
+        let this = self.clone();
+        let client_id = client_id.clone();
+        super::super::sqlite::blocking(move || {
+            let client_id = &client_id;
+            let connection = this.authority.connection.lock().map_err(failure)?;
+            let registered: Option<(String, String, String, String, String)> = connection
+                .query_row(
+                    "SELECT state,kind,display_name,redirect_uris_json,metadata_json \
                 FROM auth_oauth_clients \
                 WHERE client_id=?1",
-                [client_id.as_str()],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(failure)?;
-        if let Some((state, kind, name, redirects, metadata)) = registered {
-            if state != "active" {
-                return Ok(None);
+                    [client_id.as_str()],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(failure)?;
+            if let Some((state, kind, name, redirects, metadata)) = registered {
+                if state != "active" {
+                    return Ok(None);
+                }
+                let mut grants = vec![
+                    oauth_as::GrantType::AuthorizationCode,
+                    oauth_as::GrantType::RefreshToken,
+                ];
+                if kind == "native" {
+                    grants.push(oauth_as::GrantType::DeviceCode);
+                }
+                let metadata: serde_json::Value =
+                    serde_json::from_str(&metadata).map_err(failure)?;
+                if let Some(configured) = metadata.get("grant_types") {
+                    grants = configured
+                        .as_array()
+                        .ok_or_else(|| StorageError::new("invalid registered grant types"))?
+                        .iter()
+                        .map(|grant| match grant.as_str() {
+                            Some("authorization_code") => {
+                                Ok(oauth_as::GrantType::AuthorizationCode)
+                            }
+                            Some("refresh_token") => Ok(oauth_as::GrantType::RefreshToken),
+                            Some("urn:ietf:params:oauth:grant-type:device_code") => {
+                                Ok(oauth_as::GrantType::DeviceCode)
+                            }
+                            _ => Err(StorageError::new("invalid registered grant type")),
+                        })
+                        .collect::<Result<_, _>>()?;
+                }
+                return Ok(Some(Arc::new(Client {
+                    client_id: client_id.clone(),
+                    auth: ClientAuth::Public,
+                    grant_types: grants,
+                    redirect_uris: serde_json::from_str(&redirects).map_err(failure)?,
+                    allowed_scopes: oauth_as::ScopeSet::empty(),
+                    default_scopes: oauth_as::ScopeSet::empty(),
+                    name: Some(name),
+                    registration: None,
+                })));
             }
-            let mut grants = vec![
-                oauth_as::GrantType::AuthorizationCode,
-                oauth_as::GrantType::RefreshToken,
-            ];
-            if kind == "native" {
-                grants.push(oauth_as::GrantType::DeviceCode);
-            }
-            let metadata: serde_json::Value = serde_json::from_str(&metadata).map_err(failure)?;
-            if let Some(configured) = metadata.get("grant_types") {
-                grants = configured
-                    .as_array()
-                    .ok_or_else(|| StorageError::new("invalid registered grant types"))?
-                    .iter()
-                    .map(|grant| match grant.as_str() {
-                        Some("authorization_code") => Ok(oauth_as::GrantType::AuthorizationCode),
-                        Some("refresh_token") => Ok(oauth_as::GrantType::RefreshToken),
-                        Some("urn:ietf:params:oauth:grant-type:device_code") => {
-                            Ok(oauth_as::GrantType::DeviceCode)
-                        }
-                        _ => Err(StorageError::new("invalid registered grant type")),
-                    })
-                    .collect::<Result<_, _>>()?;
-            }
-            return Ok(Some(Arc::new(Client {
-                client_id: client_id.clone(),
-                auth: ClientAuth::Public,
-                grant_types: grants,
-                redirect_uris: serde_json::from_str(&redirects).map_err(failure)?,
-                allowed_scopes: oauth_as::ScopeSet::empty(),
-                default_scopes: oauth_as::ScopeSet::empty(),
-                name: Some(name),
-                registration: None,
-            })));
-        }
-        let now = seconds(SystemTime::now())?;
-        let retained: bool = connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 \
+            let now = seconds(SystemTime::now())?;
+            let retained: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 \
                 FROM auth_cimd_clients c \
                 WHERE c.client_id=?1 \
                 AND (c.expires_at>?2 \
@@ -978,15 +1001,17 @@ impl Storage for OAuthStorage {
                 AND g.expires_at>?2 \
                 AND l.revoked_at IS NULL \
                 AND l.expires_at>?2)))",
-                params![client_id.as_str(), now],
-                |row| row.get(0),
-            )
-            .map_err(failure)?;
-        if !retained {
-            return Ok(None);
-        }
-        self.read(Connection::new(&connection), "client", client_id.as_str())
-            .map(|client| client.map(Arc::new))
+                    params![client_id.as_str(), now],
+                    |row| row.get(0),
+                )
+                .map_err(failure)?;
+            if !retained {
+                return Ok(None);
+            }
+            this.read(Connection::new(&connection), "client", client_id.as_str())
+                .map(|client| client.map(Arc::new))
+        })
+        .await
     }
 
     async fn put_client(&self, _client: Client) -> Result<(), StorageError> {
@@ -1012,77 +1037,105 @@ impl Storage for OAuthStorage {
         client_id: &ClientId,
         window: RevocationWindow,
     ) -> Result<bool, StorageError> {
-        self.transaction(|connection| {
-            let registered: bool = connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",
-                    [client_id.as_str()],
-                    |row| row.get(0),
-                )
-                .map_err(failure)?;
-            if registered {
-                return Err(StorageError::new(
-                    "registered clients are managed by the administrative Auth API",
-                ));
-            }
-            self.barrier(connection, "client", client_id.as_str(), window)?;
-            let existed = self
-                .read::<Client>(connection, "client", client_id.as_str())?
-                .is_some();
-            connection
-                .execute(
-                    "DELETE FROM auth_oauth_artifacts WHERE client_id=?1",
-                    [client_id.as_str()],
-                )
-                .map_err(failure)?;
-            connection
-                .execute(
-                    "DELETE FROM auth_cimd_clients WHERE client_id=?1",
-                    [client_id.as_str()],
-                )
-                .map_err(failure)?;
-            Ok(existed)
+        let this = self.clone();
+        let client_id = client_id.clone();
+        super::super::sqlite::blocking(move || {
+            let client_id = &client_id;
+            this.transaction(|connection| {
+                let registered: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients WHERE client_id=?1)",
+                        [client_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(failure)?;
+                if registered {
+                    return Err(StorageError::new(
+                        "registered clients are managed by the administrative Auth API",
+                    ));
+                }
+                this.barrier(connection, "client", client_id.as_str(), window)?;
+                let existed = this
+                    .read::<Client>(connection, "client", client_id.as_str())?
+                    .is_some();
+                connection
+                    .execute(
+                        "DELETE FROM auth_oauth_artifacts WHERE client_id=?1",
+                        [client_id.as_str()],
+                    )
+                    .map_err(failure)?;
+                connection
+                    .execute(
+                        "DELETE FROM auth_cimd_clients WHERE client_id=?1",
+                        [client_id.as_str()],
+                    )
+                    .map_err(failure)?;
+                Ok(existed)
+            })
         })
+        .await
     }
 
     async fn put_device_grant(&self, grant: DeviceGrant) -> Result<(), StorageError> {
-        self.transaction(|connection| self.device(connection, &grant))
+        let this = self.clone();
+        super::super::sqlite::blocking(move || {
+            this.transaction(|connection| this.device(connection, &grant))
+        })
+        .await
     }
 
     async fn get_device_grant(
         &self,
         device_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
-        let connection = self.authority.connection.lock().map_err(failure)?;
-        self.read(Connection::new(&connection), "device", device_code)
+        let this = self.clone();
+        let device_code = device_code.to_owned();
+        super::super::sqlite::blocking(move || {
+            let device_code = device_code.as_str();
+            let connection = this.authority.connection.lock().map_err(failure)?;
+            this.read(Connection::new(&connection), "device", device_code)
+        })
+        .await
     }
 
     async fn find_device_grant_by_user_code(
         &self,
         normalized_user_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
-        let connection = self.authority.connection.lock().map_err(failure)?;
-        let sealed: Option<(String, Vec<u8>)> = connection
-            .query_row(
-                "SELECT lookup_hash,sealed_record \
+        let this = self.clone();
+        let normalized_user_code = normalized_user_code.to_owned();
+        super::super::sqlite::blocking(move || {
+            let normalized_user_code = normalized_user_code.as_str();
+            let connection = this.authority.connection.lock().map_err(failure)?;
+            let sealed: Option<(String, Vec<u8>)> = connection
+                .query_row(
+                    "SELECT lookup_hash,sealed_record \
                 FROM auth_oauth_artifacts \
                 WHERE kind='device' \
                 AND user_code_hash=?1",
-                [hash(normalized_user_code)],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(failure)?;
-        sealed
-            .map(|(key, sealed)| self.decode("device", &key, &sealed))
-            .transpose()
+                    [hash(normalized_user_code)],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(failure)?;
+            sealed
+                .map(|(key, sealed)| this.decode("device", &key, &sealed))
+                .transpose()
+        })
+        .await
     }
 
     async fn take_device_grant(
         &self,
         device_code: &str,
     ) -> Result<Option<DeviceGrant>, StorageError> {
-        self.take("device", device_code)
+        let this = self.clone();
+        let device_code = device_code.to_owned();
+        super::super::sqlite::blocking(move || {
+            let device_code = device_code.as_str();
+            this.take("device", device_code)
+        })
+        .await
     }
 
     async fn compare_and_swap_device_grant(
@@ -1090,25 +1143,35 @@ impl Storage for OAuthStorage {
         expected: &DeviceGrantState,
         updated: DeviceGrant,
     ) -> Result<bool, StorageError> {
-        self.transaction(|connection| {
-            if self
-                .read::<DeviceGrant>(connection, "device", &updated.device_code)?
-                .as_ref()
-                .map(|grant| &grant.state)
-                != Some(expected)
-            {
-                return Ok(false);
-            }
-            self.device(connection, &updated)?;
-            Ok(true)
+        let this = self.clone();
+        let expected = expected.clone();
+        super::super::sqlite::blocking(move || {
+            let expected = &expected;
+            this.transaction(|connection| {
+                if this
+                    .read::<DeviceGrant>(connection, "device", &updated.device_code)?
+                    .as_ref()
+                    .map(|grant| &grant.state)
+                    != Some(expected)
+                {
+                    return Ok(false);
+                }
+                this.device(connection, &updated)?;
+                Ok(true)
+            })
         })
+        .await
     }
 
     async fn put_authorization_code(
         &self,
         code: AuthorizationCodeRecord,
     ) -> Result<(), StorageError> {
-        self.transaction(|connection| self.code(connection, &code))
+        let this = self.clone();
+        super::super::sqlite::blocking(move || {
+            this.transaction(|connection| this.code(connection, &code))
+        })
+        .await
     }
 
     async fn compare_and_swap_authorization_code(
@@ -1116,77 +1179,115 @@ impl Storage for OAuthStorage {
         expected: &AuthorizationCodeState,
         updated: AuthorizationCodeRecord,
     ) -> Result<bool, StorageError> {
-        self.transaction(|connection| {
-            if self
-                .read::<AuthorizationCodeRecord>(connection, "code", &updated.code)?
-                .as_ref()
-                .map(|code| &code.state)
-                != Some(expected)
-            {
-                return Ok(false);
-            }
-            self.code(connection, &updated)?;
-            Ok(true)
+        let this = self.clone();
+        let expected = expected.clone();
+        super::super::sqlite::blocking(move || {
+            let expected = &expected;
+            this.transaction(|connection| {
+                if this
+                    .read::<AuthorizationCodeRecord>(connection, "code", &updated.code)?
+                    .as_ref()
+                    .map(|code| &code.state)
+                    != Some(expected)
+                {
+                    return Ok(false);
+                }
+                this.code(connection, &updated)?;
+                Ok(true)
+            })
         })
+        .await
     }
 
     async fn take_authorization_code(
         &self,
         code: &str,
     ) -> Result<Option<AuthorizationCodeRecord>, StorageError> {
-        self.take("code", code)
+        let this = self.clone();
+        let code = code.to_owned();
+        super::super::sqlite::blocking(move || {
+            let code = code.as_str();
+            this.take("code", code)
+        })
+        .await
     }
 
     async fn put_token(&self, token: IssuedToken) -> Result<WriteOutcome, StorageError> {
-        self.transaction(|connection| {
-            if self.revoked(
-                connection,
-                &token.client_id,
-                token.family_id.as_deref(),
-                token.grant_established_at,
-            )? {
-                return Ok(WriteOutcome::RefusedRevoked);
-            }
-            self.access(connection, &token)?;
-            Ok(WriteOutcome::Applied)
+        let this = self.clone();
+        super::super::sqlite::blocking(move || {
+            this.transaction(|connection| {
+                if this.revoked(
+                    connection,
+                    &token.client_id,
+                    token.family_id.as_deref(),
+                    token.grant_established_at,
+                )? {
+                    return Ok(WriteOutcome::RefusedRevoked);
+                }
+                this.access(connection, &token)?;
+                Ok(WriteOutcome::Applied)
+            })
         })
+        .await
     }
 
     async fn get_token(&self, token: &str) -> Result<Option<Arc<IssuedToken>>, StorageError> {
-        let connection = self.authority.connection.lock().map_err(failure)?;
-        self.read(Connection::new(&connection), "token", token)
-            .map(|record| record.map(Arc::new))
+        let this = self.clone();
+        let token = token.to_owned();
+        super::super::sqlite::blocking(move || {
+            let token = token.as_str();
+            let connection = this.authority.connection.lock().map_err(failure)?;
+            this.read(Connection::new(&connection), "token", token)
+                .map(|record| record.map(Arc::new))
+        })
+        .await
     }
 
     async fn delete_token(&self, token: &str) -> Result<(), StorageError> {
-        self.take::<IssuedToken>("token", token).map(|_| ())
+        let this = self.clone();
+        let token = token.to_owned();
+        super::super::sqlite::blocking(move || {
+            let token = token.as_str();
+            this.take::<IssuedToken>("token", token).map(|_| ())
+        })
+        .await
     }
 
     async fn put_refresh_token(
         &self,
         token: RefreshTokenRecord,
     ) -> Result<WriteOutcome, StorageError> {
-        self.transaction(|connection| {
-            if self.revoked(
-                connection,
-                &token.client_id,
-                Some(&token.family_id),
-                token.grant_established_at,
-            )? {
-                return Ok(WriteOutcome::RefusedRevoked);
-            }
-            self.refresh(connection, &token)?;
-            Ok(WriteOutcome::Applied)
+        let this = self.clone();
+        super::super::sqlite::blocking(move || {
+            this.transaction(|connection| {
+                if this.revoked(
+                    connection,
+                    &token.client_id,
+                    Some(&token.family_id),
+                    token.grant_established_at,
+                )? {
+                    return Ok(WriteOutcome::RefusedRevoked);
+                }
+                this.refresh(connection, &token)?;
+                Ok(WriteOutcome::Applied)
+            })
         })
+        .await
     }
 
     async fn get_refresh_token(
         &self,
         token: &str,
     ) -> Result<Option<Arc<RefreshTokenRecord>>, StorageError> {
-        let connection = self.authority.connection.lock().map_err(failure)?;
-        self.read(Connection::new(&connection), "refresh", token)
-            .map(|record| record.map(Arc::new))
+        let this = self.clone();
+        let token = token.to_owned();
+        super::super::sqlite::blocking(move || {
+            let token = token.as_str();
+            let connection = this.authority.connection.lock().map_err(failure)?;
+            this.read(Connection::new(&connection), "refresh", token)
+                .map(|record| record.map(Arc::new))
+        })
+        .await
     }
 
     async fn rotate_refresh_token(
@@ -1196,34 +1297,52 @@ impl Storage for OAuthStorage {
         access: &IssuedToken,
         next: Option<&RefreshTokenRecord>,
     ) -> Result<bool, StorageError> {
-        self.transaction(|connection| {
-            if self
-                .read::<RefreshTokenRecord>(connection, "refresh", &expected.refresh_token)?
-                .as_ref()
-                != Some(expected)
-                || self.revoked(
-                    connection,
-                    &expected.client_id,
-                    Some(&expected.family_id),
-                    expected.grant_established_at,
-                )?
-            {
-                return Ok(false);
-            }
-            self.refresh(connection, spent)?;
-            self.access(connection, access)?;
-            if let Some(next) = next {
-                self.refresh(connection, next)?;
-            }
-            Ok(true)
+        let this = self.clone();
+        let expected = expected.clone();
+        let spent = spent.clone();
+        let access = access.clone();
+        let next = next.cloned();
+        super::super::sqlite::blocking(move || {
+            let expected = &expected;
+            let spent = &spent;
+            let access = &access;
+            let next = next.as_ref();
+            this.transaction(|connection| {
+                if this
+                    .read::<RefreshTokenRecord>(connection, "refresh", &expected.refresh_token)?
+                    .as_ref()
+                    != Some(expected)
+                    || this.revoked(
+                        connection,
+                        &expected.client_id,
+                        Some(&expected.family_id),
+                        expected.grant_established_at,
+                    )?
+                {
+                    return Ok(false);
+                }
+                this.refresh(connection, spent)?;
+                this.access(connection, access)?;
+                if let Some(next) = next {
+                    this.refresh(connection, next)?;
+                }
+                Ok(true)
+            })
         })
+        .await
     }
 
     async fn take_refresh_token(
         &self,
         token: &str,
     ) -> Result<Option<RefreshTokenRecord>, StorageError> {
-        self.take("refresh", token)
+        let this = self.clone();
+        let token = token.to_owned();
+        super::super::sqlite::blocking(move || {
+            let token = token.as_str();
+            this.take("refresh", token)
+        })
+        .await
     }
 
     async fn revoke_token_family(
@@ -1231,40 +1350,47 @@ impl Storage for OAuthStorage {
         family_id: &str,
         window: RevocationWindow,
     ) -> Result<u64, StorageError> {
-        self.transaction(|connection| {
-            let family = hash(family_id);
-            self.barrier(connection, "family", &family, window)?;
-            let grant: Option<String> = connection
-                .query_row(
-                    "SELECT oauth_grant_id \
+        let this = self.clone();
+        let family_id = family_id.to_owned();
+        super::super::sqlite::blocking(move || {
+            let family_id = family_id.as_str();
+            this.transaction(|connection| {
+                let family = hash(family_id);
+                this.barrier(connection, "family", &family, window)?;
+                let grant: Option<String> = connection
+                    .query_row(
+                        "SELECT oauth_grant_id \
                     FROM auth_oauth_families \
                     WHERE family_lookup_hash=?1",
-                    [&family],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(failure)?;
-            let now = seconds(window.recorded_at)?;
-            connection
-                .execute(
-                    "UPDATE auth_oauth_families \
+                        [&family],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(failure)?;
+                let now = seconds(window.recorded_at)?;
+                connection
+                    .execute(
+                        "UPDATE auth_oauth_families \
                     SET revoked_at=coalesce(revoked_at,?2),revision=revision+1 \
                     WHERE family_lookup_hash=?1 \
                     AND revoked_at IS NULL",
-                    params![family, now],
-                )
-                .map_err(failure)?;
-            if let Some(grant) = grant {
-                enqueue_scope(connection, &EnforcementScope::Grant(grant), now).map_err(failure)?;
-            }
-            connection
-                .execute(
-                    "DELETE FROM auth_oauth_artifacts WHERE family_lookup_hash=?1",
-                    [family],
-                )
-                .map(|count| count as u64)
-                .map_err(failure)
+                        params![family, now],
+                    )
+                    .map_err(failure)?;
+                if let Some(grant) = grant {
+                    enqueue_scope(connection, &EnforcementScope::Grant(grant), now)
+                        .map_err(failure)?;
+                }
+                connection
+                    .execute(
+                        "DELETE FROM auth_oauth_artifacts WHERE family_lookup_hash=?1",
+                        [family],
+                    )
+                    .map(|count| count as u64)
+                    .map_err(failure)
+            })
         })
+        .await
     }
 
     async fn claim_replay_id(
@@ -1272,60 +1398,70 @@ impl Storage for OAuthStorage {
         replay_id: &str,
         expires_at: SystemTime,
     ) -> Result<bool, StorageError> {
-        let now = SystemTime::now();
-        self.transaction(|connection| {
-            let key = hash(replay_id);
-            connection
-                .execute(
-                    "DELETE FROM auth_oauth_artifacts \
+        let this = self.clone();
+        let replay_id = replay_id.to_owned();
+        super::super::sqlite::blocking(move || {
+            let replay_id = replay_id.as_str();
+            let now = SystemTime::now();
+            this.transaction(|connection| {
+                let key = hash(replay_id);
+                connection
+                    .execute(
+                        "DELETE FROM auth_oauth_artifacts \
                     WHERE kind='dpopReplay' \
                     AND lookup_hash=?1 AND expires_at<=?2",
-                    params![key, seconds(now)?],
-                )
-                .map_err(failure)?;
-            let present: bool = connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 \
+                        params![key, seconds(now)?],
+                    )
+                    .map_err(failure)?;
+                let present: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 \
                     FROM auth_oauth_artifacts \
                     WHERE kind='dpopReplay' \
                     AND lookup_hash=?1)",
-                    [&key],
-                    |row| row.get(0),
-                )
-                .map_err(failure)?;
-            if present {
-                return Ok(false);
-            }
-            self.write(
-                connection,
-                Record {
-                    kind: "dpopReplay",
-                    key: replay_id,
-                    value: &(),
-                    client: None,
-                    grant: None,
-                    family: None,
-                    user_code: None,
-                    established: now,
-                    expires: Some(expires_at),
-                },
-            )?;
-            Ok(true)
+                        [&key],
+                        |row| row.get(0),
+                    )
+                    .map_err(failure)?;
+                if present {
+                    return Ok(false);
+                }
+                this.write(
+                    connection,
+                    Record {
+                        kind: "dpopReplay",
+                        key: replay_id,
+                        value: &(),
+                        client: None,
+                        grant: None,
+                        family: None,
+                        user_code: None,
+                        established: now,
+                        expires: Some(expires_at),
+                    },
+                )?;
+                Ok(true)
+            })
         })
+        .await
     }
 
     async fn sweep_expired(&self, now: SystemTime) -> Result<u64, StorageError> {
-        self.transaction(|connection| {
-            let now = seconds(now)?;
-            let records = self.cleanup_expired_in(connection, now)?;
-            let barriers = connection
-                .execute(
-                    "DELETE FROM auth_oauth_barriers WHERE expires_at<=?1",
-                    [now],
-                )
-                .map_err(failure)?;
-            Ok((records + barriers) as u64)
+        let this = self.clone();
+        super::super::sqlite::blocking(move || {
+            this.transaction(|connection| {
+                let now = seconds(now)?;
+                let records = this.cleanup_expired_in(connection, now)?;
+                let barriers = connection
+                    .execute(
+                        "DELETE FROM auth_oauth_barriers WHERE expires_at<=?1",
+                        [now],
+                    )
+                    .map_err(failure)?;
+                Ok((records + barriers) as u64)
+            })
         })
+        .await
     }
 }
 

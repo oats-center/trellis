@@ -321,7 +321,7 @@ impl super::super::SqliteAuthorizationStore {
         &self,
         provider: &str,
     ) -> Result<ConfiguredProvider, AuthError> {
-        let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        let connection = self.reader()?;
         let (issuer, client_id, revision, secret, config): (
             String,
             String,
@@ -385,7 +385,7 @@ impl super::super::SqliteAuthorizationStore {
         now: i64,
     ) -> Result<super::portal::PortalLogin, AuthError> {
         let principal = {
-            let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+            let connection = self.reader()?;
             connection
                 .query_row(
                     "SELECT principal_id \

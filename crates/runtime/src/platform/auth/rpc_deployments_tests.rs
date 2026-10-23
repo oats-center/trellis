@@ -775,7 +775,7 @@ fn provisioned_service_is_discoverable_without_leaking_into_device_listing() {
 async fn public_provision_materializes_empty_and_kv_declarations_before_signed_service_admission() {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use sha2::{Digest, Sha256};
-    use std::{sync::Arc, time::Duration};
+    use std::time::Duration;
     use tokio::io::AsyncBufReadExt;
     use trellis_rs::generated::ParticipantDescriptor;
     use trellis_runtime_apis::participants::{trellis_health_runtime, trellis_platform};
@@ -808,7 +808,7 @@ async fn public_provision_materializes_empty_and_kv_declarations_before_signed_s
     let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
         .await
         .unwrap();
-    let store = Arc::new(f.store);
+    let store = f.store;
     let packages = [
         (
             trellis_health_runtime::Participant::package_evidence(),

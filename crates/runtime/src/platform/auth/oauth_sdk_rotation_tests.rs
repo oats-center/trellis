@@ -51,7 +51,7 @@ async fn sdk_rotation(mode: &str) {
     let backend = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let backend_address = backend.local_addr().unwrap();
     let backend_origin = format!("http://{backend_address}");
-    f.store.settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
     for (client_id, kind, redirect_uris) in [
         ("trellis.cli", "native", Vec::new()),
         (
@@ -121,7 +121,7 @@ async fn sdk_rotation(mode: &str) {
             now,
         );
     }
-    let mut authority = Arc::new(f.store);
+    let mut authority = f.store;
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );

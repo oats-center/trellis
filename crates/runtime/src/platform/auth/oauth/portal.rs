@@ -169,7 +169,7 @@ impl SqliteAuthorizationStore {
         if cookie.len() > 128 || csrf.len() > 128 {
             return Err(AuthError::Denied);
         }
-        let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        let connection = self.reader()?;
         connection
             .query_row(
                 "SELECT portal_session_id \
@@ -279,7 +279,7 @@ impl SqliteAuthorizationStore {
         let replacement_hash =
             URL_SAFE_NO_PAD.encode(Sha256::digest(replacement_cookie.as_bytes()));
         let (session_id, principal, hash, version): (String, String, String, u64) = {
-            let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+            let connection = self.reader()?;
             let session: String = connection
                 .query_row(
                     "SELECT portal_session_id \
@@ -395,7 +395,7 @@ impl SqliteAuthorizationStore {
     ) -> Result<PortalLogin, AuthError> {
         let cookie_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(cookie.as_bytes()));
         let csrf_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(csrf.as_bytes()));
-        let connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
+        let connection = self.reader()?;
         connection
             .query_row(
                 "SELECT p.portal_session_id,l.principal_id,l.login_session_id,\

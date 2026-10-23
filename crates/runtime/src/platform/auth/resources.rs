@@ -103,15 +103,18 @@ pub(crate) async fn materialize_native_kv(
     deployment: &str,
     now: i64,
 ) -> Result<ServiceResourceBindings, AuthError> {
-    let plan = store.transaction(|connection| {
-        let (principal, participant, installed_revision, binding_revision, evidence): (
-            String,
-            String,
-            u64,
-            u64,
-            String,
-        ) = connection.query_row(
-            "SELECT i.principal_id,d.participant_id,b.installed_revision,b.revision,\
+    let selected = deployment.to_owned();
+    let plan = store
+        .transaction_blocking(move |connection| {
+            let deployment = selected.as_str();
+            let (principal, participant, installed_revision, binding_revision, evidence): (
+                String,
+                String,
+                u64,
+                u64,
+                String,
+            ) = connection.query_row(
+                "SELECT i.principal_id,d.participant_id,b.installed_revision,b.revision,\
             p.projection_json \
             FROM auth_deployments d \
             JOIN auth_deployment_bindings b USING(deployment_id) \
@@ -124,315 +127,326 @@ pub(crate) async fn materialize_native_kv(
             AND d.state='active' \
             AND i.state='active' \
             AND a.state='active'",
-            [deployment],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )?;
-        let evidence: PackageEvidence = decode(&evidence)?;
-        let graph =
-            compile_evidence(evidence).map_err(|error| AuthError::Invalid(error.to_string()))?;
-        let definition = graph
-            .root_package()
-            .participants()
-            .values()
-            .find(|definition| definition.identity().as_str() == participant)
-            .ok_or(AuthError::NotFound)?;
-        let mut kv = BTreeMap::new();
-        for (name, declaration) in definition.resources() {
-            let (kind, history, ttl_ms) = match declaration {
-                ResourceDefinition::Kv {
-                    history, ttl_ms, ..
-                } => ("kv", *history, *ttl_ms),
-                ResourceDefinition::Store { ttl_ms, .. } => ("store", 0, *ttl_ms),
-                ResourceDefinition::Consumer { .. } => ("consumer", 0, 0),
-                ResourceDefinition::Job { .. } => ("job", 0, 0),
-                ResourceDefinition::State { .. } => ("state", 0, 0),
-            };
-            let name = name.to_string();
-            let resource_id = digest(&("deployment", deployment, &participant, kind, &name))?;
-            let state = if let ResourceDefinition::State {
-                schema,
-                version,
-                accepts,
-                ..
-            } = declaration
-            {
-                Some(super::state::StateDeclaration {
-                    resource_id: resource_id.clone(),
-                    resource_name: name.clone(),
-                    schema: trellis_idl::json_schema(&graph, schema)
-                        .map_err(|error| AuthError::Invalid(error.to_string()))?,
-                    representation_version: *version,
-                    accepted_versions: accepts
-                        .iter()
-                        .map(|old| {
-                            Ok((
-                                old.version,
-                                trellis_idl::json_schema(&graph, &old.ty)
-                                    .map_err(|error| AuthError::Invalid(error.to_string()))?,
-                            ))
-                        })
-                        .collect::<Result<_, AuthError>>()?,
-                })
-            } else {
-                None
-            };
-            let consumer = if let ResourceDefinition::Consumer {
-                events,
-                concurrency,
-                replay,
-                retry,
-                ..
-            } = declaration
-            {
-                Some(EventConsumerResourceBinding {
-                    resource_id: resource_id.clone(),
-                    stream: crate::resources::EVENT_STREAM.into(),
-                    consumer_name: String::new(),
-                    filter_subjects: events
-                        .iter()
-                        .map(|(api, event)| {
-                            trellis_protocol::derive_event_subject(api.as_str(), event)
-                                .map_err(|error| AuthError::Invalid(error.to_string()))
-                        })
-                        .collect::<Result<_, _>>()?,
-                    concurrency: *concurrency,
-                    replay: match replay {
-                        trellis_idl::Replay::New => trellis_rs::service::EventConsumerReplay::New,
-                        trellis_idl::Replay::All => trellis_rs::service::EventConsumerReplay::All,
-                    },
-                    ack_wait_ms: 30_000,
-                    max_deliver: retry.as_ref().map_or(5, |retry| i64::from(retry.attempts)),
-                    backoff_ms: retry
-                        .as_ref()
-                        .map(|retry| {
-                            retry
-                                .backoff_ms
-                                .iter()
-                                .map(|value| i64::try_from(*value).map_err(|_| AuthError::Denied))
-                                .collect::<Result<Vec<_>, _>>()
-                        })
-                        .transpose()?
-                        .unwrap_or_else(|| vec![5_000, 30_000, 120_000, 600_000]),
-                    replay_binding: trellis_rs::service::EventConsumerReplayBinding {
-                        stream: trellis_events_runtime::REPLAY_STREAM.into(),
-                        consumer_name: String::new(),
-                    },
-                })
-            } else {
-                None
-            };
-            let job = if let ResourceDefinition::Job {
-                payload,
-                result,
-                update,
-                deadline_ms,
-                retry,
-                key_concurrency,
-                ..
-            } = declaration
-            {
-                use trellis_rs::jobs::bindings::{
-                    JobKeyConcurrencyBinding, JobKeyStalePolicy, JobQueueDepthBinding,
-                    JobQueueWhenFull,
-                };
-                let namespace = digest(&("jobs", deployment))?;
-                Some(trellis_rs::service::JobsQueueResourceBinding {
-                    queue_type: name.clone(),
-                    publish_prefix: format!("trellis.jobs.{namespace}.{name}"),
-                    updates_prefix: update
-                        .as_ref()
-                        .map(|_| format!("trellis.jobs_updates.{namespace}.{name}")),
-                    work_subject: format!("trellis.work.{namespace}.{name}"),
-                    consumer_name: String::new(),
-                    payload: trellis_rs::service::JobsSchemaRef {
-                        schema: payload.id.to_string(),
-                    },
-                    result: result
-                        .as_ref()
-                        .map(|ty| trellis_rs::service::JobsSchemaRef {
-                            schema: ty.id.to_string(),
-                        }),
-                    update: update
-                        .as_ref()
-                        .map(|ty| trellis_rs::service::JobsSchemaRef {
-                            schema: ty.id.to_string(),
-                        }),
-                    max_deliver: retry.as_ref().map_or(5, |retry| i64::from(retry.attempts)),
-                    backoff_ms: retry
-                        .as_ref()
-                        .map(|retry| {
-                            retry
-                                .backoff_ms
-                                .iter()
-                                .map(|value| i64::try_from(*value).map_err(|_| AuthError::Denied))
-                                .collect::<Result<Vec<_>, _>>()
-                        })
-                        .transpose()?
-                        .unwrap_or_else(|| vec![5_000, 30_000, 120_000, 600_000]),
-                    ack_wait_ms: 30_000,
-                    default_deadline_ms: deadline_ms
-                        .map(|value| i64::try_from(value).map_err(|_| AuthError::Denied))
-                        .transpose()?,
-                    key_concurrency: key_concurrency
-                        .as_ref()
-                        .map(|key| JobKeyConcurrencyBinding {
-                            key: vec![format!("/{}", key.path.join("/"))],
-                            max_active: 1,
-                            heartbeat_interval_ms: 10_000,
-                            heartbeat_ttl_ms: 30_000,
-                            stale_policy: JobKeyStalePolicy::Block,
-                        }),
-                    queue: key_concurrency.as_ref().map(|key| JobQueueDepthBinding {
-                        max_queued_per_key: match key.policy {
-                            trellis_idl::KeyConcurrencyPolicy::Queue => u64::from(u32::MAX),
-                            trellis_idl::KeyConcurrencyPolicy::Reject => 0,
-                            trellis_idl::KeyConcurrencyPolicy::Supersede => 1,
-                        },
-                        when_full: match key.policy {
-                            trellis_idl::KeyConcurrencyPolicy::Supersede => {
-                                JobQueueWhenFull::ReplaceOldest
-                            }
-                            _ => JobQueueWhenFull::Reject,
-                        },
-                    }),
-                })
-            } else {
-                None
-            };
-            kv.insert(
-                name.clone(),
-                NativeAllocation {
-                    kind: kind.into(),
-                    resource_id,
-                    allocation_id: super::sqlite::id(),
-                    history: i64::try_from(history).map_err(|_| AuthError::Denied)?,
-                    ttl_ms: i64::try_from(ttl_ms).map_err(|_| AuthError::Denied)?,
-                    consumer,
-                    job,
-                    state,
+                [deployment],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
                 },
-            );
-        }
-        let mut materialized = BTreeSet::new();
-        let mut previous_jobs = connection.prepare(
-            "SELECT actual_json FROM auth_resource_binding_evidence \
+            )?;
+            let evidence: PackageEvidence = decode(&evidence)?;
+            let graph = compile_evidence(evidence)
+                .map_err(|error| AuthError::Invalid(error.to_string()))?;
+            let definition = graph
+                .root_package()
+                .participants()
+                .values()
+                .find(|definition| definition.identity().as_str() == participant)
+                .ok_or(AuthError::NotFound)?;
+            let mut kv = BTreeMap::new();
+            for (name, declaration) in definition.resources() {
+                let (kind, history, ttl_ms) = match declaration {
+                    ResourceDefinition::Kv {
+                        history, ttl_ms, ..
+                    } => ("kv", *history, *ttl_ms),
+                    ResourceDefinition::Store { ttl_ms, .. } => ("store", 0, *ttl_ms),
+                    ResourceDefinition::Consumer { .. } => ("consumer", 0, 0),
+                    ResourceDefinition::Job { .. } => ("job", 0, 0),
+                    ResourceDefinition::State { .. } => ("state", 0, 0),
+                };
+                let name = name.to_string();
+                let resource_id = digest(&("deployment", deployment, &participant, kind, &name))?;
+                let state = if let ResourceDefinition::State {
+                    schema,
+                    version,
+                    accepts,
+                    ..
+                } = declaration
+                {
+                    Some(super::state::StateDeclaration {
+                        resource_id: resource_id.clone(),
+                        resource_name: name.clone(),
+                        schema: trellis_idl::json_schema(&graph, schema)
+                            .map_err(|error| AuthError::Invalid(error.to_string()))?,
+                        representation_version: *version,
+                        accepted_versions: accepts
+                            .iter()
+                            .map(|old| {
+                                Ok((
+                                    old.version,
+                                    trellis_idl::json_schema(&graph, &old.ty)
+                                        .map_err(|error| AuthError::Invalid(error.to_string()))?,
+                                ))
+                            })
+                            .collect::<Result<_, AuthError>>()?,
+                    })
+                } else {
+                    None
+                };
+                let consumer = if let ResourceDefinition::Consumer {
+                    events,
+                    concurrency,
+                    replay,
+                    retry,
+                    ..
+                } = declaration
+                {
+                    Some(EventConsumerResourceBinding {
+                        resource_id: resource_id.clone(),
+                        stream: crate::resources::EVENT_STREAM.into(),
+                        consumer_name: String::new(),
+                        filter_subjects: events
+                            .iter()
+                            .map(|(api, event)| {
+                                trellis_protocol::derive_event_subject(api.as_str(), event)
+                                    .map_err(|error| AuthError::Invalid(error.to_string()))
+                            })
+                            .collect::<Result<_, _>>()?,
+                        concurrency: *concurrency,
+                        replay: match replay {
+                            trellis_idl::Replay::New => {
+                                trellis_rs::service::EventConsumerReplay::New
+                            }
+                            trellis_idl::Replay::All => {
+                                trellis_rs::service::EventConsumerReplay::All
+                            }
+                        },
+                        ack_wait_ms: 30_000,
+                        max_deliver: retry.as_ref().map_or(5, |retry| i64::from(retry.attempts)),
+                        backoff_ms: retry
+                            .as_ref()
+                            .map(|retry| {
+                                retry
+                                    .backoff_ms
+                                    .iter()
+                                    .map(|value| {
+                                        i64::try_from(*value).map_err(|_| AuthError::Denied)
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                            })
+                            .transpose()?
+                            .unwrap_or_else(|| vec![5_000, 30_000, 120_000, 600_000]),
+                        replay_binding: trellis_rs::service::EventConsumerReplayBinding {
+                            stream: trellis_events_runtime::REPLAY_STREAM.into(),
+                            consumer_name: String::new(),
+                        },
+                    })
+                } else {
+                    None
+                };
+                let job = if let ResourceDefinition::Job {
+                    payload,
+                    result,
+                    update,
+                    deadline_ms,
+                    retry,
+                    key_concurrency,
+                    ..
+                } = declaration
+                {
+                    use trellis_rs::jobs::bindings::{
+                        JobKeyConcurrencyBinding, JobKeyStalePolicy, JobQueueDepthBinding,
+                        JobQueueWhenFull,
+                    };
+                    let namespace = digest(&("jobs", deployment))?;
+                    Some(trellis_rs::service::JobsQueueResourceBinding {
+                        queue_type: name.clone(),
+                        publish_prefix: format!("trellis.jobs.{namespace}.{name}"),
+                        updates_prefix: update
+                            .as_ref()
+                            .map(|_| format!("trellis.jobs_updates.{namespace}.{name}")),
+                        work_subject: format!("trellis.work.{namespace}.{name}"),
+                        consumer_name: String::new(),
+                        payload: trellis_rs::service::JobsSchemaRef {
+                            schema: payload.id.to_string(),
+                        },
+                        result: result
+                            .as_ref()
+                            .map(|ty| trellis_rs::service::JobsSchemaRef {
+                                schema: ty.id.to_string(),
+                            }),
+                        update: update
+                            .as_ref()
+                            .map(|ty| trellis_rs::service::JobsSchemaRef {
+                                schema: ty.id.to_string(),
+                            }),
+                        max_deliver: retry.as_ref().map_or(5, |retry| i64::from(retry.attempts)),
+                        backoff_ms: retry
+                            .as_ref()
+                            .map(|retry| {
+                                retry
+                                    .backoff_ms
+                                    .iter()
+                                    .map(|value| {
+                                        i64::try_from(*value).map_err(|_| AuthError::Denied)
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()
+                            })
+                            .transpose()?
+                            .unwrap_or_else(|| vec![5_000, 30_000, 120_000, 600_000]),
+                        ack_wait_ms: 30_000,
+                        default_deadline_ms: deadline_ms
+                            .map(|value| i64::try_from(value).map_err(|_| AuthError::Denied))
+                            .transpose()?,
+                        key_concurrency: key_concurrency.as_ref().map(|key| {
+                            JobKeyConcurrencyBinding {
+                                key: vec![format!("/{}", key.path.join("/"))],
+                                max_active: 1,
+                                heartbeat_interval_ms: 10_000,
+                                heartbeat_ttl_ms: 30_000,
+                                stale_policy: JobKeyStalePolicy::Block,
+                            }
+                        }),
+                        queue: key_concurrency.as_ref().map(|key| JobQueueDepthBinding {
+                            max_queued_per_key: match key.policy {
+                                trellis_idl::KeyConcurrencyPolicy::Queue => u64::from(u32::MAX),
+                                trellis_idl::KeyConcurrencyPolicy::Reject => 0,
+                                trellis_idl::KeyConcurrencyPolicy::Supersede => 1,
+                            },
+                            when_full: match key.policy {
+                                trellis_idl::KeyConcurrencyPolicy::Supersede => {
+                                    JobQueueWhenFull::ReplaceOldest
+                                }
+                                _ => JobQueueWhenFull::Reject,
+                            },
+                        }),
+                    })
+                } else {
+                    None
+                };
+                kv.insert(
+                    name.clone(),
+                    NativeAllocation {
+                        kind: kind.into(),
+                        resource_id,
+                        allocation_id: super::sqlite::id(),
+                        history: i64::try_from(history).map_err(|_| AuthError::Denied)?,
+                        ttl_ms: i64::try_from(ttl_ms).map_err(|_| AuthError::Denied)?,
+                        consumer,
+                        job,
+                        state,
+                    },
+                );
+            }
+            let mut materialized = BTreeSet::new();
+            let mut previous_jobs = connection.prepare(
+                "SELECT actual_json FROM auth_resource_binding_evidence \
             WHERE owner_kind='deployment' \
             AND owner_id=?1 AND resource_kind='jobQueue'",
-        )?;
-        let mut key_bucket_materialized = false;
-        for binding in previous_jobs.query_map([deployment], |row| row.get::<_, String>(0))? {
-            let binding: trellis_rs::service::JobsQueueResourceBinding = decode(&binding?)?;
-            key_bucket_materialized |= binding.key_concurrency.is_some();
-        }
-        for (name, allocation) in &mut kv {
-            if let Some(declaration) = &allocation.state {
-                let mut history = connection.prepare(
-                    "SELECT commitment_json FROM auth_resource_history WHERE resource_id=?1",
-                )?;
-                for previous in
-                    history.query_map([&allocation.resource_id], |row| row.get::<_, String>(0))?
-                {
-                    let previous: super::state::StateDeclaration = decode(&previous?)?;
-                    for (version, schema) in
-                        std::iter::once((&declaration.representation_version, &declaration.schema))
-                            .chain(&declaration.accepted_versions)
+            )?;
+            let mut key_bucket_materialized = false;
+            for binding in previous_jobs.query_map([deployment], |row| row.get::<_, String>(0))? {
+                let binding: trellis_rs::service::JobsQueueResourceBinding = decode(&binding?)?;
+                key_bucket_materialized |= binding.key_concurrency.is_some();
+            }
+            for (name, allocation) in &mut kv {
+                if let Some(declaration) = &allocation.state {
+                    let mut history = connection.prepare(
+                        "SELECT commitment_json FROM auth_resource_history WHERE resource_id=?1",
+                    )?;
+                    for previous in history
+                        .query_map([&allocation.resource_id], |row| row.get::<_, String>(0))?
                     {
-                        let old = if *version == previous.representation_version {
-                            Some(&previous.schema)
-                        } else {
-                            previous.accepted_versions.get(version)
-                        };
-                        if old.is_some_and(|old| old != schema) {
-                            return Err(AuthError::Invalid(
-                                "State representation versions are immutable".into(),
-                            ));
+                        let previous: super::state::StateDeclaration = decode(&previous?)?;
+                        for (version, schema) in std::iter::once((
+                            &declaration.representation_version,
+                            &declaration.schema,
+                        ))
+                        .chain(&declaration.accepted_versions)
+                        {
+                            let old = if *version == previous.representation_version {
+                                Some(&previous.schema)
+                            } else {
+                                previous.accepted_versions.get(version)
+                            };
+                            if old.is_some_and(|old| old != schema) {
+                                return Err(AuthError::Invalid(
+                                    "State representation versions are immutable".into(),
+                                ));
+                            }
                         }
                     }
                 }
-            }
-            let current: Option<(String, String, bool)> = connection
-                .query_row(
-                    "SELECT state,allocation_id,actual_json IS NOT NULL \
+                let current: Option<(String, String, bool)> = connection
+                    .query_row(
+                        "SELECT state,allocation_id,actual_json IS NOT NULL \
                     FROM auth_resources \
                     WHERE resource_id=?1",
-                    [&allocation.resource_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .optional()?;
-            if let Some((state, incarnation, previously_materialized)) = current {
-                if state == "destroying" {
-                    return Err(AuthError::Conflict);
+                        [&allocation.resource_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+                if let Some((state, incarnation, previously_materialized)) = current {
+                    if state == "destroying" {
+                        return Err(AuthError::Conflict);
+                    }
+                    allocation.allocation_id = incarnation;
+                    if previously_materialized {
+                        materialized.insert(allocation.resource_id.clone());
+                    }
                 }
-                allocation.allocation_id = incarnation;
-                if previously_materialized {
-                    materialized.insert(allocation.resource_id.clone());
+                if let Some(consumer) = &mut allocation.consumer {
+                    consumer.consumer_name = format!(
+                        "TRELLIS_RESOURCE_{}_{}",
+                        allocation.resource_id, allocation.allocation_id
+                    );
+                    consumer.replay_binding.consumer_name =
+                        format!("{}_replay", consumer.consumer_name);
                 }
-            }
-            if let Some(consumer) = &mut allocation.consumer {
-                consumer.consumer_name = format!(
-                    "TRELLIS_RESOURCE_{}_{}",
-                    allocation.resource_id, allocation.allocation_id
-                );
-                consumer.replay_binding.consumer_name =
-                    format!("{}_replay", consumer.consumer_name);
-            }
-            if let Some(job) = &mut allocation.job {
-                job.consumer_name = format!(
-                    "TRELLIS_RESOURCE_{}_{}",
-                    allocation.resource_id, allocation.allocation_id
-                );
-                let namespace = digest(&("jobs", deployment))?;
-                let queue_token = format!("{name}_{}", allocation.allocation_id);
-                job.publish_prefix = format!("trellis.jobs.{namespace}.{queue_token}");
-                job.work_subject = format!("trellis.work.{namespace}.{queue_token}");
-                if job.updates_prefix.is_some() {
-                    job.updates_prefix =
-                        Some(format!("trellis.jobs_updates.{namespace}.{queue_token}"));
+                if let Some(job) = &mut allocation.job {
+                    job.consumer_name = format!(
+                        "TRELLIS_RESOURCE_{}_{}",
+                        allocation.resource_id, allocation.allocation_id
+                    );
+                    let namespace = digest(&("jobs", deployment))?;
+                    let queue_token = format!("{name}_{}", allocation.allocation_id);
+                    job.publish_prefix = format!("trellis.jobs.{namespace}.{queue_token}");
+                    job.work_subject = format!("trellis.work.{namespace}.{queue_token}");
+                    if job.updates_prefix.is_some() {
+                        job.updates_prefix =
+                            Some(format!("trellis.jobs_updates.{namespace}.{queue_token}"));
+                    }
                 }
-            }
-            connection.execute(
-                "INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,\
+                connection.execute(
+                    "INSERT INTO auth_resources(resource_id,allocation_id,owner_kind,\
                 owner_id,participant_id,kind,local_name,commitment_json,state,\
                 binding_revision,revision,created_at,updated_at,physical_id) \
                 VALUES(?1,?9,'deployment',?2,?3,?10,?4,?5,'pending',?6,1,?7,?7,?8) \
                 ON CONFLICT(resource_id) \
                 DO UPDATE SET state='pending',updated_at=excluded.updated_at",
-                params![
-                    allocation.resource_id,
-                    deployment,
-                    participant,
-                    name,
-                    json(allocation)?,
-                    binding_revision,
-                    now,
-                    format!(
-                        "TRELLIS_RESOURCE_{}_{}",
-                        allocation.resource_id, allocation.allocation_id
-                    ),
-                    allocation.allocation_id,
-                    allocation.kind
-                ],
-            )?;
-        }
-        Ok(ResourcePlan {
-            principal,
-            deployment: deployment.into(),
-            participant,
-            installed_revision,
-            binding_revision,
-            kv,
-            materialized,
-            key_bucket_materialized,
+                    params![
+                        allocation.resource_id,
+                        deployment,
+                        participant,
+                        name,
+                        json(allocation)?,
+                        binding_revision,
+                        now,
+                        format!(
+                            "TRELLIS_RESOURCE_{}_{}",
+                            allocation.resource_id, allocation.allocation_id
+                        ),
+                        allocation.allocation_id,
+                        allocation.kind
+                    ],
+                )?;
+            }
+            Ok(ResourcePlan {
+                principal,
+                deployment: deployment.into(),
+                participant,
+                installed_revision,
+                binding_revision,
+                kv,
+                materialized,
+                key_bucket_materialized,
+            })
         })
-    })?;
+        .await?;
     let jetstream = async_nats::jetstream::new(operational.clone());
     // Empty projections are valid only after inspecting the installed declaration set.
     let mut bindings = ServiceResourceBindings::default();
@@ -792,39 +806,41 @@ pub(crate) async fn materialize_native_kv(
     Ok(())
     }.await;
     if let Err(error) = allocation_result {
-        store.transaction(|connection| {
-            let mut failed = false;
-            for allocation in plan.kv.values() {
-                if connection.execute(
-                    "UPDATE auth_resources \
+        store
+            .transaction_blocking(move |connection| {
+                let mut failed = false;
+                for allocation in plan.kv.values() {
+                    if connection.execute(
+                        "UPDATE auth_resources \
                     SET state='failed',revision=revision+1,updated_at=?3 \
                     WHERE resource_id=?1 \
                     AND allocation_id=?2 \
                     AND state='pending'",
-                    params![allocation.resource_id, allocation.allocation_id, now],
-                )? == 1
-                {
-                    failed = true;
-                    connection.execute(
-                        "UPDATE auth_resource_binding_evidence \
+                        params![allocation.resource_id, allocation.allocation_id, now],
+                    )? == 1
+                    {
+                        failed = true;
+                        connection.execute(
+                            "UPDATE auth_resource_binding_evidence \
                         SET state='unavailable' \
                         WHERE binding_id=?1",
-                        params![allocation.resource_id],
+                            params![allocation.resource_id],
+                        )?;
+                    }
+                }
+                if failed {
+                    SqliteAuthorizationStore::policy_changed(
+                        connection,
+                        &super::EnforcementScope::Deployment(plan.deployment.clone()),
+                        now,
                     )?;
                 }
-            }
-            if failed {
-                SqliteAuthorizationStore::policy_changed(
-                    connection,
-                    &super::EnforcementScope::Deployment(plan.deployment.clone()),
-                    now,
-                )?;
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })
+            .await?;
         return Err(error);
     }
-    store.transaction(|connection| {
+    store.transaction_blocking(move |connection| {
         let current: Option<(u64, u64)> = connection
             .query_row(
                 "SELECT b.installed_revision,b.revision \
@@ -946,5 +962,5 @@ pub(crate) async fn materialize_native_kv(
             params![json(&bindings)?, plan.deployment],
         )?;
         Ok(bindings.clone())
-    })
+    }).await
 }

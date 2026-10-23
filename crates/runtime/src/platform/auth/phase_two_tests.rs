@@ -75,7 +75,7 @@ service Reader { use documents { required capability read; capability write; } }
 
 pub(super) struct Fixture {
     pub(super) directory: tempfile::TempDir,
-    pub(super) store: SqliteAuthorizationStore,
+    pub(super) store: Arc<SqliteAuthorizationStore>,
     pub(super) admin: String,
     pub(super) principal: String,
     api: String,
@@ -208,13 +208,27 @@ pub(super) fn create_user(store: &SqliteAuthorizationStore, actor: &str, now: i6
 }
 
 /// Establish the same real SQLite refresh-family record used by the OAuth engine.
+/// Complete a storage future synchronously. A plain thread has no Tokio
+/// context, so Auth's blocking helper runs the work inline there.
+pub(super) fn ready<F: std::future::Future + Send>(future: F) -> F::Output
+where
+    F::Output: Send,
+{
+    use futures_util::FutureExt;
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| future.now_or_never().expect("inline storage future"))
+            .join()
+            .unwrap()
+    })
+}
+
 pub(super) fn oauth_family(
     store: &SqliteAuthorizationStore,
     grant: &str,
     now: i64,
     expires: i64,
 ) -> String {
-    use futures_util::FutureExt;
     use oauth_as::{store::Storage, token::RefreshTokenRecord, ScopeSet};
     let path = store.connection.lock().unwrap().path().unwrap().to_owned();
     let authority = SqliteAuthorizationStore::from_connection(
@@ -249,19 +263,11 @@ pub(super) fn oauth_family(
     record.expires_at =
         Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(expires as u64));
     let token = record.refresh_token.clone();
-    let outcome = storage
-        .put_refresh_token(record)
-        .now_or_never()
-        .unwrap()
-        .unwrap();
+    let outcome = ready(storage.put_refresh_token(record)).unwrap();
     assert_eq!(outcome, oauth_as::store::WriteOutcome::Applied);
     // Component authority fixtures need the established family, not a retained
     // refresh secret encrypted under a key belonging to another OAuth fixture.
-    storage
-        .take_refresh_token(&token)
-        .now_or_never()
-        .unwrap()
-        .unwrap();
+    ready(storage.take_refresh_token(&token)).unwrap();
     family
 }
 
@@ -300,6 +306,10 @@ fn evidence(source: &str) -> PackageEvidence {
 
 pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuthorizationStore {
     let mut connection = rusqlite::Connection::open(directory.path().join("platform.db")).unwrap();
+    // Production runs the platform database in WAL mode, with a separate reader.
+    connection
+        .pragma_update(None, "journal_mode", "wal")
+        .unwrap();
     let migration = refinery::Migration::unapplied(
         "V1000__platform_init",
         include_str!("../../storage/sqlite/platform/V1000__platform_init.sql"),
@@ -452,7 +462,7 @@ pub(super) fn grant_request(
 
 pub(super) fn fixture() -> Fixture {
     let directory = tempfile::tempdir().unwrap();
-    let store = open(&directory, SigningKey::from_bytes(&[42; 32]));
+    let store = Arc::new(open(&directory, SigningKey::from_bytes(&[42; 32])));
     store.initialize_issuer(NOW).unwrap();
     let admin = store
         .initialize_administrator(
@@ -652,7 +662,7 @@ async fn oauth_sqlite_restart_retains_refresh_rotation_and_reuse_revokes_authori
     config.refresh_token_ttl = Some(std::time::Duration::from_secs(3600));
     let engine = AuthorizationServer::new(
         config.clone(),
-        super::oauth::OAuthStorage::open(Arc::new(f.store), &sealing_key_file).unwrap(),
+        super::oauth::OAuthStorage::open(f.store, &sealing_key_file).unwrap(),
     );
     let verifier = URL_SAFE_NO_PAD.encode([31; 32]);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
@@ -3330,13 +3340,9 @@ async fn own_context_errors_never_publish_to_another_keys_reply_namespace() {
         })
         .await
         .unwrap();
-    let service = super::own_context::OwnContextService::start(
-        client.clone(),
-        material,
-        std::sync::Arc::new(f.store),
-    )
-    .await
-    .unwrap();
+    let service = super::own_context::OwnContextService::start(client.clone(), material, f.store)
+        .await
+        .unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel();
     let running = tokio::spawn(service.run(async move {
         let _ = stopped.await;

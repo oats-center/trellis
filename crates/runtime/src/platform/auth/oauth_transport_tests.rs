@@ -121,11 +121,10 @@ public_origin = "https://127.0.0.1:3000"
     .unwrap();
     let config = crate::config::RuntimeConfig::load_from_path(&config_path).unwrap();
     let oauth = config.resolve_oauth_listener().unwrap();
-    f.store.settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
     let admin = f.admin.clone();
-    let engine = Arc::new(
-        OAuthEngine::new(OAuthStorage::new(Arc::new(f.store), &[17; 32]).unwrap()).unwrap(),
-    );
+    let engine =
+        Arc::new(OAuthEngine::new(OAuthStorage::new(f.store, &[17; 32]).unwrap()).unwrap());
     let listener = OAuthListener::load(socket, &oauth.origin, &oauth.transport)
         .await
         .unwrap();

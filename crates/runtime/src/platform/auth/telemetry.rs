@@ -1,7 +1,5 @@
 //! Read-only projections of Auth's durable outbox and resource lifecycle.
 
-use rusqlite::TransactionBehavior;
-
 use super::{AuthError, SqliteAuthorizationStore};
 
 /// One consistent snapshot; queued, retrying, and claimed effects remain pending
@@ -23,31 +21,29 @@ impl SqliteAuthorizationStore {
         if now < 0 {
             return Err(AuthError::Invalid("invalid snapshot time".into()));
         }
-        let mut connection = self.connection.lock().map_err(|_| AuthError::Unavailable)?;
-        // Read the owning Auth store without reserving a writer transaction.
-        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
-        let (post_commit_pending, oldest): (u64, Option<i64>) = transaction.query_row(
-            "SELECT count(*), min(created_at) FROM auth_post_commit_actions",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let resources = {
-            let mut statement = transaction.prepare(
-                "SELECT kind, state, count(*) \
-                FROM auth_resources \
-                GROUP BY kind, state \
-                ORDER BY kind, state",
+        let (post_commit_pending, oldest, resources) = self.read(|transaction| {
+            let (post_commit_pending, oldest): (u64, Option<i64>) = transaction.query_row(
+                "SELECT count(*), min(created_at) FROM auth_post_commit_actions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            let rows = statement.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, u64>(2)?,
-                ))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        transaction.commit()?;
+            let resources = transaction
+                .prepare(
+                    "SELECT kind, state, count(*) \
+                    FROM auth_resources \
+                    GROUP BY kind, state \
+                    ORDER BY kind, state",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, u64>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((post_commit_pending, oldest, resources))
+        })?;
         Ok(AuthorizationTelemetrySnapshot {
             post_commit_pending,
             post_commit_oldest_age_seconds: oldest

@@ -178,7 +178,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
             .await
             .unwrap();
     });
-    f.store.settings.oauth_origin = origin.clone();
+    Arc::get_mut(&mut f.store).unwrap().settings.oauth_origin = origin.clone();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -232,7 +232,7 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         credential_handle: ulid::Ulid::new(),
     };
     let custody = f.directory.path().join("native-oauth");
-    let mut authority = Arc::new(f.store);
+    let mut authority = f.store;
     let engine = Arc::new(
         OAuthEngine::new(OAuthStorage::new(authority.clone(), &[17; 32]).unwrap()).unwrap(),
     );

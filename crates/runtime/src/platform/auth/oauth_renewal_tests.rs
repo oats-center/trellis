@@ -207,7 +207,6 @@ fn signed_live_renewal_keeps_exact_family_key_and_session_and_callout_accepts_it
 
 #[test]
 fn exact_family_expiry_or_revocation_retires_without_using_another_live_family() {
-    use futures_util::FutureExt;
     use oauth_as::store::Storage;
     for revoked in [false, true] {
         let mut f = fixture();
@@ -260,19 +259,16 @@ fn exact_family_expiry_or_revocation_retires_without_using_another_live_family()
                 &[17; 32],
             )
             .unwrap();
-            storage
-                .revoke_token_family(
-                    &family,
-                    oauth_as::store::RevocationWindow {
-                        recorded_at: std::time::UNIX_EPOCH
-                            + std::time::Duration::from_secs((NOW + 1) as u64),
-                        until: std::time::UNIX_EPOCH
-                            + std::time::Duration::from_secs((NOW + 3600) as u64),
-                    },
-                )
-                .now_or_never()
-                .unwrap()
-                .unwrap();
+            ready(storage.revoke_token_family(
+                &family,
+                oauth_as::store::RevocationWindow {
+                    recorded_at: std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs((NOW + 1) as u64),
+                    until: std::time::UNIX_EPOCH
+                        + std::time::Duration::from_secs((NOW + 3600) as u64),
+                },
+            ))
+            .unwrap();
             NOW + 1
         } else {
             NOW + 20

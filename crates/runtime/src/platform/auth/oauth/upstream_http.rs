@@ -1,5 +1,6 @@
 //! Browser-only upstream redirects, bound to the isolated portal's guest cookie.
 
+use super::with_store;
 use super::{
     http::{cookie_response, error, fields, portal_cookie},
     oidc::{ProviderSnapshot, UpstreamFlow},
@@ -73,8 +74,15 @@ pub(super) async fn start(
         return error(ErrorCode::AccessDenied);
     };
     let now = crate::clock::unix_now();
-    let authority = &engine.server.store().authority;
-    let session = match authority.portal_session_identity(&cookie, &csrf, now) {
+    let authority = engine.server.store().authority.clone();
+    let (session_cookie, session_csrf) = (cookie.clone(), csrf.clone());
+    let session = match with_store(&engine, move |store| {
+        store
+            .authority
+            .portal_session_identity(&session_cookie, &session_csrf, now)
+    })
+    .await
+    {
         Ok(session) => session,
         Err(_) => return error(ErrorCode::AccessDenied),
     };
@@ -84,14 +92,17 @@ pub(super) async fn start(
         {
             return error(ErrorCode::InvalidRequest);
         }
-        let action = match super::account::link_session(
-            engine.server.store(),
-            token,
-            &cookie,
-            &csrf,
-            &provider,
-            now,
-        ) {
+        let (link_token, cookie, csrf, provider) = (
+            token.clone(),
+            cookie.clone(),
+            csrf.clone(),
+            provider.clone(),
+        );
+        let action = match with_store(&engine, move |store| {
+            super::account::link_session(store, &link_token, &cookie, &csrf, &provider, now)
+        })
+        .await
+        {
             Ok(action) => action,
             Err(_) => return error(ErrorCode::AccessDenied),
         };
@@ -108,17 +119,27 @@ pub(super) async fn start(
         else {
             return error(ErrorCode::InvalidRequest);
         };
-        let authorization = match engine
-            .server
-            .store()
-            .authorization(transaction, &session, now)
-        {
-            Ok(flow) => flow,
-            Err(_) => return error(ErrorCode::InvalidRequest),
+        let (flow_transaction, flow_session) = (transaction.clone(), session.clone());
+        let (login_cookie, login_csrf) = (cookie.clone(), csrf.clone());
+        let found = with_store(&engine, move |store| {
+            let authorization = store
+                .authorization(&flow_transaction, &flow_session, now)
+                .map_err(|_| ErrorCode::InvalidRequest)?;
+            let signed_in = store
+                .authority
+                .portal_login(&login_cookie, &login_csrf, now)
+                .is_ok();
+            Ok((authorization, signed_in))
+        })
+        .await;
+        let authorization = match found {
+            Ok((_, true)) => {
+                return Redirect::to(&format!("/consent?transaction={transaction}"))
+                    .into_response();
+            }
+            Ok((authorization, false)) => authorization,
+            Err(code) => return error(code),
         };
-        if authority.portal_login(&cookie, &csrf, now).is_ok() {
-            return Redirect::to(&format!("/consent?transaction={transaction}")).into_response();
-        }
         let intent = match engine.consent_intent(&authorization.request).await {
             Ok(intent) => intent,
             Err(response) => return error(response.error),
@@ -130,7 +151,12 @@ pub(super) async fn start(
             None,
         )
     };
-    let configured = match authority.upstream_provider(&provider) {
+    let selected = provider.clone();
+    let configured = match with_store(&engine, move |store| {
+        store.authority.upstream_provider(&selected)
+    })
+    .await
+    {
         Ok(provider) => provider,
         Err(_) => return error(ErrorCode::AccessDenied),
     };
@@ -192,11 +218,12 @@ pub(super) async fn start(
         expires_at: deadline.min(now + 300),
         request_id: super::super::sqlite::id(),
     };
-    if engine
-        .server
-        .store()
-        .store_upstream(state.secret(), &flow, &client_id)
-        .is_err()
+    let state = state.secret().clone();
+    if with_store(&engine, move |store| {
+        store.store_upstream(&state, &flow, &client_id)
+    })
+    .await
+    .is_err()
     {
         return error(ErrorCode::ServerError);
     }
@@ -225,24 +252,30 @@ pub(super) async fn callback(
         return error(ErrorCode::AccessDenied);
     };
     let now = crate::clock::unix_now();
-    let authority = &engine.server.store().authority;
-    let session = match authority.portal_session_identity(&cookie, &csrf, now) {
-        Ok(session) => session,
-        Err(_) => return error(ErrorCode::AccessDenied),
-    };
-    let flow = match engine.server.store().take_upstream(state, &session, now) {
-        Ok(flow) => flow,
-        Err(_) => return error(ErrorCode::InvalidRequest),
-    };
-    if flow.account_token.is_none()
-        && engine
-            .server
-            .store()
-            .authorization(&flow.authorization_transaction, &session, now)
-            .is_err()
+    let authority = engine.server.store().authority.clone();
+    let (session_cookie, session_csrf, state) = (cookie.clone(), csrf.clone(), state.clone());
+    let flow = match with_store(&engine, move |store| {
+        let session = store
+            .authority
+            .portal_session_identity(&session_cookie, &session_csrf, now)
+            .map_err(|_| ErrorCode::AccessDenied)?;
+        let flow = store
+            .take_upstream(&state, &session, now)
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        if flow.account_token.is_none()
+            && store
+                .authorization(&flow.authorization_transaction, &session, now)
+                .is_err()
+        {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        Ok(flow)
+    })
+    .await
     {
-        return error(ErrorCode::InvalidRequest);
-    }
+        Ok(flow) => flow,
+        Err(code) => return error(code),
+    };
     if form
         .get("iss")
         .is_some_and(|issuer| issuer != &flow.provider.issuer)
@@ -265,7 +298,12 @@ pub(super) async fn callback(
     else {
         return error(ErrorCode::InvalidRequest);
     };
-    let configured = match authority.upstream_provider(&flow.provider.provider_id) {
+    let selected = flow.provider.provider_id.clone();
+    let configured = match with_store(&engine, move |store| {
+        store.authority.upstream_provider(&selected)
+    })
+    .await
+    {
         Ok(configured) => configured,
         Err(_) => return error(ErrorCode::AccessDenied),
     };
@@ -333,14 +371,11 @@ pub(super) async fn callback(
         .await;
     let now = crate::clock::unix_now();
     if flow.account_token.is_some() {
-        return match super::account::complete_link(
-            engine.server.store(),
-            &flow,
-            &identity,
-            &cookie,
-            &csrf,
-            now,
-        ) {
+        return match with_store(&engine, move |store| {
+            super::account::complete_link(store, &flow, &identity, &cookie, &csrf, now)
+        })
+        .await
+        {
             Ok(()) => super::account::html(
                 &engine,
                 "Identity linked",
@@ -354,19 +389,29 @@ pub(super) async fn callback(
         return error(ErrorCode::ServerError);
     }
     let replacement = URL_SAFE_NO_PAD.encode(replacement);
-    match authority.portal_upstream_login(&flow, &identity, &cookie, &csrf, &replacement, now) {
+    let transaction = flow.authorization_transaction.clone();
+    let provider_id = flow.provider.provider_id.clone();
+    let (login_csrf, login_cookie) = (csrf.clone(), replacement.clone());
+    match with_store(&engine, move |store| {
+        store.authority.portal_upstream_login(
+            &flow,
+            &identity,
+            &cookie,
+            &login_csrf,
+            &login_cookie,
+            now,
+        )
+    })
+    .await
+    {
         Ok(login) => cookie_response(
             &replacement,
             Some(&csrf),
             (login.expires_at - now) as u32,
-            Redirect::to(&format!(
-                "/consent?transaction={}",
-                flow.authorization_transaction
-            ))
-            .into_response(),
+            Redirect::to(&format!("/consent?transaction={transaction}")).into_response(),
         ),
         Err(_) => {
-            tracing::warn!(provider_id=%flow.provider.provider_id,"upstream OIDC linked-account login rejected");
+            tracing::warn!(%provider_id, "upstream OIDC linked-account login rejected");
             error(ErrorCode::AccessDenied)
         }
     }

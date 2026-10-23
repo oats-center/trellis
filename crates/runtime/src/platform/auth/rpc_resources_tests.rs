@@ -414,7 +414,7 @@ async fn omission_retains_data_and_manual_removal_only_deletes_selected_detached
     let nats = async_nats::connect(format!("nats://127.0.0.1:{port}"))
         .await
         .unwrap();
-    let store = Arc::new(f.store);
+    let store = f.store;
     let bindings =
         super::super::resources::materialize_native_kv(&store, &nats, &provider.deployment_id, NOW)
             .await
