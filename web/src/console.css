@@ -9,30 +9,32 @@
   default: true;
   prefersdark: false;
   color-scheme: light;
-  --color-base-100: #fffdf9;
-  --color-base-200: #f5f3ef;
-  --color-base-300: #c8c2b8;
-  --color-base-content: #101828;
-  --color-primary: #101828;
-  --color-primary-content: #f5f3ef;
-  --color-secondary: #243b53;
-  --color-secondary-content: #f5f3ef;
-  --color-accent: #b86b35;
-  --color-accent-content: #fff7ef;
-  --color-neutral: #2a2521;
-  --color-neutral-content: #f5f3ef;
-  --color-info: #243b53;
-  --color-info-content: #f5f3ef;
-  --color-success: #2f7d5c;
-  --color-success-content: #f4fbf6;
-  --color-warning: #b86b35;
-  --color-warning-content: #fff7ef;
-  --color-error: #9f3a31;
-  --color-error-content: #fff7ef;
-  --radius-selector: 0.75rem;
-  --radius-field: 0.75rem;
-  --radius-box: 1rem;
+  --color-base-100: #fbfaf6;
+  --color-base-200: #f3f0e9;
+  --color-base-300: #e3ddd1;
+  --color-base-content: #2e2924;
+  --color-primary: #8a7550;
+  --color-primary-content: #fffdf8;
+  --color-secondary: #6b6540;
+  --color-secondary-content: #fffdf8;
+  --color-accent: #8a7550;
+  --color-accent-content: #fffdf8;
+  --color-neutral: #4a433b;
+  --color-neutral-content: #fbfaf6;
+  --color-info: #3f6283;
+  --color-info-content: #f5f8fb;
+  --color-success: #4f7a3f;
+  --color-success-content: #f6faf3;
+  --color-warning: #b8862a;
+  --color-warning-content: #fffaf0;
+  --color-error: #a33d31;
+  --color-error-content: #fff7f5;
+  --radius-selector: 0.375rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
   --border: 1px;
+  --depth: 0;
+  --noise: 0;
 }
 
 @plugin "daisyui/theme" {
@@ -40,30 +42,32 @@
   default: false;
   prefersdark: true;
   color-scheme: dark;
-  --color-base-100: #101828;
-  --color-base-200: #0b121f;
-  --color-base-300: #243b53;
-  --color-base-content: #f5f3ef;
-  --color-primary: #b86b35;
-  --color-primary-content: oklch(20% 0.025 55);
-  --color-secondary: #c8c2b8;
-  --color-secondary-content: #101828;
-  --color-accent: #b86b35;
-  --color-accent-content: #fff7ef;
-  --color-neutral: #2a2521;
-  --color-neutral-content: #f5f3ef;
-  --color-info: #c8c2b8;
-  --color-info-content: #101828;
-  --color-success: #59a982;
-  --color-success-content: #07150f;
-  --color-warning: #d28a52;
-  --color-warning-content: #1f1208;
-  --color-error: #c9665b;
+  --color-base-100: #24211d;
+  --color-base-200: #1b1916;
+  --color-base-300: #3a352e;
+  --color-base-content: #ece6db;
+  --color-primary: #b59a68;
+  --color-primary-content: #1b1916;
+  --color-secondary: #a8a070;
+  --color-secondary-content: #1b1916;
+  --color-accent: #b59a68;
+  --color-accent-content: #1b1916;
+  --color-neutral: #3a352e;
+  --color-neutral-content: #ece6db;
+  --color-info: #8fb0cf;
+  --color-info-content: #111820;
+  --color-success: #8fb07a;
+  --color-success-content: #12180e;
+  --color-warning: #d9aa4c;
+  --color-warning-content: #1f1608;
+  --color-error: #d7705f;
   --color-error-content: #1f0c0a;
-  --radius-selector: 0.75rem;
-  --radius-field: 0.75rem;
-  --radius-box: 1rem;
+  --radius-selector: 0.375rem;
+  --radius-field: 0.5rem;
+  --radius-box: 0.75rem;
   --border: 1px;
+  --depth: 0;
+  --noise: 0;
 }
 
 a {
@@ -75,8 +79,13 @@ html,
 body {
   background: var(--color-base-200);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", sans-serif;
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
 }
 
 body {
@@ -85,11 +94,8 @@ body {
 
 :root {
   --trellis-z-dropdown: 40;
-  --trellis-focus-ring: 0 0 0 3px color-mix(
-    in oklab,
-    var(--color-accent) 22%,
-    transparent
-  );
+  --trellis-focus-ring: 0 0 0 3px
+    color-mix(in oklab, var(--color-accent) 22%, transparent);
 }
 
 button,
@@ -119,8 +125,8 @@ select {
     var(--color-base-100) 86%,
     var(--color-base-200)
   );
-  border: 1px solid color-mix(in oklab, var(--color-base-300) 82%, transparent);
-  border-radius: 1rem;
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box);
   box-shadow: none;
 }
 
@@ -178,15 +184,15 @@ select {
   border-radius: calc(var(--radius-field, 0.5rem) - 0.15rem);
   color: color-mix(in oklab, var(--color-base-content) 68%, transparent);
   cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 650;
-  min-height: 1.8rem;
-  padding: 0 0.65rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  min-height: 2.1rem;
+  padding: 0 0.9rem;
 }
 
 .trellis-segment button.active {
-  background: var(--color-base-100);
-  color: var(--color-base-content);
+  background: var(--color-primary);
+  color: var(--color-primary-content);
 }
 
 .trellis-segment button:focus-visible {
@@ -195,49 +201,46 @@ select {
 }
 
 .trellis-ledger {
-  border-block: 1px solid
-    color-mix(in oklab, var(--color-base-300) 82%, transparent);
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
 }
 
 .trellis-ledger > button {
-  background: transparent;
-  border: 0;
-  border-right: 1px solid
-    color-mix(in oklab, var(--color-base-300) 75%, transparent);
+  background: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box);
   cursor: pointer;
   display: grid;
-  gap: 0.2rem;
+  gap: 0.15rem;
   min-width: 0;
-  padding: 0.8rem 1rem;
+  padding: 1rem 1.15rem;
   text-align: left;
-  transition: background-color 150ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.trellis-ledger > button:last-child {
-  border-right: 0;
+  transition:
+    border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 150ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .trellis-ledger > button:hover {
-  background: color-mix(in oklab, var(--color-base-200) 55%, transparent);
+  border-color: color-mix(in oklab, var(--color-base-content) 25%, transparent);
 }
 
-.trellis-ledger > button:active,
 .trellis-ledger > button.active {
   background: color-mix(
     in oklab,
-    var(--color-primary) 9%,
+    var(--color-primary) 7%,
     var(--color-base-100)
   );
-  box-shadow: inset 0 -2px
-    color-mix(in oklab, var(--color-primary) 75%, var(--color-base-content));
+  border-color: var(--color-primary);
 }
 
 .trellis-ledger > button.attention.active {
-  background: color-mix(in oklab, var(--color-error) 9%, var(--color-base-100));
-  box-shadow: inset 0 -2px
-    color-mix(in oklab, var(--color-error) 75%, var(--color-base-content));
+  background: color-mix(in oklab, var(--color-error) 6%, var(--color-base-100));
+  border-color: color-mix(
+    in oklab,
+    var(--color-error) 70%,
+    var(--color-base-300)
+  );
 }
 
 .trellis-ledger > button:disabled {
@@ -252,27 +255,25 @@ select {
 
 .trellis-ledger span {
   align-items: center;
-  color: color-mix(in oklab, var(--color-base-content) 68%, transparent);
+  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
   display: flex;
-  font-size: 0.68rem;
-  font-weight: 750;
-  gap: 0.3rem;
-  letter-spacing: 0.055em;
-  text-transform: uppercase;
+  font-size: 0.875rem;
+  gap: 0.4rem;
 }
 
 .trellis-ledger strong {
   display: block;
-  font-size: 1.3rem;
+  font-size: 1.6rem;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.03em;
-  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
 }
 
 .trellis-ledger small {
-  color: color-mix(in oklab, var(--color-base-content) 62%, transparent);
+  color: color-mix(in oklab, var(--color-base-content) 64%, transparent);
   display: block;
-  font-size: 0.68rem;
+  font-size: 0.8125rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -324,27 +325,23 @@ select {
 }
 
 .trellis-table :where(thead) {
-  background-color: color-mix(
-    in oklab,
-    var(--color-base-content) 3%,
-    transparent
-  );
+  background-color: transparent;
+  border-bottom: 1px solid var(--color-base-300);
 }
 
 .trellis-table :where(th) {
-  color: color-mix(in oklab, var(--color-base-content) 52%, transparent);
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.035em;
+  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  font-size: 0.8125rem;
+  font-weight: 500;
   line-height: 1rem;
-  padding-bottom: 0.72rem;
-  padding-top: 0.72rem;
-  text-transform: uppercase;
+  padding-bottom: 0.8rem;
+  padding-top: 0.8rem;
   white-space: nowrap;
 }
 
 .trellis-table :where(td) {
-  height: 3.45rem;
+  font-size: 0.875rem;
+  height: 3.25rem;
   padding-bottom: 0.72rem;
   padding-top: 0.72rem;
   vertical-align: middle;
@@ -395,17 +392,6 @@ select {
   font-size: 0.8125rem;
 }
 
-.trellis-logo-mask {
-  background-color: currentColor;
-  display: block;
-  mask: var(--trellis-logo-url) center / contain no-repeat;
-  -webkit-mask: var(--trellis-logo-url) center / contain no-repeat;
-}
-
-.trellis-logo-orange {
-  color: #b86b35;
-}
-
 .trellis-form {
   display: grid;
   gap: 1.25rem;
@@ -428,12 +414,10 @@ select {
 }
 
 .trellis-field-label {
-  color: color-mix(in oklab, var(--color-base-content) 74%, transparent);
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.045em;
+  color: color-mix(in oklab, var(--color-base-content) 82%, transparent);
+  font-size: 0.8125rem;
+  font-weight: 600;
   line-height: 1rem;
-  text-transform: uppercase;
 }
 
 .trellis-field-help {
@@ -484,12 +468,10 @@ select {
 
 .form-control > .label-text,
 .form-control > .label > .label-text {
-  color: color-mix(in oklab, var(--color-base-content) 74%, transparent);
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.045em;
+  color: color-mix(in oklab, var(--color-base-content) 82%, transparent);
+  font-size: 0.8125rem;
+  font-weight: 600;
   line-height: 1rem;
-  text-transform: uppercase;
 }
 
 .form-control > .label-text-alt,
@@ -589,6 +571,18 @@ select {
   z-index: var(--trellis-z-dropdown);
 }
 
+/* ActionMenu popovers render in the top layer and are placed by script. */
+.trellis-popover-menu {
+  inset: auto;
+  margin: 0;
+  position: fixed;
+}
+
+/* `.menu` sets a display that would otherwise keep closed menus on screen. */
+.trellis-popover-menu:not(:popover-open) {
+  display: none;
+}
+
 .dropdown-content {
   box-shadow: none !important;
   filter: none;
@@ -633,54 +627,98 @@ select {
 }
 
 .trellis-sidebar {
-  background: #101828;
-  color: #c8c2b8;
+  background: var(--color-base-200);
+  color: var(--color-base-content);
 }
 
 .trellis-sidebar .menu a {
   align-items: center;
-  border-radius: 0.75rem;
-  color: #c8c2b8;
+  border-radius: var(--radius-field);
+  color: color-mix(in oklab, var(--color-base-content) 86%, transparent);
   display: flex;
-  font-size: 0.9rem;
-  gap: 0.75rem;
+  font-size: 0.9375rem;
+  gap: 0.85rem;
   line-height: 1.2;
   min-height: 2.6rem;
+  padding-inline: 0.85rem;
 }
 
 .trellis-sidebar .menu a:hover {
-  background: rgb(245 243 239 / 0.06);
-  color: #f5f3ef;
+  background: color-mix(in oklab, var(--color-base-content) 6%, transparent);
+  color: var(--color-base-content);
 }
 
 .trellis-sidebar .menu a.active {
-  background: #b86b35;
-  box-shadow: inset 0 0 0 1px rgb(245 243 239 / 0.08);
-  color: #fff;
+  background: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.trellis-sidebar-label {
+  color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
+  font-size: 0.8125rem;
+  padding-inline: 0.85rem;
+}
+
+.trellis-workspace {
+  background: color-mix(
+    in oklab,
+    var(--color-base-100) 45%,
+    var(--color-base-200)
+  );
+  border-left: 1px solid var(--color-base-300);
+  border-top: 1px solid var(--color-base-300);
+  border-top-left-radius: 1.25rem;
+}
+
+.trellis-eyebrow {
+  color: var(--color-primary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .trellis-topbar {
   box-shadow: none;
 }
 
-.trellis-badge-soft.badge-success {
-  background: rgb(47 125 92 / 0.14);
-  color: var(--color-success);
+.badge:not(.badge-outline) {
+  border: 0;
+  border-radius: 0.375rem;
+  font-weight: 500;
 }
 
-.trellis-badge-soft.badge-warning {
-  background: rgb(184 107 53 / 0.16);
-  color: var(--color-warning);
+.badge.badge-success:not(.badge-outline) {
+  background: color-mix(in oklab, var(--color-success) 16%, transparent);
+  color: color-mix(
+    in oklab,
+    var(--color-success) 85%,
+    var(--color-base-content)
+  );
 }
 
-.trellis-badge-soft.badge-error {
-  background: rgb(159 58 49 / 0.14);
+.badge.badge-warning:not(.badge-outline) {
+  background: color-mix(in oklab, var(--color-warning) 18%, transparent);
+  color: color-mix(
+    in oklab,
+    var(--color-warning) 70%,
+    var(--color-base-content)
+  );
+}
+
+.badge.badge-error:not(.badge-outline) {
+  background: color-mix(in oklab, var(--color-error) 14%, transparent);
   color: var(--color-error);
 }
 
-.trellis-badge-soft.badge-neutral {
-  background: color-mix(in oklab, var(--color-base-content) 10%, transparent);
-  color: color-mix(in oklab, var(--color-base-content) 64%, transparent);
+.badge.badge-info:not(.badge-outline) {
+  background: color-mix(in oklab, var(--color-info) 14%, transparent);
+  color: var(--color-info);
+}
+
+.badge.badge-neutral:not(.badge-outline) {
+  background: color-mix(in oklab, var(--color-base-content) 9%, transparent);
+  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
 }
 
 .trellis-palette {

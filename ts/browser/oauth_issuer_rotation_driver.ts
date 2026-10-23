@@ -378,7 +378,7 @@ async function browser() {
     const authorization = await call(page, handle, "authorize");
     assert.equal(typeof authorization, "string");
     await page.goto(authorization as string);
-    const signIn = page.getByRole("heading", { name: "Sign in to Trellis" });
+    const signIn = page.getByRole("heading", { name: "Sign in", exact: true });
     if (
       await signIn.waitFor({ state: "visible", timeout: 2000 }).then(
         () => true,
@@ -391,9 +391,7 @@ async function browser() {
         .fill("a strong bootstrap password");
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
     }
-    await page
-      .getByRole("button", { name: "Authorize application", exact: true })
-      .click();
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
     await page.waitForURL(
       (url) => url.origin === appOrigin && url.pathname === "/callback",
     );

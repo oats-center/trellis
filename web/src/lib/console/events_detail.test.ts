@@ -103,42 +103,31 @@ test("V11 an unknown consumer status stays visible and sorts neutrally", () => {
 });
 
 test("Z05 a ready empty optional read may render zero; pending and unavailable may not", () => {
+  const base = {
+    windowMinutes: 60,
+    attentionConsumers: 0,
+    shownConsumers: 0,
+    focus: "exceptions",
+    attentionConsumersOnly: false,
+    failedActive: false,
+  };
   const ready = projectEventsHealthLedger({
+    ...base,
     metricsState: "ready",
     consumersState: "ready",
     total: 0n,
     integrityExceptions: 0n,
-    unresolved: 0n,
-    payloadTotalLabel: "0 B",
-    payloadAverageLabel: "0 B",
-    windowMinutes: 60,
-    attentionConsumers: 0,
-    shownConsumers: 0,
-    oldestLagValue: "-",
-    oldestLagDetail: "no pending events",
-    oldestLagDisabled: true,
-    focus: "exceptions",
-    attentionConsumersOnly: false,
-    oldestLagActive: false,
+    failedDeliveries: 0n,
   });
   const flow = ready.find((item) => item.id === "all");
   assert.deepEqual(flow?.value, "0");
   assert.deepEqual(flow?.detail.includes("0"), true);
+  assert.deepEqual(ready.find((item) => item.id === "failed")?.value, "0");
 
   const pending = projectEventsHealthLedger({
+    ...base,
     metricsState: "pending",
     consumersState: "pending",
-    payloadTotalLabel: "0 B",
-    payloadAverageLabel: "0 B",
-    windowMinutes: 60,
-    attentionConsumers: 0,
-    shownConsumers: 0,
-    oldestLagValue: "-",
-    oldestLagDetail: "no pending events",
-    oldestLagDisabled: true,
-    focus: "exceptions",
-    attentionConsumersOnly: false,
-    oldestLagActive: false,
   });
   for (const item of pending) {
     assert.deepEqual(
@@ -148,53 +137,37 @@ test("Z05 a ready empty optional read may render zero; pending and unavailable m
     );
     const label = String(item.value).toLowerCase();
     assert.deepEqual(
-      label.includes("unavailable") || label === "…" || label === "unknown",
+      label.includes("unavailable") || label === "…",
       true,
       `${item.id} pending label is ${item.value}`,
     );
   }
 
   const unavailable = projectEventsHealthLedger({
+    ...base,
     metricsState: "unavailable",
     consumersState: "unavailable",
-    payloadTotalLabel: "0 B",
-    payloadAverageLabel: "0 B",
-    windowMinutes: 60,
-    attentionConsumers: 0,
-    shownConsumers: 0,
-    oldestLagValue: "-",
-    oldestLagDetail: "no pending events",
-    oldestLagDisabled: true,
     focus: "all",
-    attentionConsumersOnly: false,
-    oldestLagActive: false,
   });
   const deniedFlow = unavailable.find((item) => item.id === "all");
   assert.deepEqual(deniedFlow?.value, "Unavailable");
-  assert.deepEqual(deniedFlow?.detail, "Metrics unavailable");
+  assert.deepEqual(deniedFlow?.detail, "Unavailable right now");
   assert.deepEqual(deniedFlow?.disabled, true);
-  const deniedLag = unavailable.find((item) => item.id === "oldest-lag");
-  assert.deepEqual(deniedLag?.value, "Unknown");
-  assert.deepEqual(deniedLag?.detail, "Consumer health unavailable");
   const deniedConsumers = unavailable.find((item) => item.id === "consumers");
   assert.deepEqual(deniedConsumers?.value, "Unavailable");
+  assert.deepEqual(deniedConsumers?.disabled, true);
 });
 
 test("Z06 a denied optional read leaves the primary numeric path untouched", () => {
   const mixed = projectEventsHealthLedger({
     metricsState: "unavailable",
     consumersState: "ready",
-    payloadTotalLabel: "0 B",
-    payloadAverageLabel: "0 B",
     windowMinutes: 15,
     attentionConsumers: 2,
     shownConsumers: 4,
-    oldestLagValue: "3s",
-    oldestLagDetail: "worker-a",
-    oldestLagDisabled: false,
     focus: "all",
     attentionConsumersOnly: false,
-    oldestLagActive: false,
+    failedActive: false,
   });
   assert.deepEqual(
     mixed.find((item) => item.id === "all")?.value,
@@ -206,7 +179,6 @@ test("Z06 a denied optional read leaves the primary numeric path untouched", () 
     mixed.find((item) => item.id === "consumers")?.disabled,
     false,
   );
-  assert.deepEqual(mixed.find((item) => item.id === "oldest-lag")?.value, "3s");
 });
 
 test("Z09 a successful mutation does not follow up after dispose", async () => {

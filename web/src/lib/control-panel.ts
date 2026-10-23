@@ -41,22 +41,22 @@ export const routeTitles = {
   "/admin/resources": "Resources",
   "/admin/sessions/revoke": "Revoke Session",
   "/admin/sessions/kick": "Kick Connection",
-  "/admin/services/new": "Create Service Deployment",
-  "/admin/devices/profiles/new": "Create Device Deployment",
-  "/admin/devices/profiles/disable": "Disable Device Deployment",
-  "/admin/devices/instances/provision": "Provision Device Instance",
-  "/admin/devices/instances/disable": "Disable Device Instance",
+  "/admin/services/new": "New Service",
+  "/admin/devices/profiles/new": "New Device Type",
+  "/admin/devices/profiles/disable": "Disable Device Type",
+  "/admin/devices/instances/provision": "Add Device",
+  "/admin/devices/instances/disable": "Disable Device",
   "/admin/health-events": "Health",
   "/admin/events": "Events",
   "/admin/jobs": "Jobs",
-  "/admin/apps": "Delegations",
-  "/admin/apps/revoke": "Revoke Delegation",
+  "/admin/apps": "Connected Apps",
+  "/admin/apps/revoke": "Disconnect App",
   "/admin/roles": "Roles",
   "/admin/roles/edit": "Edit Role",
   "/admin/roles/new": "New Role",
-  "/admin/clients": "OAuth clients",
-  "/admin/apis": "API catalog",
-  "/admin/administration": "Administration reviews",
+  "/admin/clients": "Apps",
+  "/admin/apis": "APIs",
+  "/admin/administration": "Admin approvals",
 } as const;
 
 /**
@@ -67,7 +67,7 @@ export const routeTitles = {
 const detailRouteTitles: ReadonlyArray<
   readonly [prefix: string, title: string]
 > = [
-  ["/admin/services/", "Service Deployment"],
+  ["/admin/services/", "Service"],
   ["/admin/jobs/", "Job"],
 ];
 
@@ -89,22 +89,18 @@ const ADMIN_ONLY: readonly Requirement[] = [{ administrative: true }];
 
 const navSections: NavSection[] = [
   {
-    title: "Account",
-    items: [{ href: "/profile", label: "Account", icon: "settings" }],
-  },
-  {
-    title: "Operate",
+    title: "",
     items: [
       {
         href: "/admin",
         label: "Overview",
-        icon: "users",
+        icon: "home",
         requires: ADMIN_ONLY,
       },
       {
         href: "/admin/health-events",
-        label: "Health Events",
-        icon: "alert",
+        label: "Health",
+        icon: "activity",
         requires: [
           {
             permission: {
@@ -117,15 +113,9 @@ const navSections: NavSection[] = [
         ],
       },
       {
-        href: "/admin/sessions",
-        label: "Sessions",
-        icon: "activity",
-        requires: ADMIN_ONLY,
-      },
-      {
         href: "/admin/events",
         label: "Events",
-        icon: "activity",
+        icon: "fileText",
         requires: [
           {
             permission: {
@@ -140,7 +130,7 @@ const navSections: NavSection[] = [
       {
         href: "/admin/jobs",
         label: "Jobs",
-        icon: "clipboard",
+        icon: "cog",
         requires: [
           {
             permission: {
@@ -153,21 +143,38 @@ const navSections: NavSection[] = [
         ],
       },
       {
-        href: "/admin/apps",
-        label: "Delegations",
-        icon: "key",
+        href: "/admin/sessions",
+        label: "Sessions",
+        icon: "monitor",
+        requires: ADMIN_ONLY,
+      },
+    ],
+  },
+  {
+    title: "Access",
+    items: [
+      {
+        href: "/admin/users",
+        label: "Users",
+        icon: "user",
         requires: ADMIN_ONLY,
       },
       {
         href: "/admin/roles",
         label: "Roles",
-        icon: "key",
+        icon: "shield",
+        requires: ADMIN_ONLY,
+      },
+      {
+        href: "/admin/apps",
+        label: "Connected apps",
+        icon: "plug",
         requires: ADMIN_ONLY,
       },
       {
         href: "/admin/administration",
-        label: "Administration reviews",
-        icon: "key",
+        label: "Admin approvals",
+        icon: "lock",
         requires: [
           {
             permission: {
@@ -181,8 +188,8 @@ const navSections: NavSection[] = [
       },
       {
         href: "/admin/clients",
-        label: "OAuth clients",
-        icon: "key",
+        label: "Apps",
+        icon: "appWindow",
         requires: [
           {
             permission: {
@@ -194,10 +201,27 @@ const navSections: NavSection[] = [
           },
         ],
       },
+    ],
+  },
+  {
+    title: "Platform",
+    items: [
+      {
+        href: "/admin/services",
+        label: "Services",
+        icon: "box",
+        requires: ADMIN_ONLY,
+      },
+      {
+        href: "/admin/devices",
+        label: "Devices",
+        icon: "laptop",
+        requires: ADMIN_ONLY,
+      },
       {
         href: "/admin/apis",
-        label: "API catalog",
-        icon: "server",
+        label: "APIs",
+        icon: "braces",
         requires: [
           {
             permission: {
@@ -209,11 +233,6 @@ const navSections: NavSection[] = [
           },
         ],
       },
-    ],
-  },
-  {
-    title: "Manage",
-    items: [
       {
         href: "/admin/resources",
         label: "Resources",
@@ -229,25 +248,11 @@ const navSections: NavSection[] = [
           },
         ],
       },
-      {
-        href: "/admin/services",
-        label: "Services",
-        icon: "server",
-        requires: ADMIN_ONLY,
-      },
-      {
-        href: "/admin/devices",
-        label: "Devices",
-        icon: "phone",
-        requires: ADMIN_ONLY,
-      },
-      {
-        href: "/admin/users",
-        label: "Users",
-        icon: "users",
-        requires: ADMIN_ONLY,
-      },
     ],
+  },
+  {
+    title: "Account",
+    items: [{ href: "/profile", label: "Account", icon: "settings" }],
   },
 ];
 

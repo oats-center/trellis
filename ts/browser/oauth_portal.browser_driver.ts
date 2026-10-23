@@ -21,11 +21,11 @@ test("real OAuth portal signs in and approves the requesting device", async () =
     const failures: string[] = [];
     page.on("pageerror", (error) => failures.push(error.message));
     await page.goto(verification);
-    await page.getByRole("heading", { name: "Verify your device" }).waitFor();
-    await page.getByLabel("Device code", { exact: true }).fill(userCode);
-    await page.getByRole("button", { name: "Review device request" }).click();
+    await page.getByRole("heading", { name: "Connect a device" }).waitFor();
+    await page.getByLabel("Code", { exact: true }).fill(userCode);
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
     await page
-      .getByRole("heading", { name: "Sign in to Trellis" })
+      .getByRole("heading", { name: "Sign in", exact: true })
       .waitFor()
       .catch(async (error) => {
         console.error(
@@ -41,14 +41,14 @@ test("real OAuth portal signs in and approves the requesting device", async () =
       .fill("a strong bootstrap password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await page
-      .getByRole("heading", { name: "Allow Native client to access Trellis?" })
+      .getByRole("heading", { name: "Native client wants to use your account" })
       .waitFor();
     await page
-      .getByRole("checkbox", { name: /This code matches the device/ })
+      .getByRole("checkbox", { name: /This matches the code on my device/ })
       .check();
-    await page.getByRole("button", { name: "Authorize application" }).click();
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
     await page
-      .getByRole("heading", { name: "Device access approved" })
+      .getByRole("heading", { name: "Your device is connected" })
       .waitFor();
     strictEqual(failures.length, 0, failures.join("\n"));
   } finally {

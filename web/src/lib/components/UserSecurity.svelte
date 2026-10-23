@@ -8,7 +8,7 @@
   import { catalogPage, traverseAll } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
-  import { formatDate } from "$lib/format";
+  import { formatDate, humanizeName } from "$lib/format";
   import CopyButton from "./CopyButton.svelte";
   import LoadingState from "./LoadingState.svelte";
   import Notice from "./Notice.svelte";
@@ -121,10 +121,9 @@
   onDestroy(() => scope.dispose());
 </script>
 
-<Panel title="Security">
-  <p class="trellis-field-help mb-3">
-    Authorization sessions belong to this principal. Retiring a session and
-    closing its physical connections are distinct.
+<Panel title="Sign-ins">
+  <p class="mb-3 text-sm text-base-content/65">
+    Where this person is signed in.
   </p>
   {#if error}<Notice variant="error"
       >{error}<button
@@ -132,65 +131,49 @@
         onclick={() => void load()}>Retry</button
       ></Notice
     >{/if}
-  {#if loading}<LoadingState label="Loading authorization sessions" />{:else}
-    <div class="overflow-x-auto">
-      <table class="table table-sm">
-        <thead
-          ><tr
-            ><th>Session</th><th>Binding</th><th>State</th><th>Expires</th><th
-              >Actions</th
-            ></tr
-          ></thead
-        ><tbody>
-          {#each sessions as session (session.authorizationSessionId)}<tr>
-              <td class="trellis-identifier"
-                >{session.authorizationSessionId}</td
-              >
-              <td
-                ><span>{session.binding.kind}</span>
-                <div class="trellis-identifier">
-                  {session.binding.clientId ??
-                    session.binding.deploymentId ??
-                    session.runtimeId}
-                </div></td
-              >
-              <td
-                ><span
-                  class="badge badge-sm {session.state === 'active'
-                    ? 'badge-success'
-                    : 'badge-neutral'}">{session.state}</span
-                ></td
-              >
-              <td>{formatDate(session.notAfter)}</td><td
-                ><button
-                  class="btn btn-ghost btn-xs"
-                  disabled={disabled ||
-                    busy ||
-                    session.state !== "active" ||
-                    !canPerform(
-                      authority.authority,
-                      "authorizationSessionsRevoke",
-                    )}
-                  onclick={() => void revoke(session)}>Revoke</button
-                ></td
-              >
-            </tr>{:else}<tr
-              ><td colspan="5">No authorization sessions returned.</td></tr
-            >{/each}
-        </tbody>
-      </table>
-    </div>
+  {#if loading}<LoadingState label="Loading sign-ins" />{:else}
+    <ul class="divide-y divide-base-300 rounded-field border border-base-300">
+      {#each sessions.filter((session) => session.state === "active") as session (session.authorizationSessionId)}
+        <li class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+          <span>
+            <span class="font-medium"
+              >{humanizeName(
+                session.binding.clientId ??
+                  session.binding.participantId ??
+                  "App",
+              )}</span
+            >
+            <span class="text-base-content/60">
+              · signed in {formatDate(session.createdAt)}</span
+            >
+          </span>
+          <button
+            class="btn btn-ghost btn-xs text-error"
+            disabled={disabled ||
+              busy ||
+              !canPerform(authority.authority, "authorizationSessionsRevoke")}
+            onclick={() => void revoke(session)}>Sign out</button
+          >
+        </li>
+      {:else}
+        <li class="px-3 py-2 text-sm text-base-content/60">
+          Not signed in anywhere.
+        </li>
+      {/each}
+    </ul>
   {/if}
-  <div class="border-t border-base-300 px-4 py-3">
+  <div class="mt-4">
     <button
       class="btn btn-outline btn-sm"
       disabled={disabled ||
         busy ||
         !canPerform(authority.authority, "usersPasswordResetCreate")}
-      onclick={() => void createReset()}>Create password-reset token</button
+      onclick={() => void createReset()}>Reset password</button
     >
     {#if reset}<p class="trellis-field-help mt-2">
-        One-time password-reset token; expires {formatDate(reset.expiresAt)}.
+        Send this one-time code to the person. It expires {formatDate(
+          reset.expiresAt,
+        )}.
       </p>
       <p class="trellis-identifier break-all">
         {reset.token}<CopyButton

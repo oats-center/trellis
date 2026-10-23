@@ -100,6 +100,7 @@ function sendWs(
 async function wireNatsGate(page: Page): Promise<{
   gate: NatsResponseGate;
   releaseToPage: () => Uint8Array[];
+  resumeLiveToPage: () => void;
 }> {
   const gate = new NatsResponseGate();
   let pageSocket: { send: (message: string | Buffer) => void } | undefined;
@@ -123,6 +124,10 @@ async function wireNatsGate(page: Page): Promise<{
       const chunks = gate.release();
       sendWs(pageSocket, chunks);
       return chunks;
+    },
+    resumeLiveToPage() {
+      const chunks = gate.resumeLive();
+      if (pageSocket) sendWs(pageSocket, chunks);
     },
   };
 }
@@ -160,7 +165,7 @@ test("B37 Jobs renders a real primary result and type summary", async () => {
         // The default focus is running-risk, so select the Processed ledger
         // item to bring the finished seeded job into the primary result.
         await main
-          .getByRole("button", { name: /Processed/ })
+          .getByRole("button", { name: /Finished/ })
           .first()
           .click();
         // The primary job query renders regardless of optional panels: each
@@ -175,7 +180,7 @@ test("B37 Jobs renders a real primary result and type summary", async () => {
           true,
           "the primary job query returned at least the seeded job",
         );
-        await main.getByText("Job-type health").first().waitFor({
+        await main.getByText("Job types", { exact: true }).first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
@@ -209,23 +214,20 @@ test("B38 job state summary excludes the focused state filter", async () => {
         });
         await waitForConsoleShell(page);
         const main = page.locator("main");
-        await main.getByText("Job-type health").first().waitFor({
+        await main.getByText("Job types", { exact: true }).first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
-        // The ledger is a state ledger, not a summary of the focused tab.
-        await main.getByText("Completed", { exact: false }).first().waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
-        assert.deepEqual(
-          (await main.getByText("matching types").count()) > 0,
-          true,
+        // The tiles summarize every state, not the focused tab: the default
+        // tab shows running work, yet the finished job is still counted.
+        const finished = main
+          .locator('[aria-label="Jobs status summary"] button')
+          .filter({ hasText: "Finished" });
+        await runtime.waitFor(
+          async () =>
+            Number((await finished.locator("strong").innerText()).trim()) > 0,
+          { timeoutMs: 30_000 },
         );
-        await main.getByText(/\d+ in scope \(all states\)/).waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
       } finally {
         await context.close();
       }
@@ -262,6 +264,19 @@ test("B41 Events renders its primary query table", async () => {
           state: "visible",
           timeout: 30_000,
         });
+        // Filtering by a busiest event type sends only its identity; the
+        // metrics row it comes from carries bigint counts.
+        const eventType = main.locator(".event-types button").first();
+        await eventType.waitFor({ state: "visible", timeout: 30_000 });
+        await eventType.click();
+        await main
+          .locator('.event-types button[aria-pressed="true"]')
+          .waitFor({ state: "visible", timeout: 15_000 });
+        await main.getByRole("table").first().waitFor({
+          state: "visible",
+          timeout: 30_000,
+        });
+        assert.deepEqual(await main.getByText(/serialize a BigInt/).count(), 0);
         await assertNoBrowserErrors(errors);
       } finally {
         await context.close();
@@ -288,7 +303,7 @@ test("N13 Events refreshes a verified provider event during continuous publicati
         );
         await waitForConsoleShell(page);
         const main = page.locator("main");
-        await main.getByText("Recent event flow").first().waitFor({
+        await main.getByText("Recent events", { exact: true }).first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
@@ -303,10 +318,9 @@ test("N13 Events refreshes a verified provider event during continuous publicati
           state: "visible",
           timeout: 30_000,
         });
-        const publishedEvent = main
-          .locator("tbody tr")
-          .filter({ hasText: "runtime-trellis.runtime@v1 / Changed" })
-          .filter({ hasText: seeded.deploymentId });
+        const publishedEvent = main.locator(
+          `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
+        );
         assert.deepEqual(await publishedEvent.count(), 0);
 
         let stopProducing = false;
@@ -335,7 +349,7 @@ test("N13 Events refreshes a verified provider event during continuous publicati
           ]);
           await publishedEvent
             .first()
-            .getByText("verified", { exact: true })
+            .getByText("Verified", { exact: true })
             .waitFor({
               state: "visible",
               timeout: 5_000,
@@ -371,15 +385,18 @@ test("B44 Health renders its real participant query", async () => {
         const main = page.locator("main");
         await main
           .getByRole("heading", {
-            name: "Participant Health",
+            name: "Health",
             exact: true,
           })
           .waitFor({ state: "visible", timeout: 30_000 });
         // The participant table is the primary read; the summary is separate.
-        await main.getByText("Participants", { exact: true }).first().waitFor({
-          state: "visible",
-          timeout: 30_000,
-        });
+        await main
+          .getByText("Services and devices", { exact: true })
+          .first()
+          .waitFor({
+            state: "visible",
+            timeout: 30_000,
+          });
         await assertNoBrowserErrors(errors);
       } finally {
         await context.close();
@@ -403,25 +420,20 @@ test("B45 a completed job appears during continuous updates", async () => {
         });
         await waitForConsoleShell(page);
         const main = page.locator("main");
-        await main.getByText("Job-type health").first().waitFor({
+        await main.getByText("Job types", { exact: true }).first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
 
         await main
-          .getByRole("button", { name: /Processed/ })
+          .getByRole("button", { name: /Finished/ })
           .first()
           .click();
         await main.locator(".jobs-updated").waitFor({ state: "visible" });
-        await main
-          .locator(".jobs-updated span")
-          .getByText("Live", {
-            exact: true,
-          })
-          .waitFor({
-            state: "visible",
-            timeout: 10_000,
-          });
+        await main.getByText("Live", { exact: true }).first().waitFor({
+          state: "visible",
+          timeout: 10_000,
+        });
         let producerDone = false;
         let stopProducer = false;
         const createdJobIds = new Set<string>();
@@ -513,7 +525,7 @@ test("B45 a completed job appears during continuous updates", async () => {
   }, browserRuntimeOptions());
 });
 
-test("B47 overview refresh loads an instance provisioned after the initial snapshot", async () => {
+test("B47 overview refresh shows a service that connected after the first load", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);
     try {
@@ -531,21 +543,29 @@ test("B47 overview refresh loads an instance provisioned after the initial snaps
         .waitFor({ state: "visible", timeout: 30_000 });
 
       await main
-        .getByText(/^Snapshot /)
+        .getByText(/^Updated /)
         .first()
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
+      // A newly connected service adds a session; Refresh must show it.
+      const sessionsTile = main.getByRole("link", { name: /^Sessions\b/ });
+      const sessionCount = async () =>
+        Number(/Sessions\s+(\d+)/.exec(await sessionsTile.innerText())?.[1]);
+      await runtime.waitFor(async () => Number.isFinite(await sessionCount()));
+      const before = await sessionCount();
       const fresh = await seedProvider(runtime, "b47-fresh-instance");
       try {
-        await main
-          .getByRole("button", { name: "Refresh", exact: true })
-          .click();
-        await main
-          .getByText(fresh.deploymentId, { exact: true })
-          .first()
-          .waitFor({ state: "visible" });
+        await runtime.waitFor(
+          async () => {
+            await main
+              .getByRole("button", { name: "Refresh", exact: true })
+              .click();
+            return (await sessionCount()) > before;
+          },
+          { timeoutMs: 30_000 },
+        );
         await assertNoBrowserErrors(errors);
       } finally {
         await fresh.stop();
@@ -570,7 +590,7 @@ test("Z10 Events visibility recovery refreshes a retained notification", async (
         );
         await waitForConsoleShell(page);
         const main = page.locator("main");
-        await main.getByText("Recent event flow").first().waitFor({
+        await main.getByText("Recent events", { exact: true }).first().waitFor({
           state: "visible",
           timeout: 30_000,
         });
@@ -578,10 +598,9 @@ test("Z10 Events visibility recovery refreshes a retained notification", async (
           state: "visible",
           timeout: 30_000,
         });
-        const publishedEvent = main
-          .locator("tbody tr")
-          .filter({ hasText: "runtime-trellis.runtime@v1 / Changed" })
-          .filter({ hasText: seeded.deploymentId });
+        const publishedEvent = main.locator(
+          `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
+        );
         assert.deepEqual(await publishedEvent.count(), 0);
 
         await page.evaluate(() => {
@@ -684,7 +703,7 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
         const errors = await captureBrowserErrors(page);
         await openConsole(page, runtime, credentials);
         await waitForConsoleShell(page);
-        await page.locator('summary[aria-label="Open user menu"]').click();
+        await page.getByRole("button", { name: "Open user menu" }).click();
         await page.getByText("Member", { exact: true }).first().waitFor({
           state: "visible",
           timeout: 30_000,
@@ -704,10 +723,9 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
             level: 1,
           })
           .waitFor({ state: "visible", timeout: 30_000 });
-        const publishedEvent = main
-          .locator("tbody tr")
-          .filter({ hasText: "runtime-trellis.runtime@v1 / Changed" })
-          .filter({ hasText: seeded.deploymentId });
+        const publishedEvent = main.locator(
+          `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seeded.deploymentId}"]`,
+        );
         await publishedEvent.first().waitFor({
           state: "visible",
           timeout: 30_000,
@@ -715,7 +733,7 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
 
         const ledger = main.locator('[aria-label="Event health summary"]');
         const consumers = ledger.locator("button").filter({
-          hasText: "Consumers",
+          hasText: "Services behind",
         });
         await runtime.waitFor(
           async () =>
@@ -725,17 +743,10 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
         );
         assert.deepEqual(
           await consumers.locator("small").innerText(),
-          "Consumer health unavailable",
-        );
-        const oldestLag = ledger.locator("button").filter({
-          hasText: "Oldest lag",
-        });
-        assert.deepEqual(
-          (await oldestLag.locator("strong").innerText()).trim(),
-          "Unknown",
+          "Unavailable right now",
         );
         const eventFlow = ledger.locator("button").filter({
-          hasText: "Event flow",
+          hasText: "Published",
         });
         const eventTotal = Number(
           (await eventFlow.locator("strong").innerText()).trim(),
@@ -756,7 +767,7 @@ test("Z06 permitted Events data survives denied consumer-management authority", 
         );
         assert.deepEqual(
           await consumers.locator("small").innerText(),
-          "Consumer health unavailable",
+          "Unavailable right now",
         );
         assert.deepEqual(new URL(page.url()).pathname, "/console/admin/events");
         assert.deepEqual(await page.getByText("Sign in required").count(), 0);
@@ -916,15 +927,13 @@ test("Z08 page discards superseded results and drains the latest query", async (
             state: "visible",
             timeout: 30_000,
           });
-          const search = main.getByPlaceholder("Search event metadata");
-          const rowA = main
-            .locator("tbody tr")
-            .filter({ hasText: "runtime-trellis.runtime@v1 / Changed" })
-            .filter({ hasText: seededA.deploymentId });
-          const rowB = main
-            .locator("tbody tr")
-            .filter({ hasText: "runtime-trellis.runtime@v1 / Changed" })
-            .filter({ hasText: seededB.deploymentId });
+          const search = main.getByPlaceholder("Search events");
+          const rowA = main.locator(
+            `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seededA.deploymentId}"]`,
+          );
+          const rowB = main.locator(
+            `tbody tr[data-event-type="runtime-trellis.runtime@v1 / Changed"][data-publisher="${seededB.deploymentId}"]`,
+          );
           await rowA.first().waitFor({ state: "visible", timeout: 60_000 });
           await rowB.first().waitFor({ state: "visible", timeout: 60_000 });
 
@@ -966,7 +975,7 @@ test("Z08 page discards superseded results and drains the latest query", async (
             0,
             "late A must not populate B while B is still held",
           );
-          await main.getByText("Loading event health").waitFor({
+          await main.getByText("Loading events").waitFor({
             state: "visible",
             timeout: 15_000,
           });
@@ -1098,19 +1107,12 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
               level: 1,
             })
             .waitFor({ state: "visible", timeout: 30_000 });
-          await main
-            .getByRole("button", {
-              name: key.deploymentId,
-              exact: true,
-            })
-            .first()
-            .click();
-          await main.getByText(deadLetter.deadLetterId).waitFor({
-            state: "visible",
-            timeout: 30_000,
-          });
+          const deadLetterRow = main.locator(
+            `[data-dead-letter="${deadLetter.deadLetterId}"]`,
+          );
+          await deadLetterRow.waitFor({ state: "visible", timeout: 30_000 });
           const held = wired.gate.armNextReply(EVENTS_DEAD_LETTERS_DISMISS);
-          await main
+          await deadLetterRow
             .getByRole("button", { name: "Dismiss", exact: true })
             .click();
           await page
@@ -1134,7 +1136,7 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
           );
           assert(committed.state !== "dead", "dismiss commits on the server");
 
-          await page.locator('summary[aria-label="Open user menu"]').click();
+          await page.getByRole("button", { name: "Open user menu" }).click();
           await page
             .getByRole("banner")
             .getByRole("link", {
@@ -1144,7 +1146,7 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
             .click();
           await page
             .getByRole("heading", {
-              name: "Account Access Ledger",
+              name: "Your account",
               exact: true,
             })
             .waitFor({ state: "visible", timeout: 30_000 });
@@ -1181,7 +1183,7 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
           // The same document and WebSocket stayed alive through SPA navigation.
           await main
             .getByRole("heading", {
-              name: "Account Access Ledger",
+              name: "Your account",
               exact: true,
             })
             .waitFor({ state: "visible", timeout: 15_000 });
@@ -1216,21 +1218,18 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
               level: 1,
             })
             .waitFor({ state: "visible", timeout: 30_000 });
-          await main
-            .getByRole("button", {
-              name: key.deploymentId,
-              exact: true,
-            })
-            .first()
-            .click();
-          await main.getByText(second.deadLetterId).waitFor({
-            state: "visible",
-            timeout: 30_000,
-          });
+          const secondRow = main.locator(
+            `[data-dead-letter="${second.deadLetterId}"]`,
+          );
+          await secondRow.waitFor({ state: "visible", timeout: 30_000 });
           const heldSecond = wired.gate.armNextReply(
             EVENTS_DEAD_LETTERS_DISMISS,
           );
-          await main
+          // The dismissal's own changes arrive on the live feed and refresh the
+          // page normally; hold them so the quiet window isolates the
+          // continuation of the dismissal itself.
+          wired.gate.pauseLive();
+          await secondRow
             .getByRole("button", { name: "Dismiss", exact: true })
             .click();
           await page
@@ -1252,10 +1251,9 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
           );
 
           await main.getByRole("button", { name: "15m", exact: true }).click();
-          await main.getByText("Select a consumer").waitFor({
-            state: "visible",
-            timeout: 15_000,
-          });
+          await main
+            .getByRole("heading", { name: "Failed deliveries", exact: true })
+            .waitFor({ state: "visible", timeout: 15_000 });
           await runtime.waitFor(
             async () =>
               await main
@@ -1271,10 +1269,11 @@ test("Z09 Events page disposes an in-flight dead-letter dismissal without follow
             0,
             "an obsolete dismissal continuation must not refresh the new scope",
           );
+          wired.resumeLiveToPage();
           assert.deepEqual(
-            await main.getByText("Select a consumer").count(),
-            1,
-            "the new scope presentation is unchanged",
+            await secondRow.count(),
+            0,
+            "the new scope shows the committed dismissal",
           );
           assert.deepEqual(
             await main.getByText("Outcome unknown.", { exact: false }).count(),

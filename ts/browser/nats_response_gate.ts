@@ -332,6 +332,8 @@ function requestIdFromHeaders(headers?: Uint8Array): string | undefined {
   return match?.[1];
 }
 
+const LIVE_DATA_PREFIX = "live.v1.data.";
+
 function routeMatches(subject: string, route: string): boolean {
   return subject === route || subject.startsWith(`${route}.`);
 }
@@ -350,6 +352,7 @@ export class NatsResponseGate {
   #retainedBytes = 0;
   #requests: Array<{ route: string; reply?: string }> = [];
   #pendingWaiters: Array<() => void> = [];
+  #pausedLive: Uint8Array[] | null = null;
   #disposed = false;
 
   armNextReply(route: string, predicate?: ArmPredicate): Promise<HeldRequest> {
@@ -426,11 +429,27 @@ export class NatsResponseGate {
     return out;
   }
 
+  /**
+   * Withholds live data frames until `resumeLive`, so a quiet window observes
+   * only what the page does on its own, not ordinary live refreshes.
+   */
+  pauseLive(): void {
+    this.#pausedLive ??= [];
+  }
+
+  /** Stops withholding live data and returns the frames held meanwhile. */
+  resumeLive(): Uint8Array[] {
+    const out = this.#pausedLive ?? [];
+    this.#pausedLive = null;
+    return out;
+  }
+
   dispose(): void {
     this.#disposed = true;
     this.release();
     this.#armed = [];
     this.#armedPush = [];
+    this.#pausedLive = null;
   }
 
   /** Server-to-client records. Returns bytes that should be forwarded now. */
@@ -468,6 +487,10 @@ export class NatsResponseGate {
     if (record.op !== "MSG" && record.op !== "HMSG") return true;
     const reply = record.subject;
     if (!reply) return true;
+    if (this.#pausedLive && reply.startsWith(LIVE_DATA_PREFIX)) {
+      this.#pausedLive.push(record.raw);
+      return false;
+    }
     if (![...this.#requests].some((item) => item.reply === reply)) {
       const push = this.#armedPush.shift();
       if (push) push(record);

@@ -56,7 +56,7 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
         page.setDefaultNavigationTimeout(10000);
         await page.goto(new URL("/console/profile", origin).href);
         await page
-          .getByRole("heading", { name: "Sign in to Trellis" })
+          .getByRole("heading", { name: "Sign in", exact: true })
           .waitFor();
         await page.getByLabel("Username", { exact: true }).fill(username);
         await page.getByLabel("Password", { exact: true }).fill(password);
@@ -64,13 +64,14 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
           .getByRole("button", { name: "Sign in", exact: true })
           .click();
         await page
-          .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+          .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();
 
-        const access = page.locator('input[name="approved"][type="checkbox"]');
+        // Each group's checkbox selects all of its optional access.
+        const access = page.getByRole("checkbox", { name: /^Allow all: / });
         const administration = page
           .getByRole("group", { name: "Manage this Trellis", exact: true })
-          .getByRole("checkbox");
+          .getByRole("checkbox", { name: /^Allow all: / });
         // Consent is opt-in: optional access starts unselected.
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
@@ -80,22 +81,19 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
           .getByRole("button", { name: "Select all", exact: true })
           .click();
         // Bulk selection never includes administration.
-        const administrative = new Set(
-          await Promise.all(
-            (await administration.all()).map((choice) =>
-              choice.getAttribute("value"),
-            ),
-          ),
+        const administrativeLabel = await administration.getAttribute(
+          "aria-label",
         );
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
             strictEqual(
               await choice.isChecked(),
-              !administrative.has(await choice.getAttribute("value")),
+              (await choice.getAttribute("aria-label")) !==
+                administrativeLabel,
             );
         }
         await page
-          .getByRole("button", { name: "Unselect all", exact: true })
+          .getByRole("button", { name: "Clear all", exact: true })
           .click();
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
@@ -104,42 +102,58 @@ for (const selected of [undefined, "trellis.auth.v1:users.manage"] as const) {
         // Accept ordinary capabilities but decline the separate administrative choices.
         for (const choice of await page.getByRole("checkbox").all())
           if (await choice.isEnabled()) await choice.check();
-        for (const choice of await administration.all()) await choice.uncheck();
+        await administration.uncheck();
+        if (selected) {
+          await page
+            .getByRole("group", { name: "Manage this Trellis", exact: true })
+            .getByRole("button")
+            .click();
+        }
         if (selected)
           await page
             .getByRole("checkbox", { name: /Manage users and services/ })
             .check();
-        await page
-          .getByRole("button", { name: "Authorize application" })
-          .click();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
         if (selected) {
           // Administration takes a separate confirmation step.
           await page
-            .getByRole("heading", { name: /Allow .* to manage this Trellis\?/ })
+            .getByRole("heading", { name: /Let .* manage this Trellis\?/ })
             .waitFor();
           await page
-            .getByRole("checkbox", { name: /I understand this application/ })
+            .getByRole("checkbox", { name: /I understand this app/ })
             .check();
           await page
-            .getByRole("button", { name: "Allow management of Trellis" })
+            .getByRole("button", { name: "Allow management", exact: true })
             .click();
         }
         await page.waitForURL(
           (url) => url.origin === origin && url.pathname === "/console/profile",
         );
-        await page.getByText("browser", { exact: true }).waitFor();
+        await page
+          .locator("main")
+          .getByText(username, { exact: true })
+          .first()
+          .waitFor();
         await page
           .getByText(
-            `This connection can administer this Trellis through ${selected ? 1 : 0} ${selected ? "capability" : "capabilities"}.`,
+            selected
+              ? "1 administrator power allowed."
+              : "No administrator powers allowed.",
             { exact: true },
           )
           .waitFor();
         // Reload must resume the same consented grant, not silently acquire other administration.
         await page.reload();
-        await page.getByText("browser", { exact: true }).waitFor();
+        await page
+          .locator("main")
+          .getByText(username, { exact: true })
+          .first()
+          .waitFor();
         await page
           .getByText(
-            `This connection can administer this Trellis through ${selected ? 1 : 0} ${selected ? "capability" : "capabilities"}.`,
+            selected
+              ? "1 administrator power allowed."
+              : "No administrator powers allowed.",
             { exact: true },
           )
           .waitFor();

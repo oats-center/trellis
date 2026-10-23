@@ -40,7 +40,7 @@ async function findResource(page: Page, resourceId: string): Promise<void> {
       await row.waitFor();
       return;
     }
-    const next = page.getByRole("button", { name: "Next", exact: true });
+    const next = page.getByRole("button", { name: "Next page", exact: true });
     ok(
       (await next.count()) && (await next.isEnabled()),
       `Exact resource ${resourceId} absent from the retained catalog`,
@@ -190,28 +190,27 @@ test(
           .getByRole("button", { name: "Sign in", exact: true })
           .click();
         await page
-          .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+          .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();
         for (const choice of await page.getByRole("checkbox").all())
           if (await choice.isEnabled()) await choice.check();
-        const administration = page
-          .getByRole("group", {
-            name: "Manage this Trellis",
-            exact: true,
-          })
-          .getByRole("checkbox");
-        for (const choice of await administration.all()) await choice.uncheck();
+        const administration = page.getByRole("group", {
+          name: "Manage this Trellis",
+          exact: true,
+        });
+        await administration
+          .getByRole("checkbox", { name: /^Allow all: / })
+          .uncheck();
+        await administration.getByRole("button").click();
         await page
           .getByRole("checkbox", { name: /Manage users and services/ })
           .check();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
         await page
-          .getByRole("button", { name: "Authorize application" })
-          .click();
-        await page
-          .getByRole("checkbox", { name: /I understand this application/ })
+          .getByRole("checkbox", { name: /I understand this app/ })
           .check();
         await page
-          .getByRole("button", { name: "Allow management of Trellis" })
+          .getByRole("button", { name: "Allow management", exact: true })
           .click();
         await page
           .getByRole("heading", { name: "Resources", exact: true })
@@ -227,9 +226,7 @@ test(
         await findResource(page, resourceId);
         // Seeing the allocation after a real read, not a declaration inventory, is
         // what establishes retention. Changing filters must include ready resources.
-        await page
-          .getByRole("button", { name: "All retained states", exact: true })
-          .click();
+        await page.getByRole("button", { name: "All", exact: true }).click();
         const ready = page
           .getByRole("row")
           .filter({ has: page.getByText(readyId, { exact: true }) });
@@ -238,9 +235,7 @@ test(
           await ready.getByRole("button", { name: /^Delete / }).count(),
           0,
         );
-        await page
-          .getByRole("button", { name: "Detached", exact: true })
-          .click();
+        await page.getByRole("button", { name: "Unused", exact: true }).click();
         await findResource(page, resourceId);
         await row.getByRole("button", { name: /^Delete / }).click();
         const dialog = page.getByRole("dialog");
@@ -259,9 +254,7 @@ test(
           .getByRole("button", { name: "Permanently delete", exact: true })
           .click();
         await row.waitFor({ state: "hidden" });
-        await page
-          .getByRole("button", { name: "All retained states", exact: true })
-          .click();
+        await page.getByRole("button", { name: "All", exact: true }).click();
         await findResource(page, readyId);
       } catch (error) {
         const results = fileURLToPath(

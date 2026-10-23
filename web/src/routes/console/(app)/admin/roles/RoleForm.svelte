@@ -11,10 +11,10 @@
   import { RequestScope } from "$lib/console/request_scope.ts";
   import { traverseAll } from "$lib/console/paging.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
-  import ChoiceRow from "$lib/components/ChoiceRow.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
-  import Panel from "$lib/components/Panel.svelte";
+  import PageToolbar from "$lib/components/PageToolbar.svelte";
+  import PermissionGroups from "$lib/components/PermissionGroups.svelte";
 
   let { roleId = null }: { roleId?: string | null } = $props();
   const trellis = getTrellis();
@@ -179,6 +179,14 @@
   });
 </script>
 
+<PageToolbar
+  eyebrow="Roles"
+  title={roleId ? (role?.title ?? "Edit role") : "New role"}
+  description={roleId
+    ? undefined
+    : "Choose a name and what people with it can do."}
+/>
+
 {#if error}<Notice variant="error"
     >{error}<button
       class="btn btn-ghost btn-xs ml-2"
@@ -187,91 +195,72 @@
   >{/if}
 {#if loading}<LoadingState label="Loading role" />{:else if !roleId || role}
   <form
-    class="space-y-4"
+    class="max-w-3xl space-y-5"
     onsubmit={(event) => {
       event.preventDefault();
       void save();
     }}
   >
-    <Panel title="Role">
-      <p class="trellis-field-help">
-        A role contains whole capabilities, never individual action-level
-        grants.
-      </p>
-      <div class="grid gap-3 p-4 md:grid-cols-2">
-        <label class="form-control"
-          ><span class="trellis-field-label">Title</span><input
-            class="input input-bordered input-sm"
-            bind:value={title}
-            required
-            disabled={saving}
-          /></label
-        >
-        <label class="form-control"
-          ><span class="trellis-field-label">Description</span><input
-            class="input input-bordered input-sm"
-            bind:value={description}
-            disabled={saving}
-          /></label
-        >
+    <div class="trellis-section space-y-4 p-5">
+      <label class="trellis-field"
+        ><span class="trellis-field-label">Title</span><input
+          class="input w-full"
+          bind:value={title}
+          required
+          disabled={saving}
+        /></label
+      >
+      <label class="trellis-field"
+        ><span class="trellis-field-label">Description</span><input
+          class="input w-full"
+          bind:value={description}
+          placeholder="What people with this role do"
+          disabled={saving}
+        /></label
+      >
+    </div>
+    <div class="trellis-section space-y-3 p-5">
+      <div>
+        <h2 class="text-base font-semibold">Permissions</h2>
+        <p class="text-sm text-base-content/65">
+          What people with this role can do.
+        </p>
       </div>
-      {#if role}<p class="trellis-metadata px-4 pb-3">
-          {role.roleId} · Identity generation {role.identityGeneration} · Revision
-          {role.revision}
-        </p>{/if}
-    </Panel>
-    <Panel title="Capabilities">
-      <p class="trellis-field-help mb-3">
-        Select complete, accepted capabilities. Existing selections survive an
-        incomplete discovery catalog.
-      </p>
       {#if catalogError}<Notice variant="warning"
-          >Partial catalog: {catalogError}</Notice
+          >Some permissions couldn't be loaded: {catalogError}</Notice
         >{/if}
-      {#each capabilities as capability (capability.identity.capabilityId)}
-        <ChoiceRow>
-          {#snippet input()}<input
-              class="checkbox checkbox-xs"
-              type="checkbox"
-              checked={selected.includes(capability.identity.capabilityId)}
-              disabled={saving}
-              onchange={(event) =>
-                select(
-                  capability.identity.capabilityId,
-                  event.currentTarget.checked,
-                )}
-            />{/snippet}
-          <span class="text-sm font-medium">{capability.title}</span>
-          <p class="trellis-identifier">{capability.identity.capabilityId}</p>
-          <p class="trellis-field-help">{capability.description}</p>
-        </ChoiceRow>
-      {/each}
-      {#each unknown as id (id)}<ChoiceRow
-          >{#snippet input()}<input
-              class="checkbox checkbox-xs"
-              type="checkbox"
-              checked={true}
-              disabled={saving}
-              onchange={(event) => select(id, event.currentTarget.checked)}
-            />{/snippet}<span class="trellis-identifier">{id}</span>
-          <p class="trellis-field-help">
-            Existing selection not present in the loaded catalog.
-          </p></ChoiceRow
-        >{/each}
-    </Panel>
+      <PermissionGroups {capabilities} bind:selected disabled={saving} />
+      {#if unknown.length}
+        <div class="rounded-field bg-base-200/60 p-3 text-sm">
+          <p class="font-medium">Permissions that are no longer installed</p>
+          <ul class="mt-1 space-y-1">
+            {#each unknown as id (id)}<li class="flex items-center gap-2">
+                <input
+                  class="checkbox checkbox-sm"
+                  type="checkbox"
+                  checked={true}
+                  aria-label={`Keep ${id}`}
+                  disabled={saving}
+                  onchange={(event) => select(id, event.currentTarget.checked)}
+                /><span class="trellis-identifier">{id}</span>
+              </li>{/each}
+          </ul>
+        </div>
+      {/if}
+    </div>
     <div class="flex justify-between gap-2">
       <div>
         {#if role}<button
-            class="btn btn-error btn-outline btn-sm"
+            class="btn btn-error btn-outline"
             type="button"
             disabled={saving || !canPerform(authority.authority, "rolesDelete")}
             onclick={() => void remove()}>Delete role</button
           >{/if}
       </div>
       <div class="flex gap-2">
-        <a class="btn btn-ghost btn-sm" href={resolve("/admin/roles")}>Cancel</a
+        <a class="btn btn-ghost" href={resolve("/admin/roles")}>Cancel</a
         ><button
-          class="btn btn-outline btn-sm"
+          class="btn btn-primary"
           type="submit"
           disabled={saving ||
             !!error ||

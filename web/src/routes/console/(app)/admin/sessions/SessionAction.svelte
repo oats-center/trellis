@@ -16,6 +16,7 @@
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
+  import { formatDate, humanizeName } from "$lib/format";
 
   let { kind }: { kind: "revoke" | "kick" } = $props();
   const trellis = getTrellis();
@@ -56,6 +57,14 @@
     const token = scope.begin();
     loading = true;
     error = null;
+    // Names are best-effort context; the ID stays the exact target.
+    const users = await traverseAll(async (page) => {
+      const response = await trellis.usersList({ page }).orThrow();
+      return { items: response.items, cursor: response.page.nextCursor };
+    });
+    const names = new Map(
+      users.items.map((user) => [user.principalId, user.displayName]),
+    );
     if (action === "revoke") {
       const result = await traverseAll(async (page) => {
         const response = await trellis
@@ -68,7 +77,7 @@
         .filter((item) => item.state === "active")
         .map((item) => ({
           id: item.authorizationSessionId,
-          description: `${item.principalId} · ${item.binding.kind} · ${item.runtimeId}`,
+          description: `${names.get(item.principalId) ?? humanizeName(item.binding.participantId ?? "Service")} · ${humanizeName(item.binding.clientId ?? item.binding.participantId ?? "")} · signed in ${formatDate(item.createdAt)}`,
         }));
       if (!result.complete) error = projectConsoleError(result.error).message;
     } else {
@@ -81,7 +90,9 @@
         .filter((item) => item.state === "admitted")
         .map((item) => ({
           id: item.attachmentId,
-          description: `${item.serverId} · broker client ${item.brokerClientId} · session ${item.authorizationSessionId}`,
+          description: item.admittedAt
+            ? `Connected ${formatDate(item.admittedAt)}`
+            : "Connecting",
         }));
       if (!result.complete) error = projectConsoleError(result.error).message;
     }
@@ -107,18 +118,14 @@
     const capturedKey = scope.key;
     const key = ulid();
     const confirmed = await confirmationModal?.confirm({
-      title:
-        action === "revoke"
-          ? "Revoke authorization session?"
-          : "Kick attachment?",
+      title: action === "revoke" ? "Sign out this session?" : "Disconnect?",
       message:
         action === "revoke"
-          ? "Retire this logical session and queue physical enforcement."
-          : "Close this physical attachment. The logical session and OAuth grant remain valid.",
-      confirmLabel: action === "revoke" ? "Revoke" : "Kick",
-      targetLabel: queryKey,
-      targetName: captured.id,
-      expectedValue: captured.id,
+          ? "They'll need to sign in again."
+          : "The connection closes. They stay signed in and may reconnect.",
+      confirmLabel: action === "revoke" ? "Sign out" : "Disconnect",
+      targetLabel: action === "revoke" ? "Session" : "Connection",
+      targetName: captured.description,
     });
     if (
       !confirmed ||
@@ -156,7 +163,7 @@
       if (scope.disposed || scope.key !== capturedKey) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
       error = uncertain
-        ? "Outcome unknown. Inspect this exact target before issuing another action."
+        ? "We couldn't confirm the change. Check the session before trying again."
         : projectConsoleError(cause).message;
     } finally {
       busy = false;
@@ -165,32 +172,31 @@
   onMount(() => () => scope.dispose());
 </script>
 
-<section class="space-y-4">
+<section class="max-w-3xl space-y-5">
   <PageToolbar
-    title={kind === "revoke"
-      ? "Revoke authorization session"
-      : "Kick attachment"}
+    eyebrow="Sessions"
+    title={kind === "revoke" ? "Sign out a session" : "Disconnect"}
     description={kind === "revoke"
-      ? "Logical retirement and physical connection enforcement are separate."
-      : "A physical kick does not revoke logical authority."}
+      ? "They'll need to sign in again."
+      : "The connection closes. They stay signed in and may reconnect."}
     >{#snippet actions()}<a
-        class="btn btn-ghost btn-sm"
+        class="btn btn-ghost"
         href={resolve("/admin/sessions")}>Back to sessions</a
       >{/snippet}</PageToolbar
   >
   {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
     >{/if}
   {#if completed && enforcement}<Notice variant="success"
-      >Accepted. Enforcement {enforcement.workId}: {enforcement.state}. Scanned {enforcement.scannedSessions}
-      sessions; retired {enforcement.retiredSessions}; pending kicks {enforcement.pendingKicks};
-      failed kicks {enforcement.failedKicks}.</Notice
+      >{kind === "revoke" ? "Signed out." : "Disconnected."}
+      {enforcement.pendingKicks || enforcement.failedKicks
+        ? "Some connections are still closing."
+        : ""}</Notice
     >{/if}
-  <Panel title="Exact target" class="max-w-3xl">
+  <Panel>
     {#if loading}<LoadingState
-        label="Loading eligible targets"
+        label="Loading sessions"
       />{:else if requestedId && !target}<Notice variant="warning"
-        >The requested target is unavailable or no longer eligible. No other
-        target was substituted.</Notice
+        >This session has already ended or doesn't exist.</Notice
       >{:else}
       <form
         class="trellis-form"
@@ -199,28 +205,34 @@
           void execute();
         }}
       >
-        <label class="trellis-field"
-          ><span class="trellis-field-label">{queryKey}</span
+        {#if target}<p class="font-medium">{target.description}</p>{/if}
+        <div class="trellis-field">
+          <label class="trellis-field-label" for="session-target"
+            >{kind === "revoke" ? "Session" : "Connection"}</label
           >{#if requestedId}<input
-              class="input input-bordered input-sm font-mono"
+              id="session-target"
+              class="input input-sm w-full font-mono text-xs text-base-content/70"
               value={requestedId}
               readonly
             />{:else}<select
-              class="select select-bordered select-sm"
+              id="session-target"
+              class="select w-full"
               bind:value={selectedId}
-              ><option value="">Select an exact target</option
+              ><option value=""
+                >Choose a {kind === "revoke"
+                  ? "session"
+                  : "connection"}…</option
               >{#each records as item (item.id)}<option value={item.id}
-                  >{item.id} · {item.description}</option
+                  >{item.description}</option
                 >{/each}</select
-            >{/if}</label
-        >
-        {#if target}<p class="trellis-field-help">{target.description}</p>{/if}
+            >{/if}
+        </div>
         <div class="trellis-action-row">
           <button
-            class="btn btn-error btn-outline btn-sm"
+            class="btn btn-error"
             disabled={!target || !!error || busy || completed || uncertain}
             type="submit"
-            >{kind === "revoke" ? "Revoke session" : "Kick attachment"}</button
+            >{kind === "revoke" ? "Sign out" : "Disconnect"}</button
           >
         </div>
       </form>

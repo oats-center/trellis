@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { getInitials } from "$lib/control-panel.ts";
   import { ulid } from "ulid";
   import { apis } from "trellis-web-generated";
   import { page } from "$app/state";
@@ -139,11 +140,8 @@
   onDestroy(() => scope.dispose());
 </script>
 
-<section class="space-y-4">
-  <PageToolbar
-    title={user?.account?.username ?? "Edit user"}
-    description="Manage the user's display name, sign-in availability, and authorization sessions."
-  >
+<section class="max-w-4xl space-y-5">
+  <PageToolbar eyebrow="Users" title={user?.account?.username ?? "Edit user"}>
     {#snippet actions()}<a
         class="btn btn-ghost btn-sm"
         href={resolve("/admin/users")}>Back to users</a
@@ -158,34 +156,37 @@
   {#if saved}<Notice variant="success">Profile updated.</Notice>{/if}
   {#if loading}<LoadingState label="Loading user" />
   {:else if !user?.account}<EmptyState
-      title="User unavailable"
-      description="Choose an existing user from the Users table. A failed lookup cannot be edited."
+      title="User not found"
+      description="Go back to Users and choose someone from the list."
     />
   {:else}
     <form
-      class="divide-y divide-base-300 border-y border-base-300 bg-base-100"
+      class="trellis-section divide-y divide-base-300"
       onsubmit={(event) => {
         event.preventDefault();
         void save();
       }}
     >
-      <section class="px-5 py-3">
-        <h2 class="text-base font-bold">{user.account.username}</h2>
-        <p class="trellis-identifier mt-1">
-          {user.principalId}<CopyButton
-            value={user.principalId}
-            label="Copy user ID"
-          />
-        </p>
-        <p class="trellis-metadata mt-1">
-          Revision {user.account.principal.revision}
-        </p>
+      <section class="flex items-center gap-4 px-5 py-4">
+        <span
+          class="grid h-12 w-12 place-items-center rounded-full bg-primary text-base font-medium text-primary-content"
+          aria-hidden="true">{getInitials(user)}</span
+        >
+        <div class="min-w-0 flex-1">
+          <h2 class="truncate text-base font-semibold">{user.displayName}</h2>
+          <p class="text-sm text-base-content/65">
+            {user.account.username}{user.email ? ` · ${user.email}` : ""}
+          </p>
+        </div>
+        <span class="flex items-center gap-1 text-xs text-base-content/55"
+          >ID <CopyButton value={user.principalId} label="Copy user ID" /></span
+        >
       </section>
       <label class="flex items-center justify-between gap-4 px-5 py-3">
         <span
           ><span class="block text-sm font-medium">Enabled</span><span
             class="trellis-field-help block"
-            >Controls whether this user can authenticate.</span
+            >Turn off to stop this person from signing in.</span
           ></span
         >
         <input
@@ -213,9 +214,9 @@
         >
       </section>
       <div class="flex justify-end gap-2 px-5 py-3">
-        <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}>Cancel</a
+        <a class="btn btn-ghost" href={resolve("/admin/users")}>Cancel</a
         ><button
-          class="btn btn-outline btn-sm"
+          class="btn btn-primary"
           type="submit"
           disabled={saving ||
             !!error ||

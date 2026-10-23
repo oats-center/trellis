@@ -37,9 +37,7 @@ test("account linking crosses Dex through a reviewed navigation under CSP", asyn
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     const loggedIn = await loginResponse;
     strictEqual(loggedIn.status(), 303, failures.join("\n"));
-    await page
-      .getByRole("heading", { name: "Link sign-in identity" })
-      .waitFor();
+    await page.getByRole("heading", { name: "Link company sign-in" }).waitFor();
     const csrf = await page.locator('input[name="csrf"]').inputValue();
     const token = await page.locator('input[name="token"]').inputValue();
     const origin = new URL(link).origin;
@@ -61,9 +59,7 @@ test("account linking crosses Dex through a reviewed navigation under CSP", asyn
         response.url() === `${origin}/portal/account/link` &&
         response.request().method() === "POST",
     );
-    await page
-      .getByRole("button", { name: "Continue to identity provider" })
-      .click();
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
     const response = await submitted;
     strictEqual(response.status(), 200);
     strictEqual(new URL(page.url()).origin, origin);
@@ -75,7 +71,8 @@ test("account linking crosses Dex through a reviewed navigation under CSP", asyn
         ["content-security-policy"].includes("form-action 'self'"),
     );
     const continuation = page.getByRole("link", {
-      name: "Continue to identity provider",
+      name: "Continue",
+      exact: true,
     });
     const href = await continuation.getAttribute("href");
     ok(href);
@@ -91,7 +88,7 @@ test("account linking crosses Dex through a reviewed navigation under CSP", asyn
       .getByRole("button", { name: "Sign in", exact: true })
       .click();
     await otherPage
-      .getByRole("heading", { name: "Link sign-in identity" })
+      .getByRole("heading", { name: "Link company sign-in" })
       .waitFor();
     strictEqual((await other.request.get(handoff)).status(), 400);
     await other.close();
@@ -140,7 +137,9 @@ test("account linking crosses Dex through a reviewed navigation under CSP", asyn
     await page
       .getByRole("button", { name: "Grant Access", exact: true })
       .click();
-    await page.getByRole("heading", { name: "Identity linked" }).waitFor();
+    await page
+      .getByRole("heading", { name: "Company sign-in linked" })
+      .waitFor();
     strictEqual(new URL(page.url()).origin, origin);
     strictEqual(failures.length, 0, failures.join("\n"));
   } finally {

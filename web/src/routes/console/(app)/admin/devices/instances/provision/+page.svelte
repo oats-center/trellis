@@ -316,8 +316,8 @@
 
 <section class="space-y-4">
   <PageToolbar
-    title="Provision device instance"
-    description="Create a device identity and one-time provisioning secret."
+    title="Add a device"
+    description="Creates a device and a one-time setup key to put on it."
   >
     {#snippet actions()}
       <a class="btn btn-ghost btn-sm" href={resolve("/admin/devices")}
@@ -362,7 +362,7 @@
         before provisioning another instance.
       </Notice>
     {/if}
-    <Panel title="Provisioning receipt" eyebrow="One-time output">
+    <Panel title="Provisioning receipt">
       <dl class="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
         <dt class="text-base-content/60">Deployment</dt>
         <dd class="trellis-identifier break-all">{receipt.deploymentId}</dd>
@@ -405,8 +405,8 @@
     </Panel>
   {:else if requestedDeploymentId === "" && activeDeployments.length === 0}
     <EmptyState
-      title="No active device deployments"
-      description="Create or enable a device deployment before provisioning instances."
+      title="No device types yet"
+      description="Add a device type first, then add devices to it."
       class="m-5"
     >
       {#snippet actions()}
@@ -419,7 +419,7 @@
       {/snippet}
     </EmptyState>
   {:else}
-    <Panel title="Instance identity" eyebrow="Device identity">
+    <Panel title="Device">
       <form
         class="trellis-form"
         onsubmit={(event) => {

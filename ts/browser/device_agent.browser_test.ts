@@ -107,11 +107,9 @@ test("an enrolled device uses an independently browser-consented native companio
         const flow = (await custody.startDevice(request)).orThrow();
         const page = await context.newPage();
         await page.goto(flow.verificationUri);
+        await page.getByLabel("Code", { exact: true }).fill(flow.userCode);
         await page
-          .getByLabel("Device code", { exact: true })
-          .fill(flow.userCode);
-        await page
-          .getByRole("button", { name: "Review device request", exact: true })
+          .getByRole("button", { name: "Continue", exact: true })
           .click();
         await page
           .getByLabel("Username", { exact: true })
@@ -123,13 +121,11 @@ test("an enrolled device uses an independently browser-consented native companio
           .getByRole("button", { name: "Sign in", exact: true })
           .click();
         await page
-          .getByRole("heading", { name: /Allow .* to access Trellis/ })
+          .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();
         for (const choice of await page.getByRole("checkbox").all())
           if (await choice.isEnabled()) await choice.check();
-        await page
-          .getByRole("button", { name: "Authorize application", exact: true })
-          .click();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
         const session = (await flow.complete()).orThrow();
         const scope = session.scope;
         const companion = await connectNativeClient({

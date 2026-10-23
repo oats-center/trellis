@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { formatDate, humanizeName } from "$lib/format";
   import { page } from "$app/state";
   import { apis } from "trellis-web-generated";
   import { onMount } from "svelte";
@@ -12,7 +13,6 @@
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
-  import DataTable from "$lib/components/DataTable.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
@@ -177,7 +177,7 @@
       if (scope.disposed || scope.key !== route) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
       error = uncertain
-        ? "Disable outcome unknown. Inspect the exact target before another action."
+        ? "We couldn't confirm the change. Refresh before trying again."
         : projectConsoleError(cause).message;
     } finally {
       busy = false;
@@ -186,100 +186,127 @@
   onMount(() => () => scope.dispose());
 </script>
 
-<section class="space-y-4">
+<section class="max-w-5xl space-y-5">
   <PageToolbar
-    title={deployment?.title ?? "Service deployment"}
-    description="Certified implementation binding and provisioned service identities."
+    eyebrow="Services"
+    title={deployment ? humanizeName(deployment.title) : "Service"}
+    description={deployment
+      ? humanizeName(deployment.participantId)
+      : undefined}
     >{#snippet actions()}<a
-        class="btn btn-ghost btn-sm"
-        href={resolve("/admin/services")}>Back to deployments</a
+        class="btn btn-ghost"
+        href={resolve("/admin/services")}>Back to services</a
       ><button
-        class="btn btn-ghost btn-sm"
+        class="btn btn-ghost"
         disabled={loading}
         onclick={() => void load(deploymentId)}>Refresh</button
-      >{/snippet}</PageToolbar
-  >
-  {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
-    >{/if}
-  {#if loading}<LoadingState
-      label="Loading exact deployment"
-    />{:else if deployment}
-    <Panel title="Deployment" eyebrow={deployment.state}>
-      <dl class="grid gap-2 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
-        <dt>Deployment</dt>
-        <dd class="trellis-identifier">{deployment.deploymentId}</dd>
-        <dt>Participant identity</dt>
-        <dd class="trellis-identifier">{deployment.participantId}</dd>
-        <dt>Implementation</dt>
-        <dd class="trellis-identifier break-all">
-          {deployment.implementationDigest}
-        </dd>
-        <dt>Revision</dt>
-        <dd>{deployment.revision}</dd>
-      </dl>
-      {#if deployment.state === "enabled"}<button
-          class="btn btn-error btn-outline btn-sm mt-3"
+      >{#if deployment?.state === "enabled"}<button
+          class="btn btn-outline btn-error"
           disabled={busy ||
             uncertain ||
             !canPerform(authority.authority, "deploymentsDisable")}
-          onclick={() => void disable()}>Disable deployment</button
+          onclick={() => void disable()}>Disable service</button
+        >{/if}{/snippet}</PageToolbar
+  >
+  {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
+    >{/if}
+  {#if loading}<LoadingState label="Loading service" />{:else if deployment}
+    <div class="trellis-section p-5">
+      <div class="flex flex-wrap items-center gap-3">
+        <span
+          class={[
+            "badge",
+            deployment.state === "enabled" ? "badge-success" : "badge-neutral",
+          ]}>{deployment.state === "enabled" ? "Active" : "Disabled"}</span
+        >
+        <span class="text-sm text-base-content/65"
+          >{instances.filter((item) => item.principal.enabled).length} of {instances.length}
+          instances turned on</span
+        >
+      </div>
+      <details class="mt-4 text-sm">
+        <summary class="cursor-pointer text-base-content/70"
+          >Technical details</summary
+        >
+        <dl
+          class="mt-3 grid gap-x-4 gap-y-1.5 text-xs sm:grid-cols-[9rem_minmax(0,1fr)]"
+        >
+          <dt class="text-base-content/60">Service ID</dt>
+          <dd class="trellis-identifier">{deployment.deploymentId}</dd>
+          <dt class="text-base-content/60">Contract</dt>
+          <dd class="trellis-identifier">{deployment.participantId}</dd>
+          <dt class="text-base-content/60">Build</dt>
+          <dd class="trellis-identifier break-all">
+            {deployment.implementationDigest}
+          </dd>
+          <dt class="text-base-content/60">Revision</dt>
+          <dd>{deployment.revision}</dd>
+        </dl>
+      </details>
+    </div>
+
+    <div class="trellis-section">
+      <h2 class="px-5 pt-5 text-base font-semibold">Instances</h2>
+      <p class="px-5 text-sm text-base-content/65">
+        Each running copy of this service.
+      </p>
+      {#if instanceError}<Notice variant="warning" class="mx-5 mt-3"
+          >Some instances couldn't be loaded: {instanceError}</Notice
         >{/if}
-    </Panel>
-    <Panel
-      title="Service instances"
-      eyebrow={`${instances.length} loaded instances`}
-    >
-      {#if instanceError}<Notice variant="warning"
-          >Instance catalog incomplete: {instanceError}</Notice
-        >{/if}
-      <DataTable
-        ><thead
-          ><tr
-            ><th>Instance / Principal</th><th>Public identity</th><th
-              >Enabled</th
-            ><th>Revision</th><th>Actions</th></tr
-          ></thead
-        ><tbody
-          >{#each instances as instance (instance.instanceId)}<tr
-              ><td class="trellis-identifier"
-                >{instance.instanceId}
-                <div class="trellis-metadata">
-                  {instance.principal.principalId}
-                </div></td
-              ><td class="trellis-identifier"
-                >{instance.identityPublicKey ?? "Not installed"}</td
-              ><td>{instance.principal.enabled ? "Enabled" : "Disabled"}</td><td
-                >{instance.revision}</td
-              ><td
-                >{#if instance.principal.enabled}<button
-                    class="btn btn-ghost btn-xs"
-                    disabled={busy || uncertain}
-                    onclick={() => void disable(instance)}>Disable</button
-                  >{/if}</td
-              ></tr
-            >{:else}<tr><td colspan="5">No service instances returned.</td></tr
-            >{/each}</tbody
-        ></DataTable
-      >
-    </Panel>
+      <ul class="mt-3 divide-y divide-base-300 border-t border-base-300">
+        {#each instances as instance (instance.instanceId)}
+          <li class="flex items-center justify-between gap-3 px-5 py-3">
+            <span class="min-w-0">
+              <span class="block font-medium"
+                >{instance.principal.title &&
+                instance.principal.title !== instance.instanceId
+                  ? instance.principal.title
+                  : `Instance ${instance.instanceId.slice(-6)}`}</span
+              >
+              <span class="block text-xs text-base-content/60"
+                >Added {formatDate(instance.principal.createdAt)}</span
+              >
+            </span>
+            <span class="flex items-center gap-3">
+              <span
+                class={[
+                  "badge badge-sm",
+                  instance.principal.enabled
+                    ? "badge-success"
+                    : "badge-neutral",
+                ]}>{instance.principal.enabled ? "On" : "Off"}</span
+              >
+              {#if instance.principal.enabled}<button
+                  class="btn btn-ghost btn-xs text-error"
+                  disabled={busy || uncertain}
+                  onclick={() => void disable(instance)}>Turn off</button
+                >{/if}
+            </span>
+          </li>
+        {:else}
+          <li class="px-5 py-4 text-sm text-base-content/60">
+            No instances yet.
+          </li>
+        {/each}
+      </ul>
+    </div>
+
     {#if receipt}<Panel title="Provisioning receipt"
-        ><p class="trellis-identifier">
-          Instance {receipt.instance.instanceId} · Principal {receipt.instance
-            .principal.principalId}
+        ><p class="text-sm">
+          Added {receipt.instance.principal.title || "a new instance"}.
         </p>
-        {#if receipt.provisioningSecret}<code
-            class="block break-all select-all mt-3"
+        {#if receipt.provisioningSecret}<p class="trellis-field-help mt-2">
+            Give this one-time setup key to the new instance. You won't see it
+            again.
+          </p>
+          <code
+            class="mt-2 block break-all rounded-field bg-base-200 p-3 select-all"
             >{receipt.provisioningSecret}</code
-          >
-          <p class="trellis-field-help">
-            Store this one-time secret now. Trellis does not retain a readable
-            copy.
-          </p>{:else}<p>
-            Public identity installed; no provisioning secret issued.
+          >{:else}<p class="trellis-field-help mt-2">
+            It will connect with its own key; no setup key is needed.
           </p>{/if}</Panel
       >{/if}
-    {#if deployment.state === "enabled"}<Panel
-        title="Provision service instance"
+    {#if deployment.state === "enabled"}<Panel title="Add an instance"
         ><form
           class="trellis-form"
           onsubmit={(event) => {
@@ -289,24 +316,27 @@
         >
           <label class="trellis-field"
             ><span class="trellis-field-label">Instance title</span><input
-              class="input input-bordered input-sm"
+              class="input w-full"
               bind:value={title}
               required
             /></label
-          ><label class="trellis-field"
-            ><span class="trellis-field-label"
-              >Public identity key (optional)</span
-            ><input
-              class="input input-bordered input-sm font-mono"
-              bind:value={identityPublicKey}
-            /><span class="trellis-field-help"
-              >Generated by the service. Private keys are never stored by
-              Trellis.</span
-            ></label
           >
+          <details class="text-sm">
+            <summary class="cursor-pointer text-base-content/70"
+              >Use the instance's own key</summary
+            >
+            <label class="trellis-field mt-2"
+              ><span class="trellis-field-label">Public key</span><input
+                class="input w-full font-mono"
+                bind:value={identityPublicKey}
+              /><span class="trellis-field-help"
+                >Leave empty to get a one-time setup key instead.</span
+              ></label
+            >
+          </details>
           <div class="trellis-action-row">
             <button
-              class="btn btn-primary btn-sm"
+              class="btn btn-primary"
               type="submit"
               disabled={busy ||
                 uncertain ||

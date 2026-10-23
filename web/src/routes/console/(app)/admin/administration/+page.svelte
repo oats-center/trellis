@@ -8,13 +8,13 @@
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { canPerform } from "$lib/console/operations.ts";
-  import DataTable from "$lib/components/DataTable.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import Panel from "$lib/components/Panel.svelte";
+  import StatusBadge from "$lib/components/StatusBadge.svelte";
   import { formatDate } from "$lib/format";
+  import { capabilityArea } from "$lib/console/capability_areas.ts";
 
   type Review = apis.auth.AdministrationReviewsListOutput["items"][number];
   const trellis = getTrellis();
@@ -25,6 +25,31 @@
   let decisionError = $state<string | null>(null);
   let pending = $state<string | null>(null);
   let reviews = $state.raw<Review[]>([]);
+  // Capability titles name what an app asked for; IDs are the fallback.
+  let titles = $state.raw<Map<string, string>>(new Map());
+  const ordered = $derived(
+    [...reviews].sort(
+      (left, right) =>
+        Number(right.state === "pending") - Number(left.state === "pending") ||
+        right.requestedAt.localeCompare(left.requestedAt),
+    ),
+  );
+
+  function asked(capabilityId: string): string {
+    return (
+      titles.get(capabilityId) ??
+      `${capabilityArea(capabilityId).title}: ${capabilityId.split(".").at(-1)}`
+    );
+  }
+
+  const STATES: Record<
+    string,
+    { label: string; tone: "healthy" | "degraded" | "offline" }
+  > = {
+    pending: { label: "Waiting", tone: "degraded" },
+    approved: { label: "Approved", tone: "healthy" },
+    declined: { label: "Rejected", tone: "offline" },
+  };
 
   async function load(): Promise<void> {
     const token = scope.begin();
@@ -66,81 +91,84 @@
 
   onMount(() => {
     void load();
+    void traverseAll(async (page) => {
+      const response = await trellis.capabilitiesList({ page }).orThrow();
+      return { items: response.items, cursor: response.page.nextCursor };
+    }).then((result) => {
+      titles = new Map(
+        result.items.map((item) => [item.identity.capabilityId, item.title]),
+      );
+    });
     return () => scope.dispose();
   });
 </script>
 
-<section class="space-y-4">
+<section class="space-y-5">
   <PageToolbar
-    title="Administration reviews"
-    description="Apps that a user allowed to manage this Trellis wait here until another administrator approves. Nobody can approve their own request."
+    title="Admin approvals"
+    description="When someone lets an app manage this Trellis, another administrator approves it here."
     >{#snippet actions()}<button
-        class="btn btn-ghost btn-sm"
+        class="btn btn-outline btn-sm"
         disabled={loading}
         onclick={() => void load()}>Refresh</button
       >{/snippet}</PageToolbar
   >
-  {#if error}<Notice variant="warning">Review list incomplete: {error}</Notice
+  {#if error}<Notice variant="warning"
+      >Some requests couldn't be loaded: {error}</Notice
     >{/if}
   {#if decisionError}<Notice variant="warning"
-      >The decision was not recorded: {decisionError}</Notice
+      >Your decision wasn't saved: {decisionError}</Notice
     >{/if}
-  {#if loading}<Panel><LoadingState label="Loading reviews" /></Panel
-    >{:else if !reviews.length}<EmptyState
-      title="No administration reviews"
-      description="A review opens when a user lets an app manage this Trellis."
+  {#if loading}<LoadingState
+      label="Loading requests"
+    />{:else if !reviews.length}<EmptyState
+      title="Nothing to approve"
+      description="Requests appear here when someone lets an app manage this Trellis. Nobody can approve their own request."
     />{:else}
-    <Panel title="Reviews" eyebrow={`${reviews.length} loaded records`}
-      ><DataTable
-        ><thead
-          ><tr
-            ><th>User</th><th>App</th><th>Capability</th><th>Requested</th><th
-              >State</th
-            ><th>Actions</th></tr
-          ></thead
-        ><tbody>
-          {#each reviews as review (review.reviewId)}<tr
-              ><td
-                >{review.principalTitle}
-                <div class="trellis-metadata">{review.principalId}</div></td
-              ><td
-                >{review.clientName}
-                <div class="trellis-metadata">{review.clientId}</div></td
-              ><td class="trellis-identifier">{review.capabilityId}</td><td
-                >{formatDate(review.requestedAt)}</td
-              ><td
-                ><span
-                  class="badge badge-xs {review.state === 'approved'
-                    ? 'badge-success'
-                    : review.state === 'pending'
-                      ? 'badge-warning'
-                      : 'badge-neutral'}">{review.state}</span
-                ></td
-              ><td
-                >{#if review.state === "pending"}<button
-                    class="btn btn-primary btn-xs"
-                    disabled={pending !== null ||
-                      !canPerform(
-                        authority.authority,
-                        "administrationReviewsDecide",
-                      )}
-                    onclick={() => void decide(review, "approved")}
-                    >Approve</button
-                  >
-                  <button
-                    class="btn btn-ghost btn-xs"
-                    disabled={pending !== null ||
-                      !canPerform(
-                        authority.authority,
-                        "administrationReviewsDecide",
-                      )}
-                    onclick={() => void decide(review, "declined")}
-                    >Reject</button
-                  >{/if}</td
-              ></tr
-            >{/each}
-        </tbody></DataTable
-      ></Panel
-    >
+    <ul class="trellis-section divide-y divide-base-300">
+      {#each ordered as review (review.reviewId)}
+        {@const state = STATES[review.state] ?? {
+          label: review.state,
+          tone: "offline" as const,
+        }}
+        <li class="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+          <div class="min-w-0">
+            <p class="font-medium">
+              {review.clientName} wants to {asked(
+                review.capabilityId,
+              ).toLowerCase()}
+            </p>
+            <p class="text-sm text-base-content/65">
+              Allowed by {review.principalTitle} · {formatDate(
+                review.requestedAt,
+              )}
+            </p>
+          </div>
+          <div class="flex items-center gap-3">
+            <StatusBadge label={state.label} status={state.tone} />
+            {#if review.state === "pending"}
+              <button
+                class="btn btn-primary btn-sm"
+                disabled={pending !== null ||
+                  !canPerform(
+                    authority.authority,
+                    "administrationReviewsDecide",
+                  )}
+                onclick={() => void decide(review, "approved")}>Approve</button
+              >
+              <button
+                class="btn btn-ghost btn-sm text-error"
+                disabled={pending !== null ||
+                  !canPerform(
+                    authority.authority,
+                    "administrationReviewsDecide",
+                  )}
+                onclick={() => void decide(review, "declined")}>Reject</button
+              >
+            {/if}
+          </div>
+        </li>
+      {/each}
+    </ul>
   {/if}
 </section>

@@ -52,20 +52,19 @@ test("registered Console delegates administrative authority through consent and 
           callback = url;
       });
       await page.goto(new URL("/console/admin/users", origin).href);
-      await page.getByRole("heading", { name: "Sign in to Trellis" }).waitFor();
+      await page
+        .getByRole("heading", { name: "Sign in", exact: true })
+        .waitFor();
       await page.getByLabel("Username", { exact: true }).fill(username);
       await page.getByLabel("Password", { exact: true }).fill(password);
       await page.getByRole("button", { name: "Sign in", exact: true }).click();
       await page
-        .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+        .getByRole("heading", { name: /wants to use your account/ })
         .waitFor();
-      await page
-        .getByRole("checkbox", { name: /Manage users and services/ })
-        .check();
       const choices = page.getByRole("checkbox");
       for (const choice of await choices.all())
         if (await choice.isEnabled()) await choice.check();
-      await page.getByRole("button", { name: "Authorize application" }).click();
+      await page.getByRole("button", { name: "Allow", exact: true }).click();
       await confirmAdministrationIfAsked(page);
       await page.waitForURL(
         (url) =>
@@ -105,9 +104,8 @@ test("registered Console delegates administrative authority through consent and 
         .first()
         .waitFor();
       await page.goto(new URL("/console/admin/apis", origin).href);
-      await page
-        .getByRole("button", { name: "trellis.auth@v1", exact: true })
-        .click();
+      await page.getByRole("button", { name: /^Auth\b/ }).click();
+      await page.getByText("Definition", { exact: true }).click();
       await page.locator("pre").filter({ hasText: "OAuthClients" }).waitFor();
       await page.goto(new URL("/console/admin/users", origin).href);
       await page.getByLabel("Open user menu", { exact: true }).click();
@@ -139,7 +137,7 @@ test("registered Console delegates administrative authority through consent and 
       // App revocation must preserve the separate Portal login: authorization
       // returns straight to consent, without asking the operator to sign in again.
       await page
-        .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+        .getByRole("heading", { name: /wants to use your account/ })
         .waitFor();
     } catch (error) {
       await page.screenshot({

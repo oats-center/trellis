@@ -65,11 +65,9 @@ test(
         }
         assert.ok(challenge);
         await page.goto(challenge.loginUrl);
+        await page.getByLabel("Code", { exact: true }).fill(challenge.userCode);
         await page
-          .getByLabel("Device code", { exact: true })
-          .fill(challenge.userCode);
-        await page
-          .getByRole("button", { name: "Review device request" })
+          .getByRole("button", { name: "Continue", exact: true })
           .click();
         await page.getByLabel("Username", { exact: true }).fill(username);
         await page.getByLabel("Password", { exact: true }).fill(password);
@@ -77,13 +75,11 @@ test(
           .getByRole("button", { name: "Sign in", exact: true })
           .click();
         await page
-          .getByRole("heading", { name: /Allow .* to access Trellis/ })
+          .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();
         for (const checkbox of await page.getByRole("checkbox").all())
           if (await checkbox.isEnabled()) await checkbox.check();
-        await page
-          .getByRole("button", { name: "Authorize application" })
-          .click();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
         await confirmAdministrationIfAsked(page);
         assert.equal((await exited)[0], 0);
         const run = async (...args: string[]) =>

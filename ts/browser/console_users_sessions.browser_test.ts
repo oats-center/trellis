@@ -327,11 +327,11 @@ test("a password reset receipt clears its token when closed", async () => {
       await page.getByLabel("Search users").fill(created.user.account.username);
       await page.getByLabel("Search users").press("Enter");
       const row = page.locator(".users-row", {
-        hasText: created.user.principalId,
+        hasText: created.user.account.username,
       });
       await row.waitFor({ state: "visible", timeout: 30_000 });
-      await row.locator("summary").click();
-      await row.getByRole("button", { name: "Create reset token" }).click();
+      await row.getByRole("button", { name: "Actions" }).click();
+      await row.getByRole("button", { name: "Reset password" }).click();
       await page.getByLabel("Password-reset token").waitFor({
         state: "visible",
         timeout: 30_000,
@@ -488,7 +488,9 @@ test("B30 session and connection URLs use canonical IDs with no first-row fallba
       );
       await waitForConsoleShell(page);
       await page
-        .getByText("The requested target is unavailable", { exact: false })
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
         .first()
         .waitFor({
           state: "visible",
@@ -502,7 +504,9 @@ test("B30 session and connection URLs use canonical IDs with no first-row fallba
       );
       await waitForConsoleShell(page);
       await page
-        .getByText("The requested target is unavailable", { exact: false })
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
         .first()
         .waitFor({
           state: "visible",
@@ -526,7 +530,7 @@ test("N03 query-only client navigation clears session and connection targets", a
       });
       await waitForConsoleShell(page);
       const sessionId = await page
-        .getByLabel("authorizationSessionId")
+        .getByLabel("Session", { exact: true })
         .locator("option")
         .nth(1)
         .getAttribute("value");
@@ -550,23 +554,25 @@ test("N03 query-only client navigation clears session and connection targets", a
         `/admin/sessions/revoke?authorizationSessionId=${encodeURIComponent(sessionId)}`,
       );
       await page
-        .getByLabel("authorizationSessionId")
+        .getByLabel("Session", { exact: true })
         .and(page.locator("input"))
         .waitFor({ state: "visible", timeout: 30_000 });
       assert.deepEqual(
-        await page.getByLabel("authorizationSessionId").inputValue(),
+        await page.getByLabel("Session", { exact: true }).inputValue(),
         sessionId,
       );
       await page
         .locator("main")
         .getByRole("button", {
-          name: /Revoke (session|and sign out)/,
+          name: /^Sign out$/,
         })
         .click();
       await page.locator("dialog[open]").waitFor({ state: "visible" });
       await navigate(`/admin/sessions/revoke?authorizationSessionId=${ulid()}`);
       await page
-        .getByText("The requested target is unavailable", { exact: false })
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
         .first()
         .waitFor({
           state: "visible",
@@ -579,24 +585,27 @@ test("N03 query-only client navigation clears session and connection targets", a
         .click();
       await page.locator("dialog[open]").waitFor({ state: "hidden" });
       assert.deepEqual(
-        await page.getByRole("button", { name: /Revoke/ }).count(),
+        await page
+          .locator("main")
+          .getByRole("button", { name: "Sign out", exact: true })
+          .count(),
         0,
       );
       assert.deepEqual(await page.locator("#same-document-marker").count(), 1);
       await navigate(
         `/admin/sessions/revoke?authorizationSessionId=${encodeURIComponent(sessionId)}`,
       );
-      await page.getByLabel("authorizationSessionId").waitFor({
+      await page.getByLabel("Session", { exact: true }).waitFor({
         state: "visible",
         timeout: 30_000,
       });
       assert.deepEqual(
-        await page.getByLabel("authorizationSessionId").inputValue(),
+        await page.getByLabel("Session", { exact: true }).inputValue(),
         sessionId,
       );
       await navigate("/admin/sessions/kick");
       const connectionId = await page
-        .getByLabel("attachmentId")
+        .getByLabel("Connection", { exact: true })
         .locator("option")
         .nth(1)
         .getAttribute("value");
@@ -605,23 +614,28 @@ test("N03 query-only client navigation clears session and connection targets", a
         `/admin/sessions/kick?attachmentId=${encodeURIComponent(connectionId)}`,
       );
       await page
-        .getByLabel("attachmentId")
+        .getByLabel("Connection", { exact: true })
         .and(page.locator("input"))
         .waitFor({ state: "visible", timeout: 30_000 });
       assert.deepEqual(
-        await page.getByLabel("attachmentId").inputValue(),
+        await page.getByLabel("Connection", { exact: true }).inputValue(),
         connectionId,
       );
       await navigate(`/admin/sessions/kick?attachmentId=${ulid()}`);
       await page
-        .getByText("The requested target is unavailable", { exact: false })
+        .getByText("This session has already ended or doesn't exist.", {
+          exact: false,
+        })
         .first()
         .waitFor({
           state: "visible",
           timeout: 30_000,
         });
       assert.deepEqual(
-        await page.getByRole("button", { name: "Kick attachment" }).count(),
+        await page
+          .locator("main")
+          .getByRole("button", { name: "Disconnect", exact: true })
+          .count(),
         0,
       );
       assert.deepEqual(await page.locator("#same-document-marker").count(), 1);
@@ -671,12 +685,12 @@ test("N03 switching targets during A confirmation revokes only B", async () => {
       );
       await waitForConsoleShell(pageA);
       await pageA
-        .getByLabel("authorizationSessionId")
+        .getByLabel("Session", { exact: true })
         .and(pageA.locator("input"))
         .waitFor({ state: "visible" });
       await pageA
         .locator("main")
-        .getByRole("button", { name: /Revoke/ })
+        .getByRole("button", { name: "Sign out", exact: true })
         .click();
       const dialog = pageA.locator("dialog[open]");
       await dialog.waitFor({ state: "visible" });
@@ -692,24 +706,27 @@ test("N03 switching targets during A confirmation revokes only B", async () => {
       }, `${runtime.trellisUrl}/console/admin/sessions/revoke?authorizationSessionId=${sessionB}`);
       await runtime.waitFor(
         async () =>
-          (await pageA.getByLabel("authorizationSessionId").inputValue()) ===
+          (await pageA.getByLabel("Session", { exact: true }).inputValue()) ===
           sessionB,
       );
-      await dialog.locator("input").fill(sessionA);
-      await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
+      await dialog
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
       await dialog.waitFor({ state: "hidden", timeout: 30_000 });
       assert.deepEqual(
-        await pageA.getByLabel("authorizationSessionId").inputValue(),
+        await pageA.getByLabel("Session", { exact: true }).inputValue(),
         sessionB,
       );
       assert.deepEqual(await pageA.locator("#same-document-marker").count(), 1);
-      await pageA.getByRole("button", { name: "Revoke session" }).click();
-      await dialog.waitFor({ state: "visible" });
-      await dialog.locator("input").fill(sessionB);
-      await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
       await pageA
-        .getByText("Accepted. Enforcement", { exact: false })
-        .waitFor();
+        .locator("main")
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
+      await dialog.waitFor({ state: "visible" });
+      await dialog
+        .getByRole("button", { name: "Sign out", exact: true })
+        .click();
+      await pageA.getByText("Signed out.", { exact: false }).waitFor();
       const finalSessions = await runtime.callAdminRpc(
         "authAuthorizationSessionsList",
         { page: { limit: 100 } },
@@ -747,21 +764,26 @@ test("B31 cancelling a revoke confirmation keeps its session active", async () =
       });
       await waitForConsoleShell(page);
       const firstOption = await page
-        .getByLabel("authorizationSessionId")
+        .getByLabel("Session", { exact: true })
         .locator("option")
         .nth(1)
         .getAttribute("value");
       assert.deepEqual(typeof firstOption, "string");
       if (!firstOption) throw new Error("Expected an active session to revoke");
-      await page.getByLabel("authorizationSessionId").selectOption(firstOption);
       await page
-        .getByRole("button", { name: /Revoke/ })
+        .getByLabel("Session", { exact: true })
+        .selectOption(firstOption);
+      await page
+        .locator("main")
+        .getByRole("button", { name: "Sign out", exact: true })
         .first()
         .click();
       await page.getByRole("button", { name: "Cancel" }).first().click();
       await page.reload({ waitUntil: "domcontentloaded" });
       await waitForConsoleShell(page);
-      await page.getByLabel("authorizationSessionId").selectOption(firstOption);
+      await page
+        .getByLabel("Session", { exact: true })
+        .selectOption(firstOption);
       const sessions = await runtime.callAdminRpc(
         "authAuthorizationSessionsList",
         { page: { limit: 100 } },
@@ -832,16 +854,17 @@ test("B33 kicking a connection leaves the session valid", async () => {
       );
       await waitForConsoleShell(pageA);
       await pageA
-        .getByLabel("attachmentId")
+        .getByLabel("Connection", { exact: true })
         .and(pageA.locator("input"))
         .waitFor({ state: "visible", timeout: 30_000 });
       await pageA
-        .getByRole("button", { name: "Kick attachment", exact: true })
+        .getByRole("button", { name: "Disconnect", exact: true })
         .click();
       const dialog = pageA.locator("dialog[open]");
       await dialog.waitFor({ state: "visible" });
-      await dialog.locator("input").fill(connectionB);
-      await dialog.getByRole("button", { name: "Kick", exact: true }).click();
+      await dialog
+        .getByRole("button", { name: "Disconnect", exact: true })
+        .click();
       await runtime.waitFor(
         async () => {
           const after = await runtime.callAdminRpc("authConnectionsList", {
@@ -862,10 +885,10 @@ test("B33 kicking a connection leaves the session valid", async () => {
       });
       await waitForConsoleShell(pageA);
       const optionB = pageA
-        .getByLabel("authorizationSessionId")
+        .getByLabel("Session", { exact: true })
         .locator(`option[value="${sessionB}"]`);
       await optionB.waitFor({ state: "attached", timeout: 30_000 });
-      await pageA.getByLabel("authorizationSessionId").selectOption(sessionB);
+      await pageA.getByLabel("Session", { exact: true }).selectOption(sessionB);
       const sessions = await runtime.callAdminRpc(
         "authAuthorizationSessionsList",
         { page: { limit: 100 } },

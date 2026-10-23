@@ -192,8 +192,8 @@
 
 <section class="space-y-4">
   <PageToolbar
-    title="Disable device deployment"
-    description="Select an active deployment and confirm the disable workflow."
+    title="Turn off a device type"
+    description="Devices of this type are disconnected and can't reconnect."
   >
     {#snippet actions()}
       <a class="btn btn-ghost btn-sm" href={resolve("/admin/devices")}
@@ -233,7 +233,7 @@
     >
   {:else if requestedUnavailable}
     <EmptyState
-      title="Deployment unavailable"
+      title="Device type not found"
       description={`No active device deployment matches '${requestedDeploymentId}'. It may already be disabled, removed, or the link may be stale.`}
       class="m-5"
     >
@@ -245,11 +245,11 @@
     </EmptyState>
   {:else if activeDeployments.length === 0}
     <EmptyState
-      title="No active deployments"
-      description="There are no active device deployments available to disable."
+      title="No device types to turn off"
+      description="Every device type is already off."
     />
   {:else}
-    <Panel title="Confirm deployment disable" eyebrow="Destructive workflow">
+    <Panel title="Confirm">
       <form
         class="space-y-4"
         onsubmit={(event) => {

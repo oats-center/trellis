@@ -4,9 +4,11 @@
   import { APP_CONFIG, consoleAuthOptions } from "$lib/config";
   import { consoleReturnKey, getConsoleRedirectTarget } from "$lib/auth";
   import { trellisApp } from "$lib/trellis-context.svelte";
-  import PortalBrand from "$lib/components/PortalBrand.svelte";
+  import TrellisLogo from "$lib/components/TrellisLogo.svelte";
+  import { connectionProblem } from "$lib/connection_problem";
 
   let failed = $state(false);
+  let problem = $state("");
 
   onMount(() => {
     const abort = new AbortController();
@@ -30,8 +32,10 @@
         const destination = new URL(window.location.href);
         if (target) destination.searchParams.set("redirectTo", target);
         window.location.assign(getConsoleRedirectTarget(destination));
-      } catch {
-        if (!abort.signal.aborted && !redirecting) failed = true;
+      } catch (error) {
+        if (abort.signal.aborted || redirecting) return;
+        problem = connectionProblem(error);
+        failed = true;
       }
     })();
     return () => abort.abort();
@@ -41,11 +45,12 @@
 <svelte:head><title>Sign in · Trellis</title></svelte:head>
 <main class="portal-shell flex min-h-screen justify-center px-4 py-10 sm:px-6">
   <section class="w-full max-w-xl space-y-6">
-    <PortalBrand subtitle="Console sign-in" />
+    <TrellisLogo />
     {#if failed}
       <p role="alert" class="portal-copy">
         Sign-in could not be completed. Start a new sign-in request.
       </p>
+      {#if problem}<p class="portal-copy text-sm">{problem}</p>{/if}
       <button
         class="btn btn-primary"
         onclick={() => window.location.assign(APP_CONFIG.callbackUri)}

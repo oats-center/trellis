@@ -65,7 +65,7 @@ test("a denied administrative read preserves ordinary account access and navigat
       await page.goto(`${runtime.trellisUrl}/console/admin/services`);
       await waitForConsoleShell(page);
       await page
-        .getByText("Trellis could not reach the requested capability.", {
+        .getByText("You haven't allowed the Console to do this.", {
           exact: false,
         })
         .waitFor();
@@ -106,7 +106,7 @@ test("an unavailable profile photo falls back to local initials without browser 
       await openConsole(page, runtime, credentials);
       await page.goto(`${runtime.trellisUrl}/console/profile`);
       await page
-        .getByLabel("New profile picture URL", { exact: true })
+        .getByLabel("Picture URL", { exact: true })
         .fill("https://images.invalid/photo.png");
       const unavailable = page.waitForResponse(
         (response) =>

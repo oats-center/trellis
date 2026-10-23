@@ -96,9 +96,7 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         const pageErrors: string[] = [];
         page.on("pageerror", (error) => pageErrors.push(String(error)));
         await page.goto(loginUrl, { waitUntil: "domcontentloaded" });
-        await page
-          .getByLabel("Device code", { exact: true })
-          .fill(challenge.userCode);
+        await page.getByLabel("Code", { exact: true }).fill(challenge.userCode);
         await page.getByRole("button", { name: /continue|review/i }).click();
         await signInIfPrompted(page, {
           username: runtime.adminUsername,

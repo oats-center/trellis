@@ -79,7 +79,6 @@ test("U19 self-service operations do not require the admin privilege", () => {
         action: operation.action,
       },
     ],
-    [],
   );
   equal(canPerform(authority, "usersPasswordChange"), true);
 });

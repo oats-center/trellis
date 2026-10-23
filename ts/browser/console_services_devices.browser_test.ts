@@ -38,20 +38,20 @@ test("B01 creating a native service deployment opens its persisted implementatio
       await waitForConsoleShell(page);
 
       const displayName = `ct-b01-${ulid()}`;
-      await page.getByLabel("Title", { exact: true }).fill(displayName);
+      await page.getByLabel("Name", { exact: true }).fill(displayName);
       await page
-        .getByLabel("Participant identity")
+        .getByLabel("Participant name")
         .fill(participants.EchoProvider.participant.identity);
       await page
-        .getByLabel("Native package source evidence")
+        .getByLabel("Package", { exact: true })
         .fill(
           JSON.stringify(participants.EchoProvider.participant.packageEvidence),
         );
       await page
-        .getByRole("button", { name: "Create deployment", exact: true })
+        .getByRole("button", { name: "Add service", exact: true })
         .click();
       await page
-        .getByRole("link", { name: "Open deployment", exact: true })
+        .getByRole("link", { name: "Open service", exact: true })
         .click();
 
       await page
@@ -101,12 +101,10 @@ test("B02 installed service resources render from real evidence", async () => {
           waitUntil: "domcontentloaded",
         });
         await waitForConsoleShell(page);
-        await page
-          .getByRole("button", { name: "All retained states", exact: true })
-          .click();
+        await page.getByRole("button", { name: "All", exact: true }).click();
         const resourceRows = page
           .locator("tbody tr")
-          .filter({ hasText: seeded.deploymentId });
+          .filter({ hasText: seeded.displayName });
         await resourceRows.first().waitFor({
           state: "visible",
           timeout: 30_000,
@@ -229,7 +227,7 @@ test("B05 service table pages and resets on filter change", async () => {
       });
       await waitForConsoleShell(page);
       await page
-        .getByRole("heading", { name: "Service runtime", exact: true })
+        .getByRole("heading", { name: "Services", exact: true })
         .waitFor({ state: "visible", timeout: 30_000 });
       await page.getByText("on this page").first().waitFor({
         state: "visible",
@@ -238,9 +236,11 @@ test("B05 service table pages and resets on filter change", async () => {
         'main tbody a[href^="/console/admin/services/"]',
       );
       const firstPageId = await rows.first().getAttribute("href");
-      await page.getByRole("button", { name: "Next", exact: true }).click();
       await page
-        .getByRole("button", { name: "Previous", exact: true })
+        .getByRole("button", { name: "Next page", exact: true })
+        .click();
+      await page
+        .getByRole("button", { name: "Previous page", exact: true })
         .waitFor({
           state: "visible",
           timeout: 30_000,
@@ -258,9 +258,9 @@ test("B05 service table pages and resets on filter change", async () => {
       );
 
       // Filtering hides unmatched rows; clearing it must return to the first page.
-      await page.getByLabel("Filter by state").selectOption("disabled");
+      await page.getByRole("button", { name: "Disabled", exact: true }).click();
       await runtime.waitFor(async () => (await rows.count()) === 0);
-      await page.getByLabel("Filter by state").selectOption("");
+      await page.getByRole("button", { name: "All", exact: true }).click();
       await page.waitForFunction(
         (first) =>
           document
@@ -270,7 +270,7 @@ test("B05 service table pages and resets on filter change", async () => {
       );
       assert.deepEqual(
         await page
-          .getByRole("button", { name: "Previous", exact: true })
+          .getByRole("button", { name: "Previous page", exact: true })
           .isDisabled(),
         true,
       );
@@ -304,20 +304,19 @@ test("B06 device creation persists the authored participant and returns its allo
       await waitForConsoleShell(page);
 
       const displayName = `ct-b06-${ulid()}`;
-      await page.getByLabel("Title", { exact: true }).fill(displayName);
+      await page.getByLabel("Name", { exact: true }).fill(displayName);
       await page
-        .getByLabel("Participant identity")
+        .getByLabel("Participant name")
         .fill(participants.Device.participant.identity);
       await page
-        .getByLabel("Native package source evidence")
+        .getByLabel("Package", { exact: true })
         .fill(JSON.stringify(participants.Device.participant.packageEvidence));
       await page
-        .getByRole("button", { name: "Create deployment", exact: true })
+        .getByRole("button", { name: "Add device type", exact: true })
         .click();
       try {
         await page
-          .getByText(/^Deployment .* created\. Implementation /)
-          .first()
+          .getByText(`${displayName} was added.`)
           .waitFor({ state: "visible", timeout: 30_000 });
       } catch (cause) {
         throw new Error(
@@ -325,12 +324,8 @@ test("B06 device creation persists the authored participant and returns its allo
           { cause },
         );
       }
-      const notice = await page
-        .getByText(/^Deployment .* created\. Implementation /)
-        .first()
-        .innerText();
       const createdId = codecs.ulid.decode(
-        /^Deployment (\S+) created\./.exec(notice)?.[1],
+        await page.getByTestId("created-id").textContent(),
       );
       const listed = await runtime.callAdminRpc("authDeploymentsGet", {
         deploymentId: createdId,

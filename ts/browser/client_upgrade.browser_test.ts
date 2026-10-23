@@ -235,7 +235,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
                 .click();
             }
             await page
-              .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+              .getByRole("heading", { name: /wants to use your account/ })
               .waitFor();
             assert.equal(
               await page.getByLabel("Password", { exact: true }).count(),
@@ -243,7 +243,7 @@ test("browser consent renewal and incompatible API recovery retain the authentic
             );
             await page
               .getByRole("button", {
-                name: "Authorize application",
+                name: "Allow",
                 exact: true,
               })
               .click();

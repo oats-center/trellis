@@ -17,6 +17,7 @@
     setNotifications,
   } from "../notifications.svelte";
   import { getConnection, getTrellis, type ConnectionStatus } from "../trellis";
+  import { setChangeAccess } from "../console/change_access.ts";
   import AppShell from "./AppShell.svelte";
 
   type Props = {
@@ -52,6 +53,22 @@
       location: window.location,
     });
   }
+
+  // Ending this app session sends the user back through consent, where their
+  // earlier choices are preselected and can be changed.
+  setChangeAccess(async () => {
+    try {
+      await trellis.logout();
+    } catch (error) {
+      notifications.error(
+        error instanceof Error ? error.message : "Could not end this session.",
+        "Change access failed",
+      );
+      return;
+    }
+    authority.clear();
+    redirectToLogin();
+  });
 
   async function signOut(): Promise<void> {
     try {
@@ -115,9 +132,12 @@
   authority={snapshot.authority}
   {navSections}
   {connectionStatus}
-  authFailure={snapshot.state === "error"
+  authFailure={snapshot.state === "error" &&
+  snapshot.failure?.code !== "not_allowed"
     ? (snapshot.failure?.message ?? "Could not verify your session.")
     : null}
+  accountNotAllowed={snapshot.state === "error" &&
+    snapshot.failure?.code === "not_allowed"}
   onSignOut={signOut}
   onRetryAuthority={retryAuthority}
 >

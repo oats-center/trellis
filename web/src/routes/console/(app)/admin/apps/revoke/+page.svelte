@@ -130,8 +130,8 @@
 
 <section class="space-y-4">
   <PageToolbar
-    title="Revoke app delegation"
-    description="Confirm the exact client-bound delegation and its current revision."
+    title="Disconnect an app"
+    description="The app loses access to this person's account and is signed out."
     >{#snippet actions()}<a
         class="btn btn-ghost btn-sm"
         href={resolve("/admin/apps")}>Back to app delegations</a
@@ -140,7 +140,7 @@
   {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
     >{/if}
   {#if completed}<Notice variant="success">Delegation revoked.</Notice>{/if}
-  <Panel title="Delegation target" class="max-w-3xl">
+  <Panel title="App" class="max-w-3xl">
     {#if loading}<LoadingState
         label="Loading exact delegation"
       />{:else if requestedId && !target}<Notice variant="warning"

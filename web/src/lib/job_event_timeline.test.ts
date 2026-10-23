@@ -166,7 +166,7 @@ test("buildJobTimeline retains unmatched and uncommon runtime events", () => {
   if (execution.kind !== "execution") return;
   deepEqual(
     execution.events.map((item) => item.label),
-    ["Resumed", "Worker heartbeat"],
+    ["Resumed", "Still working"],
   );
 });
 
@@ -206,7 +206,7 @@ test("buildJobTimeline represents retries as a new queue and execution cycle", (
   const retryQueue = timeline[3];
   equal(retryQueue.kind, "queue");
   if (retryQueue.kind !== "queue") return;
-  equal(retryQueue.label, "Retry delay");
+  equal(retryQueue.label, "Waiting to retry");
   equal(retryQueue.duration, "250ms");
 });
 

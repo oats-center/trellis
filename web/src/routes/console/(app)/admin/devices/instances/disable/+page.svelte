@@ -185,8 +185,8 @@
 
 <section class="space-y-4">
   <PageToolbar
-    title="Disable device instance"
-    description="Select a device instance and confirm the disable workflow."
+    title="Turn off a device"
+    description="The device is disconnected and can't reconnect."
   >
     {#snippet actions()}
       <a class="btn btn-ghost btn-sm" href={resolve("/admin/devices")}
@@ -226,7 +226,7 @@
     >
   {:else if requestedUnavailable}
     <EmptyState
-      title="Instance unavailable"
+      title="Device not found"
       description={`No active device instance matches '${requestedInstanceId}'. It may already be disabled, removed, or the link may be stale.`}
       class="m-5"
     >
@@ -238,11 +238,11 @@
     </EmptyState>
   {:else if disableableInstances.length === 0}
     <EmptyState
-      title="No instances available"
-      description="There are no non-disabled device instances available to disable."
+      title="No devices to turn off"
+      description="Every device is already off."
     />
   {:else}
-    <Panel title="Confirm instance disable" eyebrow="Destructive workflow">
+    <Panel title="Confirm">
       <form
         class="space-y-4"
         onsubmit={(event) => {

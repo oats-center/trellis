@@ -116,7 +116,7 @@
 <section class="space-y-4">
   <PageToolbar
     title="New user"
-    description="Create a local account and, as a separate step, a password setup link."
+    description="Create an account. You'll get a link to send them so they can set a password."
   >
     {#snippet actions()}
       <a class="btn btn-ghost btn-sm" href={resolve("/admin/users")}

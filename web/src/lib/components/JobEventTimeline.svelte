@@ -58,12 +58,8 @@
       <div class="dependency-detail break-anywhere">{wait.detail}</div>
     {/if}
     <div class="dependency-timing">
-      <span class="event-type break-anywhere">{wait.rawEvents[0].type}</span>
       <time datetime={wait.startedAt} title={wait.startedAt}>{formatTimestamp(wait.startedAt)}</time>
       {#if wait.endTimestamp}
-        <span class="event-type break-anywhere"
-          >{wait.rawEvents[wait.rawEvents.length - 1].type}</span
-        >
         <time datetime={wait.endTimestamp} title={wait.endTimestamp}
           >{formatTimestamp(wait.endTimestamp)}</time
         >
@@ -75,7 +71,6 @@
 {#snippet runtimeEvent(event: JobTimelineRuntimeEvent)}
   <li class="runtime-event">
     <div class="runtime-event-heading">
-      <span class="event-type break-anywhere">{event.type}</span>
       <time datetime={event.timestamp} title={event.timestamp}
         >{formatTimestamp(event.timestamp)}</time
       >
@@ -119,7 +114,6 @@
               <div>
                 <strong>{phase.enteredLabel}</strong>
                 <div class="evidence-line">
-                  <span class="event-type">{phase.enteredType}</span>
                   <time datetime={phase.enteredAt} title={phase.enteredAt}
                     >{formatTimestamp(phase.enteredAt, true)}</time
                   >
@@ -132,10 +126,6 @@
                 <div>
                   <strong>{phase.exitedLabel}</strong>
                   <div class="evidence-line">
-                    {#if phase.exitedType}
-                      <span class="event-type">{phase.exitedType}</span>
-                    {/if}
-                    {#if phase.transition}<span>{phase.transition}</span>{/if}
                     <time datetime={phase.exitedAt} title={phase.exitedAt}
                       >{formatTimestamp(phase.exitedAt, true)}</time
                     >
@@ -155,19 +145,12 @@
           </header>
 
           <div class="execution-summary">
-            <strong>{phase.attempt !== undefined ? `Attempt ${phase.attempt}` : "Running"}</strong>
+            <strong>{phase.attempt !== undefined ? `Try ${phase.attempt}` : "Running"}</strong>
             <div class="evidence-line">
-              <span class="event-type">{phase.startedType}</span>
-              {#if phase.transition}<span>{phase.transition}</span>{/if}
               <time datetime={phase.startedAt} title={phase.startedAt}
                 >{formatTimestamp(phase.startedAt, true)}</time
               >
             </div>
-            {#if phase.workerInstanceId}
-              <div class="worker-line break-anywhere">
-                Worker <span class="trellis-identifier">{phase.workerInstanceId}</span>
-              </div>
-            {/if}
           </div>
 
           {#if phase.steps.length > 0}
@@ -190,7 +173,6 @@
                         <span>+{step.interval} {index === 0 ? "since attempt started" : "since previous report"}</span>
                       {/if}
                       {#if step.detail}<span class="break-anywhere">{step.detail}</span>{/if}
-                      <span class="event-type">{step.type}</span>
                     </div>
                     {#if step.waits.length > 0}
                       <ol class="dependency-waits" aria-label={`Dependencies while ${step.label}`}>
@@ -235,10 +217,10 @@
           aria-labelledby={`outcome-${phase.rawEvents[0].sequence}`}
         >
           <header class="phase-heading">
-            <h3 id={`outcome-${phase.rawEvents[0].sequence}`}>Outcome</h3>
+            <h3 id={`outcome-${phase.rawEvents[0].sequence}`}>Result</h3>
             {#if phase.duration}
               <strong class="phase-duration"
-                >{phase.duration} {phase.durationKind === "queue" ? "queued" : "runtime"}</strong
+                >{phase.durationKind === "queue" ? "waited" : "ran"} {phase.duration}</strong
               >
             {/if}
           </header>
@@ -247,8 +229,6 @@
             <div>
               <h4>{phase.label}</h4>
               <div class="evidence-line">
-                <span class="event-type">{phase.type}</span>
-                {#if phase.transition}<span>{phase.transition}</span>{/if}
                 <time datetime={phase.timestamp} title={phase.timestamp}
                   >{formatTimestamp(phase.timestamp, true)}</time
                 >
@@ -305,10 +285,8 @@
     color: color-mix(in oklab, var(--color-base-content) 72%, transparent);
     font-size: 0.6875rem;
     font-weight: 750;
-    letter-spacing: 0.09em;
     line-height: 1.25;
     margin: 0;
-    text-transform: uppercase;
   }
 
   .phase-duration {
@@ -329,12 +307,6 @@
 
   .evidence-line,
   .step-evidence,
-  .worker-line {
-    color: color-mix(in oklab, var(--color-base-content) 64%, transparent);
-    font-size: 0.6875rem;
-    font-variant-numeric: tabular-nums;
-    line-height: 1.45;
-  }
 
   .evidence-line,
   .step-evidence {
@@ -403,14 +375,7 @@
     margin: 0 0 0.75rem;
   }
 
-  .worker-line {
-    margin-top: 0.25rem;
-  }
 
-  .worker-line .trellis-identifier {
-    overflow-wrap: anywhere;
-    white-space: normal;
-  }
 
   .work-steps,
   .dependency-waits,
@@ -575,8 +540,6 @@
     color: color-mix(in oklab, var(--color-warning) 62%, var(--color-base-content));
     font-size: 0.625rem;
     font-weight: 750;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
   }
 
   .dependency-duration {

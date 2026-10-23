@@ -13,7 +13,8 @@
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import Panel from "$lib/components/Panel.svelte";
+  import ActionMenu from "$lib/components/ActionMenu.svelte";
+  import Icon from "$lib/components/Icon.svelte";
 
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
@@ -40,54 +41,67 @@
   });
 </script>
 
-<section class="space-y-4">
+<section class="space-y-5">
   <PageToolbar
     title="Roles"
-    description="Manage reusable sets of whole, accepted capabilities."
+    description="Sets of permissions you give to people."
   >
-    {#snippet actions()}<button
-        class="btn btn-ghost btn-sm"
-        disabled={loading}
-        onclick={() => void load()}>Refresh</button
-      >{/snippet}
-  </PageToolbar>
-  {#if error}<Notice variant="error">Catalog incomplete: {error}</Notice>{/if}
-  <Panel title="Roles" eyebrow={`${roles.length} loaded roles`}>
     {#snippet actions()}{#if canPerform(authority.authority, "rolesPut")}<a
-          class="btn btn-outline btn-xs"
-          href={resolve("/admin/roles/new")}>New role</a
+          class="btn btn-primary"
+          href={resolve("/admin/roles/new")}
+          ><Icon name="plus" size={18} />New role</a
         >{/if}{/snippet}
-    {#if loading}<LoadingState
-        label="Loading roles"
-      />{:else if !roles.length}<EmptyState
-        title="No roles returned"
-        description="Create a role to bundle whole capabilities."
-      />{:else}
-      <DataTable
-        ><thead
-          ><tr
-            ><th>Role</th><th>Description</th><th>Capabilities</th><th
-              >Generation</th
-            ><th>Revision</th><th>Actions</th></tr
-          ></thead
-        ><tbody>
-          {#each roles as role (role.roleId)}<tr
-              ><td
-                ><div class="font-semibold">{role.title}</div>
-                <div class="trellis-identifier">{role.roleId}</div></td
-              ><td>{role.description}</td><td>{role.capabilities.length}</td><td
-                class="trellis-identifier">{role.identityGeneration}</td
-              ><td class="trellis-identifier">{role.revision}</td><td
-                ><a
-                  class="btn btn-ghost btn-xs"
+  </PageToolbar>
+  {#if error}<Notice variant="warning">{error}</Notice>{/if}
+  <div class="trellis-section">
+    {#if loading}<LoadingState label="Loading roles" />{:else if !roles.length}
+      <EmptyState
+        class="m-4"
+        title="No roles yet"
+        description="Create a role to give people a set of permissions at once."
+      />
+    {:else}
+      <DataTable>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Permissions</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each roles as role (role.roleId)}
+            <tr>
+              <td class="whitespace-normal">
+                <a
+                  class="font-medium hover:underline"
                   href={resolve(
                     `/admin/roles/edit?roleId=${encodeURIComponent(role.roleId)}`,
-                  )}>Edit</a
-                ></td
-              ></tr
-            >{/each}
-        </tbody></DataTable
-      >
+                  )}>{role.title}</a
+                >
+                {#if role.description}<div class="text-sm text-base-content/65">
+                    {role.description}
+                  </div>{/if}
+              </td>
+              <td class="text-base-content/75">{role.capabilities.length}</td>
+              <td class="text-right">
+                <ActionMenu
+                  widthClass="w-36"
+                  ariaLabel={`Actions for ${role.title}`}
+                >
+                  <li>
+                    <a
+                      href={resolve(
+                        `/admin/roles/edit?roleId=${encodeURIComponent(role.roleId)}`,
+                      )}>Edit</a
+                    >
+                  </li>
+                </ActionMenu>
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </DataTable>
     {/if}
-  </Panel>
+  </div>
 </section>

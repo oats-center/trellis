@@ -14,6 +14,7 @@
     consumeAdminAccountToken,
   } from "$lib/admin_account";
   import { APP_CONFIG, consoleAuthOptions } from "$lib/config";
+  import { connectionProblem } from "$lib/connection_problem";
 
   type Props = {
     children: Snippet;
@@ -74,42 +75,6 @@
       location: window.location,
       authError: "Your session ended. Sign in again.",
     });
-  }
-
-  type SerializableError = {
-    message?: unknown;
-    code?: unknown;
-    hint?: unknown;
-    context?: unknown;
-  };
-
-  function maybeSerializable(value: unknown): SerializableError | undefined {
-    if (!value || typeof value !== "object" || !("toSerializable" in value))
-      return undefined;
-    const fn = (value as { toSerializable: unknown }).toSerializable;
-    if (typeof fn !== "function") return undefined;
-    const s = fn.call(value);
-    return s && typeof s === "object" ? (s as SerializableError) : undefined;
-  }
-
-  function connectionErrorDetails(error: unknown): string {
-    const parts: string[] = [];
-    const s = maybeSerializable(error);
-    const msg =
-      typeof s?.message === "string"
-        ? s.message
-        : error instanceof Error
-          ? error.message
-          : String(error ?? "Unknown error");
-    parts.push(`Error: ${msg}`);
-    if (typeof s?.code === "string") parts.push(`Code: ${s.code}`);
-    if (typeof s?.hint === "string") parts.push(`Hint: ${s.hint}`);
-    if (s?.context && typeof s.context === "object") {
-      parts.push(`Context: ${JSON.stringify(s.context, null, 2)}`);
-    } else if (error instanceof Error && error.stack) {
-      parts.push(error.stack);
-    }
-    return parts.join("\n\n");
   }
 
   let recovering = $state(false);
@@ -174,20 +139,13 @@
           <p class="mt-2 max-w-sm text-sm text-base-content/60">
             We couldn't load the console. This might be a temporary issue.
           </p>
+          <p class="mt-1 max-w-sm text-sm text-base-content/60">
+            {connectionProblem(connectError)}
+          </p>
           <div class="mt-6 flex flex-col gap-3">
             <button class="btn btn-primary btn-sm" onclick={goToConsole}
               >Go to console</button
             >
-            <details class="text-left">
-              <summary
-                class="cursor-pointer text-xs text-base-content/50 hover:text-base-content/70"
-                >Technical details</summary
-              >
-              <pre
-                class="mt-2 max-w-md overflow-auto rounded bg-base-300/50 p-3 text-xs text-base-content/70">{connectionErrorDetails(
-                  connectError,
-                )}</pre>
-            </details>
           </div>
         </div>
       </div>

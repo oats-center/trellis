@@ -6,8 +6,7 @@ import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_tru
 test("company sign-in navigates through Dex and returns to Trellis consent under CSP", async () => {
   const authorization = process.env.TRELLIS_TEST_OAUTH_AUTHORIZATION_URI;
   const issuer = process.env.TRELLIS_TEST_OIDC_ISSUER;
-  const capability = process.env.TRELLIS_TEST_OIDC_CAPABILITY;
-  if (!authorization || !issuer || !capability)
+  if (!authorization || !issuer)
     throw new Error(
       "the upstream runner must supply its live OAuth and Dex endpoints",
     );
@@ -27,7 +26,7 @@ test("company sign-in navigates through Dex and returns to Trellis consent under
       if (message.text().includes("form-action")) failures.push(message.text());
     });
     await page.goto(authorization);
-    await page.getByRole("heading", { name: "Sign in to Trellis" }).waitFor();
+    await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
     await page
       .getByRole("link", { name: "Continue with Company identity" })
       .click();
@@ -42,10 +41,14 @@ test("company sign-in navigates through Dex and returns to Trellis consent under
     await approve.waitFor();
     await approve.click();
     await page
-      .getByRole("heading", { name: "Allow Native client to access Trellis?" })
+      .getByRole("heading", { name: "Native client wants to use your account" })
       .waitFor();
     strictEqual(new URL(page.url()).origin, new URL(authorization).origin);
-    await page.getByText(capability, { exact: true }).waitFor();
+    // The requested capability is shown by its group and title.
+    await page
+      .getByRole("group", { name: "Documents", exact: true })
+      .getByRole("checkbox", { name: /^Write\b/ })
+      .waitFor();
     strictEqual(failures.length, 0, failures.join("\n"));
   } finally {
     await browser.close();

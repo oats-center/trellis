@@ -13,6 +13,7 @@
   import { errorMessage, formatDate } from "$lib/format";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { getNotifications } from "$lib/notifications.svelte";
+  import { getChangeAccess } from "$lib/console/change_access.ts";
   import EmptyState from "$lib/components/EmptyState.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
@@ -20,17 +21,16 @@
   import Panel from "$lib/components/Panel.svelte";
   import {
     getAuthenticatedUser,
-    getConnection,
     getTrellis,
   } from "$lib/trellis";
 
   type IdentityRecord = apis.auth.UserIdentitiesListOutput["items"][number];
   const trellis = getTrellis();
-  const connection = getConnection();
   const authority = getConsoleAuthority();
   const notifications = getNotifications();
 
   let loading = $state(true);
+  const changeAccess = getChangeAccess();
   let error = $state<string | null>(null);
   let user = $state.raw<apis.auth.UsersResolveOutput["user"] | null>(null);
   const administration = $derived(
@@ -38,7 +38,6 @@
       isAdministrativeCapability(capabilityId),
     ),
   );
-  const bindingKind = $derived(trellis.ownAuthority.current?.binding.kind);
   let identities = $state.raw<IdentityRecord[]>([]);
   let identitiesPanelError = $state<string | null>(null);
   let linkPending = $state(false);
@@ -63,26 +62,11 @@
   let profileUncertain = $state(false);
   let profileError = $state<string | null>(null);
 
-  const connectionStatus = $derived(connection.status.phase);
   const hasLocalIdentity = $derived(user?.account?.hasLocalPassword ?? false);
   const capabilityCount = $derived(administration.length);
   const accountRole = $derived(
     getRoleLabel({ capabilities: authority.authority?.capabilities ?? [] }),
   );
-  const sessionStatusLabel = $derived(
-    connectionStatus === "connected"
-      ? "Connected"
-      : connectionStatus === "reconnecting"
-        ? "Reconnecting"
-        : "Disconnected",
-  );
-  const mastheadSentence = $derived(
-    `This account has ${identities.length} linked provider identities${hasLocalIdentity ? " and a local password" : ""}.`,
-  );
-
-  function capabilityCountLabel(count: number): string {
-    return `${count} administrative`;
-  }
 
   function openPasswordModal(): void {
     passwordChangeError = null;
@@ -277,15 +261,9 @@
 {:else if user}
   <section class="space-y-4">
     <PageToolbar
-      title="Account Access Ledger"
-      description="Manage how you sign in, which apps or agents can act for you, and what this account can do."
-    >
-      {#snippet actions()}
-        <button class="btn btn-ghost btn-sm" onclick={loadProfile}
-          >Refresh</button
-        >
-      {/snippet}
-    </PageToolbar>
+      title="Your account"
+      description="Your profile and how you sign in."
+    />
 
     <div class="rounded-box border border-base-300 bg-base-100 p-4">
       <div
@@ -319,48 +297,23 @@
           <div class="min-w-0 space-y-1">
             <div class="flex flex-wrap items-center gap-2">
               <h2 class="truncate text-xl font-semibold">{user.displayName}</h2>
-              <span class="badge badge-outline badge-sm"
-                >{sessionStatusLabel}</span
-              >
+              <span class="badge badge-neutral badge-sm">{accountRole}</span>
             </div>
             <p class="truncate text-sm text-base-content/70">
               {user.account?.username ?? ""}
             </p>
-            <p class="max-w-3xl text-sm text-base-content/70">
-              {mastheadSentence}
-            </p>
+            {#if user.email}<p class="truncate text-sm text-base-content/70">
+                {user.email}
+              </p>{/if}
           </div>
         </div>
-        <dl
-          class="grid shrink-0 grid-cols-2 gap-x-6 gap-y-1 text-sm md:text-right"
-        >
-          <div>
-            <dt
-              class="text-xs font-medium uppercase tracking-wide text-base-content/50"
-            >
-              Role
-            </dt>
-            <dd class="font-medium">{accountRole}</dd>
-          </div>
-          <div>
-            <dt
-              class="text-xs font-medium uppercase tracking-wide text-base-content/50"
-            >
-              Session
-            </dt>
-            <dd class="font-medium">
-              {bindingKind ?? "Not currently verified"}
-            </dd>
-          </div>
-        </dl>
       </div>
     </div>
 
-    <Panel title="Directory profile">
+    <Panel title="Profile">
       <p class="mb-4 text-sm text-base-content/70">
-        Applications you approve for directory access can read your name, email
-        and photo. Your principal ID remains your identity; an email is not a
-        login or sharing permission.
+        Apps you allow to see the user directory can see your name, email, and
+        picture.
       </p>
       <form class="space-y-4" onsubmit={saveProfile}>
         <fieldset
@@ -388,9 +341,8 @@
               id="profile-email-help"
               class="mt-1 text-xs text-base-content/60"
               >{user.emailVerified
-                ? "Verified by your linked provider. Editing removes verification."
-                : "Not verified. This address cannot supply a Gravatar image."} Clearing
-              a manual address restores linked-provider details.</span
+                ? "Verified by your company sign-in. Changing it removes the verification."
+                : "Not verified."}</span
             >
           </div>
           <label class="form-control"
@@ -409,21 +361,20 @@
           >
           <div class="form-control sm:col-span-2">
             <label for="profile-picture" class="trellis-field-label"
-              >New profile picture URL</label
+              >Picture URL</label
             ><input
               id="profile-picture"
               aria-describedby="profile-picture-help"
               class="input input-bordered input-sm w-full"
               type="url"
-              placeholder="https://… (leave blank to keep your choice)"
+              placeholder="https://…"
               maxlength="2048"
               disabled={clearPicture}
               bind:value={pictureOverride}
             /><span
               id="profile-picture-help"
               class="mt-1 text-xs text-base-content/60"
-              >Trellis retrieves eligible public HTTPS images. Your browser
-              never contacts the image provider.</span
+              >Leave blank to keep your current picture.</span
             >
           </div>
           <label class="flex items-start gap-2 text-sm"
@@ -431,8 +382,7 @@
               class="checkbox checkbox-sm"
               type="checkbox"
               bind:checked={clearPicture}
-            /><span
-              >Remove my picture override and use the linked-provider fallback</span
+            /><span>Use the picture from my company sign-in instead</span
             ></label
           >
           <label class="flex items-start gap-2 text-sm"
@@ -440,9 +390,7 @@
               class="checkbox checkbox-sm"
               type="checkbox"
               bind:checked={gravatarEnabled}
-            /><span
-              >Allow Gravatar fallback for my verified email. Gravatar receives
-              an email-derived hash.</span
+            /><span>Use my Gravatar picture if I don't have another one</span
             ></label
           >
         </fieldset>
@@ -456,23 +404,20 @@
       </form>
     </Panel>
 
-    <Panel title="Ledger">
+    <Panel title="Sign-in">
       <div class="divide-y divide-base-300">
         <section class="py-4 first:pt-0">
           <div class="grid gap-3 lg:grid-cols-[14rem_minmax(0,1fr)]">
             <div>
               <h3 class="font-semibold">How you sign in</h3>
               <p class="mt-1 text-sm text-base-content/60">
-                Connect a provider without creating another account.
+                Ways you can sign in to this account.
               </p>
             </div>
             <div class="space-y-3">
               <div class="flex flex-wrap items-center justify-between gap-2">
-                <p class="text-sm text-base-content/70">
-                  Connected logins unlock the same Trellis account.
-                </p>
                 <label class="form-control"
-                  ><span class="trellis-field-label">Provider ID</span><input
+                  ><span class="trellis-field-label">Provider</span><input
                     class="input input-bordered input-sm"
                     bind:value={providerId}
                   /></label
@@ -494,7 +439,7 @@
                 >{/if}
               {#if identitiesPanelError}
                 <Notice variant="warning" class="text-sm">
-                  Identities could not be loaded: {identitiesPanelError}
+                  Sign-in methods couldn't be loaded: {identitiesPanelError}
                   <button
                     class="btn btn-ghost btn-xs ml-2"
                     type="button"
@@ -516,7 +461,7 @@
                           {identity.issuer}
                         </div>
                         <div class="text-xs text-base-content/60">
-                          Linked provider identity
+                          Company sign-in
                         </div>
                       </div>
                       <div
@@ -527,7 +472,7 @@
                         >
                           <div>
                             <dt class="font-semibold text-base-content/70">
-                              Subject
+                              Account
                             </dt>
                             <dd class="truncate">{identity.subject}</dd>
                           </div>
@@ -567,8 +512,7 @@
                 >
               {:else}
                 <p class="text-sm text-base-content/60">
-                  No local password is connected to this account. Your connected
-                  login providers still work.
+                  This account signs in with a company account only.
                 </p>
               {/if}
             </div>
@@ -580,8 +524,7 @@
             <div>
               <h3 class="font-semibold">What you can do</h3>
               <p class="mt-1 text-sm text-base-content/60">
-                Privileges delegated to this currently verified Console
-                connection.
+                Administrator powers you allowed the Console to use.
               </p>
             </div>
             <div class="space-y-2">
@@ -591,12 +534,15 @@
                 <div>
                   <p class="font-medium">{accountRole}</p>
                   <p class="text-sm text-base-content/60">
-                    This connection can administer this Trellis through {capabilityCount}
-                    {capabilityCount === 1 ? "capability" : "capabilities"}.
+                    {capabilityCount
+                      ? `${capabilityCount} administrator ${capabilityCount === 1 ? "power" : "powers"} allowed.`
+                      : "No administrator powers allowed."}
                   </p>
                 </div>
-                <span class="badge badge-outline badge-sm"
-                  >{capabilityCountLabel(capabilityCount)}</span
+                <button
+                  type="button"
+                  class="btn btn-outline btn-sm"
+                  onclick={() => void changeAccess()}>Change access</button
                 >
               </div>
             </div>
@@ -622,7 +568,7 @@
       >
         <div>
           <h3 id="password-change-title" class="font-semibold">
-            Change local password
+            Change password
           </h3>
           <p class="mt-1 text-sm text-base-content/60">
             Use your current password to update this account.

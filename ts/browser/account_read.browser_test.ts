@@ -69,11 +69,9 @@ test(
             await custody.startDevice(request, { signal: t.signal })
           ).orThrow();
           await page.goto(flow.verificationUri);
+          await page.getByLabel("Code", { exact: true }).fill(flow.userCode);
           await page
-            .getByLabel("Device code", { exact: true })
-            .fill(flow.userCode);
-          await page
-            .getByRole("button", { name: "Review device request", exact: true })
+            .getByRole("button", { name: "Continue", exact: true })
             .click();
           if (decision === "unavailable") {
             phase = `${decision}: sign in`;
@@ -87,10 +85,10 @@ test(
           }
           phase = `${decision}: present consent`;
           await page
-            .getByRole("heading", { name: /Allow .* to access Trellis/ })
+            .getByRole("heading", { name: /wants to use your account/ })
             .waitFor();
           const approve = page.getByRole("button", {
-            name: "Authorize application",
+            name: "Allow",
             exact: true,
           });
           assert.equal(await approve.isDisabled(), decision === "unavailable");
@@ -136,7 +134,7 @@ test(
             }
           } else {
             await page
-              .getByRole("button", { name: "Deny access", exact: true })
+              .getByRole("button", { name: "Cancel", exact: true })
               .click();
             phase = `${decision}: observe denied device result`;
             const denied = await flow.complete({

@@ -4,6 +4,7 @@
   import Bell from "lucide-svelte/icons/bell";
   import Box from "lucide-svelte/icons/box";
   import ChevronDown from "lucide-svelte/icons/chevron-down";
+  import ChevronRight from "lucide-svelte/icons/chevron-right";
   import Check from "lucide-svelte/icons/check";
   import Clipboard from "lucide-svelte/icons/clipboard";
   import Cpu from "lucide-svelte/icons/cpu";
@@ -28,6 +29,17 @@
   import TriangleAlert from "lucide-svelte/icons/triangle-alert";
   import Users from "lucide-svelte/icons/users";
   import X from "lucide-svelte/icons/x";
+  import House from "lucide-svelte/icons/house";
+  import FileText from "lucide-svelte/icons/file-text";
+  import Cog from "lucide-svelte/icons/cog";
+  import Monitor from "lucide-svelte/icons/monitor";
+  import User from "lucide-svelte/icons/user";
+  import Plug from "lucide-svelte/icons/plug";
+  import AppWindow from "lucide-svelte/icons/app-window";
+  import Laptop from "lucide-svelte/icons/laptop";
+  import Braces from "lucide-svelte/icons/braces";
+  import LogOut from "lucide-svelte/icons/log-out";
+  import Lock from "lucide-svelte/icons/lock";
 
   type IconName =
     | "activity"
@@ -36,6 +48,7 @@
     | "bell"
     | "box"
     | "chevronDown"
+    | "chevronRight"
     | "check"
     | "clipboard"
     | "close"
@@ -58,7 +71,18 @@
     | "users"
     | "globe"
     | "minus"
-    | "pencil";
+    | "pencil"
+    | "home"
+    | "fileText"
+    | "cog"
+    | "monitor"
+    | "user"
+    | "plug"
+    | "appWindow"
+    | "laptop"
+    | "braces"
+    | "logOut"
+    | "lock";
 
   const components = {
     check: Check,
@@ -68,6 +92,7 @@
     bell: Bell,
     box: Box,
     chevronDown: ChevronDown,
+    chevronRight: ChevronRight,
     clipboard: Clipboard,
     close: X,
     cpu: Cpu,
@@ -90,6 +115,17 @@
     sun: Sun,
     users: Users,
     globe: Globe,
+    home: House,
+    fileText: FileText,
+    cog: Cog,
+    monitor: Monitor,
+    user: User,
+    plug: Plug,
+    appWindow: AppWindow,
+    laptop: Laptop,
+    braces: Braces,
+    logOut: LogOut,
+    lock: Lock,
   } as const;
 
   type Props = {

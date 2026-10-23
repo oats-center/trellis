@@ -1,4 +1,8 @@
 <script lang="ts">
+  import {
+    capabilityArea,
+    groupByArea,
+  } from "$lib/console/capability_areas.ts";
   import { onDestroy, untrack } from "svelte";
   import { ulid } from "ulid";
   import { apis } from "trellis-web-generated";
@@ -12,7 +16,6 @@
   import { formatDate } from "$lib/format.ts";
   import Panel from "./Panel.svelte";
   import Notice from "./Notice.svelte";
-  import DataTable from "./DataTable.svelte";
   import LoadingState from "./LoadingState.svelte";
 
   let { principalId }: { principalId: apis.auth.UsersGetInput["userId"] } =
@@ -90,6 +93,43 @@
     }
   }
 
+  function roleTitle(id: string): string {
+    return roles.find((role) => role.roleId === id)?.title ?? "Unknown role";
+  }
+
+  function capabilityTitle(id: string): string {
+    return (
+      capabilities.find((item) => item.identity.capabilityId === id)?.title ??
+      id
+    );
+  }
+
+  function label(
+    existing: (typeof assignments)[number] | (typeof grants)[number],
+  ): string {
+    // Look the record up in its own typed list rather than narrowing the union.
+    const assignment = assignments.find((item) => item === existing);
+    if (assignment) return `the ${roleTitle(assignment.roleId)} role`;
+    const grant = grants.find((item) => item === existing);
+    return grant
+      ? capabilityTitle(grant.capability.capabilityId)
+      : "this access";
+  }
+
+  // Grantable permissions grouped by API area, as in the role picker.
+  const grantable = $derived(
+    groupByArea(
+      capabilities.filter(
+        (item) =>
+          !grants.some(
+            (grant) =>
+              grant.capability.capabilityId === item.identity.capabilityId,
+          ),
+      ),
+      (item) => item.identity.capabilityId,
+    ),
+  );
+
   async function change(
     kind: "role" | "capability",
     existing:
@@ -120,8 +160,8 @@
     if (
       !window.confirm(
         existing
-          ? `Revoke ${kind} assignment ${kind === "role" ? existing.assignmentId : existing.grantId} from user ${id}?`
-          : `Assign complete ${kind} ${selected} to user ${id}?`,
+          ? `Remove ${label(existing)}?`
+          : `Give ${kind === "role" ? `the ${roleTitle(selected)} role` : capabilityTitle(selected)}?`,
       )
     )
       return;
@@ -188,7 +228,7 @@
       if (scope.disposed || scope.key !== route) return;
       uncertain = classifyMutationError(cause).kind === "unknown";
       error = uncertain
-        ? "Access change outcome unknown. Refresh and inspect the assignments before another change."
+        ? "We couldn't confirm the change. Refresh before trying again."
         : projectConsoleError(cause).message;
     } finally {
       if (!scope.disposed && scope.key === route) busy = false;
@@ -219,16 +259,11 @@
 </script>
 
 <Panel>
-  <div class="mb-3 flex items-center justify-between gap-3">
+  <div class="mb-4 flex items-start justify-between gap-3">
     <div>
-      <h2
-        class="text-sm font-semibold uppercase tracking-wide text-base-content/70"
-      >
-        Access
-      </h2>
-      <p class="text-xs text-base-content/50">
-        Grant complete installed capabilities or roles. OAuth applications still
-        require separate user consent.
+      <h2 class="text-base font-semibold">Access</h2>
+      <p class="text-sm text-base-content/65">
+        What this person can do. Apps still ask them before using it.
       </p>
     </div>
     <button
@@ -242,127 +277,132 @@
   </div>
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if loading}<LoadingState label="Loading user access" />{:else}
-    <label class="form-control mb-3 max-w-sm"
-      ><span class="label-text mb-1 text-xs text-base-content/60"
-        >Expiry for new assignments (optional, local time)</span
-      ><input
-        class="input input-bordered input-sm"
-        type="datetime-local"
-        bind:value={expiresAt}
-        disabled={busy || uncertain || !!error}
-      /></label
+    <h3 class="text-sm font-semibold">Roles</h3>
+    <ul
+      class="mt-2 divide-y divide-base-300 rounded-field border border-base-300"
     >
-    <h3 class="mb-2 text-sm font-semibold">Capabilities</h3>
-    <div class="mb-3 flex flex-wrap gap-2">
+      {#each assignments as assignment (assignment.assignmentId)}
+        <li class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+          <span>
+            <span class="font-medium">{roleTitle(assignment.roleId)}</span>
+            {#if assignment.expiresAt}<span class="text-base-content/60">
+                · until {formatDate(assignment.expiresAt)}</span
+              >{/if}
+          </span>
+          <button
+            class="btn btn-ghost btn-xs text-error"
+            onclick={() => change("role", assignment)}
+            disabled={busy ||
+              uncertain ||
+              !!error ||
+              !canPerform(authority.authority, "roleAssignmentsRevoke")}
+            >Remove</button
+          >
+        </li>
+      {:else}
+        <li class="px-3 py-2 text-sm text-base-content/60">No roles yet.</li>
+      {/each}
+    </ul>
+    <div class="mt-2 flex flex-wrap gap-2">
       <select
-        class="select select-bordered select-sm flex-1"
-        aria-label="Capability to grant"
-        bind:value={capabilityId}
-        disabled={busy || uncertain || !!error}
-      >
-        <option value="">Select a capability</option>
-        {#each capabilities.filter((item) => !grants.some((grant) => grant.capability.capabilityId === item.identity.capabilityId)) as item (item.identity.capabilityId)}<option
-            value={item.identity.capabilityId}
-            >{item.title} · {item.identity.capabilityId}</option
-          >{/each}
-      </select>
-      <button
-        class="btn btn-primary btn-sm"
-        onclick={() => change("capability")}
-        disabled={!capabilityId ||
-          busy ||
-          uncertain ||
-          !!error ||
-          !canPerform(authority.authority, "capabilityGrantsGrant")}
-        >Grant capability</button
-      >
-    </div>
-    <DataTable
-      ><thead
-        ><tr><th>Capability</th><th>Generation</th><th>Expires</th><th></th></tr
-        ></thead
-      ><tbody>
-        {#each grants as grant (grant.grantId)}<tr
-            ><td class="trellis-identifier break-all"
-              >{grant.capability.capabilityId}</td
-            ><td>{grant.capability.identityGeneration}</td><td
-              >{grant.expiresAt ? formatDate(grant.expiresAt) : "No expiry"}</td
-            ><td
-              ><button
-                class="btn btn-ghost btn-xs text-error"
-                onclick={() => change("capability", grant)}
-                disabled={busy ||
-                  uncertain ||
-                  !!error ||
-                  !canPerform(authority.authority, "capabilityGrantsRevoke")}
-                >Revoke</button
-              ></td
-            ></tr
-          >{:else}<tr
-            ><td colspan="4" class="text-base-content/50"
-              >No direct capability grants.</td
-            ></tr
-          >{/each}
-      </tbody></DataTable
-    >
-    <h3 class="mb-2 mt-5 text-sm font-semibold">Roles</h3>
-    <div class="mb-3 flex flex-wrap gap-2">
-      <select
-        class="select select-bordered select-sm flex-1"
-        aria-label="Role to assign"
+        class="select select-sm flex-1"
+        aria-label="Role to give"
         bind:value={roleId}
         disabled={busy || uncertain || !!error}
       >
-        <option value="">Select a role</option>
+        <option value="">Choose a role…</option>
         {#each roles.filter((item) => !assignments.some((assignment) => assignment.roleId === item.roleId)) as item (item.roleId)}<option
             value={item.roleId}>{item.title}</option
           >{/each}
       </select>
       <button
-        class="btn btn-primary btn-sm"
+        class="btn btn-outline btn-sm"
         onclick={() => change("role")}
         disabled={!roleId ||
           busy ||
           uncertain ||
           !!error ||
           !canPerform(authority.authority, "roleAssignmentsAssign")}
-        >Assign role</button
+        >Give role</button
       >
     </div>
-    <DataTable
-      ><thead
-        ><tr><th>Role</th><th>Generation</th><th>Expires</th><th></th></tr
-        ></thead
-      ><tbody>
-        {#each assignments as assignment (assignment.assignmentId)}<tr
-            ><td
-              ><span class="block"
-                >{roles.find((role) => role.roleId === assignment.roleId)
-                  ?.title ?? assignment.roleId}</span
-              ><span class="trellis-identifier text-xs text-base-content/50"
-                >{assignment.roleId}</span
-              ></td
-            ><td>{assignment.roleIdentityGeneration}</td><td
-              >{assignment.expiresAt
-                ? formatDate(assignment.expiresAt)
-                : "No expiry"}</td
-            ><td
-              ><button
-                class="btn btn-ghost btn-xs text-error"
-                onclick={() => change("role", assignment)}
-                disabled={busy ||
-                  uncertain ||
-                  !!error ||
-                  !canPerform(authority.authority, "roleAssignmentsRevoke")}
-                >Revoke</button
-              ></td
-            ></tr
-          >{:else}<tr
-            ><td colspan="4" class="text-base-content/50"
-              >No role assignments.</td
-            ></tr
-          >{/each}
-      </tbody></DataTable
+
+    <h3 class="mt-6 text-sm font-semibold">Extra permissions</h3>
+    <p class="text-xs text-base-content/60">
+      One-off permissions outside of roles.
+    </p>
+    <ul
+      class="mt-2 divide-y divide-base-300 rounded-field border border-base-300"
+    >
+      {#each grants as grant (grant.grantId)}
+        {@const meaning = capabilities.find(
+          (item) =>
+            item.identity.capabilityId === grant.capability.capabilityId,
+        )}
+        <li class="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+          <span>
+            <span class="font-medium"
+              >{meaning?.title ?? grant.capability.capabilityId}</span
+            >
+            <span class="text-base-content/60"
+              >{meaning
+                ? `· ${capabilityArea(meaning.identity.capabilityId).title}`
+                : ""}{grant.expiresAt
+                ? ` · until ${formatDate(grant.expiresAt)}`
+                : ""}</span
+            >
+          </span>
+          <button
+            class="btn btn-ghost btn-xs text-error"
+            onclick={() => change("capability", grant)}
+            disabled={busy ||
+              uncertain ||
+              !!error ||
+              !canPerform(authority.authority, "capabilityGrantsRevoke")}
+            >Remove</button
+          >
+        </li>
+      {:else}
+        <li class="px-3 py-2 text-sm text-base-content/60">None.</li>
+      {/each}
+    </ul>
+    <div class="mt-2 flex flex-wrap gap-2">
+      <select
+        class="select select-sm flex-1"
+        aria-label="Permission to give"
+        bind:value={capabilityId}
+        disabled={busy || uncertain || !!error}
+      >
+        <option value="">Choose a permission…</option>
+        {#each grantable as group (group.id)}
+          <optgroup label={group.title}>
+            {#each group.items as item (item.identity.capabilityId)}<option
+                value={item.identity.capabilityId}>{item.title}</option
+              >{/each}
+          </optgroup>
+        {/each}
+      </select>
+      <button
+        class="btn btn-outline btn-sm"
+        onclick={() => change("capability")}
+        disabled={!capabilityId ||
+          busy ||
+          uncertain ||
+          !!error ||
+          !canPerform(authority.authority, "capabilityGrantsGrant")}
+        >Give permission</button
+      >
+    </div>
+
+    <label class="trellis-field mt-5 max-w-xs"
+      ><span class="trellis-field-label">Until (optional)</span><input
+        class="input input-sm"
+        type="datetime-local"
+        bind:value={expiresAt}
+        disabled={busy || uncertain || !!error}
+      /><span class="trellis-field-help"
+        >New roles and permissions end at this time.</span
+      ></label
     >
   {/if}
 </Panel>

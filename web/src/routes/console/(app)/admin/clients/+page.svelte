@@ -9,7 +9,11 @@
   import { isUncertainError } from "$lib/console/mutation.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import DataTable from "$lib/components/DataTable.svelte";
-  import Panel from "$lib/components/Panel.svelte";
+  import EmptyState from "$lib/components/EmptyState.svelte";
+  import Icon from "$lib/components/Icon.svelte";
+  import Pager from "$lib/components/Pager.svelte";
+  import PermissionGroups from "$lib/components/PermissionGroups.svelte";
+  import { traverseAll } from "$lib/console/paging.ts";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
@@ -34,7 +38,16 @@
   let kind = $state("browser");
   let development = $state(false);
   let redirects = $state("");
-  let implied = $state("");
+  let implied = $state<string[]>([]);
+  let catalog = $state.raw<apis.auth.CapabilitiesListOutput["items"]>([]);
+
+  async function loadCatalog(): Promise<void> {
+    const result = await traverseAll(async (page) => {
+      const response = await trellis.capabilitiesList({ page }).orThrow();
+      return { items: response.items, cursor: response.page.nextCursor };
+    });
+    catalog = [...result.items];
+  }
 
   async function load(): Promise<void> {
     const token = scope.begin();
@@ -61,7 +74,7 @@
     kind = client?.kind ?? "browser";
     development = client?.development ?? false;
     redirects = client?.redirectUris.join("\n") ?? "";
-    implied = client?.impliedConsent.join("\n") ?? "";
+    implied = [...(client?.impliedConsent ?? [])];
     editing = true;
     error = null;
     notice = null;
@@ -92,7 +105,7 @@
           kind,
           development,
           redirectUris: redirects.split(/\s+/).filter(Boolean),
-          impliedConsent: implied.split(/\s+/).filter(Boolean),
+          impliedConsent: implied,
         });
         const response = await trellis.oAuthClientsPut(input).orThrow();
         if (!scope.isCurrent(token)) return;
@@ -101,7 +114,7 @@
         if (
           !selected ||
           !window.confirm(
-            `${operation === "disable" ? "Disable" : "Delete"} OAuth client ${identity.clientId}?`,
+            `${operation === "disable" ? "Turn off" : "Delete"} ${title || identity.clientId}?`,
           )
         )
           return;
@@ -113,15 +126,15 @@
       }
       notice =
         operation === "put"
-          ? "Client saved."
+          ? "App saved."
           : operation === "disable"
-            ? "Client disabled."
-            : "Client deleted.";
+            ? "App turned off."
+            : "App deleted.";
       await load();
     } catch (cause) {
       if (scope.isCurrent(token))
         error = isUncertainError(cause)
-          ? "Outcome unknown. Reload the client before another change."
+          ? "We couldn't confirm the change. Reload before trying again."
           : projectConsoleError(cause).message;
     } finally {
       saving = false;
@@ -130,170 +143,229 @@
 
   onMount(() => {
     void load();
+    void loadCatalog().catch(() => {});
     return () => scope.dispose();
   });
 </script>
 
-<section class="space-y-4">
+<section class="space-y-5">
   <PageToolbar
-    title="OAuth clients"
-    description="Register public browser and native clients with exact redirect URIs."
+    title="Apps"
+    description="Apps people can sign in to with Trellis."
   >
     {#snippet actions()}
-      <button
-        class="btn btn-ghost btn-sm"
-        disabled={loading || saving}
-        onclick={() => void load()}>Refresh</button
-      >
       {#if canPerform(authority.authority, "oAuthClientsPut")}<button
-          class="btn btn-outline btn-sm"
+          class="btn btn-primary"
           disabled={saving}
-          onclick={() => edit(null)}>New client</button
+          onclick={() => edit(null)}
+          ><Icon name="plus" size={18} />New app</button
         >{/if}
     {/snippet}
   </PageToolbar>
   {#if error}<Notice variant="error">{error}</Notice>{/if}
   {#if notice}<Notice variant="success">{notice}</Notice>{/if}
-  <Panel title="Registered clients" eyebrow={`${clients.length} on this page`}>
-    {#if loading}<LoadingState label="Loading clients" />{:else}
-      <DataTable
-        ><thead
-          ><tr
-            ><th>Client</th><th>Kind</th><th>State</th><th>Revision</th><th
-              >Actions</th
-            ></tr
-          ></thead
-        ><tbody>
-          {#each clients as client (client.clientId)}<tr
-              ><td
-                ><div>{client.title}</div>
-                <div class="trellis-identifier">{client.clientId}</div></td
-              ><td>{client.kind}{client.development ? " · development" : ""}</td
-              ><td
-                ><span
-                  class="badge badge-sm {client.enabled
-                    ? 'badge-success'
-                    : 'badge-neutral'}"
-                  >{client.enabled ? "Enabled" : "Disabled"}</span
-                ></td
-              ><td>{client.revision}</td><td
-                ><button
-                  class="btn btn-ghost btn-xs"
-                  disabled={saving}
-                  onclick={() => edit(client)}>Edit</button
-                ></td
-              ></tr
-            >{:else}<tr
-              ><td colspan="5">No registered clients on this page.</td></tr
-            >{/each}
-        </tbody></DataTable
-      >
-    {/if}
-    <div class="flex gap-2 p-3">
-      <button
-        class="btn btn-ghost btn-xs"
-        disabled={loading || saving || !history.length}
-        onclick={() => {
-          cursor = history.at(-1);
-          history = history.slice(0, -1);
-          void load();
-        }}>Previous</button
-      ><button
-        class="btn btn-ghost btn-xs"
-        disabled={loading || saving || !next}
-        onclick={() => {
-          history = [...history, cursor];
-          cursor = next;
-          void load();
-        }}>Next</button
-      >
+
+  <div
+    class={[
+      "grid gap-4",
+      editing && "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
+    ]}
+  >
+    <div class="trellis-section min-w-0">
+      {#if loading}<LoadingState
+          label="Loading apps"
+        />{:else if !clients.length}
+        <EmptyState
+          class="m-4"
+          title="No apps yet"
+          description="Register an app so people can sign in to it."
+        />
+      {:else}
+        <DataTable>
+          <thead>
+            <tr>
+              <th>App</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each clients as client (client.clientId)}
+              <tr
+                class={selected?.clientId === client.clientId && editing
+                  ? "bg-primary/10"
+                  : ""}
+              >
+                <td>
+                  <div class="flex items-center gap-3">
+                    <span
+                      class="grid h-9 w-9 place-items-center rounded-field bg-primary text-sm font-semibold text-primary-content"
+                      aria-hidden="true"
+                      >{client.title.charAt(0).toUpperCase()}</span
+                    >
+                    <span>
+                      <span class="block font-medium">{client.title}</span>
+                      <span class="block text-xs text-base-content/60"
+                        >{client.clientId}</span
+                      >
+                    </span>
+                  </div>
+                </td>
+                <td class="text-base-content/75"
+                  >{client.kind === "native"
+                    ? "Native app"
+                    : "Web app"}{client.development
+                    ? " · local development"
+                    : ""}</td
+                >
+                <td>
+                  <span
+                    class={[
+                      "badge badge-sm",
+                      client.enabled ? "badge-success" : "badge-neutral",
+                    ]}>{client.enabled ? "Active" : "Disabled"}</span
+                  >
+                </td>
+                <td class="text-right">
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    disabled={saving}
+                    onclick={() => edit(client)}>Edit</button
+                  >
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </DataTable>
+        {#if history.length || next}
+          <Pager
+            summary={`Showing ${clients.length} apps on this page`}
+            canPrevious={history.length > 0}
+            canNext={!!next}
+            busy={loading || saving}
+            onPrevious={() => {
+              cursor = history.at(-1);
+              history = history.slice(0, -1);
+              void load();
+            }}
+            onNext={() => {
+              history = [...history, cursor];
+              cursor = next;
+              void load();
+            }}
+          />
+        {/if}
+      {/if}
     </div>
-  </Panel>
-  {#if editing}<Panel title={selected ? "Edit client" : "New client"}>
+
+    {#if editing}
       <form
-        class="space-y-3"
+        class="trellis-section space-y-4 p-5"
         onsubmit={(event) => {
           event.preventDefault();
           void mutate("put");
         }}
       >
-        <fieldset class="grid gap-3 md:grid-cols-2" disabled={saving}>
-          <label class="form-control"
-            ><span class="trellis-field-label">Client ID</span><input
-              class="input input-bordered input-sm"
-              bind:value={clientId}
-              required
-              readonly={selected !== null}
-            /></label
+        <div class="flex items-center justify-between">
+          <h2 class="text-lg font-semibold">
+            {selected ? selected.title : "New app"}
+          </h2>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm btn-square"
+            aria-label="Close"
+            disabled={saving}
+            onclick={() => (editing = false)}
+            ><Icon name="close" size={16} /></button
           >
-          <label class="form-control"
-            ><span class="trellis-field-label">Title</span><input
-              class="input input-bordered input-sm"
+        </div>
+        <fieldset class="space-y-4" disabled={saving}>
+          <label class="trellis-field"
+            ><span class="trellis-field-label">Name</span><input
+              class="input w-full"
               bind:value={title}
               required
             /></label
           >
-          <label class="form-control"
+          <label class="trellis-field"
+            ><span class="trellis-field-label">App ID</span><input
+              class="input w-full font-mono"
+              bind:value={clientId}
+              required
+              readonly={selected !== null}
+            /><span class="trellis-field-help"
+              >The app uses this to identify itself. It can't change later.</span
+            ></label
+          >
+          <label class="trellis-field"
             ><span class="trellis-field-label">Description</span><input
-              class="input input-bordered input-sm"
+              class="input w-full"
               bind:value={description}
             /></label
           >
-          <label class="form-control"
-            ><span class="trellis-field-label">Kind</span><select
-              class="select select-bordered select-sm"
+          <label class="trellis-field"
+            ><span class="trellis-field-label">Type</span><select
+              class="select w-full"
               bind:value={kind}
-              ><option value="browser">Browser</option><option value="native"
-                >Native</option
+              ><option value="browser">Web app</option><option value="native"
+                >Native app</option
               ></select
             ></label
           >
-          <label class="form-control"
-            ><span class="trellis-field-label"
-              >Redirect URIs (one per line)</span
-            ><textarea class="textarea textarea-bordered" bind:value={redirects}
-            ></textarea></label
-          >
-          <label class="form-control"
-            ><span class="trellis-field-label"
-              >Preapproved capability IDs (one per line)</span
-            ><textarea class="textarea textarea-bordered" bind:value={implied}
+          <label class="trellis-field"
+            ><span class="trellis-field-label">Redirect URLs</span><textarea
+              class="textarea w-full font-mono text-sm"
+              bind:value={redirects}
             ></textarea><span class="trellis-field-help"
-              >Only this explicit subset bypasses consent for eligible flows.</span
+              >Where people return after signing in. One per line.</span
             ></label
           >
-          <label class="flex items-center gap-2"
+          <label class="flex items-center gap-3"
             ><input
               class="checkbox checkbox-sm"
               type="checkbox"
               bind:checked={development}
-            />Loopback development client</label
+            /><span
+              >Local development app <span class="text-sm text-base-content/60"
+                >· allows localhost redirect URLs</span
+              ></span
+            ></label
           >
+          <div class="space-y-2">
+            <div>
+              <span class="trellis-field-label">Allowed without asking</span>
+              <p class="trellis-field-help">
+                People won't be asked to approve these. Leave empty to always
+                ask.
+              </p>
+            </div>
+            <PermissionGroups capabilities={catalog} bind:selected={implied} />
+          </div>
         </fieldset>
-        <div class="flex flex-wrap gap-2">
+        <div
+          class="flex flex-wrap justify-between gap-2 border-t border-base-300 pt-4"
+        >
+          <div class="flex gap-2">
+            {#if selected && canPerform(authority.authority, "oAuthClientsDisable")}<button
+                type="button"
+                class="btn btn-outline"
+                disabled={saving || !selected.enabled}
+                onclick={() => void mutate("disable")}>Turn off</button
+              >{/if}
+            {#if selected && canPerform(authority.authority, "oAuthClientsDelete")}<button
+                type="button"
+                class="btn btn-outline btn-error"
+                disabled={saving}
+                onclick={() => void mutate("delete")}>Delete app</button
+              >{/if}
+          </div>
           {#if canPerform(authority.authority, "oAuthClientsPut")}<button
-              class="btn btn-outline btn-sm"
-              disabled={saving}>Save client</button
+              class="btn btn-primary"
+              disabled={saving}>Save app</button
             >{/if}
-          {#if selected && canPerform(authority.authority, "oAuthClientsDisable")}<button
-              type="button"
-              class="btn btn-outline btn-sm"
-              disabled={saving || !selected.enabled}
-              onclick={() => void mutate("disable")}>Disable client</button
-            >{/if}
-          {#if selected && canPerform(authority.authority, "oAuthClientsDelete")}<button
-              type="button"
-              class="btn btn-outline btn-error btn-sm"
-              disabled={saving}
-              onclick={() => void mutate("delete")}>Delete client</button
-            >{/if}
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm"
-            disabled={saving}
-            onclick={() => (editing = false)}>Close</button
-          >
         </div>
       </form>
-    </Panel>{/if}
+    {/if}
+  </div>
 </section>

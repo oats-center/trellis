@@ -18,45 +18,44 @@ test("Console creates, reloads, disables and deletes an OAuth client and creates
       await openConsole(page, runtime, BROWSER_ADMIN);
       const clientId = `console-development-${ulid()}`;
       await page.goto(`${runtime.trellisUrl}/console/admin/clients`);
+      await page.getByRole("button", { name: "New app", exact: true }).click();
+      await page.getByLabel("App ID").fill(clientId);
+      await page.getByLabel("Name", { exact: true }).fill(clientId);
       await page
-        .getByRole("button", { name: "New client", exact: true })
-        .click();
-      await page.getByLabel("Client ID", { exact: true }).fill(clientId);
-      await page.getByLabel("Title", { exact: true }).fill(clientId);
-      await page
-        .getByLabel("Redirect URIs (one per line)")
+        .getByRole("textbox", { name: /^Redirect URLs/ })
         .fill("http://localhost:49371/callback");
-      await page.getByLabel("Loopback development client").check();
-      await page
-        .getByRole("button", { name: "Save client", exact: true })
-        .click();
-      await page.getByText("Client saved.", { exact: true }).waitFor();
+      await page.getByLabel(/Local development app/).check();
+      await page.getByRole("button", { name: "Save app", exact: true }).click();
+      await page.getByText("App saved.", { exact: true }).waitFor();
       await page.reload();
       const row = page.getByRole("row").filter({ hasText: clientId });
       await row.getByRole("button", { name: "Edit", exact: true }).click();
       assert.equal(
-        await page.getByLabel("Redirect URIs (one per line)").inputValue(),
+        await page
+          .getByRole("textbox", { name: /^Redirect URLs/ })
+          .inputValue(),
         "http://localhost:49371/callback",
       );
       page.once("dialog", (dialog) => dialog.accept());
-      await page
-        .getByRole("button", { name: "Disable client", exact: true })
-        .click();
+      await page.getByRole("button", { name: "Turn off", exact: true }).click();
       await row.getByText("Disabled", { exact: true }).waitFor();
       await row.getByRole("button", { name: "Edit", exact: true }).click();
       page.once("dialog", (dialog) => dialog.accept());
       await page
-        .getByRole("button", { name: "Delete client", exact: true })
+        .getByRole("button", { name: "Delete app", exact: true })
         .click();
-      await page.getByText("Client deleted.", { exact: true }).waitFor();
+      await page.getByText("App deleted.", { exact: true }).waitFor();
       assert.equal(await row.count(), 0);
 
       const title = `Console role ${ulid()}`;
       await page.goto(`${runtime.trellisUrl}/console/admin/roles/new`);
       await page.getByLabel("Title", { exact: true }).fill(title);
       await page
-        .getByRole("checkbox", { name: /trellis.auth.v1:account.read/ })
-        .check();
+        .getByRole("group", { name: "Account", exact: true })
+        .first()
+        .getByRole("button")
+        .click();
+      await page.getByRole("checkbox", { name: /See your profile/ }).check();
       await page
         .getByRole("button", { name: "Save role", exact: true })
         .click();

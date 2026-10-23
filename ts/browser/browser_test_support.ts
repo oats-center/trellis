@@ -66,7 +66,7 @@ export async function approveConsentIfRequired(
   timeoutMs = 5_000,
 ): Promise<void> {
   const approve = page.getByRole("button", {
-    name: "Authorize application",
+    name: "Allow",
     exact: true,
   });
   if (await visibleWithin(approve, timeoutMs)) {
@@ -84,12 +84,12 @@ export async function confirmAdministrationIfAsked(
   timeoutMs = 2_000,
 ): Promise<void> {
   const allow = page.getByRole("button", {
-    name: "Allow management of Trellis",
+    name: "Allow management",
     exact: true,
   });
   if (await visibleWithin(allow, timeoutMs)) {
     await page
-      .getByRole("checkbox", { name: /I understand this application/ })
+      .getByRole("checkbox", { name: /I understand this app/ })
       .check();
     await allow.click();
   }
@@ -151,13 +151,12 @@ export async function completeAdminBootstrapInBrowser(
     .fill(credentials.password);
   await page
     .getByRole("button", {
-      name: "Reset password and sign out existing sessions",
+      name: "Set password",
+      exact: true,
     })
     .click();
   await page
-    .getByText(
-      "Your password was changed. Existing sessions have been signed out.",
-    )
+    .getByText("Your new password is set")
     .waitFor({ state: "visible" });
   await page.goto(`${runtime.trellisUrl}/console`, {
     waitUntil: "domcontentloaded",
@@ -178,7 +177,7 @@ export async function completeConsoleEntry(
     .waitFor({ state: "visible", timeout: 60_000 })
     .then(() => "form" as const);
   const approval = page
-    .getByRole("button", { name: "Authorize application", exact: true })
+    .getByRole("button", { name: "Allow", exact: true })
     .waitFor({ state: "visible", timeout: 60_000 })
     .then(() => "approval" as const);
 

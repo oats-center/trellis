@@ -4,7 +4,7 @@
   import { SvelteSet } from "svelte/reactivity";
 
   import { resolve } from "$lib/console_paths";
-  import { TABLE_PAGE_LIMIT } from "$lib/console/paging.ts";
+  import { TABLE_PAGE_LIMIT, traverseAll } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import {
     nextCursorPage,
@@ -18,11 +18,14 @@
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import Panel from "$lib/components/Panel.svelte";
-  import { errorMessage } from "$lib/format";
+  import ActionMenu from "$lib/components/ActionMenu.svelte";
+  import HealthStatus from "$lib/components/HealthStatus.svelte";
+  import Pager from "$lib/components/Pager.svelte";
+  import { errorMessage, humanizeName } from "$lib/format";
   import { getTrellis } from "$lib/trellis";
 
   type Deployment = apis.auth.DeploymentsListOutput["items"][number];
+  type Participant = apis.health.QueryOutput["items"][number];
 
   const trellis = getTrellis();
   const RPC_TIMEOUT_MS = 10_000;
@@ -37,19 +40,43 @@
   let nextCursor = $state<string | undefined>(undefined);
   let search = $state("");
   const selected = new SvelteSet<string>();
+  // Runtime health is optional context; the list stands without it.
+  let healthByDeployment = $state.raw<Map<string, Participant>>(new Map());
+
+  async function loadHealth(): Promise<void> {
+    const response = await traverseAll(async (page) => {
+      const result = await trellis.healthQuery({ page }).orThrow();
+      return { items: result.items, cursor: result.page.nextCursor };
+    });
+    // Health reports by deployment when it can, otherwise by participant name.
+    const byDeployment = new Map<string, Participant>();
+    for (const participant of response.items) {
+      byDeployment.set(humanizeName(participant.participantName), participant);
+      for (const deploymentId of participant.deploymentIds)
+        byDeployment.set(deploymentId, participant);
+    }
+    healthByDeployment = byDeployment;
+  }
+
+  function ago(iso: string): string {
+    const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    if (!Number.isFinite(minutes)) return "—";
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    return hours < 24 ? `${hours} h ago` : `${Math.floor(hours / 24)} d ago`;
+  }
 
   const filteredDeployments = $derived.by(() => {
     const term = search.trim().toLowerCase();
     return deployments.filter(
       (deployment) =>
         (selectedState === "" || deployment.state === selectedState) &&
-        (deployment.title.toLowerCase().includes(term) ||
+        (humanizeName(deployment.title).toLowerCase().includes(term) ||
+          deployment.title.toLowerCase().includes(term) ||
           deployment.deploymentId.toLowerCase().includes(term)),
     );
   });
-  const disabledCount = $derived(
-    deployments.filter((deployment) => deployment.state === "disabled").length,
-  );
 
   async function load(): Promise<void> {
     const token = scope.begin();
@@ -96,6 +123,7 @@
     void selectedState;
     scope.setKey(`services:${selectedState}`);
     void load();
+    void loadHealth().catch(() => {});
     return () => scope.invalidate();
   });
 
@@ -122,154 +150,154 @@
   }
 </script>
 
-<section class="space-y-4">
-  <PageToolbar
-    title="Service runtime"
-    description="Service deployments bound to certified native implementations."
-  >
+<section class="space-y-5">
+  <PageToolbar title="Services" description="Services running on Trellis.">
     {#snippet actions()}
-      <button class="btn btn-ghost btn-sm" onclick={load} disabled={loading}
-        >Refresh</button
-      >
-      <a class="btn btn-outline btn-sm" href={resolve("/admin/services/new")}
-        >Create service</a
+      <a class="btn btn-primary" href={resolve("/admin/services/new")}
+        ><Icon name="plus" size={18} />Add service</a
       >
     {/snippet}
   </PageToolbar>
 
   {#if error}<Notice variant="error">{error}</Notice>{/if}
 
-  {#if loading && deployments.length === 0}
-    <Panel><LoadingState label="Loading services" /></Panel>
-  {:else}
-    <Panel>
-      <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2
-            class="text-sm font-semibold uppercase tracking-wide text-base-content/70"
+  <div class="trellis-section">
+    <div class="flex flex-wrap items-center gap-3 p-4">
+      <div class="trellis-segment" role="group" aria-label="Filter by state">
+        {#each [["", "All"], ["enabled", "Active"], ["disabled", "Disabled"]] as const as [value, label] (value)}
+          <button
+            type="button"
+            class={{ active: selectedState === value }}
+            aria-pressed={selectedState === value}
+            onclick={() => applyStateFilter(value)}>{label}</button
           >
-            Service fleet
-          </h2>
-          <p class="text-xs text-base-content/50">
-            {deployments.length} on this page · {disabledCount} not active · page
-            size {TABLE_PAGE_LIMIT}
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <label class="input input-bordered input-sm flex items-center gap-2">
-            <Icon name="search" size={14} class="text-base-content/50" />
-            <input
-              bind:value={search}
-              class="grow"
-              placeholder="Search this page"
-              aria-label="Search deployments"
-            />
-          </label>
-          <label class="select select-bordered select-sm">
-            <select
-              aria-label="Filter by state"
-              value={selectedState}
-              onchange={(event) =>
-                applyStateFilter(
-                  event.currentTarget.value as "" | "enabled" | "disabled",
-                )}
-            >
-              <option value="">All states on this page</option>
-              <option value="enabled">Enabled</option>
-              <option value="disabled">Disabled</option>
-            </select>
-          </label>
-        </div>
+        {/each}
       </div>
-
-      {#if deployments.length === 0}
-        <EmptyState
-          title="No service deployments"
-          description="Create a deployment profile to inspect and install a service participant."
+      <label
+        class="input flex w-full max-w-md items-center gap-2 bg-base-100 sm:w-auto sm:flex-1"
+      >
+        <Icon name="search" size={16} class="text-base-content/50" />
+        <input
+          bind:value={search}
+          class="grow"
+          placeholder="Search services"
+          aria-label="Search services"
         />
-      {:else}
-        <DataTable>
-          <thead
-            ><tr
-              ><th>Deployment</th><th>State</th><th>Participant</th><th
-                >Revision</th
-              ><th>Implementation</th></tr
-            ></thead
-          >
-          <tbody>
-            {#each filteredDeployments as deployment (deployment.deploymentId)}
-              <tr class="hover:bg-base-200/60">
-                <td class="min-w-72">
-                  <a
-                    class="btn btn-ghost h-auto min-h-0 justify-start gap-2 px-2 py-1 text-left"
-                    href={resolve("/admin/services/[deploymentId]", {
-                      deploymentId: deployment.deploymentId,
-                    })}
-                  >
-                    <span
-                      class="h-2.5 w-2.5 rounded-full {deployment.state ===
-                      'enabled'
-                        ? 'bg-success'
-                        : 'bg-base-content/30'}"
-                    ></span>
-                    <span class="min-w-0">
-                      <span class="block truncate font-medium"
-                        >{deployment.title}</span
-                      >
-                      <span
-                        class="trellis-identifier block truncate text-xs text-base-content/50"
-                        >{deployment.deploymentId}</span
-                      >
-                    </span>
-                  </a>
-                </td>
-                <td>
-                  <span
-                    class="badge badge-sm {deployment.state === 'enabled'
-                      ? 'badge-success'
-                      : 'badge-neutral'}">{deployment.state}</span
-                  >
-                </td>
-                <td class="trellis-identifier truncate text-xs"
-                  >{deployment.participantId ?? "Not installed"}</td
-                >
-                <td>{deployment.revision}</td>
-                <td class="trellis-identifier break-all"
-                  >{deployment.implementationDigest}</td
-                >
-              </tr>
-            {:else}
-              <tr
-                ><td colspan="5" class="text-base-content/50"
-                  >No matching deployments on this page.</td
-                ></tr
-              >
-            {/each}
-          </tbody>
-        </DataTable>
+      </label>
+    </div>
 
-        <div class="mt-3 flex items-center justify-between gap-2">
-          <span class="text-xs text-base-content/50"
-            >{deployments.length} on this page</span
-          >
-          <div class="join">
-            <button
-              class="btn btn-sm join-item"
-              onclick={goPrevious}
-              disabled={cursorHistory.back.length === 0 || loading}
+    {#if loading && deployments.length === 0}
+      <LoadingState label="Loading services" />
+    {:else if deployments.length === 0}
+      <EmptyState
+        class="m-4"
+        title={selectedState ? "No services here" : "No services yet"}
+        description={selectedState
+          ? "Try a different filter."
+          : "Add a service to run it on Trellis."}
+      />
+    {:else}
+      <DataTable>
+        <thead>
+          <tr>
+            <th>Service</th>
+            <th>Health</th>
+            <th>Running</th>
+            <th>Version</th>
+            <th>Status</th>
+            <th>Last seen</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each filteredDeployments as deployment (deployment.deploymentId)}
+            {@const health =
+              healthByDeployment.get(deployment.deploymentId) ??
+              healthByDeployment.get(humanizeName(deployment.participantId))}
+            <tr>
+              <td>
+                <a
+                  class="flex items-center gap-3"
+                  href={resolve("/admin/services/[deploymentId]", {
+                    deploymentId: deployment.deploymentId,
+                  })}
+                >
+                  <span
+                    class="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-base-200 text-base-content/70"
+                    ><Icon name="box" size={18} /></span
+                  >
+                  <span class="min-w-0">
+                    <span class="block truncate font-medium hover:underline"
+                      >{humanizeName(deployment.title)}</span
+                    >
+                    {#if humanizeName(deployment.participantId) !== humanizeName(deployment.title)}
+                      <span class="block truncate text-xs text-base-content/60"
+                        >{humanizeName(deployment.participantId)}</span
+                      >
+                    {/if}
+                  </span>
+                </a>
+              </td>
+              <td>
+                {#if health}<HealthStatus status={health.effectiveStatus} />
+                {:else}<span class="text-base-content/50">No reports</span>{/if}
+              </td>
+              <td class="tabular-nums">
+                {#if health}{Number(health.onlineInstances)} / {Number(
+                    health.onlineInstances,
+                  ) + Number(health.offlineInstances)}{:else}—{/if}
+              </td>
+              <td class="text-base-content/75"
+                >{health?.versions.join(", ") || "—"}</td
+              >
+              <td>
+                <span
+                  class={[
+                    "badge badge-sm",
+                    deployment.state === "enabled"
+                      ? "badge-success"
+                      : "badge-neutral",
+                  ]}
+                  >{deployment.state === "enabled"
+                    ? "Active"
+                    : "Disabled"}</span
+                >
+              </td>
+              <td class="text-base-content/75"
+                >{health ? ago(health.lastSeenAt) : "—"}</td
+              >
+              <td class="text-right">
+                <ActionMenu
+                  widthClass="w-40"
+                  ariaLabel={`Actions for ${humanizeName(deployment.title)}`}
+                >
+                  <li>
+                    <a
+                      href={resolve("/admin/services/[deploymentId]", {
+                        deploymentId: deployment.deploymentId,
+                      })}>Open</a
+                    >
+                  </li>
+                </ActionMenu>
+              </td>
+            </tr>
+          {:else}
+            <tr
+              ><td colspan="7" class="text-base-content/60"
+                >No services match your search.</td
+              ></tr
             >
-              Previous
-            </button>
-            <button
-              class="btn btn-sm join-item"
-              onclick={goNext}
-              disabled={nextCursor === undefined || loading}
-            >
-              Next
-            </button>
-          </div>
-        </div>
-      {/if}
-    </Panel>
-  {/if}
+          {/each}
+        </tbody>
+      </DataTable>
+      <Pager
+        summary={`Showing ${filteredDeployments.length} service${filteredDeployments.length === 1 ? "" : "s"}${nextCursor !== undefined || cursorHistory.back.length ? " on this page" : ""}`}
+        canPrevious={cursorHistory.back.length > 0}
+        canNext={nextCursor !== undefined}
+        busy={loading}
+        onPrevious={goPrevious}
+        onNext={goNext}
+      />
+    {/if}
+  </div>
 </section>

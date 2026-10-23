@@ -28,17 +28,15 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
     await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await page
-      .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+      .getByRole("heading", { name: /wants to use your account/ })
       .waitFor();
     for (const choice of await page.getByRole("checkbox").all())
       if (await choice.isEnabled()) await choice.check();
-    await page.getByRole("button", { name: "Authorize application" }).click();
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
     // Administration takes a separate confirmation step.
+    await page.getByRole("checkbox", { name: /I understand this app/ }).check();
     await page
-      .getByRole("checkbox", { name: /I understand this application/ })
-      .check();
-    await page
-      .getByRole("button", { name: "Allow management of Trellis" })
+      .getByRole("button", { name: "Allow management", exact: true })
       .click();
     await page
       .getByRole("cell", { name: username, exact: true })
@@ -78,7 +76,7 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
     await page.getByLabel("Open user menu", { exact: true }).click();
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page
-      .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+      .getByRole("heading", { name: /wants to use your account/ })
       .waitFor();
     strictEqual(new URL(page.url()).origin, portal);
     const logout = await page.evaluate(async (requestId) => {
@@ -107,14 +105,14 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
       .fill("a separate browser account password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     await page
-      .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+      .getByRole("heading", { name: /wants to use your account/ })
       .waitFor();
     await page
-      .getByRole("checkbox", {
-        name: /See your profile/,
-      })
-      .check();
-    await page.getByRole("button", { name: "Authorize application" }).click();
+      .getByRole("group", { name: "Account", exact: true })
+      .getByRole("button")
+      .click();
+    await page.getByRole("checkbox", { name: /See your profile/ }).check();
+    await page.getByRole("button", { name: "Allow", exact: true }).click();
     await page.waitForURL(
       (url) =>
         url.origin === new URL(application).origin &&
@@ -133,7 +131,7 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
       .waitFor();
     await page.goto(new URL("/console/admin/users", application).href);
     await page
-      .getByText("Trellis could not reach the requested capability.", {
+      .getByText("You haven't allowed the Console to do this.", {
         exact: true,
       })
       .waitFor();

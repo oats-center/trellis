@@ -7,7 +7,7 @@
   import { canPerform } from "$lib/console/operations.ts";
   import { projectConsoleError } from "$lib/console/display_value.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
-  import { tablePage, TABLE_PAGE_LIMIT } from "$lib/console/paging.ts";
+  import { tablePage, traverseAll } from "$lib/console/paging.ts";
   import { RequestScope } from "$lib/console/request_scope.ts";
   import {
     nextCursorPage,
@@ -21,14 +21,26 @@
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import Panel from "$lib/components/Panel.svelte";
-  import StatusBadge from "$lib/components/StatusBadge.svelte";
+  import Pager from "$lib/components/Pager.svelte";
+  import { humanizeName } from "$lib/format";
 
   type Resource = apis.auth.ResourcesListOutput["items"][number];
   const trellis = getTrellis();
   const authority = getConsoleAuthority();
   const scope = new RequestScope("resources:detached");
   let filter = $state<"detached" | "all">("detached");
+  // Owner names make "used by" readable; IDs are the fallback.
+  let ownerNames = $state.raw<Map<string, string>>(new Map());
+
+  async function loadOwners(): Promise<void> {
+    const listed = await traverseAll(async (page) => {
+      const response = await trellis.deploymentsList({ page }).orThrow();
+      return { items: response.items, cursor: response.page.nextCursor };
+    });
+    ownerNames = new Map(
+      listed.items.map((item) => [item.deploymentId, humanizeName(item.title)]),
+    );
+  }
   let resources = $state.raw<Resource[]>([]);
   let history = $state(resetCursorHistory());
   let nextCursor = $state<string>();
@@ -108,11 +120,11 @@
     actionMessage = null;
     try {
       const confirmed = await confirmation?.confirm({
-        title: "Permanently delete this resource?",
+        title: "Permanently delete this storage?",
         message:
-          "This permanently deletes the retained allocation and its data. This cannot be undone. Keeping it allows a compatible declaration to reattach later.",
+          "Its data is deleted and can't be recovered. If you keep it, the service can use it again when it comes back.",
         confirmLabel: "Permanently delete",
-        targetLabel: "Selected resource and owner",
+        targetLabel: "Storage",
         targetName: `${intent.name} · ${intent.owner}`,
         expectedValue: intent.name,
         details: `Resource ID: ${intent.input.resourceId} · Revision: ${intent.input.expectedRevision}`,
@@ -164,19 +176,20 @@
         return;
       }
       void load();
+      void loadOwners().catch(() => {});
     });
   });
   onDestroy(() => scope.dispose());
 </script>
 
-<section class="space-y-4">
+<section class="space-y-5">
   <PageToolbar
     title="Resources"
-    description="Removing a declaration retains its allocation and data. Compatible declarations can reattach; only an explicit administrator deletion permanently removes data."
+    description="Storage that services and devices use. Unused storage stays until you delete it."
   >
     {#snippet actions()}
       <button
-        class="btn btn-ghost btn-sm"
+        class="btn btn-ghost"
         disabled={loading || busy || !canRead}
         onclick={() => void load()}>Refresh</button
       >
@@ -187,32 +200,29 @@
       >{actionMessage}</Notice
     >{/if}
   {#if readError}<Notice variant="error"
-      >{readError} Any displayed rows are the last successful page; deletion is disabled
-      until a successful refresh.</Notice
+      >{readError} Deleting is off until the list loads again.</Notice
     >{/if}
 
-  <Panel>
-    <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-      <div class="join" role="group" aria-label="Resource state filter">
+  <div class="trellis-section">
+    <div class="flex flex-wrap items-center justify-between gap-3 p-4">
+      <div class="trellis-segment" role="group" aria-label="Filter resources">
         <button
-          class="btn btn-outline btn-sm join-item"
-          class:btn-active={filter === "detached"}
+          type="button"
+          class={{ active: filter === "detached" }}
           aria-pressed={filter === "detached"}
           disabled={busy}
-          onclick={() => changeFilter("detached")}>Detached</button
+          onclick={() => changeFilter("detached")}>Unused</button
         >
         <button
-          class="btn btn-outline btn-sm join-item"
-          class:btn-active={filter === "all"}
+          type="button"
+          class={{ active: filter === "all" }}
           aria-pressed={filter === "all"}
           disabled={busy}
-          onclick={() => changeFilter("all")}>All retained states</button
+          onclick={() => changeFilter("all")}>All</button
         >
       </div>
-      <p class="text-xs text-base-content/60" aria-live="polite">
-        {loading
-          ? "Loading resources…"
-          : `${resources.length} on this page · page size ${TABLE_PAGE_LIMIT}`}
+      <p class="text-sm text-base-content/60" aria-live="polite">
+        {loading ? "Loading…" : ""}
       </p>
     </div>
 
@@ -220,83 +230,82 @@
       <LoadingState label="Loading resources" />
     {:else if resources.length === 0 && !readError}
       <EmptyState
-        title={filter === "detached"
-          ? "No detached resources"
-          : "No retained resources"}
+        class="m-4"
+        title={filter === "detached" ? "No unused storage" : "No storage yet"}
         description={filter === "detached"
-          ? "No detached resources. Removing a declaration retains its allocation here until an administrator explicitly deletes it."
-          : "Retained allocations will appear here independently of active deployment declarations."}
+          ? "When a service stops using storage, it shows up here so you can delete it."
+          : "Storage appears when services and devices are set up."}
       />
     {:else if resources.length > 0}
-      {#if loading}<p class="mb-2 text-xs text-base-content/60">
-          Refreshing; showing the last successful page. Deletion is disabled.
-        </p>{/if}
-      <DataTable fixed tableClass="min-w-[72rem]">
-        <thead
-          ><tr
-            ><th class="w-44">Resource</th><th class="w-64">Owner</th><th
-              class="w-64">Participant</th
-            ><th class="w-96">Resource ID</th><th class="w-32">State</th><th
-              class="w-24">Revision</th
-            ><th class="w-36">Action</th></tr
-          ></thead
-        >
+      <DataTable>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Used by</th>
+            <th>Status</th>
+            <th><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
         <tbody>
           {#each resources as resource (resource.resourceId)}
-            <tr class="hover:bg-base-200/60">
-              <td
-                ><span class="trellis-identifier block overflow-x-auto"
-                  >{resource.localName}</span
-                ><span class="text-xs text-base-content/60"
-                  >{resource.kind}</span
-                ></td
-              >
-              <td
-                ><span class="block text-xs text-base-content/60"
-                  >{resource.ownerKind}</span
-                ><span class="trellis-identifier block overflow-x-auto text-xs"
-                  >{resource.ownerId}</span
-                ></td
-              >
-              <td
-                ><span class="trellis-identifier block overflow-x-auto text-xs"
-                  >{resource.participantId ?? resource.clientId ?? "—"}</span
-                ></td
-              >
-              <td
-                ><span class="trellis-identifier block overflow-x-auto text-xs"
-                  >{resource.resourceId}</span
-                ></td
-              >
-              <td
-                ><StatusBadge
-                  label={resource.state}
-                  status={resource.state === "ready"
-                    ? "healthy"
-                    : resource.state === "failed"
-                      ? "unhealthy"
-                      : resource.state === "pending" ||
-                          resource.state === "destroying"
-                        ? "degraded"
-                        : "offline"}
-                /></td
-              >
-              <td class="trellis-identifier">{resource.revision}</td>
-              <td
-                >{#if resource.state === "detached" && canRemove}<button
+            <tr>
+              <td>
+                <span class="block font-medium"
+                  >{humanizeName(resource.localName)}</span
+                >
+                <span class="block text-xs text-base-content/60"
+                  >{humanizeName(resource.kind)} ·
+                  <span class="trellis-identifier text-[0.7rem]"
+                    >{resource.resourceId}</span
+                  ></span
+                >
+              </td>
+              <td>
+                <span class="block"
+                  >{ownerNames.get(resource.ownerId) ??
+                    humanizeName(
+                      resource.participantId ?? resource.clientId ?? "—",
+                    )}</span
+                >
+                <span class="block text-xs text-base-content/60"
+                  >{resource.ownerKind === "device"
+                    ? "Device"
+                    : "Service"}</span
+                >
+              </td>
+              <td>
+                <span
+                  class={[
+                    "badge badge-sm",
+                    resource.state === "ready"
+                      ? "badge-success"
+                      : resource.state === "failed"
+                        ? "badge-error"
+                        : resource.state === "pending" ||
+                            resource.state === "destroying"
+                          ? "badge-warning"
+                          : "badge-neutral",
+                  ]}
+                  >{resource.state === "detached"
+                    ? "Unused"
+                    : resource.state === "ready"
+                      ? "In use"
+                      : resource.state === "destroying"
+                        ? "Deleting"
+                        : humanizeName(resource.state)}</span
+                >
+              </td>
+              <td class="text-right">
+                {#if resource.state === "detached" && canRemove}<button
                     class="btn btn-outline btn-error btn-sm"
-                    aria-label={`Delete ${resource.localName} owned by ${resource.ownerKind} ${resource.ownerId}`}
+                    aria-label={`Delete ${resource.localName} used by ${resource.ownerKind} ${resource.ownerId}`}
                     disabled={busy ||
                       uncertain ||
                       loading ||
                       readError !== null}
                     onclick={() => void remove(resource)}>Delete</button
-                  >{:else}<span class="text-xs text-base-content/50"
-                    >{resource.state === "detached"
-                      ? "Read only"
-                      : "Not detached"}</span
-                  >{/if}</td
-              >
+                  >{/if}
+              </td>
             </tr>
           {/each}
         </tbody>
@@ -304,24 +313,19 @@
     {/if}
 
     {#if resources.length > 0 || history.back.length > 0 || nextCursor !== undefined}
-      <div class="mt-3 flex justify-end gap-2">
-        <button
-          class="btn btn-outline btn-sm"
-          disabled={loading || busy || history.back.length === 0}
-          onclick={() => void load(previousCursorPage(history))}
-          >Previous</button
-        >
-        <button
-          class="btn btn-outline btn-sm"
-          disabled={loading || busy || nextCursor === undefined}
-          onclick={() => {
-            if (nextCursor !== undefined)
-              void load(nextCursorPage(history, nextCursor));
-          }}>Next</button
-        >
-      </div>
+      <Pager
+        summary={`Showing ${resources.length} on this page`}
+        canPrevious={history.back.length > 0}
+        canNext={nextCursor !== undefined}
+        busy={loading || busy}
+        onPrevious={() => void load(previousCursorPage(history))}
+        onNext={() => {
+          if (nextCursor !== undefined)
+            void load(nextCursorPage(history, nextCursor));
+        }}
+      />
     {/if}
-  </Panel>
+  </div>
 </section>
 
 <ConfirmationModal bind:this={confirmation} />

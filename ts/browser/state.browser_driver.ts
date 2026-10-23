@@ -139,13 +139,11 @@ test(
           .getByRole("button", { name: "Sign in", exact: true })
           .click();
         await page
-          .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
+          .getByRole("heading", { name: /wants to use your account/ })
           .waitFor();
         for (const box of await page.getByRole("checkbox").all())
           if (await box.isEnabled()) await box.check();
-        await page
-          .getByRole("button", { name: "Authorize application" })
-          .click();
+        await page.getByRole("button", { name: "Allow", exact: true }).click();
         await page.waitForURL(
           (url) => url.origin === origin && url.pathname === "/callback",
         );

@@ -189,3 +189,16 @@ test("U12 error projection reads serialized and context shapes", () => {
   equal(context.message, "from context");
   equal(context.code, "not_found");
 });
+
+test("an optional action the user never allowed reads as not allowed", async () => {
+  const { createActionUnavailableError } =
+    await import("../../../../ts/packages/trellis/session.ts");
+  const { errorMessage } = await import("../format.ts");
+  const error = createActionUnavailableError("Deployments.List", [
+    "trellis.auth@v1::deploymentsRead",
+  ]);
+  for (const value of [error, { error }]) {
+    equal(projectConsoleError(value).code, "not_allowed");
+    equal(errorMessage(value), "You haven't allowed the Console to do this.");
+  }
+});
