@@ -38,7 +38,7 @@ test("user updates preserve identity while disabling retires authorization and r
     const required = [
       ...new Set([
         ...adminParticipant.requiredCapabilities,
-        "trellis.auth@v1::sessionsRead",
+        "trellis.auth@v1::readSessions",
       ]),
     ];
     for (const capabilityId of required)

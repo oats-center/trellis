@@ -66,23 +66,12 @@ export const APP_CONFIG: RuntimeAppConfig = {
   },
 };
 
-/** Request finite administrative delegation through ordinary OAuth consent, independently of the generated app request. */
+/** The Console's OAuth identity; its generated request already asks for administration optionally. */
 export function consoleAuthOptions(): ClientAuthOptions {
   return {
     clientId: APP_CONFIG.clientId,
     redirectTo: APP_CONFIG.callbackUri,
     loopbackDevelopment: APP_CONFIG.loopbackDevelopment,
-    platformPrivileges: {
-      required: [],
-      optional: [
-        "principals.manage",
-        "roles.manage",
-        "apis.accept",
-        "apis.forceReplace",
-        "clients.manage",
-        "privileges.manage",
-      ],
-    },
   };
 }
 

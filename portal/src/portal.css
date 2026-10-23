@@ -131,6 +131,15 @@ legend {
   color: var(--warning);
   font-size: 0.875rem;
 }
+.administration {
+  margin: 2rem 0;
+  padding: 1.25rem;
+  border: 1px solid var(--warning);
+  border-radius: 0.25rem;
+}
+.administration h2 {
+  margin-top: 0;
+}
 .remember {
   display: flex;
   gap: 0.75rem;

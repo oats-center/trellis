@@ -49,7 +49,7 @@ agent Caller {
   use runtime { required capability transport; }
 }
 app Denied { use runtime; }
-service AdminService { use auth { required capability capabilityGrantsRead; required capability capabilityGrantsRevoke; required capability authorizationSessionsRead; } }
+service AdminService { use auth { required capability manageRoles; required capability managePrincipals; } }
 service EventService { implements events; }
 app Alpha { use events { required capability publishAlpha; required capability inspect; required capability dropAlpha; } }
 app Beta { use events { required capability publishBeta; } }

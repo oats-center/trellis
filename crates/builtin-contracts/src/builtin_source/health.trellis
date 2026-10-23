@@ -462,14 +462,14 @@ api health@v1 {
         consent_revision 1;
         allows { rpc Inspect; }
       }
-      capability summary {
+      capability readSummary {
         title "See health overview";
         description "See how many things are healthy or not.";
         consequence "Can see overall health.";
         consent_revision 1;
         allows { rpc Summary; }
       }
-      capability metrics {
+      capability readMetrics {
         title "See health metrics";
         description "See health measurements over time.";
         consequence "Can see health metrics.";
@@ -483,7 +483,7 @@ api health@v1 {
         consent_revision 1;
         allows { live Watch; }
       }
-      capability statusChanges {
+      capability observeStatusChanges {
         title "Get health alerts";
         description "Be told when something becomes healthy or unhealthy.";
         consequence "Receives health changes.";
@@ -491,7 +491,7 @@ api health@v1 {
         allows { subscribe event StatusChanged; }
       }
     }
-    capability selfReport {
+    capability reportHealth {
       title "Report own health";
       description "Let a service or device report its own health.";
       consequence "Records health for that service or device only.";

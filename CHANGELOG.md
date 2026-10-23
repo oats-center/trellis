@@ -10,6 +10,22 @@ and this project adheres to
 
 ### Added
 
+- **Breaking:** Administrative capabilities replace platform privileges.
+  Managing the installation uses six ordinary capabilities in the reserved
+  `trellis.*` namespace: `trellis.managePrincipals`, `trellis.manageRoles`,
+  `trellis.acceptApis`, `trellis.forceReplaceApis`, `trellis.manageClients`,
+  and `trellis.managePlatform`. Roles, direct grants, and identity-provider
+  mappings carry them; changing who holds one requires
+  `trellis.managePlatform`. The initialized administrator holds all six
+  inherently and cannot lose them. The IDL `administrative;` marker declares
+  them and is reserved to the built-in `trellis` package, and Auth refuses any
+  other API in the `trellis.` namespace.
+- `[auth.administration]` safeguards for delegating administration to an app,
+  each on by default: `confirm_on_consent` (a separate Portal confirmation
+  step), `require_peer_approval` (another `trellis.managePlatform` holder
+  decides through `Administration.Reviews.List/Decide`), and
+  `registered_clients_only`.
+
 - Rust generated open enums implement `From<String>` and `From<&str>`, and
   `trellis_protocol::model::Timestamp::from_unix_seconds` builds a canonical
   timestamp without a format/parse round trip.
@@ -72,6 +88,10 @@ and this project adheres to
   `[nats] ca_certificate` for the runtime's own broker connections.
 
 ### Changed
+
+- **Breaking:** Every capability name is verb first, for example
+  `readSessions`, `changePassword`, and `managePrincipals`. Auth's one-RPC
+  administrative capabilities fold into the administrative capabilities.
 
 - Signed issuer-metadata answers are `trellis-protocol` types:
   `AuthorityMaterial`, `AuthorizationSessionStatus`, and `IssuerChain`, each
@@ -162,6 +182,13 @@ and this project adheres to
 - **Breaking:** `discover_native_oauth` takes the trusted root certificates.
 
 ### Removed
+
+- **Breaking:** Platform privileges: `PlatformPrivilege`, the authority's
+  `platformPrivileges`, the `trellis_platform_privileges` authorization detail,
+  client privilege eligibility, the `PlatformPrivileges.*` and
+  `PlatformDelegations.*` RPCs, `platformPrivileges` in effective access, and
+  the SDK `platformPrivileges` OAuth options. Apps request administrative
+  capabilities through their ordinary capability selections.
 
 - The `Authority.Resolve`, `Authority.Status`, and `Issuers.ResolveChain` Auth
   RPCs and their models. Clients already read this material through the signed

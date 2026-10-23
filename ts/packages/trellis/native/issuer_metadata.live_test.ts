@@ -37,7 +37,13 @@ test(
       try {
         const lease = connected.owner.own();
         try {
-          assert.deepEqual(lease.authority.platformPrivileges, []);
+          assert.ok(
+            !lease.authority.capabilities.some(
+              (held) =>
+                held.capabilityId.startsWith("trellis.") &&
+                !held.capabilityId.includes("::"),
+            ),
+          );
           const status = await connected.owner.readIssuerMetadata({
             kind: "authorityStatus",
             authorizationSessionId: lease.authority.authorizationSessionId,

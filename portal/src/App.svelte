@@ -6,17 +6,11 @@
     title: string;
     description: string;
     consequence: string;
+    /** A `trellis.*` capability to manage this Trellis installation. */
+    administrative: boolean;
     required: boolean;
     available: boolean;
     selected: boolean;
-  }
-
-  interface Privilege {
-    privilege: string;
-    label: string;
-    description: string;
-    required: boolean;
-    available: boolean;
   }
 
   interface Consent {
@@ -30,7 +24,10 @@
     redirectUri: string | null;
     deviceUserCode: string | null;
     capabilities: Capability[];
-    platformPrivileges: Privilege[];
+    /** Administration needs a separate confirmation step. */
+    confirmAdministration: boolean;
+    /** Another administrator approves administration before the app holds it. */
+    peerApproval: boolean;
   }
 
   interface Provider {
@@ -51,7 +48,7 @@
       ?.slice("__Host-trellis-portal-csrf=".length) ?? "";
   let view = $state.raw<Consent | null>(null);
   let selectedCapabilities = $state<string[]>([]);
-  let selectedPrivileges = $state<string[]>([]);
+  let confirming = $state(false);
   let error = $state("");
   let providers = $state.raw<Provider[]>([]);
   let providerError = $state("");
@@ -59,8 +56,22 @@
   const generatedTls =
     document.documentElement.hasAttribute("data-generated-tls");
   let blocked = $derived(
-    view?.capabilities.some((item) => item.required && !item.available) ||
-      view?.platformPrivileges.some((item) => item.required && !item.available),
+    view?.capabilities.some((item) => item.required && !item.available),
+  );
+  let application = $derived(
+    view?.capabilities.filter((item) => !item.administrative) ?? [],
+  );
+  let administration = $derived(
+    view?.capabilities.filter((item) => item.administrative) ?? [],
+  );
+  let selectedAdministration = $derived(
+    administration.filter(
+      (item) =>
+        item.available && selectedCapabilities.includes(item.capabilityId),
+    ),
+  );
+  let needsConfirmation = $derived(
+    (view?.confirmAdministration ?? false) && selectedAdministration.length > 0,
   );
 
   onMount(() => {
@@ -101,9 +112,6 @@
           selectedCapabilities = result.capabilities
             .filter((item) => item.selected)
             .map((item) => item.capabilityId);
-          selectedPrivileges = result.platformPrivileges
-            .filter((item) => item.required)
-            .map((item) => item.privilege);
           view = result;
         }
       })
@@ -295,12 +303,13 @@
           type="button"
           onclick={() => {
             if (!view) return;
+            // Administration is never selected in bulk.
             selectedCapabilities = view.capabilities
-              .filter((item) => item.available)
+              .filter(
+                (item) =>
+                  item.available && (item.required || !item.administrative),
+              )
               .map((item) => item.capabilityId);
-            selectedPrivileges = view.platformPrivileges
-              .filter((item) => item.available)
-              .map((item) => item.privilege);
           }}>Select all</button
         >
         <button
@@ -310,122 +319,134 @@
             selectedCapabilities = view.capabilities
               .filter((item) => item.required && item.available)
               .map((item) => item.capabilityId);
-            selectedPrivileges = view.platformPrivileges
-              .filter((item) => item.required && item.available)
-              .map((item) => item.privilege);
           }}>Unselect all</button
         >
       </div>
-      <fieldset>
-        <legend>Application capabilities</legend>
-        <p class="muted">
-          Required capabilities are necessary to continue. Choose optional
-          capabilities independently.
-        </p>
-        {#each view.capabilities as capability (capability.capabilityId)}
-          <div class="choice">
-            <input
-              id={capability.capabilityId}
-              type="checkbox"
-              name="approved"
-              value={capability.capabilityId}
-              checked={selectedCapabilities.includes(capability.capabilityId)}
-              onchange={(event) => {
-                selectedCapabilities = event.currentTarget.checked
-                  ? [...selectedCapabilities, capability.capabilityId]
-                  : selectedCapabilities.filter(
-                      (id) => id !== capability.capabilityId,
-                    );
-              }}
-              disabled={capability.required || !capability.available}
-            />
-            <div>
-              <div class="choice-title">
-                <label for={capability.capabilityId}
-                  ><strong>{capability.title}</strong></label
-                ><span class="requirement"
-                  >{capability.required ? "Required" : "Optional"}</span
-                >
-              </div>
-              <code>{capability.capabilityId}</code>
-              <p>{capability.description}</p>
-              {#if capability.consequence}<p>
-                  <strong>Effect:</strong>
-                  {capability.consequence}
-                </p>{/if}
-              {#if !capability.available}<p class="unavailable">
-                  Your account does not currently have this capability.
-                </p>{/if}
-              {#if capability.required && capability.available}<input
-                  type="hidden"
-                  name="approved"
-                  value={capability.capabilityId}
-                />{/if}
+      {#snippet choice(capability: Capability)}
+        <div class="choice">
+          <input
+            id={capability.capabilityId}
+            type="checkbox"
+            name="approved"
+            value={capability.capabilityId}
+            checked={selectedCapabilities.includes(capability.capabilityId)}
+            onchange={(event) => {
+              selectedCapabilities = event.currentTarget.checked
+                ? [...selectedCapabilities, capability.capabilityId]
+                : selectedCapabilities.filter(
+                    (id) => id !== capability.capabilityId,
+                  );
+            }}
+            disabled={capability.required || !capability.available}
+          />
+          <div>
+            <div class="choice-title">
+              <label for={capability.capabilityId}
+                ><strong>{capability.title}</strong></label
+              ><span class="requirement"
+                >{capability.required ? "Required" : "Optional"}</span
+              >
             </div>
+            <code>{capability.capabilityId}</code>
+            <p>{capability.description}</p>
+            {#if capability.consequence}<p>
+                <strong>Effect:</strong>
+                {capability.consequence}
+              </p>{/if}
+            {#if !capability.available}<p class="unavailable">
+                {capability.administrative && !view?.registered
+                  ? "Only applications an administrator registered can manage Trellis."
+                  : "Your account does not currently have this capability."}
+              </p>{/if}
+            {#if capability.required && capability.available}<input
+                type="hidden"
+                name="approved"
+                value={capability.capabilityId}
+              />{/if}
           </div>
-        {/each}
-      </fieldset>
-      {#if view.platformPrivileges.length}
-        <fieldset>
-          <legend>Administrative privileges</legend>
-          <p class="muted">
-            These privileges administer Trellis itself. They are separate from
-            application capabilities.
+        </div>
+      {/snippet}
+      <div hidden={confirming}>
+        {#if application.length}
+          <fieldset>
+            <legend>Application capabilities</legend>
+            <p class="muted">
+              Required capabilities are necessary to continue. Choose optional
+              capabilities independently.
+            </p>
+            {#each application as capability (capability.capabilityId)}
+              {@render choice(capability)}
+            {/each}
+          </fieldset>
+        {/if}
+        {#if administration.length}
+          <fieldset>
+            <legend>Manage this Trellis</legend>
+            <p class="muted">
+              These capabilities administer this Trellis installation itself,
+              not just the application's own data.
+            </p>
+            {#each administration as capability (capability.capabilityId)}
+              {@render choice(capability)}
+            {/each}
+          </fieldset>
+        {/if}
+        <label class="remember"
+          ><input type="checkbox" name="remember" value="true" checked /><span
+            >Remember these choices for this account and application.<br
+            /><small
+              >Future capability additions require new approval, and permission
+              to manage Trellis is never remembered. You can revoke access
+              later.</small
+            ></span
+          ></label
+        >
+      </div>
+      {#if confirming}
+        <section class="administration" aria-labelledby="administration-title">
+          <h2 id="administration-title">
+            Allow {view.clientName ?? view.clientId} to manage this Trellis?
+          </h2>
+          <p>
+            This application is asking to manage this Trellis installation
+            itself. That is a rare and exceptional request: most applications
+            never need it. Approve it only if you expected it and trust this
+            application.
           </p>
-          {#each view.platformPrivileges as privilege (privilege.privilege)}
-            <div class="choice">
-              <input
-                id={privilege.privilege}
-                type="checkbox"
-                name="privilege"
-                value={privilege.privilege}
-                checked={selectedPrivileges.includes(privilege.privilege)}
-                onchange={(event) => {
-                  selectedPrivileges = event.currentTarget.checked
-                    ? [...selectedPrivileges, privilege.privilege]
-                    : selectedPrivileges.filter(
-                        (id) => id !== privilege.privilege,
-                      );
-                }}
-                disabled={privilege.required || !privilege.available}
-              />
-              <div>
-                <div class="choice-title">
-                  <label for={privilege.privilege}
-                    ><strong>{privilege.label}</strong></label
-                  ><span class="requirement"
-                    >{privilege.required ? "Required" : "Optional"}</span
-                  >
-                </div>
-                <code>{privilege.privilege}</code>
-                <p>{privilege.description}</p>
-                {#if !privilege.available}<p class="unavailable">
-                    This account and client binding cannot receive this
-                    privilege.
-                  </p>{/if}
-                {#if privilege.required && privilege.available}<input
-                    type="hidden"
-                    name="privilege"
-                    value={privilege.privilege}
-                  />{/if}
-              </div>
-            </div>
-          {/each}
-        </fieldset>
+          <ul>
+            {#each selectedAdministration as capability (capability.capabilityId)}
+              <li>
+                <strong>{capability.title}</strong>
+                {#if capability.consequence}— {capability.consequence}{/if}
+              </li>
+            {/each}
+          </ul>
+          {#if view.peerApproval}<p>
+              Another administrator must also approve this before the
+              application receives it.
+            </p>{/if}
+          <label class="remember"
+            ><input
+              type="checkbox"
+              name="confirm_administration"
+              value="true"
+              required
+            /><span
+              >I understand this application will be able to manage this Trellis
+              installation.</span
+            ></label
+          >
+        </section>
       {/if}
-      <label class="remember"
-        ><input type="checkbox" name="remember" value="true" checked /><span
-          >Remember these choices for this account and application.<br /><small
-            >Future capability additions require new approval. You can revoke
-            access later.</small
-          ></span
-        ></label
-      >
       {#if blocked}<p class="unavailable" role="status">
           Required access is unavailable. You cannot authorize this application
           with this account.
         </p>{/if}
       <div class="actions">
+        {#if confirming}<button
+            type="button"
+            onclick={() => (confirming = false)}>Back</button
+          >{/if}
         <button name="decision" value="deny" type="submit" formnovalidate
           >Deny access</button
         >
@@ -434,7 +455,17 @@
           value="approve"
           type="submit"
           class="primary"
-          disabled={blocked}>Authorize application</button
+          disabled={blocked}
+          onclick={(event) => {
+            // Administration takes a separate, explicit confirmation step.
+            if (needsConfirmation && !confirming) {
+              event.preventDefault();
+              confirming = true;
+            }
+          }}
+          >{confirming
+            ? "Allow management of Trellis"
+            : "Authorize application"}</button
         >
       </div>
     </form>

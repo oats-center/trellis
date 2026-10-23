@@ -114,15 +114,13 @@ test(
           password,
           clientId: "trellis.cli",
           request: adminApps.cli.request,
-          platformPrivileges: {
-            required: [
-              "principals.manage",
-              "roles.manage",
-              "clients.manage",
-              "apis.accept",
-              "apis.forceReplace",
-            ],
-          },
+          administrativeCapabilities: [
+            "trellis.managePrincipals",
+            "trellis.manageRoles",
+            "trellis.manageClients",
+            "trellis.acceptApis",
+            "trellis.forceReplaceApis",
+          ],
           signal: context.signal,
         });
         const admin = await connectNativeClient({

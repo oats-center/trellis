@@ -107,7 +107,7 @@ self account's `profileRevision` and an idempotency key. Omitted fields stay
 unchanged; explicit clears restore linked-provider defaults, and manually set
 email is unverified. Manual choices survive later OIDC login. `Users.Resolve`
 with `accountRead` is self-only. Ordinary profiles omit `account`; admin details
-require delegated and currently eligible `principals.manage`. A directory match
+require delegated and currently held `trellis.managePrincipals`. A directory match
 does not grant access to application-owned records; key those rules by immutable
 `principalId`, not names or email.
 

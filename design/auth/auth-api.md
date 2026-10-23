@@ -74,7 +74,8 @@ the exact request, response, and error types.
 | Own authority         | `Authority.Renew`, `Admission.Renew`                                                                                                                                             |
 | APIs and capabilities | `Apis.List/Get/Review/Accept/ForceReplace`, `Capabilities.List`                                                                                                                  |
 | Capability grants     | `CapabilityGrants.Grant/List/Revoke`, `Delegations.List/Review/Revoke`                                                                                                           |
-| Roles and privileges  | `Roles.*`, `RoleAssignments.*`, `PlatformPrivileges.*`, `PlatformDelegations.*`                                                                                                  |
+| Roles                 | `Roles.*`, `RoleAssignments.*`                                                                                                                                                   |
+| Administration        | `Administration.Reviews.List/Decide`                                                                                                                                             |
 | Principals            | `Principals.EffectiveAccess`                                                                                                                                                     |
 | OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`                                                                                                                                       |
 | Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                          |
@@ -106,8 +107,8 @@ approve, reconcile, or materialized-authority RPC family.
 `Resources.List/Get` expose all catalog allocations, including detached resources,
 with digest resource IDs, explicit `user`/`deployment` owner kind and owner ID,
 participant, local name, kind, revision, and lifecycle state. List supports direct
-owner filters without joining only active deployments. The finite
-`principals.manage` privilege is required in addition to the route capability.
+owner filters without joining only active deployments. They require
+`trellis.managePrincipals`.
 
 Declaration omission and deployment Remove detach resources and remove binding
 authority while retaining physical data. Disable preserves allocations and binding
@@ -143,8 +144,8 @@ five-minute, one-use token. Open `/account/reset?token=...` on the
 isolated OAuth origin to complete it with an Origin-checked, CSRF-protected
 native form. Creating the token does not change the password. Completion checks
 credential CAS, the target's protected-administrator status, and the requester's
-still-active logical authorization session and current accepted
-`principals.manage` privilege. It atomically changes the credential, consumes
+still-active logical authorization session and current
+`trellis.managePrincipals`. It atomically changes the credential, consumes
 the action, and revokes existing logins, OAuth grants, and refresh families.
 Bootstrap administrators cannot use this RPC reset path; their existing local
 recovery path remains authoritative. Replay responses keep the same bearer token
@@ -163,13 +164,20 @@ another user, and atomically inserts the identity and consumes the account actio
 
 ## Authorization
 
-Administrative RPCs require the finite platform privilege named by the route
-(for example `principals.manage`, `clients.manage`, or `privileges.manage`) in
-the caller's current accepted authority, in addition to the route capability.
-Privileges gate the administrative surface; they do not fabricate participant
-grants. Mutation authorization and idempotency replay are checked in the same
-SQL transaction using the current principal, login/credential, exact authority
-revision, expiry, and privilege.
+Administrative RPCs are allowed by the administrative capability that names
+them (for example `trellis.managePrincipals`, `trellis.manageClients`, or
+`trellis.managePlatform`) and recheck it against the caller's current
+entitlements. Changing who holds an administrative capability, directly or
+through a role or identity-provider mapping, requires `trellis.managePlatform`.
+Mutation authorization and idempotency replay are checked in the same SQL
+transaction using the current principal, login/credential, exact authority
+revision, and expiry.
+
+`Administration.Reviews.List/Decide` require `trellis.managePlatform`. A review
+records a user's request that one app binding hold one administrative
+capability. Nobody decides their own review. Approval adds the capability to the
+user's live grants for that binding that asked for it, and later grants for the
+binding reuse it; rejection withholds it until the user asks again.
 
 ## Events And Post-Commit Work
 

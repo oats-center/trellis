@@ -53,8 +53,8 @@ pub mod supervisor;
 mod telemetry;
 
 pub use config::{
-    AuthConfig, AuthorizationConfig, AvatarConfig, ClientConfig, ConfigError, HttpConfig,
-    LeasesConfig, ListenerTransport, LiveProviderSeedFilesConfig, LocalIdentityConfig,
+    AdministrationConfig, AuthConfig, AuthorizationConfig, AvatarConfig, ClientConfig, ConfigError,
+    HttpConfig, LeasesConfig, ListenerTransport, LiveProviderSeedFilesConfig, LocalIdentityConfig,
     NatsAuthCalloutConfig, NatsConfig, NatsRuntimeConfig, OAuthListenerConfig,
     ResolvedLeasesConfig, ResolvedNatsAuthCalloutConfig, ResolvedRuntimeNatsConfig, RuntimeConfig,
     RuntimePathDefaults, RuntimePathsConfig, SqliteStorageConfig, StorageBackend, StorageConfig,

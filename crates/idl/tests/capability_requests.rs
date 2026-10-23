@@ -202,12 +202,12 @@ import { events } from events;
 import { core } from core;
 import { auth } from auth;
 app Reader {
-  use auth { required capability capabilitiesRead; }
+  use auth { required capability readSessions; }
   use state { required capability read; }
   use jobs { required capability query; }
   use health { required capability query; }
   use events { required capability query; }
-  use core { required capability authority_read; }
+  use core { required capability readAuthority; }
 }
 "#,
         ),
@@ -241,7 +241,7 @@ app Reader {
     let request = graph.root_package().app_requests().values().next().unwrap();
     for selection in request.uses().values() {
         let expected = match selection.api.as_str() {
-            "trellis.auth@v1" => vec!["Capabilities.List"],
+            "trellis.auth@v1" => vec!["Sessions.List"],
             "trellis.state@v1" => vec!["Get", "Watch"],
             "trellis.core@v1" => vec!["Surface.Status"],
             _ => vec!["Query"],

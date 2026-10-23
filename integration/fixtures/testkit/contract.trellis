@@ -60,13 +60,13 @@ device CompanionDevice {
   state saved { title "Device saved value"; description "Installed device State authority acceptance"; schema Value; version 1; }
   agent Companion {
     state saved { title "User saved value"; description "Independent companion State authority acceptance"; schema Value; version 1; }
-    use auth { required capability deviceCompanionsManage; }
+    use auth { required capability manageDeviceCompanions; }
     use echo { required capability invoke; }
   }
 }
 device OptionalCompanionDevice {
   agent optional Companion {
-    use auth { required capability deviceCompanionsManage; }
+    use auth { required capability manageDeviceCompanions; }
     use echo { required capability invoke; }
   }
 }

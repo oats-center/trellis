@@ -295,15 +295,6 @@ impl OAuthEngine {
             || approval.public_jwk != selection.public_jwk
             || requested.capabilities.required != approval.selection.required
             || requested.capabilities.optional != approval.selection.optional
-            || requested.required_privileges != approval.required_privileges
-            || !requested
-                .required_privileges
-                .iter()
-                .all(|privilege| approval.privileges.contains(privilege))
-            || !approval.privileges.iter().all(|privilege| {
-                requested.required_privileges.contains(privilege)
-                    || requested.optional_privileges.contains(privilege)
-            })
         {
             return Err(ErrorResponse::new(ErrorCode::InvalidGrant).into());
         }

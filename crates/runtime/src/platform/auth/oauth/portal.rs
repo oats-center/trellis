@@ -46,8 +46,6 @@ pub(crate) struct ConsentPresentation {
     pub(crate) capabilities:
         std::collections::BTreeMap<String, Option<trellis_protocol::CapabilityAuthority>>,
     pub(crate) api_generations: std::collections::BTreeMap<String, u64>,
-    pub(crate) required_privileges: Vec<trellis_protocol::PlatformPrivilege>,
-    pub(crate) optional_privileges: Vec<trellis_protocol::PlatformPrivilege>,
     // Authenticated custody evidence filled when reading the sealed artifact.
     #[serde(skip)]
     pub(crate) lookup_hash: String,

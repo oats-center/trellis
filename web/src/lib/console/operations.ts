@@ -4,8 +4,7 @@
  * Every operation is keyed by the generated client method name, so page code
  * asks for the operation it is about to perform rather than naming an API
  * surface by hand. Each entry carries the generated API identity and the exact
- * API interaction, plus the platform privilege required for administrative
- * surfaces.
+ * API interaction.
  *
  * The registry exists so a route's primary query and each optional panel or
  * action are authorized independently. A denied optional read is never
@@ -33,20 +32,14 @@ export type ConsoleOperation = {
   readonly name: string;
   /** Exact interaction. */
   readonly action: OperationAction;
-  /** Platform privilege required in addition to the exact permission atom. */
-  readonly privilege?: string;
 };
 
-function authRpc(
-  name: string,
-  privilege?: ConsoleOperation["privilege"],
-): ConsoleOperation {
+function authRpc(name: string): ConsoleOperation {
   return {
     api: apis.auth.API.identity,
     surface: "rpc",
     name,
     action: "call",
-    ...(privilege === undefined ? {} : { privilege }),
   };
 }
 
@@ -117,8 +110,7 @@ function jobsFeed(name: string): ConsoleOperation {
  * Every console operation, keyed by generated client method name.
  *
  * Entries are added only for operations the console actually performs; an
- * absent operation is not implicitly permitted. Self-service operations carry
- * no platform privilege.
+ * absent operation is not implicitly permitted.
  */
 export const CONSOLE_OPERATIONS = {
   // Auth: session and account self-service.
@@ -163,9 +155,9 @@ export const CONSOLE_OPERATIONS = {
   devicesRemove: authRpc("Devices.Remove"),
 
   // Auth: retained allocations, independent of active deployment declarations.
-  resourcesList: authRpc("Resources.List", "principals.manage"),
-  resourcesGet: authRpc("Resources.Get", "principals.manage"),
-  resourcesRemove: authRpc("Resources.Remove", "principals.manage"),
+  resourcesList: authRpc("Resources.List"),
+  resourcesGet: authRpc("Resources.Get"),
+  resourcesRemove: authRpc("Resources.Remove"),
 
   // Auth: sessions, connections, users, identities.
   sessionsList: authRpc("Sessions.List"),
@@ -181,36 +173,35 @@ export const CONSOLE_OPERATIONS = {
   usersPasswordResetCreate: authRpc("Users.PasswordReset.Create"),
 
   // Auth: grants, capability groups, capabilities, issuers.
-  rolesList: authRpc("Roles.List", "roles.manage"),
-  rolesGet: authRpc("Roles.Get", "roles.manage"),
-  rolesPut: authRpc("Roles.Put", "roles.manage"),
-  rolesDelete: authRpc("Roles.Delete", "roles.manage"),
-  roleAssignmentsList: authRpc("RoleAssignments.List", "roles.manage"),
-  roleAssignmentsAssign: authRpc("RoleAssignments.Assign", "roles.manage"),
-  roleAssignmentsRevoke: authRpc("RoleAssignments.Revoke", "roles.manage"),
-  capabilityGrantsList: authRpc("CapabilityGrants.List", "roles.manage"),
-  capabilityGrantsGrant: authRpc("CapabilityGrants.Grant", "roles.manage"),
-  capabilityGrantsRevoke: authRpc("CapabilityGrants.Revoke", "roles.manage"),
-  principalsEffectiveAccess: authRpc(
-    "Principals.EffectiveAccess",
-    "roles.manage",
-  ),
+  rolesList: authRpc("Roles.List"),
+  rolesGet: authRpc("Roles.Get"),
+  rolesPut: authRpc("Roles.Put"),
+  rolesDelete: authRpc("Roles.Delete"),
+  roleAssignmentsList: authRpc("RoleAssignments.List"),
+  roleAssignmentsAssign: authRpc("RoleAssignments.Assign"),
+  roleAssignmentsRevoke: authRpc("RoleAssignments.Revoke"),
+  capabilityGrantsList: authRpc("CapabilityGrants.List"),
+  capabilityGrantsGrant: authRpc("CapabilityGrants.Grant"),
+  capabilityGrantsRevoke: authRpc("CapabilityGrants.Revoke"),
+  principalsEffectiveAccess: authRpc("Principals.EffectiveAccess"),
   delegationsList: authRpc("Delegations.List"),
   delegationsRevoke: authRpc("Delegations.Revoke"),
   authorizationSessionsList: authRpc("AuthorizationSessions.List"),
   authorizationSessionsRevoke: authRpc("AuthorizationSessions.Revoke"),
-  capabilitiesList: authRpc("Capabilities.List", "roles.manage"),
+  capabilitiesList: authRpc("Capabilities.List"),
   issuersRevoke: authRpc("Issuers.Revoke"),
-  oAuthClientsList: authRpc("OAuthClients.List", "clients.manage"),
-  oAuthClientsGet: authRpc("OAuthClients.Get", "clients.manage"),
-  oAuthClientsPut: authRpc("OAuthClients.Put", "clients.manage"),
-  oAuthClientsDisable: authRpc("OAuthClients.Disable", "clients.manage"),
-  oAuthClientsDelete: authRpc("OAuthClients.Delete", "clients.manage"),
-  apisList: authRpc("Apis.List", "apis.accept"),
-  apisGet: authRpc("Apis.Get", "apis.accept"),
-  apisReview: authRpc("Apis.Review", "apis.accept"),
-  apisAccept: authRpc("Apis.Accept", "apis.accept"),
-  apisForceReplace: authRpc("Apis.ForceReplace", "apis.forceReplace"),
+  administrationReviewsList: authRpc("Administration.Reviews.List"),
+  administrationReviewsDecide: authRpc("Administration.Reviews.Decide"),
+  oAuthClientsList: authRpc("OAuthClients.List"),
+  oAuthClientsGet: authRpc("OAuthClients.Get"),
+  oAuthClientsPut: authRpc("OAuthClients.Put"),
+  oAuthClientsDisable: authRpc("OAuthClients.Disable"),
+  oAuthClientsDelete: authRpc("OAuthClients.Delete"),
+  apisList: authRpc("Apis.List"),
+  apisGet: authRpc("Apis.Get"),
+  apisReview: authRpc("Apis.Review"),
+  apisAccept: authRpc("Apis.Accept"),
+  apisForceReplace: authRpc("Apis.ForceReplace"),
 
   // Events: primary query, optional panels, actions, watch.
   eventsQuery: eventsRpc("Query"),
@@ -259,21 +250,13 @@ export function isConsoleOperation(name: string): name is ConsoleOperationName {
 /**
  * True when the current authority may perform `name`.
  *
- * Both the exact contract permission atom and any required platform privilege
- * must be present. An unregistered operation is never permitted.
+ * The exact contract permission atom must be present. An unregistered
+ * operation is never permitted.
  */
 export function canPerform(authority: Authority | null, name: string): boolean {
   if (authority === null) return false;
   if (!isConsoleOperation(name)) return false;
   const operation: ConsoleOperation = CONSOLE_OPERATIONS[name];
-  if (
-    operation.privilege !== undefined &&
-    !authority.platformPrivileges.some(
-      (privilege) => privilege === operation.privilege,
-    )
-  ) {
-    return false;
-  }
   return hasExactPermission(authority, {
     api: operation.api,
     surface: operation.surface,

@@ -24,19 +24,11 @@ enum AuthPrincipalKind { user; service; device; }
 enum AuthPublicClientKind { browser; native; }
 enum AuthBindingKind { browser; native; service; device; }
 enum AuthCredentialKind { oauthGrant; provisionedIdentity; }
-enum AuthPlatformPrivilege {
-  "principals.manage";
-  "roles.manage";
-  "apis.accept";
-  "apis.forceReplace";
-  "clients.manage";
-  "privileges.manage";
-}
 enum AuthEnforcementState { queued; running; completed; }
 enum AuthAuthorizationSessionState { active; superseded; revoked; }
 enum AuthAttachmentState { pending; admitted; closed; }
 enum AuthDecision { approved; declined; }
-enum AuthCapabilitySourceKind { role; direct; oidcRole; }
+enum AuthCapabilitySourceKind { role; direct; oidcRole; administrator; }
 enum AuthActionKind { rpc; operation; event; live; transfer; }
 enum AuthActionDirection { call; invoke; observe; cancel; control; publish; subscribe; read; write; delete; submit; process; consume; }
 enum AuthRevocationReason {
@@ -208,7 +200,6 @@ model AuthPrincipalRequest { principalId: ulid; }
 model AuthEffectiveAccessResponse {
   principal: AuthPrincipal;
   capabilities: list<AuthEffectiveCapability>;
-  platformPrivileges: list<AuthPlatformPrivilege>;
 }
 
 model AuthPackageSourceEvidence {
@@ -342,50 +333,6 @@ model AuthDelegationRevokeRequest {
   expectedRevision: AuthRevision;
   idempotencyKey: AuthIdempotencyKey;
 }
-model AuthPlatformAssignment {
-  assignmentId: ulid;
-  principalId: ulid;
-  privileges: list<AuthPlatformPrivilege>;
-  revision: AuthRevision;
-}
-type AuthPlatformAssignmentsListResponse = CursorPage<AuthPlatformAssignment>;
-model AuthPlatformAssignRequest {
-  principalId: ulid;
-  privileges: list<AuthPlatformPrivilege>;
-  expectedRevision: uint64;
-  idempotencyKey: AuthIdempotencyKey;
-}
-model AuthPlatformAssignResponse { assignment: AuthPlatformAssignment; enforcement?: AuthEnforcementProgress; }
-model AuthPlatformRevokeRequest {
-  assignmentId: ulid;
-  expectedRevision: AuthRevision;
-  idempotencyKey: AuthIdempotencyKey;
-}
-model AuthAdministrativeBinding {
-  kind: AuthPublicClientKind;
-  clientId: AuthClientId;
-  origin?: string;
-}
-model AuthPlatformDelegation {
-  delegationId: ulid;
-  binding: AuthAdministrativeBinding;
-  eligiblePrivileges: list<AuthPlatformPrivilege>;
-  revision: AuthRevision;
-}
-type AuthPlatformDelegationsListResponse = CursorPage<AuthPlatformDelegation>;
-model AuthPlatformDelegationPutRequest {
-  binding: AuthAdministrativeBinding;
-  eligiblePrivileges: list<AuthPlatformPrivilege>;
-  expectedRevision: uint64;
-  idempotencyKey: AuthIdempotencyKey;
-}
-model AuthPlatformDelegationPutResponse { delegation: AuthPlatformDelegation; enforcement?: AuthEnforcementProgress; }
-model AuthPlatformDelegationRevokeRequest {
-  delegationId: ulid;
-  expectedRevision: AuthRevision;
-  idempotencyKey: AuthIdempotencyKey;
-}
-
 model AuthRuntimeBinding {
   kind: AuthBindingKind;
   clientId?: AuthClientId;
@@ -698,6 +645,27 @@ model AuthDeviceReview {
   companionClientId?: AuthClientId;
   companionRequestId?: string;
   companionRequired?: bool;
+}
+enum AuthAdministrationReviewState { pending; approved; rejected; }
+// A user's request that an app hold an administrative capability.
+model AuthAdministrationReview {
+  reviewId: ulid;
+  principalId: ulid;
+  principalTitle: string;
+  clientId: AuthClientId;
+  clientName: string;
+  capabilityId: string;
+  state: AuthAdministrationReviewState;
+  requestedAt: timestamp;
+  revision: AuthRevision;
+}
+model AuthAdministrationReviewResponse { review: AuthAdministrationReview; }
+type AuthAdministrationReviewsListResponse = CursorPage<AuthAdministrationReview>;
+model AuthAdministrationReviewDecideRequest {
+  reviewId: ulid;
+  decision: AuthDecision;
+  expectedRevision: AuthRevision;
+  idempotencyKey: AuthIdempotencyKey;
 }
 model AuthDeviceReviewGetRequest { reviewId: ulid; confirmationCode: AuthDeviceConfirmationCode; }
 model AuthDeviceReviewResponse { review: AuthDeviceReview; }

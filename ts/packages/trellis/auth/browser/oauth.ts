@@ -8,7 +8,6 @@ import { base64urlEncode, sha256, utf8, toArrayBuffer } from "../utils.ts";
 import { BrowserSessionStore, type BrowserOAuthScope } from "./storage.ts";
 import {
   verifyOAuthAdmissionWasm,
-  type PlatformPrivilege,
   type SignedOAuthAdmission,
 } from "../protocol_wasm.ts";
 import {
@@ -46,36 +45,11 @@ const tokenSchema = z.object({
   trellis_admission: z.string().min(1),
   authorization_details: z
     .array(
-      z.discriminatedUnion("type", [
-        z.object({
-          type: z.literal("trellis_capabilities"),
-          required: z.array(z.string()),
-          optional: z.array(z.string()),
-        }),
-        z.object({
-          type: z.literal("trellis_platform_privileges"),
-          required: z.array(
-            z.enum([
-              "principals.manage",
-              "roles.manage",
-              "apis.accept",
-              "apis.forceReplace",
-              "clients.manage",
-              "privileges.manage",
-            ]),
-          ),
-          optional: z.array(
-            z.enum([
-              "principals.manage",
-              "roles.manage",
-              "apis.accept",
-              "apis.forceReplace",
-              "clients.manage",
-              "privileges.manage",
-            ]),
-          ),
-        }),
-      ]),
+      z.object({
+        type: z.literal("trellis_capabilities"),
+        required: z.array(z.string()),
+        optional: z.array(z.string()),
+      }),
     )
     .optional(),
 });
@@ -100,11 +74,6 @@ export type BrowserOAuthAdmission = {
 export type BrowserCapabilityRequest = {
   readonly required: readonly string[];
   readonly optional: readonly string[];
-  /** Finite RAR requests; the server still enforces client eligibility, administrator authority, and consent. */
-  readonly platformPrivileges?: {
-    readonly required: readonly PlatformPrivilege[];
-    readonly optional: readonly PlatformPrivilege[];
-  };
 };
 const pendingSchema = z.object({
   issuer: z.string(),
@@ -288,15 +257,6 @@ export class BrowserOAuthClient {
             required: capabilities.required,
             optional: capabilities.optional,
           },
-          ...(capabilities.platformPrivileges
-            ? [
-                {
-                  type: "trellis_platform_privileges",
-                  required: capabilities.platformPrivileges.required,
-                  optional: capabilities.platformPrivileges.optional,
-                },
-              ]
-            : []),
         ]),
       }).toString();
       return ok(url.href);

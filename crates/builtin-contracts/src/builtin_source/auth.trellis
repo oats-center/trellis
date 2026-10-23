@@ -42,14 +42,6 @@ import {
   AuthDelegationReviewRequest,
   AuthDelegationReviewResponse,
   AuthDelegationRevokeRequest,
-  AuthPlatformAssignmentsListResponse,
-  AuthPlatformAssignRequest,
-  AuthPlatformAssignResponse,
-  AuthPlatformRevokeRequest,
-  AuthPlatformDelegationsListResponse,
-  AuthPlatformDelegationPutRequest,
-  AuthPlatformDelegationPutResponse,
-  AuthPlatformDelegationRevokeRequest,
   AuthAuthorizationSessionsListRequest,
   AuthAuthorizationSessionsListResponse,
   AuthAuthorizationSessionRevokeRequest,
@@ -108,6 +100,9 @@ import {
   AuthDeviceReviewGetRequest,
   AuthDeviceReviewResponse,
   AuthDeviceReviewsListResponse,
+  AuthAdministrationReviewDecideRequest,
+  AuthAdministrationReviewResponse,
+  AuthAdministrationReviewsListResponse,
   AuthDeviceReviewDecideRequest,
   AuthDeviceCompanionAttachRequest,
   AuthDeviceCompanion,
@@ -130,7 +125,7 @@ api auth@v1 {
   error UnexpectedError(AuthErrorDetails);
   error ValidationError(AuthErrorDetails);
 
-  // roles.manage; role membership never contains action-level grants.
+  // trellis.manageRoles; role membership never contains action-level grants.
   rpc Roles.List { input AuthPageRequest; output AuthRolesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Roles.Get { input AuthRoleGetRequest; output AuthRoleGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Roles.Put { input AuthRolePutRequest; output AuthRolePutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -151,7 +146,7 @@ api auth@v1 {
   rpc Apis.Accept { input AuthApiAcceptRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Apis.ForceReplace { input AuthApiForceReplaceRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // clients.manage. Platform eligibility is edited separately below.
+  // trellis.manageClients.
   rpc OAuthClients.List { input AuthPageRequest; output AuthOAuthClientsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc OAuthClients.Get { input AuthOAuthClientGetRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OAuthClients.Put { input AuthOAuthClientPutRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -159,20 +154,12 @@ api auth@v1 {
   rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // These handlers scope ordinary delegated access to the verified user.
-  // Cross-user administration additionally requires principals.manage.
+  // Cross-user administration additionally requires trellis.managePrincipals.
   rpc Delegations.List { input AuthDelegationsListRequest; output AuthDelegationsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Delegations.Review { input AuthDelegationReviewRequest; output AuthDelegationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Delegations.Revoke { input AuthDelegationRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // privileges.manage; eligibility is not a principal privilege assignment.
-  rpc PlatformPrivileges.List { input AuthPageRequest; output AuthPlatformAssignmentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
-  rpc PlatformPrivileges.Assign { input AuthPlatformAssignRequest; output AuthPlatformAssignResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  rpc PlatformPrivileges.Revoke { input AuthPlatformRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
-  rpc PlatformDelegations.List { input AuthPageRequest; output AuthPlatformDelegationsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
-  rpc PlatformDelegations.Put { input AuthPlatformDelegationPutRequest; output AuthPlatformDelegationPutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
-  rpc PlatformDelegations.Revoke { input AuthPlatformDelegationRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
-
-  // principals.manage; logical retirement and physical kicks are distinct.
+  // trellis.managePrincipals; logical retirement and physical kicks are distinct.
   rpc AuthorizationSessions.List { input AuthAuthorizationSessionsListRequest; output AuthAuthorizationSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc AuthorizationSessions.Revoke { input AuthAuthorizationSessionRevokeRequest; output AuthAuthorizationSessionRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Connections.List { input AuthConnectionsListRequest; output AuthConnectionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
@@ -185,9 +172,11 @@ api auth@v1 {
   rpc Sessions.Me { input AuthEmpty; output AuthSessionsMeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Sessions.Logout { input AuthEmpty; output AuthSessionsLogoutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // privileges.manage.
+  // trellis.managePlatform.
   rpc Issuers.Rotate { input AuthIssuerRotateRequest; output AuthIssuerRotateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Issuers.Revoke { input AuthIssuerRevokeRequest; output AuthIssuerRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Administration.Reviews.List { input AuthPageRequest; output AuthAdministrationReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Administration.Reviews.Decide { input AuthAdministrationReviewDecideRequest; output AuthAdministrationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
 
   // Own-account data, bounded by the named capabilities below.
   rpc Users.Resolve { input AuthEmpty; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -199,7 +188,7 @@ api auth@v1 {
   rpc Sessions.List { input AuthPageRequest; output AuthSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Sessions.Revoke { input AuthLoginRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // principals.manage. Administrative account access grants no domain data.
+  // trellis.managePrincipals. Administrative account access grants no domain data.
   rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Users.List { input AuthPageRequest; output AuthUsersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Users.Create { input AuthUserCreateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -211,12 +200,12 @@ api auth@v1 {
   rpc OIDCProviders.Disable { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OIDCProviders.Delete { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // roles.manage; mappings apply only to verified claims from this provider.
+  // trellis.manageRoles; mappings apply only to verified claims from this provider.
   rpc OIDCRoleMappings.List { input AuthOIDCRoleMappingsListRequest; output AuthOIDCRoleMappingsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc OIDCRoleMappings.Put { input AuthOIDCRoleMappingPutRequest; output AuthOIDCRoleMappingPutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc OIDCRoleMappings.Delete { input AuthOIDCRoleMappingDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
 
-  // principals.manage; only service/device implementations can be deployed.
+  // trellis.managePrincipals; only service/device implementations can be deployed.
   rpc Devices.Reviews.Get { input AuthDeviceReviewGetRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
   rpc Devices.Reviews.List { input AuthPageRequest; output AuthDeviceReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
   rpc Devices.Reviews.Decide { input AuthDeviceReviewDecideRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
@@ -255,70 +244,70 @@ api auth@v1 {
     group account {
       title "Your account";
       description "Your profile, password, sign-ins, and connected apps.";
-      capability deviceCompanionsManage {
+      capability manageDeviceCompanions {
         consent_revision 1;
         title "Link to a device";
         description "Link this sign-in to a device you approved, or unlink it.";
         consequence "The device can recognize this sign-in. Unlinking signs it out.";
         allows { rpc Devices.Reviews.Get; rpc DeviceCompanions.Attach; rpc DeviceCompanions.Revoke; }
       }
-      capability accountRead {
+      capability readAccount {
         consent_revision 3;
         title "See your profile";
         description "See your name, email, and account, and sign you out.";
         consequence "Can read your profile and email and end your current sign-in.";
         allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; }
       }
-      capability accountProfileWrite {
+      capability updateProfile {
         consent_revision 1;
         title "Edit your profile";
         description "Change your display name, email, and photo.";
         consequence "Changes what other apps see about you. Emails entered here are not verified.";
         allows { rpc Users.Profile.Update; }
       }
-      capability passwordChange {
+      capability changePassword {
         consent_revision 1;
         title "Change your password";
         description "Change your password using your current one.";
         consequence "Changes your password and signs out your other sessions.";
         allows { rpc Users.Password.Change; }
       }
-      capability identitiesRead {
+      capability readIdentities {
         consent_revision 1;
         title "See linked sign-ins";
         description "See which company accounts you can sign in with.";
         consequence "Can see your linked accounts.";
         allows { rpc UserIdentities.List; }
       }
-      capability identitiesManage {
+      capability manageIdentities {
         consent_revision 1;
         title "Manage linked sign-ins";
         description "Link or unlink company accounts.";
         consequence "Changes which accounts can sign in as you.";
         allows { rpc Users.IdentityLink.Create; rpc UserIdentities.Unlink; }
       }
-      capability sessionsRead {
+      capability readSessions {
         consent_revision 1;
         title "See your sign-ins";
         description "See when and where you signed in.";
         consequence "Can see your sign-in history.";
         allows { rpc Sessions.List; }
       }
-      capability sessionsRevoke {
+      capability revokeSessions {
         consent_revision 1;
         title "Sign out your sessions";
         description "End one of your sign-ins.";
         consequence "Signs out apps that use that sign-in.";
         allows { rpc Sessions.Revoke; }
       }
-      capability delegationsRead {
+      capability readDelegations {
         consent_revision 1;
         title "See your connected apps";
         description "See which apps you have allowed and what they can do.";
         consequence "Can see your app choices.";
         allows { rpc Delegations.List; rpc Delegations.Review; }
       }
-      capability delegationsRevoke {
+      capability revokeDelegations {
         consent_revision 1;
         title "Disconnect your apps";
         description "Remove an app's access to your account.";
@@ -329,480 +318,93 @@ api auth@v1 {
     group users {
       title "Users";
       description "People's accounts.";
-      capability principalsEffectiveAccess {
-        consent_revision 1;
-        title "See what users can do";
-        description "See everything a user or service is allowed to do.";
-        consequence "Can see anyone's permissions.";
-        allows { rpc Principals.EffectiveAccess; }
-      }
-      capability usersRead {
+      capability readUsers {
         consent_revision 2;
         title "See users";
         description "Find people and see their names, emails, and photos.";
         consequence "Can see everyone's name, email, and photo.";
         allows { rpc Users.List; rpc Users.Get; }
       }
-      capability usersCreate {
+      capability managePrincipals {
+        administrative;
         consent_revision 1;
-        title "Add users";
-        description "Create new accounts.";
-        consequence "Can create accounts that can sign in.";
-        allows { rpc Users.Create; }
-      }
-      capability usersUpdate {
-        consent_revision 1;
-        title "Edit users";
-        description "Change people's details and turn accounts on or off.";
-        consequence "Can change other people's accounts.";
-        allows { rpc Users.Update; }
-      }
-      capability usersPasswordReset {
-        consent_revision 1;
-        title "Reset passwords";
-        description "Send people a link to set a new password.";
-        consequence "Can let someone replace a user's password.";
-        allows { rpc Users.PasswordReset.Create; }
+        title "Manage users and services";
+        description "Add and change users, sign-in providers, services, devices, storage, sessions, and connections.";
+        consequence "Can create and change any account or service in this Trellis and sign anyone out.";
+        allows { rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.PasswordReset.Create; rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
       }
     }
     group roles {
       title "Roles and permissions";
       description "Who can do what.";
-      capability rolesRead {
+      capability manageRoles {
+        administrative;
         consent_revision 1;
-        title "See roles";
-        description "See roles and what they allow.";
-        consequence "Can see every role.";
-        allows { rpc Roles.List; rpc Roles.Get; }
-      }
-      capability rolesPut {
-        consent_revision 1;
-        title "Edit roles";
-        description "Create roles and change what they allow.";
-        consequence "Changes what everyone with the role can do.";
-        allows { rpc Roles.Put; }
-      }
-      capability rolesDelete {
-        consent_revision 1;
-        title "Delete roles";
-        description "Delete a role.";
-        consequence "People with the role lose what it allowed.";
-        allows { rpc Roles.Delete; }
-      }
-      capability roleAssignmentsRead {
-        consent_revision 1;
-        title "See who has roles";
-        description "See which roles each user has.";
-        consequence "Can see everyone's roles.";
-        allows { rpc RoleAssignments.List; }
-      }
-      capability roleAssignmentsAssign {
-        consent_revision 1;
-        title "Give roles";
-        description "Give a role to a user or service.";
-        consequence "Can give people more access.";
-        allows { rpc RoleAssignments.Assign; }
-      }
-      capability roleAssignmentsRevoke {
-        consent_revision 1;
-        title "Take away roles";
-        description "Remove a role from a user or service.";
-        consequence "Can remove people's access.";
-        allows { rpc RoleAssignments.Revoke; }
-      }
-      capability capabilityGrantsRead {
-        consent_revision 1;
-        title "See direct permissions";
-        description "See permissions given outside of roles.";
-        consequence "Can see who has extra permissions.";
-        allows { rpc CapabilityGrants.List; }
-      }
-      capability capabilityGrantsGrant {
-        consent_revision 1;
-        title "Give direct permissions";
-        description "Give a single permission without a role.";
-        consequence "Can give people more access.";
-        allows { rpc CapabilityGrants.Grant; }
-      }
-      capability capabilityGrantsRevoke {
-        consent_revision 1;
-        title "Remove direct permissions";
-        description "Take away a permission given without a role.";
-        consequence "Can remove people's access.";
-        allows { rpc CapabilityGrants.Revoke; }
-      }
-      capability capabilitiesRead {
-        consent_revision 1;
-        title "See all permissions";
-        description "See every permission Trellis offers.";
-        consequence "Can see what each permission allows.";
-        allows { rpc Capabilities.List; }
+        title "Manage roles and access";
+        description "Change roles, who has them, what each person may do, and roles given by company sign-in.";
+        consequence "Can give any person or app access to anything in this Trellis.";
+        allows { rpc Roles.List; rpc Roles.Get; rpc Roles.Put; rpc Roles.Delete; rpc RoleAssignments.List; rpc RoleAssignments.Assign; rpc RoleAssignments.Revoke; rpc CapabilityGrants.List; rpc CapabilityGrants.Grant; rpc CapabilityGrants.Revoke; rpc Capabilities.List; rpc OIDCRoleMappings.List; rpc OIDCRoleMappings.Put; rpc OIDCRoleMappings.Delete; rpc Principals.EffectiveAccess; }
       }
     }
-    group signIn {
-      title "Sign-in providers";
-      description "Company sign-in such as Google or Okta.";
-      capability oidcProvidersRead {
+    group apis {
+      title "APIs";
+      description "The APIs installed on Trellis.";
+      capability acceptApis {
+        administrative;
         consent_revision 1;
-        title "See sign-in providers";
-        description "See which company sign-in providers are set up.";
-        consequence "Can see sign-in settings.";
-        allows { rpc OIDCProviders.List; rpc OIDCProviders.Get; }
+        title "Install API updates";
+        description "Review and install compatible API updates.";
+        consequence "Changes what installed APIs offer to every app.";
+        allows { rpc Apis.List; rpc Apis.Get; rpc Apis.Review; rpc Apis.Accept; }
       }
-      capability oidcProvidersPut {
+      capability forceReplaceApis {
+        administrative;
         consent_revision 1;
-        title "Set up sign-in providers";
-        description "Add or change a company sign-in provider.";
-        consequence "Changes how people sign in.";
-        allows { rpc OIDCProviders.Put; }
-      }
-      capability oidcProvidersDisable {
-        consent_revision 1;
-        title "Turn off sign-in providers";
-        description "Stop new sign-ins through a provider.";
-        consequence "People can't sign in with that provider.";
-        allows { rpc OIDCProviders.Disable; }
-      }
-      capability oidcProvidersDelete {
-        consent_revision 1;
-        title "Delete sign-in providers";
-        description "Remove a sign-in provider.";
-        consequence "Removes that sign-in option.";
-        allows { rpc OIDCProviders.Delete; }
-      }
-      capability oidcRoleMappingsRead {
-        consent_revision 1;
-        title "See provider role rules";
-        description "See which roles people get from their company sign-in.";
-        consequence "Can see how roles are given automatically.";
-        allows { rpc OIDCRoleMappings.List; }
-      }
-      capability oidcRoleMappingsPut {
-        consent_revision 1;
-        title "Edit provider role rules";
-        description "Give roles automatically based on company sign-in.";
-        consequence "Changes the roles people get when they sign in.";
-        allows { rpc OIDCRoleMappings.Put; }
-      }
-      capability oidcRoleMappingsDelete {
-        consent_revision 1;
-        title "Delete provider role rules";
-        description "Remove an automatic role rule.";
-        consequence "People stop getting that role automatically.";
-        allows { rpc OIDCRoleMappings.Delete; }
+        title "Force API replacements";
+        description "Install API updates that break compatibility.";
+        consequence "Affected apps lose access and are signed out until people approve them again.";
+        allows { rpc Apis.List; rpc Apis.Get; rpc Apis.Review; rpc Apis.ForceReplace; }
       }
     }
-    group sessions {
-      title "Sessions";
-      description "Who is signed in and what is connected.";
-      capability authorizationSessionsRead {
+    group apps {
+      title "Apps";
+      description "Apps that people can sign in to.";
+      capability manageClients {
+        administrative;
         consent_revision 1;
-        title "See sessions";
-        description "See who is signed in and through which app.";
-        consequence "Can see everyone's sessions.";
-        allows { rpc AuthorizationSessions.List; }
+        title "Manage apps";
+        description "Register apps and change their sign-in settings.";
+        consequence "Decides which apps can ask people for access.";
+        allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.Disable; rpc OAuthClients.Delete; }
       }
-      capability authorizationSessionsRevoke {
-        consent_revision 1;
-        title "End sessions";
-        description "Sign someone out.";
-        consequence "The person or app is signed out.";
-        allows { rpc AuthorizationSessions.Revoke; }
-      }
-      capability connectionsRead {
-        consent_revision 1;
-        title "See connections";
-        description "See which apps, services, and devices are connected now.";
-        consequence "Can see what is connected.";
-        allows { rpc Connections.List; }
-      }
-      capability connectionsKick {
-        consent_revision 1;
-        title "Disconnect";
-        description "Drop a live connection. It may reconnect.";
-        consequence "Interrupts the app, service, or device.";
-        allows { rpc Connections.Kick; }
-      }
-      capability securityObserve {
+    }
+    group security {
+      title "Platform security";
+      description "Administrators and signing keys.";
+      capability observeSecurityEvents {
         consent_revision 1;
         title "Watch security activity";
         description "Follow sign-ins, sign-outs, and key changes as they happen.";
         consequence "Can see security activity live.";
         allows { subscribe event Connections.Opened; subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event AuthorizationSessions.Retired; subscribe event Issuers.Rotated; subscribe event Issuers.Revoked; }
       }
-    }
-    group services {
-      title "Services";
-      description "Services and device types running on Trellis.";
-      capability deploymentsRead {
+      capability managePlatform {
+        administrative;
         consent_revision 1;
-        title "See services and device types";
-        description "See what is set up to run and how it is configured.";
-        consequence "Can see service and device settings.";
-        allows { rpc Deployments.List; rpc Deployments.Get; }
-      }
-      capability deploymentsCreate {
-        consent_revision 1;
-        title "Add services and device types";
-        description "Set up a new service or device type.";
-        consequence "Can add new things that run on Trellis.";
-        allows { rpc Deployments.Create; }
-      }
-      capability deploymentsApply {
-        consent_revision 1;
-        title "Change service settings";
-        description "Change what a service or device type runs and uses.";
-        consequence "Changes running services and devices.";
-        allows { rpc Deployments.Apply; }
-      }
-      capability deploymentsEnable {
-        consent_revision 1;
-        title "Turn on services and device types";
-        description "Allow a service or device type to run.";
-        consequence "They can connect and run.";
-        allows { rpc Deployments.Enable; }
-      }
-      capability deploymentsDisable {
-        consent_revision 1;
-        title "Turn off services and device types";
-        description "Stop a service or device type from running.";
-        consequence "They are disconnected and can't reconnect.";
-        allows { rpc Deployments.Disable; }
-      }
-      capability deploymentsRemove {
-        consent_revision 1;
-        title "Remove services and device types";
-        description "Delete a service or device type.";
-        consequence "Removes it and its settings.";
-        allows { rpc Deployments.Remove; }
-      }
-      capability serviceInstancesRead {
-        consent_revision 1;
-        title "See service instances";
-        description "See each running copy of a service.";
-        consequence "Can see service instances.";
-        allows { rpc ServiceInstances.List; }
-      }
-      capability serviceInstancesProvision {
-        consent_revision 1;
-        title "Add service instances";
-        description "Create a new copy of a service and its one-time setup key.";
-        consequence "Can add services that connect to Trellis.";
-        allows { rpc ServiceInstances.Provision; }
-      }
-      capability serviceInstancesEnable {
-        consent_revision 1;
-        title "Turn on service instances";
-        description "Allow a service instance to connect.";
-        consequence "It can connect and run.";
-        allows { rpc ServiceInstances.Enable; }
-      }
-      capability serviceInstancesDisable {
-        consent_revision 1;
-        title "Turn off service instances";
-        description "Stop a service instance from connecting.";
-        consequence "It is disconnected.";
-        allows { rpc ServiceInstances.Disable; }
-      }
-      capability serviceInstancesRemove {
-        consent_revision 1;
-        title "Remove service instances";
-        description "Delete a service instance.";
-        consequence "Removes it for good.";
-        allows { rpc ServiceInstances.Remove; }
+        title "Manage this Trellis";
+        description "Decide who administers this Trellis and manage its signing keys.";
+        consequence "Full control of this Trellis installation.";
+        allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; }
       }
     }
-    group devices {
-      title "Devices";
-      description "Individual devices.";
-      capability devicesRead {
-        // Enrollment reads require either administrative authority or the exact
-        // device-local confirmation code, checked by the handler.
-        consent_revision 1;
-        title "See devices";
-        description "See devices and requests to add new ones.";
-        consequence "Can see every device and its status.";
-        allows { rpc Devices.List; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; }
-      }
-      capability devicesProvision {
-        consent_revision 1;
-        title "Add and approve devices";
-        description "Add devices and approve requests from new ones.";
-        consequence "Can add devices that connect to Trellis.";
-        allows { rpc Devices.Provision; rpc Devices.Reviews.Decide; }
-      }
-      capability devicesEnable {
-        consent_revision 1;
-        title "Turn on devices";
-        description "Allow a device to connect.";
-        consequence "The device can connect.";
-        allows { rpc Devices.Enable; }
-      }
-      capability devicesDisable {
-        consent_revision 1;
-        title "Turn off devices";
-        description "Stop a device from connecting.";
-        consequence "The device is disconnected.";
-        allows { rpc Devices.Disable; }
-      }
-      capability devicesRemove {
-        consent_revision 1;
-        title "Remove devices";
-        description "Delete a device.";
-        consequence "Removes the device for good.";
-        allows { rpc Devices.Remove; }
-      }
-    }
-    group resources {
-      title "Storage";
-      description "Storage set up for services and devices.";
-      capability resourcesRead {
-        consent_revision 1;
-        title "See storage";
-        description "See the storage used by services and devices.";
-        consequence "Can see how storage is set up.";
-        allows { rpc Resources.List; rpc Resources.Get; }
-      }
-      capability resourcesRemove {
-        consent_revision 1;
-        title "Delete storage";
-        description "Delete storage and the data in it.";
-        consequence "Permanently deletes data.";
-        allows { rpc Resources.Remove; }
-      }
-    }
-    group apps {
-      title "Apps";
-      description "Apps that people can sign in to.";
-      capability oauthClientsRead {
-        consent_revision 1;
-        title "See apps";
-        description "See which apps people can sign in to.";
-        consequence "Can see app settings.";
-        allows { rpc OAuthClients.List; rpc OAuthClients.Get; }
-      }
-      capability oauthClientsPut {
-        consent_revision 1;
-        title "Add and edit apps";
-        description "Register an app or change where it sends people after sign-in.";
-        consequence "Changes which apps people can sign in to.";
-        allows { rpc OAuthClients.Put; }
-      }
-      capability oauthClientsDisable {
-        consent_revision 1;
-        title "Turn off apps";
-        description "Stop new sign-ins to an app.";
-        consequence "People can't sign in to the app.";
-        allows { rpc OAuthClients.Disable; }
-      }
-      capability oauthClientsDelete {
-        consent_revision 1;
-        title "Delete apps";
-        description "Remove an app.";
-        consequence "Removes the app's registration.";
-        allows { rpc OAuthClients.Delete; }
-      }
-      capability platformDelegationsRead {
-        consent_revision 1;
-        title "See admin apps";
-        description "See which apps may be given administrator powers.";
-        consequence "Can see admin app settings.";
-        allows { rpc PlatformDelegations.List; }
-      }
-      capability platformDelegationsPut {
-        consent_revision 1;
-        title "Allow admin apps";
-        description "Let an app ask for administrator powers.";
-        consequence "Lets administrators give the app admin powers.";
-        allows { rpc PlatformDelegations.Put; }
-      }
-      capability platformDelegationsRevoke {
-        consent_revision 1;
-        title "Stop admin apps";
-        description "Stop an app from getting administrator powers.";
-        consequence "The app can't get admin powers.";
-        allows { rpc PlatformDelegations.Revoke; }
-      }
-    }
-    group apis {
-      title "APIs";
-      description "The APIs installed on Trellis.";
-      capability apisRead {
-        consent_revision 1;
-        title "See APIs";
-        description "See the installed APIs.";
-        consequence "Can see API definitions.";
-        allows { rpc Apis.List; rpc Apis.Get; }
-      }
-      capability apisReview {
-        consent_revision 1;
-        title "Review API updates";
-        description "Check what an API update would change.";
-        consequence "Can see changes before they are installed.";
-        allows { rpc Apis.Review; }
-      }
-      capability apisAccept {
-        consent_revision 1;
-        title "Install API updates";
-        description "Install a compatible API update.";
-        consequence "Changes what apps and services can do.";
-        allows { rpc Apis.Accept; }
-      }
-      capability apisForceReplace {
-        consent_revision 1;
-        title "Force API replacements";
-        description "Install an API update that breaks compatibility.";
-        consequence "Signs out affected apps and services.";
-        allows { rpc Apis.ForceReplace; }
-      }
-    }
-    group security {
-      title "Platform security";
-      description "Administrators and signing keys.";
-      capability platformPrivilegesRead {
-        consent_revision 1;
-        title "See administrators";
-        description "See who has administrator powers.";
-        consequence "Can see all administrators.";
-        allows { rpc PlatformPrivileges.List; }
-      }
-      capability platformPrivilegesAssign {
-        consent_revision 1;
-        title "Make administrators";
-        description "Give someone administrator powers.";
-        consequence "Can create new administrators.";
-        allows { rpc PlatformPrivileges.Assign; }
-      }
-      capability platformPrivilegesRevoke {
-        consent_revision 1;
-        title "Remove administrators";
-        description "Take away administrator powers.";
-        consequence "Can remove administrators.";
-        allows { rpc PlatformPrivileges.Revoke; }
-      }
-      capability issuersRotate {
-        consent_revision 1;
-        title "Rotate signing keys";
-        description "Switch to a new signing key.";
-        consequence "New sign-ins use the new key.";
-        allows { rpc Issuers.Rotate; }
-      }
-      capability issuersRevoke {
-        consent_revision 1;
-        title "Revoke signing keys";
-        description "Permanently revoke a signing key.";
-        consequence "Anything signed with that key stops working.";
-        allows { rpc Issuers.Revoke; }
-      }
-    }
-    capability jobResourceBindingsRead {
+    capability readJobBindings {
       consent_revision 1;
       title "Read job storage settings";
       description "Look up which services own which job queues.";
       consequence "Can see job queue ownership.";
       allows { rpc ResourceBindings.Query; }
     }
-    capability eventResourceBindingsRead {
+    capability readEventBindings {
       consent_revision 1;
       title "Read event delivery settings";
       description "Look up which services own which event consumers.";

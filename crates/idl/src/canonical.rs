@@ -539,11 +539,12 @@ fn render_capability(
         writeln!(
             block,
             "    capability {} {{",
-            id.as_str()
-                .rsplit_once("::")
-                .map_or(id.as_str(), |(_, name)| name)
+            crate::semantic::capability_name(id.as_str())
         )
         .unwrap();
+    }
+    if capability.administrative {
+        block.push_str("      administrative;\n");
     }
     if mode == CanonicalMode::Presentation {
         if !capability.title.is_empty() {
@@ -766,10 +767,7 @@ fn render_uses(
             writeln!(
                 output,
                 "    required capability {};",
-                capability
-                    .as_str()
-                    .rsplit_once("::")
-                    .map_or(capability.as_str(), |(_, name)| name)
+                crate::semantic::capability_name(capability.as_str())
             )
             .unwrap();
         }
@@ -777,10 +775,7 @@ fn render_uses(
             writeln!(
                 output,
                 "    capability {};",
-                capability
-                    .as_str()
-                    .rsplit_once("::")
-                    .map_or(capability.as_str(), |(_, name)| name)
+                crate::semantic::capability_name(capability.as_str())
             )
             .unwrap();
         }

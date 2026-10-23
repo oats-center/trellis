@@ -351,12 +351,11 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
             {
                 "type":"trellis_capabilities",
                 "required": [
-                    "trellis.auth@v1::authorizationSessionsRead",
-                    "trellis.auth@v1::authorizationSessionsRevoke"
+                    "trellis.managePrincipals",
+                    "trellis.managePrincipals"
                             ],
                 "optional": []
-            },
-            {"type":"trellis_platform_privileges","required":["principals.manage"]}
+            }
         ]))
         .await
         .unwrap();

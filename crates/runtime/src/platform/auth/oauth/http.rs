@@ -643,20 +643,13 @@ async fn consent_data(
                 Some(&login.login_session_id),
                 now,
             )?;
-            let eligible: Option<String> = connection
-                .query_row(
-                    "SELECT requested_privileges_json \
-                FROM auth_oauth_clients \
-                WHERE client_id=?1 AND state='active'",
-                    [validated.client_id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let registered = eligible.is_some();
-            let eligible: Vec<trellis_protocol::PlatformPrivilege> = match eligible {
-                Some(value) => serde_json::from_str(&value)?,
-                None => Vec::new(),
-            };
+            let registered: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_oauth_clients \
+                WHERE client_id=?1 AND state='active')",
+                [validated.client_id.as_str()],
+                |row| row.get(0),
+            )?;
+            let administration = store.authority.settings.administration;
             let kind: String = connection.query_row(
                 "SELECT kind FROM auth_oauth_clients \
             WHERE client_id=?1 AND state='active' \
@@ -744,16 +737,18 @@ async fn consent_data(
                     )
                     .optional()?;
                 let (title, description, consequence, group) = match metadata {
-                    Some((title, description, consequence, api, name, group_title, group_text)) => (
-                        title,
-                        description,
-                        consequence,
-                        serde_json::json!({
-                            "id": if name.is_empty() { api } else { format!("{api}::{name}") },
-                            "title": group_title,
-                            "description": group_text,
-                        }),
-                    ),
+                    Some((title, description, consequence, api, name, group_title, group_text)) => {
+                        (
+                            title,
+                            description,
+                            consequence,
+                            serde_json::json!({
+                                "id": if name.is_empty() { api } else { format!("{api}::{name}") },
+                                "title": group_title,
+                                "description": group_text,
+                            }),
+                        )
+                    }
                     None => (
                         capability.clone(),
                         "This capability is not installed.".into(),
@@ -785,70 +780,21 @@ async fn consent_data(
                     ],
                     |row| row.get(0),
                 )?;
+                let administrative = super::super::administration::is_administrative(capability);
+                // An unregistered app never receives administration.
+                let available = entitled.contains_key(capability)
+                    && (!administrative || registered || !administration.registered_clients_only);
                 capabilities.push(serde_json::json!({
                     "capabilityId":capability,
                     "title":title,
                     "description":description,
                     "consequence":consequence,
                     "group":group,
+                    "administrative":administrative,
                     "required":requested.capabilities.required.contains(capability),
-                    "available":entitled.contains_key(capability),
+                    "available":available,
                     "selected": requested.capabilities.required.contains(capability)
-                            || (remembered && entitled.contains_key(capability))
-                }));
-            }
-            let mut privileges = Vec::new();
-            for privilege in requested
-                .required_privileges
-                .iter()
-                .chain(&requested.optional_privileges)
-            {
-                let privilege_id = serde_json::to_value(privilege)?;
-                let available: bool = connection.query_row(
-                    "SELECT EXISTS(SELECT 1 \
-                FROM auth_platform_privileges \
-                WHERE principal_id=?1 \
-                AND privilege=?2)",
-                    rusqlite::params![
-                        login.principal_id,
-                        privilege_id
-                            .as_str()
-                            .ok_or(super::super::AuthError::Denied)?
-                    ],
-                    |row| row.get(0),
-                )?;
-                let (label, description) = match privilege {
-                    trellis_protocol::PlatformPrivilege::PrincipalsManage => (
-                        "Manage users and services",
-                        "Add and change users, services, devices, storage, and sign-in providers.",
-                    ),
-                    trellis_protocol::PlatformPrivilege::RolesManage => (
-                        "Manage roles",
-                        "Change roles, who has them, and roles given by company sign-in.",
-                    ),
-                    trellis_protocol::PlatformPrivilege::ApisAccept => (
-                        "Install API updates",
-                        "Install compatible API updates.",
-                    ),
-                    trellis_protocol::PlatformPrivilege::ApisForceReplace => (
-                        "Force API replacements",
-                        "Install API updates that break compatibility. Affected apps are signed out.",
-                    ),
-                    trellis_protocol::PlatformPrivilege::ClientsManage => (
-                        "Manage apps",
-                        "Register apps and change their sign-in settings.",
-                    ),
-                    trellis_protocol::PlatformPrivilege::PrivilegesManage => (
-                        "Manage administrators",
-                        "Make people administrators and manage signing keys.",
-                    ),
-                };
-                privileges.push(serde_json::json!({
-                    "privilege":privilege_id,
-                    "label":label,
-                    "description":description,
-                    "required":requested.required_privileges.contains(privilege),
-                    "available":available&&eligible.contains(privilege)
+                            || (remembered && available)
                 }));
             }
             let presentation_id = super::super::sqlite::id();
@@ -862,8 +808,6 @@ async fn consent_data(
                 selection: requested.capabilities.clone(),
                 capabilities: meanings,
                 api_generations,
-                required_privileges: requested.required_privileges.clone(),
-                optional_privileges: requested.optional_privileges.clone(),
                 lookup_hash: String::new(),
                 sealed_digest: String::new(),
             };
@@ -881,7 +825,8 @@ async fn consent_data(
                 "redirectUri":validated.redirect_uri,
                 "deviceUserCode":validated.device_user_code,
                 "capabilities":capabilities,
-                "platformPrivileges":privileges
+                "confirmAdministration":administration.confirm_on_consent,
+                "peerApproval":administration.require_peer_approval
             }))
         })
     })
@@ -901,7 +846,6 @@ async fn approve(
         return error(ErrorCode::AccessDenied);
     };
     let mut approved = Vec::new();
-    let mut privileges = Vec::new();
     let mut controls = Vec::new();
     for (name, value) in pairs {
         match name.as_str() {
@@ -911,15 +855,6 @@ async fn approve(
                 }
                 approved.push(value);
             }
-            "privilege" => match serde_json::from_value(Value::String(value)) {
-                Ok(privilege) => {
-                    if privileges.contains(&privilege) {
-                        return error(ErrorCode::InvalidRequest);
-                    }
-                    privileges.push(privilege);
-                }
-                Err(_) => return error(ErrorCode::InvalidRequest),
-            },
             _ => controls.push((name, value)),
         }
     }
@@ -1045,6 +980,11 @@ async fn approve(
         None | Some("false") => false,
         _ => return error(ErrorCode::InvalidRequest),
     };
+    let administration_confirmed = match form.get("confirm_administration").map(String::as_str) {
+        Some("true") => true,
+        None => false,
+        _ => return error(ErrorCode::InvalidRequest),
+    };
     let declined = requested
         .capabilities
         .optional
@@ -1065,8 +1005,7 @@ async fn approve(
         approved,
         reused_remembered: Vec::new(),
         declined,
-        privileges,
-        required_privileges: requested.required_privileges,
+        administration_confirmed,
         remember,
         remember_until: None,
         expires_at: login.expires_at,

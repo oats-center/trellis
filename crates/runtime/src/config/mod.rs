@@ -1051,6 +1051,35 @@ pub struct AuthConfig {
     /// Authorization trust and short-lived context runtime configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization: Option<AuthorizationConfig>,
+    /// Safeguards on delegating administrative capabilities to apps.
+    #[serde(default)]
+    pub administration: AdministrationConfig,
+}
+
+/// Safeguards on delegating `trellis.*` administrative capabilities to an app.
+/// Every safeguard is on unless the operator turns it off.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AdministrationConfig {
+    /// Consent asks for a separate confirmation that the app may manage this
+    /// Trellis installation.
+    pub confirm_on_consent: bool,
+    /// Another holder of `trellis.managePlatform` must approve the delegation
+    /// before the app receives it.
+    pub require_peer_approval: bool,
+    /// Only OAuth clients an administrator registered may receive
+    /// administrative capabilities.
+    pub registered_clients_only: bool,
+}
+
+impl Default for AdministrationConfig {
+    fn default() -> Self {
+        Self {
+            confirm_on_consent: true,
+            require_peer_approval: true,
+            registered_clients_only: true,
+        }
+    }
 }
 
 /// External image policy. Disabling immediately prevents serving remote-derived

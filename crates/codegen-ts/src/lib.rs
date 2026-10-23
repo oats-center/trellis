@@ -1156,9 +1156,7 @@ fn render_app_request(
                     optional_capabilities: BTreeSet::new(),
                 });
         for (id, capability) in api.capabilities() {
-            if ["read", "write", "delete"]
-                .contains(&id.as_str().rsplit("::").next().unwrap_or_default())
-            {
+            if ["read", "write", "delete"].contains(&trellis_idl::capability_name(id.as_str())) {
                 selection.required_capabilities.insert(id.clone());
                 selection.optional_capabilities.remove(id);
                 selection.actions.extend(capability.allows.iter().cloned());
@@ -1401,9 +1399,7 @@ fn render_participant(
                     optional_capabilities: BTreeSet::new(),
                 });
         for (id, capability) in api.capabilities() {
-            if ["read", "write", "delete"]
-                .contains(&id.as_str().rsplit("::").next().unwrap_or_default())
-            {
+            if ["read", "write", "delete"].contains(&trellis_idl::capability_name(id.as_str())) {
                 selection.required_capabilities.insert(id.clone());
                 selection.optional_capabilities.remove(id);
                 selection.actions.extend(

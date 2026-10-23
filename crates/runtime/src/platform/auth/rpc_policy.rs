@@ -1,12 +1,12 @@
 //! Native policy RPC projections over the authoritative authorization store.
 
 use super::sqlite::timestamp;
+use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
 use rusqlite::{params, OptionalExtension};
-use trellis_protocol::PlatformPrivilege;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
     __types::{trellis::*, CursorPage, CursorPageInfo, CursorQuery},
@@ -27,14 +27,13 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
     provider.register_roles_list(move |context, input| {
         let store = Arc::clone(&roles);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::ManageRoles)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "roles.manage",
+                        Administration::ManageRoles,
                     )?;
                     read_roles(connection, &input)
                 })
@@ -47,14 +46,13 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
     provider.register_roles_get(move |context, input| {
         let store = Arc::clone(&roles);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::ManageRoles)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "roles.manage",
+                        Administration::ManageRoles,
                     )?;
                     Ok(AuthRoleGetResponse {
                         role: read_role(connection, &input.role_id.to_string())?,
@@ -75,7 +73,7 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
                     let identity = mutation(
                         &context,
                         &input.idempotency_key,
-                        Some(PlatformPrivilege::RolesManage),
+                        Some(Administration::ManageRoles),
                         &input,
                     )
                     .map_err(rpc_error)?;
@@ -98,14 +96,13 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
     provider.register_role_assignments_list(move |context, input| {
         let store = Arc::clone(&assignments);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::ManageRoles)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "roles.manage",
+                        Administration::ManageRoles,
                     )?;
                     read_assignments(connection, &input)
                 })
@@ -118,14 +115,13 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
     provider.register_capability_grants_list(move |context, input| {
         let store = Arc::clone(&grants);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::ManageRoles)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "roles.manage",
+                        Administration::ManageRoles,
                     )?;
                     read_grants(connection, &input)
                 })
@@ -138,14 +134,13 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
     provider.register_capabilities_list(move |context, input| {
         let store = Arc::clone(&capabilities);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::ManageRoles)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "roles.manage",
+                        Administration::ManageRoles,
                     )?;
                     read_capabilities(connection, &input)
                 })
@@ -157,14 +152,13 @@ pub(crate) fn register_policy_rpc<P: ParticipantDescriptor>(
     provider.register_principals_effective_access(move |context, input| {
         let store = Arc::clone(&store);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::ManageRoles)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "roles.manage",
+                        Administration::ManageRoles,
                     )?;
                     read_effective_access(
                         connection,
@@ -804,6 +798,8 @@ pub(super) fn read_effective_access(
                         Ok(AuthCapabilitySource {
                             kind: if role_id.is_some() {
                                 AuthCapabilitySourceKind::Role
+                            } else if origin == "administrator" {
+                                AuthCapabilitySourceKind::Administrator
                             } else {
                                 AuthCapabilitySourceKind::Direct
                             },
@@ -841,17 +837,9 @@ pub(super) fn read_effective_access(
             },
         )
         .collect::<Result<Vec<_>, AuthError>>()?;
-    let mut statement = connection.prepare(
-        "SELECT privilege FROM auth_platform_privileges WHERE principal_id=?1 ORDER BY privilege",
-    )?;
-    let platform_privileges = statement
-        .query_map([principal_id], |row| row.get::<_, String>(0))?
-        .map(|row| Ok(serde_json::from_value(serde_json::Value::String(row?))?))
-        .collect::<Result<Vec<_>, AuthError>>()?;
     Ok(AuthEffectiveAccessResponse {
         principal,
         capabilities,
-        platform_privileges,
         extra: Default::default(),
     })
 }

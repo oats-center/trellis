@@ -415,10 +415,7 @@ impl OAuthEngine {
         config.refresh_token_ttl = Some(Duration::from_secs(30 * 24 * 60 * 60));
         config.require_dpop = true;
         config.device_code_ttl = Duration::from_secs(300);
-        config.authorization_details_types_supported = Some(vec![
-            "trellis_capabilities".into(),
-            "trellis_platform_privileges".into(),
-        ]);
+        config.authorization_details_types_supported = Some(vec!["trellis_capabilities".into()]);
         config.allowed_resources = Some(Vec::new().into_boxed_slice());
         let server = AuthorizationServer::with_clock(config, storage, SystemClock)
             .with_jws_verifier(Arc::new(P256Verifier))
@@ -507,15 +504,6 @@ impl OAuthEngine {
             || validated.dpop_jkt.as_deref() != Some(&approval.durable_dpop_jkt)
             || requested.capabilities.required != approval.selection.required
             || requested.capabilities.optional != approval.selection.optional
-            || requested.required_privileges != approval.required_privileges
-            || !requested
-                .required_privileges
-                .iter()
-                .all(|privilege| approval.privileges.contains(privilege))
-            || !approval.privileges.iter().all(|privilege| {
-                requested.required_privileges.contains(privilege)
-                    || requested.optional_privileges.contains(privilege)
-            })
         {
             return Err(rejected().into());
         }
@@ -528,7 +516,6 @@ impl OAuthEngine {
         let now = crate::clock::unix_now();
         let authority = self.server.store().authority.clone();
         let (identity, approval) = (identity.clone(), approval.clone());
-        let required_privileges = requested.required_privileges.clone();
         let (grant, actual) = blocking(move || {
             let grant = authority
                 .approve_grant(&identity, &approval, now)
@@ -546,7 +533,7 @@ impl OAuthEngine {
                         .iter()
                         .map(|capability| capability.capability_id.clone())
                         .collect();
-                    let mut details = vec![serde_json::json!({
+                    let details = vec![serde_json::json!({
                         "type":"trellis_capabilities",
                         "required":approval.selection.required,
                         "optional": approved
@@ -554,17 +541,6 @@ impl OAuthEngine {
                                 .filter(|name| !approval.selection.required.contains(name))
                                 .collect::<Vec<_>>()
                     })];
-                    if !approval.privileges.is_empty() {
-                        details.push(serde_json::json!({
-                            "type":"trellis_platform_privileges",
-                            "required":required_privileges,
-                            "optional": approval
-                                    .privileges
-                                    .iter()
-                                    .filter(|privilege| !required_privileges.contains(privilege))
-                                    .collect::<Vec<_>>()
-                        }));
-                    }
                     Ok(serde_json::to_string(&details)?)
                 })
                 .map_err(|_| super::portal::ApprovalError::from(rejected()))?;
@@ -686,7 +662,7 @@ impl OAuthEngine {
                     .iter()
                     .map(|capability| capability.capability_id.clone())
                     .collect();
-                let mut actual = vec![serde_json::json!({
+                let actual = vec![serde_json::json!({
                     "type":"trellis_capabilities",
                     "required":current.selection.required,
                     "optional": approved
@@ -694,26 +670,6 @@ impl OAuthEngine {
                             .filter(|name| !current.selection.required.contains(name))
                             .collect::<Vec<_>>()
                 })];
-                if !current.platform_privileges.is_empty() {
-                    let required: String = connection.query_row(
-                        "SELECT required_privileges_json \
-                    FROM auth_oauth_grants \
-                    WHERE oauth_grant_id=?1",
-                        [grant],
-                        |row| row.get(0),
-                    )?;
-                    let required: Vec<trellis_protocol::PlatformPrivilege> =
-                        serde_json::from_str(&required)?;
-                    actual.push(serde_json::json!({
-                        "type":"trellis_platform_privileges",
-                        "required":required,
-                        "optional": current
-                                .platform_privileges
-                                .iter()
-                                .filter(|privilege| !required.contains(privilege))
-                                .collect::<Vec<_>>()
-                    }));
-                }
                 let actual = serde_json::Value::Array(actual);
                 Ok((signed, actual, expires))
             })

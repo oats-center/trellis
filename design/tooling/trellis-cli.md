@@ -41,8 +41,9 @@ trellis logout
 trellis whoami
 ```
 
-Login uses public OAuth Device Code with explicit capability and optional finite
-administrative privilege consent. The registered client is `trellis.cli`; no app
+Login uses public OAuth Device Code with explicit capability consent; the
+administrative `trellis.*` capabilities are optional and take the Portal's
+separate confirmation step. The registered client is `trellis.cli`; no app
 participant installation is involved. The native SDK owns durable P-256 custody,
 refresh-token rotation, locking and atomic replacement. Each process resumes
 custody and establishes fresh ephemeral runtime authority. `--ca-certificate`
@@ -62,8 +63,8 @@ trellis issuers revoke <issuer-key-id> ...
 Client registration and catalog operations call the generated `Auth.OAuthClients`
 and `Auth.Apis` families. JSON request files use generated native-contract DTOs;
 the CLI does not author a second policy or contract schema. Mutations retain
-expected revisions and idempotency keys. Force replacement requires the finite
-`apis.forceReplace` privilege and explicit breakage/consent acknowledgements.
+expected revisions and idempotency keys. Force replacement requires
+`trellis.forceReplaceApis` and explicit breakage/consent acknowledgements.
 Client configuration supports exact registered loopback browser callbacks.
 
 Issuer commands manage the online signer. No `infra`, trust-root, certificate,
@@ -159,7 +160,7 @@ artifacts.
 Human output is concise and actionable. JSON mode emits one documented value to
 stdout and sends tracing/progress to stderr. Expected Auth RPC errors retain
 their generated result codes, including stale binding/deployment revisions,
-invalid participant artifacts, denied Admin privilege, missing required
+invalid participant artifacts, denied administration, missing required
 evidence, and unavailable issuer/runtime dependencies.
 
 ## Removed Surface

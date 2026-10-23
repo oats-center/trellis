@@ -1,3 +1,4 @@
+use super::Administration;
 use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -15,9 +16,9 @@ use super::catalog::{action_identity, resolve_api};
 use super::policy::capability;
 use super::sqlite::{decode, digest, id, json, AuthError, Mutation, SqliteAuthorizationStore};
 
-pub(super) const SELF_HEALTH_CAPABILITY: &str = "trellis.health@v1::selfReport";
-pub(super) const JOB_HISTORY_CAPABILITY: &str = "trellis.jobs@v1::history";
-pub(super) const CONSUMER_RUNTIME_CAPABILITY: &str = "trellis.events@v1::consumerRuntime";
+pub(super) const SELF_HEALTH_CAPABILITY: &str = "trellis.health@v1::reportHealth";
+pub(super) const JOB_HISTORY_CAPABILITY: &str = "trellis.jobs@v1::readHistory";
+pub(super) const CONSUMER_RUNTIME_CAPABILITY: &str = "trellis.events@v1::processReplays";
 
 /// The automatically assigned runtime right must never expand into domain actions.
 pub(super) fn native_health_capability(
@@ -232,7 +233,7 @@ impl SqliteAuthorizationStore {
                 )
                 .optional()?
                 .ok_or(AuthError::Denied)?;
-            Self::require_privilege(connection, &admin, "principals.manage")?;
+            Self::require_administration(connection, &admin, Administration::ManagePrincipals)?;
             match source.lookup::<C>(connection, now) {
                 Ok(existing) => Ok(Some(existing)),
                 Err(AuthError::NotFound) => Ok(None),
@@ -326,7 +327,11 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<ProvisionedDeployment, AuthError> {
         self.mutate(mutation, "deployment.provision", input, now, |connection| {
-            Self::require_privilege(connection, &mutation.actor, "principals.manage")?;
+            Self::require_administration(
+                connection,
+                &mutation.actor,
+                Administration::ManagePrincipals,
+            )?;
             let graph = compile_evidence(input.evidence.clone())
                 .map_err(|error| AuthError::Invalid(error.to_string()))?;
             let title = graph
@@ -336,8 +341,14 @@ impl SqliteAuthorizationStore {
                 .find(|participant| participant.identity().as_str() == input.participant_id)
                 .ok_or(AuthError::NotFound)?
                 .name();
-            let deployment =
-                Self::install_deployment_in_transaction(connection, input, None, title, now)?;
+            let deployment = Self::install_deployment_in_transaction(
+                connection,
+                &mutation.actor,
+                input,
+                None,
+                title,
+                now,
+            )?;
             Self::provision_instance_in_transaction(
                 connection,
                 &deployment,
@@ -353,6 +364,7 @@ impl SqliteAuthorizationStore {
     /// bindings separately before the credential can be admitted.
     pub(super) fn install_deployment_in_transaction(
         connection: &crate::platform::auth::sqlite::Connection,
+        actor: &str,
         input: &DeploymentProvisioning,
         existing: Option<&str>,
         title: &str,
@@ -384,6 +396,13 @@ impl SqliteAuthorizationStore {
             .iter()
             .map(ToString::to_string)
             .collect();
+        // Deploying a participant that selects administration changes who
+        // holds it, which takes `trellis.managePlatform`.
+        Self::require_platform_for(
+            connection,
+            actor,
+            required.iter().chain(&optional).map(String::as_str),
+        )?;
         if input.expires_at.is_some_and(|expiry| expiry <= now)
             || !input.resource_commitments.is_object()
         {
@@ -570,9 +589,8 @@ impl SqliteAuthorizationStore {
                 connection.execute(
                     "INSERT INTO auth_oauth_clients(client_id,kind,display_name,\
                     redirect_uris_json,development,implied_capabilities_json,\
-                    requested_privileges_json,metadata_json,state,revision,created_at,\
-                    updated_at) \
-                    VALUES(?1,'native',?2,'[]',0,'[]','[]',?3,'active',1,?4,?4) \
+                    metadata_json,state,revision,created_at,updated_at) \
+                    VALUES(?1,'native',?2,'[]',0,'[]',?3,'active',1,?4,?4) \
                     ON CONFLICT(client_id) \
                     DO UPDATE SET metadata_json=excluded.metadata_json,\
                     display_name=excluded.display_name,\

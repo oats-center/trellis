@@ -391,13 +391,6 @@ async fn login_command(format: OutputFormat, args: &LoginArgs) -> miette::Result
             "type": "trellis_capabilities",
             "required": Request::REQUIRED_CAPABILITIES,
             "optional": Request::OPTIONAL_CAPABILITIES,
-        }, {
-            "type": "trellis_platform_privileges",
-            "required": [],
-            "optional": [
-                "principals.manage", "roles.manage", "apis.accept",
-                "apis.forceReplace", "clients.manage", "privileges.manage",
-            ],
         }]))
         .await
         .into_diagnostic()?;

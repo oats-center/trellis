@@ -40,15 +40,11 @@ async fn browser_state_namespace_cas_watch_and_persistence() {
             {
                 "type":"trellis_capabilities",
                 "required": [
-                    "trellis.auth@v1::usersCreate",
-                    "trellis.auth@v1::capabilityGrantsGrant",
-                    "trellis.auth@v1::oauthClientsPut"
+                    "trellis.managePrincipals",
+                    "trellis.manageRoles",
+                    "trellis.manageClients"
                             ],
                 "optional": []
-            },
-            {
-                "type":"trellis_platform_privileges",
-                "required": ["principals.manage","roles.manage","clients.manage"]
             }
         ]))
         .await

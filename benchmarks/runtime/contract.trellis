@@ -41,7 +41,7 @@ service Provider {
 
 agent Caller {
   use performance { required capability workloads; }
-  use auth { required capability accountRead; }
+  use auth { required capability readAccount; }
   state saved { title "Saved"; description "Measured client state round trips."; schema Value; version 1; }
 }
 

@@ -20,7 +20,6 @@ fn reset_session(
         redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
         development: false,
         implied_capabilities: vec![],
-        eligible_privileges: vec![PlatformPrivilege::PrincipalsManage],
         metadata: serde_json::json!({}),
         expected_revision: 0,
     };
@@ -46,15 +45,40 @@ fn reset_session(
         )
         .unwrap();
     let mut approval = grant_request(actor, &login.login_session_id, "", "", NOW);
-    approval.selection.required.clear();
+    let manage = Administration::ManagePrincipals.capability_id().to_string();
+    approval.selection.required = vec![manage.clone()];
     approval.selection.optional.clear();
-    approval.approved.clear();
-    approval.privileges = vec![PlatformPrivilege::PrincipalsManage];
-    approval.required_privileges = vec![PlatformPrivilege::PrincipalsManage];
+    approval.approved = vec![manage];
+    approval.administration_confirmed = true;
     approval.remember = false;
     let grant = store
         .approve_grant(&mutation(actor, &approval), &approval, NOW)
         .unwrap();
+    // Another administrator approves the delegation.
+    let pending: Option<(String, u64)> = store
+        .read(|connection| {
+            Ok(connection
+                .query_row(
+                    "SELECT review_id,revision FROM auth_administration_reviews \
+                    WHERE principal_id=?1 AND state='pending'",
+                    [actor],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?)
+        })
+        .unwrap();
+    if let Some((review, revision)) = pending {
+        let input: trellis_runtime_apis::types::AuthAdministrationReviewDecideRequest =
+            serde_json::from_value(serde_json::json!({
+                "reviewId": review,
+                "decision": "approved",
+                "expectedRevision": revision.to_string(),
+                "idempotencyKey": id(),
+            }))
+            .unwrap();
+        crate::platform::auth::administration::decide(store, &mutation(admin, &input), &input, NOW)
+            .unwrap();
+    }
     let admission = AdmissionIdentity {
         refresh_family_id: Some(crate::platform::auth::tests::oauth_family(
             store,
@@ -858,10 +882,11 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     }
     let operator = &principals[0];
     let alice = &principals[1];
-    let grant = PolicyMutation::PrivilegeAssign {
+    let grant = PolicyMutation::CapabilityGrant {
         principal_id: operator.clone(),
-        privileges: vec![PlatformPrivilege::PrincipalsManage],
+        capability_id: Administration::ManagePrincipals.capability_id().into(),
         expected_revision: 0,
+        expires_at: None,
     };
     crate::platform::auth::tests::apply_policy(&store, &mutation(&admin, &grant), &grant, NOW)
         .unwrap();
@@ -885,17 +910,9 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
         NOW,
     )
     .unwrap();
-    let assignment: String = store
-        .transaction(|connection| {
-            Ok(connection.query_row(
-                "SELECT assignment_id FROM auth_platform_assignments WHERE principal_id=?1",
-                [operator],
-                |row| row.get(0),
-            )?)
-        })
-        .unwrap();
-    let revoke = PolicyMutation::PrivilegeRevoke {
-        assignment_id: assignment,
+    let revoke = PolicyMutation::CapabilityRevoke {
+        principal_id: operator.clone(),
+        capability_id: Administration::ManagePrincipals.capability_id().into(),
         expected_revision: 1,
     };
     crate::platform::auth::tests::apply_policy(

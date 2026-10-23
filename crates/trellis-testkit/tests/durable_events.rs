@@ -41,20 +41,22 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
         )
         .await
         .unwrap();
-        let device = native.start_device(&serde_json::json!([
-            {
-                "type":"trellis_capabilities",
-                "required": [
-                    "trellis.auth@v1::accountRead",
-                    "trellis.auth@v1::capabilityGrantsGrant",
-                    "trellis.auth@v1::deploymentsCreate",
-                    "trellis.auth@v1::deploymentsApply",
-                    "trellis.auth@v1::serviceInstancesProvision"
-                            ],
-                "optional": []
-            },
-            {"type":"trellis_platform_privileges","required":["roles.manage", "principals.manage"]}
-        ])).await.unwrap();
+        let device = native
+            .start_device(&serde_json::json!([
+                {
+                    "type":"trellis_capabilities",
+                    "required": [
+                        "trellis.auth@v1::readAccount",
+                        "trellis.manageRoles",
+                        "trellis.managePrincipals",
+                        "trellis.managePrincipals",
+                        "trellis.managePrincipals"
+                                ],
+                    "optional": []
+                }
+            ]))
+            .await
+            .unwrap();
         runtime
             .approve_device_login("trellis.cli", device.user_code())
             .await
@@ -108,13 +110,12 @@ async fn sdk_consumers_preserve_original_publication_through_dlq_replay() {
                         "runtime-trellis.events@v1::publishAlpha",
                         "runtime-trellis.events@v1::inspect",
                         "trellis.events@v1::query",
-                        "trellis.events@v1::consumersInspect",
-                        "trellis.events@v1::deadLettersInspect",
-                        "trellis.events@v1::deadLettersReplay"
+                        "trellis.events@v1::inspectConsumers",
+                        "trellis.events@v1::inspectDeadLetters",
+                        "trellis.events@v1::replayDeadLetters"
                                 ],
                     "optional": []
-                },
-                {"type":"trellis_platform_privileges","required":["principals.manage"]}
+                }
             ]))
             .await
             .unwrap();

@@ -1,10 +1,10 @@
 //! Shared adapters from verified RPC openings to authoritative Auth operations.
 
+use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use serde::Serialize;
-use trellis_protocol::PlatformPrivilege;
 use trellis_rs::{
     generated::TrellisError,
     service::{DeclaredRpcError, ServerError, ServiceHandlerContext},
@@ -28,13 +28,14 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     super::rpc_users::register_user_provider_rpc(provider, oauth.clone());
     super::rpc_credentials::register_credential_rpc(provider, store.clone());
     super::oauth::enrollment::register_rpc(provider, store.clone(), operational.clone());
+    super::administration::register_rpc(provider, store.clone());
     super::rpc_deployments::register_deployment_rpc(provider, store.clone(), operational, oauth);
     let users = store.clone();
     provider.register_users_list(move |context, input| {
         let store = users.clone();
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
-            let delegated = caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
+            let delegated = caller(&context, Some(Administration::ManagePrincipals)).is_ok();
             blocking(move || {
                 store.transaction(|connection| {
                     let administrative =
@@ -163,7 +164,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
 /// delegated to this session. Store mutations additionally check current policy.
 pub(super) fn caller(
     context: &ServiceHandlerContext,
-    privilege: Option<PlatformPrivilege>,
+    administration: Option<Administration>,
 ) -> Result<String, AuthError> {
     let request = context
         .request()
@@ -171,7 +172,7 @@ pub(super) fn caller(
         .filter(|request| request.authorized_action().is_some())
         .ok_or(AuthError::Denied)?;
     let caller = request.caller();
-    if privilege.is_some_and(|privilege| !caller.platform_privileges.contains(&privilege)) {
+    if administration.is_some_and(|administration| !caller.holds(administration.capability_id())) {
         return Err(AuthError::Denied);
     }
     Ok(caller.principal_id.clone())
@@ -183,11 +184,11 @@ pub(super) fn caller(
 pub(super) fn mutation(
     context: &ServiceHandlerContext,
     idempotency_key: &str,
-    privilege: Option<PlatformPrivilege>,
+    administration: Option<Administration>,
     input: &impl Serialize,
 ) -> Result<Mutation, AuthError> {
     Ok(Mutation {
-        actor: caller(context, privilege)?,
+        actor: caller(context, administration)?,
         request_id: idempotency_key.to_owned(),
         request_digest: digest(input)?,
     })

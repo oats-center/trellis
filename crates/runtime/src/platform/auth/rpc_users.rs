@@ -1,13 +1,13 @@
 //! Typed account adapters over Auth's authoritative SQLite aggregates.
 
 use super::sqlite::timestamp;
+use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
 use argon2::{password_hash::SaltString, Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use rusqlite::{params, OptionalExtension};
-use trellis_protocol::PlatformPrivilege;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
     __types::{trellis::*, CursorPage, CursorPageInfo, CursorQuery},
@@ -32,7 +32,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&users);
         async move {
             let actor = caller(&context, None).map_err(rpc_error)?;
-            let delegated = caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
+            let delegated = caller(&context, Some(Administration::ManagePrincipals)).is_ok();
             blocking(move || {
                 store.transaction(|connection| {
                     let administrative = directory_account_access(connection, &actor, delegated)?;
@@ -77,7 +77,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
                     let identity = mutation(
                         &context,
                         &input.idempotency_key,
-                        Some(PlatformPrivilege::PrincipalsManage),
+                        Some(Administration::ManagePrincipals),
                         &input,
                     )
                     .map_err(rpc_error)?;
@@ -134,14 +134,13 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
     provider.register_oidc_role_mappings_list(move |context, input| {
         let store = Arc::clone(&mappings);
         async move {
-            let actor =
-                caller(&context, Some(PlatformPrivilege::RolesManage)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::ManageRoles)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "roles.manage",
+                        Administration::ManageRoles,
                     )?;
                     let (cursor, limit) = page_bounds(input.page.as_ref())?;
                     let mut statement = connection.prepare(
@@ -178,7 +177,7 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(PlatformPrivilege::RolesManage),
+                Some(Administration::ManageRoles),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -211,13 +210,13 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&providers);
         async move {
             let actor =
-                caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
+                caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "principals.manage",
+                        Administration::ManagePrincipals,
                     )?;
                     Ok(AuthOIDCProviderGetResponse {
                         provider: read_provider(connection, &input.provider_id.to_string())?,
@@ -233,13 +232,13 @@ pub(crate) fn register_user_rpc<P: ParticipantDescriptor>(
         let store = Arc::clone(&store);
         async move {
             let actor =
-                caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
+                caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "principals.manage",
+                        Administration::ManagePrincipals,
                     )?;
                     read_providers(connection, &input)
                 })
@@ -262,7 +261,7 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(PlatformPrivilege::PrincipalsManage),
+                Some(Administration::ManagePrincipals),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -310,7 +309,7 @@ pub(crate) fn register_user_provider_rpc<P: ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(PlatformPrivilege::PrincipalsManage),
+                Some(Administration::ManagePrincipals),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -570,7 +569,11 @@ pub(super) fn directory_account_access(
     if !delegated {
         return Ok(false);
     }
-    match SqliteAuthorizationStore::require_privilege(connection, actor, "principals.manage") {
+    match SqliteAuthorizationStore::require_administration(
+        connection,
+        actor,
+        Administration::ManagePrincipals,
+    ) {
         Ok(()) => Ok(true),
         Err(AuthError::Denied) => Ok(false),
         Err(error) => Err(error),
@@ -690,10 +693,10 @@ pub(super) fn create_user(
         &audit,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let taken: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 \
@@ -1097,10 +1100,10 @@ fn set_provider_state(
         input,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let provider = input.provider_id.to_string();
             if connection.execute(

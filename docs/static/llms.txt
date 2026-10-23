@@ -67,7 +67,7 @@ the supported flows. Kind is immutable; use a new client ID to switch kind.
 Native HTTP loopback callbacks need no development flag; browser loopback does.
 `put` reads generated AuthOAuthClientPutRequest JSON; mutations are revision-fenced. `trellis apis
 list|get|review|accept|force-replace` uses generated Auth request JSON and reviewed
-package evidence. Force replacement requires apis.forceReplace and explicit
+package evidence. Force replacement requires trellis.forceReplaceApis and explicit
 breakage/consent acknowledgements. Console exposes OAuth clients and API catalog.
 
 Durable event consumers verify original broker publication time. DLQ/replay retains
@@ -100,7 +100,7 @@ does not authorize KV purge, stream destruction, or cross-owner Store access.
 Account actions use generated Auth RPCs and the isolated OAuth portal.
 PasswordReset.Create returns a five-minute, one-use token for `/account/reset`;
 completion checks Origin/CSRF, credential CAS, and the requester's original active
-session/current accepted `principals.manage`, then revokes login/grant families.
+session/current `trellis.managePrincipals`, then revokes login/grant families.
 Bootstrap administrators use local recovery. IdentityLink.Create returns a
 five-minute portal URL requiring the exact initiating user and fresh verified
 OIDC with nonce/PKCE. Provider changes and cross-user identity collisions fail;
@@ -113,7 +113,7 @@ reaches the verified IdP without relaxing form-action 'self' or leaking the
 handoff in referrers. Direct, expired and replayed handoffs fail.
 
 Provisioned services/devices publish native Health.Heartbeat events automatically
-with ordinary SessionEvent signatures and the runtime-only selfReport capability.
+with ordinary SessionEvent signatures and the runtime-only reportHealth capability.
 Users/apps cannot obtain that publishing right. The collector verifies catalog
 authority, broker chronology, retirement cutoff and signed native identity;
 payload claims never establish deployment, instance or participant digest.
@@ -121,9 +121,10 @@ Initial publication is asynchronous and does not gate service connection.
 
 Fresh administrator initialization explicitly grants only the current accepted
 Trellis-owned Auth/Core/State/Health/Jobs/Events capabilities, atomically with
-finite platform privileges and Console/CLI registration. Replay does not grant
-future capabilities or rewrite clients; domain APIs remain explicitly granted.
-App connections still require selection, consent, and client privilege eligibility.
+Console/CLI registration; the administrator holds the administrative
+capabilities inherently. Replay does not grant future capabilities or rewrite
+clients; domain APIs remain explicitly granted. App connections still require
+selection and consent.
 
 OAuth authority/admission renewal is bounded by the original verified refresh
 family's absolute deadline and revocation state, never another family's lifetime.
@@ -213,15 +214,21 @@ trust, never caller-selected deployments in CONNECT. The Rust SDK retains native
 OAuth custody and renews admission with the same runtime key; uncertain refresh
 requires recovery rather than replaying a spent token.
 
-Explicitly registered loopback development clients may be eligible for
-platform privileges only when authorized registration configures eligibility,
-the user holds the privileges, and the user explicitly delegates them. Localhost
-and development mode grant no trust; CIMD clients remain ineligible.
+Administrative capabilities (`trellis.managePrincipals`, `trellis.manageRoles`,
+`trellis.acceptApis`, `trellis.forceReplaceApis`, `trellis.manageClients`,
+`trellis.managePlatform`) are ordinary capabilities in a namespace only built-in
+Trellis contracts may use. Roles, direct grants, and identity-provider mappings
+can carry them; changing who holds one requires `trellis.managePlatform`.
+Delegating one to an app has three safeguards, on by default under
+`[auth.administration]`: a separate consent confirmation, approval by another
+`trellis.managePlatform` holder (`Administration.Reviews.*`), and registered
+clients only. The initialized administrator holds all six inherently and needs
+no review. Localhost/development mode establishes no trust, and
+application/OAuth origins remain isolated.
 
-Finite administrative privileges are explicit OAuth requests, not native IDL
-selections or generated contract authority. Browser connections use
-`auth.platformPrivileges: { required, optional }`; normal client eligibility,
-user authority, and consent checks apply, including to optional requests.
+Apps request administrative capabilities like any other, through their generated
+required/optional capability selections; there is no separate privilege request.
+Optional administration is never preselected or remembered.
 
 Explicit one-off consent overrides older remembered choices without changing
 them. Reused choices retain their expiry; later shared withdrawals still retire
@@ -326,10 +333,9 @@ optional. Generated callers expose the selected actions; inspect capability
 availability before using an optional capability. API authors supply positive
 `consent_revision` values; Auth owns acceptance and introduction counters.
 
-Administrative Auth RPCs require ordinary capability/action authorization plus
-the applicable finite platform privilege. Selecting an administrative capability
-does not confer that privilege. Own-authority/session maintenance uses fixed
-session rights rather than ordinary capability requests.
+Administrative Auth RPCs are allowed by the administrative capability that names
+them. Own-authority/session maintenance uses fixed session rights rather than
+ordinary capability requests.
 
 Provider-owned event publication requires the exact issuer-verified publish
 action in the certificate bound to the signed native authority and its native
@@ -445,7 +451,7 @@ Devices.Reviews.Get/Decide require its confirmation code and current revision.
 A declared native companion uses ordinary explicit OAuth consent through its
 current accepted declaration; removing it rejects new/pending consent without
 revoking existing independently consented grants. Association removal by its
-user or a currently delegated principals.manage administrator revokes only the
+user or a currently delegated trellis.managePrincipals administrator revokes only the
 associated grant and families. The dedicated OAuth client is the
 deployment-scoped client trellis.device.<deploymentId>.companion. Registration
 grants no user authority. Its verified user caller associates the grant through
@@ -506,7 +512,7 @@ runtime verifies provider identity and session authority before bytes move.
 `Auth.Users.List/Get` require selected and consented `usersRead` and return
 active directory profiles, including immutable `principalId`, names, available
 email and photos. Ordinary profiles omit `account`. Delegated and currently
-eligible `principals.manage` also exposes account lifecycle/revision, username
+eligible `trellis.managePrincipals` also exposes account lifecycle/revision, username
 and password status and permits inactive-user lookup and username search.
 `Users.Resolve` with `accountRead` is self-only and discloses names, email and
 verification status, photo and the caller's account. It grants no directory access.

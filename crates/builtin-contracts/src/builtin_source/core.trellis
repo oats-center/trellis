@@ -46,21 +46,21 @@ api core@v1 {
     group runtime {
       title "Trellis runtime";
       description "Runtime status and storage Trellis manages.";
-      capability authority_read {
+      capability readAuthority {
         title "See runtime status";
         description "Check which Trellis features are ready.";
         consequence "Can see runtime readiness.";
         consent_revision 1;
         allows { rpc Surface.Status; }
       }
-      capability resources_read {
+      capability readResources {
         title "See managed resources";
         description "See Trellis-managed storage and its status.";
         consequence "Can see resource settings and history.";
         consent_revision 1;
         allows { rpc Resources.Inspect; rpc Resources.Query; }
       }
-      capability resources_destroy {
+      capability destroyResources {
         title "Delete managed resources";
         description "Permanently delete Trellis-managed storage.";
         consequence "Permanently deletes data.";

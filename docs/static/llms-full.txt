@@ -68,7 +68,7 @@ the supported flows. Kind is immutable; use a new client ID to switch kind.
 Native HTTP loopback callbacks need no development flag; browser loopback does.
 `put` reads generated AuthOAuthClientPutRequest JSON; mutations are revision-fenced. `trellis apis
 list|get|review|accept|force-replace` uses generated Auth request JSON and reviewed
-package evidence. Force replacement requires apis.forceReplace and explicit
+package evidence. Force replacement requires trellis.forceReplaceApis and explicit
 breakage/consent acknowledgements. Console exposes OAuth clients and API catalog.
 
 Durable event consumers verify original broker publication time. DLQ/replay retains
@@ -139,7 +139,7 @@ does not authorize KV purge, stream destruction, or cross-owner Store access.
 
 Provisioned services/devices automatically publish the native Health.Heartbeat
 event using ordinary SessionEvent signatures. Auth assigns only the runtime-owned
-trellis.health@v1::selfReport capability through native provisioning; users/apps
+trellis.health@v1::reportHealth capability through native provisioning; users/apps
 cannot acquire this right. The collector verifies whole catalog authority,
 broker chronology, retirement cutoff and signed deployment/instance identity.
 The signed trellis.nativeParticipant.v1 extension supplies installed revision and
@@ -147,28 +147,28 @@ participant digest, never payload claims. No health declaration is needed in
 service contracts. Initial publication is asynchronous, not a connection gate.
 
 Fresh administrator initialization explicitly grants only current accepted
-Trellis-owned Auth/Core/State/Health/Jobs/Events capabilities. These grants,
-finite platform privileges, and Console/CLI registration commit atomically.
-Replay neither grants future capabilities nor rewrites clients. Domain API
-access remains explicitly granted; app authority still requires selection,
-consent, and client privilege eligibility. `Issuers.Rotate` requires
-`privileges.manage`, the expected current key ID, and an idempotency key. Auth
-locally generates and durably flushes a private successor key before atomically
-committing its old-key-signed chain link, activation, publication intent, and
-replay result. Replays do not rotate again. Restart loads the database-current
-key and fails closed on missing custody, without replacing the bootstrap seed.
-Back up the issuer seed and the database's sibling `<database-stem>.issuer-keys`
-directory (`platform.issuer-keys` by default) with Auth's database
-and the independent OAuth storage key. Private keys never cross the RPC.
-OAuth sessions retain
-their original verified refresh family; CONNECT, Authority.Renew, OwnContextGet,
-and Admission.Renew consult that exact family's revocation and absolute deadline.
-A different live family of the same grant cannot replace it, and rotation never
-extends it. Admission.Renew uses the live caller's session-key proof and own
-context digest to return same-key signed OAuth admission, at most 300 seconds
-and bounded by the candidate authority/family, without rotating refresh tokens.
-Invalid roots retire the session and enqueue cutoff/kicks. Provisioned admission
-still needs the client's identity signature (`provisioned_signature_required`).
+Trellis-owned Auth/Core/State/Health/Jobs/Events capabilities. These grants and
+Console/CLI registration commit atomically; the administrator holds the
+administrative capabilities inherently. Replay neither grants future
+capabilities nor rewrites clients. Domain API access remains explicitly granted;
+app authority still requires selection and consent. `Issuers.Rotate` requires
+`trellis.managePlatform`, the expected current key ID, and an idempotency key.
+Auth locally generates and durably flushes a private successor key before
+atomically committing its old-key-signed chain link, activation, publication
+intent, and replay result. Replays do not rotate again. Restart loads the
+database-current key and fails closed on missing custody, without replacing the
+bootstrap seed. Back up the issuer seed and the database's sibling
+`<database-stem>.issuer-keys` directory (`platform.issuer-keys` by default) with
+Auth's database and the independent OAuth storage key. Private keys never cross
+the RPC. OAuth sessions retain their original verified refresh family; CONNECT,
+Authority.Renew, OwnContextGet, and Admission.Renew consult that exact family's
+revocation and absolute deadline. A different live family of the same grant
+cannot replace it, and rotation never extends it. Admission.Renew uses the live
+caller's session-key proof and own context digest to return same-key signed
+OAuth admission, at most 300 seconds and bounded by the candidate
+authority/family, without rotating refresh tokens. Invalid roots retire the
+session and enqueue cutoff/kicks. Provisioned admission still needs the client's
+identity signature (`provisioned_signature_required`).
 
 For services, apps, agents, and devices consuming Trellis. Read the
 [TypeScript](llms-typescript.txt), [Rust](llms-rust.txt), or
@@ -255,18 +255,21 @@ unless another entitlement path preserves the outstanding authority.
 Consent approval binds the current server-owned presentation and the selected
 optional capabilities; stale forms require a fresh presentation. Signed session
 authority has a shared 64 KiB issuer, verification, and parsing budget.
-Explicitly initialized or administrator-registered development clients may be
-eligible for platform privileges. Registration requires clients.manage;
-configuring privilege eligibility also requires privileges.manage. Delegation
-requires the authenticated user to hold and explicitly approve each privilege.
+Administrative capabilities (`trellis.managePrincipals`, `trellis.manageRoles`,
+`trellis.acceptApis`, `trellis.forceReplaceApis`, `trellis.manageClients`,
+`trellis.managePlatform`) are ordinary capabilities in a namespace only built-in
+Trellis contracts may use. Roles, direct grants, and identity-provider mappings
+can carry them; changing who holds one requires `trellis.managePlatform`.
+Delegating one to an app has three safeguards, on by default under
+`[auth.administration]`: a separate consent confirmation, approval by another
+`trellis.managePlatform` holder (`Administration.Reviews.*`), and registered
+clients only. The initialized administrator holds all six inherently and needs
+no review. Localhost/development mode establishes no trust, and
+application/OAuth origins remain isolated.
 
-Finite administrative privilege requests belong to OAuth configuration, not
-native IDL or generated application metadata. Browser apps supply
-`auth.platformPrivileges: { required, optional }` to their connection. Selecting
-an administrative API capability alone grants no finite privilege, and optional
-requests remain subject to registration eligibility, user authority, and consent.
-Localhost/development mode establishes no trust, and CIMD clients remain
-ineligible. Application and OAuth origins remain isolated.
+Apps request administrative capabilities like any other, through their generated
+required/optional capability selections; there is no separate privilege request.
+Optional administration is never preselected or remembered.
 
 Provisional CIMD client intake shares a 128-client/16 MiB budget and a five-minute
 lifetime; live decisions and approved refresh lifecycles are retained. Exhaustion
@@ -404,13 +407,12 @@ metadata, not canonical API/participant JSON. Generated descriptors are support
 ABI, not a contract-as-code authoring surface.
 
 Capability approvals are policy decisions over whole capabilities, not saved
-exact-action grant snapshots. Administrative Auth actions also require the
-applicable finite platform privilege; an ordinary capability never implies that
-privilege. Own-authority/session maintenance is a fixed session right, not an
-ordinary capability request. Resource commitments approve hard
-semantics, while desired capacities are sizing hints and do not allocate larger
-resources by themselves. Approval views distinguish requested commitments from
-observed provider limits; runtime handles use the observed binding limits.
+exact-action grant snapshots. Administrative Auth actions are allowed by
+administrative capabilities. Own-authority/session maintenance is a fixed
+session right, not an ordinary capability request. Resource commitments approve
+hard semantics, while desired capacities are sizing hints and do not allocate
+larger resources by themselves. Approval views distinguish requested commitments
+from observed provider limits; runtime handles use the observed binding limits.
 Trellis refuses to adopt or destroy a physical resource whose ownership marker
 does not match. Removal detaches access without deleting new-version data;
 compatible approved re-add reattaches the same resource identity. When running a
@@ -521,7 +523,7 @@ missing companion; an optional wrapper can connect without it. DeviceCompanions.
 removes the association and revokes only its exact grant and refresh families,
 leaving other grants, the user login and parent authority independent.
 Removal permits the associated user or an administrator with current delegated
-principals.manage. Removing the declaration rejects new and pending consent,
+trellis.managePrincipals. Removing the declaration rejects new and pending consent,
 while existing independently consented grants retain ordinary refresh.
 
 Browser sign-in uses OAuth authorization code with PKCE and DPoP. Public
@@ -564,27 +566,29 @@ expansion to the participant revision being edited, then saves exact
 permissions.
 
 For `trellis identity grants set`, the input file contains only
-`installedRevision`, `grants`, `platformPrivileges`, and `expiresAt`; all four
-fields are required. `installedRevision` accepts a JSON integer or decimal
-string in `1..=9007199254740991`. `expiresAt` accepts `null`, or a JSON integer
-or decimal string in `0..=9007199254740991`. The CLI normalizes these inputs for
-the generated request. Omitting `--expected-revision` uses the current binding
+`installedRevision`, `grants`, and `expiresAt`; all three fields are required.
+`installedRevision` accepts a JSON integer or decimal string in
+`1..=9007199254740991`. `expiresAt` accepts `null`, or a JSON integer or decimal
+string in `0..=9007199254740991`. The CLI normalizes these inputs for the
+generated request. Omitting `--expected-revision` uses the current binding
 revision, or zero for creation; an explicit zero is also valid. A stale revision
 is rejected without changing the binding. `Auth.Users.Update` checks lifecycle
 `expectedRevision`; omitted profile fields are untouched. Intentional profile
 changes also require `expectedProfileRevision`. A stale combined edit rolls back
-both lifecycle and profile changes. `Auth.Users.PasswordReset.Create` targets `userId` and returns
-a five-minute, one-use token for `/account/reset?token=...` on the OAuth origin.
-Completion checks Origin/CSRF, credential CAS, and the requester's original active
-logical session and current accepted `principals.manage`, then atomically changes
-the password and revokes login/grant families. Bootstrap administrators use local
-recovery instead. `Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
+both lifecycle and profile changes. `Auth.Users.PasswordReset.Create` targets
+`userId` and returns a five-minute, one-use token for `/account/reset?token=...`
+on the OAuth origin. Completion checks Origin/CSRF, credential CAS, and the
+requester's original active logical session and current
+`trellis.managePrincipals`, then atomically changes the password and revokes
+login/grant families. Bootstrap administrators use local recovery instead.
+`Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
 `Auth.Users.IdentityLink.Create` target the current user. Linking returns a
-five-minute portal URL, requires exact current-user continuity and fresh verified
-upstream OIDC with nonce/PKCE, and rejects provider changes and identity collisions.
-Creation replay keeps the original sealed response and never revives an action.
-Last-sign-in-method and protected-administrator checks remain.
-`Auth.Connections.List` accepts `principalId` to filter physical connections.
+five-minute portal URL, requires exact current-user continuity and fresh
+verified upstream OIDC with nonce/PKCE, and rejects provider changes and
+identity collisions. Creation replay keeps the original sealed response and
+never revives an action. Last-sign-in-method and protected-administrator checks
+remain. `Auth.Connections.List` accepts `principalId` to filter physical
+connections.
 
 Auth Callout resolves the deployment, installed artifacts, capabilities,
 resources, online issuer, inbox, and exact transport permissions, and returns
@@ -899,7 +903,7 @@ Declare these dependencies only when the application uses them:
 - `Auth.Users.Resolve` with `accountRead` returns only your own profile and
   account. `Users.List/Get` with selected and consented `usersRead` provide an
   active-user directory, including names, available email and photos. Ordinary
-  results omit `account`; delegated and currently eligible `principals.manage`
+  results omit `account`; delegated and currently held `trellis.managePrincipals`
   additionally exposes username, password status and lifecycle/revision, and
   permits inactive-user lookup and username search. Use immutable `principalId`,
   never a name or email, for application-owned authorization.

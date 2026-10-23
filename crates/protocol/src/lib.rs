@@ -94,7 +94,6 @@ pub use pagination::{
 pub use participant::ParticipantKind;
 pub use permissions::{
     ApiSurfaceKind, ParticipantResourceKind, PermissionAction, PermissionAtom, PermissionTarget,
-    PlatformPrivilege,
 };
 pub use response::{
     session_response_signing_digest, sign_session_response, verify_session_response,

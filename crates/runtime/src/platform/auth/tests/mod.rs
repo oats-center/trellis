@@ -17,6 +17,7 @@ use trellis_protocol::{
 use super::sqlite::{digest, id};
 use super::*;
 
+mod administration;
 mod catalog;
 mod consent;
 mod credentials;
@@ -34,7 +35,6 @@ mod oauth_upstream;
 mod own_context;
 mod policy;
 mod policy_aggregates;
-mod privileges;
 mod resources;
 mod runtime_rotation;
 mod sdk_rotation;
@@ -314,6 +314,7 @@ pub(super) fn open(directory: &tempfile::TempDir, key: SigningKey) -> SqliteAuth
         key,
         AuthSettings {
             avatar_external_fetch_enabled: true,
+            administration: Default::default(),
             upstream_tls_roots_pem: Vec::new(),
             instance_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             account: account_key().into(),
@@ -367,6 +368,29 @@ pub(super) fn policy(
     now: i64,
 ) -> u64 {
     apply_policy(store, &mutation(admin, &command), &command, now).unwrap()
+}
+
+/// Grant `principal` administrative capabilities directly, as `admin`.
+pub(super) fn administer(
+    store: &SqliteAuthorizationStore,
+    admin: &str,
+    principal: &str,
+    administration: &[Administration],
+    now: i64,
+) {
+    for administration in administration {
+        policy(
+            store,
+            admin,
+            PolicyMutation::CapabilityGrant {
+                principal_id: principal.into(),
+                capability_id: administration.capability_id().into(),
+                expected_revision: 0,
+                expires_at: None,
+            },
+            now,
+        );
+    }
 }
 
 /// Commit a policy operation through the same aggregate mutator as RPC adapters.
@@ -443,8 +467,7 @@ pub(super) fn grant_request(
         approved: vec![read.into(), write.into()],
         reused_remembered: vec![],
         declined: vec![],
-        privileges: vec![],
-        required_privileges: vec![],
+        administration_confirmed: false,
         remember: true,
         remember_until: None,
         expires_at: now + 3600,
@@ -472,7 +495,6 @@ pub(super) fn fixture() -> Fixture {
         redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
         development: false,
         implied_capabilities: vec![],
-        eligible_privileges: vec![],
         metadata: serde_json::json!({}),
         expected_revision: 0,
     };

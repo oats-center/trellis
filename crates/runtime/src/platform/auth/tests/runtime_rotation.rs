@@ -151,7 +151,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
         .unwrap();
     let device = native
         .start_device(&serde_json::json!([
-        {"type":"trellis_capabilities","required":["trellis.auth@v1::accountRead"],"optional":[]}
+        {"type":"trellis_capabilities","required":["trellis.auth@v1::readAccount"],"optional":[]}
         ]))
         .await
         .unwrap();
@@ -247,7 +247,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
                     ("transaction", transaction.as_str()),
                     ("presentation", view["presentationId"].as_str().unwrap()),
                     ("decision", "approve"),
-                    ("approved", "trellis.auth@v1::accountRead"),
+                    ("approved", "trellis.auth@v1::readAccount"),
                     ("confirm_device", user_code.as_str()),
                 ])
                 .send()
@@ -267,7 +267,7 @@ async fn native_cold_rotation_resumes_custody_and_calls_signed_sessions_me() {
     .await
     .unwrap();
     let warm_device = warm_native.start_device(&serde_json::json!([
-        {"type":"trellis_capabilities","required":["trellis.auth@v1::accountRead"],"optional":[]}
+        {"type":"trellis_capabilities","required":["trellis.auth@v1::readAccount"],"optional":[]}
     ])).await.unwrap();
     approve_device(warm_device.user_code().to_owned()).await;
     let warm = trellis_rs::client::TrellisClient::connect_user(UserConnectOptions::new(

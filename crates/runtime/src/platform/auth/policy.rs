@@ -1,9 +1,10 @@
+use super::Administration;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use trellis_protocol::{
-    AuthorityApi, AuthorityProvider, CapabilityAuthority, PlatformPrivilege, SessionBinding, U64s,
+    AuthorityApi, AuthorityProvider, CapabilityAuthority, SessionBinding, U64s,
 };
 
 use super::authorization_sessions::Credential;
@@ -28,8 +29,6 @@ pub(crate) struct Evaluation {
     pub(crate) apis: Vec<AuthorityApi>,
     pub(crate) providers: Vec<AuthorityProvider>,
     pub(crate) resource_bindings_digest: Option<String>,
-    pub(crate) platform_privileges: Vec<PlatformPrivilege>,
-    pub(crate) platform_privilege_deadline: Option<i64>,
     pub(crate) capability_deadlines: BTreeMap<String, i64>,
     pub(crate) root_not_after: i64,
     /// Issuance limit for the complete current set, not a shared root limit.
@@ -72,15 +71,6 @@ pub(crate) enum PolicyMutation {
     CapabilityRevoke {
         principal_id: String,
         capability_id: String,
-        expected_revision: u64,
-    },
-    PrivilegeAssign {
-        principal_id: String,
-        privileges: Vec<PlatformPrivilege>,
-        expected_revision: u64,
-    },
-    PrivilegeRevoke {
-        assignment_id: String,
         expected_revision: u64,
     },
     ClientState {
@@ -245,6 +235,22 @@ pub(super) fn entitlements(
             }
         }
     }
+    // The default administrator holds every administrative capability by
+    // being the default administrator; no grant, role or mapping can take it.
+    let protected: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+        [principal],
+        |row| row.get(0),
+    )?;
+    if protected {
+        for administration in super::Administration::ALL {
+            sources.push((
+                administration.capability_id().into(),
+                None,
+                "administrator".into(),
+            ));
+        }
+    }
     for (capability, deadline, source) in sources {
         values
             .entry(capability)
@@ -286,13 +292,9 @@ pub(super) fn evaluate(
         apis: vec![],
         providers: vec![],
         resource_bindings_digest: root.resource_bindings_digest,
-        platform_privileges: root.platform_privileges,
-        platform_privilege_deadline: root.platform_privilege_deadline,
         capability_deadlines: BTreeMap::new(),
         root_not_after: root.not_after,
-        not_after: root
-            .not_after
-            .min(root.platform_privilege_deadline.unwrap_or(i64::MAX)),
+        not_after: root.not_after,
         explanations: BTreeMap::new(),
         native: root.native,
     };
@@ -397,19 +399,24 @@ pub(super) fn apply_policy_in_transaction(
     mutation: &PolicyMutation,
     now: i64,
 ) -> Result<u64, AuthError> {
-    let privilege = match mutation {
-        PolicyMutation::PrivilegeAssign { .. } | PolicyMutation::PrivilegeRevoke { .. } => {
-            "privileges.manage"
+    let required = match mutation {
+        PolicyMutation::ClientState { .. } => Some(Administration::ManageClients),
+        PolicyMutation::PrincipalState { .. } => Some(Administration::ManagePrincipals),
+        PolicyMutation::ConsentRevoke { principal_id, .. } if principal_id == &identity.actor => {
+            None
         }
-        PolicyMutation::ClientState { .. } => "clients.manage",
-        PolicyMutation::PrincipalState { .. } => "principals.manage",
-        PolicyMutation::ConsentRevoke { principal_id, .. } if principal_id == &identity.actor => "",
-        PolicyMutation::ConsentRevoke { .. } => "principals.manage",
-        _ => "roles.manage",
+        PolicyMutation::ConsentRevoke { .. } => Some(Administration::ManagePrincipals),
+        _ => Some(Administration::ManageRoles),
     };
-    if !privilege.is_empty() {
-        SqliteAuthorizationStore::require_privilege(connection, &identity.actor, privilege)?;
+    if let Some(required) = required {
+        SqliteAuthorizationStore::require_administration(connection, &identity.actor, required)?;
     }
+    let involved = administrative_capabilities_involved(connection, mutation)?;
+    SqliteAuthorizationStore::require_platform_for(
+        connection,
+        &identity.actor,
+        involved.iter().map(String::as_str),
+    )?;
     let (scope, revision) = apply_policy(connection, mutation, now)?;
     SqliteAuthorizationStore::policy_changed(connection, &scope, now)?;
     Ok(revision)
@@ -645,99 +652,6 @@ pub(super) fn apply_policy(
                 expected_revision + 1,
             ))
         }
-        PolicyMutation::PrivilegeAssign {
-            principal_id,
-            privileges,
-            expected_revision,
-        } => {
-            let protected: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
-                [principal_id],
-                |row| row.get(0),
-            )?;
-            if protected {
-                let mut statement = connection.prepare(
-                    "SELECT privilege FROM auth_platform_privileges WHERE principal_id=?1",
-                )?;
-                for existing in
-                    statement.query_map([principal_id], |row| row.get::<_, String>(0))?
-                {
-                    let existing: PlatformPrivilege =
-                        serde_json::from_value(serde_json::Value::String(existing?))?;
-                    if !privileges.contains(&existing) {
-                        return Err(AuthError::Denied);
-                    }
-                }
-            }
-            let current: Option<u64> = connection
-                .query_row(
-                    "SELECT revision FROM auth_platform_assignments WHERE principal_id=?1",
-                    [principal_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if current.unwrap_or(0) != *expected_revision {
-                return Err(AuthError::Conflict);
-            }
-            connection.execute(
-                "INSERT INTO auth_platform_assignments \
-                VALUES(?1,?2,?3,?4) \
-                ON CONFLICT(principal_id) \
-                DO UPDATE SET revision=excluded.revision",
-                params![
-                    super::sqlite::id(),
-                    principal_id,
-                    expected_revision + 1,
-                    now
-                ],
-            )?;
-            connection.execute(
-                "DELETE FROM auth_platform_privileges WHERE principal_id=?1",
-                [principal_id],
-            )?;
-            for privilege in privileges.iter().collect::<BTreeSet<_>>() {
-                connection.execute(
-                    "INSERT INTO auth_platform_privileges VALUES(?1,?2)",
-                    params![principal_id, serde_json::to_value(privilege)?.as_str()],
-                )?;
-            }
-            Ok((
-                EnforcementScope::Principal(principal_id.clone()),
-                expected_revision + 1,
-            ))
-        }
-        PolicyMutation::PrivilegeRevoke {
-            assignment_id,
-            expected_revision,
-        } => {
-            let principal_id: String = connection
-                .query_row(
-                    "SELECT principal_id \
-                    FROM auth_platform_assignments \
-                    WHERE assignment_id=?1 \
-                    AND revision=?2",
-                    params![assignment_id, expected_revision],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .ok_or(AuthError::Conflict)?;
-            let protected: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
-                [&principal_id],
-                |row| row.get(0),
-            )?;
-            if protected {
-                return Err(AuthError::Denied);
-            }
-            connection.execute(
-                "DELETE FROM auth_platform_assignments WHERE assignment_id=?1 AND revision=?2",
-                params![assignment_id, expected_revision],
-            )?;
-            Ok((
-                EnforcementScope::Principal(principal_id.clone()),
-                expected_revision + 1,
-            ))
-        }
         PolicyMutation::ClientState {
             client_id,
             expected_revision,
@@ -915,4 +829,68 @@ pub(super) fn apply_policy(
             Ok((EnforcementScope::All, expected_revision + 1))
         }
     }
+}
+
+/// Administrative capabilities whose holders the mutation could change: what a
+/// role, grant or identity-provider mapping carries before and after it.
+fn administrative_capabilities_involved(
+    connection: &Connection,
+    mutation: &PolicyMutation,
+) -> Result<Vec<String>, AuthError> {
+    let role_capabilities = |role: &str| -> Result<Vec<String>, AuthError> {
+        Ok(connection
+            .prepare(
+                "SELECT m.capability_id FROM auth_role_capabilities m \
+                JOIN auth_roles r ON r.role_id=m.role_id \
+                AND r.identity_generation=m.role_generation \
+                WHERE m.role_id=?1",
+            )?
+            .query_map([role], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?)
+    };
+    let mapping_roles = |mapping: &str| -> Result<Vec<String>, AuthError> {
+        Ok(connection
+            .prepare("SELECT role_id FROM auth_oidc_mapping_roles WHERE mapping_id=?1")?
+            .query_map([mapping], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?)
+    };
+    let mut capabilities = Vec::new();
+    match mutation {
+        PolicyMutation::RolePut {
+            role_id,
+            capabilities: next,
+            ..
+        } => {
+            capabilities.extend(next.iter().cloned());
+            capabilities.extend(role_capabilities(role_id)?);
+        }
+        PolicyMutation::RoleDelete { role_id, .. }
+        | PolicyMutation::RoleAssign { role_id, .. }
+        | PolicyMutation::RoleRevoke { role_id, .. } => {
+            capabilities.extend(role_capabilities(role_id)?);
+        }
+        PolicyMutation::CapabilityGrant { capability_id, .. }
+        | PolicyMutation::CapabilityRevoke { capability_id, .. } => {
+            capabilities.push(capability_id.clone());
+        }
+        PolicyMutation::OidcMappingPut {
+            mapping_id,
+            role_ids,
+            ..
+        } => {
+            for role in role_ids.iter().cloned().chain(mapping_roles(mapping_id)?) {
+                capabilities.extend(role_capabilities(&role)?);
+            }
+        }
+        PolicyMutation::OidcMappingDelete { mapping_id, .. } => {
+            for role in mapping_roles(mapping_id)? {
+                capabilities.extend(role_capabilities(&role)?);
+            }
+        }
+        PolicyMutation::ClientState { .. }
+        | PolicyMutation::PrincipalState { .. }
+        | PolicyMutation::ConsentRevoke { .. } => {}
+    }
+    capabilities.retain(|capability| super::administration::is_administrative(capability));
+    Ok(capabilities)
 }

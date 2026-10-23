@@ -4,7 +4,6 @@ use super::*;
 use crate::platform::auth::initialization::{
     cli_registration, console_registration, CLI_CLIENT_ID,
 };
-use trellis_protocol::PlatformPrivilege;
 
 #[test]
 fn administrator_without_a_password_cannot_log_in_or_be_seeded_with_a_password_later() {
@@ -67,13 +66,12 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
             NOW
         )
         .is_err());
-    // Failure must leave no principal, privilege, catalog, grant, or client
+    // Failure must leave no principal, catalog, grant, or client
     // from this attempted aggregate, including its earlier valid Console.
     store
         .transaction(|connection| {
             for table in [
                 "auth_principals",
-                "auth_platform_privileges",
                 "auth_accepted_apis",
                 "auth_direct_capabilities",
                 "auth_oauth_clients",
@@ -112,13 +110,13 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
             )
         })
         .unwrap();
-    let read = "trellis.auth@v1::usersRead";
-    let write = "trellis.auth@v1::usersCreate";
+    let read = "trellis.managePrincipals";
+    let write = "trellis.auth@v1::readAccount";
     let mut approval = grant_request(&admin, &login, read, write, NOW + 2);
     approval.client_id = CLI_CLIENT_ID.into();
     approval.approved = vec![read.into()];
     approval.declined = vec![write.into()];
-    approval.privileges = vec![PlatformPrivilege::PrincipalsManage];
+    approval.administration_confirmed = true;
     let grant = store
         .approve_grant(&mutation(&admin, &approval), &approval, NOW + 2)
         .unwrap();
@@ -144,37 +142,6 @@ fn fresh_bootstrap_rolls_back_all_seeds_and_grants_then_issues_only_consented_su
         .capabilities
         .iter()
         .any(|cap| cap.capability_id == write));
-    assert_eq!(
-        issued.authority.unsigned.platform_privileges,
-        vec![PlatformPrivilege::PrincipalsManage]
-    );
-    // The admin's privileges do not bypass a public client's eligibility.
-    let client = ClientRegistration {
-        client_id: "unapproved-client".into(),
-        kind: "native".into(),
-        display_name: "Public client".into(),
-        redirect_uris: vec!["http://127.0.0.1:9823/callback".into()],
-        development: false,
-        implied_capabilities: vec![],
-        eligible_privileges: vec![],
-        metadata: serde_json::json!({}),
-        expected_revision: 0,
-    };
-    store
-        .transaction(|connection| {
-            store.register_client_in_transaction(
-                connection,
-                &mutation(&admin, &client),
-                &client,
-                NOW + 4,
-            )
-        })
-        .unwrap();
-    approval.client_id = client.client_id;
-    assert!(matches!(
-        store.approve_grant(&mutation(&admin, &approval), &approval, NOW + 4),
-        Err(AuthError::Denied)
-    ));
 }
 
 #[test]
@@ -318,7 +285,7 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
     let mut approval = grant_request(
         &admin,
         &login,
-        "trellis.auth@v1::rolesRead",
+        "trellis.manageRoles",
         "trellis.auth@v1::futureRead",
         NOW + 2,
     );
@@ -329,6 +296,7 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         })
         .unwrap();
     approval.client_id = CLI_CLIENT_ID.into();
+    approval.administration_confirmed = true;
     let grant = store
         .approve_grant(&mutation(&admin, &approval), &approval, NOW + 2)
         .unwrap();
@@ -347,7 +315,7 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         .unsigned
         .capabilities
         .iter()
-        .any(|cap| cap.capability_id == "trellis.auth@v1::rolesRead"));
+        .any(|cap| cap.capability_id == "trellis.manageRoles"));
     assert!(!issued
         .authority
         .unsigned

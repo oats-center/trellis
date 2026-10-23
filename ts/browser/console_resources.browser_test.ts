@@ -86,7 +86,7 @@ test(
           password,
           clientId: "trellis.cli",
           request: adminApps.cli.request,
-          platformPrivileges: { required: ["principals.manage"] },
+          administrativeCapabilities: ["trellis.managePrincipals"],
           signal: context.signal,
         });
         const admin = await connectNativeClient({
@@ -194,16 +194,24 @@ test(
           .waitFor();
         for (const choice of await page.getByRole("checkbox").all())
           if (await choice.isEnabled()) await choice.check();
-        const privileges = page
+        const administration = page
           .getByRole("group", {
-            name: "Administrative privileges",
+            name: "Manage this Trellis",
             exact: true,
           })
           .getByRole("checkbox");
-        for (const choice of await privileges.all()) await choice.uncheck();
-        await page.getByRole("checkbox", { name: /Manage identities/ }).check();
+        for (const choice of await administration.all()) await choice.uncheck();
+        await page
+          .getByRole("checkbox", { name: /Manage users and services/ })
+          .check();
         await page
           .getByRole("button", { name: "Authorize application" })
+          .click();
+        await page
+          .getByRole("checkbox", { name: /I understand this application/ })
+          .check();
+        await page
+          .getByRole("button", { name: "Allow management of Trellis" })
           .click();
         await page
           .getByRole("heading", { name: "Resources", exact: true })

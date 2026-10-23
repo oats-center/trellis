@@ -508,7 +508,7 @@ api events@v1 {
         consent_revision 1;
         allows { rpc Inspect; }
       }
-      capability metrics {
+      capability readMetrics {
         title "See event metrics";
         description "See event volume and delivery speed.";
         consequence "Can see event metrics.";
@@ -522,35 +522,35 @@ api events@v1 {
         consent_revision 1;
         allows { live Watch; }
       }
-      capability consumersInspect {
+      capability inspectConsumers {
         title "See event consumers";
         description "See which services receive events and how delivery is going.";
         consequence "Can see delivery status.";
         consent_revision 1;
         allows { rpc Consumers.Query; rpc Consumers.Inspect; }
       }
-      capability deadLettersInspect {
+      capability inspectDeadLetters {
         title "See failed deliveries";
         description "See events that services could not process.";
         consequence "Can see failed event data and errors.";
         consent_revision 1;
         allows { rpc DeadLetters.Query; rpc DeadLetters.Inspect; }
       }
-      capability deadLettersReplay {
+      capability replayDeadLetters {
         title "Retry failed deliveries";
         description "Send a failed event to its service again.";
         consequence "The service may repeat its work.";
         consent_revision 1;
         allows { rpc DeadLetters.Replay; }
       }
-      capability deadLettersDismiss {
+      capability dismissDeadLetters {
         title "Dismiss failed deliveries";
         description "Clear a failed delivery from the list.";
         consequence "Removes it from follow-up.";
         consent_revision 1;
         allows { rpc DeadLetters.Dismiss; }
       }
-      capability diagnostics {
+      capability readDiagnostics {
         title "See event diagnostics";
         description "See problems with event storage and processing.";
         consequence "Can see event system errors.";
@@ -558,7 +558,7 @@ api events@v1 {
         allows { rpc Diagnostics; }
       }
     }
-    capability consumerRuntime {
+    capability processReplays {
       title "Process own event replays";
       description "Let a service finish replays of its own events.";
       consequence "The service can complete its own replays.";

@@ -92,6 +92,7 @@ pub(crate) enum AuthError {
 #[derive(Clone, Debug)]
 pub(crate) struct AuthSettings {
     pub(crate) avatar_external_fetch_enabled: bool,
+    pub(crate) administration: crate::config::AdministrationConfig,
     pub(crate) instance_id: String,
     pub(crate) account: String,
     pub(crate) oauth_origin: String,
@@ -390,6 +391,11 @@ impl SqliteAuthorizationStore {
                 .as_ref()
                 .and_then(|auth| auth.avatar.as_ref())
                 .is_none_or(|avatar| avatar.external_fetch_enabled),
+            administration: config
+                .auth
+                .as_ref()
+                .map(|auth| auth.administration)
+                .unwrap_or_default(),
             instance_id,
             account: account.into(),
             oauth_origin: oauth.origin.clone(),
@@ -873,27 +879,6 @@ impl SqliteAuthorizationStore {
                 }
             }
         })
-    }
-
-    pub(super) fn require_privilege(
-        connection: &Connection,
-        actor: &str,
-        privilege: &str,
-    ) -> Result<(), AuthError> {
-        let permitted: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 \
-            FROM auth_platform_privileges p \
-            JOIN auth_principals u USING(principal_id) \
-            WHERE p.principal_id=?1 \
-            AND p.privilege=?2 AND u.state='active')",
-            params![actor, privilege],
-            |row| row.get(0),
-        )?;
-        if permitted {
-            Ok(())
-        } else {
-            Err(AuthError::Denied)
-        }
     }
 
     pub(super) fn policy_changed(

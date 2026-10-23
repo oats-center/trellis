@@ -659,5 +659,4 @@ fn catalog_and_effective_access_project_accepted_actions_and_expiring_paths() {
         .capabilities
         .iter()
         .any(|cap| cap.definition.identity.capability_id.as_ref() == f.write));
-    assert!(after.platform_privileges.is_empty());
 }

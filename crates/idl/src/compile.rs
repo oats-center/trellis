@@ -136,7 +136,7 @@ pub(crate) fn compile(
             );
         }
         for capability in api.capabilities.keys() {
-            let raw_name = capability.as_str().rsplit("::").next().unwrap_or_default();
+            let raw_name = crate::semantic::capability_name(capability.as_str());
             let raw_capability = raw
                 .capabilities
                 .iter()
@@ -767,6 +767,31 @@ fn resolve_name(
     ))
 }
 
+/// The package whose APIs and administrative capabilities form the reserved
+/// `trellis.*` namespace.
+pub(crate) const BUILTIN_PACKAGE: &str = "trellis";
+
+/// Ordinary capabilities are scoped to their API; administrative capabilities
+/// name an installation-wide power in the reserved `trellis.*` namespace.
+fn capability_id(api: &ApiId, name: &str, administrative: bool) -> CapabilityId {
+    if administrative {
+        CapabilityId::new(format!("{BUILTIN_PACKAGE}.{name}"))
+    } else {
+        CapabilityId::new(format!("{api}::{name}"))
+    }
+}
+
+/// Resolve a capability a participant names on a used API.
+fn named_capability(api: &ApiDefinition, name: &str) -> miette::Result<CapabilityId> {
+    [
+        capability_id(&api.identity, name, false),
+        capability_id(&api.identity, name, true),
+    ]
+    .into_iter()
+    .find(|id| api.capabilities.contains_key(id))
+    .ok_or_else(|| miette!("unknown capability '{}::{name}'", api.identity))
+}
+
 fn resolve_api(
     raw: &ast::Api,
     source: usize,
@@ -863,7 +888,16 @@ fn resolve_api(
                 capability.name
             ));
         }
-        let id = CapabilityId::new(format!("{identity}::{}", capability.name));
+        if capability.administrative
+            && (scope.package.as_str() != BUILTIN_PACKAGE || capability.public)
+        {
+            return Err(miette!(
+                "capability '{}' cannot be administrative; only the builtin Trellis package \
+                declares administrative capabilities",
+                capability.name
+            ));
+        }
+        let id = capability_id(&identity, &capability.name, capability.administrative);
         let allows: BTreeSet<ActionSelection> = capability
             .allows
             .iter()
@@ -886,6 +920,7 @@ fn resolve_api(
                     description: capability.description.clone(),
                     consequence: capability.consequence.clone(),
                     group: capability.group.clone(),
+                    administrative: capability.administrative,
                     allows,
                     public: capability.public,
                 },
@@ -1304,11 +1339,12 @@ fn resolve_authoring(
         for name in &use_.required_capabilities {
             selected
                 .required_capabilities
-                .insert(CapabilityId::new(format!("{}::{name}", api.identity)));
+                .insert(named_capability(&api, name)?);
         }
         for name in &use_.optional_capabilities {
-            let id = CapabilityId::new(format!("{}::{name}", api.identity));
-            selected.optional_capabilities.insert(id);
+            selected
+                .optional_capabilities
+                .insert(named_capability(&api, name)?);
         }
     }
     for (api_id, selected) in &mut uses {

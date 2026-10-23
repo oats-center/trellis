@@ -1,13 +1,14 @@
 //! Credential and runtime-authority adapters over the existing Auth owners.
 
 use super::sqlite::timestamp;
+use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
 
 use crate::platform::auth::sqlite::Connection;
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
-use trellis_protocol::{AuthenticatedCaller, PlatformPrivilege};
+use trellis_protocol::AuthenticatedCaller;
 use trellis_rs::{
     generated::{ParticipantDescriptor, TrellisError},
     service::{DeclaredRpcError, ServerError},
@@ -82,13 +83,17 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     }
     query!(
         register_o_auth_clients_list,
-        Some(PlatformPrivilege::ClientsManage),
+        Some(Administration::ManageClients),
         |store: &SqliteAuthorizationStore,
          actor: &str,
          _: &AuthenticatedCaller,
          input: &AuthPageRequest| {
             store.transaction(|connection| {
-                SqliteAuthorizationStore::require_privilege(connection, actor, "clients.manage")?;
+                SqliteAuthorizationStore::require_administration(
+                    connection,
+                    actor,
+                    Administration::ManageClients,
+                )?;
                 let (cursor, limit) = page_bounds(input.page.as_ref())?;
                 let mut statement = connection.prepare(
                     "SELECT client_id FROM auth_oauth_clients \
@@ -114,12 +119,16 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     query!(
         register_o_auth_clients_get,
-        Some(PlatformPrivilege::ClientsManage),
+        Some(Administration::ManageClients),
         |store: &SqliteAuthorizationStore,
          actor: &str,
          _: &AuthenticatedCaller,
          input: &AuthOAuthClientGetRequest| store.transaction(|connection| {
-            SqliteAuthorizationStore::require_privilege(connection, actor, "clients.manage")?;
+            SqliteAuthorizationStore::require_administration(
+                connection,
+                actor,
+                Administration::ManageClients,
+            )?;
             Ok(AuthOAuthClientGetResponse {
                 client: read_client(connection, &input.client_id)?,
                 extra: Default::default(),
@@ -128,7 +137,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     mutate!(
         register_o_auth_clients_put,
-        Some(PlatformPrivilege::ClientsManage),
+        Some(Administration::ManageClients),
         |store: &SqliteAuthorizationStore,
          identity: &Mutation,
          _: &AuthenticatedCaller,
@@ -137,7 +146,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     mutate!(
         register_o_auth_clients_disable,
-        Some(PlatformPrivilege::ClientsManage),
+        Some(Administration::ManageClients),
         |store: &SqliteAuthorizationStore,
          identity: &Mutation,
          _: &AuthenticatedCaller,
@@ -146,7 +155,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     mutate!(
         register_o_auth_clients_delete,
-        Some(PlatformPrivilege::ClientsManage),
+        Some(Administration::ManageClients),
         |store: &SqliteAuthorizationStore,
          identity: &Mutation,
          _: &AuthenticatedCaller,
@@ -202,16 +211,13 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                     .map(ToString::to_string)
                     .unwrap_or_else(|| actor.into());
                 if owner != actor {
-                    if !verified
-                        .platform_privileges
-                        .contains(&PlatformPrivilege::PrincipalsManage)
-                    {
+                    if !verified.holds(Administration::ManagePrincipals.capability_id()) {
                         return Err(AuthError::Denied);
                     }
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         actor,
-                        "principals.manage",
+                        Administration::ManagePrincipals,
                     )?;
                 }
                 let (cursor, limit) = page_bounds(input.page.as_ref())?;
@@ -249,16 +255,13 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
          input: &AuthDelegationReviewRequest| store.transaction(|connection| {
             let delegation = read_delegation(connection, &input.delegation_id.to_string())?;
             if delegation.principal_id.to_string() != actor {
-                if !verified
-                    .platform_privileges
-                    .contains(&PlatformPrivilege::PrincipalsManage)
-                {
+                if !verified.holds(Administration::ManagePrincipals.capability_id()) {
                     return Err(AuthError::Denied);
                 }
-                SqliteAuthorizationStore::require_privilege(
+                SqliteAuthorizationStore::require_administration(
                     connection,
                     actor,
-                    "principals.manage",
+                    Administration::ManagePrincipals,
                 )?;
             }
             let mut current_capabilities = Vec::new();
@@ -337,16 +340,16 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     });
     query!(
         register_connections_list,
-        Some(PlatformPrivilege::PrincipalsManage),
+        Some(Administration::ManagePrincipals),
         |store: &SqliteAuthorizationStore,
          actor: &str,
          _: &AuthenticatedCaller,
          input: &AuthConnectionsListRequest| {
             store.transaction(|connection| {
-                SqliteAuthorizationStore::require_privilege(
+                SqliteAuthorizationStore::require_administration(
                     connection,
                     actor,
-                    "principals.manage",
+                    Administration::ManagePrincipals,
                 )?;
                 let (cursor, limit) = page_bounds(input.page.as_ref())?;
                 let state = input.state.as_ref().map(serde_json::to_value).transpose()?;
@@ -382,16 +385,16 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     query!(
         register_authorization_sessions_list,
-        Some(PlatformPrivilege::PrincipalsManage),
+        Some(Administration::ManagePrincipals),
         |store: &SqliteAuthorizationStore,
          actor: &str,
          _: &AuthenticatedCaller,
          input: &AuthAuthorizationSessionsListRequest| {
             store.transaction(|connection| {
-                SqliteAuthorizationStore::require_privilege(
+                SqliteAuthorizationStore::require_administration(
                     connection,
                     actor,
-                    "principals.manage",
+                    Administration::ManagePrincipals,
                 )?;
                 let (cursor, limit) = page_bounds(input.page.as_ref())?;
                 let state = input.state.as_ref().map(serde_json::to_value).transpose()?;
@@ -430,7 +433,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     mutate!(
         register_authorization_sessions_revoke,
-        Some(PlatformPrivilege::PrincipalsManage),
+        Some(Administration::ManagePrincipals),
         |store: &SqliteAuthorizationStore,
          identity: &Mutation,
          _: &AuthenticatedCaller,
@@ -442,10 +445,10 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
                 input,
                 now,
                 |connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &identity.actor,
-                        "principals.manage",
+                        Administration::ManagePrincipals,
                     )?;
                     let scope =
                         EnforcementScope::Session(input.authorization_session_id.to_string());
@@ -466,7 +469,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     mutate!(
         register_connections_kick,
-        Some(PlatformPrivilege::PrincipalsManage),
+        Some(Administration::ManagePrincipals),
         |store: &SqliteAuthorizationStore,
          identity: &Mutation,
          _: &AuthenticatedCaller,
@@ -488,16 +491,16 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     mutate!(
         register_issuers_revoke,
-        Some(PlatformPrivilege::PrivilegesManage),
+        Some(Administration::ManagePlatform),
         |store: &SqliteAuthorizationStore,
          identity: &Mutation,
          _: &AuthenticatedCaller,
          input: &AuthIssuerRevokeRequest,
          now| store.mutate(identity, "rpc.issuer.revoke", input, now, |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "privileges.manage",
+                Administration::ManagePlatform,
             )?;
             let scope = EnforcementScope::Issuer(input.key_id.to_string());
             let root = Mutation {
@@ -514,7 +517,7 @@ pub(crate) fn register_credential_rpc<P: ParticipantDescriptor>(
     );
     mutate!(
         register_issuers_rotate,
-        Some(PlatformPrivilege::PrivilegesManage),
+        Some(Administration::ManagePlatform),
         |store: &SqliteAuthorizationStore,
          identity: &Mutation,
          _: &AuthenticatedCaller,
@@ -645,7 +648,11 @@ pub(super) fn put_client(
     now: i64,
 ) -> Result<AuthOAuthClientGetResponse, AuthError> {
     store.mutate(identity, "rpc.client.put", input, now, |connection| {
-        SqliteAuthorizationStore::require_privilege(connection, &identity.actor, "clients.manage")?;
+        SqliteAuthorizationStore::require_administration(
+            connection,
+            &identity.actor,
+            Administration::ManageClients,
+        )?;
         let deleted: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 \
             FROM auth_oauth_clients \
@@ -656,21 +663,16 @@ pub(super) fn put_client(
         if deleted {
             return Err(AuthError::Conflict);
         }
-        let existing: Option<(String, String)> = connection
+        let existing: Option<String> = connection
             .query_row(
-                "SELECT metadata_json,requested_privileges_json \
-                FROM auth_oauth_clients \
-                WHERE client_id=?1",
+                "SELECT metadata_json FROM auth_oauth_clients WHERE client_id=?1",
                 [input.client_id.as_ref()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .optional()?;
-        let (mut metadata, eligible_privileges) = match existing {
-            Some((metadata, privileges)) => (
-                decode::<serde_json::Value>(&metadata)?,
-                decode(&privileges)?,
-            ),
-            None => (json!({}), vec![]),
+        let mut metadata = match existing {
+            Some(metadata) => decode::<serde_json::Value>(&metadata)?,
+            None => json!({}),
         };
         metadata["description"] = json!(input.description.as_ref());
         let authorization_code =
@@ -702,7 +704,6 @@ pub(super) fn put_client(
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            eligible_privileges,
             metadata,
             expected_revision: input.expected_revision.0,
         };
@@ -831,16 +832,13 @@ pub(super) fn revoke_login(
             .optional()?
             .ok_or(AuthError::NotFound)?;
         if owner != identity.actor {
-            if !verified
-                .platform_privileges
-                .contains(&PlatformPrivilege::PrincipalsManage)
-            {
+            if !verified.holds(Administration::ManagePrincipals.capability_id()) {
                 return Err(AuthError::Denied);
             }
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
         }
         let scope = EnforcementScope::Login(login);
@@ -1040,10 +1038,10 @@ pub(super) fn kick_connection(
     now: i64,
 ) -> Result<AuthConnectionsKickResponse, AuthError> {
     store.mutate(identity, "rpc.connection.kick", input, now, |connection| {
-        SqliteAuthorizationStore::require_privilege(
+        SqliteAuthorizationStore::require_administration(
             connection,
             &identity.actor,
-            "principals.manage",
+            Administration::ManagePrincipals,
         )?;
         let (server, client, session, state): (String, u64, String, String) = connection
             .query_row(
@@ -1356,16 +1354,13 @@ pub(super) fn revoke_delegation(
         |connection| {
             let delegation = read_delegation(connection, &input.delegation_id.to_string())?;
             if delegation.principal_id.to_string() != identity.actor {
-                if !verified
-                    .platform_privileges
-                    .contains(&PlatformPrivilege::PrincipalsManage)
-                {
+                if !verified.holds(Administration::ManagePrincipals.capability_id()) {
                     return Err(AuthError::Denied);
                 }
-                SqliteAuthorizationStore::require_privilege(
+                SqliteAuthorizationStore::require_administration(
                     connection,
                     &identity.actor,
-                    "principals.manage",
+                    Administration::ManagePrincipals,
                 )?;
             }
             if delegation.revision != input.expected_revision {

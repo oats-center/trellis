@@ -16,7 +16,6 @@ export {
   type NativeOAuthGrant,
 } from "./native/custody.ts";
 export type { RuntimeAuthorizationTrust } from "./auth/authority.ts";
-export type { PlatformPrivilege } from "./auth/protocol_wasm.ts";
 export {
   connectNativeSession,
   connectNativeClient,

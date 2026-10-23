@@ -112,10 +112,8 @@ app StateCaller {
 app Denied { use runtime; }
 service AdminService {
   use auth {
-    required capability deploymentsRead;
-    required capability capabilityGrantsRead;
-    required capability capabilityGrantsRevoke;
-    required capability authorizationSessionsRead;
+    required capability managePrincipals;
+    required capability manageRoles;
   }
 }
 service EventService {

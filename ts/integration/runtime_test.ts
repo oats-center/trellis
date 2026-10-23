@@ -1179,7 +1179,7 @@ test("generated runtime workflows", async (t) => {
           assert.deepEqual(stored.value.value, "durable");
         });
         await t.test(
-          "service administration stays denied and login revocation fences the caller",
+          "an administrator-deployed service administers and login revocation fences the caller",
           async () => {
             const identity = await runtime.registerService({
               name: "nonadmin-service",
@@ -1192,10 +1192,10 @@ test("generated runtime workflows", async (t) => {
               seed: identity.seed,
             }).orThrow();
             try {
-              const denied = await native.deploymentsList({});
+              // A platform manager deployed it with administrative capabilities.
               assert(
-                denied.isErr(),
-                "ordinary service authority must not become platform administration",
+                (await native.deploymentsList({})).isOk(),
+                "an approved administrative service holds its administration",
               );
               assert.equal(
                 (await client.echo({ value: "allowed" }).orThrow()).value,

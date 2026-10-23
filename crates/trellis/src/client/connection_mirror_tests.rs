@@ -8,10 +8,11 @@ use trellis_runtime_apis::types::AuthLoginRevokeRequest;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_session() {
     use trellis_runtime_apis::types::{
-        AuthCapabilityGrantRequest, AuthPlatformAssignRequest, AuthPlatformAssignResponse,
-        AuthPlatformPrivilege, AuthPlatformRevokeRequest, AuthUserCreateRequest,
-        AuthUserGetResponse,
+        AuthCapabilityGrantRequest, AuthCapabilityGrantResponse, AuthCapabilityRevokeRequest,
+        AuthUserCreateRequest, AuthUserGetResponse,
     };
+    // An optional capability the user holds only by a direct grant.
+    let inspect = format!("{}::inspect", Query::API_ID);
     let mut runtime = trellis_testkit::TrellisTestRuntime::builder()
         .start()
         .await
@@ -35,16 +36,10 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     let login = native
         .start_device(&json!([
             {"type":"trellis_capabilities","required":[
-                trellis_auth_v1::rpc::PlatformPrivilegesAssign::CALLER_CAPABILITIES[0],
-                trellis_auth_v1::rpc::PlatformPrivilegesRevoke::CALLER_CAPABILITIES[0],
                 trellis_auth_v1::rpc::UsersCreate::CALLER_CAPABILITIES[0],
                 trellis_auth_v1::rpc::CapabilityGrantsGrant::CALLER_CAPABILITIES[0],
                 trellis_auth_v1::rpc::SessionsRevoke::CALLER_CAPABILITIES[0]
-            ],"optional":[]},
-            {
-                "type":"trellis_platform_privileges",
-                "required": ["privileges.manage","principals.manage","roles.manage"]
-            }
+            ],"optional":[]}
         ]))
         .await
         .unwrap();
@@ -106,24 +101,25 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         )
         .await
         .unwrap();
-    let assignment = AuthPlatformAssignRequest {
+    let grant = AuthCapabilityGrantRequest {
         principal_id: user.user.principal_id,
-        privileges: vec![AuthPlatformPrivilege::RolesManage],
+        capability_id: inspect.clone().into(),
         expected_revision: 0.into(),
+        expires_at: None,
         idempotency_key: ulid::Ulid::new().to_string().into(),
         extra: Default::default(),
     };
-    let assigned: AuthPlatformAssignResponse = serde_json::from_value(
+    let granted: AuthCapabilityGrantResponse = serde_json::from_value(
         admin
             .request_json_value(
-                trellis_auth_v1::rpc::PlatformPrivilegesAssign::API_ID,
+                trellis_auth_v1::rpc::CapabilityGrantsGrant::API_ID,
                 trellis_protocol::CatalogActionIdentity {
                     kind: trellis_protocol::ApiSurfaceKind::Rpc,
-                    name: "PlatformPrivileges.Assign".into(),
+                    name: "CapabilityGrants.Grant".into(),
                     direction: trellis_protocol::PermissionAction::Call,
                 },
-                trellis_auth_v1::rpc::PlatformPrivilegesAssign::SUBJECT,
-                &serde_json::to_value(assignment).unwrap(),
+                trellis_auth_v1::rpc::CapabilityGrantsGrant::SUBJECT,
+                &serde_json::to_value(grant).unwrap(),
             )
             .await
             .unwrap(),
@@ -143,8 +139,7 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     .await
     .unwrap();
     let login = native.start_device(&json!([
-        {"type":"trellis_capabilities","required":[Query::CALLER_CAPABILITIES[0]],"optional":[]},
-        {"type":"trellis_platform_privileges","required":[],"optional":["roles.manage"]}
+        {"type":"trellis_capabilities","required":[Query::CALLER_CAPABILITIES[0]],"optional":[inspect]}
     ])).await.unwrap();
     // The ordinary local-user portal establishes this non-administrator's login
     // and consent; no fixture inserts an OAuth grant or a verified context.
@@ -255,14 +250,9 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         ("decision", "approve"),
         ("confirm_device", login.user_code()),
     ];
-    for (field, key, wire_key) in [
-        ("capabilities", "capabilityId", "approved"),
-        ("platformPrivileges", "privilege", "privilege"),
-    ] {
-        for item in view[field].as_array().unwrap() {
-            if item["available"] == true {
-                form.push((wire_key, item[key].as_str().unwrap()));
-            }
+    for item in view["capabilities"].as_array().unwrap() {
+        if item["available"] == true {
+            form.push(("approved", item["capabilityId"].as_str().unwrap()));
         }
     }
     let response = http
@@ -293,8 +283,9 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
     let old = provider.authorization_owner().own_authority().unwrap();
     assert!(old
         .authority()
-        .platform_privileges
-        .contains(&trellis_protocol::PlatformPrivilege::RolesManage));
+        .capabilities
+        .iter()
+        .any(|held| held.capability_id == inspect));
     let mut availability = provider
         .authorization_contexts
         .as_ref()
@@ -306,21 +297,21 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         .unwrap()
         .generation_id();
     let mut publication = provider.generations.subscribe_publication();
-    let revoke = AuthPlatformRevokeRequest {
-        assignment_id: assigned.assignment.assignment_id,
-        expected_revision: assigned.assignment.revision,
+    let revoke = AuthCapabilityRevokeRequest {
+        grant_id: granted.grant.grant_id,
+        expected_revision: granted.grant.revision,
         idempotency_key: ulid::Ulid::new().to_string().into(),
         extra: Default::default(),
     };
     admin
         .request_json_value(
-            trellis_auth_v1::rpc::PlatformPrivilegesRevoke::API_ID,
+            trellis_auth_v1::rpc::CapabilityGrantsRevoke::API_ID,
             trellis_protocol::CatalogActionIdentity {
                 kind: trellis_protocol::ApiSurfaceKind::Rpc,
-                name: "PlatformPrivileges.Revoke".into(),
+                name: "CapabilityGrants.Revoke".into(),
                 direction: trellis_protocol::PermissionAction::Call,
             },
-            trellis_auth_v1::rpc::PlatformPrivilegesRevoke::SUBJECT,
+            trellis_auth_v1::rpc::CapabilityGrantsRevoke::SUBJECT,
             &serde_json::to_value(revoke).unwrap(),
         )
         .await
@@ -353,7 +344,11 @@ async fn own_policy_reduction_rebinds_the_mirror_without_reviving_the_retired_se
         replacement.authority().authorization_session_id,
         old.authority().authorization_session_id
     );
-    assert!(replacement.authority().platform_privileges.is_empty());
+    assert!(!replacement
+        .authority()
+        .capabilities
+        .iter()
+        .any(|held| held.capability_id == inspect));
     assert!(provider.authorization_owner().assert_current(&old).is_err());
     provider
         .request_json_value(Query::API_ID, action.clone(), Query::SUBJECT, &json!({}))

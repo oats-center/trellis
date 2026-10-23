@@ -265,14 +265,11 @@ fn stale_review_and_force_without_privilege_are_atomic_failures() {
     ));
     assert_eq!(f.store.current_catalog(&f.api).unwrap().generation.get(), 1);
     let manager = create_user(&f.store, &f.admin, NOW);
-    policy(
+    administer(
         &f.store,
         &f.admin,
-        PolicyMutation::PrivilegeAssign {
-            principal_id: manager.clone(),
-            privileges: vec![trellis_protocol::PlatformPrivilege::ApisAccept],
-            expected_revision: 0,
-        },
+        &manager,
+        &[Administration::AcceptApis],
         NOW,
     );
     let review = f

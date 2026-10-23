@@ -1,8 +1,8 @@
 //! Real SQLite aggregate checks; transport acceptance remains in the live suite.
 
 use super::{
-    fixture, id, mutation, policy, AuthError, ClientRegistration, Credential, EnforcementScope,
-    PolicyMutation, NOW,
+    administer, fixture, id, mutation, Administration, AuthError, ClientRegistration, Credential,
+    EnforcementScope, NOW,
 };
 use crate::platform::auth::rpc_credentials::{
     change_client_state, kick_connection, put_client, read_client,
@@ -115,8 +115,7 @@ fn physical_kick_queues_exact_attachment_without_retiring_its_logical_session() 
 }
 
 #[test]
-fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibility() {
-    use trellis_protocol::PlatformPrivilege;
+fn client_manager_can_edit_metadata() {
     let f = fixture();
     let registration = ClientRegistration {
         client_id: "eligible-client".into(),
@@ -125,7 +124,6 @@ fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibil
         redirect_uris: vec!["http://127.0.0.1:9823/callback".into()],
         development: false,
         implied_capabilities: vec![],
-        eligible_privileges: vec![PlatformPrivilege::ClientsManage],
         metadata: serde_json::json!({}),
         expected_revision: 0,
     };
@@ -139,14 +137,11 @@ fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibil
             )
         })
         .unwrap();
-    policy(
+    administer(
         &f.store,
         &f.admin,
-        PolicyMutation::PrivilegeAssign {
-            principal_id: f.principal.clone(),
-            privileges: vec![PlatformPrivilege::ClientsManage],
-            expected_revision: 0,
-        },
+        &f.principal,
+        &[Administration::ManageClients],
         NOW,
     );
     let input = AuthOAuthClientPutRequest {
@@ -168,21 +163,6 @@ fn client_manager_can_edit_metadata_without_changing_existing_privilege_eligibil
             .title,
         "Renamed"
     );
-    let mut changed = registration;
-    changed.expected_revision = 2;
-    changed
-        .eligible_privileges
-        .push(PlatformPrivilege::PrincipalsManage);
-    assert!(matches!(
-        f.store
-            .transaction(|connection| f.store.register_client_in_transaction(
-                connection,
-                &mutation(&f.principal, &changed),
-                &changed,
-                NOW + 2
-            )),
-        Err(AuthError::Denied)
-    ));
 }
 
 #[test]

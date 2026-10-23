@@ -2,10 +2,10 @@ import { apis } from "trellis-web-generated";
 
 import type { OwnAuthoritySnapshot } from "@oatscenter/trellis";
 
-/** Advisory actions and privileges from the verified promoted installation. */
+/** Advisory capabilities and actions from the verified promoted installation. */
 export type Authority = Pick<
   OwnAuthoritySnapshot,
-  "authorityDigest" | "platformPrivileges" | "actions"
+  "authorityDigest" | "capabilities" | "actions"
 >;
 
 const HEALTH_API = apis.health.API.identity;
@@ -22,7 +22,6 @@ export type ExactPermission = {
 
 type Requirement = {
   administrative?: boolean;
-  privilege?: string;
   permission?: ExactPermission;
 };
 
@@ -57,6 +56,7 @@ export const routeTitles = {
   "/admin/roles/new": "New Role",
   "/admin/clients": "OAuth clients",
   "/admin/apis": "API catalog",
+  "/admin/administration": "Administration reviews",
 } as const;
 
 /**
@@ -165,12 +165,26 @@ const navSections: NavSection[] = [
         requires: ADMIN_ONLY,
       },
       {
+        href: "/admin/administration",
+        label: "Administration reviews",
+        icon: "key",
+        requires: [
+          {
+            permission: {
+              api: apis.auth.API.identity,
+              surface: "rpc",
+              name: "Administration.Reviews.List",
+              action: "call",
+            },
+          },
+        ],
+      },
+      {
         href: "/admin/clients",
         label: "OAuth clients",
         icon: "key",
         requires: [
           {
-            privilege: "clients.manage",
             permission: {
               api: apis.auth.API.identity,
               surface: "rpc",
@@ -186,7 +200,6 @@ const navSections: NavSection[] = [
         icon: "server",
         requires: [
           {
-            privilege: "apis.accept",
             permission: {
               api: apis.auth.API.identity,
               surface: "rpc",
@@ -207,7 +220,6 @@ const navSections: NavSection[] = [
         icon: "database",
         requires: [
           {
-            privilege: "principals.manage",
             permission: {
               api: apis.auth.API.identity,
               surface: "rpc",
@@ -254,11 +266,20 @@ export function hasExactPermission(
   );
 }
 
-/** Human-facing operator classification from finite delegated administrative privileges. */
+/** Administrative capabilities are the bare `trellis.<name>` IDs. */
+export function isAdministrativeCapability(capabilityId: string): boolean {
+  return capabilityId.startsWith("trellis.") && !capabilityId.includes("::");
+}
+
+/** Human-facing operator classification: holds any administrative capability. */
 export function hasPlatformAdmin(
-  authority: Pick<Authority, "platformPrivileges"> | null,
+  authority: Pick<Authority, "capabilities"> | null,
 ): boolean {
-  return (authority?.platformPrivileges.length ?? 0) > 0;
+  return (
+    authority?.capabilities.some(({ capabilityId }) =>
+      isAdministrativeCapability(capabilityId),
+    ) ?? false
+  );
 }
 
 function meetsRequirements(
@@ -268,10 +289,6 @@ function meetsRequirements(
   return requirements.every(
     (requirement) =>
       (!requirement.administrative || hasPlatformAdmin(authority)) &&
-      (requirement.privilege === undefined ||
-        authority?.platformPrivileges.some(
-          (privilege) => privilege === requirement.privilege,
-        ) === true) &&
       (requirement.permission === undefined ||
         (authority !== null &&
           hasExactPermission(authority, requirement.permission))),
@@ -327,7 +344,7 @@ export function getPageTitle(pathname: string): string {
 }
 
 export function getRoleLabel(
-  authority: Pick<Authority, "platformPrivileges"> | null,
+  authority: Pick<Authority, "capabilities"> | null,
 ): string {
   return hasPlatformAdmin(authority) ? "Operator" : "Member";
 }

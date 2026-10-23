@@ -4,14 +4,11 @@ use std::collections::BTreeSet;
 
 use oauth_as::error::{ErrorCode, ErrorResponse};
 use serde::Deserialize;
-use trellis_protocol::PlatformPrivilege;
 
 use super::super::CapabilitySelection;
 
 pub(crate) struct RequestedAuthority {
     pub(crate) capabilities: CapabilitySelection,
-    pub(crate) required_privileges: Vec<PlatformPrivilege>,
-    pub(crate) optional_privileges: Vec<PlatformPrivilege>,
 }
 
 #[derive(Deserialize)]
@@ -19,12 +16,6 @@ pub(crate) struct RequestedAuthority {
 enum Detail {
     #[serde(rename = "trellis_capabilities")]
     Capabilities {
-        required: Vec<String>,
-        #[serde(default)]
-        optional: Vec<String>,
-    },
-    #[serde(rename = "trellis_platform_privileges")]
-    Privileges {
         required: Vec<String>,
         #[serde(default)]
         optional: Vec<String>,
@@ -38,13 +29,9 @@ impl RequestedAuthority {
             return Err(invalid());
         }
         let details = oauth_as::rar::AuthorizationDetails::parse(raw)?;
-        details.require_supported_types(Some(&[
-            "trellis_capabilities".into(),
-            "trellis_platform_privileges".into(),
-        ]))?;
+        details.require_supported_types(Some(&["trellis_capabilities".into()]))?;
         let details: Vec<Detail> = serde_json::from_str(raw).map_err(|_| invalid())?;
         let mut capabilities = None;
-        let mut privileges = None;
         for detail in details {
             match detail {
                 Detail::Capabilities { required, optional } => {
@@ -53,6 +40,16 @@ impl RequestedAuthority {
                         return Err(invalid());
                     }
                     for name in required.iter().chain(&optional) {
+                        if super::super::administration::is_administrative(name) {
+                            if name.len() > 128
+                                || !name["trellis.".len()..]
+                                    .bytes()
+                                    .all(|byte| byte.is_ascii_alphanumeric())
+                            {
+                                return Err(invalid());
+                            }
+                            continue;
+                        }
                         let (api, capability) = name.split_once("::").ok_or_else(invalid)?;
                         if name.len() > 1024
                             || trellis_protocol::validate_api_id(api).is_err()
@@ -74,36 +71,10 @@ impl RequestedAuthority {
                         optional: optional.into_iter().collect(),
                     });
                 }
-                Detail::Privileges { required, optional } => {
-                    if privileges.is_some() || required.len().saturating_add(optional.len()) > 32 {
-                        return Err(invalid());
-                    }
-                    privileges = Some((required, optional));
-                }
             }
         }
         let capabilities = capabilities.ok_or_else(invalid)?;
-        let (required, optional) = privileges.unwrap_or_default();
-        let required: BTreeSet<_> = required.into_iter().collect();
-        let optional: BTreeSet<_> = optional
-            .into_iter()
-            .filter(|name| !required.contains(name))
-            .collect();
-        let required_privileges = required
-            .into_iter()
-            .map(|name| {
-                serde_json::from_value(serde_json::Value::String(name)).map_err(|_| invalid())
-            })
-            .collect::<Result<_, _>>()?;
-        let optional_privileges = optional
-            .into_iter()
-            .filter_map(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
-            .collect();
-        Ok(Self {
-            capabilities,
-            required_privileges,
-            optional_privileges,
-        })
+        Ok(Self { capabilities })
     }
 }
 
@@ -113,24 +84,20 @@ mod tests {
 
     #[test]
     fn capability_details_normalize_selection_and_fail_closed_on_ambiguous_requests() {
-        let request = RequestedAuthority::parse(r#"[{"type":"trellis_capabilities","required":["acme.documents@v1::read","acme.documents@v1::read"],"optional":["acme.documents@v1::read","acme.documents@v1::export","acme.documents@v1::export"]},{"type":"trellis_platform_privileges","required":["roles.manage"],"optional":["roles.manage","clients.manage","future.privilege"]}]"#).unwrap();
-        assert_eq!(request.capabilities.required, ["acme.documents@v1::read"]);
+        let request = RequestedAuthority::parse(r#"[{"type":"trellis_capabilities","required":["acme.documents@v1::read","acme.documents@v1::read","trellis.manageRoles"],"optional":["acme.documents@v1::read","acme.documents@v1::export","acme.documents@v1::export"]}]"#).unwrap();
+        assert_eq!(
+            request.capabilities.required,
+            ["acme.documents@v1::read", "trellis.manageRoles"]
+        );
         assert_eq!(request.capabilities.optional, ["acme.documents@v1::export"]);
-        assert_eq!(
-            request.required_privileges,
-            [PlatformPrivilege::RolesManage]
-        );
-        assert_eq!(
-            request.optional_privileges,
-            [PlatformPrivilege::ClientsManage]
-        );
         for raw in [
             r#"[]"#,
             r#"[{"type":"future_type","required":[]}]"#,
             r#"[{"type":"trellis_capabilities","required":[],"required":["acme.documents@v1::write"]}]"#,
             r#"[{"type":"trellis_capabilities","required":[]},{"type":"trellis_capabilities","required":[]}]"#,
             r#"[{"type":"trellis_capabilities","required":["not-qualified"]}]"#,
-            r#"[{"type":"trellis_capabilities","required":[]},{"type":"trellis_platform_privileges","required":["future.privilege"]}]"#,
+            r#"[{"type":"trellis_capabilities","required":["trellis.manage-roles"]}]"#,
+            r#"[{"type":"trellis_capabilities","required":[]},{"type":"trellis_platform_privileges","required":["roles.manage"]}]"#,
         ] {
             assert!(RequestedAuthority::parse(raw).is_err(), "{raw}");
         }

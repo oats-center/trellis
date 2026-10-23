@@ -650,14 +650,13 @@ CREATE TABLE auth_oauth_clients (
     redirect_uris_json TEXT NOT NULL CHECK (json_valid(redirect_uris_json)),
     development INTEGER NOT NULL CHECK (development IN (0, 1)),
     implied_capabilities_json TEXT NOT NULL CHECK (json_valid(implied_capabilities_json)),
-    requested_privileges_json TEXT NOT NULL CHECK (json_valid(requested_privileges_json)),
     metadata_json TEXT NOT NULL CHECK (json_valid(metadata_json)),
     state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'deleted')),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
--- Retrieved public metadata is not client registration or privilege eligibility.
+-- Retrieved public metadata is not client registration.
 CREATE TABLE auth_cimd_clients (
     client_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('browser','native')),
@@ -667,28 +666,6 @@ CREATE TABLE auth_cimd_clients (
     expires_at INTEGER NOT NULL CHECK (expires_at > observed_at)
 );
 CREATE INDEX auth_cimd_clients_expiry ON auth_cimd_clients(expires_at);
-CREATE TABLE auth_platform_assignments (
-    assignment_id TEXT PRIMARY KEY CHECK (length(assignment_id) = 26),
-    principal_id TEXT NOT NULL UNIQUE REFERENCES auth_principals(principal_id),
-    revision INTEGER NOT NULL CHECK (revision >= 1),
-    created_at INTEGER NOT NULL
-);
-CREATE TABLE auth_platform_privileges (
-    principal_id TEXT NOT NULL REFERENCES auth_platform_assignments(principal_id) ON DELETE CASCADE,
-    privilege TEXT NOT NULL CHECK (privilege IN ('principals.manage', 'roles.manage', 'apis.accept',
-        'apis.forceReplace', 'clients.manage', 'privileges.manage')),
-    PRIMARY KEY (principal_id, privilege)
-);
-CREATE TABLE auth_platform_delegations (
-    principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
-    client_id TEXT NOT NULL REFERENCES auth_oauth_clients(client_id),
-    binding_kind TEXT NOT NULL CHECK (binding_kind IN ('browser', 'native')),
-    binding_value TEXT NOT NULL,
-    approved_privileges_json TEXT NOT NULL CHECK (json_valid(approved_privileges_json)),
-    expires_at INTEGER,
-    revision INTEGER NOT NULL CHECK (revision >= 1),
-    PRIMARY KEY (principal_id, client_id, binding_kind, binding_value)
-);
 CREATE TABLE auth_remembered_consent (
     principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
     client_id TEXT NOT NULL,
@@ -722,9 +699,7 @@ CREATE TABLE auth_oauth_grants (
     required_capabilities_json TEXT NOT NULL CHECK (json_valid(required_capabilities_json)),
     optional_capabilities_json TEXT NOT NULL CHECK (json_valid(optional_capabilities_json)),
     approved_capabilities_json TEXT NOT NULL CHECK (json_valid(approved_capabilities_json)),
-    approved_privileges_json TEXT NOT NULL CHECK (json_valid(approved_privileges_json)),
     consent_basis_json TEXT NOT NULL CHECK (json_valid(consent_basis_json)),
-    required_privileges_json TEXT NOT NULL CHECK (json_valid(required_privileges_json)),
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     revoked_at INTEGER,
@@ -737,6 +712,27 @@ CREATE TABLE auth_oauth_grants (
 CREATE INDEX auth_oauth_grants_login ON auth_oauth_grants(login_session_id, revoked_at, expires_at);
 CREATE INDEX auth_oauth_grants_binding
 ON auth_oauth_grants(principal_id, client_id, binding_kind, binding_value, revoked_at);
+-- A user's request that an app hold an administrative capability, awaiting or
+-- carrying another administrator's decision. Approval applies to the user's
+-- current and later grants for the same app binding.
+CREATE TABLE auth_administration_reviews (
+    review_id TEXT PRIMARY KEY CHECK (length(review_id) = 26),
+    principal_id TEXT NOT NULL REFERENCES auth_principals(principal_id),
+    client_id TEXT NOT NULL,
+    binding_kind TEXT NOT NULL CHECK (binding_kind IN ('browser', 'native')),
+    binding_value TEXT NOT NULL,
+    capability_id TEXT NOT NULL CHECK (capability_id GLOB 'trellis.*'),
+    state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'rejected')),
+    requested_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    decided_by TEXT,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    UNIQUE (principal_id, client_id, binding_kind, binding_value, capability_id),
+    CHECK ((state = 'pending') = (decided_at IS NULL)),
+    CHECK ((decided_at IS NULL) = (decided_by IS NULL))
+);
+CREATE INDEX auth_administration_reviews_state
+ON auth_administration_reviews(state, review_id);
 CREATE TABLE auth_oauth_families (
     family_lookup_hash TEXT PRIMARY KEY CHECK (length(family_lookup_hash) = 43),
     oauth_grant_id TEXT NOT NULL REFERENCES auth_oauth_grants(oauth_grant_id),
@@ -792,7 +788,6 @@ CREATE TABLE auth_authorization_sessions (
     identity_key_id TEXT REFERENCES auth_provisioned_identities(identity_key_id),
     selected_capabilities_json TEXT NOT NULL CHECK (json_valid(selected_capabilities_json)),
     approved_capabilities_json TEXT NOT NULL CHECK (json_valid(approved_capabilities_json)),
-    approved_privileges_json TEXT NOT NULL CHECK (json_valid(approved_privileges_json)),
     issued_at INTEGER NOT NULL,
     hard_deadline INTEGER NOT NULL,
     latest_context_expiry INTEGER NOT NULL,
@@ -935,7 +930,6 @@ BEGIN SELECT RAISE(ABORT, 'security audit entries are retained'); END;
 CREATE INDEX auth_role_capabilities_identity
 ON auth_role_capabilities(capability_id, capability_generation, role_id, role_generation);
 CREATE INDEX auth_oauth_grants_client ON auth_oauth_grants(client_id, revoked_at, oauth_grant_id);
-CREATE INDEX auth_platform_delegations_client ON auth_platform_delegations(client_id, principal_id);
 CREATE INDEX auth_provisioned_identities_principal
 ON auth_provisioned_identities(principal_id, state, identity_key_id);
 CREATE INDEX auth_provisioned_identities_deployment

@@ -13,6 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for path in manifest.sources.values() {
         println!("cargo:rerun-if-changed={}", root.join(path).display());
     }
+    // Built-in contracts are read from disk, so a change to them must rerun this.
+    println!(
+        "cargo:rerun-if-changed={}",
+        trellis_builtin_contracts::source_root().display()
+    );
     let sources = trellis_idl::project::load_sources(&root, &manifest)?;
     let builtin = trellis_builtin_contracts::compile()?;
     let binding = trellis_codegen_rust::RustModelBinding::from_package_manifest(

@@ -67,7 +67,6 @@ async fn sdk_rotation(mode: &str) {
             redirect_uris,
             development: true,
             implied_capabilities: Vec::new(),
-            eligible_privileges: Vec::new(),
             metadata: if kind == "native" {
                 serde_json::json!({
                     "grant_types": [
@@ -114,7 +113,7 @@ async fn sdk_rotation(mode: &str) {
             &f.admin,
             PolicyMutation::CapabilityGrant {
                 principal_id: other.user.principal_id.to_string(),
-                capability_id: "trellis.auth@v1::identitiesRead".into(),
+                capability_id: "trellis.auth@v1::readIdentities".into(),
                 expected_revision: 0,
                 expires_at: None,
             },
@@ -523,7 +522,7 @@ async fn cold_rotated_owner_resolves_builtin_catalog_signer_over_real_nats() {
     let action = health_catalog
         .capabilities
         .iter()
-        .find(|capability| capability.capability_id == "trellis.health@v1::selfReport")
+        .find(|capability| capability.capability_id == "trellis.health@v1::reportHealth")
         .unwrap()
         .memberships[0]
         .action

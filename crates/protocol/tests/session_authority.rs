@@ -9,7 +9,7 @@ use trellis_protocol::{
     parse_session_authority, sign_session_authority, sign_session_event, sign_session_request,
     verify_session_authority, verify_session_event, verify_session_request, AuthorityApi,
     AuthorityIssuerKey, AuthorityIssuerState, CapabilityAuthority, OriginalEventPublication,
-    PlatformPrivilege, PrincipalKind, SessionAuthorityPurpose, SessionAuthorityVerificationInput,
+    PrincipalKind, SessionAuthorityPurpose, SessionAuthorityVerificationInput,
     SessionAuthorityVerificationPolicy, SessionBinding, SessionEvent,
     SessionEventVerificationInput, SessionRequest, SessionRequestVerificationInput,
     SignedSessionAuthority, U64s, UnsignedSessionAuthority, SESSION_AUTHORITY_FORMAT_V1,
@@ -60,7 +60,6 @@ fn issued() -> (
             }],
             provider_bindings: vec![],
             resource_bindings_digest: None,
-            platform_privileges: vec![PlatformPrivilege::RolesManage],
             issued_at: 1_100,
             not_before: 1_100,
             expires_at: 1_300,
@@ -199,7 +198,6 @@ fn provider_publication_requires_exact_signed_implementation_and_never_grants_ca
     body.login_session_id = None;
     body.oauth_grant_id = None;
     body.capabilities.clear();
-    body.platform_privileges.clear();
     body.apis[0].catalog_snapshot_digest = catalog.digest().unwrap();
     body.provider_bindings = vec![AuthorityProvider {
         api_id: certificate.api_id.clone(),
@@ -424,7 +422,6 @@ fn certified_responses_bind_opening_bytes_action_destination_and_result_kind() {
     provider_body.login_session_id = None;
     provider_body.oauth_grant_id = None;
     provider_body.capabilities.clear();
-    provider_body.platform_privileges.clear();
     provider_body.provider_bindings = vec![AuthorityProvider {
         api_id: certificate.api_id.clone(),
         generation: certificate.generation,

@@ -55,7 +55,7 @@ route.
 Authority is current Auth policy, not a stored per-participant record: user
 capabilities from roles, direct grants, and fresh OIDC mappings, intersected
 with an application's requested and approved capabilities, or a service or
-device deployment's selection. Platform privileges are a separate finite set. Readiness reports missing required
+device deployment's selection. Readiness reports missing required
 capabilities/resources separately from temporary provider liveness.
 
 ## Participants and selection

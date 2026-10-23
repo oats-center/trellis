@@ -11,10 +11,9 @@ function authorityWith(
     name: string;
     action: Authority["actions"][number]["action"]["direction"];
   }>,
-  privileges: Authority["platformPrivileges"][number][] = ["roles.manage"],
 ): Authority {
   return {
-    platformPrivileges: privileges,
+    capabilities: [],
     authorityDigest: "current-ui-snapshot",
     actions: permissions.map((permission) => ({
       apiId: permission.api,
@@ -57,7 +56,7 @@ test("U17 a registered operation requires its exact permission atom", () => {
   );
 });
 
-test("U18 an administrative operation requires the platform privilege", () => {
+test("U18 an administrative operation requires only its exact action", () => {
   const operation = CONSOLE_OPERATIONS.rolesPut;
   const atom = {
     api: operation.api,
@@ -65,12 +64,8 @@ test("U18 an administrative operation requires the platform privilege", () => {
     name: operation.name,
     action: operation.action,
   };
-  equal(canPerform(authorityWith([atom], []), "rolesPut"), false);
-  equal(canPerform(authorityWith([atom], ["roles.manage"]), "rolesPut"), true);
-  equal(
-    canPerform(authorityWith([atom], ["principals.manage"]), "rolesPut"),
-    false,
-  );
+  equal(canPerform(authorityWith([]), "rolesPut"), false);
+  equal(canPerform(authorityWith([atom]), "rolesPut"), true);
 });
 
 test("U19 self-service operations do not require the admin privilege", () => {

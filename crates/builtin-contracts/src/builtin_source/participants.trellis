@@ -21,175 +21,68 @@ service platform {
 service healthRuntime { implements health; }
 service jobsRuntime {
   implements jobs;
-  use auth { required capability jobResourceBindingsRead; }
+  use auth { required capability readJobBindings; }
 }
 service eventsRuntime {
   implements events;
-  use auth { required capability eventResourceBindingsRead; }
+  use auth { required capability readEventBindings; }
 }
 
-// Administrative capabilities still require separately delegated platform privileges.
 // These declarations are developer requests, never installed principals.
 agent cli {
   use auth {
-    capability rolesRead;
-    capability rolesPut;
-    capability rolesDelete;
-    capability roleAssignmentsRead;
-    capability roleAssignmentsAssign;
-    capability roleAssignmentsRevoke;
-    capability capabilityGrantsRead;
-    capability capabilityGrantsGrant;
-    capability capabilityGrantsRevoke;
-    capability capabilitiesRead;
-    capability principalsEffectiveAccess;
-    capability apisRead;
-    capability apisReview;
-    capability apisAccept;
-    capability apisForceReplace;
-    capability oauthClientsRead;
-    capability oauthClientsPut;
-    capability oauthClientsDisable;
-    capability oauthClientsDelete;
-    capability platformPrivilegesRead;
-    capability platformPrivilegesAssign;
-    capability platformPrivilegesRevoke;
-    capability platformDelegationsRead;
-    capability platformDelegationsPut;
-    capability platformDelegationsRevoke;
-    capability authorizationSessionsRead;
-    capability authorizationSessionsRevoke;
-    capability connectionsRead;
-    capability connectionsKick;
-    capability issuersRotate;
-    capability issuersRevoke;
-    capability usersRead;
-    capability usersCreate;
-    capability usersUpdate;
-    capability usersPasswordReset;
-    capability oidcProvidersRead;
-    capability oidcProvidersPut;
-    capability oidcProvidersDisable;
-    capability oidcProvidersDelete;
-    capability oidcRoleMappingsRead;
-    capability oidcRoleMappingsPut;
-    capability oidcRoleMappingsDelete;
-    capability deploymentsRead;
-    capability deploymentsCreate;
-    capability deploymentsApply;
-    capability deploymentsEnable;
-    capability deploymentsDisable;
-    capability deploymentsRemove;
-    capability serviceInstancesRead;
-    capability serviceInstancesProvision;
-    capability serviceInstancesEnable;
-    capability serviceInstancesDisable;
-    capability serviceInstancesRemove;
-    capability devicesRead;
-    capability devicesProvision;
-    capability devicesEnable;
-    capability devicesDisable;
-    capability devicesRemove;
-    capability resourcesRead;
-    capability resourcesRemove;
-    capability accountRead;
-    capability accountProfileWrite;
-    capability passwordChange;
-    capability identitiesRead;
-    capability identitiesManage;
-    capability sessionsRead;
-    capability sessionsRevoke;
-    capability delegationsRead;
-    capability delegationsRevoke;
+    capability manageRoles;
+    capability acceptApis;
+    capability forceReplaceApis;
+    capability manageClients;
+    capability managePlatform;
+    capability managePrincipals;
+    capability readUsers;
+    capability readAccount;
+    capability updateProfile;
+    capability changePassword;
+    capability readIdentities;
+    capability manageIdentities;
+    capability readSessions;
+    capability revokeSessions;
+    capability readDelegations;
+    capability revokeDelegations;
   }
   use state { capability delete; }
   use core {
-    capability resources_destroy;
-    capability resources_read;
+    capability destroyResources;
+    capability readResources;
   }
   use health { capability query; capability observe; }
   use jobs { capability query; }
   use events {
-    capability consumersInspect;
-    capability deadLettersDismiss;
-    capability deadLettersInspect;
-    capability deadLettersReplay;
+    capability inspectConsumers;
+    capability dismissDeadLetters;
+    capability inspectDeadLetters;
+    capability replayDeadLetters;
     capability query;
   }
 }
 
 app console {
   use auth {
-    capability rolesRead;
-    capability rolesPut;
-    capability rolesDelete;
-    capability roleAssignmentsRead;
-    capability roleAssignmentsAssign;
-    capability roleAssignmentsRevoke;
-    capability capabilityGrantsRead;
-    capability capabilityGrantsGrant;
-    capability capabilityGrantsRevoke;
-    capability capabilitiesRead;
-    capability principalsEffectiveAccess;
-    capability apisRead;
-    capability apisReview;
-    capability apisAccept;
-    capability apisForceReplace;
-    capability oauthClientsRead;
-    capability oauthClientsPut;
-    capability oauthClientsDisable;
-    capability oauthClientsDelete;
-    capability platformPrivilegesRead;
-    capability platformPrivilegesAssign;
-    capability platformPrivilegesRevoke;
-    capability platformDelegationsRead;
-    capability platformDelegationsPut;
-    capability platformDelegationsRevoke;
-    capability authorizationSessionsRead;
-    capability authorizationSessionsRevoke;
-    capability connectionsRead;
-    capability connectionsKick;
-    capability issuersRotate;
-    capability issuersRevoke;
-    capability usersRead;
-    capability usersCreate;
-    capability usersUpdate;
-    capability usersPasswordReset;
-    capability oidcProvidersRead;
-    capability oidcProvidersPut;
-    capability oidcProvidersDisable;
-    capability oidcProvidersDelete;
-    capability oidcRoleMappingsRead;
-    capability oidcRoleMappingsPut;
-    capability oidcRoleMappingsDelete;
-    capability deploymentsRead;
-    capability deploymentsCreate;
-    capability deploymentsApply;
-    capability deploymentsEnable;
-    capability deploymentsDisable;
-    capability deploymentsRemove;
-    capability serviceInstancesRead;
-    capability serviceInstancesProvision;
-    capability serviceInstancesEnable;
-    capability serviceInstancesDisable;
-    capability serviceInstancesRemove;
-    capability devicesRead;
-    capability devicesProvision;
-    capability devicesEnable;
-    capability devicesDisable;
-    capability devicesRemove;
-    capability resourcesRead;
-    capability resourcesRemove;
-    capability securityObserve;
-    capability accountRead;
-    capability accountProfileWrite;
-    capability passwordChange;
-    capability identitiesRead;
-    capability identitiesManage;
-    capability sessionsRead;
-    capability sessionsRevoke;
-    capability delegationsRead;
-    capability delegationsRevoke;
+    capability manageRoles;
+    capability acceptApis;
+    capability forceReplaceApis;
+    capability manageClients;
+    capability managePlatform;
+    capability managePrincipals;
+    capability readUsers;
+    capability observeSecurityEvents;
+    capability readAccount;
+    capability updateProfile;
+    capability changePassword;
+    capability readIdentities;
+    capability manageIdentities;
+    capability readSessions;
+    capability revokeSessions;
+    capability readDelegations;
+    capability revokeDelegations;
   }
   use state {
     capability delete;
@@ -197,38 +90,38 @@ app console {
     capability write;
   }
   use core {
-    capability resources_destroy;
-    capability resources_read;
+    capability destroyResources;
+    capability readResources;
   }
   use health {
     capability inspect;
-    capability metrics;
+    capability readMetrics;
     capability query;
-    capability summary;
+    capability readSummary;
     capability observe;
   }
   use jobs {
     capability cancel;
-    capability dlqDismiss;
-    capability keyLookup;
+    capability dismissDeadLetters;
+    capability findByKey;
     capability inspect;
-    capability dlqRead;
+    capability readDeadLetters;
     capability listServices;
-    capability metrics;
+    capability readMetrics;
     capability query;
-    capability summary;
-    capability dlqReplay;
+    capability readSummary;
+    capability replayDeadLetters;
     capability retry;
     capability observe;
   }
   use events {
-    capability consumersInspect;
-    capability deadLettersDismiss;
-    capability deadLettersInspect;
-    capability deadLettersReplay;
-    capability diagnostics;
+    capability inspectConsumers;
+    capability dismissDeadLetters;
+    capability inspectDeadLetters;
+    capability replayDeadLetters;
+    capability readDiagnostics;
     capability inspect;
-    capability metrics;
+    capability readMetrics;
     capability query;
     capability observe;
   }

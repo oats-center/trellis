@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 
-use crate::{canonicalize_json, AuthorizationErrorCode, PlatformPrivilege, ProtocolError, U64s};
+use crate::{canonicalize_json, AuthorizationErrorCode, ProtocolError, U64s};
 
 /// The sole session-authority format and issuer-signature domain.
 pub const SESSION_AUTHORITY_FORMAT_V1: &str = "trellis.session-authority.v1";
@@ -342,8 +342,15 @@ pub struct AuthenticatedCaller {
     pub capabilities: Vec<CapabilityAuthority>,
     /// Accepted API stamps captured by this authority.
     pub apis: Vec<AuthorityApi>,
-    /// Explicit finite administrative subset.
-    pub platform_privileges: Vec<PlatformPrivilege>,
+}
+
+impl AuthenticatedCaller {
+    /// Whether the authority carries `capability_id`.
+    pub fn holds(&self, capability_id: &str) -> bool {
+        self.capabilities
+            .iter()
+            .any(|held| held.capability_id == capability_id)
+    }
 }
 
 /// Complete issuer-authenticated authority for one logical runtime session.
@@ -387,8 +394,6 @@ pub struct UnsignedSessionAuthority {
     /// Principal-owned resource bindings, never app resource approvals.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_bindings_digest: Option<String>,
-    /// Explicitly authorized finite administrative subset.
-    pub platform_privileges: Vec<PlatformPrivilege>,
     /// Unix seconds when Auth issued the authority.
     pub issued_at: i64,
     /// Inclusive Unix-second lower bound.
@@ -758,19 +763,11 @@ fn validate_authority(body: &UnsignedSessionAuthority) -> Result<(), ProtocolErr
             ));
         }
     }
-    let privilege_names = body
-        .platform_privileges
-        .iter()
-        .map(|privilege| {
-            serde_json::to_value(privilege)
-                .map(|value| value.as_str().unwrap_or_default().to_owned())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if !is_utf16_strictly_sorted(&privilege_names) || !is_utf16_strictly_sorted(&body.critical) {
+    if !is_utf16_strictly_sorted(&body.critical) {
         return Err(authorization_error(
             AuthorizationErrorCode::NonCanonicalSet,
             [],
-            "privileges and critical names must be sorted and unique",
+            "critical names must be sorted and unique",
         ));
     }
     if !body.critical.is_empty() {
@@ -1101,7 +1098,6 @@ impl<'a> VerifiedSessionRequest<'a> {
             oauth_grant_id: authority.oauth_grant_id.clone(),
             capabilities: authority.capabilities.clone(),
             apis: authority.apis.clone(),
-            platform_privileges: authority.platform_privileges.clone(),
         }
     }
 

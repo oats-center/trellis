@@ -72,8 +72,7 @@ async fn admitted_finite_replies_survive_caller_retirement() {
     controller_capabilities.dedup();
     let login = native
         .start_device(&json!([
-            {"type":"trellis_capabilities","required":controller_capabilities,"optional":[]},
-            {"type":"trellis_platform_privileges","required":["principals.manage"]}
+            {"type":"trellis_capabilities","required":controller_capabilities,"optional":[]}
         ]))
         .await
         .unwrap();

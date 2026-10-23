@@ -5,7 +5,11 @@
   import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import { onMount } from "svelte";
   import { catalogPage, traverseAll } from "$lib/console/paging.ts";
-  import { getInitials, getRoleLabel } from "$lib/control-panel.ts";
+  import {
+    getInitials,
+    getRoleLabel,
+    isAdministrativeCapability,
+  } from "$lib/control-panel.ts";
   import { errorMessage, formatDate } from "$lib/format";
   import { classifyMutationError } from "$lib/console/mutation.ts";
   import { getNotifications } from "$lib/notifications.svelte";
@@ -29,8 +33,10 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let user = $state.raw<apis.auth.UsersResolveOutput["user"] | null>(null);
-  const platformPrivileges = $derived(
-    authority.authority?.platformPrivileges ?? [],
+  const administration = $derived(
+    (authority.authority?.capabilities ?? []).filter(({ capabilityId }) =>
+      isAdministrativeCapability(capabilityId),
+    ),
   );
   const bindingKind = $derived(trellis.ownAuthority.current?.binding.kind);
   let identities = $state.raw<IdentityRecord[]>([]);
@@ -59,8 +65,10 @@
 
   const connectionStatus = $derived(connection.status.phase);
   const hasLocalIdentity = $derived(user?.account?.hasLocalPassword ?? false);
-  const capabilityCount = $derived(platformPrivileges.length);
-  const accountRole = $derived(getRoleLabel({ platformPrivileges }));
+  const capabilityCount = $derived(administration.length);
+  const accountRole = $derived(
+    getRoleLabel({ capabilities: authority.authority?.capabilities ?? [] }),
+  );
   const sessionStatusLabel = $derived(
     connectionStatus === "connected"
       ? "Connected"
@@ -73,7 +81,7 @@
   );
 
   function capabilityCountLabel(count: number): string {
-    return `${count} ${count === 1 ? "privilege" : "privileges"}`;
+    return `${count} administrative`;
   }
 
   function openPasswordModal(): void {
@@ -583,10 +591,8 @@
                 <div>
                   <p class="font-medium">{accountRole}</p>
                   <p class="text-sm text-base-content/60">
-                    This connection has {capabilityCount} delegated {capabilityCount ===
-                    1
-                      ? "privilege"
-                      : "privileges"}.
+                    This connection can administer this Trellis through {capabilityCount}
+                    {capabilityCount === 1 ? "capability" : "capabilities"}.
                   </p>
                 </div>
                 <span class="badge badge-outline badge-sm"

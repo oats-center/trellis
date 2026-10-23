@@ -3,7 +3,6 @@
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use trellis_protocol::PlatformPrivilege;
 
 use super::{
     sqlite::{digest, id},
@@ -14,7 +13,7 @@ pub(crate) const CONSOLE_CLIENT_ID: &str = "trellis.console";
 pub(crate) const CLI_CLIENT_ID: &str = "trellis.cli";
 
 /// Explicitly initialized native Device Code client. No callback or loopback
-/// identity conveys trust; ordinary privilege eligibility and consent apply.
+/// identity conveys trust; ordinary consent applies.
 pub(crate) fn cli_registration() -> ClientRegistration {
     ClientRegistration {
         client_id: CLI_CLIENT_ID.into(),
@@ -23,14 +22,6 @@ pub(crate) fn cli_registration() -> ClientRegistration {
         redirect_uris: Vec::new(),
         development: false,
         implied_capabilities: Vec::new(),
-        eligible_privileges: vec![
-            PlatformPrivilege::PrincipalsManage,
-            PlatformPrivilege::RolesManage,
-            PlatformPrivilege::ApisAccept,
-            PlatformPrivilege::ApisForceReplace,
-            PlatformPrivilege::ClientsManage,
-            PlatformPrivilege::PrivilegesManage,
-        ],
         metadata: serde_json::json!({
             "client_id": CLI_CLIENT_ID,
             "application_type": "native",
@@ -39,6 +30,36 @@ pub(crate) fn cli_registration() -> ClientRegistration {
         }),
         expected_revision: 0,
     }
+}
+
+/// The APIs each built-in runtime participant provides, with its package evidence.
+pub(super) fn builtin_package_evidence(
+) -> Result<Vec<(&'static [&'static str], trellis_idl::PackageEvidence)>, AuthError> {
+    use trellis_rs::generated::ParticipantDescriptor;
+    use trellis_runtime_apis::participants::{
+        trellis_events_runtime, trellis_health_runtime, trellis_jobs_runtime, trellis_platform,
+    };
+    let decode = |evidence| -> Result<_, AuthError> {
+        Ok(serde_json::from_value(serde_json::to_value(evidence)?)?)
+    };
+    Ok(vec![
+        (
+            trellis_platform::Participant::IMPLEMENTED_API_IDS,
+            decode(trellis_platform::Participant::package_evidence())?,
+        ),
+        (
+            trellis_health_runtime::Participant::IMPLEMENTED_API_IDS,
+            decode(trellis_health_runtime::Participant::package_evidence())?,
+        ),
+        (
+            trellis_jobs_runtime::Participant::IMPLEMENTED_API_IDS,
+            decode(trellis_jobs_runtime::Participant::package_evidence())?,
+        ),
+        (
+            trellis_events_runtime::Participant::IMPLEMENTED_API_IDS,
+            decode(trellis_events_runtime::Participant::package_evidence())?,
+        ),
+    ])
 }
 
 #[derive(Serialize, Deserialize)]
@@ -85,14 +106,6 @@ pub(crate) fn console_registration(origin: &str) -> Result<ClientRegistration, A
             .to_string()],
         development: origin.scheme() == "http" && loopback,
         implied_capabilities: Vec::new(),
-        eligible_privileges: vec![
-            PlatformPrivilege::PrincipalsManage,
-            PlatformPrivilege::RolesManage,
-            PlatformPrivilege::ApisAccept,
-            PlatformPrivilege::ApisForceReplace,
-            PlatformPrivilege::ClientsManage,
-            PlatformPrivilege::PrivilegesManage,
-        ],
         metadata: serde_json::json!({}),
         expected_revision: 0,
     })
@@ -180,29 +193,7 @@ impl SqliteAuthorizationStore {
                     )?;
                     // Use exactly the API ownership set used by production
                     // built-in provider initialization, never all accepted APIs.
-                    use trellis_rs::generated::ParticipantDescriptor;
-                    use trellis_runtime_apis::participants::{
-                        trellis_events_runtime, trellis_health_runtime, trellis_jobs_runtime,
-                        trellis_platform,
-                    };
-                    for (apis, evidence) in [
-                        (
-                            trellis_platform::Participant::IMPLEMENTED_API_IDS,
-                            trellis_platform::Participant::package_evidence(),
-                        ),
-                        (
-                            trellis_health_runtime::Participant::IMPLEMENTED_API_IDS,
-                            trellis_health_runtime::Participant::package_evidence(),
-                        ),
-                        (
-                            trellis_jobs_runtime::Participant::IMPLEMENTED_API_IDS,
-                            trellis_jobs_runtime::Participant::package_evidence(),
-                        ),
-                        (
-                            trellis_events_runtime::Participant::IMPLEMENTED_API_IDS,
-                            trellis_events_runtime::Participant::package_evidence(),
-                        ),
-                    ] {
+                    for (apis, evidence) in builtin_package_evidence()? {
                         for api in apis {
                             let accepted: bool = connection.query_row(
                                 "SELECT EXISTS(SELECT 1 FROM auth_accepted_apis WHERE api_id=?1)",
@@ -213,7 +204,7 @@ impl SqliteAuthorizationStore {
                                 let review = self.review_api_in_transaction(
                                     connection,
                                     &principal,
-                                    serde_json::from_value(serde_json::to_value(evidence)?)?,
+                                    evidence.clone(),
                                     api,
                                     now,
                                 )?;
@@ -243,7 +234,9 @@ impl SqliteAuthorizationStore {
                                 .query_map([api], |row| row.get::<_, String>(0))?
                                 .collect::<rusqlite::Result<Vec<_>>>()?;
                             for capability_id in capabilities {
-                                if capability_id == super::deployments::SELF_HEALTH_CAPABILITY {
+                                if capability_id == super::deployments::SELF_HEALTH_CAPABILITY
+                                    || super::administration::is_administrative(&capability_id)
+                                {
                                     continue;
                                 }
                                 super::policy::apply_policy_in_transaction(

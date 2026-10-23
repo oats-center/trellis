@@ -4,14 +4,11 @@ use super::*;
 fn issuer_revocation_uses_only_issuer_privilege_and_preserves_other_scope_gates() {
     let f = fixture();
     let delegate = create_user(&f.store, &f.admin, NOW);
-    policy(
+    administer(
         &f.store,
         &f.admin,
-        PolicyMutation::PrivilegeAssign {
-            principal_id: delegate.clone(),
-            privileges: vec![trellis_protocol::PlatformPrivilege::PrivilegesManage],
-            expected_revision: 0,
-        },
+        &delegate,
+        &[Administration::ManagePlatform],
         NOW,
     );
     let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();

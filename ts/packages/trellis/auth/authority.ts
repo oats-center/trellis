@@ -139,7 +139,6 @@ export class VerifiedAuthority {
       oauthGrantId: authority.oauthGrantId,
       capabilities: authority.capabilities,
       apis: authority.apis,
-      platformPrivileges: authority.platformPrivileges,
     };
   }
   /** Time and observed retirement are checked again immediately before authorized work. */

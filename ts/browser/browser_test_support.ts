@@ -74,6 +74,24 @@ export async function approveConsentIfRequired(
       if (await choice.isEnabled()) await choice.check();
     }
     await approve.click();
+    await confirmAdministrationIfAsked(page);
+  }
+}
+
+/** Completes the portal's separate confirmation step for administration, when shown. */
+export async function confirmAdministrationIfAsked(
+  page: Page,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const allow = page.getByRole("button", {
+    name: "Allow management of Trellis",
+    exact: true,
+  });
+  if (await visibleWithin(allow, timeoutMs)) {
+    await page
+      .getByRole("checkbox", { name: /I understand this application/ })
+      .check();
+    await allow.click();
   }
 }
 
@@ -265,13 +283,13 @@ export async function createOrdinaryUserWithPassword(
   });
   const principalId = created.user.principalId;
   for (const capabilityId of [
-    "trellis.auth@v1::accountRead",
-    "trellis.auth@v1::accountProfileWrite",
-    "trellis.auth@v1::identitiesRead",
-    "trellis.auth@v1::identitiesManage",
-    "trellis.auth@v1::passwordChange",
-    "trellis.auth@v1::sessionsRead",
-    "trellis.auth@v1::sessionsRevoke",
+    "trellis.auth@v1::readAccount",
+    "trellis.auth@v1::updateProfile",
+    "trellis.auth@v1::readIdentities",
+    "trellis.auth@v1::manageIdentities",
+    "trellis.auth@v1::changePassword",
+    "trellis.auth@v1::readSessions",
+    "trellis.auth@v1::revokeSessions",
   ]) {
     await runtime.callAdminRpc("authCapabilityGrantsGrant", {
       principalId,

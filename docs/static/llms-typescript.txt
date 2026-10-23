@@ -24,10 +24,11 @@ one-time `adminAccountUrl` password-setup link unless an initial password was
 supplied. Configure fresh credentials with startup `--admin-username`,
 `--admin-password`, or `--admin-password-stdin`; explicit initialization is
 `trellis init admin --config <path> --username admin` with optional `--password`
-or `--password-stdin`. Links expire after five minutes. Until password setup, each
-startup prints a fresh link and invalidates prior links. After setup, restart preserves
-credentials; `--reset-admin` is explicit local recovery through the same account
-flow. Ordinary RPC reset privileges do not authorize protected-admin recovery.
+or `--password-stdin`. Links expire after five minutes. Until password setup,
+each startup prints a fresh link and invalidates prior links. After setup,
+restart preserves credentials; `--reset-admin` is explicit local recovery
+through the same account flow. Ordinary RPC reset authority does not authorize
+protected-admin recovery.
 
 Generated service job handles and workers reconstruct retained lifecycle history
 through the deployment-scoped runtime `Jobs.History` route automatically. Do not
@@ -45,7 +46,7 @@ the supported flows. Kind is immutable; use a new client ID to switch kind.
 Native HTTP loopback callbacks need no development flag; browser loopback does.
 `put` reads generated AuthOAuthClientPutRequest JSON; mutations are revision-fenced. `trellis apis
 list|get|review|accept|force-replace` uses generated Auth request JSON and reviewed
-package evidence. Force replacement requires apis.forceReplace and explicit
+package evidence. Force replacement requires trellis.forceReplaceApis and explicit
 breakage/consent acknowledgements. Console exposes OAuth clients and API catalog.
 
 Identity-link approval remains a protected same-origin POST. Its no-store
@@ -87,15 +88,15 @@ or unavailable responses cannot grant authority or clear known revocation.
 
 Native service/device connections automatically publish the generated
 Health.Heartbeat event through ordinary signed SessionEvent publication. Auth
-assigns the runtime-only selfReport right during provisioning, not to users/apps.
+assigns the runtime-only reportHealth right during provisioning, not to users/apps.
 The collector verifies catalog evidence, broker chronology, retirement cutoff
 and signed native participant/deployment/instance identity. No extra service
 contract declaration is needed; initial publication does not gate CONNECT.
 
 Fresh administrator initialization grants explicit current Trellis-owned
-Auth/Core/State/Health/Jobs/Events capabilities, not domain or future capabilities.
-Console/CLI connections still require actual selected consent and client
-privilege eligibility; administrator status is not blanket app authority.
+Auth/Core/State/Health/Jobs/Events capabilities, not domain or future
+capabilities. Console/CLI connections still require actual selected consent;
+administrator status is not blanket app authority.
 
 OAuth CONNECT and authority/admission renewal consult the original verified
 refresh family's absolute deadline and revocation state. Admission.Renew accepts
@@ -179,18 +180,21 @@ unless another entitlement path preserves the outstanding authority.
 Consent approval binds the current server-owned presentation and the selected
 optional capabilities; stale forms require a fresh presentation. Signed session
 authority has a shared 64 KiB issuer, verification, and parsing budget.
-An explicitly administrator-registered development app can receive eligible
-platform privileges only through normal user authority and explicit delegation.
-Registration requires clients.manage; configuring eligibility also requires
-privileges.manage. Localhost is not trust; CIMD apps remain ineligible, and
-application/OAuth origin isolation remains required.
+Administrative capabilities (`trellis.managePrincipals`, `trellis.manageRoles`,
+`trellis.acceptApis`, `trellis.forceReplaceApis`, `trellis.manageClients`,
+`trellis.managePlatform`) are ordinary capabilities in a namespace only built-in
+Trellis contracts may use. Roles, direct grants, and identity-provider mappings
+can carry them; changing who holds one requires `trellis.managePlatform`.
+Delegating one to an app has three safeguards, on by default under
+`[auth.administration]`: a separate consent confirmation, approval by another
+`trellis.managePlatform` holder (`Administration.Reviews.*`), and registered
+clients only. The initialized administrator holds all six inherently and needs
+no review. Localhost/development mode establishes no trust, and
+application/OAuth origins remain isolated.
 
-Administrative browser apps request finite privileges through the connection's
-`auth.platformPrivileges: { required, optional }` OAuth options, not generated
-app metadata or IDL. Selecting administrative API capabilities does not grant
-these privileges. Optional privileges may be declined without making them
-application requirements; registration eligibility, user authority, and explicit
-consent are still required.
+Apps request administrative capabilities like any other, through their generated
+required/optional capability selections; there is no separate privilege request.
+Optional administration is never preselected or remembered.
 
 Provisional CIMD client intake shares a 128-client/16 MiB budget and a five-minute
 lifetime; live decisions and approved refresh lifecycles are retained. Exhaustion
@@ -259,12 +263,12 @@ Services/devices are deployable participants; apps/agents are application reques
 descriptors exported through the generated `apps` namespace.
 
 Administrative Auth callers use generated actions and request their narrow
-ordinary capabilities. Runtime authorization additionally requires the
-applicable finite platform privilege; capability selection never confers it.
-Own-authority/session maintenance uses fixed session rights. Capability discovery
-does not grant authority, and capability groups are not presets expanded into
-saved exact-action grants. API authors set positive `consent_revision` values;
-Auth owns acceptance and action/membership introduction counters.
+ordinary capabilities. Administrative capabilities allow them; Auth rechecks
+current entitlements. Own-authority/session maintenance uses fixed session
+rights. Capability discovery does not grant authority, and capability groups are
+not presets expanded into saved exact-action grants. API authors set positive
+`consent_revision` values; Auth owns acceptance and action/membership
+introduction counters.
 
 Request verification checks caller grants against the caller's exact signed
 catalog reference, independently of the provider's pinned implementation and
@@ -753,13 +757,13 @@ checks signed request/client/grant assignment; required children must be ready,
 optional children may be absent. DeviceCompanions.Revoke removes the association
 and revokes that exact grant/families, not other grants, login or parent authority.
 Removal permits the associated user or an administrator with current delegated
-principals.manage. Removing the declaration rejects new and pending consent,
+trellis.managePrincipals. Removing the declaration rejects new and pending consent,
 while existing independently consented grants retain ordinary refresh.
 
 Account actions use the generated Auth RPCs. PasswordReset.Create returns a
 five-minute, one-use token for `/account/reset?token=...` on the OAuth origin;
 completion checks Origin/CSRF, credential CAS, and the requester's original active
-logical session/current accepted `principals.manage`, then revokes login/grant
+logical session/current `trellis.managePrincipals`, then revokes login/grant
 families atomically with the credential change. Bootstrap administrators use local
 recovery. IdentityLink.Create returns a five-minute portal URL for the current
 user; completion requires that same signed-in user and fresh nonce/PKCE-verified
@@ -788,7 +792,7 @@ Omission keeps fields, explicit clear flags restore linked-provider defaults,
 manual email is unverified, and manual choices survive OIDC enrichment. Select and
 consent to `usersRead` for `Users.List/Get`: ordinary results expose active
 profiles with immutable `principalId`, names, available email and photos, but no
-`account`. Delegated and currently eligible `principals.manage` additionally
+`account`. Delegated and currently held `trellis.managePrincipals` additionally
 permits username search, inactive-user lookup and account details. Directory
 identity is not an application-object authorization grant.
 

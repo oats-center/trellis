@@ -5,10 +5,7 @@ import {
   discoverNativeOAuth,
   type NativeOAuthCustody,
 } from "@oatscenter/trellis/native";
-import type {
-  NativeOAuthSession,
-  PlatformPrivilege,
-} from "@oatscenter/trellis/native";
+import type { NativeOAuthSession } from "@oatscenter/trellis/native";
 import { ulid } from "ulid";
 import { z } from "zod";
 
@@ -19,13 +16,7 @@ const presentationSchema = z.object({
   capabilities: z.array(
     z.object({
       capabilityId: z.string(),
-      available: z.boolean(),
-      required: z.boolean(),
-    }),
-  ),
-  platformPrivileges: z.array(
-    z.object({
-      privilege: z.string(),
+      administrative: z.boolean(),
       available: z.boolean(),
       required: z.boolean(),
     }),
@@ -43,12 +34,10 @@ export async function loginNativeTestClient(options: {
   request: AppRequestDescriptor;
   username: string;
   password: string;
-  /** Exact real consent selections; omitted approves all available capabilities. Required capabilities cannot be declined. */
+  /** Exact real consent selections; omitted approves all available non-administrative capabilities. Required capabilities cannot be declined. */
   approvedCapabilities?: readonly string[];
-  platformPrivileges?: {
-    required: readonly PlatformPrivilege[];
-    optional?: readonly PlatformPrivilege[];
-  };
+  /** Administrative `trellis.*` capabilities required in addition to the request. */
+  administrativeCapabilities?: readonly string[];
   signal?: AbortSignal;
 }): Promise<{ session: NativeOAuthSession; servers: readonly string[] }> {
   const server = (
@@ -74,10 +63,16 @@ export async function loginNativeTestClient(options: {
   if (isErr(client)) throw client.error;
   try {
     const device = (
-      await client.startDevice(options.request, {
-        platformPrivileges: options.platformPrivileges,
-        signal: options.signal,
-      })
+      await client.startDevice(
+        {
+          ...options.request,
+          requiredCapabilities: [
+            ...options.request.requiredCapabilities,
+            ...(options.administrativeCapabilities ?? []),
+          ],
+        },
+        { signal: options.signal },
+      )
     ).take();
     if (isErr(device)) throw device.error;
     await approveNativeDeviceCode({
@@ -180,17 +175,19 @@ export async function approveNativeDeviceCode(options: {
   for (const item of view.capabilities) {
     if (item.required && !item.available)
       throw new Error("Required capability unavailable");
-    const approved =
-      !options.approvedCapabilities ||
-      options.approvedCapabilities.includes(item.capabilityId);
+    // Administration is approved only when required or explicitly selected.
+    const approved = item.administrative
+      ? item.required ||
+        (options.approvedCapabilities ?? []).includes(item.capabilityId)
+      : !options.approvedCapabilities ||
+        options.approvedCapabilities.includes(item.capabilityId);
     if (item.required && !approved)
       throw new Error("Required capability cannot be declined");
-    if (item.available && approved) form.append("approved", item.capabilityId);
-  }
-  for (const item of view.platformPrivileges) {
-    if (item.required && !item.available)
-      throw new Error("Required privilege unavailable");
-    if (item.available) form.append("privilege", item.privilege);
+    if (item.available && approved) {
+      form.append("approved", item.capabilityId);
+      // The real Portal asks for this separate confirmation step.
+      if (item.administrative) form.set("confirm_administration", "true");
+    }
   }
   const approved = await request("/portal/approve", form);
   if (

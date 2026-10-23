@@ -120,12 +120,13 @@ surfaces are the union of the selected capabilities' actions; unrelated
 capabilities do not become requirements merely because they overlap those
 actions. Operation selections include the operation lifecycle and signals.
 
-Administrative Auth RPCs also have ordinary, narrowly scoped capabilities.
-Selecting one exposes its generated caller methods but does not grant platform
-privileges: the required finite administrative privilege is an additional
-runtime condition. Own-authority and own-session maintenance are fixed session
-rights, not ordinary capability requests. There is no IDL privilege-request
-syntax.
+Administrative Auth RPCs are allowed by administrative capabilities, declared
+with the `administrative;` marker. Only the built-in `trellis` package may use
+it, and such a capability's ID is the bare `trellis.<name>` rather than
+`<api>::<name>`; Auth refuses any other API in the `trellis.` namespace.
+Own-authority and own-session maintenance are fixed session rights, not
+ordinary capability requests. Every capability name is verb first, such as
+`readSessions` or `managePrincipals`.
 
 Every authored capability has an explicit positive integer `consent_revision`;
 descriptor projections must expose it as `consentRevision`. Authors change this
@@ -173,7 +174,7 @@ capabilities explicitly. Deployable resources remain principal-owned.
 Built-in capability selections follow the same rule. State `read`, `write`, and
 `delete` select Get, Put, and Delete independently. A Jobs `query` selection
 exposes Query, not job inspection, cancellation, or dead-letter replay. Health
-`statusChanges` selects event consumption, not publication; provider publication
+`observeStatusChanges` selects event consumption, not publication; provider publication
 and Consumer delivery reporting are runtime responsibilities rather than caller
 capabilities.
 

@@ -27,7 +27,7 @@ const login = await loginNativeTestClient({
   directory,
   clientId: "trellis.cli",
   request: apps.cli.request,
-  platformPrivileges: { required: ["principals.manage"] },
+  administrativeCapabilities: ["trellis.managePrincipals"],
 });
 const admin = await connectNativeClient({
   ...login,

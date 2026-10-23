@@ -33,6 +33,13 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
     for (const choice of await page.getByRole("checkbox").all())
       if (await choice.isEnabled()) await choice.check();
     await page.getByRole("button", { name: "Authorize application" }).click();
+    // Administration takes a separate confirmation step.
+    await page
+      .getByRole("checkbox", { name: /I understand this application/ })
+      .check();
+    await page
+      .getByRole("button", { name: "Allow management of Trellis" })
+      .click();
     await page
       .getByRole("cell", { name: username, exact: true })
       .first()
@@ -104,7 +111,7 @@ test("Console reload, simultaneous tabs, Chromium restart and account switching 
       .waitFor();
     await page
       .getByRole("checkbox", {
-        name: /Read your profile and account, and sign out/,
+        name: /See your profile/,
       })
       .check();
     await page.getByRole("button", { name: "Authorize application" }).click();

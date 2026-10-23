@@ -24,7 +24,6 @@ export type OwnAuthoritySnapshot = Readonly<{
   oauthGrantId?: string;
   runtimeId: string;
   expiresAt: number;
-  platformPrivileges: readonly AuthenticatedCaller["platformPrivileges"][number][];
   capabilities: readonly Readonly<
     AuthenticatedCaller["capabilities"][number]
   >[];
@@ -159,7 +158,6 @@ export class PromotedOwnAuthorityView implements OwnAuthorityView {
           oauthGrantId: authority.oauthGrantId,
           runtimeId: authority.runtimeId,
           expiresAt: authority.expiresAt,
-          platformPrivileges: Object.freeze([...authority.platformPrivileges]),
           capabilities: Object.freeze(
             authority.capabilities
               .filter((capability) => {

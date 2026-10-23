@@ -4,7 +4,10 @@ import { test } from "node:test";
 import { chromium } from "playwright";
 import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
-import { browserRuntimeOptions } from "./browser_test_support.ts";
+import {
+  browserRuntimeOptions,
+  confirmAdministrationIfAsked,
+} from "./browser_test_support.ts";
 
 test("registered Console delegates administrative authority through consent and uses the real authenticated client", async () => {
   await withTrellisRuntime(async (runtime) => {
@@ -56,11 +59,14 @@ test("registered Console delegates administrative authority through consent and 
       await page
         .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
         .waitFor();
-      await page.getByRole("checkbox", { name: /Manage identities/ }).check();
+      await page
+        .getByRole("checkbox", { name: /Manage users and services/ })
+        .check();
       const choices = page.getByRole("checkbox");
       for (const choice of await choices.all())
         if (await choice.isEnabled()) await choice.check();
       await page.getByRole("button", { name: "Authorize application" }).click();
+      await confirmAdministrationIfAsked(page);
       await page.waitForURL(
         (url) =>
           url.origin === origin && url.pathname === "/console/admin/users",

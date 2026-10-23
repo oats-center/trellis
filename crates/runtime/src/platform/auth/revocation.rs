@@ -1,3 +1,4 @@
+use super::Administration;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -792,13 +793,13 @@ impl SqliteAuthorizationStore {
                     _ => false,
                 };
                 if !owned {
-                    Self::require_privilege(
+                    Self::require_administration(
                         connection,
                         &identity.actor,
                         if matches!(scope, EnforcementScope::Issuer(_)) {
-                            "privileges.manage"
+                            Administration::ManagePlatform
                         } else {
-                            "principals.manage"
+                            Administration::ManagePrincipals
                         },
                     )?;
                 }

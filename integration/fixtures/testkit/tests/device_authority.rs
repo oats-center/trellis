@@ -36,8 +36,8 @@ async fn oauth(
     .await
     .unwrap();
     let mut optional = Request::OPTIONAL_CAPABILITIES.to_vec();
-    if !optional.contains(&"trellis.auth@v1::deviceCompanionsManage") {
-        optional.push("trellis.auth@v1::deviceCompanionsManage");
+    if !optional.contains(&"trellis.auth@v1::manageDeviceCompanions") {
+        optional.push("trellis.auth@v1::manageDeviceCompanions");
     }
     let mut details = json!([{"type":"trellis_capabilities","required":[],"optional":optional}]);
     if admin {

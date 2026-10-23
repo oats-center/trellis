@@ -359,7 +359,6 @@ fn trusted_browser_preapproval_is_subset_bound_and_native_clients_need_explicit_
         redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
         development: false,
         implied_capabilities: vec![f.read.clone()],
-        eligible_privileges: vec![],
         metadata: serde_json::json!({}),
         expected_revision: 1,
     };

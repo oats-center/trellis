@@ -6,7 +6,6 @@ import {
 } from "@oatscenter/result";
 import {
   BrowserOAuthClient,
-  type BrowserCapabilityRequest,
   type BrowserOAuthAdmission,
 } from "./auth/browser/oauth.ts";
 import { connectAdmitted } from "./auth/connection.ts";
@@ -38,8 +37,6 @@ import { TransportError } from "./errors/TransportError.ts";
 /** Ordinary app OAuth identity and callback; no caller-authored participant wire claims. */
 export type ClientAuthOptions = {
   clientId: string;
-  /** Finite OAuth requests, subject to client eligibility, user authority, and explicit consent; never contract authority. */
-  platformPrivileges?: BrowserCapabilityRequest["platformPrivileges"];
   /** Local multi-account slot; defaults to the registered client ID. */
   credentialHandle?: string;
   redirectTo: string;
@@ -177,7 +174,6 @@ export function connectClientWithDeps<T extends AppRequestDescriptor>(
             await oauth.authorize(args.auth.redirectTo, {
               required: args.request.requiredCapabilities,
               optional: args.request.optionalCapabilities,
-              platformPrivileges: args.auth.platformPrivileges,
             })
           ).take();
           if (isErr(authorization)) return Result.err(authorization.error);

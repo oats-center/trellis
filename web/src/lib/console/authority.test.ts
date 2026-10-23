@@ -11,7 +11,13 @@ import type { Authority } from "../control-panel.ts";
 
 const READY_AUTHORITY: Authority = {
   authorityDigest: "current-ui-snapshot",
-  platformPrivileges: ["principals.manage"],
+  capabilities: [
+    {
+      capabilityId: "trellis.managePrincipals",
+      identityGeneration: "1",
+      consentRevision: "1",
+    },
+  ],
   actions: [],
 };
 

@@ -117,21 +117,20 @@ service TransferGrowthProvider {
 service OrdinaryJobs {
   job work { title "Work"; description "Ordinary queue cancellation"; payload Value; result Value; }
 }
-agent JobEvidenceReader { use auth { required capability jobResourceBindingsRead; } }
+agent JobEvidenceReader { use auth { required capability readJobBindings; } }
 agent DirectoryCaller {
   use auth {
-    required capability usersRead;
-    required capability accountRead;
-    required capability accountProfileWrite;
-    required capability usersCreate;
-    required capability usersUpdate;
+    required capability readUsers;
+    required capability readAccount;
+    required capability updateProfile;
+    capability managePrincipals;
   }
 }
 agent DirectoryOptional {
-  use auth { required capability accountRead; capability usersRead; }
+  use auth { required capability readAccount; capability readUsers; }
 }
-agent AccountCaller { use auth { required capability accountRead; } }
-agent EventEvidenceReader { use auth { required capability eventResourceBindingsRead; } }
+agent AccountCaller { use auth { required capability readAccount; } }
+agent EventEvidenceReader { use auth { required capability readEventBindings; } }
 api optional_availability@v2 {
   title "Optional operation availability";
   description "Native clients use approved optional operations without legacy atom grants.";
@@ -155,7 +154,7 @@ service OperationCaller { use runtime { required capability work; } }
 agent EchoCaller { use runtime { required capability echo; } }
 agent Observer {
   use health { required capability observe; required capability inspect; }
-  use jobs { required capability observe; required capability summary; }
+  use jobs { required capability observe; required capability readSummary; }
   use eventlog { required capability observe; required capability query; }
 }
 agent TransferCaller { use runtime { required capability transport; required capability download; } }
@@ -171,13 +170,11 @@ agent NativeStateCaller {
   state savedResource { title "Saved resource"; description "Native State acceptance value."; schema ResourceValue; version 1; }
 }
 agent Denied { use runtime; }
-agent JobsAdmin { use jobs { required capability query; required capability inspect; required capability keyLookup; required capability retry; required capability dlqReplay; required capability listServices; } }
+agent JobsAdmin { use jobs { required capability query; required capability inspect; required capability findByKey; required capability retry; required capability replayDeadLetters; required capability listServices; } }
 service AdminService {
   use auth {
-    required capability deploymentsRead;
-    required capability capabilityGrantsRead;
-    required capability capabilityGrantsRevoke;
-    required capability authorizationSessionsRead;
+    required capability managePrincipals;
+    required capability manageRoles;
   }
 }
 service EventService {
@@ -210,7 +207,7 @@ device Device {
   state telemetry { title "Telemetry"; description "Device-owned State acceptance value."; schema ResourceValue; version 1; }
   agent Companion {
     state shared { title "Shared"; description "Same-user companion State acceptance value."; schema ResourceValue; version 1; }
-    use auth { required capability deviceCompanionsManage; }
+    use auth { required capability manageDeviceCompanions; }
     use device_child {
       required capability required;
       capability optional;
@@ -222,7 +219,7 @@ device StateDevice {
 }
 device AgentDevice {
   agent Companion {
-    use auth { required capability deviceCompanionsManage; }
+    use auth { required capability manageDeviceCompanions; }
     use device_child {
       required capability required;
       capability optional;

@@ -12,7 +12,10 @@ import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_tru
 import { ulid } from "ulid";
 import { participants } from "../../integration/fixtures/client-upgrade/packages/client-upgrade/index.js";
 import { withTrellisRuntime } from "../integration/_support/runtime.ts";
-import { browserRuntimeOptions } from "./browser_test_support.ts";
+import {
+  browserRuntimeOptions,
+  confirmAdministrationIfAsked,
+} from "./browser_test_support.ts";
 
 test(
   "CLI explicitly consents to administration, resumes custody, and manages clients and catalog revisions",
@@ -81,6 +84,7 @@ test(
         await page
           .getByRole("button", { name: "Authorize application" })
           .click();
+        await confirmAdministrationIfAsked(page);
         assert.equal((await exited)[0], 0);
         const run = async (...args: string[]) =>
           JSON.parse(

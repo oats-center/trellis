@@ -2,52 +2,24 @@ import { auth, events, health, jobs, state } from trellis;
 
 agent cli {
   use auth {
-    capability capabilitiesRead;
-    capability rolesRead;
-    capability resourcesRead;
-    capability rolesPut;
-    capability roleAssignmentsRead;
-    capability roleAssignmentsAssign;
-    capability roleAssignmentsRevoke;
-    capability capabilityGrantsRead;
-    capability capabilityGrantsGrant;
-    capability capabilityGrantsRevoke;
-    capability connectionsRead;
-    capability authorizationSessionsRead;
-    capability authorizationSessionsRevoke;
-    capability connectionsKick;
-    capability deploymentsRead;
-    capability deploymentsCreate;
-    capability deploymentsApply;
-    capability deploymentsEnable;
-    capability deploymentsDisable;
-    capability devicesProvision;
-    capability devicesRead;
-    capability apisRead;
-    capability apisReview;
-    capability apisAccept;
-    capability apisForceReplace;
-    capability oauthClientsRead;
-    capability oauthClientsPut;
-    capability serviceInstancesDisable;
-    capability serviceInstancesRemove;
-    capability serviceInstancesProvision;
-    capability usersCreate;
-    capability usersRead;
-    capability usersUpdate;
-    capability usersPasswordReset;
-    capability sessionsRead;
-    capability sessionsRevoke;
-    capability issuersRotate;
-    required capability identitiesRead;
-    required capability accountRead;
+    capability manageRoles;
+    capability managePrincipals;
+    capability readUsers;
+    capability acceptApis;
+    capability forceReplaceApis;
+    capability manageClients;
+    capability readSessions;
+    capability revokeSessions;
+    capability managePlatform;
+    required capability readIdentities;
+    required capability readAccount;
   }
   use events {
     capability inspect;
-    capability consumersInspect;
-    capability deadLettersDismiss;
-    capability deadLettersInspect;
-    capability deadLettersReplay;
+    capability inspectConsumers;
+    capability dismissDeadLetters;
+    capability inspectDeadLetters;
+    capability replayDeadLetters;
     capability query;
   }
   use health { capability query; }

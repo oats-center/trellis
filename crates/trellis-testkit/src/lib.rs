@@ -200,7 +200,6 @@ mod tests {
             .await
             .unwrap();
         let context = client.authorization_context().unwrap().unwrap().context;
-        assert!(context.unsigned.platform_privileges.is_empty());
         let nats = client.runtime_nats();
         let digest = context.digest().unwrap();
         for query in [

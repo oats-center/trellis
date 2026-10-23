@@ -119,6 +119,7 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
         }),
         auth: Some(AuthConfig {
             avatar: None,
+            administration: Default::default(),
             instance_id: Some(options.runtime.instance_id.clone()),
             oauth: Some(oauth),
             oauth_storage_key_file: Some(PathBuf::from("./auth/oauth-storage.key")),

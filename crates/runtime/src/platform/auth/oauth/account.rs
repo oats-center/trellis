@@ -1,5 +1,6 @@
 //! Bounded account actions over the existing portal and account-flow repository.
 
+use super::super::Administration;
 use super::super::{
     rpc_users::hash_password,
     sqlite::{digest, id},
@@ -78,24 +79,23 @@ fn reset_requester(
     now: i64,
 ) -> Result<(), AuthError> {
     use super::super::{authorization_sessions::credential_snapshot, Credential};
-    use trellis_protocol::PlatformPrivilege;
-    SqliteAuthorizationStore::require_privilege(connection, actor, "principals.manage")?;
-    let (grant, identity, accepted): (Option<String>, Option<String>, String) = connection
+    SqliteAuthorizationStore::require_administration(
+        connection,
+        actor,
+        Administration::ManagePrincipals,
+    )?;
+    let (grant, identity): (Option<String>, Option<String>) = connection
         .query_row(
-            "SELECT oauth_grant_id,identity_key_id,approved_privileges_json \
+            "SELECT oauth_grant_id,identity_key_id \
             FROM auth_authorization_sessions \
             WHERE authorization_session_id=?1 \
             AND principal_id=?2 \
             AND state='active' AND hard_deadline>?3",
             params![session, actor, now],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?
         .ok_or(AuthError::Denied)?;
-    let accepted: Vec<PlatformPrivilege> = serde_json::from_str(&accepted)?;
-    if !accepted.contains(&PlatformPrivilege::PrincipalsManage) {
-        return Err(AuthError::Denied);
-    }
     let credential = match (grant, identity) {
         (Some(grant), None) => Credential::OAuthGrant(grant),
         (None, Some(identity)) => Credential::ProvisionedIdentity(identity),
@@ -103,9 +103,9 @@ fn reset_requester(
     };
     let current = credential_snapshot(connection, &credential, now)?;
     if current.principal_id != actor
-        || !current
-            .platform_privileges
-            .contains(&PlatformPrivilege::PrincipalsManage)
+        || !current.approved.iter().flatten().any(|capability| {
+            capability.capability_id == Administration::ManagePrincipals.capability_id()
+        })
     {
         return Err(AuthError::Denied);
     }

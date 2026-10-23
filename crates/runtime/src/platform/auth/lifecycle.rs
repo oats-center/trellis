@@ -1,3 +1,4 @@
+use super::Administration;
 use std::collections::{BTreeMap, BTreeSet};
 
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
@@ -6,7 +7,7 @@ use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use trellis_protocol::{CapabilityAuthority, PlatformPrivilege};
+use trellis_protocol::CapabilityAuthority;
 
 use super::authorization_sessions::GrantConsentBasis;
 use super::policy::{capability, entitlements, CapabilitySelection};
@@ -21,7 +22,6 @@ pub(crate) struct ClientRegistration {
     pub(crate) redirect_uris: Vec<String>,
     pub(crate) development: bool,
     pub(crate) implied_capabilities: Vec<String>,
-    pub(crate) eligible_privileges: Vec<PlatformPrivilege>,
     pub(crate) metadata: Value,
     pub(crate) expected_revision: u64,
 }
@@ -67,8 +67,9 @@ pub(crate) struct GrantApproval {
     /// valid remembered consent and inherit its optional deadline.
     pub(crate) reused_remembered: Vec<String>,
     pub(crate) declined: Vec<String>,
-    pub(crate) privileges: Vec<PlatformPrivilege>,
-    pub(crate) required_privileges: Vec<PlatformPrivilege>,
+    /// The user confirmed, in a separate step, that the app may manage this
+    /// Trellis installation.
+    pub(crate) administration_confirmed: bool,
     pub(crate) remember: bool,
     pub(crate) remember_until: Option<i64>,
     pub(crate) expires_at: i64,
@@ -128,23 +129,6 @@ impl SqliteAuthorizationStore {
             params![principal, now],
         )?;
         connection.execute(
-            "INSERT INTO auth_platform_assignments VALUES(?1,?2,1,?3)",
-            params![id(), principal, now],
-        )?;
-        for privilege in [
-            PlatformPrivilege::PrincipalsManage,
-            PlatformPrivilege::RolesManage,
-            PlatformPrivilege::ApisAccept,
-            PlatformPrivilege::ApisForceReplace,
-            PlatformPrivilege::ClientsManage,
-            PlatformPrivilege::PrivilegesManage,
-        ] {
-            connection.execute(
-                "INSERT INTO auth_platform_privileges VALUES(?1,?2)",
-                params![principal, serde_json::to_value(privilege)?.as_str()],
-            )?;
-        }
-        connection.execute(
             "INSERT INTO auth_security_audit VALUES(?1,?2,'administrator.bootstrap',?2,'{}',?3)",
             params![id(), principal, now],
         )?;
@@ -165,7 +149,11 @@ impl SqliteAuthorizationStore {
             registration,
             now,
             |connection| {
-                Self::require_privilege(connection, &identity.actor, "clients.manage")?;
+                Self::require_administration(
+                    connection,
+                    &identity.actor,
+                    Administration::ManageClients,
+                )?;
                 if let Some(grants) = registration.metadata.get("grant_types") {
                     let grants = grants
                         .as_array()
@@ -246,30 +234,6 @@ impl SqliteAuthorizationStore {
                         &uri,
                     );
                 }
-                // Eligibility is assigned explicitly by a privilege manager; a
-                // loopback callback or development mode never implies it.
-                let existing_eligibility: Option<String> = connection
-                    .query_row(
-                        "SELECT requested_privileges_json \
-                    FROM auth_oauth_clients \
-                    WHERE client_id=?1",
-                        [&registration.client_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                let existing_eligibility: Vec<PlatformPrivilege> = existing_eligibility
-                    .as_deref()
-                    .map(decode)
-                    .transpose()?
-                    .unwrap_or_default();
-                if existing_eligibility.iter().collect::<BTreeSet<_>>()
-                    != registration
-                        .eligible_privileges
-                        .iter()
-                        .collect::<BTreeSet<_>>()
-                {
-                    Self::require_privilege(connection, &identity.actor, "privileges.manage")?;
-                }
                 for name in &registration.implied_capabilities {
                     capability(connection, name)?;
                 }
@@ -295,13 +259,12 @@ impl SqliteAuthorizationStore {
                 }
                 connection.execute(
                     "INSERT INTO auth_oauth_clients \
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'active',?9,?10,?10) \
+                VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,?9,?9) \
                 ON CONFLICT(client_id) \
                 DO UPDATE SET kind=excluded.kind,display_name=excluded.display_name,\
                 redirect_uris_json=excluded.redirect_uris_json,\
                 development=excluded.development,\
                 implied_capabilities_json=excluded.implied_capabilities_json,\
-                requested_privileges_json=excluded.requested_privileges_json,\
                 metadata_json=excluded.metadata_json,revision=excluded.revision,\
                 updated_at=excluded.updated_at",
                     params![
@@ -311,7 +274,6 @@ impl SqliteAuthorizationStore {
                         json(&registration.redirect_uris)?,
                         registration.development,
                         json(&registration.implied_capabilities)?,
-                        json(&registration.eligible_privileges)?,
                         json(&registration.metadata)?,
                         registration.expected_revision + 1,
                         now
@@ -440,7 +402,11 @@ impl SqliteAuthorizationStore {
             registration,
             now,
             |connection| {
-                Self::require_privilege(connection, &identity.actor, "principals.manage")?;
+                Self::require_administration(
+                    connection,
+                    &identity.actor,
+                    Administration::ManagePrincipals,
+                )?;
                 let issuer =
                     url::Url::parse(&registration.issuer).map_err(|_| AuthError::Denied)?;
                 if issuer.scheme() != "https"
@@ -621,11 +587,6 @@ impl SqliteAuthorizationStore {
                     || presentation.binding_value != approval.binding_value
                     || presentation.selection.required != approval.selection.required
                     || presentation.selection.optional != approval.selection.optional
-                    || presentation.required_privileges != approval.required_privileges
-                    || !approval.privileges.iter().all(|privilege| {
-                        presentation.required_privileges.contains(privilege)
-                            || presentation.optional_privileges.contains(privilege)
-                    })
                 {
                     return Err(AuthError::Denied);
                 }
@@ -689,19 +650,18 @@ impl SqliteAuthorizationStore {
                     return Err(AuthError::Denied);
                 }
             }
-            let client: Option<(String, String, String, String)> = connection
+            let client: Option<(String, String, String)> = connection
                 .query_row(
-                    "SELECT state,kind,implied_capabilities_json,requested_privileges_json \
+                    "SELECT state,kind,implied_capabilities_json \
                     FROM auth_oauth_clients \
                     WHERE client_id=?1",
                     [&approval.client_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .optional()?;
-            let (kind, implied, eligible) = match client {
-                Some((state, kind, implied, eligible)) if state == "active" => {
-                    (kind, implied, eligible)
-                }
+            let registered = client.is_some();
+            let (kind, implied) = match client {
+                Some((state, kind, implied)) if state == "active" => (kind, implied),
                 Some(_) => return Err(AuthError::Denied),
                 None => {
                     let kind: Option<String> = connection
@@ -711,7 +671,7 @@ impl SqliteAuthorizationStore {
                             |row| row.get(0),
                         )
                         .optional()?;
-                    (kind.ok_or(AuthError::Denied)?, "[]".into(), "[]".into())
+                    (kind.ok_or(AuthError::Denied)?, "[]".into())
                 }
             };
             if kind != approval.binding_kind {
@@ -724,7 +684,12 @@ impl SqliteAuthorizationStore {
             } else {
                 Vec::new()
             };
-            let eligible: Vec<PlatformPrivilege> = decode(&eligible)?;
+            let safeguards = self.settings.administration;
+            let default_administrator: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM auth_bootstrap_administrator WHERE principal_id=?1)",
+                [&approval.principal_id],
+                |row| row.get(0),
+            )?;
             let entitled = entitlements(
                 connection,
                 &approval.principal_id,
@@ -775,7 +740,23 @@ impl SqliteAuthorizationStore {
                     }
                     Err(error) => return Err(error),
                 };
-                if approval.remember && !reused.contains(name) {
+                let administrative = super::administration::is_administrative(name);
+                if accepted && administrative {
+                    if (safeguards.registered_clients_only && !registered)
+                        || (safeguards.confirm_on_consent && !approval.administration_confirmed)
+                    {
+                        return Err(AuthError::Denied);
+                    }
+                    if safeguards.require_peer_approval
+                        && !default_administrator
+                        && !peer_approved(connection, approval, name, now)?
+                    {
+                        // Withheld until another administrator approves it.
+                        continue;
+                    }
+                }
+                // Administration is never remembered: each delegation is confirmed.
+                if approval.remember && !reused.contains(name) && !administrative {
                     connection.execute(
                         "INSERT INTO auth_remembered_consent \
                         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10) \
@@ -847,54 +828,14 @@ impl SqliteAuthorizationStore {
                     approved.push(cap);
                 }
             }
-            if !approval
-                .required_privileges
-                .iter()
-                .all(|privilege| approval.privileges.contains(privilege))
-            {
-                return Err(AuthError::RequiredMissing);
-            }
-            for privilege in &approval.privileges {
-                let assigned: bool = connection.query_row(
-                    "SELECT EXISTS(SELECT 1 \
-                    FROM auth_platform_privileges \
-                    WHERE principal_id=?1 \
-                    AND privilege=?2)",
-                    params![
-                        approval.principal_id,
-                        serde_json::to_value(privilege)?.as_str()
-                    ],
-                    |row| row.get(0),
-                )?;
-                if !assigned || !eligible.contains(privilege) {
-                    return Err(AuthError::Denied);
-                }
-            }
-            if !approval.privileges.is_empty() {
-                connection.execute(
-            "INSERT INTO auth_platform_delegations \
-            VALUES(?1,?2,?3,?4,?5,?6,1) \
-            ON CONFLICT(principal_id,client_id,binding_kind,binding_value) \
-            DO UPDATE SET approved_privileges_json=excluded.approved_privileges_json,expires_at=excluded.expires_at,revision=revision+1",
-            params![
-                approval.principal_id,
-                approval.client_id,
-                approval.binding_kind,
-                approval.binding_value,
-                json(&approval.privileges)?,
-                approval.remember_until
-            ],
-                )?;
-            }
             let grant = id();
             connection.execute(
                 "INSERT INTO auth_oauth_grants(oauth_grant_id,principal_id,\
                 login_session_id,client_id,binding_kind,binding_value,\
                 durable_dpop_jkt,public_jwk_json,required_capabilities_json,\
                 optional_capabilities_json,approved_capabilities_json,\
-                approved_privileges_json,required_privileges_json,consent_basis_json,\
-                created_at,expires_at,revoked_at,revision) \
-                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,NULL,1)",
+                consent_basis_json,created_at,expires_at,revoked_at,revision) \
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,1)",
                 params![
                     grant,
                     approval.principal_id,
@@ -907,14 +848,12 @@ impl SqliteAuthorizationStore {
                     json(&approval.selection.required)?,
                     json(&approval.selection.optional)?,
                     json(&approved)?,
-                    json(&approval.privileges)?,
-                    json(&approval.required_privileges)?,
                     json(&consent_basis)?,
                     now,
                     approval.expires_at.min(login_expiry)
                 ],
             )?;
-            if approval.remember || !approval.privileges.is_empty() {
+            if approval.remember {
                 enqueue_scope(
                     connection,
                     &EnforcementScope::Principal(approval.principal_id.clone()),
@@ -932,4 +871,52 @@ impl SqliteAuthorizationStore {
             Ok(grant)
         })
     }
+}
+
+/// Whether another administrator approved `capability` for this user and app
+/// binding. A first request opens the review; a rejected one reopens it.
+fn peer_approved(
+    connection: &Connection,
+    approval: &GrantApproval,
+    capability: &str,
+    now: i64,
+) -> Result<bool, AuthError> {
+    let state: Option<String> = connection
+        .query_row(
+            "SELECT state FROM auth_administration_reviews \
+            WHERE principal_id=?1 AND client_id=?2 \
+            AND binding_kind=?3 AND binding_value=?4 AND capability_id=?5",
+            params![
+                approval.principal_id,
+                approval.client_id,
+                approval.binding_kind,
+                approval.binding_value,
+                capability
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match state.as_deref() {
+        Some("approved") => return Ok(true),
+        Some("pending") => return Ok(false),
+        _ => {}
+    }
+    connection.execute(
+        "INSERT INTO auth_administration_reviews \
+        VALUES(?1,?2,?3,?4,?5,?6,'pending',?7,NULL,NULL,1) \
+        ON CONFLICT(principal_id,client_id,binding_kind,binding_value,capability_id) \
+        DO UPDATE SET review_id=excluded.review_id,state='pending',\
+        requested_at=excluded.requested_at,decided_at=NULL,decided_by=NULL,\
+        revision=revision+1",
+        params![
+            id(),
+            approval.principal_id,
+            approval.client_id,
+            approval.binding_kind,
+            approval.binding_value,
+            capability,
+            now
+        ],
+    )?;
+    Ok(false)
 }

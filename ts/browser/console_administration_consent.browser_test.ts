@@ -9,8 +9,8 @@ import { withTrellisRuntime } from "../integration/_support/runtime.ts";
 import { browserRuntimeOptions } from "./browser_test_support.ts";
 
 // Uses the initialized production host and registered Console, never a fake issuer.
-for (const selected of [undefined, "principals.manage"] as const) {
-  test(`Console consent promotes only selected optional privileges (${selected ?? "none"})`, async () => {
+for (const selected of [undefined, "trellis.managePrincipals"] as const) {
+  test(`Console consent promotes only selected administration (${selected ?? "none"})`, async () => {
     await withTrellisRuntime(async (runtime) => {
       const username = runtime.adminUsername;
       const password = runtime.adminPassword;
@@ -67,9 +67,10 @@ for (const selected of [undefined, "principals.manage"] as const) {
           .getByRole("heading", { name: /Allow .* to access Trellis\?/ })
           .waitFor();
 
-        const access = page.locator(
-          'input[name="approved"][type="checkbox"], input[name="privilege"][type="checkbox"]',
-        );
+        const access = page.locator('input[name="approved"][type="checkbox"]');
+        const administration = page
+          .getByRole("group", { name: "Manage this Trellis", exact: true })
+          .getByRole("checkbox");
         // Consent is opt-in: optional access starts unselected.
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
@@ -78,9 +79,20 @@ for (const selected of [undefined, "principals.manage"] as const) {
         await page
           .getByRole("button", { name: "Select all", exact: true })
           .click();
+        // Bulk selection never includes administration.
+        const administrative = new Set(
+          await Promise.all(
+            (await administration.all()).map((choice) =>
+              choice.getAttribute("value"),
+            ),
+          ),
+        );
         for (const choice of await access.all()) {
           if (await choice.isEnabled())
-            strictEqual(await choice.isChecked(), true);
+            strictEqual(
+              await choice.isChecked(),
+              !administrative.has(await choice.getAttribute("value")),
+            );
         }
         await page
           .getByRole("button", { name: "Unselect all", exact: true })
@@ -92,37 +104,42 @@ for (const selected of [undefined, "principals.manage"] as const) {
         // Accept ordinary capabilities but decline the separate administrative choices.
         for (const choice of await page.getByRole("checkbox").all())
           if (await choice.isEnabled()) await choice.check();
-        const privileges = page
-          .getByRole("group", {
-            name: "Administrative privileges",
-            exact: true,
-          })
-          .getByRole("checkbox");
-        for (const privilege of await privileges.all())
-          await privilege.uncheck();
+        for (const choice of await administration.all()) await choice.uncheck();
         if (selected)
           await page
-            .getByRole("checkbox", { name: /Manage identities/ })
+            .getByRole("checkbox", { name: /Manage users and services/ })
             .check();
         await page
           .getByRole("button", { name: "Authorize application" })
           .click();
+        if (selected) {
+          // Administration takes a separate confirmation step.
+          await page
+            .getByRole("heading", { name: /Allow .* to manage this Trellis\?/ })
+            .waitFor();
+          await page
+            .getByRole("checkbox", { name: /I understand this application/ })
+            .check();
+          await page
+            .getByRole("button", { name: "Allow management of Trellis" })
+            .click();
+        }
         await page.waitForURL(
           (url) => url.origin === origin && url.pathname === "/console/profile",
         );
         await page.getByText("browser", { exact: true }).waitFor();
         await page
           .getByText(
-            `This connection has ${selected ? 1 : 0} delegated ${selected ? "privilege" : "privileges"}.`,
+            `This connection can administer this Trellis through ${selected ? 1 : 0} ${selected ? "capability" : "capabilities"}.`,
             { exact: true },
           )
           .waitFor();
-        // Reload must resume the same consented grant, not silently acquire the other privileges.
+        // Reload must resume the same consented grant, not silently acquire other administration.
         await page.reload();
         await page.getByText("browser", { exact: true }).waitFor();
         await page
           .getByText(
-            `This connection has ${selected ? 1 : 0} delegated ${selected ? "privilege" : "privileges"}.`,
+            `This connection can administer this Trellis through ${selected ? 1 : 0} ${selected ? "capability" : "capabilities"}.`,
             { exact: true },
           )
           .waitFor();

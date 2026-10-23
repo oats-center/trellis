@@ -217,26 +217,28 @@ pub(crate) async fn approve_device(
         ("decision", "approve"),
         ("confirm_device", user_code),
     ];
-    for (field, key, wire_key) in [
-        ("capabilities", "capabilityId", "approved"),
-        ("platformPrivileges", "privilege", "privilege"),
-    ] {
-        for item in view[field]
-            .as_array()
-            .ok_or_else(|| failure(stage, "invalid consent presentation"))?
-        {
-            if item["available"] != true && item["required"] == true {
-                return Err(failure(stage, "required authority unavailable"));
-            }
-            if item["available"] == true {
-                form.push((
-                    wire_key,
-                    item[key]
-                        .as_str()
-                        .ok_or_else(|| failure(stage, "invalid consent item"))?,
-                ));
-            }
+    let mut administrative = false;
+    for item in view["capabilities"]
+        .as_array()
+        .ok_or_else(|| failure(stage, "invalid consent presentation"))?
+    {
+        if item["available"] != true && item["required"] == true {
+            return Err(failure(stage, "required authority unavailable"));
         }
+        // Administration is approved only when the request requires it.
+        if item["available"] == true && (item["administrative"] != true || item["required"] == true)
+        {
+            administrative |= item["administrative"] == true;
+            form.push((
+                "approved",
+                item["capabilityId"]
+                    .as_str()
+                    .ok_or_else(|| failure(stage, "invalid consent item"))?,
+            ));
+        }
+    }
+    if administrative {
+        form.push(("confirm_administration", "true"));
     }
     let response = http
         .post(format!("{oauth_origin}/portal/approve"))
@@ -282,19 +284,15 @@ impl AdminSession {
             &json!([
                 {
                     "type":"trellis_capabilities",
-                    "required": [],
-                    "optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES
-                },
-                {
-                    "type":"trellis_platform_privileges",
                     "required": [
-                        "principals.manage",
-                        "roles.manage",
-                        "apis.accept",
-                        "apis.forceReplace",
-                        "clients.manage",
-                        "privileges.manage"
-                                ]
+                        "trellis.managePrincipals",
+                        "trellis.manageRoles",
+                        "trellis.acceptApis",
+                        "trellis.forceReplaceApis",
+                        "trellis.manageClients",
+                        "trellis.managePlatform"
+                    ],
+                    "optional":crate::apps::trellis_cli::Request::OPTIONAL_CAPABILITIES
                 }
             ]),
             username,

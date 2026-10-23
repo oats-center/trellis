@@ -582,10 +582,22 @@ pub struct CapabilityDefinition {
     pub consequence: String,
     /// API-local presentation group, when the capability declares one.
     pub group: Option<String>,
+    /// Manages the Trellis installation itself. Only the builtin `trellis`
+    /// package declares these, and their IDs are `trellis.<name>`.
+    pub administrative: bool,
     /// Exact covered actions.
     pub allows: BTreeSet<ActionSelection>,
     /// Whether the capability is public.
     pub public: bool,
+}
+
+/// The contract-local name of an API-scoped (`api::name`) or administrative
+/// (`trellis.name`) capability ID.
+pub fn capability_name(id: &str) -> &str {
+    id.rsplit_once("::")
+        .map(|(_, name)| name)
+        .or_else(|| id.strip_prefix("trellis."))
+        .unwrap_or(id)
 }
 
 /// A selected action and direction.

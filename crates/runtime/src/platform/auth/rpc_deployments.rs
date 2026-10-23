@@ -1,6 +1,7 @@
 //! Typed catalog and provisioning reads over the authoritative SQLite aggregates.
 
 use super::sqlite::timestamp;
+use super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
 use trellis_rs::generated::TrellisError;
@@ -9,7 +10,6 @@ use trellis_runtime_apis::apis::trellis_auth_v1::errors::ValidationError as Auth
 
 use crate::platform::auth::sqlite::Connection;
 use rusqlite::{params, OptionalExtension};
-use trellis_protocol::PlatformPrivilege;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
     __types::{trellis::*, CursorPage, CursorPageInfo, CursorQuery},
@@ -30,16 +30,20 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
     oauth: Arc<super::OAuthEngine>,
 ) {
     macro_rules! read {
-        ($registration:ident, $privilege:ident, $name:literal, $operation:expr) => {{
+        ($registration:ident, $privilege:ident, $operation:expr) => {{
             let store = Arc::clone(&store);
             provider.$registration(move |context, input| {
                 let store = Arc::clone(&store);
                 async move {
                     let actor =
-                        caller(&context, Some(PlatformPrivilege::$privilege)).map_err(rpc_error)?;
+                        caller(&context, Some(Administration::$privilege)).map_err(rpc_error)?;
                     blocking(move || {
                         store.transaction(|connection| {
-                            SqliteAuthorizationStore::require_privilege(connection, &actor, $name)?;
+                            SqliteAuthorizationStore::require_administration(
+                                connection,
+                                &actor,
+                                Administration::$privilege,
+                            )?;
                             ($operation)(connection, &input)
                         })
                     })
@@ -49,18 +53,16 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             });
         }};
     }
-    read!(register_apis_list, ApisAccept, "apis.accept", read_apis);
-    read!(register_apis_get, ApisAccept, "apis.accept", read_api);
+    read!(register_apis_list, AcceptApis, read_apis);
+    read!(register_apis_get, AcceptApis, read_api);
     read!(
         register_deployments_list,
-        PrincipalsManage,
-        "principals.manage",
+        ManagePrincipals,
         read_deployments
     );
     read!(
         register_deployments_get,
-        PrincipalsManage,
-        "principals.manage",
+        ManagePrincipals,
         |connection: &Connection, input: &AuthDeploymentGetRequest| {
             Ok(AuthDeploymentGetResponse {
                 deployment: read_deployment(connection, &input.deployment_id.to_string())?,
@@ -70,16 +72,14 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
     );
     read!(
         register_service_instances_list,
-        PrincipalsManage,
-        "principals.manage",
+        ManagePrincipals,
         |connection: &Connection, input: &AuthInstancesListRequest| read_instances(
             connection, input, "service"
         )
     );
     read!(
         register_devices_list,
-        PrincipalsManage,
-        "principals.manage",
+        ManagePrincipals,
         |connection: &Connection, input: &AuthInstancesListRequest| read_instances(
             connection, input, "device"
         )
@@ -88,7 +88,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
     provider.register_apis_review(move |context, input| {
         let store = Arc::clone(&reviews);
         async move {
-            let actor = caller(&context, Some(PlatformPrivilege::ApisAccept)).map_err(rpc_error)?;
+            let actor = caller(&context, Some(Administration::AcceptApis)).map_err(rpc_error)?;
             blocking(move || review_api(&store, &actor, &input, crate::clock::unix_now()))
                 .await
                 .map_err(rpc_error)
@@ -103,7 +103,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                     let identity = mutation(
                         &context,
                         &input.idempotency_key,
-                        Some(PlatformPrivilege::$privilege),
+                        Some(Administration::$privilege),
                         &input,
                     )
                     .map_err(rpc_error)?;
@@ -116,10 +116,10 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             });
         }};
     }
-    accept!(register_apis_accept, ApisAccept, accept_api);
+    accept!(register_apis_accept, AcceptApis, accept_api);
     accept!(
         register_apis_force_replace,
-        ApisForceReplace,
+        ForceReplaceApis,
         force_replace_api
     );
     macro_rules! provision {
@@ -131,7 +131,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
                     let identity = mutation(
                         &context,
                         &input.idempotency_key,
-                        Some(PlatformPrivilege::PrincipalsManage),
+                        Some(Administration::ManagePrincipals),
                         &input,
                     )
                     .map_err(rpc_error)?;
@@ -181,7 +181,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(PlatformPrivilege::PrincipalsManage),
+                Some(Administration::ManagePrincipals),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -217,7 +217,7 @@ pub(crate) fn register_deployment_rpc<P: ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(PlatformPrivilege::PrincipalsManage),
+                Some(Administration::ManagePrincipals),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -290,10 +290,10 @@ pub(super) fn create_deployment(
         input,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let provisioning = deployment_input(
                 connection,
@@ -318,6 +318,7 @@ pub(super) fn create_deployment(
             }
             let deployment = SqliteAuthorizationStore::install_deployment_in_transaction(
                 connection,
+                &identity.actor,
                 &provisioning,
                 None,
                 &input.title,
@@ -382,10 +383,10 @@ pub(super) fn apply_deployment(
         input,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let deployment = input.deployment_id.to_string();
             let current = read_deployment(connection, &deployment)?;
@@ -409,6 +410,7 @@ pub(super) fn apply_deployment(
             )?;
             SqliteAuthorizationStore::install_deployment_in_transaction(
                 connection,
+                &identity.actor,
                 &provisioning,
                 Some(&deployment),
                 &current.title,
@@ -470,10 +472,10 @@ pub(super) fn change_deployment(
         input,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let deployment = input.deployment_id.to_string();
             let current = read_deployment(connection, &deployment)?;
@@ -550,10 +552,10 @@ pub(super) fn provision_instance(
         input,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let deployment = input.deployment_id.to_string();
             let current = read_deployment(connection, &deployment)?;
@@ -594,10 +596,10 @@ pub(super) fn change_instance(
         input,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let instance_id = input.instance_id.to_string();
             let instance = read_instance(connection, &instance_id)?;

@@ -14,8 +14,8 @@ import { loginNativeTestClient } from "../../trellis-testkit/src/admin/native_au
 import { connectNativeClient, connectNativeSession } from "../native.ts";
 import { withTrellisRuntime } from "../../../integration/_support/runtime.ts";
 
-const sessionsRead = "trellis.auth@v1::sessionsRead";
-const usersCreate = "trellis.auth@v1::usersCreate";
+const sessionsRead = "trellis.auth@v1::readSessions";
+const managePrincipals = "trellis.managePrincipals";
 
 test(
   "native signed RPCs, explicit consent deselection, same-attachment renewal and enforced policy reduction",
@@ -34,9 +34,11 @@ test(
           password,
           clientId: "trellis.cli",
           request: apps.cli.request,
-          platformPrivileges: {
-            required: ["principals.manage", "roles.manage"],
-          },
+          administrativeCapabilities: [
+            "trellis.managePrincipals",
+            "trellis.manageRoles",
+            "trellis.managePlatform",
+          ],
           signal,
         });
         const admin = await connectNativeClient({
@@ -59,7 +61,7 @@ test(
           ...new Set([
             ...apps.cli.request.requiredCapabilities,
             sessionsRead,
-            usersCreate,
+            managePrincipals,
           ]),
         ];
         await Promise.all(
@@ -106,10 +108,16 @@ test(
           displayName: "Denied",
           idempotencyKey: ulid(),
         });
+        // Delegated administration waits for another administrator's approval.
         assert.ok(denied.isErr());
+        const reviews = await admin.administrationReviewsList({}).orThrow();
         assert.ok(
-          denied.error instanceof apis.auth.AuthError,
-          "selected Users.Create must return a verified declared Auth failure, not a transport failure",
+          reviews.items.some(
+            (review) =>
+              review.principalId === subject.user.principalId &&
+              review.capabilityId === managePrincipals &&
+              review.state === "pending",
+          ),
         );
         await ordinary.connection.close();
 

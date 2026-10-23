@@ -282,7 +282,8 @@ async fn cimd_client_cannot_receive_administrative_delegation_from_a_privileged_
         now + 3600,
     ));
     admission.credential = Credential::OAuthGrant(grant);
-    assert!(crate::platform::auth::tests::issue_authority(
+    let manage = crate::platform::auth::Administration::ManagePrincipals.capability_id();
+    assert!(!crate::platform::auth::tests::issue_authority(
         &storage.authority,
         &admission,
         None,
@@ -291,9 +292,12 @@ async fn cimd_client_cannot_receive_administrative_delegation_from_a_privileged_
     .unwrap()
     .authority
     .unsigned
-    .platform_privileges
-    .is_empty());
-    approval.privileges = vec![trellis_protocol::PlatformPrivilege::PrincipalsManage];
+    .capabilities
+    .iter()
+    .any(|held| held.capability_id == manage));
+    approval.selection.optional = vec![manage.into()];
+    approval.approved = vec![manage.into()];
+    approval.administration_confirmed = true;
     assert!(matches!(
         storage
             .authority
@@ -859,7 +863,6 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
         development: false,
         implied_capabilities: vec![],
-        eligible_privileges: vec![trellis_protocol::PlatformPrivilege::PrincipalsManage],
         metadata: serde_json::json!({}),
         expected_revision: 1,
     };
@@ -915,12 +918,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     let ephemeral = nkeys::KeyPair::new_user();
     let runtime = URL_SAFE_NO_PAD.encode([31; 16]);
     let details = serde_json::json!([
-        {"type":"trellis_capabilities","required":[f.read],"optional":[f.write]},
-        {
-            "type":"trellis_platform_privileges",
-            "required": ["principals.manage"],
-            "optional": []
-        }
+        {"type":"trellis_capabilities","required":[f.read, "trellis.managePrincipals"],"optional":[f.write]}
     ])
     .to_string();
     let start_proof = dpop(
@@ -1153,8 +1151,9 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             ("presentation", consent["presentationId"].as_str().unwrap()),
             ("decision", "approve"),
             ("approved", f.read.as_str()),
+            ("approved", "trellis.managePrincipals"),
             ("confirm_device", device.user_code.as_str()),
-            ("privilege", "principals.manage"),
+            ("confirm_administration", "true"),
         ])
         .send()
         .await
@@ -1198,8 +1197,9 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             ("presentation", consent["presentationId"].as_str().unwrap()),
             ("decision", "approve"),
             ("approved", f.read.as_str()),
+            ("approved", "trellis.managePrincipals"),
             ("confirm_device", device.user_code.as_str()),
-            ("privilege", "principals.manage"),
+            ("confirm_administration", "true"),
         ])
         .send()
         .await
@@ -1217,8 +1217,8 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     let tokens: TrellisTokenResponse = tokens.json().await.unwrap();
     let granted = serde_json::to_value(&tokens.oauth).unwrap();
     assert_eq!(
-        granted["authorization_details"][1]["required"],
-        serde_json::json!(["principals.manage"])
+        granted["authorization_details"][0]["required"],
+        serde_json::json!([f.read, "trellis.managePrincipals"])
     );
     let admitted = crate::platform::auth::tests::admit_credential(
         &authority,
@@ -1232,10 +1232,6 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
     .unwrap();
     assert_eq!(admitted.authority.unsigned.principal_id, f.admin);
     assert_eq!(
-        admitted.authority.unsigned.platform_privileges,
-        vec![trellis_protocol::PlatformPrivilege::PrincipalsManage]
-    );
-    assert_eq!(
         admitted
             .authority
             .unsigned
@@ -1243,7 +1239,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
             .iter()
             .map(|capability| capability.capability_id.as_str())
             .collect::<Vec<_>>(),
-        vec![f.read.as_str()]
+        vec![f.read.as_str(), "trellis.managePrincipals"]
     );
     let replay = http
         .post(&token_uri)

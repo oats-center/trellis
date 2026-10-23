@@ -189,7 +189,6 @@ async fn native_device_approval_refresh_and_revocation_keep_identity_and_custody
         redirect_uris: Vec::new(),
         development: false,
         implied_capabilities: vec![f.read.clone()],
-        eligible_privileges: Vec::new(),
         metadata: serde_json::json!({
             "grant_types": ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]
         }),

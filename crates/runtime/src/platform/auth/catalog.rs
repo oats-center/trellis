@@ -1,3 +1,4 @@
+use super::Administration;
 use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, OptionalExtension};
@@ -127,6 +128,32 @@ fn policy_snapshot(connection: &Connection, api: &str) -> Result<String, AuthErr
     digest(&values)
 }
 
+/// Only the APIs Trellis ships may use this namespace, which is also where
+/// administrative capabilities live.
+const RESERVED_API_PREFIX: &str = "trellis.";
+
+/// Definition digests of the APIs Trellis ships, by API ID.
+fn builtin_api_digests() -> &'static BTreeMap<String, String> {
+    static DIGESTS: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
+    DIGESTS.get_or_init(|| {
+        let mut digests = BTreeMap::new();
+        for (apis, evidence) in
+            super::initialization::builtin_package_evidence().expect("built-in evidence decodes")
+        {
+            let graph = compile_evidence(evidence).expect("built-in contracts compile");
+            for api in apis {
+                let resolved = resolve_api(&graph, api).expect("built-in API resolves");
+                digests.insert(
+                    (*api).to_owned(),
+                    api_digest(&graph, resolved.definition().identity())
+                        .expect("built-in API digests"),
+                );
+            }
+        }
+        digests
+    })
+}
+
 impl SqliteAuthorizationStore {
     pub(crate) fn review_api(
         &self,
@@ -153,8 +180,15 @@ impl SqliteAuthorizationStore {
         let candidate = resolve_api(&graph, api_id)?;
         let definition_digest = api_digest(&graph, candidate.definition().identity())
             .map_err(|error| AuthError::Invalid(error.to_string()))?;
+        if api_id.starts_with(RESERVED_API_PREFIX)
+            && builtin_api_digests().get(api_id) != Some(&definition_digest)
         {
-            Self::require_privilege(connection, actor, "apis.accept")?;
+            return Err(AuthError::Invalid(format!(
+                "API IDs starting with `{RESERVED_API_PREFIX}` are reserved for Trellis"
+            )));
+        }
+        {
+            Self::require_administration(connection, actor, Administration::AcceptApis)?;
             let existing: Option<(u64, u64, String)> = connection
                 .query_row(
                     "SELECT generation,accepted_revision,definition_json \
@@ -297,9 +331,13 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<SignedCatalogSnapshot, AuthError> {
         {
-            Self::require_privilege(connection, &identity.actor, "apis.accept")?;
+            Self::require_administration(connection, &identity.actor, Administration::AcceptApis)?;
             if acceptance.force {
-                Self::require_privilege(connection, &identity.actor, "apis.forceReplace")?;
+                Self::require_administration(
+                    connection,
+                    &identity.actor,
+                    Administration::ForceReplaceApis,
+                )?;
             }
             self.current_signer(connection)?;
             let review: String = connection
@@ -601,7 +639,11 @@ impl SqliteAuthorizationStore {
                 ) {
                     return Err(AuthError::Denied);
                 }
-                Self::require_privilege(connection, &identity.actor, "roles.manage")?;
+                Self::require_administration(
+                    connection,
+                    &identity.actor,
+                    Administration::ManageRoles,
+                )?;
                 let (scope, _) = apply_policy(connection, edit, now)?;
                 Self::policy_changed(connection, &scope, now)?;
             }

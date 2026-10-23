@@ -6,10 +6,7 @@ import {
   SessionAuthorityOwner,
   type RuntimeAuthorizationTrust,
 } from "../auth/authority.ts";
-import {
-  verifyOAuthAdmissionWasm,
-  type PlatformPrivilege,
-} from "../auth/protocol_wasm.ts";
+import { verifyOAuthAdmissionWasm } from "../auth/protocol_wasm.ts";
 import { base64urlEncode, sha256, utf8, toArrayBuffer } from "../auth/utils.ts";
 import type { AppRequestDescriptor } from "../generated_support.ts";
 import { AuthError } from "../errors/AuthError.ts";
@@ -131,13 +128,7 @@ export class NativeOAuthClient {
   /** Begin RFC 8628 using the generated native application's finite RAR selections. */
   startDevice(
     request: AppRequestDescriptor,
-    options: {
-      signal?: AbortSignal;
-      platformPrivileges?: {
-        required: readonly PlatformPrivilege[];
-        optional?: readonly PlatformPrivilege[];
-      };
-    } = {},
+    options: { signal?: AbortSignal } = {},
   ): Promise<Result<NativeDeviceAuthorization, AuthError>> {
     return this.#serial(async () => {
       if (request.kind !== "native")
@@ -148,15 +139,6 @@ export class NativeOAuthClient {
           required: request.requiredCapabilities,
           optional: request.optionalCapabilities,
         },
-        ...(options.platformPrivileges
-          ? [
-              {
-                type: "trellis_platform_privileges",
-                required: options.platformPrivileges.required,
-                optional: options.platformPrivileges.optional ?? [],
-              },
-            ]
-          : []),
       ]);
       if (Buffer.byteLength(details) > 32768)
         throw new AuthError({ reason: "InvalidCredential" });

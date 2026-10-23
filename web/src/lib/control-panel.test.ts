@@ -11,7 +11,7 @@ import {
 test("navigation separates delegated administration from an ordinary API action", () => {
   const member: Authority = {
     authorityDigest: "current-ui-snapshot",
-    platformPrivileges: [],
+    capabilities: [],
     actions: [
       {
         apiId: apis.health.API.identity,
@@ -30,16 +30,28 @@ test("navigation separates delegated administration from an ordinary API action"
   equal(
     canAccessRoute("/admin/users", {
       ...member,
-      platformPrivileges: ["principals.manage"],
+      capabilities: [
+        {
+          capabilityId: "trellis.managePrincipals",
+          identityGeneration: "1",
+          consentRevision: "1",
+        },
+      ],
     }),
     true,
   );
 });
 
-test("a finite privilege does not replace an exact catalog-authorized action", () => {
+test("an administrative capability does not replace an exact catalog-authorized action", () => {
   const authority: Authority = {
     authorityDigest: "current-ui-snapshot",
-    platformPrivileges: ["principals.manage"],
+    capabilities: [
+      {
+        capabilityId: "trellis.managePrincipals",
+        identityGeneration: "1",
+        consentRevision: "1",
+      },
+    ],
     actions: [
       {
         apiId: apis.auth.API.identity,

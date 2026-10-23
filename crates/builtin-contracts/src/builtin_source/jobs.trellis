@@ -500,7 +500,7 @@ api jobs@v1 {
         consent_revision 1;
         allows { rpc Inspect; }
       }
-      capability keyLookup {
+      capability findByKey {
         title "Find jobs by key";
         description "Look up a job by its key.";
         consequence "Can find jobs by key.";
@@ -514,14 +514,14 @@ api jobs@v1 {
         consent_revision 1;
         allows { rpc ListServices; }
       }
-      capability summary {
+      capability readSummary {
         title "See job overview";
         description "See how many jobs are waiting, running, or failed.";
         consequence "Can see job counts.";
         consent_revision 1;
         allows { rpc Summary; }
       }
-      capability metrics {
+      capability readMetrics {
         title "See job metrics";
         description "See job speed and throughput.";
         consequence "Can see job metrics.";
@@ -542,21 +542,21 @@ api jobs@v1 {
         consent_revision 1;
         allows { rpc Retry; }
       }
-      capability dlqRead {
+      capability readDeadLetters {
         title "See failed jobs";
         description "See jobs that failed for good.";
         consequence "Can see failed jobs.";
         consent_revision 1;
         allows { rpc ListDLQ; }
       }
-      capability dlqReplay {
+      capability replayDeadLetters {
         title "Rerun failed jobs";
         description "Send a failed job back to run again.";
         consequence "Work may run again and repeat its effects.";
         consent_revision 1;
         allows { rpc ReplayDLQ; }
       }
-      capability dlqDismiss {
+      capability dismissDeadLetters {
         title "Dismiss failed jobs";
         description "Clear a failed job from the list.";
         consequence "Removes it from follow-up.";
@@ -571,7 +571,7 @@ api jobs@v1 {
         allows { live Watch; }
       }
     }
-    capability history {
+    capability readHistory {
       title "Read own job history";
       description "Let a service read the history of its own jobs.";
       consequence "Only that service's jobs are returned.";

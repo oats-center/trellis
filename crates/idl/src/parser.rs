@@ -427,6 +427,7 @@ impl<'a> Parser<'a> {
             consequence: String::new(),
             consent_revision: None,
             group: group.map(str::to_owned),
+            administrative: false,
             allows: Vec::new(),
             span: start..start,
         };
@@ -449,6 +450,10 @@ impl<'a> Parser<'a> {
                     capability.consent_revision = Some(revision);
                 }
                 "allows" => capability.allows = self.selection_block(false)?,
+                "administrative" => {
+                    self.token(TokenKind::Semi)?;
+                    capability.administrative = true;
+                }
                 other => {
                     return Err(
                         self.error_previous(format!("unsupported capability member '{other}'"))

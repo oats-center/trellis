@@ -135,16 +135,14 @@ export class TrellisTestAdminAutomation {
           request: adminParticipant,
           username: ADMIN_USERNAME,
           password: this.#adminPassword,
-          platformPrivileges: {
-            required: [
-              "principals.manage",
-              "roles.manage",
-              "apis.accept",
-              "apis.forceReplace",
-              "clients.manage",
-              "privileges.manage",
-            ],
-          },
+          administrativeCapabilities: [
+            "trellis.managePrincipals",
+            "trellis.manageRoles",
+            "trellis.acceptApis",
+            "trellis.forceReplaceApis",
+            "trellis.manageClients",
+            "trellis.managePlatform",
+          ],
         });
         this.#nativeSession = login.session;
         const client = await connectNativeClient({

@@ -17,8 +17,8 @@ Auth SQL stores:
 - deployments, service instances, devices, and one-use provisioning secrets;
 - immutable installed participant revisions with exact participant and resolved
   source-package semantic evidence;
-- roles, direct capability grants, OIDC role mappings, and finite platform
-  privileges;
+- roles, direct capability grants, OIDC role mappings, and administrative
+  delegation reviews;
 - resource declarations, assignments, and exact runtime evidence;
 - online issuer lifecycle state;
 - logical authorization sessions and every issued signed session authority;
@@ -41,12 +41,10 @@ canonical repository-owned bytes at startup.
 
 ## Finite Policy Aggregates
 
-Platform privileges are one assignment aggregate per principal, with a durable
-ULID and one revision. Assign atomically replaces the finite membership set and
-preserves that ULID; Revoke checks both assignment identity and revision. A new
-assignment after revocation gets a new ULID, so an old assignment cannot revoke
-it. The bootstrap administrator's assignment cannot lose existing privileges or
-be revoked. Administrative privileges do not imply capability entitlements.
+Administrative capabilities are ordinary capabilities held through the same
+direct grants, roles, and mappings. The bootstrap administrator holds all of
+them inherently, so no grant, role, or mapping change can remove them, and it
+cannot be disabled.
 
 An OIDC role mapping has one durable ULID and revision for its provider/claim
 predicate and a set of role memberships pinned to role identity generations.

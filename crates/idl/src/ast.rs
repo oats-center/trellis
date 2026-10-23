@@ -125,6 +125,7 @@ pub(crate) struct Capability {
     pub consequence: String,
     pub consent_revision: Option<u64>,
     pub group: Option<String>,
+    pub administrative: bool,
     pub allows: Vec<Selection>,
     pub span: Range<usize>,
 }

@@ -1,3 +1,4 @@
+use super::Administration;
 use std::{collections::BTreeMap, sync::Arc};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -8,7 +9,7 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use trellis_protocol::{
     sign_session_authority, AuthorityIssuerKey, AuthorityIssuerState, AuthorityProvider,
-    CapabilityAuthority, CatalogActionIdentity, PlatformPrivilege, PrincipalKind, SessionBinding,
+    CapabilityAuthority, CatalogActionIdentity, PrincipalKind, SessionBinding,
     SignedIssuerRotation, SignedProviderCertificate, SignedSessionAuthority, U64s,
     UnsignedSessionAuthority, ISSUER_ROTATION_FORMAT_V1, PROVIDER_CERTIFICATE_FORMAT_V1,
     SESSION_AUTHORITY_FORMAT_V1,
@@ -64,8 +65,6 @@ pub(super) struct CredentialSnapshot {
     pub(super) consent_deadlines: BTreeMap<String, i64>,
     pub(super) providers: Vec<AuthorityProvider>,
     pub(super) resource_bindings_digest: Option<String>,
-    pub(super) platform_privileges: Vec<PlatformPrivilege>,
-    pub(super) platform_privilege_deadline: Option<i64>,
     /// Shared credential lifetime, independent of selected permission limits.
     pub(super) not_after: i64,
     /// The installed instance a native credential is bound to.
@@ -182,12 +181,10 @@ pub(super) fn credential_snapshot(
             }
             let deadline = families.1.map_or(deadline, |expiry| deadline.min(expiry));
             let mut approved: Vec<CapabilityAuthority> = decode(&approved)?;
-            let (requested, basis): (String, String) = connection.query_row(
-                "SELECT approved_privileges_json,consent_basis_json \
-                FROM auth_oauth_grants \
-                WHERE oauth_grant_id=?1",
+            let basis: String = connection.query_row(
+                "SELECT consent_basis_json FROM auth_oauth_grants WHERE oauth_grant_id=?1",
                 [grant],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )?;
             let basis: BTreeMap<String, GrantConsentBasis> = decode(&basis)?;
             let mut consent_deadlines = BTreeMap::new();
@@ -234,69 +231,6 @@ pub(super) fn credential_snapshot(
                 }
                 retained.push(cap);
             }
-            let requested: Vec<PlatformPrivilege> = decode(&requested)?;
-            let mut privileges = Vec::new();
-            let eligibility: Option<String> = connection
-                .query_row(
-                    "SELECT requested_privileges_json \
-                    FROM auth_oauth_clients \
-                    WHERE client_id=?1 AND state='active'",
-                    [&client],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let delegation: Option<(String, Option<i64>)> = connection
-                .query_row(
-                    "SELECT approved_privileges_json,expires_at \
-                    FROM auth_platform_delegations \
-                    WHERE principal_id=?1 \
-                    AND client_id=?2 AND binding_kind=?3 \
-                    AND binding_value=?4 \
-                    AND (expires_at IS NULL \
-                    OR expires_at>?5)",
-                    params![principal, client, kind, value, now],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .optional()?;
-            let mut platform_privilege_deadline = None;
-            if let (Some(eligibility), Some((delegation, expires))) = (eligibility, delegation) {
-                let eligibility: Vec<PlatformPrivilege> = decode(&eligibility)?;
-                let delegation: Vec<PlatformPrivilege> = decode(&delegation)?;
-                for privilege in requested {
-                    let assigned: bool = connection.query_row(
-                        "SELECT EXISTS(SELECT 1 \
-                        FROM auth_platform_privileges \
-                        WHERE principal_id=?1 \
-                        AND privilege=?2)",
-                        params![principal, serde_json::to_value(privilege)?.as_str()],
-                        |row| row.get(0),
-                    )?;
-                    if assigned
-                        && eligibility.contains(&privilege)
-                        && delegation.contains(&privilege)
-                    {
-                        privileges.push(privilege);
-                    }
-                }
-                if !privileges.is_empty() {
-                    platform_privilege_deadline = expires;
-                }
-            }
-            privileges
-                .sort_by_key(|privilege| serde_json::to_string(privilege).unwrap_or_default());
-            privileges.dedup();
-            let required_privileges: String = connection.query_row(
-                "SELECT required_privileges_json FROM auth_oauth_grants WHERE oauth_grant_id=?1",
-                [grant],
-                |row| row.get(0),
-            )?;
-            let required_privileges: Vec<PlatformPrivilege> = decode(&required_privileges)?;
-            if !required_privileges
-                .iter()
-                .all(|privilege| privileges.contains(privilege))
-            {
-                return Err(AuthError::RequiredMissing);
-            }
             let binding = match kind.as_str() {
                 "browser" => SessionBinding::Browser {
                     client_id: client,
@@ -321,8 +255,6 @@ pub(super) fn credential_snapshot(
                 consent_deadlines,
                 providers: vec![],
                 resource_bindings_digest: None,
-                platform_privileges: privileges,
-                platform_privilege_deadline,
                 not_after: deadline,
                 native: None,
             })
@@ -469,8 +401,6 @@ pub(super) fn credential_snapshot(
                 consent_deadlines: BTreeMap::new(),
                 providers,
                 resource_bindings_digest: Some(digest(resources)?),
-                platform_privileges: vec![],
-                platform_privilege_deadline: None,
                 not_after: deadline.unwrap_or(i64::MAX),
                 native: Some(projection),
             })
@@ -548,14 +478,6 @@ pub(super) fn loses_authority(
                         .get(&capability.capability_id)
                         .is_some_and(|deadline| old.expires_at > *deadline)
             })
-            || (!old.platform_privileges.is_empty()
-                && current
-                    .platform_privilege_deadline
-                    .is_some_and(|deadline| old.expires_at > deadline))
-            || old
-                .platform_privileges
-                .iter()
-                .any(|privilege| !current.platform_privileges.contains(privilege))
             || old.apis.iter().any(|api| {
                 current
                     .apis
@@ -822,17 +744,16 @@ impl SqliteAuthorizationStore {
             principal_id,binding_kind,binding_key,binding_json,runtime_id,\
             session_public_key,credential_kind,oauth_grant_id,identity_key_id,\
             selected_capabilities_json,approved_capabilities_json,\
-            approved_privileges_json,issued_at,hard_deadline,\
+            issued_at,hard_deadline,\
             latest_context_expiry,original_refresh_family_id,\
             refresh_family_lookup_hash,state,revision) \
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,\
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,\
             'active',1) \
             ON CONFLICT(authorization_session_id) \
             DO UPDATE SET hard_deadline=min(hard_deadline,excluded.hard_deadline),\
             latest_context_expiry=max(latest_context_expiry,\
             excluded.latest_context_expiry),\
             approved_capabilities_json=excluded.approved_capabilities_json,\
-            approved_privileges_json=excluded.approved_privileges_json,\
             revision=revision+1",
             params![
                 session,
@@ -847,7 +768,6 @@ impl SqliteAuthorizationStore {
                 identity,
                 json(&current.selection)?,
                 json(&current.capabilities)?,
-                json(&current.platform_privileges)?,
                 now,
                 session_hard_deadline,
                 expires_at,
@@ -992,7 +912,6 @@ impl SqliteAuthorizationStore {
                 apis: current.apis,
                 provider_bindings: providers,
                 resource_bindings_digest: current.resource_bindings_digest,
-                platform_privileges: current.platform_privileges,
                 issued_at: now,
                 not_before: now,
                 expires_at,
@@ -1135,7 +1054,11 @@ impl SqliteAuthorizationStore {
     ) -> Result<SignedIssuerRotation, AuthError> {
         // Authorization applies to replays too; an old request is not a privilege.
         self.transaction(|connection| {
-            Self::require_privilege(connection, &identity.actor, "privileges.manage")?;
+            Self::require_administration(
+                connection,
+                &identity.actor,
+                Administration::ManagePlatform,
+            )?;
             self.mutate_in_transaction(
                 connection,
                 identity,

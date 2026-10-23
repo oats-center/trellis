@@ -155,15 +155,6 @@ export async function verifyOAuthAdmissionWasm(
   return Object.freeze(result);
 }
 
-/** Finite administrative privileges, separate from ordinary capabilities. */
-export type PlatformPrivilege =
-  | "principals.manage"
-  | "roles.manage"
-  | "apis.accept"
-  | "apis.forceReplace"
-  | "clients.manage"
-  | "privileges.manage";
-
 /** Explicit trust scope and logical-session state for authority verification. */
 export type SessionAuthorityVerificationInput = {
   issuer: AuthorityIssuerKey;
@@ -277,7 +268,6 @@ export type AuthenticatedCaller = {
   oauthGrantId?: string;
   capabilities: CapabilityAuthority[];
   apis: AuthorityApi[];
-  platformPrivileges: PlatformPrivilege[];
 };
 
 /** Cryptographically authenticated request binding, before dispatch authorization. */

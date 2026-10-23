@@ -1,5 +1,6 @@
 //! Administrative resource discovery and explicit detached-allocation removal.
 
+use super::Administration;
 use super::{
     rpc::{caller, mutation, rpc_error},
     sqlite::{digest, AuthError, Mutation, SqliteAuthorizationStore},
@@ -9,7 +10,6 @@ use crate::platform::auth::sqlite::Connection;
 use async_nats::jetstream::{context::GetStreamErrorKind, stream::ConsumerErrorKind, ErrorCode};
 use rusqlite::{params, OptionalExtension};
 use std::sync::Arc;
-use trellis_protocol::PlatformPrivilege;
 use trellis_rs::generated::ParticipantDescriptor;
 use trellis_runtime_apis::{
     __types::{CursorPage, CursorPageInfo},
@@ -28,13 +28,13 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
         let store = list_store.clone();
         async move {
             let actor =
-                caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
+                caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(move |connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "principals.manage",
+                        Administration::ManagePrincipals,
                     )?;
                     list_resources(connection, &input)
                 })
@@ -48,13 +48,13 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
         let store = get_store.clone();
         async move {
             let actor =
-                caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
+                caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(move |connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "principals.manage",
+                        Administration::ManagePrincipals,
                     )?;
                     Ok(AuthResourceGetResponse {
                         resource: read_resource(connection, input.resource_id.as_ref())?,
@@ -73,7 +73,7 @@ pub(crate) fn register_resource_rpc<P: ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(PlatformPrivilege::PrincipalsManage),
+                Some(Administration::ManagePrincipals),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -214,10 +214,10 @@ pub(super) async fn remove_resource(
     let claim_owner = execution_owner.clone();
     let (result, command) = blocking(move || {
         store_copy.transaction(|connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity_copy.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let result = store_copy.mutate_in_transaction(
                 connection,

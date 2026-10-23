@@ -669,7 +669,6 @@ staticPasswords:
                 redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
                 development: false,
                 implied_capabilities: vec![],
-                eligible_privileges: vec![trellis_protocol::PlatformPrivilege::PrincipalsManage],
                 metadata: serde_json::json!({}),
                 expected_revision: 1,
             };
@@ -692,11 +691,11 @@ staticPasswords:
                 .unwrap();
             let login = authority.portal_login(cookie, &csrf, current).unwrap();
             let mut approval = grant_request(&f.admin, &login.login_session_id, "", "", current);
-            approval.selection.required.clear();
+            let manage = crate::platform::auth::Administration::ManagePrincipals.capability_id();
+            approval.selection.required = vec![manage.into()];
             approval.selection.optional.clear();
-            approval.approved.clear();
-            approval.privileges = vec![trellis_protocol::PlatformPrivilege::PrincipalsManage];
-            approval.required_privileges = approval.privileges.clone();
+            approval.approved = vec![manage.into()];
+            approval.administration_confirmed = true;
             approval.remember = false;
             let grant = authority
                 .approve_grant(&mutation(&f.admin, &approval), &approval, current)

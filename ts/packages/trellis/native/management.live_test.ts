@@ -8,7 +8,7 @@ import { apis, apps } from "../../trellis-testkit/trellis/index.js";
 import { connectNativeClient } from "../native.ts";
 
 test(
-  "role entitlements and optional consent remain distinct; signed nonadmin mutations are denied",
+  "role entitlements and optional consent remain distinct; delegated administration awaits peer approval",
   { timeout: 45_000 },
   async (context) => {
     await withTrellisRuntime(async (runtime) => {
@@ -25,9 +25,12 @@ test(
           password,
           clientId: "trellis.cli",
           request,
-          platformPrivileges: {
-            required: ["principals.manage", "roles.manage", "clients.manage"],
-          },
+          administrativeCapabilities: [
+            "trellis.managePrincipals",
+            "trellis.manageRoles",
+            "trellis.manageClients",
+            "trellis.managePlatform",
+          ],
           signal: context.signal,
         });
         const admin = await connectNativeClient({
@@ -50,16 +53,15 @@ test(
         const approved = [
           ...new Set([
             ...request.requiredCapabilities,
-            "trellis.auth@v1::sessionsRead",
-            "trellis.auth@v1::rolesPut",
+            "trellis.auth@v1::readSessions",
           ]),
         ];
-        const declined = "trellis.auth@v1::capabilityGrantsRead";
+        const declined = "trellis.manageRoles";
         const { role } = await admin
           .rolesPut({
             title: `Management ${suffix}`,
             description:
-              "Selected application capabilities confer no administrative privilege",
+              "Role membership is not consent to delegate administration",
             capabilityIds: [...approved, declined],
             expectedRevision: 0n,
             idempotencyKey: ulid(),
@@ -108,9 +110,8 @@ test(
             (session) => session.principalId === user.principalId,
           ),
         );
-        // rolesPut was granted and explicitly approved: this is a signed request
-        // for an available action, rejected by the authoritative privilege check.
-        const attempted = await caller.rolesPut({
+        // The role carries manageRoles, but this login declined it.
+        const declinedAttempt = await caller.rolesPut({
           roleId: role.roleId,
           title: "Unauthorized overwrite",
           description: "",
@@ -118,23 +119,65 @@ test(
           expectedRevision: role.revision,
           idempotencyKey: ulid(),
         });
-        assert.equal(attempted.isErr(), true);
-        if (attempted.isErr()) {
-          assert.ok(attempted.error instanceof apis.auth.AuthError);
-          assert.equal(attempted.error.data.code, "access_denied");
-        }
+        assert.equal(declinedAttempt.isErr(), true);
+        assert.equal(
+          (
+            await caller.capabilityGrantsList({ principalId: user.principalId })
+          ).isErr(),
+          true,
+          "an unapproved optional capability must not become usable through role membership",
+        );
+        // Approving it opens a peer review instead of delegating it at once.
+        const delegating = await loginNativeTestClient({
+          issuer,
+          username: user.account.username,
+          password: userPassword,
+          clientId,
+          request,
+          approvedCapabilities: [...approved, declined],
+          signal: context.signal,
+        });
+        const delegated = await connectNativeClient({
+          ...delegating,
+          request,
+          signal: context.signal,
+        }).orThrow();
+        connections.push(() => delegated.connection.close());
+        assert.equal(
+          (
+            await delegated.rolesPut({
+              roleId: role.roleId,
+              title: "Unapproved overwrite",
+              description: "",
+              capabilityIds: [],
+              expectedRevision: role.revision,
+              idempotencyKey: ulid(),
+            })
+          ).isErr(),
+          true,
+        );
+        const review = (
+          await admin.administrationReviewsList({}).orThrow()
+        ).items.find(
+          (item) =>
+            item.principalId === user.principalId &&
+            item.capabilityId === declined,
+        );
+        assert.ok(review);
+        assert.equal(review.state, "pending");
+        const decided = await admin
+          .administrationReviewsDecide({
+            reviewId: review.reviewId,
+            decision: "approved",
+            expectedRevision: review.revision,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+        assert.equal(decided.review.state, "approved");
         const unchanged = await admin
           .rolesGet({ roleId: role.roleId })
           .orThrow();
         assert.equal(unchanged.role.title, role.title);
-        const unapproved = await caller.capabilityGrantsList({
-          principalId: user.principalId,
-        });
-        assert.equal(
-          unapproved.isErr(),
-          true,
-          "an unapproved optional capability must not become usable through role membership",
-        );
       } finally {
         for (const close of connections.reverse()) await close();
       }

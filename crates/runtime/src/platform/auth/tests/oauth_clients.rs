@@ -11,7 +11,6 @@ fn oauth_registration_rejects_portal_and_remote_plaintext_callbacks_without_rebi
         redirect_uris: vec!["http://127.0.0.1:9123/callback".into()],
         development: false,
         implied_capabilities: vec![],
-        eligible_privileges: vec![],
         metadata: serde_json::json!({}),
         expected_revision: 1,
     };

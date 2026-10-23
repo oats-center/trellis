@@ -4,6 +4,8 @@
 //! Broker effects are durable outbox work; no distributed policy ancestry is
 //! required to verify the resulting authority.
 
+mod administration;
+pub(crate) use administration::Administration;
 mod authorization_sessions;
 mod broker;
 mod catalog;

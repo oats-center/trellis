@@ -150,7 +150,7 @@ test(
         password,
         clientId: "trellis.cli",
         request,
-        platformPrivileges: { required: ["principals.manage"] },
+        administrativeCapabilities: ["trellis.managePrincipals"],
         signal: context.signal,
       });
       const admin = await connectNativeClient({

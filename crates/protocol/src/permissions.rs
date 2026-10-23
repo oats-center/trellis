@@ -458,31 +458,6 @@ impl<'de> Deserialize<'de> for PermissionAtom {
     }
 }
 
-/// Server-assigned meta-authority that cannot be expressed by an action permission.
-///
-/// Participant capabilities and capability groups cannot define these privileges.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-pub enum PlatformPrivilege {
-    /// Manage principals, deployments, devices, resources, and OIDC connections.
-    #[serde(rename = "principals.manage")]
-    PrincipalsManage,
-    /// Manage roles, assignments, and OIDC role mappings.
-    #[serde(rename = "roles.manage")]
-    RolesManage,
-    /// Accept normally compatible API definitions.
-    #[serde(rename = "apis.accept")]
-    ApisAccept,
-    /// Explicitly replace an incompatible API generation.
-    #[serde(rename = "apis.forceReplace")]
-    ApisForceReplace,
-    /// Manage registered public OAuth clients.
-    #[serde(rename = "clients.manage")]
-    ClientsManage,
-    /// Manage finite privileges, administrative delegations, and issuer keys.
-    #[serde(rename = "privileges.manage")]
-    PrivilegesManage,
-}
-
 fn validate_identifier(field: &'static str, value: &str) -> Result<(), ProtocolError> {
     let reason = if value.is_empty() {
         Some("must not be empty")

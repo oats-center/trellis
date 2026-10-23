@@ -146,13 +146,11 @@ Console. Its client ID is neither a deployment ID nor a secret. Production
 administrator seeding initializes the administrator and registers `trellis.console`
 and `trellis.cli` in one idempotent aggregate transaction. CLI is an explicitly
 registered native Device Code/refresh client without a callback listener or
-implicit loopback trust. Both registrations have finite eligibility for the six
-administrative privileges. Registration uses the newly created
-administrator's ordinary `clients.manage` and `privileges.manage` authority.
-Replay returns the saved result without re-registering or re-enabling a modified
-client; ordinary startup does not change client registration. Registration does not itself grant the user
-capabilities or platform privileges: finite delegation still requires the user's
-holdings and explicit consent.
+implicit loopback trust. Registration uses the newly created administrator's
+ordinary `trellis.manageClients` capability. Replay returns the saved result
+without re-registering or re-enabling a modified client; ordinary startup does
+not change client registration. Registration does not itself grant the user any
+capability: delegation still requires the user's holdings and explicit consent.
 
 Administrative client Put derives supported flows on every revision: browser
 with callbacks uses Authorization Code and refresh; native without callbacks
@@ -221,21 +219,23 @@ The same rule applies to previously committed shared Job keyed-coordination
 storage: losing it must not reset active ownership fences or cleanup obligations.
 Existing resources must still pass ownership and data-retention validation.
 
-Explicitly initialized or administrator-registered development clients may be
-eligible for platform privileges, including a localhost Console or a locally
-developed Console using a remote installation. Registration still requires
-`clients.manage`; configuring privilege eligibility requires `privileges.manage`.
-The authenticated user must possess each requested privilege and explicitly
-consent to delegating it to that registered client. Neither development mode nor
-a localhost redirect establishes trust. CIMD and unregistered clients remain
-ineligible for platform privileges, and OAuth/application origin isolation is
-unchanged.
+Administrative capabilities (`trellis.*`, see
+[administrative capabilities](./administrative-capabilities.md)) are ordinary
+capabilities with three delegation safeguards, each on by default and
+configurable under `[auth.administration]`: consent asks for a separate
+confirmation, another administrator approves the delegation, and only
+registered clients may receive it. An administrator-registered development
+client, including a localhost Console or a locally developed Console using a
+remote installation, is a registered client; neither development mode nor a
+localhost redirect establishes anything further. OAuth/application origin
+isolation is unchanged.
 
 Interactive OAuth approval is opt-in. It initially selects only required access
 and capabilities the user previously remembered for the client; optional
-capabilities and platform privileges start unselected. Select all and Unselect
-all are explicit actions over optional access; required access stays selected
-and unavailable access stays disabled. Selection is presentation, not
+capabilities start unselected. Select all and Unselect all are explicit actions
+over optional access, and Select all never selects administration; required
+access stays selected and unavailable access stays disabled. Administrative
+choices are never remembered. Selection is presentation, not
 authorization: the user must still submit approval, and the server rechecks the
 submitted selection against current authority.
 Bulk access selection never checks the separate Device Code confirmation.
@@ -272,12 +272,12 @@ The compiler reads one coherent SQLite transaction. It unions independently
 valid role, direct, and fresh verified-OIDC entitlement paths before
 intersecting them with the application/deployment selection and the OAuth
 grant's approved capability identities and consent revisions. Services/devices
-are bounded by their deployed native participant selection. Platform privileges
-are a separate finite set, not capabilities or arbitrary action grants.
+are bounded by their deployed native participant selection. The initialized
+administrator additionally holds every administrative capability inherently.
 
 The result includes approved capabilities, required-missing and
 optional-unavailable selections, accepted API generations/revisions, provider
-certificates, ownership bindings, privileges, explanations, and the earliest
+certificates, ownership bindings, explanations, and the earliest
 applicable deadline. Pending backing resources do not remove an ordinary user's
 capabilities. Freshness expiry removes only the affected OIDC entitlement path;
 another valid direct or role path can preserve the capability.
@@ -309,7 +309,7 @@ delegation.
 
 Deadline reductions compare each outstanding context with its shared credential
 limit and the current limits of only the rights that context carries. Newly
-gained capabilities or privileges cannot shorten older, narrower authority.
+gained capabilities cannot shorten older, narrower authority.
 Their limits bound newly issued contexts, not the persistent logical-session
 root; spent contexts are excluded after their acceptance deadline.
 
@@ -362,7 +362,7 @@ against its pinned implementation and provider certificate. Compatible callers
 and providers need not have equal accepted revisions within one API generation;
 neither party's catalog can lend authority to the other.
 
-Force replacement requires its finite privilege, reviewed-digest confirmation,
+Force replacement requires `trellis.forceReplaceApis`, reviewed-digest confirmation,
 explicit breakage acknowledgment, and declared meaning changes with increased
 consent revisions. It creates a new API generation at revision 1 and makes
 displaced providers ineligible for admission. Technical wire breakage alone does
@@ -389,7 +389,7 @@ Resolution by digest returns that exact committed object even after restart.
 Renewal may reuse an active logical ID only while no authority has been lost
 relative to any still-usable context issued under it. A narrower newest context
 cannot hide an older broader live context. Comparison includes provider/API
-generations, privileges, ownership bindings, and deadlines. Derived comparison
+generations, capabilities, ownership bindings, and deadlines. Derived comparison
 state expires when those contexts cease to be usable; immutable history remains.
 
 Reduction irreversibly retires the ID. A surviving root can reconnect with a new
@@ -547,8 +547,8 @@ directory read to renew an expired URL.
 
 ## User Directory And Account Projection
 
-`trellis.auth@v1::usersRead` authorizes the existing `Users.List` and
-`Users.Get` actions without a platform privilege. Its consent explicitly covers
+`trellis.auth@v1::readUsers` authorizes the existing `Users.List` and
+`Users.Get` actions. Its consent explicitly covers
 names, email and photos. Ordinary callers see active user profiles only:
 `principalId`, `displayName`, optional given/family names and email,
 `emailVerified`, and an optional Trellis-owned avatar URL. The immutable principal
@@ -556,10 +556,10 @@ ID is the identity key; names and email are neither unique nor authorization.
 Unknown and inactive users have the same `not_found` result for ordinary reads.
 
 `account` contains the principal lifecycle/revision, username and local-password
-status. List/Get include it only when `principals.manage` was delegated to the
-verified session and remains eligible in durable policy at the read transaction.
-Durable administrator privilege alone never expands a client's delegation.
-`Users.Resolve` requires `accountRead`, is self-only, and includes the caller's
+status. List/Get include it only when `trellis.managePrincipals` was delegated to
+the verified session and is still held at the read transaction. Holding it
+without delegating it never expands a client's delegation.
+`Users.Resolve` requires `readAccount`, is self-only, and includes the caller's
 own account. Directory capability does not authorize account mutations.
 
 List pagination is principal-ID ordered, defaults to 50 and is bounded to 200.
@@ -624,7 +624,7 @@ returns the original mutation result rather than a revision conflict.
 Event Consumer exhaustion, including replay exhaustion, is broker-owned: SDKs
 leave the final failed delivery unacknowledged and Events journals the captured
 MAX_DELIVERIES advisory. Consumer services receive the implicit
-`trellis.events@v1::consumerRuntime` capability only for retained inspection and
+`trellis.events@v1::processReplays` capability only for retained inspection and
 terminal replay reporting. Both require an exact current owned Consumer binding;
 ownership does not authorize Replay/Dismiss. Successful or permanently rejected
 replay is durably reported before ACK/TERM. A JetStream acknowledgement address
@@ -654,12 +654,12 @@ Fresh initialization accepts any missing Trellis-owned built-in APIs from the
 production Platform, Health, Jobs, and Events participant descriptors and grants
 the administrator each currently accepted active capability of those APIs
 (Auth, Core, State, Health, Jobs, and Events). These are explicit whole-capability
-policy grants committed atomically with the finite platform privileges and
-Console/CLI registration, not wildcard authority. Initialization replay neither
-grants capabilities added later nor overwrites registered clients. Domain APIs
-are excluded. Application connections still require their actual selected and
-approved capabilities, and administrative privileges remain constrained by
-client eligibility and consent.
+policy grants committed atomically with Console/CLI registration, not wildcard
+authority; the administrative capabilities need no grant, since the initialized
+administrator holds them inherently and cannot lose them. Initialization replay
+neither grants capabilities added later nor overwrites registered clients.
+Domain APIs are excluded. Application connections still require their actual
+selected and approved capabilities.
 Passwords use Argon2; password change/reset retires the affected login families
 in the same transaction. Authentication failures do not identify which
 credential check failed.
@@ -667,7 +667,7 @@ credential check failed.
 Account reset and identity linking use five-minute, one-use account actions in
 the existing isolated OAuth portal. Action creation replay preserves the original
 response under OAuth sealing custody, never a renewed deadline. Reset completion
-checks the originating logical session, current accepted `principals.manage`,
+checks the originating logical session, current `trellis.managePrincipals`,
 credential CAS, and protected-administrator status before atomically changing the
 password and revoking login/grant families. Bootstrap-administrator reset remains
 on the existing local recovery path. Until the protected administrator sets a
@@ -755,10 +755,10 @@ and proof headers even after source retention removes the event. Targeted replay
 resolves those bytes and `originalPublishedAt` through authenticated, resource-scoped
 Events inspection; neither replay-envelope content nor publisher headers supply
 trusted chronology, and the replay stream's newer timestamp is never substituted.
-Issuer rotation/revocation requires `privileges.manage`, not an additional
-`principals.manage` privilege. Other hard-root revocation retains its own
-`principals.manage` gate.
-`Issuers.Rotate` requires `privileges.manage`, the expected current issuer key,
+Issuer rotation/revocation requires `trellis.managePlatform`, not an additional
+`trellis.managePrincipals`. Other hard-root revocation retains its own
+`trellis.managePrincipals` gate.
+`Issuers.Rotate` requires `trellis.managePlatform`, the expected current issuer key,
 and an idempotency key. Auth generates successor signing custody locally; private
 keys never enter the RPC. Before committing a rotation, Auth creates a private
 `0700` directory beside its effective persistent SQLite database, replacing the
@@ -837,7 +837,7 @@ There is no anonymous application-account bootstrap or permanent browser admin
 token.
 
 The A3 platform bootstrap helper uses ordinary catalog acceptance and deployment
-approval under the initialized administrator's existing management privileges;
+approval under the initialized administrator's administrative capabilities;
 it never re-enables or reassigns a disabled provisioned identity. Startup KV
 materialization reads the installed native declaration set, performs JetStream
 allocation outside the SQLite lock, then commits catalog resource/history,

@@ -1,4 +1,5 @@
 //! Device enrollment and companion association share Auth's authoritative store.
+use super::super::Administration;
 use crate::platform::auth::blocking;
 use std::sync::Arc;
 
@@ -18,7 +19,6 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
     operational: async_nats::Client,
 ) {
     use super::super::rpc::{caller, mutation, rpc_error};
-    use trellis_protocol::PlatformPrivilege;
     let get = store.clone();
     provider.register_devices_reviews_get(move |context, input| {
         let store = get.clone();
@@ -46,13 +46,13 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
         let store = list.clone();
         async move {
             let actor =
-                caller(&context, Some(PlatformPrivilege::PrincipalsManage)).map_err(rpc_error)?;
+                caller(&context, Some(Administration::ManagePrincipals)).map_err(rpc_error)?;
             blocking(move || {
                 store.transaction(|connection| {
-                    SqliteAuthorizationStore::require_privilege(
+                    SqliteAuthorizationStore::require_administration(
                         connection,
                         &actor,
-                        "principals.manage",
+                        Administration::ManagePrincipals,
                     )?;
                     let limit = input
                         .page
@@ -99,7 +99,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
             let identity = mutation(
                 &context,
                 &input.idempotency_key,
-                Some(PlatformPrivilege::PrincipalsManage),
+                Some(Administration::ManagePrincipals),
                 &input,
             )
             .map_err(rpc_error)?;
@@ -157,8 +157,7 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
         async move {
             let identity =
                 mutation(&context, &input.idempotency_key, None, &input).map_err(rpc_error)?;
-            let delegated_admin =
-                caller(&context, Some(PlatformPrivilege::PrincipalsManage)).is_ok();
+            let delegated_admin = caller(&context, Some(Administration::ManagePrincipals)).is_ok();
             blocking(move || {
                 revoke(
                     &store,
@@ -281,10 +280,10 @@ fn decide(
         input,
         now,
         |connection| {
-            SqliteAuthorizationStore::require_privilege(
+            SqliteAuthorizationStore::require_administration(
                 connection,
                 &identity.actor,
-                "principals.manage",
+                Administration::ManagePrincipals,
             )?;
             let id = input.review_id.to_string();
             confirm(connection, &id, &input.confirmation_code)?;
@@ -632,10 +631,10 @@ fn revoke(
                 if !delegated_admin {
                     return Err(AuthError::Denied);
                 }
-                SqliteAuthorizationStore::require_privilege(
+                SqliteAuthorizationStore::require_administration(
                     connection,
                     &identity.actor,
-                    "principals.manage",
+                    Administration::ManagePrincipals,
                 )?;
             }
             if revision != input.expected_revision.0 .0 {
@@ -940,10 +939,10 @@ pub(crate) fn provision(
         storage
             .authority
             .mutate(identity, "rpc.device.provision", input, now, |connection| {
-                SqliteAuthorizationStore::require_privilege(
+                SqliteAuthorizationStore::require_administration(
                     connection,
                     &identity.actor,
-                    "principals.manage",
+                    Administration::ManagePrincipals,
                 )?;
                 let deployment = input.deployment_id.to_string();
                 let kind: String = connection.query_row(
