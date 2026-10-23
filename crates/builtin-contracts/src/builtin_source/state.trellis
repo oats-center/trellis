@@ -53,26 +53,30 @@ api state@v1 {
   }
 
   capabilities {
-    capability read {
-      title "Read State";
-      description "Read saved State values in the caller's authorized namespace.";
-      consequence "The caller can see saved values.";
-      consent_revision 2;
-      allows { rpc Get; live Watch; }
-    }
-    capability write {
-      title "Write State";
-      description "Register representations and create or replace State values in the caller's authorized namespace.";
-      consequence "The caller can change saved values.";
-      consent_revision 2;
-      allows { rpc Register; rpc Put; }
-    }
-    capability delete {
-      title "Delete State";
-      description "Delete State values in the caller's authorized namespace.";
-      consequence "The caller can remove saved values.";
-      consent_revision 1;
-      allows { rpc Delete; }
+    group state {
+      title "Saved data";
+      description "Data that apps save in Trellis.";
+      capability read {
+        title "Read saved data";
+        description "Read data saved in its space.";
+        consequence "Can see saved data.";
+        consent_revision 2;
+        allows { rpc Get; live Watch; }
+      }
+      capability write {
+        title "Save data";
+        description "Create or replace data in its space.";
+        consequence "Can change saved data.";
+        consent_revision 2;
+        allows { rpc Register; rpc Put; }
+      }
+      capability delete {
+        title "Delete saved data";
+        description "Delete data in its space.";
+        consequence "Can remove saved data.";
+        consent_revision 1;
+        allows { rpc Delete; }
+      }
     }
   }
 }

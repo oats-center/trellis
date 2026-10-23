@@ -88,7 +88,16 @@ pub(crate) struct Api {
     pub errors: BTreeMap<String, Option<String>>,
     pub actions: Vec<Action>,
     pub capabilities: Vec<Capability>,
+    pub capability_groups: Vec<CapabilityGroup>,
     pub capabilities_present: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CapabilityGroup {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub span: Range<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +124,7 @@ pub(crate) struct Capability {
     pub description: String,
     pub consequence: String,
     pub consent_revision: Option<u64>,
+    pub group: Option<String>,
     pub allows: Vec<Selection>,
     pub span: Range<usize>,
 }

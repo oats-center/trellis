@@ -824,6 +824,32 @@ fn resolve_api(
             ));
         }
     }
+    let mut capability_groups = BTreeMap::new();
+    for group in &raw.capability_groups {
+        if !canonical_unit && (group.title.is_empty() || group.description.is_empty()) {
+            return Err(miette!(
+                "capability group '{}' requires title and description",
+                group.name
+            ));
+        }
+        if !raw
+            .capabilities
+            .iter()
+            .any(|capability| capability.group.as_deref() == Some(&group.name))
+        {
+            return Err(miette!(
+                "capability group '{}' contains no capabilities",
+                group.name
+            ));
+        }
+        let docs = Documentation {
+            title: group.title.clone(),
+            description: group.description.clone(),
+        };
+        if capability_groups.insert(group.name.clone(), docs).is_some() {
+            return Err(miette!("duplicate capability group '{}'", group.name));
+        }
+    }
     let mut capabilities = BTreeMap::new();
     for capability in &raw.capabilities {
         if !capability.public
@@ -859,6 +885,7 @@ fn resolve_api(
                     title: capability.title.clone(),
                     description: capability.description.clone(),
                     consequence: capability.consequence.clone(),
+                    group: capability.group.clone(),
                     allows,
                     public: capability.public,
                 },
@@ -881,6 +908,7 @@ fn resolve_api(
         errors,
         actions,
         capabilities,
+        capability_groups,
         subjects,
     })
 }

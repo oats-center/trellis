@@ -420,6 +420,7 @@ pub struct ApiDefinition {
     pub(crate) errors: BTreeMap<String, Option<TypeRef>>,
     pub(crate) actions: BTreeMap<ActionId, ActionDefinition>,
     pub(crate) capabilities: BTreeMap<CapabilityId, CapabilityDefinition>,
+    pub(crate) capability_groups: BTreeMap<String, Documentation>,
     pub(crate) subjects: trellis_protocol::DerivedApiSubjects,
 }
 
@@ -455,6 +456,11 @@ impl ApiDefinition {
     /// Return API capabilities.
     pub fn capabilities(&self) -> &BTreeMap<CapabilityId, CapabilityDefinition> {
         &self.capabilities
+    }
+
+    /// Return presentation groups for capabilities, keyed by API-local group name.
+    pub fn capability_groups(&self) -> &BTreeMap<String, Documentation> {
+        &self.capability_groups
     }
 
     /// Return protocol-derived subjects for every API action.
@@ -574,6 +580,8 @@ pub struct CapabilityDefinition {
     pub description: String,
     /// Consent consequence.
     pub consequence: String,
+    /// API-local presentation group, when the capability declares one.
+    pub group: Option<String>,
     /// Exact covered actions.
     pub allows: BTreeSet<ActionSelection>,
     /// Whether the capability is public.

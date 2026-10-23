@@ -135,6 +135,29 @@ Auth must enforce the same rule when accepting a force replacement. API
 generation, accepted revision, and action/membership introduction revisions are
 Auth-owned acceptance metadata, never authored counters.
 
+Capabilities may be placed in presentation groups. People choose access by
+group, so a group should name something they recognise ("Orders", "Users"),
+and capability titles inside it can stay short ("See orders", "Cancel
+orders"):
+
+```trellis
+capabilities {
+  group orders {
+    title "Orders";
+    description "Customer orders and their status.";
+    capability read { ... }
+    capability create { ... }
+  }
+}
+```
+
+Groups require a nonempty `title` and `description` and at least one
+capability; names are unique within the API. Group membership and text are
+presentation metadata: they appear in presentation canonical source but not in
+semantic source, so regrouping never changes a package digest, capability
+identity, or consent revision. Auth stores each accepted API's groups and
+presents ungrouped capabilities under the API's own title and description.
+
 Resource headers are `state`, `kv`, `store`, `job`, or `consumer`, optionally
 followed by `optional`, then a local name. Bodies require nonempty `title` and
 `description`. State is one value and has no TTL. Store is raw bytes. Consumer
@@ -191,7 +214,7 @@ unknown-symbol arm.
 Canonical source has presentation-preserving and semantic modes using the same
 parser. A canonical compilation unit may include frozen `package` and
 `dependency` prelude declarations. Semantic mode removes nonsemantic metadata
-and source-layout choices while retaining package/dependency identity,
+(including capability groups) and source-layout choices while retaining package/dependency identity,
 capability consent text, capability allows, and machine declarations.
 
 The package digest is base64url SHA-256 of semantic canonical UTF-8 source.

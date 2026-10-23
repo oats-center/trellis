@@ -472,7 +472,24 @@ impl SqliteAuthorizationStore {
                 )?;
             }
             snapshot.actions = actions.into_values().collect();
+            connection.execute(
+                "DELETE FROM auth_capability_groups WHERE api_id=?1",
+                [&review.api_id],
+            )?;
+            let docs = api.documentation();
+            let groups = std::iter::once(("", &docs.title, &docs.description)).chain(
+                api.capability_groups()
+                    .iter()
+                    .map(|(name, docs)| (name.as_str(), &docs.title, &docs.description)),
+            );
+            for (name, title, description) in groups {
+                connection.execute(
+                    "INSERT INTO auth_capability_groups VALUES(?1,?2,?3,?4)",
+                    params![review.api_id, name, title, description],
+                )?;
+            }
             for (name, definition) in api.capabilities() {
+                let group = definition.group.as_deref().unwrap_or_default();
                 let current: Option<(u64, u64)> = connection
                     .query_row(
                         "SELECT identity_generation,consent_revision \
@@ -490,7 +507,8 @@ impl SqliteAuthorizationStore {
                         }
                         connection.execute(
                             "UPDATE auth_capability_identities \
-                            SET consent_revision=?1,title=?2,description=?3,consequence=?4 \
+                            SET consent_revision=?1,title=?2,description=?3,consequence=?4,\
+                            group_name=?7 \
                             WHERE capability_id=?5 \
                             AND identity_generation=?6",
                             params![
@@ -499,7 +517,8 @@ impl SqliteAuthorizationStore {
                                 definition.description,
                                 definition.consequence,
                                 name.as_str(),
-                                identity_generation
+                                identity_generation,
+                                group
                             ],
                         )?;
                         identity_generation
@@ -513,7 +532,7 @@ impl SqliteAuthorizationStore {
                         )?;
                         connection.execute(
                             "INSERT INTO auth_capability_identities \
-                            VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,NULL)",
+                            VALUES(?1,?2,?3,?4,?5,?6,?7,'active',?8,NULL,?9)",
                             params![
                                 name.as_str(),
                                 identity_generation,
@@ -522,7 +541,8 @@ impl SqliteAuthorizationStore {
                                 definition.title,
                                 definition.description,
                                 definition.consequence,
-                                now
+                                now,
+                                group
                             ],
                         )?;
                         identity_generation

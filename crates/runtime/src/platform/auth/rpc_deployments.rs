@@ -1008,13 +1008,16 @@ fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi
         .ok_or(AuthError::NotFound)?;
     let mut statement = connection.prepare(
         "SELECT c.capability_id,c.identity_generation,c.consent_revision,\
-        c.title,c.description,c.consequence \
+        c.title,c.description,c.consequence,c.group_name,g.title,g.description \
         FROM auth_capability_identities c \
-        WHERE api_id=?1 AND state='active' \
-        ORDER BY capability_id",
+        JOIN auth_capability_groups g \
+        ON g.api_id=c.api_id AND g.group_name=c.group_name \
+        WHERE c.api_id=?1 AND c.state='active' \
+        ORDER BY c.capability_id",
     )?;
     let rows = statement
         .query_map([api_id], |row| {
+            let name = row.get::<_, String>(6)?;
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, u64>(1)?,
@@ -1022,14 +1025,25 @@ fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
+                AuthCapabilityGroup {
+                    id: if name.is_empty() {
+                        api_id.to_owned()
+                    } else {
+                        format!("{api_id}::{name}")
+                    },
+                    title: row.get(7)?,
+                    description: row.get(8)?,
+                    extra: Default::default(),
+                },
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let capabilities = rows
         .into_iter()
-        .map(|(id, identity, consent, title, description, consequence)| {
-            let mut statement = connection.prepare(
-                "SELECT a.descriptor_json \
+        .map(
+            |(id, identity, consent, title, description, consequence, group)| {
+                let mut statement = connection.prepare(
+                    "SELECT a.descriptor_json \
                 FROM auth_capability_actions c \
                 JOIN auth_api_actions a ON a.api_id=c.api_id \
                 AND a.generation=c.api_generation \
@@ -1037,26 +1051,28 @@ fn accepted_api(connection: &Connection, api_id: &str) -> Result<AuthAcceptedApi
                 WHERE c.capability_id=?1 \
                 AND c.identity_generation=?2 \
                 ORDER BY a.action_key",
-            )?;
-            let allows = statement
-                .query_map(params![id, identity], |row| row.get::<_, String>(0))?
-                .map(|row| Ok(serde_json::from_str(&row?)?))
-                .collect::<Result<Vec<_>, AuthError>>()?;
-            Ok(AuthCapabilityDefinition {
-                identity: AuthCapabilityIdentity {
-                    capability_id: id.into(),
-                    identity_generation: AuthRevision(identity.into()),
+                )?;
+                let allows = statement
+                    .query_map(params![id, identity], |row| row.get::<_, String>(0))?
+                    .map(|row| Ok(serde_json::from_str(&row?)?))
+                    .collect::<Result<Vec<_>, AuthError>>()?;
+                Ok(AuthCapabilityDefinition {
+                    identity: AuthCapabilityIdentity {
+                        capability_id: id.into(),
+                        identity_generation: AuthRevision(identity.into()),
+                        extra: Default::default(),
+                    },
+                    consent_revision: AuthRevision(consent.into()),
+                    api_id: api_id.to_owned().into(),
+                    title,
+                    description,
+                    consequence,
+                    group,
+                    allows,
                     extra: Default::default(),
-                },
-                consent_revision: AuthRevision(consent.into()),
-                api_id: api_id.to_owned().into(),
-                title,
-                description,
-                consequence,
-                allows,
-                extra: Default::default(),
-            })
-        })
+                })
+            },
+        )
         .collect::<Result<_, AuthError>>()?;
     Ok(AuthAcceptedApi {
         api_id: api_id.to_owned().into(),

@@ -719,23 +719,48 @@ async fn consent_data(
                 if let Some((api, generation)) = api {
                     api_generations.insert(api, generation);
                 }
-                let metadata: Option<(String, String, String)> = connection
+                type Metadata = (String, String, String, String, String, String, String);
+                let metadata: Option<Metadata> = connection
                     .query_row(
-                        "SELECT title,description,consequence \
-                    FROM auth_capability_identities \
-                    WHERE capability_id=?1 \
-                    AND state='active'",
+                        "SELECT c.title,c.description,c.consequence,c.api_id,c.group_name,\
+                        g.title,g.description \
+                        FROM auth_capability_identities c \
+                        JOIN auth_capability_groups g \
+                        ON g.api_id=c.api_id AND g.group_name=c.group_name \
+                        WHERE c.capability_id=?1 \
+                        AND c.state='active'",
                         [capability],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                                row.get(6)?,
+                            ))
+                        },
                     )
                     .optional()?;
-                let (title, description, consequence) = metadata.unwrap_or_else(|| {
-                    (
+                let (title, description, consequence, group) = match metadata {
+                    Some((title, description, consequence, api, name, group_title, group_text)) => (
+                        title,
+                        description,
+                        consequence,
+                        serde_json::json!({
+                            "id": if name.is_empty() { api } else { format!("{api}::{name}") },
+                            "title": group_title,
+                            "description": group_text,
+                        }),
+                    ),
+                    None => (
                         capability.clone(),
                         "This capability is not installed.".into(),
                         String::new(),
-                    )
-                });
+                        serde_json::Value::Null,
+                    ),
+                };
                 let remembered: bool = connection.query_row(
                     "SELECT EXISTS(SELECT 1 \
                 FROM auth_remembered_consent d \
@@ -765,6 +790,7 @@ async fn consent_data(
                     "title":title,
                     "description":description,
                     "consequence":consequence,
+                    "group":group,
                     "required":requested.capabilities.required.contains(capability),
                     "available":entitled.contains_key(capability),
                     "selected": requested.capabilities.required.contains(capability)
@@ -793,32 +819,28 @@ async fn consent_data(
                 )?;
                 let (label, description) = match privilege {
                     trellis_protocol::PlatformPrivilege::PrincipalsManage => (
-                        "Manage identities",
-                        "Manage users, service/device identities, deployments, resources, \
-                    and identity providers.",
+                        "Manage users and services",
+                        "Add and change users, services, devices, storage, and sign-in providers.",
                     ),
                     trellis_protocol::PlatformPrivilege::RolesManage => (
                         "Manage roles",
-                        "Change roles, role assignments, and upstream identity-provider role \
-                    mappings.",
+                        "Change roles, who has them, and roles given by company sign-in.",
                     ),
                     trellis_protocol::PlatformPrivilege::ApisAccept => (
-                        "Accept API updates",
-                        "Install normally compatible API definitions into the accepted catalog.",
+                        "Install API updates",
+                        "Install compatible API updates.",
                     ),
                     trellis_protocol::PlatformPrivilege::ApisForceReplace => (
-                        "Force API replacement",
-                        "Replace an incompatible API generation and invalidate affected \
-                    authorization.",
+                        "Force API replacements",
+                        "Install API updates that break compatibility. Affected apps are signed out.",
                     ),
                     trellis_protocol::PlatformPrivilege::ClientsManage => (
-                        "Manage OAuth clients",
-                        "Register public clients and change trusted client metadata.",
+                        "Manage apps",
+                        "Register apps and change their sign-in settings.",
                     ),
                     trellis_protocol::PlatformPrivilege::PrivilegesManage => (
-                        "Manage platform authority",
-                        "Assign administrative privileges, administrative delegations, \
-                    and issuer keys.",
+                        "Manage administrators",
+                        "Make people administrators and manage signing keys.",
                     ),
                 };
                 privileges.push(serde_json::json!({

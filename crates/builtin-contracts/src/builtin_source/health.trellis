@@ -445,54 +445,58 @@ api health@v1 {
     event HealthWatchFrame;
   }
   capabilities {
+    group health {
+      title "Health";
+      description "Whether services and devices are healthy.";
+      capability query {
+        title "Search health";
+        description "Find services and devices by health.";
+        consequence "Can see health summaries.";
+        consent_revision 1;
+        allows { rpc Query; }
+      }
+      capability inspect {
+        title "See health details";
+        description "See a service's or device's health history.";
+        consequence "Can see health details.";
+        consent_revision 1;
+        allows { rpc Inspect; }
+      }
+      capability summary {
+        title "See health overview";
+        description "See how many things are healthy or not.";
+        consequence "Can see overall health.";
+        consent_revision 1;
+        allows { rpc Summary; }
+      }
+      capability metrics {
+        title "See health metrics";
+        description "See health measurements over time.";
+        consequence "Can see health metrics.";
+        consent_revision 1;
+        allows { rpc Metrics; }
+      }
+      capability observe {
+        title "Watch health live";
+        description "Follow health changes as they happen.";
+        consequence "Can see health live.";
+        consent_revision 1;
+        allows { live Watch; }
+      }
+      capability statusChanges {
+        title "Get health alerts";
+        description "Be told when something becomes healthy or unhealthy.";
+        consequence "Receives health changes.";
+        consent_revision 1;
+        allows { subscribe event StatusChanged; }
+      }
+    }
     capability selfReport {
-      title "Report own native participant health";
-      description "Publish health samples for the authenticated provisioned service or device instance.";
-      consequence "The runtime records operational health for the publisher's signed native identity only.";
+      title "Report own health";
+      description "Let a service or device report its own health.";
+      consequence "Records health for that service or device only.";
       consent_revision 1;
       allows { publish event Heartbeat; }
-    }
-    capability query {
-      title "Query health";
-      description "Find participants matching health filters.";
-      consequence "Matching participant health summaries are visible to the caller.";
-      consent_revision 1;
-      allows { rpc Query; }
-    }
-    capability inspect {
-      title "Inspect health";
-      description "Read a participant's health details and operational history.";
-      consequence "The caller can see participant health diagnostics.";
-      consent_revision 1;
-      allows { rpc Inspect; }
-    }
-    capability summary {
-      title "Read health summaries";
-      description "Read aggregate participant health counts.";
-      consequence "The caller can see overall deployment health.";
-      consent_revision 1;
-      allows { rpc Summary; }
-    }
-    capability metrics {
-      title "Read health metrics";
-      description "Read participant health measurements.";
-      consequence "The caller can see operational health metrics.";
-      consent_revision 1;
-      allows { rpc Metrics; }
-    }
-    capability observe {
-      title "Observe health";
-      description "Follow live participant health updates.";
-      consequence "The caller can continuously observe participant health.";
-      consent_revision 1;
-      allows { live Watch; }
-    }
-    capability statusChanges {
-      title "Receive health status changes";
-      description "Consume participant health status-change events.";
-      consequence "The caller receives participant status transitions.";
-      consent_revision 1;
-      allows { subscribe event StatusChanged; }
     }
   }
 }

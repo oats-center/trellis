@@ -82,6 +82,13 @@ model AuthActionSummary {
   kind: AuthActionKind;
   direction: AuthActionDirection;
 }
+// The presentation group people choose access by; ungrouped capabilities
+// belong to their API's own group.
+model AuthCapabilityGroup {
+  id: string;
+  title: string;
+  description: string;
+}
 model AuthCapabilityDefinition {
   identity: AuthCapabilityIdentity;
   apiId: AuthApiId;
@@ -89,6 +96,7 @@ model AuthCapabilityDefinition {
   title: string;
   description: string;
   consequence: string;
+  group: AuthCapabilityGroup;
   allows: list<AuthActionSummary>;
 }
 model AuthCapabilitiesListRequest {

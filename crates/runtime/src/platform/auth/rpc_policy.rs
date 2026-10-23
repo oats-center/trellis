@@ -679,22 +679,36 @@ fn read_capability(
     connection: &Connection,
     capability_id: &str,
 ) -> Result<AuthCapabilityDefinition, AuthError> {
-    let (generation, consent_revision, api_id, title, description, consequence) = connection
+    let (generation, consent_revision, api_id, title, description, consequence, group) = connection
         .query_row(
-            "SELECT identity_generation,consent_revision,api_id,title,description,\
-            consequence \
-            FROM auth_capability_identities \
-            WHERE capability_id=?1 \
-            AND state='active'",
+            "SELECT c.identity_generation,c.consent_revision,c.api_id,c.title,\
+            c.description,c.consequence,c.group_name,g.title,g.description \
+            FROM auth_capability_identities c \
+            JOIN auth_capability_groups g \
+            ON g.api_id=c.api_id AND g.group_name=c.group_name \
+            WHERE c.capability_id=?1 \
+            AND c.state='active'",
             [capability_id],
             |row| {
+                let api_id = row.get::<_, String>(2)?;
+                let name = row.get::<_, String>(6)?;
                 Ok((
                     row.get::<_, u64>(0)?,
                     row.get::<_, u64>(1)?,
-                    row.get::<_, String>(2)?,
+                    api_id.clone(),
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    AuthCapabilityGroup {
+                        id: if name.is_empty() {
+                            api_id
+                        } else {
+                            format!("{api_id}::{name}")
+                        },
+                        title: row.get(7)?,
+                        description: row.get(8)?,
+                        extra: Default::default(),
+                    },
                 ))
             },
         )
@@ -727,6 +741,7 @@ fn read_capability(
         title,
         description,
         consequence,
+        group,
         allows,
         extra: Default::default(),
     })
@@ -740,7 +755,8 @@ pub(super) fn read_effective_access(
     let (kind, state, revision, created_at, title) = connection
         .query_row(
             "SELECT p.kind,p.state,p.version,p.created_at,coalesce(u.display_name,\
-            p.principal_id) \
+            (SELECT c.normalized_username FROM auth_local_credentials c \
+            WHERE c.principal_id=p.principal_id),p.principal_id) \
             FROM auth_principals p \
             LEFT JOIN auth_user_profiles u ON u.principal_id=p.principal_id \
             WHERE p.principal_id=?1",

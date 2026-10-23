@@ -157,6 +157,69 @@ mod tests {
         assert_ne!(staged.root_digest(), graph.root_digest());
     }
 
+    fn grouped_contract(capabilities: &str) -> String {
+        format!(
+            r#"
+            model Value {{ value: string; }}
+            api files@v1 {{
+              title "Files";
+              description "File fixture.";
+              rpc Get {{ input Value; output Value; }}
+              rpc Put {{ input Value; output Value; }}
+              capabilities {{ {capabilities} }}
+            }}
+            "#
+        )
+    }
+
+    #[test]
+    fn capability_groups_present_without_changing_api_identity() {
+        let read = r#"capability read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
+        let write = r#"capability write { consent_revision 1; title "Change files"; description "Write files."; consequence "Changes files."; allows { rpc Put; } }"#;
+        let grouped = compile(grouped_contract(&format!(
+            r#"group files {{ title "Files"; description "Your stored files."; {read} }} {write}"#
+        )))
+        .unwrap();
+        let api = grouped.root_package().apis().values().next().unwrap();
+        assert_eq!(api.capability_groups()["files"].title, "Files");
+        let groups: Vec<_> = api
+            .capabilities()
+            .values()
+            .map(|capability| capability.group.as_deref())
+            .collect();
+        assert_eq!(groups, [Some("files"), None]);
+
+        // The presentation form keeps groups; regrouping never changes identity.
+        let canonical =
+            canonical_package(&grouped, grouped.root(), CanonicalMode::Presentation).unwrap();
+        let round_trip = compile(&canonical).unwrap();
+        let api = round_trip.root_package().apis().values().next().unwrap();
+        assert_eq!(
+            api.capability_groups()["files"].description,
+            "Your stored files."
+        );
+        let ungrouped = compile(grouped_contract(&format!("{read} {write}"))).unwrap();
+        assert_eq!(grouped.root_digest(), ungrouped.root_digest());
+        assert_eq!(round_trip.root_digest(), ungrouped.root_digest());
+    }
+
+    #[test]
+    fn capability_groups_require_presentation_text_and_members() {
+        let read = r#"capability read { consent_revision 1; title "See files"; description "List files."; consequence "Reveals files."; allows { rpc Get; } }"#;
+        let untitled = compile(grouped_contract(&format!(
+            r#"group files {{ description "Files."; {read} }}"#
+        )))
+        .unwrap_err();
+        assert!(untitled
+            .to_string()
+            .contains("requires title and description"));
+        let empty = compile(grouped_contract(&format!(
+            r#"group files {{ title "Files"; description "Files."; }} {read}"#
+        )))
+        .unwrap_err();
+        assert!(empty.to_string().contains("contains no capabilities"));
+    }
+
     #[test]
     fn operations_cannot_declare_both_upload_and_stream() {
         let error = compile(transfer_contract("upload; stream;")).unwrap_err();

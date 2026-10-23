@@ -500,72 +500,101 @@ fn render_api(api: &ApiDefinition, mode: CanonicalMode, imports: &Imports) -> St
         render_action(&mut output, id, action, imports);
     }
     output.push_str("  capabilities {\n");
-    for (id, capability) in &api.capabilities {
-        if capability.public {
-            output.push_str("    public {\n");
-        } else {
-            writeln!(
-                output,
-                "    capability {} {{",
-                id.as_str()
-                    .rsplit_once("::")
-                    .map_or(id.as_str(), |(_, name)| name)
-            )
-            .unwrap();
+    // Groups are presentation metadata, so the semantic form never carries them.
+    if mode == CanonicalMode::Presentation {
+        for (name, docs) in &api.capability_groups {
+            writeln!(output, "    group {name} {{").unwrap();
+            writeln!(output, "      title {};", quote(&docs.title)).unwrap();
+            writeln!(output, "      description {};", quote(&docs.description)).unwrap();
+            for (id, capability) in &api.capabilities {
+                if capability.group.as_deref() == Some(name) {
+                    let mut block = String::new();
+                    render_capability(&mut block, id, capability, mode);
+                    for line in block.lines() {
+                        writeln!(output, "  {line}").unwrap();
+                    }
+                }
+            }
+            output.push_str("    }\n");
         }
-        if mode == CanonicalMode::Presentation {
-            if !capability.title.is_empty() {
-                writeln!(output, "      title {};", quote(&capability.title)).unwrap();
-            }
-            if !capability.description.is_empty() {
-                writeln!(
-                    output,
-                    "      description {};",
-                    quote(&capability.description)
-                )
-                .unwrap();
-            }
-            if !capability.consequence.is_empty() {
-                writeln!(
-                    output,
-                    "      consequence {};",
-                    quote(&capability.consequence)
-                )
-                .unwrap();
-            }
-        } else if capability.public {
-            output.push_str("      title \"_\";\n");
-        } else {
-            output.push_str("      title \"_\";\n");
+    }
+    for (id, capability) in &api.capabilities {
+        if mode != CanonicalMode::Presentation || capability.group.is_none() {
+            render_capability(&mut output, id, capability, mode);
+        }
+    }
+    output.push_str("  }\n}\n");
+    output
+}
+
+fn render_capability(
+    block: &mut String,
+    id: &CapabilityId,
+    capability: &CapabilityDefinition,
+    mode: CanonicalMode,
+) {
+    if capability.public {
+        block.push_str("    public {\n");
+    } else {
+        writeln!(
+            block,
+            "    capability {} {{",
+            id.as_str()
+                .rsplit_once("::")
+                .map_or(id.as_str(), |(_, name)| name)
+        )
+        .unwrap();
+    }
+    if mode == CanonicalMode::Presentation {
+        if !capability.title.is_empty() {
+            writeln!(block, "      title {};", quote(&capability.title)).unwrap();
+        }
+        if !capability.description.is_empty() {
             writeln!(
-                output,
+                block,
                 "      description {};",
                 quote(&capability.description)
             )
             .unwrap();
+        }
+        if !capability.consequence.is_empty() {
             writeln!(
-                output,
+                block,
                 "      consequence {};",
                 quote(&capability.consequence)
             )
             .unwrap();
         }
+    } else if capability.public {
+        block.push_str("      title \"_\";\n");
+    } else {
+        block.push_str("      title \"_\";\n");
         writeln!(
-            output,
-            "      consent_revision {};",
-            capability.consent_revision
+            block,
+            "      description {};",
+            quote(&capability.description)
         )
         .unwrap();
-        output.push_str("      allows {\n");
-        let mut allows = capability.allows.iter().collect::<Vec<_>>();
-        allows.sort_by_key(|selection| selection_key(selection));
-        for selection in allows {
-            render_selection(&mut output, selection, "        ");
-        }
-        output.push_str("      }\n    }\n");
+        writeln!(
+            block,
+            "      consequence {};",
+            quote(&capability.consequence)
+        )
+        .unwrap();
     }
-    output.push_str("  }\n}\n");
-    output
+    writeln!(
+        block,
+        "      consent_revision {};",
+        capability.consent_revision
+    )
+    .unwrap();
+    block.push_str("      allows {\n");
+    let mut allows = capability.allows.iter().collect::<Vec<_>>();
+    allows.sort_by_key(|selection| selection_key(selection));
+    for selection in allows {
+        render_selection(block, selection, "        ");
+    }
+    block.push_str("      }\n    }\n");
 }
 
 fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, imports: &Imports) {
