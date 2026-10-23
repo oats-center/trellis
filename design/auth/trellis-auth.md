@@ -405,7 +405,12 @@ cannot admit an already-retired or newly-reduced session.
 Policy mutations commit small scoped work items through aggregate idempotency.
 Bounded transactional pages resume from committed cursors after restart,
 recompute through the same compiler, and preserve sessions when an independent
-entitlement path means nothing was lost. Session/root retirement persists its
+entitlement path means nothing was lost.
+Committing work wakes the enforcement and effect workers immediately; a
+one-second tick only retries backed-off effects and recovers expired claims.
+Work naming one session, grant, login, identity, principal, or deployment runs
+in a targeted lane ahead of broad scans (all sessions, an API, capability, role,
+client, identity provider, or issuer), which yield to it at page boundaries. Session/root retirement persists its
 cutoff, reason, signed revocation, and exact attachment kick effects atomically.
 
 Ordinary reevaluation uses retirement commit time as the effective cutoff, not
@@ -479,6 +484,8 @@ reused CID with another attachment marker is never kicked. Unavailable or
 malformed inventory is retryable, not proof of absence. `CONNZ`'s filtered
 `num_connections`, not its global `total`, establishes CID absence. Effects have
 bounded claims, retry backoff, stale-claim recovery, and predecessor ordering.
+An effect's identity includes its predecessor, so an identical payload queued
+behind another predecessor is a separate action rather than a dropped edge.
 An expired or superseded claim cannot acknowledge or reschedule work and is not
 an Auth-host failure. The durable intent remains available to its current or next
 owner. Claim settlement includes time spent awaiting broker effects rather than

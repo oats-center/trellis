@@ -117,6 +117,10 @@ pub(crate) struct SqliteAuthorizationStore {
     client_origins: std::sync::RwLock<Arc<std::collections::BTreeSet<String>>>,
     /// Set by SQLite's update hook when a statement writes a client table.
     clients_changed: Arc<std::sync::atomic::AtomicBool>,
+    /// Set by SQLite's update hook when a statement queues enforcement or effect work.
+    work_queued: Arc<std::sync::atomic::AtomicBool>,
+    /// Bumped after each commit that queued work, waking the effect workers.
+    work_signal: tokio::sync::watch::Sender<u64>,
     pub(super) avatar_signer: std::sync::OnceLock<Arc<super::avatars::AvatarSigner>>,
     pub(crate) settings: AuthSettings,
 }
@@ -473,12 +477,19 @@ impl SqliteAuthorizationStore {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.set_prepared_statement_cache_capacity(STATEMENT_CACHE_CAPACITY);
         let clients_changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let changed = Arc::clone(&clients_changed);
+        let work_queued = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (changed, queued) = (Arc::clone(&clients_changed), Arc::clone(&work_queued));
         connection.update_hook(Some(
-            move |_: rusqlite::hooks::Action, _: &str, table: &str, _: i64| {
-                if matches!(table, "auth_oauth_clients" | "auth_cimd_clients") {
+            move |action: rusqlite::hooks::Action, _: &str, table: &str, _: i64| match table {
+                "auth_oauth_clients" | "auth_cimd_clients" => {
                     changed.store(true, std::sync::atomic::Ordering::Release);
                 }
+                "auth_enforcement_work" | "auth_post_commit_actions"
+                    if action == rusqlite::hooks::Action::SQLITE_INSERT =>
+                {
+                    queued.store(true, std::sync::atomic::Ordering::Release);
+                }
+                _ => {}
             },
         ))?;
         let client_origins = client_origins_in(Connection::new(&connection))?;
@@ -491,6 +502,8 @@ impl SqliteAuthorizationStore {
             current_key: Mutex::new(None),
             client_origins: std::sync::RwLock::new(Arc::new(client_origins)),
             clients_changed,
+            work_queued,
+            work_signal: tokio::sync::watch::Sender::new(0),
             avatar_signer: std::sync::OnceLock::new(),
             settings,
         })
@@ -573,6 +586,10 @@ impl SqliteAuthorizationStore {
     /// caller still holds the connection, so no other write can interleave.
     pub(super) fn after_commit(&self, connection: &rusqlite::Connection) {
         use std::sync::atomic::Ordering;
+        if self.work_queued.swap(false, Ordering::AcqRel) {
+            self.work_signal
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
+        }
         if !self.clients_changed.swap(false, Ordering::AcqRel) {
             return;
         }
@@ -586,6 +603,11 @@ impl SqliteAuthorizationStore {
                 self.clients_changed.store(true, Ordering::Release);
             }
         }
+    }
+
+    /// Changes whenever a commit queues enforcement or effect work.
+    pub(crate) fn work_signal(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.work_signal.subscribe()
     }
 
     /// Whether `origin` serves a redirect URI of a usable client.

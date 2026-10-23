@@ -25,6 +25,9 @@ use crate::{
 use auth::SqliteAuthorizationStore;
 use auth_callout::{AuthCallout, CalloutKeys};
 
+/// Bounded work batches per wake before a worker yields to the next signal.
+const EFFECT_DRAIN_TURNS: usize = 64;
+
 pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, RuntimeError> {
     let _owner = context.owner(crate::ownership::OwnerGroup::Platform)?;
     let nats = context
@@ -223,36 +226,52 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         let worker_stop = task_stop.clone();
         let provider_oauth = engine.clone();
         tasks.spawn(async move {
+            // Committed work wakes the worker at once; the tick retries backed-off
+            // effects and expired claims, and prunes expired artifacts.
+            let mut queued = store.work_signal();
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                tokio::select! {
-                    ()=worker_stop.stopped()=>return Ok(()),
-                    _=interval.tick()=> {
-                        let now = crate::clock::unix_now();
-                        match store
-                            .process_effects(&material, &revocations, &system, now)
-                            .await
-                        {
-                            Ok(_) => {}
-                            Err(auth::AuthError::Broker(_) | auth::AuthError::Unavailable) => {
-                                tracing::warn!(
-                                    "Auth broker effects unavailable; durable work retained"
-                                )
-                            }
-                            Err(error) => return Err(RuntimeError::Platform(error.to_string())),
+                let ticked = tokio::select! {
+                    () = worker_stop.stopped() => return Ok(()),
+                    _ = interval.tick() => true,
+                    changed = queued.changed() => {
+                        if changed.is_err() {
+                            return Ok(());
                         }
-                        let (pruned, cleaned) = (store.clone(), engine.server.store().clone());
-                        auth::blocking(move || {
-                            pruned.prune_expired_artifacts(now)?;
-                            cleaned
-                                .cleanup_expired(now)
-                                .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
-                            Ok::<_, auth::AuthError>(())
-                        })
-                        .await
-                        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+                        false
                     }
+                };
+                // Keep draining while turns make progress, but give other tasks a
+                // turn between bounded batches.
+                for _ in 0..EFFECT_DRAIN_TURNS {
+                    match store
+                        .process_effects(&material, &revocations, &system, crate::clock::unix_now())
+                        .await
+                    {
+                        Ok(0) => break,
+                        Ok(_) => tokio::task::yield_now().await,
+                        Err(auth::AuthError::Broker(_) | auth::AuthError::Unavailable) => {
+                            tracing::warn!(
+                                "Auth broker effects unavailable; durable work retained"
+                            );
+                            break;
+                        }
+                        Err(error) => return Err(RuntimeError::Platform(error.to_string())),
+                    }
+                }
+                if ticked {
+                    let now = crate::clock::unix_now();
+                    let (pruned, cleaned) = (store.clone(), engine.server.store().clone());
+                    auth::blocking(move || {
+                        pruned.prune_expired_artifacts(now)?;
+                        cleaned
+                            .cleanup_expired(now)
+                            .map_err(|error| auth::AuthError::Invalid(error.to_string()))?;
+                        Ok::<_, auth::AuthError>(())
+                    })
+                    .await
+                    .map_err(|error| RuntimeError::Platform(error.to_string()))?;
                 }
             }
         });
@@ -269,22 +288,30 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
             let owner = provider.runtime_native_owner();
             let publisher = provider.event_publisher();
             let publications = async {
+                let mut queued = event_store.work_signal();
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         () = provider_stop.stopped() => break Ok::<(), RuntimeError>(()),
                         _ = interval.tick() => {}
+                        changed = queued.changed() => {
+                            if changed.is_err() {
+                                break Ok(());
+                            }
+                        }
                     }
                     // Claim each publication immediately before sending it, so
                     // a slow broker cannot consume another event's lease.
-                    for _ in 0..8 {
-                        let Some(effect) = event_store
-                            .claim_effects(1, crate::clock::unix_now(), 10, true)
-                            .map_err(|error| RuntimeError::Platform(error.to_string()))?
-                            .into_iter()
-                            .next()
-                        else {
+                    for _ in 0..EFFECT_DRAIN_TURNS {
+                        let claimer = event_store.clone();
+                        let Some(effect) = auth::blocking(move || {
+                            claimer.claim_effects(1, crate::clock::unix_now(), 10, true)
+                        })
+                        .await
+                        .map_err(|error| RuntimeError::Platform(error.to_string()))?
+                        .into_iter()
+                        .next() else {
                             break;
                         };
                         let result = async {
@@ -313,8 +340,11 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                         }
                         .await;
                         let now = crate::clock::unix_now();
+                        let settler = event_store.clone();
                         match result {
-                            Ok(()) => event_store.complete_effect(&effect, now),
+                            Ok(()) => {
+                                auth::blocking(move || settler.complete_effect(&effect, now)).await
+                            }
                             Err(error) => {
                                 tracing::warn!(
                                     action_id=%effect.action_id,
@@ -322,7 +352,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
                                     %error,
                                     "Auth event publication remains pending"
                                 );
-                                event_store.retry_effect(&effect, now)
+                                auth::blocking(move || settler.retry_effect(&effect, now)).await
                             }
                         }
                         .map_err(|error| RuntimeError::Platform(error.to_string()))?;

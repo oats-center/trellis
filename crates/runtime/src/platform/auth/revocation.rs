@@ -96,26 +96,28 @@ pub(super) fn enqueue_scope(
 ) -> Result<String, AuthError> {
     let work = id();
     let encoded = json(scope)?;
-    let kind = match scope {
-        EnforcementScope::Principal(_) => "principal",
-        EnforcementScope::Role(_) => "role",
-        EnforcementScope::Capability(_) => "capability",
-        EnforcementScope::Api(_) => "api",
-        EnforcementScope::Client(_) => "client",
-        EnforcementScope::OidcProvider(_) => "oidcProvider",
-        EnforcementScope::Login(_) => "login",
-        EnforcementScope::Grant(_) => "grant",
-        EnforcementScope::Identity(_) => "identity",
-        EnforcementScope::Deployment(_) => "deployment",
-        EnforcementScope::Issuer(_) => "issuer",
-        EnforcementScope::Session(_) => "session",
-        EnforcementScope::All => "all",
+    // Work naming one credential or identity takes the targeted lane, so a
+    // revocation never waits behind a scan of every session.
+    let (kind, lane) = match scope {
+        EnforcementScope::Principal(_) => ("principal", 0),
+        EnforcementScope::Login(_) => ("login", 0),
+        EnforcementScope::Grant(_) => ("grant", 0),
+        EnforcementScope::Identity(_) => ("identity", 0),
+        EnforcementScope::Deployment(_) => ("deployment", 0),
+        EnforcementScope::Session(_) => ("session", 0),
+        EnforcementScope::Role(_) => ("role", 1),
+        EnforcementScope::Capability(_) => ("capability", 1),
+        EnforcementScope::Api(_) => ("api", 1),
+        EnforcementScope::Client(_) => ("client", 1),
+        EnforcementScope::OidcProvider(_) => ("oidcProvider", 1),
+        EnforcementScope::Issuer(_) => ("issuer", 1),
+        EnforcementScope::All => ("all", 1),
     };
     connection.execute(
         "INSERT INTO auth_enforcement_work(work_id,scope_kind,scope_key,\
-        scope_json,state,next_attempt_at,created_at) \
-        VALUES(?1,?2,?3,?4,'queued',?5,?5)",
-        params![work, kind, digest(scope)?, encoded, now],
+        scope_json,lane,state,next_attempt_at,created_at) \
+        VALUES(?1,?2,?3,?4,?5,'queued',?6,?6)",
+        params![work, kind, digest(scope)?, encoded, lane, now],
     )?;
     Ok(work)
 }
@@ -127,7 +129,9 @@ pub(super) fn enqueue_effect(
     predecessor: Option<&str>,
     now: i64,
 ) -> Result<String, AuthError> {
-    let action = digest(&(kind, payload))?;
+    // The predecessor is part of the identity: an identical payload queued
+    // behind a different predecessor is a separate action, never a dropped edge.
+    let action = digest(&(kind, payload, predecessor))?;
     connection.execute(
         "INSERT OR IGNORE INTO auth_post_commit_actions(action_id,kind,\
         payload_json,created_at,next_attempt_at,predecessor_action_id) \
@@ -472,7 +476,7 @@ impl SqliteAuthorizationStore {
                     FROM auth_enforcement_work \
                     WHERE state IN ('queued','running') \
                     AND next_attempt_at<=?1 \
-                    ORDER BY created_at,work_id \
+                    ORDER BY lane,created_at,work_id \
                     LIMIT 1",
                     [now],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),

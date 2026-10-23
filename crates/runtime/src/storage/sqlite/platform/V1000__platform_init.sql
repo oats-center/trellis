@@ -893,6 +893,8 @@ CREATE TABLE auth_enforcement_work (
     scope_kind TEXT NOT NULL,
     scope_key TEXT NOT NULL,
     scope_json TEXT NOT NULL CHECK (json_valid(scope_json)),
+    -- 0: a specific credential or identity; 1: a broad scan that yields at page boundaries.
+    lane INTEGER NOT NULL CHECK (lane IN (0, 1)),
     cursor TEXT,
     state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'completed')),
     scanned_sessions INTEGER NOT NULL DEFAULT 0 CHECK (scanned_sessions >= 0),
@@ -903,7 +905,8 @@ CREATE TABLE auth_enforcement_work (
     created_at INTEGER NOT NULL,
     completed_at INTEGER
 );
-CREATE INDEX auth_enforcement_work_ready ON auth_enforcement_work(state, next_attempt_at, work_id);
+CREATE INDEX auth_enforcement_work_ready
+    ON auth_enforcement_work(state, lane, created_at, work_id);
 
 CREATE TABLE auth_security_audit (
     audit_id TEXT PRIMARY KEY CHECK (length(audit_id) = 26),

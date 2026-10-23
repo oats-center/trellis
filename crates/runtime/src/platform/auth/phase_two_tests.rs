@@ -3083,6 +3083,71 @@ fn hard_grant_revocation_blocks_offline_reissue_and_preserves_signed_cutoff() {
 }
 
 #[test]
+fn targeted_enforcement_preempts_a_queued_broad_scan_and_wakes_workers() {
+    let f = fixture();
+    drain(&f.store, NOW);
+    let mut queued = f.store.work_signal();
+    queued.mark_unchanged();
+    let broad = f
+        .store
+        .transaction(|connection| {
+            super::revocation::enqueue_scope(connection, &EnforcementScope::All, NOW)
+        })
+        .unwrap();
+    assert!(
+        queued.has_changed().unwrap(),
+        "a commit that queues work wakes workers"
+    );
+    queued.mark_unchanged();
+    let targeted = f
+        .store
+        .transaction(|connection| {
+            super::revocation::enqueue_scope(connection, &EnforcementScope::Session(id()), NOW)
+        })
+        .unwrap();
+    assert!(queued.has_changed().unwrap());
+    assert_eq!(f.store.enforce_next_page(NOW).unwrap(), Some(targeted));
+    assert_eq!(f.store.enforce_next_page(NOW).unwrap(), Some(broad));
+    queued.mark_unchanged();
+    f.store.read(|_| Ok(())).unwrap();
+    assert!(!queued.has_changed().unwrap(), "reads never wake workers");
+}
+
+#[test]
+fn identical_effects_behind_different_predecessors_keep_both_edges() {
+    let f = fixture();
+    let payload = serde_json::json!({"kind":"authority","digest":"same"});
+    let actions = f
+        .store
+        .transaction(|connection| {
+            let first = super::revocation::enqueue_effect(
+                connection,
+                "authority_publish",
+                &payload,
+                Some("first-predecessor"),
+                NOW,
+            )?;
+            let second = super::revocation::enqueue_effect(
+                connection,
+                "authority_publish",
+                &payload,
+                Some("second-predecessor"),
+                NOW,
+            )?;
+            let edges: i64 = connection.query_row(
+                "SELECT count(*) FROM auth_post_commit_actions \
+                WHERE action_id IN (?1,?2) AND predecessor_action_id IS NOT NULL",
+                [&first, &second],
+                |row| row.get(0),
+            )?;
+            Ok((first, second, edges))
+        })
+        .unwrap();
+    assert_ne!(actions.0, actions.1);
+    assert_eq!(actions.2, 2);
+}
+
+#[test]
 fn outbox_orders_revocation_before_kicks_and_fences_expired_claims() {
     let f = fixture();
     {
