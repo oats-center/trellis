@@ -549,6 +549,8 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
   #operationRecoveryTask?: Promise<void>;
   /** Drains fixed-connection intake subscriptions on stop. */
   #operationIntakeDrains = new Set<() => Promise<void>>();
+  /** Per-generation operation intakes, retracted at the broker on stop. */
+  #operationGenerationIntakes = new Set<string>();
   #stopPromise?: Promise<void>;
   #transferSupport?: RuntimeOperationTransferSupport;
   /**
@@ -2834,6 +2836,7 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
       // can rely on it, so this is awaited by the registration path (and by the
       // activation barrier for a new generation).
       if (this.adaptiveTransport) {
+        this.#operationGenerationIntakes.add(`operation:${operation}:control`);
         await this.declareGenerationIntake(
           `operation:${operation}:control`,
           installControl,
@@ -4622,6 +4625,9 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
         // Install the generic intake on every admitted generation (or directly
         // on the fixed connection when this runtime has no generation owner).
         if (this.adaptiveTransport) {
+          this.#operationGenerationIntakes.add(
+            `operation:${String(operation)}:intake`,
+          );
           await this.declareGenerationIntake(
             `operation:${String(operation)}:intake`,
             installIntake,
@@ -4769,6 +4775,17 @@ export class TrellisServiceRuntime extends Trellis<RuntimeApi, TrellisMode> {
             return;
           }
         }
+        // Unsubscribe operation intake at the broker before reporting stopped:
+        // until then the broker can route a start or control request in the
+        // queue group to this provider, whose closed intake drops it instead
+        // of a live replica answering it.
+        const retracted = Promise.allSettled(
+          [...this.#operationGenerationIntakes].map((id) =>
+            this.retractFrameworkIntake(id),
+          ),
+        );
+        this.#operationGenerationIntakes.clear();
+        if (await untilReleased(retracted)) return;
 
         // A loss or terminal close releases the drain instead of waiting on a
         // flush that never settles. An adaptive transport is closed through the

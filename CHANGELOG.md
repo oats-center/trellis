@@ -279,6 +279,10 @@ grants; capability …; }` bundles of its own
 
 ### Fixed
 
+- A stopping TypeScript service with replicas no longer swallows Operation
+  starts and control requests: `stop()` unsubscribes its operation intake at
+  the broker before resolving, so the broker routes those requests to a live
+  replica instead of the stopping one.
 - `auth.local_identity.enabled = false` now refuses username/password sign-in,
   and the Portal hides its password form. `/portal/providers` returns
   `{ localIdentity, providers }`.
