@@ -62,8 +62,14 @@ pub struct LoginArgs {
 
     /// Trust only this PEM CA for the deployment's OAuth and NATS TLS, such as
     /// a Trellis-generated installation CA. Verify its fingerprint out of band.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", conflicts_with = "ca_fingerprint")]
     pub ca_certificate: Option<PathBuf>,
+
+    /// Trust and pin the CA the deployment presents only if its SHA-256
+    /// fingerprint is this value, without prompting. Without it, an untrusted
+    /// CA is shown by fingerprint and pinned once you accept it.
+    #[arg(long, value_name = "SHA256")]
+    pub ca_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Args)]

@@ -192,8 +192,10 @@ HTTP insecure-origin allowlist does not relax that requirement.
 
 Rust participants put a private CA in `RuntimeAuthorizationTrust.root_certificates`
 or pass it to `discover_native_oauth(origin, &[ca_path])`. Node participants
-start with `NODE_EXTRA_CA_CERTS=<ca path>`. The CLI uses
-`trellis login <oauth-origin> --ca-certificate <ca path>`. Browsers trust the CA
+start with `NODE_EXTRA_CA_CERTS=<ca path>`. `trellis login <oauth-origin>`
+shows an untrusted CA's fingerprint and pins it once accepted (prompt, or
+`--ca-fingerprint <sha256>`); `--ca-certificate <ca path>` trusts a CA file
+directly. A pinned CA that changes is a hard error. Browsers trust the CA
 through the operating system or browser trust store.
 
 ### OAuth portal and issuer custody

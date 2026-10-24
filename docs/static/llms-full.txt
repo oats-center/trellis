@@ -198,8 +198,10 @@ HTTP insecure-origin allowlist does not relax that requirement.
 
 Rust participants put a private CA in `RuntimeAuthorizationTrust.root_certificates`
 or pass it to `discover_native_oauth(origin, &[ca_path])`. Node participants
-start with `NODE_EXTRA_CA_CERTS=<ca path>`. The CLI uses
-`trellis login <oauth-origin> --ca-certificate <ca path>`. Browsers trust the CA
+start with `NODE_EXTRA_CA_CERTS=<ca path>`. `trellis login <oauth-origin>`
+shows an untrusted CA's fingerprint and pins it once accepted (prompt, or
+`--ca-fingerprint <sha256>`); `--ca-certificate <ca path>` trusts a CA file
+directly. A pinned CA that changes is a hard error. Browsers trust the CA
 through the operating system or browser trust store.
 
 #### OAuth portal and issuer custody
@@ -1373,7 +1375,8 @@ Node trust, so SDK clients need no TLS options. Launch Playwright browsers with
 `env: browserTrustEnvironment()`, which builds a private NSS trust store holding
 those CAs (requires NSS `certutil`); never use `ignoreHTTPSErrors`. Pass
 `NODE_EXTRA_CA_CERTS=runtime.caCertificate` to spawned Node processes and
-`--ca-certificate` to `trellis login`.
+`--ca-certificate runtime.caCertificate` (or `--ca-fingerprint` with its
+SHA-256 fingerprint) to `trellis login`.
 
 Live testkit users are ordinary accounts: `runtime.createUser({ name })`, then
 `runtime.grantUserCapabilities({ user, capabilityIds })`, then

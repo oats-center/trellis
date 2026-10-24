@@ -263,7 +263,8 @@ verification.
 
 Clients trust a private installation CA only through explicit configuration:
 `RuntimeAuthorizationTrust.root_certificates` in Rust (supplied by provisioning,
-`discover_native_oauth`'s roots, or `trellis login --ca-certificate`), and the
+`discover_native_oauth`'s roots, or `trellis login`'s `--ca-certificate` or a
+CA the user accepted by fingerprint and pinned), and the
 Node runtime's `NODE_EXTRA_CA_CERTS` for TypeScript participants. Non-empty Rust
 roots are the only trust anchors for that installation's OAuth and broker TLS. A
 broker or metadata response can never supply them. Observable configured origin

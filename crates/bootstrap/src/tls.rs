@@ -133,15 +133,18 @@ pub(crate) fn generate_installation_tls(
     }
     fs::write(bundle.join(BUNDLE_CA_CERTIFICATE), ca.pem())?;
 
+    let ca_pem = ca.pem();
     let issuer = Issuer::new(params, ca_key);
     issue_leaf(
         &issuer,
+        &ca_pem,
         runtime_hosts,
         &bundle.join(RUNTIME_CERTIFICATE),
         &bundle.join(RUNTIME_PRIVATE_KEY),
     )?;
     issue_leaf(
         &issuer,
+        &ca_pem,
         nats_hosts,
         &bundle.join(NATS_CERTIFICATE),
         &bundle.join(NATS_PRIVATE_KEY),
@@ -204,7 +207,13 @@ pub fn renew_generated_certificates(
             .map(CertificateHost::Dns)
             .chain(current.ip_addresses.into_iter().map(CertificateHost::Ip))
             .collect();
-        let not_after = issue_leaf(&issuer, &hosts, &certificate, &bundle.join(private_key))?;
+        let not_after = issue_leaf(
+            &issuer,
+            &ca_pem,
+            &hosts,
+            &certificate,
+            &bundle.join(private_key),
+        )?;
         renewed.push(RenewedCertificate {
             certificate,
             not_after,
@@ -215,8 +224,12 @@ pub fn renew_generated_certificates(
 
 /// Issues one serverAuth leaf, replacing its key before its certificate so a
 /// reloading listener never pairs a new certificate with the old key for long.
+///
+/// The served chain ends with the installation CA so a client meeting the
+/// installation for the first time can show and pin the CA it is offered.
 fn issue_leaf(
     issuer: &Issuer<'_, KeyPair>,
+    ca_pem: &str,
     hosts: &[CertificateHost],
     certificate_path: &Path,
     private_key_path: &Path,
@@ -247,7 +260,11 @@ fn issue_leaf(
     let key = KeyPair::generate().map_err(tls_error)?;
     let certificate = params.signed_by(&key, issuer).map_err(tls_error)?;
     replace_file(private_key_path, key.serialize_pem().as_bytes(), true)?;
-    replace_file(certificate_path, certificate.pem().as_bytes(), false)?;
+    replace_file(
+        certificate_path,
+        format!("{}{ca_pem}", certificate.pem()).as_bytes(),
+        false,
+    )?;
     Ok(params.not_after)
 }
 

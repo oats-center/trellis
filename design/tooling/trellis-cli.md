@@ -36,7 +36,7 @@ author wire schemas.
 ## Authentication
 
 ```text
-trellis login <oauth-origin> [--ca-certificate <ca.crt>]
+trellis login <oauth-origin> [--ca-certificate <ca.crt> | --ca-fingerprint <sha256>]
 trellis logout
 trellis whoami
 ```
@@ -49,7 +49,17 @@ refresh-token rotation, locking and atomic replacement. Each process resumes
 custody and establishes fresh ephemeral runtime authority. `--ca-certificate`
 selects a private installation CA as the only trust anchor for that deployment's
 OAuth and broker TLS; login prints its fingerprint for out-of-band comparison
-and the selection retains its path. Logout revokes the
+and the selection retains its path.
+
+Without it, a deployment whose CA no system root vouches for is trusted on first
+use, like an SSH host key. Generated leaf chains end with their installation CA;
+login shows that CA's SHA-256 fingerprint and, once the user accepts it (an
+interactive prompt, or `--ca-fingerprint` naming the same value), pins it under
+`trellis/trusted-ca/<host>_<port>.pem` in the configuration directory as the only
+trust anchor for that origin. JSON output reports the offer as an `untrustedCa`
+record on stderr. A later login whose deployment presents a different CA than
+its pin is a hard error (`pinnedCaMismatch`); replacing a pin means deleting it
+after confirming the new fingerprint with the operator. Logout revokes the
 application refresh family and clears the selected native credentials.
 
 ## Authorization Administration

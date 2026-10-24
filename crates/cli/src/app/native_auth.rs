@@ -20,7 +20,7 @@ pub(super) struct Selection {
     pub root_certificates: Vec<PathBuf>,
 }
 
-fn directory() -> miette::Result<PathBuf> {
+pub(super) fn directory() -> miette::Result<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))

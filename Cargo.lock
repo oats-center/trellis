@@ -5917,6 +5917,7 @@ dependencies = [
  "trellis-runtime",
  "trellis-runtime-apis",
  "ulid",
+ "url",
 ]
 
 [[package]]

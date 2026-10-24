@@ -368,7 +368,8 @@ Node trust, so SDK clients need no TLS options. Launch Playwright browsers with
 `env: browserTrustEnvironment()`, which builds a private NSS trust store holding
 those CAs (requires NSS `certutil`); never use `ignoreHTTPSErrors`. Pass
 `NODE_EXTRA_CA_CERTS=runtime.caCertificate` to spawned Node processes and
-`--ca-certificate` to `trellis login`.
+`--ca-certificate runtime.caCertificate` (or `--ca-fingerprint` with its
+SHA-256 fingerprint) to `trellis login`.
 
 Live testkit users are ordinary accounts: `runtime.createUser({ name })`, then
 `runtime.grantUserCapabilities({ user, capabilityIds })`, then

@@ -43,7 +43,7 @@ This creates a movable init bundle under `~/trellis`:
 | `auth/`        | Online issuer seed and Auth runtime state                          |
 | `session.seed` | Private 32-byte event-session seed referenced from `config.toml`   |
 | `tls/`         | Installation CA certificate plus the Console/OAuth certificate     |
-| `nats/tls/`    | The broker certificate for native NATS and WebSockets             |
+| `nats/tls/`    | The broker certificate for native NATS and WebSockets              |
 
 Trellis is secure by default: every listener uses TLS. Unless you supply
 certificates, initialization generates an installation CA that may issue only
@@ -63,21 +63,21 @@ peers are visible.
 
 Useful local flags:
 
-| Flag                                       | Default                           | Use when                                                                                               |
-| ------------------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `--name Trellis`                           | `Trellis`                         | You want a different Trellis display name; the NATS server name is derived from this unless overridden |
-| `--server-name trellis`                    | derived from `--name`             | You need a specific NATS server name                                                                   |
-| `--nats-port 4222`                         | `4222`                            | Managed NATS should listen for native clients on a different port; e.g. when `4222` is already taken   |
-| `--nats-monitor-port 8222`                 | `8222`                            | Managed NATS monitoring and health should listen on a different port                                   |
-| `--nats-ws-port 8080`                      | `8080`                            | Managed NATS websocket should listen on a different port                                               |
-| `--public-origin https://eta.oats:3000`    | `https://localhost:<trellis-port>` | Console is reached at another hostname, such as a tailnet name                                       |
-| `--oauth-origin https://auth.eta.oats:3001` | `https://localhost:<oauth-port>`  | The OAuth listener is reached at another hostname                                                    |
-| `--nats-server-url tls://eta.oats:4222`    | `tls://localhost:<nats-port>`      | Native clients reach NATS at another hostname                                                        |
-| `--nats-websocket-url wss://eta.oats:8080` | `wss://localhost:<nats-ws-port>`   | Browser clients reach NATS at another hostname                                                       |
-| `--tls supplied`                           | `generated`                        | You have certificates; pass `--tls-certificate-chain`, `--tls-private-key`, `--nats-tls-certificate-chain`, `--nats-tls-private-key`, and `--tls-ca-certificate` for a private issuer |
-| `--tls loopback-development`               | `generated`                        | You want plaintext on loopback only; every origin and listener must then be loopback                 |
-| `--trusted-proxy 10.0.0.2/32`              | none                               | An HTTPS-terminating reverse proxy at that network fronts Console and OAuth                          |
-| `--nats-websocket-behind-proxy`            | off                                | An HTTPS-terminating reverse proxy fronts NATS WebSockets                                             |
+| Flag                                        | Default                            | Use when                                                                                                                                                                              |
+| ------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--name Trellis`                            | `Trellis`                          | You want a different Trellis display name; the NATS server name is derived from this unless overridden                                                                                |
+| `--server-name trellis`                     | derived from `--name`              | You need a specific NATS server name                                                                                                                                                  |
+| `--nats-port 4222`                          | `4222`                             | Managed NATS should listen for native clients on a different port; e.g. when `4222` is already taken                                                                                  |
+| `--nats-monitor-port 8222`                  | `8222`                             | Managed NATS monitoring and health should listen on a different port                                                                                                                  |
+| `--nats-ws-port 8080`                       | `8080`                             | Managed NATS websocket should listen on a different port                                                                                                                              |
+| `--public-origin https://eta.oats:3000`     | `https://localhost:<trellis-port>` | Console is reached at another hostname, such as a tailnet name                                                                                                                        |
+| `--oauth-origin https://auth.eta.oats:3001` | `https://localhost:<oauth-port>`   | The OAuth listener is reached at another hostname                                                                                                                                     |
+| `--nats-server-url tls://eta.oats:4222`     | `tls://localhost:<nats-port>`      | Native clients reach NATS at another hostname                                                                                                                                         |
+| `--nats-websocket-url wss://eta.oats:8080`  | `wss://localhost:<nats-ws-port>`   | Browser clients reach NATS at another hostname                                                                                                                                        |
+| `--tls supplied`                            | `generated`                        | You have certificates; pass `--tls-certificate-chain`, `--tls-private-key`, `--nats-tls-certificate-chain`, `--nats-tls-private-key`, and `--tls-ca-certificate` for a private issuer |
+| `--tls loopback-development`                | `generated`                        | You want plaintext on loopback only; every origin and listener must then be loopback                                                                                                  |
+| `--trusted-proxy 10.0.0.2/32`               | none                               | An HTTPS-terminating reverse proxy at that network fronts Console and OAuth                                                                                                           |
+| `--nats-websocket-behind-proxy`             | off                                | An HTTPS-terminating reverse proxy fronts NATS WebSockets                                                                                                                             |
 
 Every certificate names exactly the hosts in these URLs, so choose the
 hostnames clients will really use before initializing. Generated certificates
@@ -90,8 +90,11 @@ reaches it over loopback.
   store after checking its fingerprint. One import covers Console, OAuth, and
   NATS WebSockets. Clicking through a certificate warning does not cover the
   separate WebSocket port and is not a supported workflow.
-- **Trellis CLI:** `trellis login https://auth.eta.oats:3001 --ca-certificate
-  ~/trellis/tls/ca.crt` trusts only that CA for this deployment and remembers it.
+- **Trellis CLI:** `trellis login https://auth.eta.oats:3001` shows the CA's
+  fingerprint and asks before trusting it, then pins it for this deployment; a
+  later change of CA is refused. Pass `--ca-fingerprint <sha256>` to accept a
+  known fingerprint without the prompt, or `--ca-certificate
+~/trellis/tls/ca.crt` to trust a CA file you already have.
 - **Rust services and devices:** put the CA path in
   `RuntimeAuthorizationTrust.root_certificates`, or pass it to
   `discover_native_oauth`.

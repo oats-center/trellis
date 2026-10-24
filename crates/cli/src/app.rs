@@ -27,6 +27,7 @@ mod native_auth;
 mod resources;
 mod runtime;
 mod self_cmd;
+mod trust;
 
 const SELF_UPDATE_TARGET: SelfUpdateTarget = SelfUpdateTarget::new(
     "oats-center",

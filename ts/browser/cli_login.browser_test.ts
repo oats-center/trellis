@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { types } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { X509Certificate } from "node:crypto";
 import { statSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
+import { connect } from "node:tls";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { text } from "node:stream/consumers";
@@ -35,6 +38,20 @@ function jsonOutput(stdout: string): Record<string, unknown> {
   );
 }
 
+/** The `kind` record a JSON-mode CLI run reported on stderr. */
+function progressRecord(stderr: string, kind: string): Record<string, unknown> {
+  for (const line of stderr.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    const record: unknown = JSON.parse(line);
+    if (typeof record === "object" && record !== null && kind in record) {
+      const value: unknown = Reflect.get(record, kind);
+      assert(typeof value === "object" && value !== null, line);
+      return Object.fromEntries(Object.entries(value));
+    }
+  }
+  assert.fail(`no ${kind} record in: ${stderr}`);
+}
+
 async function runCli(
   args: readonly string[],
   configHome: string,
@@ -54,6 +71,33 @@ test("CLI login authorizes independent runtime keys through one durable login", 
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();
     const configHome = await mkdtemp(join(tmpdir(), "trellis-cli-login-"));
+    const ca = new X509Certificate(await readFile(runtime.caCertificate))
+      .fingerprint256;
+
+    // No system root vouches for the generated CA, so a first login stops and
+    // names the CA it was offered rather than trusting it.
+    const untrusted = await runCli(
+      ["--format", "json", "login", runtime.oauthIssuer],
+      configHome,
+    );
+    assert.notEqual(untrusted.code, 0);
+    assert.equal(
+      progressRecord(untrusted.stderr, "untrustedCa")["presented"],
+      ca,
+    );
+    const wrong = await runCli(
+      [
+        "--format",
+        "json",
+        "login",
+        runtime.oauthIssuer,
+        "--ca-fingerprint",
+        Array(32).fill("00").join(":"),
+      ],
+      configHome,
+    );
+    assert.notEqual(wrong.code, 0);
+    assert.deepEqual(await readdir(configHome), []);
 
     const child = spawnTracked(
       cliBinary(),
@@ -62,8 +106,8 @@ test("CLI login authorizes independent runtime keys through one durable login", 
         "json",
         "login",
         runtime.oauthIssuer,
-        "--ca-certificate",
-        runtime.caCertificate,
+        "--ca-fingerprint",
+        ca,
       ],
       { env: { ...process.env, XDG_CONFIG_HOME: configHome } },
     );
@@ -135,6 +179,49 @@ test("CLI login authorizes independent runtime keys through one durable login", 
           .principal.principalId,
         login.principalId,
       );
+
+      // The accepted CA is pinned for this deployment: a later login trusts
+      // it without being told, and a different pinned CA is a hard error.
+      const again = spawnTracked(
+        cliBinary(),
+        ["--format", "json", "login", runtime.oauthIssuer],
+        { env: { ...process.env, XDG_CONFIG_HOME: configHome } },
+      );
+      let againProgress = "";
+      for await (const line of createInterface({ input: again.stderr })) {
+        againProgress += `${line}\n`;
+        if (line.includes("loginUrl")) break;
+      }
+      again.kill("SIGTERM");
+      await again.exited;
+      assert(againProgress.includes("loginUrl"), againProgress);
+
+      const pins = join(configHome, "trellis/trusted-ca");
+      const [pin] = await readdir(pins);
+      assert(pin);
+      const issuer = new URL(runtime.oauthIssuer);
+      const leaf = await new Promise<Buffer>((resolve, reject) => {
+        const socket = connect({
+          host: issuer.hostname,
+          port: Number(issuer.port),
+          ...(isIP(issuer.hostname) ? {} : { servername: issuer.hostname }),
+          rejectUnauthorized: false,
+        });
+        socket.once("secureConnect", () => {
+          resolve(socket.getPeerCertificate().raw);
+          socket.end();
+        });
+        socket.once("error", reject);
+      });
+      await writeFile(join(pins, pin), new X509Certificate(leaf).toString());
+      const replaced = await runCli(
+        ["--format", "json", "login", runtime.oauthIssuer],
+        configHome,
+      );
+      assert.notEqual(replaced.code, 0);
+      const mismatch = progressRecord(replaced.stderr, "pinnedCaMismatch");
+      assert.equal(mismatch["presented"], ca);
+      assert.notEqual(mismatch["pinned"], ca);
     } finally {
       if (child.exitCode === null && child.signalCode === null)
         child.kill("SIGTERM");
