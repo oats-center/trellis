@@ -408,6 +408,7 @@ fn resolve_package<'a>(
                 let registry = dependency
                     .registry
                     .as_deref()
+                    .or(manifest.default_registry.as_deref())
                     .expect("validated registry dependency");
                 let config = registry_config(manifest, registry)?;
                 let requirement =
@@ -1049,6 +1050,41 @@ mod tests {
         let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
         assert!(manifest.dependencies.is_empty());
         compile_project(root.path(), &manifest).unwrap();
+    }
+
+    #[tokio::test]
+    async fn registry_dependency_without_a_registry_uses_the_default_registry() {
+        let _guard = oci::TEST_ENV_LOCK.lock().await;
+        let root = tempfile::tempdir().unwrap();
+        // Nothing listens on port 1, so resolution reaches the default
+        // registry and reports that it cannot list releases there.
+        fs::write(
+            root.path().join("trellis.toml"),
+            "default-registry = \"main\"\n[package]\nname = \"root\"\nversion = \
+            \"1.0.0\"\n[sources]\nmain = \"main.trellis\"\n[registries.main]\nprefix = \
+            \"127.0.0.1:1/trellis\"\n[dependencies.acme]\npackage = \"acme\"\nversion = \
+            \"^1\"\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("main.trellis"), "model Root {}\n").unwrap();
+
+        let error = update(
+            OutputFormat::Text,
+            &UpdateArgs {
+                dependency_alias: None,
+                project: ProjectRootArgs {
+                    root: root.path().to_path_buf(),
+                },
+            },
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("failed to list releases for 'acme'"),
+            "{error}"
+        );
+        assert!(!root.path().join("trellis.lock").exists());
     }
 
     #[tokio::test]
