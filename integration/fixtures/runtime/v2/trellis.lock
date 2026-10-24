@@ -1,0 +1,28 @@
+format = 2
+root = "runtime-trellis"
+
+[[packages]]
+name = "runtime-trellis"
+version = "0.100.0"
+digest = "1ozo2QDN-1n5ejOZL29qFFVZLy9ef0vO7ojkN-iKXL8"
+distribution-digest = "sha256:380789d6c9f8964b2854fc7a879b4418166fd1cb193cb6b5477737dcab5e160f"
+
+[[packages.dependencies]]
+name = "trellis"
+version = "0.100.0"
+digest = "5oikZNdhNiboROjZwa26SfHYhaoe7wV9QT25-iMR1Ow"
+
+[packages.source]
+kind = "path"
+path = "."
+
+[[packages]]
+name = "trellis"
+version = "0.100.0"
+digest = "5oikZNdhNiboROjZwa26SfHYhaoe7wV9QT25-iMR1Ow"
+distribution-digest = "sha256:4e34bf1a8bf6105b6f5dfee21ad2ef920cc9f154ccddbf36daa9f939deab6142"
+dependencies = []
+
+[packages.source]
+kind = "path"
+path = "../../../../crates/builtin-contracts"

@@ -7,7 +7,7 @@ validation libraries, databases, dependency injection, or general coding rules.
 ## Documentation
 
 Use Trellis documentation matching the installed CLI and libraries. With a local
-checkout, read `docs/static/llms.txt` and the relevant language guide there.
+checkout, read `docs/static/llms-core.txt` and the relevant language guide there.
 Otherwise use those files from the matching release revision, not automatically
 from `main`. Public API documentation is linked from the Trellis docs site's
 `/api`; generated source defines this project's exact participant methods.

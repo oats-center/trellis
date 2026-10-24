@@ -1,13 +1,14 @@
 use std::path::PathBuf;
 
 use trellis_runtime::{
-    AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig,
+    AuthConfig, AuthorizationConfig, ClientConfig, HttpConfig, LeasesConfig, ListenerTransport,
     LiveProviderSeedFilesConfig, LocalIdentityConfig, NatsAuthCalloutConfig, NatsConfig,
-    NatsRuntimeConfig, OAuthConfig, PlatformTtlConfig, RuntimeConfig, StorageConfig,
-    SubsystemConfig,
+    NatsRuntimeConfig, OAuthListenerConfig, RuntimeConfig, StorageConfig, SubsystemConfig,
+    TlsConfig,
 };
 
-use crate::types::TrellisBootstrapOptions;
+use crate::tls::{BUNDLE_CA_CERTIFICATE, RUNTIME_CERTIFICATE, RUNTIME_PRIVATE_KEY};
+use crate::types::{BootstrapTls, TrellisBootstrapOptions};
 
 /// Render the Trellis runtime TOML config for a full bootstrap bundle.
 ///
@@ -27,6 +28,41 @@ pub fn render_trellis_config(options: &TrellisBootstrapOptions) -> String {
 /// Build the shared Rust runtime config value for a bootstrap bundle.
 #[must_use]
 pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfig {
+    let bundle_path = |path: &str| PathBuf::from(format!("./{path}"));
+    let transport = if !options.runtime.trusted_proxies.is_empty() {
+        ListenerTransport::Proxy {
+            trusted_proxies: options.runtime.trusted_proxies.clone(),
+        }
+    } else if options.runtime.tls == BootstrapTls::LoopbackDevelopment {
+        ListenerTransport::LoopbackDevelopment
+    } else {
+        ListenerTransport::Tls {
+            certificate_chain: bundle_path(RUNTIME_CERTIFICATE),
+            private_key: bundle_path(RUNTIME_PRIVATE_KEY),
+        }
+    };
+    let ca_certificate = match &options.runtime.tls {
+        BootstrapTls::Generated { .. } => Some(bundle_path(BUNDLE_CA_CERTIFICATE)),
+        BootstrapTls::Supplied(supplied) => supplied
+            .ca_certificate
+            .as_ref()
+            .map(|_| bundle_path(BUNDLE_CA_CERTIFICATE)),
+        BootstrapTls::LoopbackDevelopment => None,
+    };
+    let oauth = OAuthListenerConfig {
+        origin: options.runtime.oauth_origin.clone(),
+        bind_address: options.runtime.bind_address.unwrap_or(
+            if transport == ListenerTransport::LoopbackDevelopment {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv4Addr::UNSPECIFIED.into()
+            },
+        ),
+        port: options.runtime.oauth_port,
+        transport: transport.clone(),
+        // A proxy transport already presents the forwarded client.
+        trusted_proxies: Vec::new(),
+    };
     RuntimeConfig {
         instance_name: Some(options.runtime.name.clone()),
         event_session_seed_file: Some(PathBuf::from("./session.seed")),
@@ -38,6 +74,9 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             events: Some(PathBuf::from("./live-providers/events.seed")),
         }),
         paths: None,
+        tls: matches!(options.runtime.tls, BootstrapTls::Generated { .. }).then(|| TlsConfig {
+            generated_ca_certificate: Some(bundle_path(BUNDLE_CA_CERTIFICATE)),
+        }),
         http: Some(HttpConfig {
             port: Some(options.runtime.trellis_port),
             bind_address: options.runtime.bind_address,
@@ -47,19 +86,11 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 origins.extend(options.runtime.extra_origins.iter().cloned());
                 origins
             }),
-            allow_insecure_origins: Some({
-                let mut origins = vec![options.runtime.public_origin.clone()];
-                origins.extend(options.runtime.extra_origins.iter().cloned());
-                origins
-            }),
-            web_source: options.runtime.web_source.clone(),
-            portal_source: options.runtime.portal_source.clone(),
-            console_source: options.runtime.console_source.clone(),
-            rate_limit_max: Some(options.runtime.rate_limit_max),
-            rate_limit_window_ms: Some(options.runtime.rate_limit_window_ms),
+            transport: (transport != ListenerTransport::LoopbackDevelopment).then_some(transport),
         }),
         nats: Some(NatsConfig {
             servers: Some(options.runtime.nats_server_url.clone()),
+            ca_certificate,
             runtime: Some(NatsRuntimeConfig {
                 auth_creds_path: Some(PathBuf::from("./nats/creds/auth-auth.creds")),
                 trellis_creds_path: Some(PathBuf::from("./nats/creds/trellis-auth.creds")),
@@ -87,6 +118,11 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             renew_ms: Some(5_000),
         }),
         auth: Some(AuthConfig {
+            avatar: None,
+            administration: Default::default(),
+            instance_id: Some(options.runtime.instance_id.clone()),
+            oauth: Some(oauth),
+            oauth_storage_key_file: Some(PathBuf::from("./auth/oauth-storage.key")),
             local_identity: Some(LocalIdentityConfig {
                 enabled: Some(true),
                 password_min_length: Some(8),
@@ -98,36 +134,17 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                     .authorization
                     .context_lifetime_seconds
                     .unwrap_or(300),
-                refresh_lead_seconds: options
+                allowed_clock_skew_seconds: options
                     .runtime
                     .authorization
-                    .refresh_lead_seconds
-                    .unwrap_or(60),
-                refresh_jitter_seconds: options
+                    .allowed_clock_skew_seconds
+                    .unwrap_or(30),
+                oauth_admission_lifetime_seconds: options
                     .runtime
                     .authorization
-                    .refresh_jitter_seconds
-                    .unwrap_or(15),
-                minimum_context_lifetime_seconds: options
-                    .runtime
-                    .authorization
-                    .minimum_context_lifetime_seconds
-                    .unwrap_or(76),
-                maximum_bootstrap_jwt_lifetime_seconds: 3_600,
-                allowed_clock_skew_seconds: 30,
-                maximum_context_bytes: 65_536,
-                maximum_permissions: 4_096,
-                context_bucket: "trellis_authorization_contexts".to_owned(),
-                registry_replicas: 1,
+                    .oauth_admission_lifetime_seconds
+                    .unwrap_or(300),
             }),
-        }),
-        oauth: Some(OAuthConfig {
-            redirect_base: Some(format!(
-                "{}/auth/callback",
-                options.runtime.public_origin.trim_end_matches('/')
-            )),
-            always_show_provider_chooser: Some(false),
-            providers: options.runtime.oauth_providers.clone(),
         }),
         platform: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -135,12 +152,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: None,
             transport_max_bytes: None,
             retention_days: None,
-            ttl_ms: Some(PlatformTtlConfig {
-                sessions: Some(options.runtime.ttl_ms.sessions.unwrap_or(86_400_000)),
-                oauth: Some(options.runtime.ttl_ms.oauth.unwrap_or(300_000)),
-                device_flow: Some(options.runtime.ttl_ms.device_flow.unwrap_or(1_800_000)),
-                pending_auth: Some(options.runtime.ttl_ms.pending_auth.unwrap_or(300_000)),
-            }),
         }),
         jobs: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -148,7 +159,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: None,
             transport_max_bytes: None,
             retention_days: None,
-            ttl_ms: None,
         }),
         health: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -156,7 +166,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: Some(24),
             transport_max_bytes: Some(1_073_741_824),
             retention_days: None,
-            ttl_ms: None,
         }),
         events: Some(SubsystemConfig {
             storage: Some(sqlite_storage()),
@@ -164,7 +173,6 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             transport_retention_hours: None,
             transport_max_bytes: None,
             retention_days: Some(7),
-            ttl_ms: None,
         }),
     }
 }

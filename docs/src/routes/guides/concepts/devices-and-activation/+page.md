@@ -1,0 +1,83 @@
+---
+title: "Devices and activation"
+description: "Preregistered devices, activation portals, device deployments, review policy, and online credentials."
+---
+
+Activated devices are first-class Trellis principals. They are preregistered against deployment-owned device records, activated through a portal flow, and later connect with their own durable identity key.
+
+## Preregistered devices
+
+Known device activation starts from a preregistered device instance record.
+
+The expected lifecycle is:
+
+1. an admin or manufacturing process provisions the device instance by `publicIdentityKey` and `activationKey`
+2. the instance is attached to a device deployment
+3. a user activates the device through an authenticated portal flow and, when
+   declared, separately approves its app or agent companion
+4. the activated device bootstraps with its durable identity and a fresh session
+   key; an approved companion connects alongside it under separate user authority
+
+Unknown or self-registering devices may be added later as an extension, but they are not the primary v1 model.
+
+## Device identity
+
+Each activated device is its own Trellis principal.
+
+- the device later authenticates with its own identity key, not as the user who activated it
+- the user identity and the device identity are intentionally separate
+- a short confirmation code is only a local setup signal; it is never the device's online credential
+
+Devices derive purpose-specific keys from a root secret. The identity key becomes the online credential. The activation key is used only for QR MACs and optional offline confirmation.
+
+Trellis stores the public identity key plus activation-only secret material. It does not need the device root secret.
+
+## Device deployments
+
+A device deployment is a deployment-owned record used during activation and
+online auth. It selects the installed participant, review policy, resource
+evidence, and lifecycle state for attached devices.
+
+Activated devices present a signed provisioned admission in NATS CONNECT.
+Auth Callout resolves the installed participant and current deployment
+server-side before granting NATS access.
+
+## Activation portals
+
+Device activation uses a browser portal. The built-in activation portal is Trellis-owned, but deployments can configure device-specific portal routing.
+
+The activation portal is still a browser web app. If it calls Trellis after login, it acts as the logged-in user, not as a service and not as the device.
+
+## Device companions
+
+A device contract may declare one app or agent as its lexical child. The child
+cannot initiate a standalone browser or native bootstrap. Enrollment claims the
+exact child and installation key, and activation is the only flow that can
+establish its ordinary user login.
+
+The activation operation exposes server-computed `companionConsent` for that
+child. The approving user submits a separate child `Approval` containing the
+same decision digest, installed revision, and expected grant revision, with
+exact selections drawn from eligible capabilities and resources. Required
+eligible entries must be selected. Auth rejects stale consent or any mismatched
+capability consent digest or resource commitment.
+
+Auth commits the child approval and device authority before creating the child
+session. The resulting child uses its own user-owned grant, session,
+authorization context, resource bindings, and connection. None of those are
+shared with the parent device, and the device credential cannot replace the
+user's authority.
+
+## Review policy
+
+Device deployments may require review before a device becomes usable online. Review policy is deployment-owned, which means operators can decide whether activation is automatic, manually reviewed, or disabled for a deployment.
+
+Review gates activation. It does not replace the later runtime proof. Once
+approved, the device still authenticates with its identity key and receives
+only the grants/resources in its current participant-scoped binding.
+
+## Online credentials
+
+The durable online credential is the device identity key. Activation-only material is not an online password and should not be treated as reusable runtime auth.
+
+This separation lets setup flows use QR codes or local confirmation codes without turning those setup artifacts into long-lived credentials.

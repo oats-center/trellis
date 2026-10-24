@@ -1,3 +1,5 @@
+import { auth } from trellis;
+
 model Value { value: string; }
 model Status { stage: string; }
 model Preview { text: string; }
@@ -19,20 +21,51 @@ api echo@v1 {
   operation Upload { input Value; output Value; upload; }
   event Observed { payload Value; }
   capabilities {
-    public { allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; operation Upload; publish event Observed; subscribe event Observed; } }
-    capability optionalSilent {
+    capability echo.invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; grants "The caller may invoke Echo, work operations, and observe results."; allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
+    capability files.upload { title "Upload"; description "Upload fixture values."; grants "The caller may execute uploads."; allows { operation Upload; } }
+    capability events.publishObserved { title "Publish observations"; description "Publish fixture observations."; grants "The publisher may emit Observed events."; allows { publish event Observed; } }
+    capability echo.optionalSilent {
       title "Optional silent operation";
       description "Partial lifecycle authorization acceptance.";
-      consequence "The caller can invoke and manage Silent.";
+      grants "The caller can invoke and manage the optional silent operation.";
       allows { operation OptionalSilent; }
     }
   }
 }
 
 service Provider { implements echo; }
-app Caller { use echo { rpc Echo; operation Work; operation UpdateOnly; operation Silent; operation Upload; subscribe event Observed; } }
-agent AgentCaller { use echo { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
-app RestrictedCaller {}
-app OptionalOperationCaller { use echo { operation OptionalSilent; optional capability optionalSilent; } }
-app OperationAuthorizationCaller { use echo { operation OptionalSilent; } }
+service Consumer { use echo { required capability echo.invoke; capability echo.optionalSilent; } }
+service JobsProvider {
+  job work { title "Work"; description "Private lifecycle recovery acceptance"; payload Value; result Value; }
+}
+service KvProvider {
+  store objects { title "Private objects"; description "Raw resource isolation acceptance"; ttl 0; desired_max_object 1MiB; desired_max_total 8MiB; }
+  kv records {
+    title "Records";
+    description "Authenticated generated KV availability across connection readiness.";
+    schema Value;
+    version 1;
+    history 4;
+    ttl 0ms;
+  }
+}
+agent Caller { use echo { required capability echo.invoke; required capability files.upload; } }
+agent AgentCaller { use echo { required capability echo.invoke; } }
+agent RestrictedCaller {}
+agent OptionalOperationCaller { use echo { capability echo.optionalSilent; } }
+agent OperationAuthorizationCaller { use echo { required capability echo.optionalSilent; } }
 device UnsupportedDevice {}
+device CompanionDevice {
+  state saved { title "Device saved value"; description "Installed device State authority acceptance"; schema Value; version 1; }
+  agent Companion {
+    state saved { title "User saved value"; description "Independent companion State authority acceptance"; schema Value; version 1; }
+    use auth { required capability account.linkDevice; }
+    use echo { required capability echo.invoke; }
+  }
+}
+device OptionalCompanionDevice {
+  agent optional Companion {
+    use auth { required capability account.linkDevice; }
+    use echo { required capability echo.invoke; }
+  }
+}

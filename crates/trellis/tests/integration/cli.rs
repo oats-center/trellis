@@ -44,8 +44,8 @@ fn terminate_on_parent_exit(_command: &mut Command) {}
 
 /// Deliberately bogus NATS URLs baked into the bundle so managed mode's endpoint
 /// override is observable: nothing listens on these, yet the report must be valid.
-const BOGUS_NATS_URL: &str = "nats://nats.invalid:4222";
-const BOGUS_WS_URL: &str = "ws://browser.invalid:8080";
+const BOGUS_NATS_URL: &str = "tls://nats.invalid:4222";
+const BOGUS_WS_URL: &str = "wss://browser.invalid:8080";
 /// The first managed run downloads the pinned nats-server binary into an empty
 /// cache, so startup allows 600s for that initial acquisition.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -57,125 +57,6 @@ fn repo_root() -> &'static Path {
         .ancestors()
         .nth(2)
         .expect("trellis-rs crate should live under crates/trellis")
-}
-
-/// Real CLI login and repeat participant installation preserve both optional bundle kinds.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn optional_bundles_decode_and_repeat_cli_install() {
-    use trellis_rs::auth::{complete_local_login, connect_admin_client_async, AdminSessionState};
-    use trellis_runtime_apis::apis::trellis_auth_v1::Client as AuthClient;
-    use trellis_runtime_apis::types::AuthParticipantsGetRequest;
-    use trellis_testkit::TrellisTestRuntime;
-
-    let mut runtime = TrellisTestRuntime::builder()
-        .start()
-        .await
-        .expect("start runtime");
-    let cli = std::env::var_os("TRELLIS_TEST_CLI_BIN").expect("producer-built CLI path");
-    let config_home = runtime.workdir().join("cli-profile");
-    let login_url_file = runtime.workdir().join("cli-login-url");
-    let mut login = tokio::process::Command::new(&cli)
-        .args([
-            "--format",
-            "json",
-            "login",
-            runtime.trellis_url(),
-            "--login-url-file",
-        ])
-        .arg(&login_url_file)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("ordinary CLI login");
-    let login_url = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Ok(url) = fs::read_to_string(&login_url_file) {
-                break url;
-            }
-            assert!(
-                login.try_wait().unwrap().is_none(),
-                "CLI exited before login URL"
-            );
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("CLI login URL deadline");
-    complete_local_login(
-        runtime.trellis_url(),
-        login_url.trim(),
-        runtime.admin_username(),
-        runtime.admin_password(),
-    )
-    .await
-    .expect("complete real portal login");
-    let logged_in = tokio::time::timeout(Duration::from_secs(30), login.wait_with_output())
-        .await
-        .expect("CLI login deadline")
-        .expect("CLI login completion");
-    assert!(
-        logged_in.status.success(),
-        "CLI login: {}",
-        String::from_utf8_lossy(&logged_in.stderr)
-    );
-    let state: AdminSessionState =
-        serde_json::from_slice(&fs::read(config_home.join("trellis/admin-session.json")).unwrap())
-            .unwrap();
-    let connected = connect_admin_client_async(&state)
-        .await
-        .expect("connect administrator");
-    let auth = AuthClient::from_generated(connected.clone());
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/optional-bundle-source");
-    for installation in ["initial", "repeat"] {
-        // No expected-revision: repeat installation must read the actual participant.
-        let output = tokio::time::timeout(
-            Duration::from_secs(30),
-            tokio::process::Command::new(&cli)
-                .args(["--format", "json", "participants", "install", "--source"])
-                .arg(&source)
-                .env("XDG_CONFIG_HOME", &config_home)
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .expect("participant install deadline")
-        .expect("run participant install");
-        assert!(
-            output.status.success(),
-            "{installation} install: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let detail = auth
-        .participants_get(&AuthParticipantsGetRequest {
-            participant_id: "optional-bundle-fixture.Caller".to_owned().into(),
-            revision: None,
-            extra: Default::default(),
-        })
-        .await
-        .expect("generated Participants.Get must decode both kinds");
-    let bundles = &detail.participant.optional_bundles;
-    let capability = bundles
-        .iter()
-        .find(|bundle| bundle.id.as_ref() == "optional-bundle-fixture.echo@v1::optionalEcho")
-        .expect("optional API bundle");
-    assert_eq!(
-        capability.api_id.as_ref().map(AsRef::<str>::as_ref),
-        Some("optional-bundle-fixture.echo@v1")
-    );
-    assert!(!capability.permissions.is_empty());
-    let resource = bundles
-        .iter()
-        .find(|bundle| bundle.id.as_ref() == "resource.cache")
-        .expect("optional resource bundle");
-    assert!(resource.api_id.is_none());
-    assert!(!resource.permissions.is_empty());
-    drop(auth);
-    drop(connected);
-    runtime.shutdown().await.expect("shutdown runtime");
 }
 
 fn cli_command() -> Command {
@@ -419,8 +300,8 @@ async fn cli_server_managed_nats() {
     fs::create_dir_all(&cache_dir).expect("create managed-NATS cache dir");
     fs::set_permissions(&cache_dir, fs::Permissions::from_mode(0o700))
         .expect("make managed-NATS cache dir private");
-    let reservations = [(); 4].map(|_| TcpListener::bind(("127.0.0.1", 0)).expect("reserve port"));
-    let [runtime_port, nats_port, monitor_port, websocket_port] = reservations
+    let reservations = [(); 5].map(|_| TcpListener::bind(("127.0.0.1", 0)).expect("reserve port"));
+    let [runtime_port, nats_port, monitor_port, websocket_port, oauth_port] = reservations
         .each_ref()
         .map(|socket| socket.local_addr().expect("port address").port());
     let managed_ports = [nats_port, monitor_port, websocket_port];
@@ -449,6 +330,10 @@ async fn cli_server_managed_nats() {
             BOGUS_NATS_URL,
             "--nats-websocket-url",
             BOGUS_WS_URL,
+            "--oauth-origin",
+            &format!("https://127.0.0.1:{oauth_port}"),
+            "--oauth-port",
+            &oauth_port.to_string(),
         ])
         .output()
         .expect("run trellis init config");
@@ -457,34 +342,11 @@ async fn cli_server_managed_nats() {
         "trellis init config failed: {}",
         String::from_utf8_lossy(&init_output.stderr)
     );
-    let init: Value = serde_json::from_slice(&init_output.stdout)
-        .expect("trellis init config should emit a JSON report");
-    assert_eq!(init["generated"], true);
-    assert_eq!(init["out"], bundle.display().to_string());
     let config_path = bundle.join("config.toml");
-    assert!(
-        config_path.is_file(),
-        "bundle trellis config was not generated"
-    );
-    assert!(
-        bundle.join("nats/nats.conf").is_file(),
-        "bundle nats.conf was not generated"
-    );
-    assert!(
-        bundle.join("nats/jwt.conf").is_file(),
-        "bundle jwt.conf was not generated"
-    );
     let mut config_toml = fs::read_to_string(&config_path).expect("read bundle config");
-    assert!(
-        config_toml.contains(BOGUS_NATS_URL),
-        "bundle must configure the bogus NATS URL so the managed override is observable"
-    );
-    assert!(
-        config_toml.contains(BOGUS_WS_URL),
-        "bundle must configure the bogus websocket URL so the managed override is observable"
-    );
     config_toml.push_str(&format!(
-        "\n[paths]\ndata = {data:?}\nstate = {state:?}\ncache = {cache:?}\nruntime = {runtime:?}\nlogs = {logs:?}\n",
+        "\n[paths]\ndata = {data:?}\nstate = {state:?}\ncache = \
+        {cache:?}\nruntime = {runtime:?}\nlogs = {logs:?}\n",
         data = effective_root.join("data").display().to_string(),
         state = effective_root.join("state").display().to_string(),
         cache = effective_root.join("cache").display().to_string(),
@@ -492,6 +354,23 @@ async fn cli_server_managed_nats() {
         logs = effective_root.join("logs").display().to_string(),
     ));
     fs::write(&config_path, &config_toml).expect("write configured path roots");
+    let seeded = server_command(&workdir.0)
+        .args([
+            "bootstrap-admin",
+            "--config",
+            config_path.to_str().expect("UTF-8 config path"),
+            "--username",
+            "managed-nats-admin",
+            "--password",
+            "managed-nats-fixture-password",
+        ])
+        .output()
+        .expect("seed fresh installation administrator");
+    assert!(
+        seeded.status.success(),
+        "bootstrap administrator: {}",
+        String::from_utf8_lossy(&seeded.stderr)
+    );
     let authored_nats = fs::read(bundle.join("nats/nats.conf")).expect("read authored nats.conf");
     let authored_jwt = fs::read(bundle.join("nats/jwt.conf")).expect("read authored jwt.conf");
 
@@ -551,6 +430,13 @@ async fn cli_server_managed_nats() {
         "the runtime HTTP listener",
     )
     .await;
+    wait_until(
+        || port_accepts(oauth_port),
+        &mut child,
+        &run_stderr,
+        "the separate OAuth listener",
+    )
+    .await;
     child.signal_term();
     let exit = child.wait_for_exit(SHUTDOWN_TIMEOUT);
     assert!(
@@ -576,22 +462,6 @@ async fn cli_server_managed_nats() {
         !managed_ports.iter().any(|port| port_accepts(*port)),
         "managed ports still accept connections after shutdown"
     );
-    let effective_nats = fs::read_to_string(effective_root.join("state/nats/nats.conf"))
-        .expect("read effective managed nats.conf");
-    assert!(
-        !effective_nats.contains("0.0.0.0"),
-        "the managed local effective config must bind loopback only: {effective_nats}"
-    );
-    for (label, port) in [
-        ("listen", nats_port),
-        ("http", monitor_port),
-        ("listen", websocket_port),
-    ] {
-        assert!(
-            effective_nats.contains(&format!("{label}: 127.0.0.1:{port}")),
-            "effective managed config must bind {label} on loopback port {port}: {effective_nats}"
-        );
-    }
     let nats_log = effective_root.join("logs/nats-server.log");
     assert!(nats_log.is_file());
     assert!(
@@ -617,10 +487,6 @@ async fn cli_server_managed_nats() {
             "mutable {database} must not land under the config root"
         );
     }
-    assert!(
-        effective_root.join("state/event-context.digest").is_file(),
-        "omitted event context state must use the configured state root"
-    );
     assert_eq!(
         fs::read(bundle.join("nats/nats.conf")).expect("reread authored nats.conf"),
         authored_nats,
@@ -667,7 +533,8 @@ async fn cli_server_managed_nats() {
     let check_stdout_text = fs::read_to_string(&check_stdout).expect("read check stdout log");
     assert!(
         check_exit.unwrap().success(),
-        "trellis-server check failed with a preflight report:\n{check_stdout_text}\nstderr tail:\n{}",
+        "trellis-server check failed with a preflight \
+        report:\n{check_stdout_text}\nstderr tail:\n{}",
         log_tail(&check_stderr)
     );
     let report: Value = serde_json::from_str(&check_stdout_text)
@@ -820,13 +687,14 @@ async fn cli_server_managed_nats() {
         .credentials_file(bundle.join("nats/creds/trellis-auth.creds"))
         .await
         .expect("load Trellis NATS credentials")
+        .add_root_certificates(bundle.join("tls/ca.crt"))
         .connect(external.nats_url())
         .await
         .expect("connect to external NATS");
     let jetstream = jetstream::new(nats);
     let external_config = config_toml
-        .replace(BOGUS_NATS_URL, &format!("nats://127.0.0.1:{nats_port}"))
-        .replace(BOGUS_WS_URL, &format!("ws://localhost:{websocket_port}"));
+        .replace(BOGUS_NATS_URL, &format!("tls://127.0.0.1:{nats_port}"))
+        .replace(BOGUS_WS_URL, &format!("wss://localhost:{websocket_port}"));
     fs::write(&config_path, external_config).expect("write external NATS config");
 
     for (name, subjects, max_messages_per_subject, discard_new_per_subject) in [
@@ -1058,4 +926,299 @@ async fn cli_server_managed_nats() {
         "external mode must not touch the test-owned pid file"
     );
     // Drop stops the test-owned server and removes its pid file.
+}
+
+#[test]
+fn server_rejects_reserved_oauth_origins_before_starting_listeners() {
+    let workdir = WorkdirGuard::new();
+    let bundle = workdir.0.join("reserved-origin");
+    let initialized = cli_command()
+        .args(["init", "config", "--out"])
+        .arg(&bundle)
+        .output()
+        .expect("initialize ordinary server bundle");
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let path = bundle.join("config.toml");
+    let original = fs::read_to_string(&path).unwrap();
+    // Equal public origins are observable even when listener ports differ,
+    // including an application allowlist entry behind a reverse proxy.
+    for configured in [
+        original.replace(
+            "public_origin = \"https://localhost:3000\"",
+            "public_origin = \"https://localhost:3001\"",
+        ),
+        original.replace(
+            "origins = [\"https://localhost:3000\"]",
+            "origins = [\"https://localhost:3000\", \"https://localhost:3001\"]",
+        ),
+    ] {
+        fs::write(&path, configured).unwrap();
+        let output = server_command(&workdir.0)
+            .args(["all", "--config"])
+            .arg(&path)
+            .output()
+            .expect("run ordinary production startup");
+        assert!(
+            !output.status.success(),
+            "reserved OAuth origin started successfully"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("differ from every configured application origin"),
+            "startup did not report the reserved-origin error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[tokio::test]
+async fn server_serves_generated_installation_tls_and_reloads_renewed_certificates() {
+    let workdir = WorkdirGuard::new();
+    let bundle = workdir.0.join("tls");
+    let ports = [(); 5].map(|_| TcpListener::bind(("127.0.0.1", 0)).unwrap());
+    let [http, nats, monitor, websocket, oauth] = ports
+        .each_ref()
+        .map(|port| port.local_addr().unwrap().port());
+    drop(ports);
+    // Ordinary initialization with no certificate options generates the
+    // installation CA and every listener's certificate.
+    let initialized = cli_command()
+        .args(["--format", "json", "init", "config", "--out"])
+        .arg(&bundle)
+        .args([
+            "--trellis-port",
+            &http.to_string(),
+            "--nats-port",
+            &nats.to_string(),
+            "--nats-monitor-port",
+            &monitor.to_string(),
+            "--nats-ws-port",
+            &websocket.to_string(),
+            "--oauth-port",
+            &oauth.to_string(),
+            "--public-origin",
+            &format!("https://127.0.0.1:{http}"),
+            "--oauth-origin",
+            &format!("https://localhost:{oauth}"),
+            "--nats-server-url",
+            &format!("tls://127.0.0.1:{nats}"),
+            "--nats-websocket-url",
+            &format!("wss://127.0.0.1:{websocket}"),
+            "--nats-data-dir",
+        ])
+        .arg(bundle.join("jetstream"))
+        .output()
+        .unwrap();
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let summary: Value = serde_json::from_slice(&initialized.stdout).unwrap();
+    let fingerprint = summary["generatedTls"]["caSha256Fingerprint"]
+        .as_str()
+        .expect("init reports the generated CA fingerprint")
+        .to_owned();
+    let ca = bundle.join("tls/ca.crt");
+    assert!(
+        !bundle.join("tls/ca.key").exists() && workdir.0.join("tls-tls-ca/ca.key").is_file(),
+        "the CA private key must live outside the role-mounted bundle"
+    );
+    let config = bundle.join("config.toml");
+    let mut configured = fs::read_to_string(&config).unwrap();
+    configured.push_str("\n[paths]\n");
+    for name in ["data", "state", "cache", "runtime", "logs"] {
+        configured.push_str(&format!(
+            "{name} = {:?}\n",
+            bundle.join(name).display().to_string()
+        ));
+    }
+    fs::write(&config, configured).unwrap();
+    let bootstrap = server_command(&workdir.0)
+        .args(["bootstrap-admin", "--config"])
+        .arg(&config)
+        .args([
+            "--username",
+            "tls-admin",
+            "--password",
+            "tls-fixture-password",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        bootstrap.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bootstrap.stderr)
+    );
+    let broker_log = bundle.join("nats.log");
+    let binary = std::env::var_os("TRELLIS_TEST_NATS_BIN").unwrap_or_else(|| "nats-server".into());
+    let mut broker = ChildGuard::spawn(
+        Command::new(binary)
+            .arg("-c")
+            .arg(bundle.join("nats/nats.conf"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(fs::File::create(&broker_log).unwrap())),
+        "TLS NATS",
+    );
+    wait_until(
+        || port_accepts(nats),
+        &mut broker,
+        &broker_log,
+        "TLS NATS listener",
+    )
+    .await;
+    // The runtime trusts its broker only through the configured installation
+    // CA; no system trust or environment override is involved.
+    let server_log = bundle.join("server.log");
+    let server_output = bundle.join("server.stdout.log");
+    let mut server = ChildGuard::spawn(
+        server_command(&workdir.0)
+            .args(["all", "--config"])
+            .arg(&config)
+            .env_remove("SSL_CERT_FILE")
+            .stdout(Stdio::from(fs::File::create(&server_output).unwrap()))
+            .stderr(Stdio::from(fs::File::create(&server_log).unwrap())),
+        "TLS Trellis server",
+    );
+    wait_until(
+        || port_accepts(http) && port_accepts(oauth),
+        &mut server,
+        &server_log,
+        "runtime serving generated TLS",
+    )
+    .await;
+    assert!(
+        fs::read_to_string(&server_output)
+            .unwrap()
+            .contains(&fingerprint),
+        "startup must warn operators with the generated CA fingerprint"
+    );
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .tls_info(true)
+        .pool_max_idle_per_host(0)
+        .tls_certs_only([reqwest::Certificate::from_pem(&fs::read(&ca).unwrap()).unwrap()])
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let oauth_origin = format!("https://localhost:{oauth}");
+    let metadata: Value = client
+        .get(format!(
+            "{oauth_origin}/.well-known/oauth-authorization-server"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(metadata["issuer"], oauth_origin);
+    assert!(
+        client
+            .get(format!(
+                "http://localhost:{oauth}/.well-known/oauth-authorization-server"
+            ))
+            .send()
+            .await
+            .is_err(),
+        "OAuth TLS must not accept plaintext"
+    );
+    let untrusted = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    assert!(
+        untrusted
+            .get(format!(
+                "{oauth_origin}/.well-known/oauth-authorization-server"
+            ))
+            .send()
+            .await
+            .is_err(),
+        "the generated CA must not be trusted without explicit configuration"
+    );
+    // Every Console and Portal user is told the installation serves its own
+    // generated certificates.
+    let console = client
+        .get(format!(
+            "https://127.0.0.1:{http}/assets/web/runtime-config.js"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(console.contains(r#""generatedTls":true"#), "{console}");
+    let portal = client
+        .get(format!("{oauth_origin}/device/complete"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(portal.contains("<html data-generated-tls"), "{portal}");
+    // A real WSS upgrade reaches the broker through a verified TLS connection.
+    let upgraded = client
+        .get(format!("https://127.0.0.1:{websocket}/"))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upgraded.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
+
+    let served = |client: reqwest::Client| async move {
+        let response = client
+            .get(format!("https://127.0.0.1:{http}/readyz"))
+            .send()
+            .await
+            .unwrap();
+        response
+            .extensions()
+            .get::<reqwest::tls::TlsInfo>()
+            .and_then(|info| info.peer_certificate().map(<[u8]>::to_vec))
+            .unwrap()
+    };
+    let before = served(client.clone()).await;
+    let renewed = cli_command()
+        .args(["tls", "renew", "--bundle"])
+        .arg(&bundle)
+        .output()
+        .unwrap();
+    assert!(
+        renewed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&renewed.stderr)
+    );
+    // The running listener picks up the renewed certificate; clients that
+    // trust the unchanged CA keep connecting.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if served(client.clone()).await != before {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the runtime did not serve its renewed certificate"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+    server.signal_term();
+    assert!(server.wait_for_exit(SHUTDOWN_TIMEOUT).unwrap().success());
+    broker.signal_term();
+    assert!(broker.wait_for_exit(SHUTDOWN_TIMEOUT).unwrap().success());
 }

@@ -134,9 +134,16 @@ impl PackageManifest {
                         None => self.default_registry.is_some(),
                     } =>
                 {
-                    VersionReq::parse(requirement).map_err(|error| miette!("invalid version requirement for '{alias}': {error}"))?;
+                    VersionReq::parse(requirement).map_err(|error| {
+                        miette!("invalid version requirement for '{alias}': {error}")
+                    })?;
                 }
-                _ => return Err(miette!("dependency '{alias}' must use either {{ package, path }} or {{ package, version, registry }}")),
+                _ => {
+                    return Err(miette!(
+                        "dependency '{alias}' must use either {{ package, path }} or {{ package, \
+                        version, registry }}"
+                    ))
+                }
             }
         }
         if let Some(default) = &self.default_registry {

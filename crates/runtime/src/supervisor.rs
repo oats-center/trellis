@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use trellis_rs::__internal::RuntimeOwner as _;
 
 use serde::Serialize;
 use thiserror::Error;
@@ -19,7 +20,6 @@ const NATS_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::leases::{LeaseError, LeaseKey};
 use crate::ownership::{OwnerContext, OwnerGroup, RuntimeOwnership};
-use crate::platform::auth::verifier::RuntimeAuthVerifier;
 use crate::resources::{stream_is_compatible, ExpectedRuntimeResources};
 use crate::shutdown::StopHandle;
 use crate::storage::{RuntimeStores, StoreError};
@@ -118,6 +118,7 @@ pub async fn check(
     config: RuntimeConfig,
     nats_servers: Option<&str>,
 ) -> Result<RuntimeCheckReport, RuntimeError> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut report = RuntimeCheckReport {
         valid: true,
         mode: mode.to_string(),
@@ -164,7 +165,13 @@ pub async fn check(
             return Ok(report);
         }
     };
-    let trellis_nats = match check_nats_connection(&nats.servers, &nats.trellis_creds_path).await {
+    let trellis_nats = match check_nats_connection(
+        &nats.servers,
+        nats.ca_certificate.as_deref(),
+        &nats.trellis_creds_path,
+    )
+    .await
+    {
         Ok(client) => {
             report.push(
                 "nats.trellis",
@@ -236,111 +243,112 @@ pub async fn check(
             error.to_string(),
         ),
     }
-    if expected_resources.requires(SubsystemName::Platform) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| RuntimeError::Platform(error.to_string()))?
-            .as_secs();
-        let now = i64::try_from(now)
-            .map_err(|_| RuntimeError::Platform("current time exceeds i64 seconds".to_owned()))?;
+    if matches!(mode, RuntimeMode::All | RuntimeMode::Platform) {
+        let keys = crate::platform::callout_keys(&config, &nats)?;
         let authorization = config.resolve_authorization()?;
-        let trust = match crate::platform::auth::context::trust::VerifiedTrustMaterial::load(
-            authorization,
-            now,
-        ) {
-            Ok(trust) => {
-                report.push(
-                    "authorization.issuer_file",
-                    RuntimeCheckStatus::Ok,
-                    "configured issuer signing material is valid",
-                );
-                trust
-            }
-            Err(error) => {
-                let detail = error.to_string();
-                let status = if detail.contains("expired") {
-                    RuntimeCheckStatus::Expired
-                } else {
-                    RuntimeCheckStatus::Error
-                };
-                report.push("authorization.issuer_file", status, detail);
-                return Ok(report);
-            }
-        };
+        if let Err(error) =
+            crate::platform::auth::read_custody_key(&authorization.issuer_signing_seed_file)
+        {
+            report.push(
+                "authorization.issuer_file",
+                RuntimeCheckStatus::Error,
+                error.to_string(),
+            );
+            return Ok(report);
+        }
+        report.push(
+            "authorization.issuer_file",
+            RuntimeCheckStatus::Ok,
+            "configured issuer signing material is valid",
+        );
+        let custody = config
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.oauth_storage_key_file.as_deref())
+            .ok_or_else(|| {
+                RuntimeError::Platform("auth.oauth_storage_key_file is required".into())
+            })?;
+        if let Err(error) = crate::platform::auth::read_custody_key(custody) {
+            report.push(
+                "authorization.oauth_custody",
+                RuntimeCheckStatus::Error,
+                error.to_string(),
+            );
+            return Ok(report);
+        }
+        report.push(
+            "authorization.oauth_custody",
+            RuntimeCheckStatus::Ok,
+            "configured OAuth storage custody is valid",
+        );
         if stores.platform()?.exists() {
-            let auth_store = crate::platform::auth::SqliteAuthorizationStore::open_read_only(
-                stores.platform()?,
-            )?;
-            match auth_store
-                .get_issuer_key(
-                    trust.issuer.key_id.clone(),
-                    now.checked_mul(1_000).ok_or_else(|| {
-                        RuntimeError::Platform("issuer check time overflow".to_owned())
-                    })?,
-                )
-                .await
-                .map_err(|error| RuntimeError::Platform(error.to_string()))?
-            {
-                Some(key) if key == trust.issuer => report.push(
+            let (platform, store_config, account) = (
+                stores.platform()?.clone(),
+                config.clone(),
+                keys.target_account().to_owned(),
+            );
+            let issuer = crate::platform::auth::blocking(move || {
+                let auth_store = crate::platform::auth::SqliteAuthorizationStore::open_read_only(
+                    &platform,
+                    &store_config,
+                    &account,
+                )?;
+                Ok::<_, RuntimeError>(auth_store.runtime_authorization_trust())
+            })
+            .await?;
+            match issuer {
+                Ok(_) => report.push(
                     "authorization.issuer_record",
                     RuntimeCheckStatus::Ok,
                     "configured public issuer key is retained and active",
                 ),
-                Some(_) => report.push(
+                Err(crate::platform::auth::AuthError::Denied) => report.push(
                     "authorization.issuer_record",
                     RuntimeCheckStatus::Incompatible,
-                    "configured issuer is retired, revoked, or has different public material",
+                    "configured issuer is not the active retained signing key",
                 ),
-                None => report.push(
+                Err(error) => report.push(
                     "authorization.issuer_record",
-                    RuntimeCheckStatus::Missing,
-                    "configured issuer has not been installed",
+                    RuntimeCheckStatus::Error,
+                    error.to_string(),
                 ),
             }
         }
-        match crate::platform::auth::NatsAuthEphemeralRepository::check(trellis_nats.clone()).await
-        {
-            Ok(()) => report.push(
-                "nats.auth_kv",
-                RuntimeCheckStatus::Ok,
-                "all required auth KV buckets exist with compatible limits",
-            ),
-            Err(error) => {
-                let detail = error.to_string();
-                let status = if detail.contains("missing") {
-                    RuntimeCheckStatus::Missing
-                } else {
-                    RuntimeCheckStatus::Incompatible
-                };
-                report.push("nats.auth_kv", status, detail);
-            }
-        }
-        match crate::platform::auth::context::AuthorizationContextRegistry::check(
-            trellis_nats.clone(),
-            authorization,
-        )
-        .await
-        {
-            Ok(()) => report.push(
-                "authorization.context_registry",
-                RuntimeCheckStatus::Ok,
-                "context and revocation registry settings match configuration",
-            ),
-            Err(error) => {
-                let detail = error.to_string();
-                let status = if detail.contains("does not exist") || detail.contains("not found") {
-                    RuntimeCheckStatus::Missing
-                } else {
-                    RuntimeCheckStatus::Incompatible
-                };
-                report.push("authorization.context_registry", status, detail);
+        for name in [
+            crate::platform::auth::MATERIAL_BUCKET,
+            crate::platform::auth::REVOCATION_BUCKET,
+        ] {
+            let check = format!("authorization.registry.{name}");
+            match jetstream.get_key_value(name).await {
+                Ok(bucket) => match bucket.status().await {
+                    Ok(status)
+                        if status.info.config.storage
+                            == async_nats::jetstream::stream::StorageType::File
+                            && status.max_age().is_zero() =>
+                    {
+                        report.push(
+                            &check,
+                            RuntimeCheckStatus::Ok,
+                            "durable nonexpiring verification evidence is retained",
+                        )
+                    }
+                    Ok(_) => report.push(
+                        &check,
+                        RuntimeCheckStatus::Incompatible,
+                        "verification evidence requires durable nonexpiring storage",
+                    ),
+                    Err(error) => report.push(&check, RuntimeCheckStatus::Error, error.to_string()),
+                },
+                Err(error) => report.push(&check, RuntimeCheckStatus::Missing, error.to_string()),
             }
         }
         for (name, credentials) in [
             ("nats.auth", &nats.auth_creds_path),
             ("nats.system", &nats.system_creds_path),
         ] {
-            match check_nats_connection(&nats.servers, credentials).await {
+            match check_nats_connection(&nats.servers, nats.ca_certificate.as_deref(), credentials)
+                .await
+            {
                 Ok(client) => {
                     let _ = client.drain().await;
                     report.push(
@@ -362,12 +370,16 @@ pub async fn check(
 
 async fn check_nats_connection(
     servers: &str,
+    ca_certificate: Option<&std::path::Path>,
     credentials: &std::path::Path,
 ) -> Result<async_nats::Client, RuntimeError> {
-    let options = async_nats::ConnectOptions::new()
+    let mut options = async_nats::ConnectOptions::new()
         .credentials_file(credentials)
         .await
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+    if let Some(ca) = ca_certificate {
+        options = options.add_root_certificates(ca.to_path_buf());
+    }
     let client = tokio::time::timeout(Duration::from_secs(10), options.connect(servers))
         .await
         .map_err(|_| RuntimeError::Nats("connection timed out".to_owned()))?
@@ -416,7 +428,8 @@ pub enum RuntimeError {
     },
     /// A selected singleton owner lease is already held.
     #[error(
-        "runtime owner lease {key:?} for {subsystem} is already held; owner {owner_id} cannot start: {source}"
+        "runtime owner lease {key:?} for {subsystem} is already held; owner \
+        {owner_id} cannot start: {source}"
     )]
     OwnerHeld {
         /// Selected subsystem owner group.
@@ -563,9 +576,9 @@ pub(crate) struct RuntimeContext {
     /// Fixed owner contexts for selected runtime subsystems.
     owners: BTreeMap<OwnerGroup, OwnerContext>,
     http_router: std::sync::Mutex<axum::Router>,
-    /// Runtime-local Auth verifier installed by the platform subsystem once the
-    /// validator cache is ready; absent in platform-less modes (fail closed).
-    pub(crate) platform_verifier: Arc<tokio::sync::OnceCell<RuntimeAuthVerifier>>,
+    /// Platform-owned aggregate store; other modes may only read provisioned identity.
+    pub(crate) authorization_store:
+        std::sync::OnceLock<Arc<crate::platform::auth::SqliteAuthorizationStore>>,
     /// Per-role delivery slots for built-in live provider owners.
     pub(crate) live_providers: crate::platform::LiveProviderSlots,
 }
@@ -578,11 +591,6 @@ impl RuntimeContext {
             .ok_or(RuntimeError::OwnerContextMissing {
                 subsystem: group.subsystem(),
             })
-    }
-
-    /// Resolve the public origin used for provider bootstrap and advertised URLs.
-    pub(crate) fn public_origin(&self) -> String {
-        self.config.public_origin()
     }
 
     pub(crate) fn register_http_router(&self, router: axum::Router) -> Result<(), RuntimeError> {
@@ -647,8 +655,17 @@ pub async fn run_with_stop(
     options: RuntimeOptions,
     stop: Option<crate::shutdown::StopHandle>,
 ) -> Result<(), RuntimeError> {
+    // NATS TLS connects before the OAuth/Console listeners initialize rustls.
+    // Select our provider before any TLS consumer builds a client configuration.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let config = options.config;
     config.validate_for_mode(options.mode)?;
+    if let Some(notice) =
+        crate::tls::GeneratedTlsNotice::from_config(&config, config.http_transport())
+            .map_err(|error| RuntimeError::Platform(error.to_string()))?
+    {
+        notice.warn();
+    }
     let nats = config.resolve_nats_runtime_with(
         options
             .nats_override
@@ -656,10 +673,14 @@ pub async fn run_with_stop(
             .map(|o| o.runtime_servers.as_str()),
     )?;
     let leases = config.resolve_leases()?;
-    let trellis_nats = async_nats::ConnectOptions::new()
+    let mut trellis_options = async_nats::ConnectOptions::new()
         .credentials_file(&nats.trellis_creds_path)
         .await
-        .map_err(|error| RuntimeError::Nats(error.to_string()))?
+        .map_err(|error| RuntimeError::Nats(error.to_string()))?;
+    if let Some(ca) = &nats.ca_certificate {
+        trellis_options = trellis_options.add_root_certificates(ca.clone());
+    }
+    let trellis_nats = trellis_options
         .connect(&nats.servers)
         .await
         .map_err(|error| RuntimeError::Nats(error.to_string()))?;
@@ -762,7 +783,7 @@ async fn run_owned(
         trellis_nats,
         owners: ownership.contexts(),
         http_router: std::sync::Mutex::new(axum::Router::new()),
-        platform_verifier: Arc::new(tokio::sync::OnceCell::new()),
+        authorization_store: std::sync::OnceLock::new(),
         live_providers: crate::platform::LiveProviderSlots::new(),
     };
     let primary = supervise_owned(&context, ownership, stop).await;
@@ -832,8 +853,25 @@ async fn supervise_owned(
             return Err(RuntimeError::from(error));
         }
     };
+    let transport = context.config.http_transport().clone();
+    let origin = match url::Url::parse(&context.config.public_origin()) {
+        Ok(origin) => origin,
+        Err(error) => {
+            root_stop.stop();
+            if let Err(cleanup) = stop_subsystems(handles).await {
+                tracing::error!(error = %cleanup, "runtime startup cleanup also failed");
+            }
+            return Err(RuntimeError::Config(
+                crate::ConfigError::InvalidPublicOrigin {
+                    origin: format!("{}: {error}", context.config.public_origin()),
+                },
+            ));
+        }
+    };
     let mut server = Box::pin(crate::serve_http_listener(
         listener,
+        &origin,
+        &transport,
         context.mode,
         http_router,
         std::sync::Arc::clone(&http_ready),
@@ -931,31 +969,106 @@ fn preserve_run_primary(
 }
 
 /// Bound on one built-in live provider's ordinary native bootstrap.
-const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 30_000;
+const BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS: u64 = 35_000;
 
 /// Connect every built-in live provider role selected by the runtime mode.
 ///
-/// This runs after the bootstrap HTTP listener begins serving so a built-in
-/// provider authenticates through the ordinary native service bootstrap and
-/// Auth Callout. Each connected owner is delivered to the subsystem that
+/// Providers authenticate through native Callout and signed own-context, without
+/// HTTP bootstrap. Each connected owner is delivered to the subsystem that
 /// serves its live routes; a role whose subsystem is selected but whose owner
 /// cannot be connected fails startup before any live router serves traffic.
 async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), RuntimeError> {
-    let trellis_url = context.public_origin();
+    let nats = context
+        .config
+        .resolve_nats_runtime_with(
+            context
+                .nats_override
+                .as_ref()
+                .map(|value| value.runtime_servers.as_str()),
+        )
+        .map_err(|error| RuntimeError::Platform(error.to_string()))?;
+    let store = context.authorization_store.get();
+    // The configured broker CA also anchors the Auth origin in a split
+    // deployment; the installation's generated CA issues both certificates.
+    let root_certificates: Vec<_> = nats.ca_certificate.iter().cloned().collect();
+    let mut trust = match store {
+        Some(store) => {
+            let store = store.clone();
+            crate::platform::auth::blocking(move || store.runtime_authorization_trust()).await?
+        }
+        None => {
+            let origin = context
+                .config
+                .auth
+                .as_ref()
+                .and_then(|auth| auth.oauth.as_ref())
+                .map(|oauth| oauth.origin.as_str())
+                .ok_or_else(|| {
+                    RuntimeError::Platform(
+                        "the selected Auth origin is required for split roles".into(),
+                    )
+                })?;
+            trellis_rs::auth::discover_native_oauth(origin, &root_certificates)
+                .await
+                .map_err(|error| {
+                    RuntimeError::Platform(format!("discover configured Auth origin: {error}"))
+                })?
+                .trust
+        }
+    };
+    trust.root_certificates = root_certificates;
     for role in crate::platform::LiveProviderRole::roles_for_mode(context.mode) {
         let identity_seed = crate::platform::load_live_provider_seed(&context.config, role)?;
+        let deployment = if let Some(store) = store {
+            Some(
+                crate::platform::prepare_builtin_live_provider(
+                    role,
+                    store,
+                    &context.trellis_nats,
+                    &identity_seed,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let client = crate::platform::connect_builtin_live_provider(
             role,
             &identity_seed,
             crate::platform::BuiltinLiveProviderConnectOptions {
-                trellis_url: &trellis_url,
+                nats_servers: nats
+                    .servers
+                    .split(',')
+                    .map(|server| server.trim().to_owned())
+                    .collect(),
+                trust: trust.clone(),
                 timeout_ms: BUILTIN_LIVE_PROVIDER_CONNECT_TIMEOUT_MS,
             },
         )
         .await?;
+        if let Some(deployment) = deployment {
+            let authority = client
+                .authorization_context()
+                .map_err(|error| RuntimeError::Platform(error.to_string()))?
+                .ok_or_else(|| {
+                    RuntimeError::Platform("built-in provider has no installed authority".into())
+                })?;
+            if authority.context.unsigned.principal_id != deployment.principal_id
+                || authority.context.unsigned.binding
+                    != (trellis_protocol::SessionBinding::Service {
+                        participant_id: deployment.participant_id,
+                        deployment_id: deployment.deployment_id,
+                        instance_id: deployment.instance_id,
+                    })
+            {
+                return Err(RuntimeError::Platform(
+                    "installed built-in authority does not match provisioning".into(),
+                ));
+            }
+        }
         context.live_providers.install(
             role,
-            trellis_rs::service::LiveProviderOwner::from_connected_client(Arc::new(client)),
+            trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(client)),
         );
     }
     Ok(())
@@ -1199,37 +1312,35 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn refuses_plaintext_non_loopback_public_origin_without_authorization() {
-        let config = RuntimeConfig::from_toml_str(
-            r#"
-[http]
-public_origin = "http://trellis-demo.lan:3000"
-allow_insecure_origins = []
-"#,
-        )
-        .expect("parse config");
-
-        let error = run_with_stop(
-            RuntimeOptions {
-                mode: RuntimeMode::All,
-                config,
-                reset_admin: false,
-                nats_override: None,
-            },
-            None,
-        )
-        .await
-        .expect_err("startup must refuse an unauthorized plaintext public origin");
-
-        match error {
-            RuntimeError::Config(error) => {
-                assert!(error.to_string().contains("allow_insecure_origins"));
-                assert!(matches!(
+    async fn refuses_plaintext_for_a_remote_public_origin() {
+        // A remote origin may be served as plaintext only behind a trusted
+        // HTTPS proxy; there is no insecure-origin escape hatch.
+        for http in [
+            "public_origin = \"http://trellis-demo.lan:3000\"",
+            "public_origin = \"http://trellis-demo.lan:3000\"\n[http.transport]\n\
+            mode = \"proxy\"\ntrusted_proxies = [\"10.0.0.0/8\"]",
+            "public_origin = \"http://localhost:3000\"\nbind_address = \"0.0.0.0\"",
+        ] {
+            let config =
+                RuntimeConfig::from_toml_str(&format!("[http]\n{http}\n")).expect("parse config");
+            let error = run_with_stop(
+                RuntimeOptions {
+                    mode: RuntimeMode::All,
+                    config,
+                    reset_admin: false,
+                    nats_override: None,
+                },
+                None,
+            )
+            .await
+            .expect_err("startup must refuse plaintext the transport cannot protect");
+            assert!(
+                matches!(
                     error,
-                    crate::ConfigError::InsecurePublicOrigin { .. }
-                ));
-            }
-            other => panic!("unexpected startup error: {other}"),
+                    RuntimeError::Config(crate::ConfigError::InvalidHttpTransport { .. })
+                ),
+                "unexpected startup error for {http}: {error}"
+            );
         }
     }
 

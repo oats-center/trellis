@@ -2,6 +2,7 @@ use super::super::{ServerError, ServiceResourceBindings};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future};
 use tokio::{sync::oneshot, task::JoinHandle};
+use trellis_protocol::{transfer::TransferOrigin, CatalogActionIdentity};
 
 pub use crate::client::FileInfo as FileTransferInfo;
 
@@ -28,6 +29,8 @@ pub struct UploadTransferGrant {
     pub direction: String,
     /// Owning service.
     pub service: String,
+    /// Authenticated action that admitted this streaming session.
+    pub origin: TransferOrigin,
     /// Runtime-generated high entropy session id.
     pub transfer_id: String,
     /// Absolute RFC3339 expiry.
@@ -55,6 +58,7 @@ pub struct UploadTransferGrant {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     /// Retained application metadata.
+    #[serde(default)]
     pub metadata: BTreeMap<String, String>,
 }
 
@@ -71,6 +75,8 @@ pub struct DownloadTransferGrant {
     pub direction: String,
     /// Owning service.
     pub service: String,
+    /// Authenticated action that admitted this streaming session.
+    pub origin: TransferOrigin,
     /// Runtime-generated high entropy session id.
     pub transfer_id: String,
     /// Absolute RFC3339 expiry.
@@ -149,8 +155,9 @@ pub struct TransferDownloadGrantArgs<'a> {
     pub max_payload: u64,
     /// Resolved private storage bindings.
     pub resources: &'a ServiceResourceBindings,
-    /// Contract-local store alias.
-    pub store: &'a str,
+    /// Contract-local store alias, or `None` when the provider streams bytes
+    /// from its own source with declared metadata.
+    pub store: Option<&'a str>,
     /// Runtime-generated transfer id.
     pub transfer_id: &'a str,
     /// RFC3339 expiry.
@@ -181,12 +188,35 @@ pub struct DownloadTransferGrantPlan {
     pub admission: super::super::RequestContext,
     /// Prepared grant.
     pub grant: DownloadTransferGrant,
-    /// Contract-local alias.
+    /// Contract-local alias; empty for a provider-supplied stream source.
     pub store_alias: String,
-    /// Physical storage identifier, never serialized to the caller.
+    /// Physical storage identifier, never serialized to the caller; empty for
+    /// a provider-supplied stream source.
     pub store: String,
     /// Installed backend object limit.
     pub max_object_bytes: Option<u64>,
+}
+
+pub(crate) fn transfer_origin(
+    admission: &super::super::RequestContext,
+) -> Result<TransferOrigin, ServerError> {
+    if admission.caller.is_none() {
+        return Err(super::wire::error(
+            "transfer admission has no authenticated caller",
+        ));
+    }
+    let route = admission
+        .required_permission
+        .as_ref()
+        .ok_or_else(|| super::wire::error("transfer admission action missing"))?;
+    Ok(TransferOrigin {
+        api_id: route.api.clone(),
+        action: CatalogActionIdentity {
+            kind: route.surface,
+            name: route.name.clone(),
+            direction: route.action,
+        },
+    })
 }
 
 pub(super) type UploadTransferCompletionResult = (
@@ -197,6 +227,7 @@ pub(super) type UploadTransferCompletionResult = (
 /// Owned endpoint completion and final Operation persistence barrier.
 #[derive(Debug)]
 pub struct UploadTransferCompletion {
+    pub(crate) cancellation: Option<oneshot::Sender<()>>,
     pub(super) receiver: oneshot::Receiver<UploadTransferCompletionResult>,
     pub(super) task: Option<JoinHandle<Result<(), ServerError>>>,
 }

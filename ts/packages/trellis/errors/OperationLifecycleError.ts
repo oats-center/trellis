@@ -17,8 +17,7 @@ export type OperationNotFoundErrorData = Static<
 /**
  * Error raised when a requested Trellis operation id cannot be found.
  */
-export class OperationNotFoundError
-  extends TrellisError<OperationNotFoundErrorData> {
+export class OperationNotFoundError extends TrellisError<OperationNotFoundErrorData> {
   override readonly name = "OperationNotFoundError" as const;
   readonly operationId: string;
 
@@ -73,8 +72,7 @@ export type OperationAlreadyTerminalErrorData = Static<
 /**
  * Error raised when a Trellis operation lifecycle mutation targets a terminal operation.
  */
-export class OperationAlreadyTerminalError
-  extends TrellisError<OperationAlreadyTerminalErrorData> {
+export class OperationAlreadyTerminalError extends TrellisError<OperationAlreadyTerminalErrorData> {
   override readonly name = "OperationAlreadyTerminalError" as const;
   readonly operationId: string;
   readonly state?: string;
@@ -143,8 +141,7 @@ export type OperationMismatchErrorData = Static<
 /**
  * Error raised when a Trellis operation id belongs to a different service or operation.
  */
-export class OperationMismatchError
-  extends TrellisError<OperationMismatchErrorData> {
+export class OperationMismatchError extends TrellisError<OperationMismatchErrorData> {
   override readonly name = "OperationMismatchError" as const;
   readonly operationId: string;
   readonly expectedService: string;

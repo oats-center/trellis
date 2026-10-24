@@ -6,23 +6,18 @@
 //! Service-local job execution lives in
 //! `trellis_rs::jobs` in the public `trellis` facade.
 
+mod bindings;
 mod projector;
 mod query;
-mod resolver;
 mod router;
 pub mod storage;
 pub mod telemetry;
 mod watch;
 pub mod worker_presence;
 
-#[cfg(test)]
-mod test_nats;
-
+pub use bindings::{JobKeySnapshot, JobResourceBinding, JobResourceResolver};
 pub use projector::{projector_consumer_name, start_jobs_projector, JobsProjectorHandle};
 pub use query::{jobs_admin_resources, JobsAdminResources, JobsQuery, JobsQueryError};
-pub use resolver::{
-    JobKeySnapshot, JobResourceBinding, JobResourceResolver, SqliteJobResourceResolver,
-};
 pub use router::build_router_with_query;
 pub use storage::{ListJobsFilter, SqliteJobsStore, SqliteJobsStoreError};
 pub use watch::register_jobs_watch_live;

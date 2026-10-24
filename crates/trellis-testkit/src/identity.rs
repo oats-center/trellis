@@ -7,29 +7,9 @@
 
 use std::fmt;
 
-use trellis_rs::client::{UserConnectOptions, UserSessionCredentials};
+use trellis_rs::auth::NativeOAuthSession;
+use trellis_rs::client::{RuntimeAuthorizationTrust, UserConnectOptions};
 use trellis_rs::service::ServiceConnectOptions;
-
-/// A participant installed into the runtime's fresh platform.
-#[derive(Clone, Debug)]
-pub struct InstalledParticipant {
-    pub(crate) participant_id: String,
-    pub(crate) installed_revision: u64,
-}
-
-impl InstalledParticipant {
-    /// Qualified participant identity.
-    #[must_use]
-    pub fn participant_id(&self) -> &str {
-        &self.participant_id
-    }
-
-    /// Server-confirmed installed revision.
-    #[must_use]
-    pub fn installed_revision(&self) -> u64 {
-        self.installed_revision
-    }
-}
 
 /// A provisioned service identity and the options its service connects with.
 pub struct TestServiceIdentity {
@@ -39,6 +19,8 @@ pub struct TestServiceIdentity {
     pub(crate) instance_id: String,
     pub(crate) seed: String,
     pub(crate) trellis_url: String,
+    pub(crate) nats_servers: Vec<String>,
+    pub(crate) trust: RuntimeAuthorizationTrust,
     pub(crate) timeout_ms: u64,
 }
 
@@ -82,7 +64,7 @@ impl TestServiceIdentity {
     /// Options for the service's generated `connect` call.
     #[must_use]
     pub fn connect_options(&self) -> ServiceConnectOptions<'_> {
-        ServiceConnectOptions::new(&self.trellis_url, &self.seed)
+        ServiceConnectOptions::new(self.nats_servers.clone(), self.trust.clone(), &self.seed)
             .with_name(&self.name)
             .with_timeout_ms(self.timeout_ms)
     }
@@ -101,12 +83,49 @@ impl fmt::Debug for TestServiceIdentity {
     }
 }
 
+/// An ordinary account created by one test runtime. Its password is never exported.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestUserIdentity {
+    pub(crate) principal_id: String,
+    pub(crate) username: String,
+}
+
+impl TestUserIdentity {
+    /// Actual principal returned by authenticated Auth user creation.
+    #[must_use]
+    pub fn principal_id(&self) -> &str {
+        &self.principal_id
+    }
+
+    /// Normalized local Portal username.
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+}
+
+/// One registered native application, reusable for independent logins by different users.
+#[derive(Debug)]
+pub struct TestRegisteredNativeClient<P: trellis_rs::generated::AppRequestDescriptor> {
+    pub(crate) name: String,
+    pub(crate) client_id: String,
+    pub(crate) request: std::marker::PhantomData<fn() -> P>,
+}
+
+impl<P: trellis_rs::generated::AppRequestDescriptor> TestRegisteredNativeClient<P> {
+    /// Registered OAuth application ID, shared by all of its users' logins.
+    #[must_use]
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+}
+
 /// A logged-in application or agent caller identity.
 pub struct TestClientIdentity {
     pub(crate) name: String,
-    pub(crate) participant_id: String,
-    pub(crate) login_session_id: String,
-    pub(crate) session_seed: String,
+    pub(crate) client_id: String,
+    pub(crate) session: NativeOAuthSession,
+    pub(crate) nats_servers: Vec<String>,
     pub(crate) trellis_url: String,
     pub(crate) timeout_ms: u64,
 }
@@ -118,16 +137,16 @@ impl TestClientIdentity {
         &self.name
     }
 
-    /// Qualified participant identity.
+    /// Registered OAuth client identity, independent of source application requests.
     #[must_use]
-    pub fn participant_id(&self) -> &str {
-        &self.participant_id
+    pub fn client_id(&self) -> &str {
+        &self.client_id
     }
 
-    /// Durable login-session id issued by the proof-bound final bind.
+    /// Durable login-session id from the issuer-verified OAuth admission.
     #[must_use]
     pub fn login_session_id(&self) -> &str {
-        &self.login_session_id
+        &self.session.admission.credential.login_session_id
     }
 
     /// Base URL of the runtime this identity was bound in.
@@ -136,19 +155,10 @@ impl TestClientIdentity {
         &self.trellis_url
     }
 
-    /// Options for the caller's generated client `connect` call.
+    /// Consume exclusive OAuth custody for the caller's generated `connect` call.
     #[must_use]
-    pub fn connect_options(&self) -> UserConnectOptions<'_> {
-        UserConnectOptions::new(
-            &self.trellis_url,
-            self.timeout_ms,
-            UserSessionCredentials {
-                login_session_id: &self.login_session_id,
-                session_key_seed_base64url: &self.session_seed,
-            },
-            &self.participant_id,
-        )
-        .with_name(&self.name)
+    pub fn connect_options(self) -> UserConnectOptions<'static> {
+        UserConnectOptions::new(self.nats_servers, self.timeout_ms, self.session)
     }
 }
 
@@ -157,9 +167,8 @@ impl fmt::Debug for TestClientIdentity {
         formatter
             .debug_struct("TestClientIdentity")
             .field("name", &self.name)
-            .field("participant_id", &self.participant_id)
-            .field("login_session_id", &self.login_session_id)
-            .field("session_seed", &"[redacted]")
+            .field("client_id", &self.client_id)
+            .field("login_session_id", &self.login_session_id())
             .finish()
     }
 }

@@ -2,6 +2,7 @@ import { equal } from "node:assert/strict";
 
 import { resolveRequestedTarget } from "./target.ts";
 import { err, ok } from "@oatscenter/result";
+import { test } from "node:test";
 import { apis } from "trellis-web-generated";
 
 function authFailure(code: string) {
@@ -15,13 +16,9 @@ function authFailure(code: string) {
   });
 }
 
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
-
 type Record_ = { id: string; state: string };
 
-Deno.test("U34 an exact Get resolves the requested record only", async () => {
+test("U34 an exact Get resolves the requested record only", async () => {
   const resolution = await resolveRequestedTarget<Record_>({
     requestedId: "dep_b",
     get: (id) => Promise.resolve(ok({ id, state: "active" })),
@@ -31,7 +28,7 @@ Deno.test("U34 an exact Get resolves the requested record only", async () => {
   if (resolution.kind === "ready") equal(resolution.item.id, "dep_b");
 });
 
-Deno.test("U34 a Get for a different record is an error, not a target", async () => {
+test("U34 a Get for a different record is an error, not a target", async () => {
   const resolution = await resolveRequestedTarget<Record_>({
     requestedId: "dep_b",
     get: () => Promise.resolve(ok({ id: "dep_a", state: "active" })),
@@ -40,7 +37,7 @@ Deno.test("U34 a Get for a different record is an error, not a target", async ()
   equal(resolution.kind, "error");
 });
 
-Deno.test("U34 a missing target is not found, and is never substituted", async () => {
+test("U34 a missing target is not found, and is never substituted", async () => {
   const resolution = await resolveRequestedTarget<Record_>({
     requestedId: "dep_missing",
     get: () => Promise.resolve(err(authFailure("not_found"))),
@@ -49,7 +46,7 @@ Deno.test("U34 a missing target is not found, and is never substituted", async (
   equal(resolution.kind, "not-found");
 });
 
-Deno.test("U34 a forbidden target is distinct from a missing one", async () => {
+test("U34 a forbidden target is distinct from a missing one", async () => {
   const resolution = await resolveRequestedTarget<Record_>({
     requestedId: "dep_forbidden",
     get: () => Promise.resolve(err(authFailure("not_authorized"))),
@@ -58,13 +55,13 @@ Deno.test("U34 a forbidden target is distinct from a missing one", async () => {
   equal(resolution.kind, "forbidden");
 });
 
-Deno.test("N02 a target beyond the first page resolves by complete traversal", async () => {
+test("N02 a target beyond the first page resolves by complete traversal", async () => {
   const pages: Array<{ items: Record_[]; cursor?: string }> = [
     {
-      items: Array.from(
-        { length: 100 },
-        (_, index) => ({ id: `dep_${index}`, state: "active" }),
-      ),
+      items: Array.from({ length: 100 }, (_, index) => ({
+        id: `dep_${index}`,
+        state: "active",
+      })),
       cursor: "p2",
     },
     { items: [{ id: "dep_target", state: "active" }] },
@@ -79,7 +76,7 @@ Deno.test("N02 a target beyond the first page resolves by complete traversal", a
   equal(call, 2);
 });
 
-Deno.test("N02 a failed later page is incomplete, not absence", async () => {
+test("N02 a failed later page is incomplete, not absence", async () => {
   let call = 0;
   const resolution = await resolveRequestedTarget<Record_>({
     requestedId: "dep_target",
@@ -101,7 +98,7 @@ Deno.test("N02 a failed later page is incomplete, not absence", async () => {
   );
 });
 
-Deno.test("U04 a repeated cursor is an incomplete lookup, not a loop", async () => {
+test("U04 a repeated cursor is an incomplete lookup, not a loop", async () => {
   const resolution = await resolveRequestedTarget<Record_>({
     requestedId: "dep_target",
     listPage: () =>
@@ -113,7 +110,7 @@ Deno.test("U04 a repeated cursor is an incomplete lookup, not a loop", async () 
   equal(resolution.kind, "incomplete");
 });
 
-Deno.test("U05 an empty requested target is not-requested, not a first row", async () => {
+test("U05 an empty requested target is not-requested, not a first row", async () => {
   let called = 0;
   const resolution = await resolveRequestedTarget<Record_>({
     requestedId: "",

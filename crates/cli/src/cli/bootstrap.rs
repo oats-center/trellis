@@ -2,7 +2,19 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "runtime")]
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+
+#[cfg(feature = "runtime")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Certificate source for generated listeners.
+pub enum InitTlsMode {
+    /// Generate an installation CA and short-lived certificates (default).
+    Generated,
+    /// Use operator-supplied PEM certificates and keys.
+    Supplied,
+    /// Plaintext restricted to loopback origins and listeners.
+    LoopbackDevelopment,
+}
 
 #[cfg(feature = "runtime")]
 #[derive(Debug, Args)]
@@ -57,78 +69,127 @@ pub struct InitConfigArgs {
     pub nats_ws_port: u16,
 
     #[arg(long)]
-    /// Native NATS server URL for Trellis services; defaults to nats://127.0.0.1:<nats-port>.
+    /// Absolute writable data directory for an independently managed NATS server.
+    pub nats_data_dir: Option<PathBuf>,
+
+    #[arg(long)]
+    /// Native NATS server URL for Trellis services; defaults to tls://localhost:<nats-port>
+    /// (nats:// in loopback development).
     pub nats_server_url: Option<String>,
 
     #[arg(long)]
-    /// Browser-facing NATS websocket URL for Trellis clients; defaults to ws://localhost:<nats-ws-port>.
+    /// Browser-facing NATS websocket URL for Trellis clients; defaults to
+    /// wss://localhost:<nats-ws-port> (ws:// in loopback development).
     pub nats_websocket_url: Option<String>,
 
     #[arg(long)]
-    /// Public Trellis HTTP origin for OAuth redirects; defaults to http://localhost:<trellis-port>.
+    /// Public Console origin; defaults to https://localhost:<trellis-port>
+    /// (http:// in loopback development).
     pub public_origin: Option<String>,
 
+    #[arg(long)]
+    /// Public OAuth origin, distinct from the Console origin; defaults to
+    /// https://localhost:<oauth-port> (http:// in loopback development).
+    pub oauth_origin: Option<String>,
+
+    #[arg(long, default_value_t = trellis_bootstrap::DEFAULT_OAUTH_PORT)]
+    /// Dedicated OAuth listener port.
+    pub oauth_port: u16,
+
+    #[arg(long, value_enum, default_value_t = InitTlsMode::Generated)]
+    /// Certificate source. Generated TLS creates an installation CA that
+    /// browsers and native clients must trust explicitly.
+    pub tls: InitTlsMode,
+
+    #[arg(long)]
+    /// Directory receiving the generated CA private key; defaults to
+    /// `<out>-tls-ca`. Keep it out of every runtime and broker mount.
+    pub tls_ca_dir: Option<PathBuf>,
+
+    #[arg(long, required_if_eq("tls", "supplied"))]
+    /// Supplied PEM certificate chain naming the Console and OAuth hosts.
+    pub tls_certificate_chain: Option<PathBuf>,
+
+    #[arg(long, required_if_eq("tls", "supplied"))]
+    /// Supplied PEM private key for --tls-certificate-chain.
+    pub tls_private_key: Option<PathBuf>,
+
+    #[arg(long, required_if_eq("tls", "supplied"))]
+    /// Supplied PEM certificate chain naming the NATS and WebSocket hosts.
+    pub nats_tls_certificate_chain: Option<PathBuf>,
+
+    #[arg(long, required_if_eq("tls", "supplied"))]
+    /// Supplied PEM private key for --nats-tls-certificate-chain.
+    pub nats_tls_private_key: Option<PathBuf>,
+
+    #[arg(long)]
+    /// Private CA that issued the supplied NATS certificate, trusted by the runtime.
+    pub tls_ca_certificate: Option<PathBuf>,
+
+    #[arg(long = "trusted-proxy", value_name = "CIDR")]
+    /// Serve Console and OAuth as plaintext behind an HTTPS-terminating
+    /// reverse proxy at this network; repeatable. Public origins stay HTTPS.
+    pub trusted_proxy: Vec<ipnet::IpNet>,
+
+    #[arg(long)]
+    /// Serve NATS WebSockets as plaintext behind an HTTPS-terminating reverse
+    /// proxy. Native NATS always terminates its own TLS.
+    pub nats_websocket_behind_proxy: bool,
+
     #[arg(long = "extra-origin", value_name = "ORIGIN")]
-    /// Additional allowed HTTP origin, for callers served elsewhere; repeatable.
-    ///
-    /// Each origin is added to both the accepted request origins and the
-    /// insecure-origin allow-list, so a browser app on its own development
-    /// origin can complete a portal login.
+    /// Additional allowed browser origin, for callers served elsewhere; repeatable.
     pub extra_origin: Vec<String>,
     /// HTTP listener IP address.
     #[arg(long)]
     pub bind_address: Option<std::net::IpAddr>,
-    /// Maximum requests per rate-limit window; zero disables limiting.
-    #[arg(long, default_value_t = 60)]
-    pub rate_limit_max: u32,
-    /// Rate-limit window in milliseconds.
-    #[arg(long, default_value_t = 60_000)]
-    pub rate_limit_window_ms: u64,
-    /// Shared static web artifact directory.
-    #[arg(long, conflicts_with = "web_proxy")]
-    pub web_directory: Option<PathBuf>,
-    /// Shared HTTP(S) reverse-proxy upstream.
-    #[arg(long)]
-    pub web_proxy: Option<String>,
-    /// Static Login Portal artifact directory.
-    #[arg(long, conflicts_with = "portal_proxy")]
-    pub portal_directory: Option<PathBuf>,
-    /// Login Portal HTTP(S) reverse-proxy upstream.
-    #[arg(long)]
-    pub portal_proxy: Option<String>,
-    /// Static Console artifact directory.
-    #[arg(long, conflicts_with = "console_proxy")]
-    pub console_directory: Option<PathBuf>,
-    /// Console HTTP(S) reverse-proxy upstream.
-    #[arg(long)]
-    pub console_proxy: Option<String>,
-    /// Session TTL in milliseconds.
-    #[arg(long)]
-    pub platform_sessions_ttl_ms: Option<u64>,
-    /// OAuth flow TTL in milliseconds.
-    #[arg(long)]
-    pub platform_oauth_ttl_ms: Option<u64>,
-    /// Device-flow TTL in milliseconds.
-    #[arg(long)]
-    pub platform_device_flow_ttl_ms: Option<u64>,
-    /// Pending authentication TTL in milliseconds.
-    #[arg(long)]
-    pub platform_pending_auth_ttl_ms: Option<u64>,
     /// Authorization context lifetime in seconds.
     #[arg(long)]
     pub auth_context_lifetime_seconds: Option<u64>,
-    /// Authorization refresh lead in seconds.
+    /// Maximum signed OAuth admission lifetime in seconds.
     #[arg(long)]
-    pub auth_refresh_lead_seconds: Option<u64>,
-    /// Earlier-only authorization refresh jitter in seconds.
+    pub auth_oauth_admission_lifetime_seconds: Option<u64>,
+    /// Authorization clock-skew allowance in seconds.
     #[arg(long)]
-    pub auth_refresh_jitter_seconds: Option<u64>,
-    /// Minimum authorization context lifetime in seconds.
+    pub auth_allowed_clock_skew_seconds: Option<u64>,
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Debug, Args)]
+/// Manage Trellis-generated TLS certificates.
+pub struct TlsCommand {
+    #[command(subcommand)]
+    pub command: TlsSubcommand,
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Debug, Subcommand)]
+/// Generated TLS operations.
+pub enum TlsSubcommand {
+    /// Reissue the bundle's leaf certificates from its installation CA.
+    Renew(TlsRenewArgs),
+    /// Show the installation CA fingerprint and certificate expiry.
+    Status(TlsStatusArgs),
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Debug, Args)]
+/// Renew generated leaf certificates without changing client trust.
+pub struct TlsRenewArgs {
+    /// Bundle directory written by `trellis init config --out`.
     #[arg(long)]
-    pub auth_minimum_context_lifetime_seconds: Option<u64>,
-    /// Private JSON provider input file; repeatable, duplicate IDs are rejected.
+    pub bundle: PathBuf,
+    /// CA directory holding the private key; defaults to `<bundle>-tls-ca`.
     #[arg(long)]
-    pub oauth_providers_file: Vec<PathBuf>,
+    pub ca_dir: Option<PathBuf>,
+}
+
+#[cfg(feature = "runtime")]
+#[derive(Debug, Args)]
+/// Report generated TLS identity for a runtime configuration.
+pub struct TlsStatusArgs {
+    /// Runtime configuration file.
+    #[arg(long)]
+    pub config: PathBuf,
 }
 
 #[cfg(feature = "runtime")]
@@ -145,19 +206,27 @@ pub struct InitCommand {
 pub enum InitSubcommand {
     /// Generate Trellis runtime config and NATS bootstrap material.
     Config(Box<InitConfigArgs>),
-    /// Seed an initial admin account and linked identity.
+    /// Initialize the protected administrator with a password or setup link.
     Admin(InitAdminArgs),
 }
 
 #[cfg(feature = "runtime")]
 #[derive(Debug, Args)]
-/// Seed an initial admin account and linked identity in Trellis service storage.
+/// Initialize the protected administrator in the configured runtime storage.
 pub struct InitAdminArgs {
-    #[arg(long, value_name = "PROVIDER:SUBJECT")]
-    /// Provider identity for the first admin account.
-    pub identity: String,
-
-    #[arg(long, default_value = "/var/lib/trellis/trellis.sqlite")]
-    /// Trellis service SQLite database path.
-    pub db_path: PathBuf,
+    /// Use the Linux system/FHS host profile instead of the user profile.
+    #[arg(long)]
+    pub system: bool,
+    /// Runtime configuration identifying the installation and custody files.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Starting administrator username.
+    #[arg(long, default_value = "admin")]
+    pub username: String,
+    /// Starting password; omit for a one-time password-setup link.
+    #[arg(long, conflicts_with = "password_stdin")]
+    pub password: Option<String>,
+    /// Read the starting password from stdin instead of argv.
+    #[arg(long)]
+    pub password_stdin: bool,
 }

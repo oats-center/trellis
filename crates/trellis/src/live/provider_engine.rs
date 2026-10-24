@@ -132,8 +132,6 @@ impl ProviderSessionRecord {
     pub(crate) async fn reserve(
         manager: &Arc<LiveSessionManager>,
         request: &ProviderOpenRequest,
-        own_deployment_id: &str,
-        max_data_body_bytes: u64,
         now_ms: u64,
     ) -> Result<(Arc<ProviderSession>, ProviderPermit), LiveErrorCode> {
         let permit = manager.clone().admit_provider(
@@ -144,8 +142,6 @@ impl ProviderSessionRecord {
             .register_owner_control(&request.base_subject)
             .await
             .map_err(|_| LiveErrorCode::ResourceExhausted)?;
-        let _ = own_deployment_id;
-        let _ = max_data_body_bytes;
         let session_id =
             trellis_protocol::generate_nonce().map_err(|_| LiveErrorCode::ProtocolError)?;
         let subjects = ProviderSessionSubjects {
@@ -196,22 +192,23 @@ impl ProviderSessionRecord {
             .await
             .map_err(|_| LiveErrorCode::PermissionDenied)?;
         let manager = self.manager()?;
-        let digest = manager
-            .contexts_handle()
-            .context_digest()
+        let authority = manager
+            .authorization_owner()
+            .own_authority()
             .map_err(|_| LiveErrorCode::AuthorizationUnavailable)?;
+        let digest = authority.digest();
         if digest.is_empty() {
             return Err(LiveErrorCode::AuthorizationUnavailable);
         }
         let proof = trellis_protocol::sign_live_server_proof(
-            &digest,
+            digest,
             subject,
             body,
             manager.auth_handle().live_signing_key(),
         )
         .map_err(|_| LiveErrorCode::AuthorizationUnavailable)?;
         let mut headers = async_nats::HeaderMap::new();
-        headers.insert("authorization-context", digest.as_str());
+        headers.insert("authorization-context", digest);
         headers.insert("session-key", manager.auth_handle().session_key.as_str());
         headers.insert("trellis-live-proof", proof.as_str());
         Ok(headers)
@@ -229,9 +226,7 @@ impl ProviderSessionRecord {
         provider: &PinnedPeerIdentity,
         consumer: &PinnedPeerIdentity,
         limits: trellis_protocol::LiveOfferLimits,
-        max_data_body_bytes: u64,
     ) -> Result<Bytes, LiveErrorCode> {
-        let _ = max_data_body_bytes;
         let offer = trellis_protocol::LiveOffer {
             format: trellis_protocol::LIVE_VERSION.to_owned(),
             kind: trellis_protocol::LiveOfferKind::Offer,
@@ -246,15 +241,15 @@ impl ProviderSessionRecord {
                 connection_id: provider.connection_id.clone(),
                 session_key: trellis_protocol::encode_subject_token(&provider.session_key),
                 principal_id: provider.principal_id.clone(),
-                participant_id: provider.participant_id.clone(),
-                deployment_id: provider.deployment_id.clone().unwrap_or_default(),
-                instance_id: provider.instance_id.clone().unwrap_or_default(),
+                participant_id: provider.participant_id().to_owned(),
+                deployment_id: provider.deployment_id().unwrap_or_default().to_owned(),
+                instance_id: provider.instance_id().unwrap_or_default().to_owned(),
             },
             consumer: trellis_protocol::LiveOfferConsumer {
                 connection_id: consumer.connection_id.clone(),
                 session_key: trellis_protocol::encode_subject_token(&consumer.session_key),
                 principal_id: consumer.principal_id.clone(),
-                participant_id: consumer.participant_id.clone(),
+                binding: consumer.binding.clone(),
             },
             limits,
         };
@@ -560,7 +555,7 @@ impl ProviderSessionRecord {
         let Some(headers) = message.headers.as_ref() else {
             return;
         };
-        if self
+        if let Err(error) = self
             .caller_guard
             .verify_control_request(
                 message.subject.as_str(),
@@ -569,8 +564,8 @@ impl ProviderSessionRecord {
                 headers,
             )
             .await
-            .is_err()
         {
+            tracing::debug!(?error, "live control rejected");
             return;
         }
         let Ok(control) = trellis_protocol::parse_live_control(&message.payload) else {

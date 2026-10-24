@@ -50,7 +50,12 @@ fn project_named(
                     required.push(Value::String(name.clone()));
                 }
             }
-            let mut schema = json!({"type":"object", "properties":null, "required":null, "additionalProperties":true});
+            let mut schema = json!({
+                "type":"object",
+                "properties":null,
+                "required":null,
+                "additionalProperties":true
+            });
             schema["properties"] = Value::Object(properties);
             schema["required"] = Value::Array(required);
             schema
@@ -76,21 +81,63 @@ fn project_expr(
         }
         TypeExpression::Primitive(primitive, bounds) => primitive_schema(*primitive, bounds),
         TypeExpression::List(member, bounds) => {
-            let mut value = json!({"type":"array", "items":project_expr(graph, member, definitions, visiting)?});
+            let mut value = json!({
+                "type":"array",
+                "items":project_expr(graph, member, definitions, visiting)?
+            });
             apply_count(&mut value, bounds, "minItems", "maxItems");
             value
         }
         TypeExpression::Map(member) => {
-            json!({"type":"object", "additionalProperties":project_expr(graph, member, definitions, visiting)?})
+            json!({
+                "type":"object",
+                "additionalProperties":project_expr(graph, member, definitions, visiting)?
+            })
         }
         TypeExpression::Nullable(member) => {
             json!({"anyOf":[project_expr(graph, member, definitions, visiting)?, {"type":"null"}]})
         }
         TypeExpression::CursorQuery => {
-            json!({"type":"object", "properties":{"cursor":{"type":"string","minLength":1},"limit":{"type":"integer","minimum":1,"maximum":9_007_199_254_740_991_u64}}, "additionalProperties":true})
+            json!({
+                "type":"object",
+                "properties": {
+                    "cursor": {"type":"string","minLength":1},
+                    "limit": {
+                        "type":"integer",
+                        "minimum":1,
+                        "maximum":9_007_199_254_740_991_u64
+                             }
+                              },
+                "additionalProperties":true
+            })
         }
         TypeExpression::CursorPage(member) => {
-            json!({"type":"object", "properties":{"items":{"type":"array","items":project_expr(graph, member, definitions, visiting)?},"page":{"type":"object","properties":{"nextCursor":{"type":"string","minLength":1}},"additionalProperties":true}}, "required":["items","page"], "additionalProperties":true})
+            json!({
+                "type":"object",
+                "properties": {
+                    "items": {
+                        "type":"array",
+                        "items": project_expr(
+                                graph,
+                                member,
+                                definitions,
+                                visiting,
+                            )?
+                             },
+                    "page": {
+                        "type":"object",
+                        "properties": {
+                            "nextCursor": {
+                                "type":"string",
+                                "minLength":1
+                                    }
+                                      },
+                        "additionalProperties":true
+                            }
+                              },
+                "required": ["items","page"],
+                "additionalProperties":true
+            })
         }
     })
 }
@@ -102,17 +149,34 @@ fn primitive_schema(value: Primitive, bounds: &Bounds) -> Value {
         Primitive::Int32 => json!({"type":"integer","minimum":i32::MIN,"maximum":i32::MAX}),
         Primitive::Uint32 => json!({"type":"integer","minimum":0,"maximum":u32::MAX}),
         Primitive::Int64 => {
-            json!({"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","x-trellis-integer":"int64","x-trellis-minimum":"-9223372036854775808","x-trellis-maximum":"9223372036854775807"})
+            json!({
+                "type":"string",
+                "pattern":"^(0|-?[1-9][0-9]*)$",
+                "x-trellis-integer":"int64",
+                "x-trellis-minimum":"-9223372036854775808",
+                "x-trellis-maximum":"9223372036854775807"
+            })
         }
         Primitive::Uint64 => {
-            json!({"type":"string","pattern":"^(0|[1-9][0-9]*)$","x-trellis-integer":"uint64","x-trellis-minimum":"0","x-trellis-maximum":"18446744073709551615"})
+            json!({
+                "type":"string",
+                "pattern":"^(0|[1-9][0-9]*)$",
+                "x-trellis-integer":"uint64",
+                "x-trellis-minimum":"0",
+                "x-trellis-maximum":"18446744073709551615"
+            })
         }
         Primitive::Number => json!({"type":"number"}),
         Primitive::Bytes => {
             json!({"type":"string","contentEncoding":"base64","x-trellis-base64":"standard-padded"})
         }
         Primitive::Timestamp => {
-            json!({"type":"string","format":"date-time","pattern":r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z$","x-trellis-canonical":"utc-rfc3339"})
+            json!({
+                "type":"string",
+                "format":"date-time",
+                "pattern":r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?Z$",
+                "x-trellis-canonical":"utc-rfc3339"
+            })
         }
         Primitive::Ulid => json!({"type":"string","pattern":"^[0-7][0-9A-HJKMNP-TV-Z]{25}$"}),
     };

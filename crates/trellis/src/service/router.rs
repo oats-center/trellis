@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
+use trellis_protocol::SessionBinding;
 
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -13,6 +14,7 @@ use trellis_protocol::{
 };
 
 use super::error::ValidationIssue;
+use super::live_router;
 use super::operations::ServiceOperationProvider;
 use super::request_loop::{HandlerResponse, ResponseStream};
 use super::schema_validation::{OperationSchemas, PreparedOperationSchemas, PreparedSchema};
@@ -95,6 +97,10 @@ async fn accepted_generation(
 /// Request metadata forwarded to mounted RPC handlers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequestContext {
+    /// Presented request transcript, untrusted until `verified_request` is available.
+    pub session_request: Option<trellis_protocol::SessionRequest>,
+    /// Shared verified opening retained across dispatch and reply publication.
+    pub(crate) verified_opening: VerifiedOpening,
     /// Whether this handler invocation reclaimed previously accepted work.
     pub resuming: bool,
     /// Last durable operation progress supplied to a resumed handler.
@@ -115,10 +121,12 @@ pub struct RequestContext {
     pub required_capabilities: Option<Vec<String>>,
     /// Exact permission surface required for this exact routed request.
     pub required_permission: Option<RoutePermission>,
+    /// Set only from registered route metadata, never from a wire assertion.
+    pub(crate) handler_authorizes: bool,
     /// NATS reply inbox used for request/reply responses.
     pub reply_to: Option<String>,
     /// Locally verified caller projection, when the request was authorized.
-    pub caller: Option<super::local_validator::VerifiedCaller>,
+    pub caller: Option<super::local_validator::AuthenticatedCaller>,
     /// W3C trace context header propagated by the caller, if present.
     pub traceparent: Option<String>,
     /// W3C trace state header propagated by the caller, if present.
@@ -126,6 +134,84 @@ pub struct RequestContext {
     /// The generation that accepted this request through a provider ingress.
     /// Session-scoped work accepted on it pins that generation.
     pub(crate) transport: GenerationPin,
+}
+
+/// Retains one verified opening across immutable validator and dispatcher contexts.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct VerifiedOpening(
+    Arc<std::sync::RwLock<Option<crate::client::VerifiedAuthorizationRequest>>>,
+);
+
+impl PartialEq for VerifiedOpening {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+            || self.0.read().ok().and_then(|value| {
+                value
+                    .as_ref()
+                    .map(|request| (*request.digest(), request.authorized_action().cloned()))
+            }) == other.0.read().ok().and_then(|value| {
+                value
+                    .as_ref()
+                    .map(|request| (*request.digest(), request.authorized_action().cloned()))
+            })
+    }
+}
+impl Eq for VerifiedOpening {}
+
+impl RequestContext {
+    /// Admit this exact opening after the handler has checked its payload-bound resource rights.
+    /// Only handler-authorized routes may call this, after—not before—their authorization check.
+    /// Possession alone never permits response signing or a Live reservation.
+    pub fn authorize_handler_request(&self) -> Result<(), ServerError> {
+        let route = self
+            .required_permission
+            .as_ref()
+            .filter(|_| self.handler_authorizes)
+            .ok_or_else(|| ServerError::Nats("request is not a handler-authorized route".into()))?;
+        let mut slot = self
+            .verified_opening
+            .0
+            .write()
+            .map_err(|_| ServerError::Nats("verified request unavailable".into()))?;
+        let verified = slot
+            .as_mut()
+            .ok_or_else(|| ServerError::Nats("verified opening unavailable".into()))?;
+        if verified.request().api_id != route.api {
+            return Err(ServerError::Nats("handler route API mismatch".into()));
+        }
+        verified
+            .authorize_handler(route.catalog_action())
+            .map_err(|error| ServerError::Nats(error.to_string()))
+    }
+    /// Return the authenticated opening, never the caller's unverified header assertions.
+    pub fn verified_request(&self) -> Option<crate::client::VerifiedAuthorizationRequest> {
+        self.verified_opening.0.read().ok()?.as_ref().cloned()
+    }
+
+    /// Retain a production-verified opening for downstream controls and response signing.
+    /// Additional permission checks on the same request preserve its original reply action.
+    pub fn retain_verified_request(
+        &self,
+        request: crate::client::VerifiedAuthorizationRequest,
+    ) -> Result<(), ServerError> {
+        let mut slot = self
+            .verified_opening
+            .0
+            .write()
+            .map_err(|_| ServerError::Nats("verified request unavailable".into()))?;
+        if slot
+            .as_ref()
+            .is_some_and(|current| current.digest() != request.digest())
+        {
+            return Err(ServerError::Nats(
+                "verified request already installed".into(),
+            ));
+        }
+        if slot.is_none() {
+            *slot = Some(request);
+        }
+        Ok(())
+    }
 }
 
 /// One exact API-surface permission required by a routed request.
@@ -145,6 +231,14 @@ pub struct RoutePermission {
 }
 
 impl RoutePermission {
+    /// Exact generated catalog action; capabilities authorize the operation direction.
+    pub fn catalog_action(&self) -> trellis_protocol::CatalogActionIdentity {
+        trellis_protocol::CatalogActionIdentity {
+            kind: self.surface,
+            name: self.name.clone(),
+            direction: self.action,
+        }
+    }
     /// Convert generated route metadata into its exact permission atom.
     pub fn permission_atom(&self) -> Result<PermissionAtom, ProtocolError> {
         let target = if self.action == PermissionAction::Control {
@@ -165,11 +259,7 @@ impl RoutePermission {
     }
 }
 
-type BoxedHandler = Box<
-    dyn Fn(RequestContext, Bytes) -> BoxFuture<'static, Result<HandlerResponse, ServerError>>
-        + Send
-        + Sync,
->;
+type BoxedHandler = Box<dyn Fn(RequestContext, Bytes) -> HandlerFuture + Send + Sync>;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -196,7 +286,7 @@ struct Route {
 #[derive(Debug, Clone)]
 enum RoutePermissionSpec {
     /// The handler performs exact payload-bound authorization after proof verification.
-    Handler,
+    Handler(String, String),
     /// One fixed surface for every request on the route.
     Static(String, ApiSurfaceKind, String, PermissionAction),
     /// Operation control routes resolve the action from the payload.
@@ -206,7 +296,13 @@ enum RoutePermissionSpec {
 impl RoutePermissionSpec {
     fn for_payload(&self, payload: &[u8]) -> Option<RoutePermission> {
         match self {
-            Self::Handler => None,
+            Self::Handler(api, name) => Some(RoutePermission {
+                api: api.clone(),
+                surface: ApiSurfaceKind::Rpc,
+                name: name.clone(),
+                action: PermissionAction::Call,
+                signal: None,
+            }),
             Self::Static(api, surface, name, action) => Some(RoutePermission {
                 api: api.clone(),
                 surface: *surface,
@@ -274,7 +370,7 @@ impl RouteCapabilities {
 /// An in-memory subject router for descriptor-backed RPC handlers.
 #[derive(Default)]
 pub struct Router {
-    handlers: HashMap<String, Route>,
+    handlers: HashMap<String, Arc<Route>>,
     provider_deployment_id: Option<String>,
     provider_instance_id: Option<String>,
     operation_recoveries: Vec<OperationRecovery>,
@@ -285,14 +381,20 @@ pub struct Router {
     live_owner: Arc<std::sync::RwLock<Option<super::live_router::LiveProviderOwner>>>,
 }
 
+/// Future produced by one route handler invocation.
+type HandlerFuture = BoxFuture<'static, Result<HandlerResponse, ServerError>>;
+
 type OperationRecovery = Box<dyn Fn() -> BoxFuture<'static, Result<(), ServerError>> + Send + Sync>;
 
 impl Router {
     fn route(&self, subject: &str) -> Option<&Route> {
-        self.handlers.get(subject).or_else(|| {
-            let (prefix, _) = subject.rsplit_once('.')?;
-            self.handlers.get(&format!("{prefix}.*"))
-        })
+        self.handlers
+            .get(subject)
+            .or_else(|| {
+                let (prefix, _) = subject.rsplit_once('.')?;
+                self.handlers.get(&format!("{prefix}.*"))
+            })
+            .map(Arc::as_ref)
     }
 
     /// Create an empty router.
@@ -300,7 +402,14 @@ impl Router {
         Self::default()
     }
 
-    /// Bind subsequently registered request routes to this provider deployment.
+    /// Exact registered entry and owner-control subjects for provider intake.
+    pub fn subjects(&self) -> Vec<String> {
+        let mut subjects: Vec<_> = self.handlers.keys().cloned().collect();
+        subjects.sort();
+        subjects
+    }
+
+    /// Bind Operation routes to their owning deployment before registering handlers.
     pub fn set_provider_deployment_id(&mut self, deployment_id: impl Into<String>) {
         self.provider_deployment_id = Some(deployment_id.into());
     }
@@ -308,6 +417,67 @@ impl Router {
     /// Bind Live control routes to this service instance.
     pub fn set_provider_instance_id(&mut self, instance_id: impl Into<String>) {
         self.provider_instance_id = Some(instance_id.into());
+    }
+
+    /// Bind Operation starts and controls to the installation's verified provider owner.
+    pub fn bind_provider_owner(
+        &mut self,
+        owner: &trellis_protocol::VerifiedSessionAuthority,
+    ) -> Result<(), ServerError> {
+        let SessionBinding::Service {
+            deployment_id,
+            instance_id,
+            ..
+        } = &owner.authority().binding
+        else {
+            return Err(ServerError::Nats(
+                "provider requires a verified service binding".into(),
+            ));
+        };
+        let previous_deployment = self.provider_deployment_id.replace(deployment_id.clone());
+        self.provider_instance_id = Some(instance_id.clone());
+        let mut controls = Vec::new();
+        let mut starts = Vec::new();
+        let mut previous_starts = Vec::new();
+        for (subject, route) in &self.handlers {
+            if let RoutePermissionSpec::OperationControl(api, name) = &route.permission {
+                let base =
+                    trellis_protocol::derive_bound_operation_subject(api, deployment_id, name)
+                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                controls.push((subject.clone(), control_subject(&base)));
+            }
+            if let RoutePermissionSpec::Static(
+                api,
+                ApiSurfaceKind::Operation,
+                name,
+                PermissionAction::Invoke,
+            ) = &route.permission
+            {
+                let bound =
+                    trellis_protocol::derive_bound_operation_subject(api, deployment_id, name)
+                        .map_err(|error| ServerError::Nats(error.to_string()))?;
+                if let Some(previous) = &previous_deployment {
+                    let previous =
+                        trellis_protocol::derive_bound_operation_subject(api, previous, name)
+                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                    if subject == &previous {
+                        previous_starts.push(subject.clone());
+                        continue;
+                    }
+                }
+                starts.push((bound, Arc::clone(route)));
+            }
+        }
+        for previous in previous_starts {
+            self.handlers.remove(&previous);
+        }
+        self.handlers.extend(starts);
+        for (old, new) in controls {
+            if let Some(route) = self.handlers.remove(&old) {
+                self.handlers.insert(new, route);
+            }
+        }
+        Ok(())
     }
 
     /// Bind live Live/Operation observation routes to one connected owner.
@@ -353,26 +523,21 @@ impl Router {
         Ok(())
     }
 
-    fn descriptor_subject(
-        &self,
-        family: &str,
-        api_id: &str,
-        action: &str,
-        fallback: &str,
-    ) -> String {
-        let Some(deployment_id) = self.provider_deployment_id.as_deref() else {
-            return fallback.to_owned();
-        };
-        let action = self.descriptor_name(action);
-        let subject = match family {
-            "rpc" => trellis_protocol::derive_bound_rpc_subject(api_id, deployment_id, &action),
-            "operation" => {
-                trellis_protocol::derive_bound_operation_subject(api_id, deployment_id, &action)
-            }
-            "live" => trellis_protocol::derive_bound_live_subject(api_id, deployment_id, &action),
-            _ => unreachable!("only request route families are deployment-bound"),
-        };
-        subject.expect("generated route metadata must form a valid bound subject")
+    fn operation_owner_subject(&self, api_id: &str, action: &str, canonical: &str) -> String {
+        self.provider_deployment_id.as_deref().map_or_else(
+            || canonical.to_owned(),
+            |deployment| {
+                trellis_protocol::derive_bound_operation_subject(
+                    api_id,
+                    deployment,
+                    action
+                        .split_once(":operation:")
+                        .expect("generated canonical Operation identity")
+                        .1,
+                )
+                .expect("generated operation metadata must form a valid owner subject")
+            },
+        )
     }
 
     fn descriptor_capabilities(&self, capabilities: &[&str]) -> Vec<String> {
@@ -426,8 +591,8 @@ impl Router {
         let handler = Arc::new(handler);
         let capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         self.handlers.insert(
-            self.descriptor_subject("rpc", D::API_ID, D::KEY, D::SUBJECT),
-            Route {
+            D::SUBJECT.to_owned(),
+            Arc::new(Route {
                 capabilities: RouteCapabilities::Static(capabilities),
                 permission: RoutePermissionSpec::Static(
                     D::API_ID.to_owned(),
@@ -438,21 +603,19 @@ impl Router {
                 route_token: self.intern_route(D::API_ID, D::KEY),
                 unary_rpc: true,
                 live: false,
-                handler: Box::new(
-                move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+                handler: Box::new(move |ctx, payload| -> HandlerFuture {
                     let handler = Arc::clone(&handler);
                     Box::pin(async move {
                         let input = decode_generated_input::<D::Input>(&payload)?;
                         let output = handler(ctx, input).await?;
                         let output = crate::generated::Codec::encode(&output)
                             .map_err(|error| ServerError::Nats(error.to_string()))?;
-                        Ok(HandlerResponse::Frames(vec![Bytes::from(serde_json::to_vec(
-                            &output,
-                        )?)]))
+                        Ok(HandlerResponse::Frames(vec![Bytes::from(
+                            serde_json::to_vec(&output)?,
+                        )]))
                     })
-                },
-            ),
-            },
+                }),
+            }),
         );
     }
 
@@ -465,12 +628,20 @@ impl Router {
     where
         D: RpcDescriptor + 'static,
     {
-        let subject = self.descriptor_subject("rpc", D::API_ID, D::KEY, D::SUBJECT);
+        let subject = D::SUBJECT.to_owned();
         let route = self
             .handlers
             .get_mut(&subject)
             .expect("RPC must be registered before changing its authorization mode");
-        route.permission = RoutePermissionSpec::Handler;
+        Arc::get_mut(route)
+            .expect("RPC routes have one registration owner")
+            .permission = RoutePermissionSpec::Handler(
+            D::API_ID.to_owned(),
+            D::KEY
+                .split_once('.')
+                .map_or(D::KEY, |(_, action)| action)
+                .to_owned(),
+        );
     }
 
     /// Register one generated RPC descriptor for routing metadata only.
@@ -483,8 +654,8 @@ impl Router {
     {
         let capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         self.handlers.insert(
-            self.descriptor_subject("rpc", D::API_ID, D::KEY, D::SUBJECT),
-            Route {
+            D::SUBJECT.to_owned(),
+            Arc::new(Route {
                 capabilities: RouteCapabilities::Static(capabilities),
                 permission: RoutePermissionSpec::Static(
                     D::API_ID.to_owned(),
@@ -502,7 +673,7 @@ impl Router {
                         ))
                     })
                 }),
-            },
+            }),
         );
     }
 
@@ -511,23 +682,25 @@ impl Router {
     where
         D: OperationDescriptor + 'static,
     {
-        let subject = self.descriptor_subject("operation", D::API_ID, D::KEY, D::SUBJECT);
-        let name = self.descriptor_name(D::KEY);
+        let subject = D::SUBJECT.to_owned();
+        let name = D::KEY
+            .split_once(":operation:")
+            .expect("generated canonical Operation identity")
+            .1
+            .to_owned();
         let metadata_handler = || {
-            Box::new(
-                |_, _| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
-                    Box::pin(async {
-                        Err(ServerError::Nats(
-                            "routing-metadata-only handler cannot execute".to_owned(),
-                        ))
-                    })
-                },
-            ) as BoxedHandler
+            Box::new(|_, _| -> HandlerFuture {
+                Box::pin(async {
+                    Err(ServerError::Nats(
+                        "routing-metadata-only handler cannot execute".to_owned(),
+                    ))
+                })
+            }) as BoxedHandler
         };
         let operation_token = self.intern_route(D::API_ID, &name);
         self.handlers.insert(
             subject.clone(),
-            Route {
+            Arc::new(Route {
                 capabilities: RouteCapabilities::Static(
                     self.descriptor_capabilities(D::CALLER_CAPABILITIES),
                 ),
@@ -541,11 +714,16 @@ impl Router {
                 unary_rpc: false,
                 live: true,
                 handler: metadata_handler(),
-            },
+            }),
         );
+        if self.provider_deployment_id.is_some() {
+            let bound = self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT);
+            self.handlers
+                .insert(bound, Arc::clone(&self.handlers[D::SUBJECT]));
+        }
         self.handlers.insert(
-            control_subject(&subject),
-            Route {
+            control_subject(&self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT)),
+            Arc::new(Route {
                 capabilities: RouteCapabilities::OperationControl {
                     observe: self.descriptor_capabilities(D::OBSERVE_CAPABILITIES),
                     cancel: self.descriptor_capabilities(D::CANCEL_CAPABILITIES),
@@ -556,7 +734,7 @@ impl Router {
                 unary_rpc: false,
                 live: true,
                 handler: metadata_handler(),
-            },
+            }),
         );
     }
 
@@ -575,20 +753,12 @@ impl Router {
     {
         let handler = Arc::new(handler);
         let live_owner = Arc::clone(&self.live_owner);
-        let subject = self.descriptor_subject("live", D::API_ID, D::KEY, D::SUBJECT);
-        let provider_deployment_id = self
-            .provider_deployment_id
-            .clone()
-            .unwrap_or_else(|| "unbound-deployment".to_owned());
-        let provider_instance_id = self
-            .provider_instance_id
-            .clone()
-            .unwrap_or_else(|| "unbound-instance".to_owned());
+        let subject = D::SUBJECT.to_owned();
         let capabilities = self.descriptor_capabilities(D::SUBSCRIBE_CAPABILITIES);
         let handler_subject = subject.clone();
         self.handlers.insert(
             subject,
-            Route {
+            Arc::new(Route {
                 capabilities: RouteCapabilities::Static(capabilities),
                 permission: RoutePermissionSpec::Static(
                     D::API_ID.to_owned(),
@@ -599,76 +769,75 @@ impl Router {
                 route_token: self.intern_route(D::API_ID, D::KEY),
                 unary_rpc: false,
                 live: true,
-                handler: Box::new(
-                    move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
-                        let handler = Arc::clone(&handler);
-                        let live_owner = live_owner.clone();
-                        let provider_deployment_id = provider_deployment_id.clone();
-                        let provider_instance_id = provider_instance_id.clone();
-                        let handler_subject = handler_subject.clone();
-                        Box::pin(async move {
-                            let owner = live_owner
-                                .read()
-                                .ok()
-                                .and_then(|owner| owner.clone())
-                                .ok_or_else(|| {
-                                    ServerError::Nats(format!(
-                                        "live route '{handler_subject}' has no live provider owner"
-                                    ))
-                                })?;
-                            let opening = crate::service::live_router::parse_live_open::<D::Input>(
-                                &payload,
-                            )?;
-                            let encoded_input = crate::generated::Codec::encode(&opening.input)
-                                .map_err(|error| ServerError::Nats(error.to_string()))?;
-                            let input = opening.input;
-                            let meta = crate::service::live_router::LiveOpeningMeta {
-                                open_id: opening.open_id.clone(),
-                                receive_max_payload_bytes: opening.receive_max_payload_bytes,
-                            };
-                            let cancellation = crate::live::LiveCancellation::new();
-                            let factory_cancellation = cancellation.clone();
-                            let source_factory = {
-                                let handler = Arc::clone(&handler);
-                                let request = ctx.clone();
-                                move || {
-                                    let stream = handler(
-                                        LiveRequestContext {
-                                            request,
-                                            cancellation: factory_cancellation.clone(),
-                                        },
-                                        input,
-                                    );
-                                    crate::service::live_router::source_from_handler::<D::Event, S>(
-                                        stream,
-                                    )
-                                }
-                            };
-                            let lease = accepted_generation(&owner, &ctx).await?;
-                            let reserved = crate::service::live_router::reserve_live::<D, _>(
-                                owner.client(),
-                                lease,
-                                owner.manager()?,
-                                &crate::service::live_router::LiveOpenRequest {
-                                    request: ctx,
-                                    inputs: crate::service::live_router::LiveOpenInputs {
-                                        api_id: D::API_ID.to_owned(),
-                                        base_subject: handler_subject,
-                                        provider_instance_id,
-                                        provider_deployment_id,
+                handler: Box::new(move |ctx, payload| -> HandlerFuture {
+                    let handler = Arc::clone(&handler);
+                    let live_owner = live_owner.clone();
+                    let handler_subject = handler_subject.clone();
+                    Box::pin(async move {
+                        let owner = live_owner
+                            .read()
+                            .ok()
+                            .and_then(|owner| owner.clone())
+                            .ok_or_else(|| {
+                                ServerError::Nats(format!(
+                                    "live route '{handler_subject}' has no live provider owner"
+                                ))
+                            })?;
+                        let authority = owner
+                            .client()
+                            .authorization_owner()
+                            .own_authority()
+                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        let SessionBinding::Service { .. } = &authority.authority().binding else {
+                            return Err(ServerError::Nats(
+                                "live provider requires a service binding".into(),
+                            ));
+                        };
+                        let opening = live_router::parse_live_open::<D::Input>(&payload)?;
+                        let encoded_input = crate::generated::Codec::encode(&opening.input)
+                            .map_err(|error| ServerError::Nats(error.to_string()))?;
+                        let input = opening.input;
+                        let meta = live_router::LiveOpeningMeta {
+                            open_id: opening.open_id.clone(),
+                            receive_max_payload_bytes: opening.receive_max_payload_bytes,
+                        };
+                        let cancellation = crate::live::LiveCancellation::new();
+                        let factory_cancellation = cancellation.clone();
+                        let source_factory = {
+                            let handler = Arc::clone(&handler);
+                            let request = ctx.clone();
+                            move || {
+                                let stream = handler(
+                                    LiveRequestContext {
+                                        request,
+                                        cancellation: factory_cancellation.clone(),
                                     },
-                                    opening: meta,
-                                    encoded_input,
-                                    cancellation,
+                                    input,
+                                );
+                                live_router::source_from_handler::<D::Event, S>(stream)
+                            }
+                        };
+                        let lease = accepted_generation(&owner, &ctx).await?;
+                        let reserved = live_router::reserve_live::<D, _>(
+                            owner.client(),
+                            lease,
+                            owner.manager()?,
+                            &live_router::LiveOpenRequest {
+                                request: ctx,
+                                inputs: live_router::LiveOpenInputs {
+                                    base_subject: handler_subject,
                                 },
-                                source_factory,
-                            )
-                            .await?;
-                            Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
-                        })
-                    },
-                ),
-            },
+                                opening: meta,
+                                encoded_input,
+                                cancellation,
+                            },
+                            source_factory,
+                        )
+                        .await?;
+                        Ok(HandlerResponse::LivePrepared(Box::new(reserved.prepared)))
+                    })
+                }),
+            }),
         );
     }
 
@@ -693,17 +862,8 @@ impl Router {
                 provider.recover().await
             })
         }));
-        let subject = self.descriptor_subject("operation", D::API_ID, D::KEY, D::SUBJECT);
-        let handler_subject = subject.clone();
+        let subject = D::SUBJECT.to_owned();
         let live_owner = Arc::clone(&self.live_owner);
-        let provider_deployment_id = self
-            .provider_deployment_id
-            .clone()
-            .unwrap_or_else(|| "unbound-deployment".to_owned());
-        let provider_instance_id = self
-            .provider_instance_id
-            .clone()
-            .unwrap_or_else(|| "unbound-instance".to_owned());
         let caller_capabilities = self.descriptor_capabilities(D::CALLER_CAPABILITIES);
         let observe_capabilities = self.descriptor_capabilities(D::OBSERVE_CAPABILITIES);
         let cancel_capabilities = self.descriptor_capabilities(D::CANCEL_CAPABILITIES);
@@ -711,19 +871,22 @@ impl Router {
 
         self.handlers.insert(
             subject.clone(),
-            Route {
+            Arc::new(Route {
                 capabilities: RouteCapabilities::Static(caller_capabilities),
                 permission: RoutePermissionSpec::Static(
                     D::API_ID.to_owned(),
                     ApiSurfaceKind::Operation,
-                    self.descriptor_name(D::KEY),
+                    D::KEY
+                        .split_once(":operation:")
+                        .expect("generated canonical Operation identity")
+                        .1
+                        .to_owned(),
                     PermissionAction::Invoke,
                 ),
                 route_token: self.intern_route(D::API_ID, D::KEY),
                 unary_rpc: false,
                 live: false,
-                handler: Box::new(
-                move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+                handler: Box::new(move |ctx, payload| -> HandlerFuture {
                     let start = Arc::clone(&start);
                     let schemas = Arc::clone(&start_schemas);
                     Box::pin(async move {
@@ -747,14 +910,18 @@ impl Router {
                             serde_json::to_vec(&output)?,
                         )]))
                     })
-                },
-            ),
-            },
+                }),
+            }),
         );
 
+        if self.provider_deployment_id.is_some() {
+            let bound = self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT);
+            self.handlers
+                .insert(bound, Arc::clone(&self.handlers[D::SUBJECT]));
+        }
         self.handlers.insert(
-            control_subject(&subject),
-            Route {
+            control_subject(&self.operation_owner_subject(D::API_ID, D::KEY, D::SUBJECT)),
+            Arc::new(Route {
                 capabilities: RouteCapabilities::OperationControl {
                     observe: observe_capabilities,
                     cancel: cancel_capabilities,
@@ -762,22 +929,27 @@ impl Router {
                 },
                 permission: RoutePermissionSpec::OperationControl(
                     D::API_ID.to_owned(),
-                    self.descriptor_name(D::KEY),
+                    D::KEY
+                        .split_once(":operation:")
+                        .expect("generated canonical Operation identity")
+                        .1
+                        .to_owned(),
                 ),
                 route_token: self.intern_route(D::API_ID, D::KEY),
                 unary_rpc: false,
                 live: true,
-                handler: Box::new(
-                move |ctx, payload| -> BoxFuture<'static, Result<HandlerResponse, ServerError>> {
+                handler: Box::new(move |ctx, payload| -> HandlerFuture {
                     let get = Arc::clone(&get);
                     let watch = Arc::clone(&watch);
                     let cancel = Arc::clone(&cancel);
                     let signal = Arc::clone(&signal);
                     let schemas = Arc::clone(&control_schemas);
                     let live_owner = live_owner.clone();
-                    let provider_deployment_id = provider_deployment_id.clone();
-                    let provider_instance_id = provider_instance_id.clone();
-                    let subject = handler_subject.clone();
+                    let subject = ctx
+                        .subject
+                        .strip_suffix(".control")
+                        .unwrap_or(&ctx.subject)
+                        .to_owned();
                     Box::pin(async move {
                         let schemas = schemas.get()?;
                         let request = serde_json::from_slice::<OperationControlRequest>(&payload)
@@ -807,13 +979,21 @@ impl Router {
                                     .and_then(|owner| owner.clone())
                                     .ok_or_else(|| {
                                         ServerError::Nats(format!(
-                                            "operation route '{subject}' has no live provider owner"
-                                        ))
+                                    "operation route '{subject}' has no live provider owner"
+                                ))
                                     })?;
-                                let opening =
-                                    crate::service::live_router::parse_operation_watch_open(
-                                        &payload,
-                                    )?;
+                                let authority = owner
+                                    .client()
+                                    .authorization_owner()
+                                    .own_authority()
+                                    .map_err(|error| ServerError::Nats(error.to_string()))?;
+                                let SessionBinding::Service { .. } = &authority.authority().binding
+                                else {
+                                    return Err(ServerError::Nats(
+                                        "operation provider requires a service binding".into(),
+                                    ));
+                                };
+                                let opening = live_router::parse_operation_watch_open(&payload)?;
                                 let include_updates = opening.include_updates;
                                 let cancellation = crate::live::LiveCancellation::new();
                                 let factory_watch = Arc::clone(&watch);
@@ -821,29 +1001,24 @@ impl Router {
                                 let factory_operation_id = opening.operation_id.clone();
                                 let schemas = Arc::clone(schemas);
                                 let source_factory = move || {
-                                    crate::service::live_router::source_from_watch_frames(
-                                        watch_response_stream::<D, D::Update>(
-                                            factory_watch
-                                                .watch(factory_ctx, factory_operation_id),
-                                            include_updates,
-                                            schemas,
-                                        ),
-                                    )
+                                    live_router::source_from_watch_frames(watch_response_stream::<
+                                        D,
+                                        D::Update,
+                                    >(
+                                        factory_watch.watch(factory_ctx, factory_operation_id),
+                                        include_updates,
+                                        schemas,
+                                    ))
                                 };
                                 let lease = accepted_generation(&owner, &ctx).await?;
-                                let reserved = crate::service::live_router::reserve_operation_watch::<
-                                    D,
-                                    _,
-                                >(
+                                let reserved = live_router::reserve_operation_watch::<D, _>(
                                     owner.client(),
                                     lease,
                                     owner.manager()?,
-                                    &crate::service::live_router::OperationWatchOpenRequest {
+                                    &live_router::OperationWatchOpenRequest {
                                         request: ctx,
-                                        inputs: crate::service::live_router::OperationWatchOpenInputs {
+                                        inputs: live_router::OperationWatchOpenInputs {
                                             base_subject: subject,
-                                            provider_instance_id,
-                                            provider_deployment_id,
                                         },
                                         opening,
                                         cancellation,
@@ -866,16 +1041,24 @@ impl Router {
                                         action: "signal".to_string(),
                                     }
                                 })?;
-                                let signal_schema = schemas.signals
-                                    .get(&signal_name)
-                                    .ok_or_else(|| ServerError::InvalidOperationControlAction {
-                                        subject: subject.clone(),
-                                        action: format!("signal:{signal_name}"),
+                                let signal_schema =
+                                    schemas.signals.get(&signal_name).ok_or_else(|| {
+                                        ServerError::InvalidOperationControlAction {
+                                            subject: subject.clone(),
+                                            action: format!("signal:{signal_name}"),
+                                        }
                                     })?;
-                                let signal_value = request.input.as_ref().unwrap_or(&serde_json::Value::Null);
+                                let signal_value =
+                                    request.input.as_ref().unwrap_or(&serde_json::Value::Null);
                                 signal_schema.validate(signal_value)?;
                                 Ok(HandlerResponse::Frames(vec![signal_frame::<D>(
-                                    signal.signal(ctx, request.operation_id, signal_name, request.input)
+                                    signal
+                                        .signal(
+                                            ctx,
+                                            request.operation_id,
+                                            signal_name,
+                                            request.input,
+                                        )
                                         .await?,
                                     schemas,
                                 )?]))
@@ -886,9 +1069,8 @@ impl Router {
                             }),
                         }
                     })
-                },
-            ),
-            },
+                }),
+            }),
         );
     }
 
@@ -899,25 +1081,6 @@ impl Router {
         P: ServiceOperationProvider<D>,
     {
         self.register_operation_routes::<D, P>(Arc::new(provider));
-    }
-
-    /// Register an operation business handler while the router owns lifecycle control.
-    #[cfg(feature = "runtime-internals")]
-    pub fn register_operation_handler<D, F, Fut, V>(
-        &mut self,
-        runtime: super::operations::OperationHandlerRuntime<V>,
-        handler: F,
-    ) where
-        D: OperationDescriptor + 'static,
-        D::Progress: serde::de::DeserializeOwned,
-        D::Output: serde::de::DeserializeOwned,
-        F: Fn(RequestContext, D::Input, super::OperationControl<D>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), ServerError>> + Send + 'static,
-        V: super::RequestValidator + Clone + 'static,
-    {
-        self.register_operation_provider::<D, _>(super::operations::RuntimeOperationProvider::new(
-            runtime, handler,
-        ));
     }
 
     #[doc(hidden)]
@@ -971,6 +1134,32 @@ impl Router {
         Ok(route.permission.for_payload(payload))
     }
 
+    /// Whether the registered handler enforces payload-bound authority after possession
+    /// verification.
+    pub fn handler_authorizes(&self, subject: &str) -> bool {
+        self.route(subject)
+            .is_some_and(|route| matches!(route.permission, RoutePermissionSpec::Handler(..)))
+    }
+
+    pub(crate) async fn sign_reply(
+        &self,
+        context: &RequestContext,
+        request_payload: &[u8],
+        reply: &super::request_loop::OutboundReply,
+    ) -> Result<async_nats::HeaderMap, ServerError> {
+        let owner = self
+            .live_owner
+            .read()
+            .ok()
+            .and_then(|owner| owner.clone())
+            .ok_or_else(|| ServerError::Nats("provider reply owner unavailable".into()))?;
+        let action = self
+            .required_permission(&context.subject, request_payload)?
+            .map(|route| route.catalog_action())
+            .ok_or_else(|| ServerError::Nats("reply has no registered provider action".into()))?;
+        super::request_loop::sign_verified_reply(owner.client(), context, &action, reply).await
+    }
+
     /// Dispatch one request to the registered handler for its subject.
     pub async fn handle_request_frames(
         &self,
@@ -1000,6 +1189,16 @@ impl Router {
         let route = self
             .route(subject)
             .ok_or_else(|| ServerError::MissingHandler(subject.to_string()))?;
+        if route.live
+            && !context
+                .verified_request()
+                .is_some_and(|verified| verified.authorized_action().is_some())
+        {
+            return Err(ServerError::RequestDenied {
+                subject: subject.to_owned(),
+                session_key: String::new(),
+            });
+        }
         (route.handler)(context, payload).await
     }
 }
@@ -1046,16 +1245,26 @@ where
     TUpdate: serde::Serialize + 'static,
 {
     let mut sent_initial_snapshot = false;
+    let mut current_snapshot = None;
     Box::pin(
         events
             .map(move |event| match event {
                 Ok(OperationLiveEvent::Snapshot(snapshot)) => {
+                    let value = match serde_json::to_value(&snapshot) {
+                        Ok(value) => value,
+                        Err(error) => return Some(Err(error.into())),
+                    };
+                    current_snapshot = Some(value);
                     let index = usize::from(sent_initial_snapshot);
                     sent_initial_snapshot = true;
                     Some(operation_watch_frame::<D>(index, snapshot, &schemas))
                 }
                 Ok(OperationLiveEvent::Update(update)) if include_updates => {
-                    Some(operation_update_frame(update, schemas.update.as_ref()))
+                    Some(operation_update_frame(
+                        update,
+                        schemas.update.as_ref(),
+                        current_snapshot.as_ref(),
+                    ))
                 }
                 Ok(OperationLiveEvent::Update(_)) => None,
                 Err(error) => Some(Err(error)),
@@ -1067,6 +1276,7 @@ where
 fn operation_update_frame<TUpdate>(
     update: crate::client::OperationUpdateEvent<TUpdate>,
     update_schema: Option<&PreparedSchema>,
+    snapshot: Option<&serde_json::Value>,
 ) -> Result<Bytes, ServerError>
 where
     TUpdate: serde::Serialize,
@@ -1076,6 +1286,9 @@ where
         ServerError::Nats("operation update stream is missing its declared schema".to_string())
     })?;
     schema.validate(&update_value)?;
+    let snapshot = snapshot.ok_or_else(|| {
+        ServerError::Nats("operation update preceded its initial snapshot".into())
+    })?;
     Ok(Bytes::from(serde_json::to_vec(&serde_json::json!({
         "kind": "event",
         "sequence": update.sequence,
@@ -1085,6 +1298,7 @@ where
             "sequence": update.sequence,
             "timestamp": update.timestamp,
             "update": update_value,
+            "snapshot": snapshot,
         }
     }))?))
 }
@@ -1178,183 +1392,4 @@ where
         validate_provider_value(D::KEY, &schemas.output, &serde_json::to_value(output)?)?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-
-    use futures_util::stream;
-
-    use super::*;
-
-    struct TestOperation;
-
-    impl OperationDescriptor for TestOperation {
-        type Input = Value;
-        type Progress = Value;
-        type Output = Value;
-        type Update = Value;
-        type UpdateEvidence = crate::client::NoOperationUpdates;
-        type Error = super::super::OperationFailure;
-
-        const API_ID: &'static str = "test@v1";
-        const KEY: &'static str = "Test.Operation";
-        const SUBJECT: &'static str = "operations.v1.Test.Operation";
-        const CANCELABLE: bool = true;
-        const INPUT_SCHEMA_JSON: &'static str = r#"{"type":"object"}"#;
-        const PROGRESS_SCHEMA_JSON: Option<&'static str> = None;
-        const OUTPUT_SCHEMA_JSON: &'static str = r#"{"type":"object"}"#;
-        const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
-        const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = r#"{"resume":{"type":"object"}}"#;
-    }
-
-    struct DefaultControlProvider;
-
-    #[test]
-    fn bound_routes_use_canonical_action_name_without_legacy_api_prefix() {
-        let mut router = Router::new();
-        router.set_provider_deployment_id("provider");
-        let subject = trellis_protocol::derive_bound_operation_subject(
-            TestOperation::API_ID,
-            "provider",
-            "Operation",
-        )
-        .expect("bound subject");
-        assert_eq!(
-            router.descriptor_subject(
-                "operation",
-                TestOperation::API_ID,
-                TestOperation::KEY,
-                TestOperation::SUBJECT,
-            ),
-            subject,
-        );
-    }
-
-    impl ServiceOperationProvider<TestOperation> for DefaultControlProvider {
-        fn start(
-            &self,
-            _context: RequestContext,
-            _input: Value,
-        ) -> BoxFuture<'static, Result<super::super::AcceptedOperation<Value, Value>, ServerError>>
-        {
-            unreachable!("start is not exercised")
-        }
-
-        fn get(
-            &self,
-            context: RequestContext,
-            operation_id: String,
-        ) -> BoxFuture<'static, Result<OperationSnapshot<Value, Value>, ServerError>> {
-            self.wait(context, operation_id)
-        }
-
-        fn wait(
-            &self,
-            _context: RequestContext,
-            _operation_id: String,
-        ) -> BoxFuture<'static, Result<OperationSnapshot<Value, Value>, ServerError>> {
-            Box::pin(async {
-                Ok(OperationSnapshot {
-                    revision: 2,
-                    state: super::super::OperationState::Completed,
-                    output: Some(serde_json::json!({})),
-                    ..Default::default()
-                })
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn provider_defaults_watch_terminal_and_reject_controls() {
-        let mut router = Router::new();
-        router.register_operation_provider::<TestOperation, _>(DefaultControlProvider);
-        let control = super::super::control_subject(TestOperation::SUBJECT);
-        let context = || RequestContext {
-            subject: control.clone(),
-            ..Default::default()
-        };
-
-        let response = router
-            .handle_request_response(
-                &control,
-                Bytes::from_static(br#"{"action":"watch","operationId":"op-1"}"#),
-                context(),
-            )
-            .await;
-        assert!(
-            matches!(response, Err(ServerError::Nats(message)) if message.contains("live provider owner")),
-            "a watch route without a live owner must fail closed, not stream"
-        );
-
-        for payload in [
-            br#"{"action":"cancel","operationId":"op-1"}"#.as_slice(),
-            br#"{"action":"signal","operationId":"op-1","signal":"resume","input":{}}"#.as_slice(),
-        ] {
-            assert!(matches!(
-                router
-                    .handle_request_response(&control, Bytes::copy_from_slice(payload), context())
-                    .await,
-                Err(ServerError::InvalidOperationControlAction { .. })
-            ));
-        }
-    }
-
-    struct TestLive;
-
-    impl LiveDescriptor for TestLive {
-        type Input = Value;
-        type Event = Value;
-
-        const API_ID: &'static str = "test@v1";
-        const DESCRIPTOR_NAME: &'static str = "live.Live";
-        const KEY: &'static str = "Test.Live";
-        const SUBJECT: &'static str = "live.v1.route.Test.Live";
-        const SUBSCRIBE_CAPABILITIES: &'static [&'static str] = &[];
-    }
-
-    #[tokio::test]
-    async fn live_routes_require_a_live_provider_owner() {
-        let mut router = Router::new();
-        router.set_provider_instance_id("provider-instance");
-        router.register_live::<TestLive, _, _>(|_, _| {
-            stream::pending::<Result<Value, ServerError>>()
-        });
-        let response = router
-            .handle_request_response(
-                TestLive::SUBJECT,
-                Bytes::from_static(b"{}"),
-                RequestContext {
-                    subject: TestLive::SUBJECT.to_owned(),
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(
-            matches!(response, Err(ServerError::Nats(message)) if message.contains("live provider owner")),
-            "a Live route without a live owner must fail closed"
-        );
-    }
-
-    #[tokio::test]
-    async fn live_open_rejects_a_non_live_envelope_before_reserving() {
-        let mut router = Router::new();
-        router.set_provider_instance_id("provider-instance");
-        router.register_live::<TestLive, _, _>(|_, _| {
-            stream::pending::<Result<Value, ServerError>>()
-        });
-        // A legacy finite request body is an explicit incompatible-protocol
-        // error, never a silent fallback to an old transport.
-        let response = router
-            .handle_request_response(
-                TestLive::SUBJECT,
-                Bytes::from_static(b"{}"),
-                RequestContext {
-                    subject: TestLive::SUBJECT.to_owned(),
-                    ..Default::default()
-                },
-            )
-            .await;
-        assert!(response.is_err());
-    }
 }

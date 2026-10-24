@@ -1,17 +1,17 @@
 import type {
-  CallerParticipant,
   ConnectedTrellisClient,
   TrellisConnection,
   TrellisConnectionStatus,
 } from "@oatscenter/trellis";
+import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 import { createContext } from "svelte";
 import { createSubscriber } from "svelte/reactivity";
 
 /** Minimal contract shape required to create a typed Trellis Svelte app context. */
-export type TrellisParticipantLike = CallerParticipant;
+export type TrellisAppRequest = AppRequestDescriptor;
 
 /** Real connected Trellis client type exposed by a Svelte app context. */
-export type TrellisClientFor<TContract extends TrellisParticipantLike> =
+export type TrellisClientFor<TContract extends TrellisAppRequest> =
   ConnectedTrellisClient<TContract>;
 
 /** Minimal client surface required for Trellis Svelte context clients. */
@@ -29,15 +29,14 @@ export type TrellisAppUrl = string | URL;
  * runtime. Returning `undefined` means no instance is currently available.
  */
 export type TrellisAppUrlResolver =
-  | TrellisAppUrl
-  | (() => TrellisAppUrl | undefined);
+  TrellisAppUrl | (() => TrellisAppUrl | undefined);
 
 /** Options used to create a Trellis Svelte app owner. */
 export type CreateTrellisAppOptions<
-  TContract extends TrellisParticipantLike = TrellisParticipantLike,
+  TContract extends TrellisAppRequest = TrellisAppRequest,
 > = {
   /** Generated participant used by this app context and its connections. */
-  participant: TContract;
+  request: TContract;
 
   /** Trellis URL, or a resolver for runtime-selected Trellis URLs. */
   trellisUrl: TrellisAppUrlResolver;
@@ -88,9 +87,9 @@ const trellisAppOwnerBrand: unique symbol = Symbol("trellisAppOwner");
 
 /** Minimal branded app owner surface accepted by the Trellis Svelte provider. */
 export type TrellisAppOwner<
-  TContract extends TrellisParticipantLike = TrellisParticipantLike,
+  TContract extends TrellisAppRequest = TrellisAppRequest,
 > = {
-  readonly participant: TContract;
+  readonly request: TContract;
   readonly trellisUrl: TrellisAppUrlResolver;
   readonly [trellisAppOwnerBrand]: true;
 };
@@ -101,11 +100,11 @@ export type TrellisAppOwner<
  * `TClient` is a type-only refinement over the descriptor-inferred caller runtime.
  */
 export interface TrellisApp<
-  TContract extends TrellisParticipantLike = TrellisParticipantLike,
+  TContract extends TrellisAppRequest = TrellisAppRequest,
   TClient extends TrellisContextClient = TrellisClientFor<TContract>,
 > extends TrellisAppOwner<TContract> {
   /** Generated participant used by this app context and its connections. */
-  readonly participant: TContract;
+  readonly request: TContract;
 
   /** Trellis URL configuration used by `TrellisProvider` connections. */
   readonly trellisUrl: TrellisAppUrlResolver;
@@ -119,11 +118,11 @@ export interface TrellisApp<
 
 /** Internal app-scoped typed Svelte context implementation. */
 class TrellisAppImpl<
-  TContract extends TrellisParticipantLike = TrellisParticipantLike,
+  TContract extends TrellisAppRequest = TrellisAppRequest,
   TClient extends TrellisContextClient = TrellisClientFor<TContract>,
 > {
   readonly [trellisAppOwnerBrand] = true as const;
-  readonly #participant: TContract;
+  readonly #request: TContract;
   readonly #trellisUrl: TrellisAppUrlResolver;
   readonly #getContext: () => TrellisAppContext<TClient>;
   readonly #setContext: (
@@ -132,19 +131,18 @@ class TrellisAppImpl<
 
   /** Creates an app-scoped context owner for a specific Trellis contract. */
   constructor(options: CreateTrellisAppOptions<TContract>) {
-    const { participant, trellisUrl } = options;
-    this.#participant = participant;
+    const { request, trellisUrl } = options;
+    this.#request = request;
     this.#trellisUrl = trellisUrl;
-    const [getContext, setContext] = createContext<
-      TrellisAppContext<TClient>
-    >();
+    const [getContext, setContext] =
+      createContext<TrellisAppContext<TClient>>();
     this.#getContext = getContext;
     this.#setContext = setContext;
   }
 
   /** Generated participant used by `TrellisProvider` connections. */
-  get participant(): TContract {
-    return this.#participant;
+  get request(): TContract {
+    return this.#request;
   }
 
   /** Trellis URL configuration used by `TrellisProvider` connections. */
@@ -177,17 +175,15 @@ class TrellisAppImpl<
  * The optional `TClient` type parameter refines the connected caller runtime.
  */
 export function createTrellisApp<
-  TContract extends TrellisParticipantLike,
+  TContract extends TrellisAppRequest,
   TClient extends TrellisContextClient = TrellisClientFor<TContract>,
->(
-  options: CreateTrellisAppOptions<TContract>,
-): TrellisApp<TContract, TClient> {
+>(options: CreateTrellisAppOptions<TContract>): TrellisApp<TContract, TClient> {
   return new TrellisAppImpl<TContract, TClient>(options);
 }
 
 function isTrellisAppImpl(
   app: TrellisAppOwner,
-): app is TrellisAppImpl<TrellisParticipantLike> {
+): app is TrellisAppImpl<TrellisAppRequest> {
   return app instanceof TrellisAppImpl;
 }
 

@@ -1,0 +1,18 @@
+[package]
+name = "runtime-trellis"
+version = "0.100.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+trellis-rs = "0.100.0-rc.3"
+trellis-models = { path = "../../../../../crates/models" }
+trellis-protocol = { path = "../../../../../crates/protocol" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+futures-util = "0.3"
+
+[build-dependencies]
+trellis-builtin-contracts = { path = "../../../../../crates/builtin-contracts" }
+trellis-codegen-rust = { path = "../../../../../crates/codegen-rust" }
+trellis-idl = { path = "../../../../../crates/idl" }

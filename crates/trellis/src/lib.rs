@@ -34,14 +34,18 @@
 //! assignment and current grants from a provisioned seed.
 //!
 //! ```no_run
+//! use trellis_rs::client::RuntimeAuthorizationTrust;
 //! use trellis_rs::service::ServiceConnectOptions;
 //!
-//! let _options = ServiceConnectOptions::new(
-//!     "http://localhost:3000",
-//!     "base64url-identity-seed",
-//! )
-//! .with_name("documents-worker")
-//! .with_timeout_ms(10_000);
+//! fn service_options<'a>(
+//!     nats_servers: Vec<String>,
+//!     provisioning_trust: RuntimeAuthorizationTrust,
+//!     local_identity_seed: &'a str,
+//! ) -> ServiceConnectOptions<'a> {
+//!     ServiceConnectOptions::new(nats_servers, provisioning_trust, local_identity_seed)
+//!         .with_name("documents-worker")
+//!         .with_timeout_ms(10_000)
+//! }
 //! ```
 
 #[doc(hidden)]
@@ -72,4 +76,9 @@ pub mod jobs;
 /// Reusable OpenTelemetry ownership and instrumentation.
 pub mod telemetry;
 
+#[doc(hidden)]
+#[path = "internal.rs"]
+pub mod __internal;
+
 extern crate self as trellis_rs;
+include!("../generated/modules.rs");

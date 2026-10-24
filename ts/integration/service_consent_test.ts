@@ -1,66 +1,80 @@
-import { assert, assertRejects } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { ulid } from "ulid";
+import { types } from "../packages/trellis-testkit/trellis/index.js";
 
+import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { participants as removedParticipants } from "../../integration/fixtures/runtime-removed/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("service connection requires an approved participant identity", async (t) => {
+test("service provisioning requires an installed deployment and admits its identity", async () => {
   await withTrellisRuntime(async (runtime) => {
-    await runtime.contracts.install({
+    await assert.rejects(() => runtime.services.provisionInstanceOnly({}));
+    const identity = await runtime.registerService({
+      name: "provider",
       contract: participants.Provider.participant,
     });
-    const pending = await runtime.contracts.requestApply({
-      contract: participants.Provider.participant,
+    const service = await TrellisService.connect({
+      trellisUrl: runtime.oauthIssuer,
+      participant: participants.Provider.participant,
+      name: "provider",
+      seed: identity.seed,
+    }).orThrow();
+    const caller = await runtime.connectClient({
+      name: "provisioned-identity-caller",
+      contract: apps.Caller.request,
     });
-
-    await t.step("deployment apply stops at consent", () => {
-      assert(pending.status === "approval_required");
-    });
-    if (pending.status !== "approval_required") return;
-
-    await t.step(
-      "unapproved deployment cannot provision an identity",
-      async () => {
-        await assertRejects(() => runtime.services.provisionInstanceOnly({}));
-      },
-    );
-
-    await t.step("approved deployment provisions and connects", async () => {
-      const approval = await runtime.contracts.approveApply(pending.pendingId);
-      assert(approval.participantId.length > 0);
-      const identity = await runtime.services.createInstance({
-        name: "provider",
-        contract: participants.Provider.participant,
+    try {
+      await service.handleEcho(({ input }) => Result.ok(input));
+      assert.deepEqual(await caller.echo({ value: "admitted" }).orThrow(), {
+        value: "admitted",
       });
-      const service = await TrellisService.connect({
-        trellisUrl: runtime.trellisUrl,
-        participant: participants.Provider.participant,
-        name: "provider",
-        seed: identity.seed,
-      }).orThrow();
-      try {
-        assert(service.connection !== undefined);
-      } finally {
-        await service.stop();
-      }
-    });
+    } finally {
+      await caller.connection.close();
+      await service.stop();
+    }
   });
 });
 
-Deno.test("a pending deployment approval keeps its original revision", async () => {
+test("a stale deployment apply cannot overwrite the accepted implementation", async () => {
   await withTrellisRuntime(async (runtime) => {
-    const pending = await runtime.contracts.requestApply({
-      contract: participants.Provider.participant,
+    const contract = participants.Provider.participant;
+    await runtime.contracts.install({ contract });
+    const created = await runtime.callAdminRpc("authDeploymentsCreate", {
+      title: "concurrent deployment apply",
+      kind: "service",
+      participantId: contract.identity,
+      packageEvidence: types.AuthPackageEvidenceCodec.decode(
+        contract.packageEvidence,
+      ),
+      idempotencyKey: ulid(),
     });
-    assert(pending.status === "approval_required");
-    if (pending.status !== "approval_required") return;
-
-    await runtime.contracts.apply({
-      contract: removedParticipants.Provider.participant,
+    const accepted = await runtime.callAdminRpc("authDeploymentsApply", {
+      deploymentId: created.deployment.deploymentId,
+      expectedRevision: created.deployment.revision,
+      packageEvidence: types.AuthPackageEvidenceCodec.decode(
+        removedParticipants.Provider.participant.packageEvidence,
+      ),
+      idempotencyKey: ulid(),
     });
-    await assertRejects(() =>
-      runtime.contracts.approveApply(pending.pendingId)
+    await assert.rejects(() =>
+      runtime.callAdminRpc("authDeploymentsApply", {
+        deploymentId: created.deployment.deploymentId,
+        expectedRevision: created.deployment.revision,
+        packageEvidence: types.AuthPackageEvidenceCodec.decode(
+          contract.packageEvidence,
+        ),
+        idempotencyKey: ulid(),
+      }),
     );
+    const current = await runtime.callAdminRpc("authDeploymentsGet", {
+      deploymentId: created.deployment.deploymentId,
+    });
+    assert.deepEqual(current.deployment, accepted.deployment);
   });
 });

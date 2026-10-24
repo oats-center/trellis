@@ -1,0 +1,19 @@
+---
+title: "Listening to the outside world"
+description: "Declare an auth event dependency and subscribe to Auth.Connections.Opened."
+---
+
+# Consume events durably
+
+Add the owning source package as a dependency, import its API, and select the
+event in a `use` body. For durable processing, declare a `consumer` resource with
+title, description, exact selected events, local concurrency, initial replay,
+and retry policy. An ephemeral event listener is for lossy live-only reactions.
+
+Register the generated Consumer handler during startup. Trellis owns its stream,
+durable identity, proof verification, retry, progress acknowledgement, and scoped
+DLQ. Concurrency is local per participant process, not a distributed cap.
+
+Delivery and manual replay are at least once. Keep side effects idempotent or
+commit an inbox marker with the side effect. Final failure is recorded by Events
+before the original delivery is acknowledged; replay targets only this Consumer.

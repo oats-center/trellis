@@ -83,6 +83,10 @@ pub fn print_success(message: &str) {
     println!("{} {}", "ok".green().bold(), message);
 }
 
+pub fn print_warning(message: &str) {
+    eprintln!("{} {}", "warning".yellow().bold(), message);
+}
+
 pub fn print_info(message: &str) {
     println!("{}", message);
 }

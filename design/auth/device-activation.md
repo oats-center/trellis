@@ -1,6 +1,6 @@
 # Design: Device Activation
 
-Status: authoritative device enrollment and bootstrap model after WO-02.
+Status: Revision 7 device enrollment and independently consented native companion model.
 
 ## Principles
 
@@ -13,17 +13,25 @@ Status: authoritative device enrollment and bootstrap model after WO-02.
 - Every attempt proves possession of both the durable identity key and the
   ephemeral session key used for the eventual NATS connection.
 - Device runtimes have no durable user-login row.
-- A declared companion is the device's lexical `app` or `agent` child, but it
-  runs under separate user authority with its own login session, context,
-  resources, and connection.
+- A declared companion is the device's lexical native application request. It
+  runs under independently consented OAuth user authority with its own durable
+  P-256 key, ephemeral Ed25519 key, refresh family, context, and connection.
 
 ## Provisioning
 
 Administrators create a device deployment and provision an instance through the
 Auth RPC surface. Provisioning atomically creates the principal, instance, and
-device record and may return a one-use high-entropy secret. Only its hash is
-stored. Consuming that secret installs the caller-supplied durable public
-identity key once; retries return the committed idempotent result.
+device record. `Devices.Provision` with an administrator-supplied public key
+registers an already-approved identity. Omitting that key instead returns a
+one-use, expiring high-entropy provisioning secret for the server-owned instance.
+Only its hash is stored in the secret table; idempotent response replay is
+encrypted. Consuming the secret installs the durable public identity key once
+and leaves the device pending review. It grants no user authority.
+
+Accepting a deployment with a declared native companion registers the dedicated
+client `trellis.device.<deploymentId>.companion`. Its allowed request is derived
+from that accepted child descriptor. Registration neither grants capabilities to
+a user nor creates an OAuth grant or login.
 
 The provisioned device keeps its root/identity secret. Ready-state configuration
 does not retain deployment IDs, instance IDs, participant artifacts, authority
@@ -32,81 +40,80 @@ digests, session credentials, or authorization contexts.
 ## Online Enrollment
 
 `POST /auth/device/enroll` accepts the device identity key, participant ID,
-ephemeral session public key, request ID, issue time, `device-enroll` proof, and
-optional one-use provisioning secret. The request is strict and proof-bound to
-the complete raw body.
+ephemeral session public key, request ID, issue time, challenge digest,
+confirmation code, and optional one-use provisioning secret. Both `proof` and
+`sessionProof` use the `deviceEnrollment` purpose: the durable identity signs the
+complete unsigned body, and the ephemeral key signs the same body with its own
+key ID. Auth verifies both possession proofs, origin and bounded issue time
+before consuming a secret or touching review state.
 
 The server resolves assignment and installed participant state. It either reuses
 the review for the same attempt or creates one aggregate review record.
 Responses are:
 
-- `pending`, with activation URL, confirmation code, and polling metadata;
-- `rejected`, with the terminal rejection; or
-- `ready`, indicating that review approval is complete.
+- `pending`, with review ID, activation URL and bounded polling metadata;
+- `rejected` or `expired`; or
+- `approved`, which SDK activation helpers expose as ready for native admission.
 
-The TypeScript and Rust activation helpers retain one durable identity and one
-ephemeral session key/logical connection ID across retries. They do not create
-new reviews while polling. When the device declares a companion, enrollment also
-carries a proof-bound claim for that exact lexical child and its separate
-installation key. The child cannot start an independent browser or native
-bootstrap; it is admitted only through this parent activation.
+Retries retain the durable identity and device-local challenge, and reuse the
+same bounded review. A resumed helper may rotate its ephemeral key but must prove
+possession of both keys again. The device displays its locally derived
+confirmation code. Enrollment carries no companion login, installation seed or
+authority claim.
 
 ## User Approval
 
-The activation Portal resolves review state from Auth and presents the exact
-device, deployment, requested participant, and confirmation code. The signed-in
-user approves or rejects through `Auth.DeviceUserAuthorities.Resolve` and the
-device review RPCs. For a device companion, operation progress includes the
-server-computed `companionConsent` for the child participant. The approving user
-must submit a separate child `Approval` that repeats its `decisionDigest`,
-`installedRevision`, and `expectedGrantRevision` and selects only eligible
-capabilities and resources from that consent. Required eligible entries must be
-included. Auth rejects the approval if the consent, installed revision, grant
-revision, eligibility, consent digest, or resource commitment is stale or does
-not match exactly.
+An authenticated administrator uses `Devices.Reviews.Get` and
+`Devices.Reviews.Decide`, presenting the device's confirmation code and expected
+review revision. Auth rechecks expiration, server-owned assignment, current
+accepted participant revision and device state inside its SQLite transaction.
+Approval enables the parent only; it cannot issue companion credentials.
 
-Auth commits the child approval and device authority before creating the child
-login session. The device does not lend its principal or grants to the child;
-the resulting user-owned child binding, login session, authorization context,
-resource bindings, and connection remain distinct from the parent's. The
-operation retains pending/approved/rejected progress and events but no
-identity-authority payload.
+The companion separately uses ordinary OAuth Device Code with the dedicated
+deployment client and explicit user consent to the accepted child request. Its
+authenticated user connection calls `DeviceCompanions.Attach` with the approved
+review ID, confirmation code, expected revision and idempotency key. Auth derives
+the user and grant exclusively from that verified caller. The same transaction
+rechecks the accepted child request, exact native client, live grant/login/family,
+eligible required capabilities and active assignment, then records the
+association. Caller-supplied principal IDs, grant IDs or parent credentials
+cannot substitute for this consent.
 
-Portal authentication uses the standard browser flow, browser-binding secret,
-and OIDC/local-login controls. The Portal participant is installed as a
-Trellis-owned built-in but receives no bootstrap `Admin` binding.
+New OAuth initiation and consent approval both recheck the registered request
+against the deployment's current accepted declaration. Omitting the companion or
+removing its deployment rejects new and pending approvals; accepting the declaration
+again permits a new explicit consent flow. This does not disable the OAuth client
+or revoke already-consented independent grants: their ordinary refresh remains
+valid after parent disable, declaration omission, or deployment removal.
+
+`DeviceCompanions.Revoke` is authorized to the associated user or an administrator
+whose verified session delegates `trellis.auth.v1:users.manage` and who still holds
+it. It atomically
+removes the association and revokes that exact OAuth grant and its families.
+It does not revoke the user's login or other grants, or disable the parent.
 
 ## Device Bootstrap
 
-After approval, `POST /bootstrap/device` accepts only:
+After approval the ordinary provisioned-device NATS admission proves possession
+of the registered durable key. Auth resolves assignment, accepted descriptor,
+native resources and transport permissions server-side; admission never creates
+a review or user login. The signed native authorization may advertise the
+companion's request ID, client ID, OAuth grant ID and required/optional flag, but
+never its tokens or private keys.
 
-```text
-identityKey, participantId, sessionPublicKey, requestId, issuedAt, proof
-```
-
-The proof purpose is `native-bootstrap`. The route never creates a review and
-rejects pending/rejected/unrecognized devices. It resolves the current
-assignment, installed participant revision, `GrantBinding`, resources, issuer,
-and transport data server-side.
-
-The response uses the shared native installation shape documented in
-`auth-protocol.md`: `assignment`, `runtime`, and `transports`. The runtime
-validates exact participant/API evidence, grant/resource bindings, signed
-context, route JWT, session key, inbox, and endpoints before NATS CONNECT.
-
-When activation established a companion, device bootstrap may also return that
-exact child installation. The device runtime opens it as a separate ordinary
-user connection using the committed child login and authority. A required child
-must be available; an optional child may be absent without merging or widening
-the parent device authority.
+The wrapper receives independently obtained native OAuth custody and checks it
+against this signed assignment before opening the separate user connection.
+A required child must be assigned and available; an optional child may be absent.
+Child revocation does not revoke parent authority, although a required wrapper
+cannot be newly constructed without a valid child. Parent disablement does not
+revoke the independently consented child grant.
 
 ## Identity And Session Keys
 
-The durable identity key authorizes enrollment/bootstrap for the provisioned
-device. A fresh ephemeral session key signs the bootstrap proof and
-authenticates NATS. These roles are distinct. The session public key in the
-request, signed context, route token, NATS credentials, and later `session-key`
-message header must all agree.
+The durable identity key authorizes provisioned-device admission. Enrollment
+additionally proves possession of its ephemeral key. Companion OAuth uses its
+own durable P-256 DPoP key and fresh ephemeral Ed25519 session key. None of these
+keys is interchangeable with another principal's key.
 
 Device enable/disable/remove mutations atomically update principal/device state,
 idempotency, events, context revocations, and post-commit kicks. A disabled or
@@ -129,8 +136,14 @@ TypeScript callers use `deriveDeviceIdentity`, `checkDeviceActivation` or
 activated client. Generated participant types supply participant/API evidence;
 callers supply only Trellis origin and held key material.
 
-Authorization contexts, route JWTs, transports, grants, and issuer keys remain
-process-memory-only. Reconnect uses proof-bound refresh once per disconnected
+A completed local activation retains its original challenge. Rechecking uses
+proof-bound enrollment against that challenge instead of creating another
+review or resubmitting the consumed provisioning secret. The local completion
+is never authorization: disabled or removed devices still fail enrollment and
+connection at Auth.
+
+Session authority, admission credentials, transports, grants, and issuer keys
+remain process-memory-only. Reconnect uses proof-bound refresh once per disconnected
 episode.
 
 ## Non-Goals
@@ -138,6 +151,6 @@ episode.
 - deployment/instance IDs in bootstrap configuration;
 - client-supplied participant artifacts or authority state;
 - persistent device login sessions;
-- standalone browser or native bootstrap for a device companion;
+- parent-derived user approval, login, OAuth custody or browser identity;
 - a server QR endpoint; and
 - compatibility with retired device-connect or identity-authority payloads.

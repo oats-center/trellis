@@ -6,7 +6,11 @@ import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { ulid } from "ulid";
 
-import { deriveDeviceConfirmationCode, deriveDeviceIdentity } from "../auth.ts";
+import {
+  deriveDeviceConfirmationCode,
+  deriveDeviceIdentity,
+  requestDeviceEnrollment,
+} from "../auth/device_activation.ts";
 import type {
   TrellisDeviceActivatedActivationState,
   TrellisDeviceActivationArgs,
@@ -19,7 +23,14 @@ import {
 } from "../device.ts";
 import { TransportError } from "../errors/index.ts";
 import { trellisCrypto } from "../auth/crypto.ts";
-import { base64urlDecode, base64urlEncode } from "../auth/utils.ts";
+import {
+  base64urlDecode,
+  base64urlEncode,
+  sha256,
+  utf8,
+} from "../auth/utils.ts";
+import { createAuth } from "../auth/session_auth.ts";
+import { participantEvidence } from "../participant_runtime/participant.ts";
 
 const PendingActivationStateSchema = Type.Object({
   status: Type.Literal("pending"),
@@ -105,9 +116,9 @@ export type TrellisDeviceActivationRequiredStatus = {
   activationUrl: string;
   /** Device-local code the activating user must confirm in the portal. */
   confirmationCode: string;
-  waitForOnlineApproval(
-    opts?: { signal?: AbortSignal },
-  ): Promise<TrellisDeviceActivatedStatus>;
+  waitForOnlineApproval(opts?: {
+    signal?: AbortSignal;
+  }): Promise<TrellisDeviceActivatedStatus>;
   acceptConfirmationCode(code: string): Promise<TrellisDeviceActivatedStatus>;
 };
 
@@ -261,9 +272,9 @@ async function resolveDeviceActivationStatePath(
   const { publicIdentityKey } = await deriveStoreIdentity(args);
   const origin = new URL(args.trellisUrl).origin;
   const originHash = await hashOrigin(origin);
-  const fileName = `activation-state-v1-${originHash}-${
-    encodeURIComponent(args.participantId)
-  }-${publicIdentityKey}.json`;
+  const fileName = `activation-state-v1-${originHash}-${encodeURIComponent(
+    args.participantId,
+  )}-${publicIdentityKey}.json`;
 
   return join(args.stateDir ?? defaultActivationStateDir(), fileName);
 }
@@ -311,8 +322,7 @@ async function openDeviceActivationStateStore(
       });
       await mkdir(dirname(statePath), { recursive: true });
       const nextText =
-        JSON.stringify({ version: 1, localState: state }, null, 2) +
-        "\n";
+        JSON.stringify({ version: 1, localState: state }, null, 2) + "\n";
       const nextPath = tempStatePath(statePath);
       try {
         await writeFile(nextPath, nextText, "utf8");
@@ -364,8 +374,7 @@ function activatedStatus(): TrellisDeviceActivatedStatus {
 
 function createActivatedLocalState(
   localState:
-    | TrellisDevicePendingActivationState
-    | TrellisDeviceActivatedActivationState,
+    TrellisDevicePendingActivationState | TrellisDeviceActivatedActivationState,
 ): TrellisDeviceActivatedActivationState {
   return {
     ...localState,
@@ -380,20 +389,27 @@ async function createActivationRequiredStatus<
   store: DeviceActivationStateStore;
   localState: TrellisDeviceLocalActivationState | null;
 }): Promise<TrellisDeviceActivationRequiredStatus> {
-  const session = args.localState?.status === "pending"
-    ? await resumeDeviceActivationWithDeps({
-      trellisUrl: args.checkArgs.trellisUrl,
-      participant: args.checkArgs.participant,
-      provisioningSecret: args.checkArgs.provisioningSecret,
-      rootSecret: args.checkArgs.rootSecret,
-      localState: args.localState,
-    }, { now: () => Date.now() })
-    : await startDeviceActivationWithDeps({
-      trellisUrl: args.checkArgs.trellisUrl,
-      participant: args.checkArgs.participant,
-      provisioningSecret: args.checkArgs.provisioningSecret,
-      rootSecret: args.checkArgs.rootSecret,
-    }, { now: () => Date.now() });
+  const session =
+    args.localState?.status === "pending"
+      ? await resumeDeviceActivationWithDeps(
+          {
+            trellisUrl: args.checkArgs.trellisUrl,
+            participant: args.checkArgs.participant,
+            provisioningSecret: args.checkArgs.provisioningSecret,
+            rootSecret: args.checkArgs.rootSecret,
+            localState: args.localState,
+          },
+          { now: () => Date.now() },
+        )
+      : await startDeviceActivationWithDeps(
+          {
+            trellisUrl: args.checkArgs.trellisUrl,
+            participant: args.checkArgs.participant,
+            provisioningSecret: args.checkArgs.provisioningSecret,
+            rootSecret: args.checkArgs.rootSecret,
+          },
+          { now: () => Date.now() },
+        );
 
   if (args.localState?.status !== "pending") {
     await args.store.save(session.localState);
@@ -449,6 +465,8 @@ async function createActivationRequiredStatus<
 
 /**
  * Reports native device activation status and hides local activation persistence details.
+ * Completed activation is rechecked against Auth using the retained challenge;
+ * local completion alone never grants device access or creates a new review.
  */
 export async function checkDeviceActivation<
   TContract extends TrellisDeviceActivationArgs["participant"],
@@ -463,6 +481,33 @@ export async function checkDeviceActivation<
     statePath: args.statePath,
   });
   const localState = await store.load();
+  if (localState?.status === "activated") {
+    const identity = await deriveDeviceIdentity(
+      normalizeRootSecret(args.rootSecret),
+    );
+    const enrollment = await requestDeviceEnrollment({
+      trellisUrl: args.trellisUrl,
+      publicIdentityKey: identity.publicIdentityKey,
+      identitySeed: identity.identitySeed,
+      sessionIdentity: await createAuth({
+        sessionKeySeed: base64urlEncode(
+          crypto.getRandomValues(new Uint8Array(32)),
+        ),
+      }),
+      connectionId: ulid(),
+      participantId: args.participant.identity,
+      ...participantEvidence(args.participant),
+      challengeDigest: base64urlEncode(await sha256(utf8(localState.nonce))),
+      confirmationCode: await deriveDeviceConfirmationCode({
+        activationKey: identity.activationKey,
+        publicIdentityKey: identity.publicIdentityKey,
+        nonce: localState.nonce,
+      }),
+    });
+    return enrollment.state === "approved"
+      ? activatedStatus()
+      : { status: "not_ready", reason: "activation_rejected" };
+  }
   try {
     return await createActivationRequiredStatus({
       checkArgs: args,

@@ -1,3 +1,4 @@
+use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -7,7 +8,6 @@ use runtime_trellis::apis::runtime_trellis_events_v1::rpc::ObservedOutput;
 use runtime_trellis::participants::runtime_trellis_event_service::{Participant, Provider};
 use runtime_trellis::types::{Empty, Sample};
 use tracing_subscriber::prelude::*;
-use trellis_rs::generated::EventDescriptor;
 use trellis_rs::service::{
     ServerError, ServiceConnectOptions, ServiceEventListenOptions, ServiceEventListenerMode,
 };
@@ -30,26 +30,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         env!("CARGO_PKG_VERSION"),
     ));
     tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
         .with(
             telemetry
                 .tracer()
                 .map(|tracer| tracing_opentelemetry::layer().with_tracer(tracer)),
         )
         .init();
-    assert_eq!(
-        Beta::publish_subject(&Sample {
-            site: "rust".to_owned(),
-            value: "payload".to_owned(),
-            extra: Default::default(),
-        })?,
-        "events.v1.cnVudGltZS10cmVsbGlzLmV2ZW50c0B2MQ.Beta"
-    );
     let url = std::env::var("TRELLIS_URL")?;
     let identity = std::env::var("TRELLIS_IDENTITY_SEED")?;
+    if std::env::var("PUBLIC_BACKLOG").as_deref() == Ok("true") {
+        return run_public_backlog(&url, &identity).await;
+    }
     if std::env::var("CONSUMER_ONLY").as_deref() == Ok("true") {
         return run_consumer_only(&url, &identity).await;
     }
-    let mut service = Participant::connect(ServiceConnectOptions::new(&url, &identity)).await?;
+    let server =
+        trellis_rs::auth::discover_native_oauth(&url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
+    let mut service = Participant::connect(ServiceConnectOptions::new(
+        server.nats_servers,
+        server.trust,
+        &identity,
+    ))
+    .await?;
     let seen = Arc::new(Mutex::new(BTreeSet::new()));
     let stats = Arc::new(Mutex::new(DeliveryStats::default()));
     let event_options = if std::env::var("EPHEMERAL").as_deref() == Ok("true") {
@@ -164,11 +169,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Publish before a real lease boundary, then pull that publication through the generated consumer.
+async fn run_public_backlog(url: &str, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use futures_util::StreamExt as _;
+    use runtime_trellis::apis::runtime_trellis_events_v1::Client as EventsClient;
+    use runtime_trellis::participants::runtime_trellis_event_service_both::{Client, Participant};
+    use tokio::io::{AsyncBufReadExt as _, BufReader};
+
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
+    let service = Participant::connect(ServiceConnectOptions::new(
+        server.nats_servers,
+        server.trust,
+        identity,
+    ))
+    .await?;
+    let owner = service.runtime_native_owner();
+    let authority = owner.runtime_authorization_owner();
+    let published = authority.own_authority()?;
+    let publisher = EventsClient::from_generated(service.generated_client());
+    let input = Sample {
+        site: "retained-public-rust".into(),
+        value: "before-expiry".into(),
+        extra: Default::default(),
+    };
+    publisher.publish_alpha(&input).await?;
+    assert_eq!(authority.own_authority()?.digest(), published.digest());
+    println!(
+        "PUBLIC_BACKLOG_READY {}",
+        serde_json::json!({"expiresAt": published.authority().expires_at})
+    );
+    let mut commands = BufReader::new(tokio::io::stdin()).lines();
+    assert_eq!(commands.next_line().await?.as_deref(), Some("PULL"));
+    assert!(
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64
+            >= published.authority().expires_at
+    );
+    assert_ne!(authority.own_authority()?.digest(), published.digest());
+    let client = Client::from_generated(service.generated_client());
+    let mut backlog = client.events()?.subscribe::<Alpha>().await?;
+    let received = tokio::time::timeout(Duration::from_secs(10), backlog.next())
+        .await?
+        .ok_or("backlog ended before publication")??;
+    assert_eq!(received.value, input.value);
+    assert_eq!(received.site, input.site);
+    println!("PUBLIC_BACKLOG_DELIVERED");
+    drop(backlog);
+    owner.shutdown_native_runtime().await?;
+    Ok(())
+}
+
 /// Consumer-only participant: a declared durable consumer grants no raw
 /// Event Subscribe authority, so explicit ephemeral must fail fast.
 async fn run_consumer_only(url: &str, identity: &str) -> Result<(), Box<dyn std::error::Error>> {
     use runtime_trellis::participants::runtime_trellis_event_service_consumer_only::Participant as ConsumerOnly;
-    let service = ConsumerOnly::connect(ServiceConnectOptions::new(url, identity)).await?;
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
+    let service = ConsumerOnly::connect(ServiceConnectOptions::new(
+        server.nats_servers,
+        server.trust,
+        identity,
+    ))
+    .await?;
     let outcome = service
         .listen_event::<Alpha, _, _>(
             |_event, _| async { Ok(()) },

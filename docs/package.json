@@ -1,0 +1,25 @@
+{
+  "name": "@trellis/docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run docs:design && npm run docs:llms && npm run docs:api && vite dev",
+    "docs:design": "node scripts/sync_design_docs.ts",
+    "docs:llms": "node scripts/build_llms_full.ts",
+    "docs:api": "npm run protocol:wasm --prefix .. && node scripts/generate_ts_api_docs.ts && node scripts/generate_rust_api_docs.ts",
+    "build": "npm run docs:design && npm run docs:llms && npm run docs:api && vite build",
+    "preview": "vite preview",
+    "prepare": "svelte-kit sync || echo ''",
+    "check": "npm run docs:design && svelte-kit sync && svelte-check"
+  },
+  "devDependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@iconify-json/tabler": "^1.2.42",
+    "@sveltepress/theme-default": "^8.11.0",
+    "@sveltepress/vite": "^1.10.0"
+  },
+  "imports": {
+    "#lib/*": "./src/lib/*"
+  }
+}

@@ -26,7 +26,7 @@ Avoid SaaS-dashboard cliches, decorative metrics, ornamental gradients, glass ef
 - Prefer earned familiarity: standard controls, predictable navigation, and consistent action placement.
 - Let data density serve operations without making forms feel unfinished or crowded.
 - Use restraint as a trust signal: accent color should clarify focus, selection, and primary action, not decorate.
-- Preserve contract and runtime language where precision matters, but add helper copy where operators need context.
+- Speak the user's language: plain names for things people recognise, with exact identifiers available on demand rather than in the way.
 
 ## Accessibility & Inclusion
 

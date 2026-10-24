@@ -44,10 +44,10 @@ api primary@v1 {
   live Watch { input Empty; event Node; }
   capabilities {
     public { allows { publish event Changed; } }
-    capability access {
+    capability fixture.access {
       title "Access";
       description "Fixture access.";
-      consequence "The caller can use the fixture.";
+      grants "The caller can use the fixture.";
       allows { rpc Fetch; operation Process; subscribe event Changed; live Watch; }
     }
   }
@@ -60,10 +60,10 @@ api secondary@v2 {
   live Monitor { input Empty; event Empty; }
   capabilities {
     public { allows { publish event Ping; } }
-    capability observe {
+    capability fixture.observe {
       title "Observe";
       description "Fixture observation.";
-      consequence "The caller can observe the fixture.";
+      grants "The caller can observe the fixture.";
       allows { subscribe event Ping; live Monitor; }
     }
   }
@@ -84,13 +84,9 @@ service Worker {
 
 app Caller {
   use primary {
-    rpc Fetch;
-    operation Process;
-    subscribe event Changed;
-    live Watch;
-    optional capability access;
+    capability fixture.access;
   }
-  use secondary { subscribe event Ping; live Monitor; }
+  use secondary { required capability fixture.observe; }
 }
 "#;
 
@@ -134,10 +130,10 @@ fn generated_package_exercises_wo03_b2_b4() {
     };
     let graph = compile(CONTRACT.into()).unwrap();
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = tempfile::tempdir_in(repo.join("target")).unwrap();
     let rust = temp.path().join("rust");
     let typescript = temp.path().join("typescript");
-    trellis_codegen_rust::generate_rust_package(&graph, &rust, "wo03-fixture").unwrap();
+    trellis_codegen_rust::generate_rust_package(&graph, &rust, "wo03-fixture", &[]).unwrap();
     trellis_codegen_ts::generate_ts_package(&graph, &typescript, "@fixture/wo03").unwrap();
 
     let runtime = repo.join("crates/trellis").canonicalize().unwrap();
@@ -160,7 +156,8 @@ fn generated_package_exercises_wo03_b2_b4() {
 use trellis_rs::generated::{Codec as _, ParticipantDescriptor as _, TrellisError as _};
 use wo03_fixture::{
     apis::{fixture_primary_v1, fixture_secondary_v2},
-    participants::{fixture_caller, fixture_worker},
+    apps::fixture_caller,
+    participants::fixture_worker,
     types::{Node, Number, Status},
 };
 use fixture_worker::types::{Current, Historic};
@@ -256,24 +253,15 @@ fn codecs_errors_and_generated_surfaces_compile() {
         })
     });
     let _ = migrations;
-    let optional_fetch = trellis_rs::generated::OptionalAction::rpc("fixture.primary@v1", "Fetch");
-    assert!(matches!(
-        trellis_rs::generated::AvailabilitySnapshot::default()
-            .require_action(&[optional_fetch], optional_fetch),
-        Err(trellis_rs::client::TrellisClientError::AuthorizationUnavailable(_))
-    ));
-    fn availability_facade(client: &fixture_caller::Client) {
-        let _: fixture_caller::Availability = client.availability();
-        let _: futures_util::stream::BoxStream<'static, fixture_caller::Availability> =
-            client.watch_availability();
+    async fn caller(client: &fixture_caller::Client, node: &Node) {
+        let _: Node = client.fixture_primary_v1().fetch(node).await.unwrap();
     }
-    let _ = availability_facade;
+    let _ = caller;
 }
 "#,
     )
     .unwrap();
-    // The generated package pins the workspace version; patch the library to
-    // the checkout so the test also passes for unpublished prerelease candidates.
+    // Exercise the current candidate closure, including independently versioned models.
     run(
         Command::new("cargo")
             .arg("test")
@@ -283,50 +271,45 @@ fn codecs_errors_and_generated_surfaces_compile() {
                 "patch.crates-io.trellis-rs.path=\"{}\"",
                 repo.join("crates/trellis").display()
             ))
+            .arg("--config")
+            .arg(format!(
+                "patch.crates-io.trellis-protocol.path={:?}",
+                repo.join("crates/protocol")
+            ))
+            .arg("--config")
+            .arg(format!(
+                "patch.crates-io.trellis-models.path={:?}",
+                repo.join("crates/models")
+            ))
             .current_dir(&rust),
         "generated Rust test",
     );
 
-    let generated_support = repo
-        .join("ts/packages/trellis/generated.ts")
-        .canonicalize()
+    let packages = temp.path().join("node_modules/@oatscenter");
+    fs::create_dir_all(&packages).unwrap();
+    // Exercise generated code against SDK source, independently of npm staging.
+    for name in ["trellis", "result"] {
+        std::os::unix::fs::symlink(
+            repo.join(format!("ts/packages/{name}")),
+            packages.join(name),
+        )
         .unwrap();
-    let participant_runtime = repo
-        .join("ts/packages/trellis/participant_runtime/participant.ts")
-        .canonicalize()
-        .unwrap();
-    let caller_runtime = repo
-        .join("ts/packages/trellis/caller.ts")
-        .canonicalize()
-        .unwrap();
-    let connection_runtime = repo
-        .join("ts/packages/trellis/connection.ts")
-        .canonicalize()
-        .unwrap();
-    let errors_runtime = repo
-        .join("ts/packages/trellis/errors/index.ts")
-        .canonicalize()
-        .unwrap();
-    // A local `imports` map replaces the extended map rather than merging with
-    // it, so every workspace package the fixture imports must be listed.
-    let result_package = repo
-        .join("ts/packages/result/mod.ts")
-        .canonicalize()
-        .unwrap();
-    let deno_config: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(repo.join("ts/deno.json")).unwrap()).unwrap();
+    }
+    fs::write(temp.path().join("package.json"), r#"{"type":"module"}"#).unwrap();
     fs::write(
-        temp.path().join("deno.json"),
+        temp.path().join("tsconfig.json"),
         serde_json::to_string_pretty(&serde_json::json!({
-            "compilerOptions": deno_config["compilerOptions"],
-            "imports": {
-                "@oatscenter/result": format!("file://{}", result_package.display()),
-                "@oatscenter/trellis/generated": format!("file://{}", generated_support.display()),
-                "@fixture/caller": format!("file://{}", caller_runtime.display()),
-                "@fixture/connection": format!("file://{}", connection_runtime.display()),
-                "@fixture/errors": format!("file://{}", errors_runtime.display()),
-                "@fixture/participant-runtime": format!("file://{}", participant_runtime.display())
-            }
+            "compilerOptions": {
+                "target": "ES2024",
+                "module": "NodeNext",
+                "strict": true,
+                "noEmit": true,
+                "preserveSymlinks": true,
+                "allowImportingTsExtensions": true,
+                "types": ["node"],
+                "typeRoots": [repo.join("node_modules/@types")]
+            },
+            "include": ["fixture_test.ts"]
         }))
         .unwrap(),
     )
@@ -334,16 +317,12 @@ fn codecs_errors_and_generated_surfaces_compile() {
     fs::write(
         temp.path().join("fixture_test.ts"),
         r#"
+import { test } from "node:test";
 import { API as Primary, Known } from "./typescript/apis/primary/mod.js";
-import { participant as Caller } from "./typescript/participants/Caller/mod.js";
+import { request as Caller } from "./typescript/apps/Caller/mod.js";
 import { participant as Worker } from "./typescript/participants/Worker/mod.js";
-import type * as CallerModule from "./typescript/participants/Caller/mod.js";
 import type * as WorkerModule from "./typescript/participants/Worker/mod.js";
-import { AsyncResult, ok, Result } from "@oatscenter/result";
-import { createCallerRuntime } from "@fixture/caller";
-import { installConnectionAvailability, TrellisConnection } from "@fixture/connection";
-import { TransportError } from "@fixture/errors";
-import { participantAvailability } from "@fixture/participant-runtime";
+import type { AppRequestDescriptor } from "@oatscenter/trellis/generated";
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -371,7 +350,7 @@ const wire = {
   ignored: true,
 };
 
-Deno.test("generated TypeScript package exercises WO-03 B2-B4", () => {
+test("generated TypeScript package exercises WO-03 B2-B4", () => {
   const fetch = Primary.actions["rpc:Fetch"];
   const node = fetch.input.decode(wire);
   assert(node.count === 18_446_744_073_709_551_615n, "uint64 decode");
@@ -415,75 +394,23 @@ Deno.test("generated TypeScript package exercises WO-03 B2-B4", () => {
     blobs: undefined,
   };
   void handles;
-});
-
-Deno.test("generated caller replaces and enforces installed availability", async () => {
-  const connection = new TrellisConnection({
-    kind: "client",
-    availability: participantAvailability(Caller, {}, {}, []),
-  });
-  let transportCalls = 0;
-  const caller = createCallerRuntime({
-    connection,
-    state: {},
-    request: () => {
-      transportCalls += 1;
-      return AsyncResult.from(Promise.resolve(ok(wire)));
-    },
-    operationHandle: () => ({ input: () => ({}), resume: () => ({}) }),
-    feedHandle: () => ({ input: () => ({ subscribe: () => AsyncResult.from(Promise.resolve(ok([]))) }) }),
-    publish: () => AsyncResult.from(Promise.resolve(ok(undefined))),
-    prepare: () => ok({}),
-    listenEvent: () => AsyncResult.from(Promise.resolve(ok(undefined))),
-    publishPrepared: () => AsyncResult.from(Promise.resolve(ok(undefined))),
-    transfer: () => ({}),
-    wait: () => AsyncResult.from(Promise.resolve(ok(undefined))),
-  }, Caller);
-
-  const unavailable = await caller.fetch(Primary.actions["rpc:Fetch"].input.decode(wire)).take();
-  assert(Result.isErr(unavailable), "unavailable optional action fails");
-  assert(unavailable.error instanceof TransportError, "typed unavailable error");
-  assert(unavailable.error.code === "trellis.request.unavailable", "typed unavailable error");
-  assert(transportCalls === 0, "unavailable action does not reach transport");
-
-  const watcher = caller.watchAvailability()[Symbol.asyncIterator]();
-  const initial = await watcher.next();
-  const typedInitial: CallerModule.Availability = initial.value;
-  assert(!typedInitial.capabilities["fixture.primary@v1::access"], "initial snapshot");
-  const replacement = participantAvailability(
-    Caller,
-    { "fixture.primary@v1": {} },
-    {},
-    Caller.optionalGrants["fixture.primary@v1::access"],
-  );
-  installConnectionAvailability(connection, replacement);
-  const changed = await watcher.next();
-  assert(changed.value === caller.availability(), "watch receives installed replacement");
-  assert(Object.isFrozen(changed.value) && Object.isFrozen(changed.value.capabilities), "snapshot is immutable");
-
-  const available = await caller.fetch(Primary.actions["rpc:Fetch"].input.decode(wire)).take();
-  assert(!Result.isErr(available), "available optional action invokes");
-  assert(Number(transportCalls) === 1, "available action reaches transport once");
-  await watcher.return?.();
+  const request: AppRequestDescriptor = Caller;
+  void request;
 });
 "#,
     )
     .unwrap();
     run(
-        Command::new("deno")
-            .arg("check")
-            .arg("--no-lock")
-            .arg("-c")
-            .arg(temp.path().join("deno.json"))
-            .arg(temp.path().join("fixture_test.ts")),
+        Command::new("node")
+            .arg(repo.join("node_modules/typescript/bin/tsc"))
+            .arg("--project")
+            .arg(temp.path().join("tsconfig.json")),
         "generated TypeScript check",
     );
     run(
-        Command::new("deno")
-            .arg("test")
-            .arg("--no-lock")
-            .arg("-c")
-            .arg(temp.path().join("deno.json"))
+        Command::new("node")
+            .arg("--experimental-transform-types")
+            .arg("--test")
             .arg(temp.path().join("fixture_test.ts")),
         "generated TypeScript test",
     );

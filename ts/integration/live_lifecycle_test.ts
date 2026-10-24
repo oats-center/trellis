@@ -7,8 +7,8 @@
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
-import { assert, assertEquals } from "@std/assert";
-import { fromFileUrl } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { metrics } from "@opentelemetry/api";
 import {
   AggregationTemporality,
@@ -17,7 +17,10 @@ import {
   PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
@@ -40,8 +43,8 @@ function startMetricCapture() {
       if (metric.descriptor.name !== name) continue;
       for (const point of metric.dataPoints) {
         if (
-          Object.entries(subset).every(([key, value]) =>
-            point.attributes[key] === value
+          Object.entries(subset).every(
+            ([key, value]) => point.attributes[key] === value,
           )
         ) {
           sum += point.value as number;
@@ -74,7 +77,7 @@ async function startProvider(
     contract: participants.Provider.participant,
   });
   const service = await TrellisService.connect({
-    trellisUrl: runtime.trellisUrl,
+    trellisUrl: runtime.oauthIssuer,
     participant: participants.Provider.participant,
     name: `live-lifecycle-${crypto.randomUUID()}`,
     seed: identity.seed,
@@ -88,7 +91,7 @@ const runtimeOptions = {
   trellis: { source: repoTrellisSource() },
 };
 
-Deno.test("connection close synchronously cancels active and prepared Live consumers", async () => {
+test("connection close synchronously cancels active and prepared Live consumers", async () => {
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
     const { service, exit } = await startProvider(
@@ -98,19 +101,19 @@ Deno.test("connection close synchronously cancels active and prepared Live consu
         await emit({ value: "active" }).orThrow();
         if (!signal.aborted) {
           await new Promise<void>((resolve) =>
-            signal.addEventListener("abort", () => resolve(), { once: true })
+            signal.addEventListener("abort", () => resolve(), { once: true }),
           );
         }
       },
     );
     const client = await runtime.connectClient({
       name: "live-close-owner-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const active = await client.watch({}).orThrow();
-      assertEquals((await active.next()).done, false);
-      const prepared = await client.watch({}).orThrow();
+      const active = await client.runtimeWatch({}).orThrow();
+      assert.deepEqual((await active.next()).done, false);
+      const prepared = await client.runtimeWatch({}).orThrow();
       const closing = client.connection.close();
       // A resolved local end must win immediately, without waiting for physical
       // transport closure or authorization-registry teardown to notify consumers.
@@ -119,11 +122,11 @@ Deno.test("connection close synchronously cancels active and prepared Live consu
           handle.closed,
           Promise.resolve(undefined),
         ]);
-        assertEquals(end?.reason, "cancelled");
-        assertEquals(await handle.next(), { done: true, value: undefined });
+        assert.deepEqual(end?.reason, "cancelled");
+        assert.deepEqual(await handle.next(), { done: true, value: undefined });
       }
       await closing;
-      assertEquals(
+      assert.deepEqual(
         starts,
         1,
         "the prepared consumer never activates its source",
@@ -131,12 +134,12 @@ Deno.test("connection close synchronously cancels active and prepared Live consu
     } finally {
       await client.connection.close();
       await service.stop();
-      assertEquals(await exit, undefined);
+      assert.deepEqual(await exit, undefined);
     }
   }, runtimeOptions);
 });
 
-Deno.test("L19/L20 prepared return never starts a provider source", async () => {
+test("L19/L20 prepared return never starts a provider source", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
@@ -154,16 +157,16 @@ Deno.test("L19/L20 prepared return never starts a provider source", async () => 
     );
     const client = await runtime.connectClient({
       name: "live-lifecycle-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
       await metricsCapture.flush();
       const beforeEnds = metricsCapture.total("trellis.live.ends", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "consumer",
       });
       const beforeActive = metricsCapture.total("trellis.live.sessions", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "consumer",
         "trellis.phase": "active",
       });
@@ -173,41 +176,41 @@ Deno.test("L19/L20 prepared return never starts a provider source", async () => 
 
       // A never-iterated handle is returned immediately: no activation, no
       // provider source, and exactly one local live end.
-      const prepared = await client.watch({}).orThrow();
+      const prepared = await client.runtimeWatch({}).orThrow();
       await prepared[Symbol.asyncIterator]().return?.();
       await new Promise((resolve) => setTimeout(resolve, 2_000));
       await metricsCapture.flush();
 
-      assertEquals(starts, 0);
-      assertEquals(cleanups, 0);
-      assertEquals(
+      assert.deepEqual(starts, 0);
+      assert.deepEqual(cleanups, 0);
+      assert.deepEqual(
         metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "consumer",
         }) - beforeEnds,
         1,
       );
-      assertEquals(
+      assert.deepEqual(
         metricsCapture.total("trellis.live.sessions", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "consumer",
           "trellis.phase": "active",
         }),
         beforeActive,
       );
-      assertEquals(
+      assert.deepEqual(
         metricsCapture.total("trellis.live.cleanup.pending"),
         beforePending,
       );
     } finally {
       await client.connection.close();
       await service.stop();
-      assertEquals(await exit, undefined);
+      assert.deepEqual(await exit, undefined);
     }
   }, runtimeOptions);
 });
 
-Deno.test("L24/L25 finite source delivers ordered values and one normal end", async () => {
+test("L24/L25 finite source delivers ordered values and one normal end", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
@@ -221,38 +224,38 @@ Deno.test("L24/L25 finite source delivers ordered values and one normal end", as
     });
     const client = await runtime.connectClient({
       name: "live-lifecycle-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
       await metricsCapture.flush();
       const beforeConsumerEnds = metricsCapture.total("trellis.live.ends", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "consumer",
       });
       const beforeProviderEnds = metricsCapture.total("trellis.live.ends", {
-        "trellis.kind": "standalone",
+        "trellis.kind": "live",
         "trellis.side": "provider",
       });
 
-      const handle = await client.watch({}).orThrow();
+      const handle = await client.runtimeWatch({}).orThrow();
       const seen: unknown[] = [];
       for await (const value of handle) seen.push(value);
-      assertEquals(seen.length, 4);
+      assert.deepEqual(seen.length, 4);
       await runtime.waitFor(() => cleanups === 1, { timeoutMs: 10_000 });
       await metricsCapture.flush();
 
-      assertEquals(starts, 1);
-      assertEquals(cleanups, 1);
-      assertEquals(
+      assert.deepEqual(starts, 1);
+      assert.deepEqual(cleanups, 1);
+      assert.deepEqual(
         metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "consumer",
         }) - beforeConsumerEnds,
         1,
       );
-      assertEquals(
+      assert.deepEqual(
         metricsCapture.total("trellis.live.ends", {
-          "trellis.kind": "standalone",
+          "trellis.kind": "live",
           "trellis.side": "provider",
         }) - beforeProviderEnds,
         1,
@@ -260,12 +263,12 @@ Deno.test("L24/L25 finite source delivers ordered values and one normal end", as
     } finally {
       await client.connection.close();
       await service.stop();
-      assertEquals(await exit, undefined);
+      assert.deepEqual(await exit, undefined);
     }
   }, runtimeOptions);
 });
 
-Deno.test("L28 cancelling a blocked source settles provider cleanup", async () => {
+test("L28 cancelling a blocked source settles provider cleanup", async () => {
   const metricsCapture = ensureCapture();
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
@@ -287,42 +290,42 @@ Deno.test("L28 cancelling a blocked source settles provider cleanup", async () =
     );
     const client = await runtime.connectClient({
       name: "live-lifecycle-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
       await metricsCapture.flush();
       const beforePending = metricsCapture.total(
         "trellis.live.cleanup.pending",
       );
-      const handle = await client.watch({}).orThrow();
+      const handle = await client.runtimeWatch({}).orThrow();
       const iterator = handle[Symbol.asyncIterator]();
       await iterator.next();
       const [receipt, concurrentReceipt] = await Promise.all([
         handle.close().orThrow(),
         handle.close().orThrow(),
       ]);
-      assertEquals(receipt.remote, "confirmed");
-      assertEquals(receipt.cleanup, "complete");
-      assertEquals(receipt.end.reason, "cancelled");
-      assertEquals(concurrentReceipt, receipt);
-      assertEquals(await handle.close().orThrow(), receipt);
-      assertEquals(await iterator.next(), { done: true, value: undefined });
+      assert.deepEqual(receipt.remote, "confirmed");
+      assert.deepEqual(receipt.cleanup, "complete");
+      assert.deepEqual(receipt.end.reason, "cancelled");
+      assert.deepEqual(concurrentReceipt, receipt);
+      assert.deepEqual(await handle.close().orThrow(), receipt);
+      assert.deepEqual(await iterator.next(), { done: true, value: undefined });
       await iterator.return?.();
       await runtime.waitFor(() => cleanups === 1, { timeoutMs: 10_000 });
       await metricsCapture.flush();
 
-      assertEquals(starts, 1);
-      assertEquals(cleanups, 1);
+      assert.deepEqual(starts, 1);
+      assert.deepEqual(cleanups, 1);
       assert(cleanupAborted);
       // A settled cancellation leaves no retained cleanup behind.
-      assertEquals(
+      assert.deepEqual(
         metricsCapture.total("trellis.live.cleanup.pending"),
         beforePending,
       );
     } finally {
       await client.connection.close();
       await service.stop();
-      assertEquals(await exit, undefined);
+      assert.deepEqual(await exit, undefined);
     }
   }, runtimeOptions);
 });

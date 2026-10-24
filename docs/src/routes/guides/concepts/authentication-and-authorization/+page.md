@@ -1,0 +1,264 @@
+---
+title: "Authentication and authorization"
+description: "Principals, session keys, browser login, portals, approvals, and capabilities."
+---
+
+Trellis separates authentication, participant-scoped grants, signed
+authorization contexts, and transport permissions. The Rust platform runtime
+owns these boundaries. Services and clients never read Auth storage or derive
+NATS subjects themselves.
+
+## Principals
+
+| Principal | Authentication                                                |
+| --------- | ------------------------------------------------------------- |
+| User      | Browser or CLI login established through an Auth portal       |
+| Service   | Immutable provisioned Ed25519 identity for a service instance |
+| Device    | Provisioned/activated Ed25519 identity for a device instance  |
+
+OIDC identities and local passwords are sign-in methods for a Trellis user.
+They are not separate authorization containers. Durable Auth sessions represent
+user logins only; services and devices authenticate without a login row.
+
+Immediate `Auth.ServiceInstances.Provision` and `Auth.Devices.Provision` require
+`identityPublicKey`: generate the Ed25519 identity key on the client and submit
+only its public key. Keep the private seed client-side; Trellis never generates,
+stores, or returns it. A missing public key returns validation code
+`identity_public_key_required` without creating a principal or instance, and the
+failed request does not consume its idempotency key. The current response has
+`provisioningSecret: null`; one-time activation-token provisioning is not yet
+implemented. CONNECT proves possession of the registered immutable identity key.
+
+## Account actions
+
+`Auth.Users.PasswordReset.Create` returns a five-minute, one-use token for a
+non-bootstrap user. Open `/account/reset?token=...` on the OAuth origin and submit
+the native password form. Completion requires the requester's original logical
+session and current accepted `principals.manage`, rejects stale credentials, and
+atomically changes the password and signs out existing login/grant families.
+Bootstrap administrators use the existing local recovery path instead.
+
+`Auth.Users.IdentityLink.Create` returns a five-minute portal authorization URL
+for the current user. Sign in as that same user, then continue through the
+identity provider's fresh OIDC authentication. Provider revision/state, nonce,
+PKCE, and current portal-user continuity are checked before the identity is linked.
+An identity belonging to another user cannot be reassigned. Creation retries
+return the original response; they do not renew or revive consumed actions.
+
+## Profile photos
+
+Directory responses can include `avatarUrl`, a Trellis-hosted image-only bearer
+valid for at most ten minutes. Use it in an `<img referrerpolicy="no-referrer">`,
+render local initials when absent or broken, and reread the authorized directory
+to renew it. Do not log or share this URL: access to the URL permits reading only
+that image until expiry. Profile edits invalidate earlier URLs. Revoking
+`usersRead` prevents issuing new URLs but does not instantly revoke existing ones.
+
+Trellis tries your explicit picture URL, linked-provider picture, then Gravatar
+for a verified email when you have not opted out. Gravatar receives a normalized
+SHA-256 email hash, not raw email; the hash is still personal information. Manual
+unverified addresses never trigger Gravatar. Your browser contacts Trellis only,
+and failed image retrieval does not prevent login or directory lookup.
+
+Operators can set `[auth.avatar] external_fetch_enabled = false` to disable all
+remote-derived images, including cached photos. Safe retrieval permits only
+public HTTPS destinations with no redirects, and stores sanitized small PNGs.
+
+## Own directory profile
+
+Select `trellis.auth.v1:account.edit` and call `Users.Profile.Update`
+to edit your own display/given/family names, email, picture override and Gravatar
+preference. Use `Users.Resolve`'s `user.account.profileRevision` as
+`expectedRevision`, plus a fresh `idempotencyKey`. There is no target user ID.
+Omitted fields stay unchanged. Explicit `clearEmail`/`clearAvatarOverride` restore
+eligible linked-provider data; do not send a value and its clear flag together.
+Manually entered email is not verified and never links or authenticates accounts.
+Manual choices survive future OIDC logins. Provider unlink removes only its
+nonmanual profile contributions, not your other sign-in methods.
+
+Configure upstream providers with `openid profile email` when you want standard
+profile claims; Trellis preserves explicitly configured scope choices. Optional
+UserInfo fills missing signed-token profile fields only when its `sub` matches.
+An unavailable or malformed enrichment response does not block valid login.
+
+## Installed participants
+
+Every participant is installed in Auth before it can be granted access. An
+installed revision identifies verified source-package evidence, its semantic
+digest, and the participant's exact lexical path. Revisions are immutable,
+so Auth can always explain the exact API surface behind an issued context.
+
+The CLI (`trellis-app.cli@v1`), Console (`trellis-app.console@v1`), activation
+Portal (`trellis-app.portal@v1`), and Auth runtime are installed built-ins.
+Their IDs do not grant access by themselves.
+
+## Capabilities
+
+Capabilities are approval and explanation groups. Approval is constrained by
+current policy and is converted to exact selected grants; it is not itself a
+runtime permission token.
+
+## Effective authority
+
+Auth computes a user's capabilities from roles, direct capability grants, and
+fresh OIDC role mappings. An application acts only within that set, intersected
+with the capabilities it requested and those the user approved in its OAuth
+grant. Services and devices are bounded by their deployment. Platform privileges
+such as `principals.manage` are a separate finite set and never imply
+application capabilities. Auth evaluates this policy whenever it issues signed
+session authority; see [Participant grants](/guides/concepts/deployment-authority).
+
+## Managing users and access in Console
+
+The user edit screen keeps profile, access grants, sign-in methods, and active
+sessions together. Profile and access edits save separately because they are
+independent transactions.
+
+Administrative profile updates preserve the immutable user ID and local username.
+Users without a local password can establish a local sign-in method through a
+password-reset account flow.
+
+Generate a password-reset link for the selected user, then securely give that
+one-use, time-limited link to them. Generating the link does not reset their
+password; completing the flow does, and revokes their existing login sessions.
+Identity-link flows also target the selected user. Removing a sign-in method
+cannot remove the last method or bypass protected-administrator safeguards.
+
+The access section assigns direct capability grants and roles. A role grants
+its capabilities for as long as the user holds it, so changing a role changes
+every member's access. Platform privileges are separate and never imply
+application capabilities. Service and device access belongs to their
+deployment; changing it can affect other instances in that deployment.
+
+End a session to revoke that login. Disconnect a connection to terminate a
+physical connection; these are distinct actions.
+
+## Session keys
+
+Each live installation proves possession of its session key. The key identifies
+the installation cryptographically but does not grant authority by itself.
+
+## Authorization contexts
+
+When a principal bootstraps or refreshes, Auth rereads the current credential,
+binding, installed participant, resource evidence, and online issuer in one
+transaction. It signs an authorization context containing that exact snapshot
+and stores it permanently by digest before use.
+
+OAuth sessions retain the refresh family verified at CONNECT. Every authority
+or admission renewal consults that exact family's absolute deadline and
+revocation state, even if another family of the same grant remains valid.
+Rotation does not extend the family deadline. Capability-specific deadlines
+remain separate from this shared credential-root limit.
+
+A live OAuth caller can use `Admission.Renew` with its own context digest and
+ordinary session-key proof to obtain a fresh, same-key signed admission. Auth
+rechecks policy and validates the candidate authority in the same transaction;
+the admission lasts at most 300 seconds and never outlives that authority or
+the family. This does not rotate refresh tokens or create durable reconnect
+credentials. Provisioned admission must still be signed locally with the
+client's identity key (`provisioned_signature_required` otherwise).
+
+Applications carry only the context digest, a message proof, message-specific
+metadata, and a small `session-key` header that must equal the key inside the
+signed context. The header is redundant checked metadata, never independent
+authority.
+
+Providers resolve an unknown context by digest, verify the issuer signature and
+explicit revocation state, verify the message proof, and authorize the exact
+action from the grant. Their bounded in-memory caches do not call Auth on a
+cache hit.
+
+## Bootstrap and NATS
+
+Services and devices send a signed provisioned admission in NATS CONNECT. Auth
+Callout resolves the deployment, participant evidence, capabilities, resources,
+and inbox server-side and returns signed session authority with exact transport
+permissions, which the runtime verifies.
+
+A client CONNECTs with its session NKey signature and its
+`trellis.oauth-admission.v1` or `trellis.provisioned-admission.v1` credential;
+it presents no client JWT. Auth Callout validates the signed OAuth admission or
+identity-bound provisioned admission, rechecks current issuable state, and
+installs the exact transport policy signed into the selected session authority.
+It never derives authority from subject strings or the redundant session key.
+
+### User directory
+
+Request `trellis.auth.v1:users.read` to search active profiles through the generated
+`Users.List` and `Users.Get` actions. Consent covers names, email and photos.
+Responses identify users by immutable `principalId`; display names and emails
+are not unique and never grant access to application-owned objects.
+
+Ordinary results omit `account`. That projection contains username, local-password
+status and principal lifecycle/revision, and requires both delegated and currently
+eligible `principals.manage`. Only qualified administrators can inspect inactive
+users or search usernames. `Users.Resolve`, authorized by `accountRead`, returns
+only the caller's own profile and account. Account mutations retain their separate
+capabilities and administrative checks.
+
+## Browser login and the portal
+
+Browser applications use OAuth Authorization Code with PKCE and DPoP against
+the installation's dedicated OAuth origin. Trellis's portal on that origin
+performs local-password or OIDC sign-in and explicit capability consent under its
+own cookie and CSRF controls. The token response carries a signed Trellis
+admission for the browser's fresh runtime key; the client connects with it and
+then retrieves its signed authority over NATS.
+
+Only the browser's OAuth custody is durable: a non-extractable DPoP key and an
+encrypted refresh credential in IndexedDB. Ephemeral runtime keys, signed
+authority, issuer keys, grants, and transport endpoints remain in process
+memory.
+
+## Devices
+
+Device enrollment uses `/auth/device/enroll` to create or resume a review.
+Approval does not install runtime credentials. Once approved, the device's NATS
+CONNECT carries a signed provisioned admission that proves its durable identity
+plus a fresh session key, the same admission path a service uses.
+
+## Revocation and history
+
+Authorization-changing transactions commit state, affected-context
+revocations, typed events, and connection-kick intents together. Explicit
+revocation invalidates proofs. Ordinary expiry, connection closure, login
+revocation, grant replacement, and issuer rotation retain signed contexts for
+historical event validation.
+
+Events history stores context-digest references rather than duplicate contexts
+or grant sets. Events signed inside their validity window may remain historically
+valid after ordinary expiry, but never after an applicable explicit revocation.
+
+### Rotating issuer keys
+
+An administrator with `privileges.manage` calls `Issuers.Rotate` with the
+expected current key ID and an idempotency key. Auth generates the successor
+locally and signs its public key with the current issuer, allowing clients to
+verify the chain without trusting an unrelated key. A repeated request returns
+the original result; a stale expected key conflicts.
+
+Successor keys are private files in a sibling directory obtained by replacing
+the configured issuer seed file's extension with `.keys`. Back up that directory,
+the original seed, Auth's database, and the independent OAuth storage key
+together. Rotation does not change the OAuth storage key or revoke existing
+sessions. Restart uses the database-selected issuer and refuses missing or invalid
+custody rather than replacing it or falling back to the original key.
+
+## Device companions
+
+A device may declare one named app or agent companion as its lexical child. The
+child cannot start a standalone browser or native bootstrap; the parent device's
+activation flow is its only admission path.
+
+The activation operation returns server-computed `companionConsent`. The
+approving user submits a separate child `Approval` fenced by its decision
+digest, installed revision, expected grant revision, and exact eligible
+capability and resource selections. Changed consent or authority makes that
+approval stale and Auth rejects it. Auth commits the approval and device
+authority before creating the child login session.
+
+The companion then runs as the user with its own OAuth grant, login session,
+session authority, resources, and connection. Parent and child grants,
+connections, expiry, and revocation remain separate; device credentials never
+substitute for unavailable user authority.

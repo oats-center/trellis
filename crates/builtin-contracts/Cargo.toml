@@ -1,0 +1,15 @@
+[package]
+name = "trellis-builtin-contracts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native IDL build inputs for Trellis-owned contracts."
+publish = false
+
+[dependencies]
+miette.workspace = true
+trellis-idl = { path = "../idl", version = "0.100.0-rc.3" }
+
+[lints]
+workspace = true

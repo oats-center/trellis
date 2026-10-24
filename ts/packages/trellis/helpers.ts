@@ -72,9 +72,8 @@ export function escapeKvKey(key: string): string {
 }
 
 export function decodeSubject(token: string): string {
-  const out = token.replace(
-    /~([0-9A-F]{1,6})~/g,
-    (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)),
+  const out = token.replace(/~([0-9A-F]{1,6})~/g, (_, hex: string) =>
+    String.fromCodePoint(Number.parseInt(hex, 16)),
   );
 
   if (out.startsWith("_$")) {

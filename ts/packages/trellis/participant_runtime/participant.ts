@@ -10,13 +10,13 @@ import type {
   RuntimeRpcErrorDesc,
   SchemaLike,
 } from "./api.ts";
-import {
-  boundApiSubject,
-  eventDescriptorIdentity,
-  eventSubject,
-} from "./api.ts";
+import { eventDescriptorIdentity } from "./api.ts";
 import { lowerCamelSurfaceName, pascalSurfaceName } from "./surface_names.ts";
 import type { TrellisAvailability } from "../connection.ts";
+import type { AppRequestDescriptor } from "../generated_support.ts";
+
+/** Source-owned API selections for either a provisioned participant or an OAuth application. */
+export type GeneratedCaller = GeneratedParticipant | AppRequestDescriptor;
 
 type GeneratedCodec = Readonly<{
   decode(value: unknown): unknown;
@@ -24,6 +24,8 @@ type GeneratedCodec = Readonly<{
 }>;
 
 export type GeneratedActionDescriptor = Readonly<{
+  /** Compiler-owned canonical API/action subject, including event parameters. */
+  subject: string;
   kind: "rpc" | "operation" | "event" | "live";
   descriptorName: `${"rpc" | "operation" | "event" | "live"}:${string}`;
   input?: GeneratedCodec;
@@ -31,10 +33,14 @@ export type GeneratedActionDescriptor = Readonly<{
   payload?: GeneratedCodec;
   event?: GeneratedCodec;
   progress?: GeneratedCodec;
+  /** Operation's transient-update codec, distinct from durable progress. */
+  update?: GeneratedCodec;
   errors?: readonly RuntimeRpcErrorClass[];
   signals?: Readonly<Record<string, GeneratedCodec>>;
   parameters?: readonly (readonly string[])[];
   upload?: boolean;
+  /** Upload bytes stream directly to the running handler; implies `upload`. */
+  stream?: boolean;
   download?: boolean;
   pagination?: "cursor";
 }>;
@@ -64,16 +70,15 @@ export type GeneratedPermissionAtom = Readonly<{
   target: Readonly<Record<string, unknown>>;
 }>;
 
-export type GeneratedResourceDescriptor =
-  & Readonly<Record<string, unknown>>
-  & Readonly<{ availability: "required" | "optional" }>
-  & (
+export type GeneratedResourceDescriptor = Readonly<Record<string, unknown>> &
+  Readonly<{ availability: "required" | "optional" }> &
+  (
     | Readonly<{
-      kind: "state" | "kv";
-      codec: GeneratedCodec;
-      version: number;
-      migrations: Readonly<Record<number, GeneratedCodec>>;
-    }>
+        kind: "state" | "kv";
+        codec: GeneratedCodec;
+        version: number;
+        migrations: Readonly<Record<number, GeneratedCodec>>;
+      }>
     | Readonly<{ kind: "store" | "job" | "consumer" }>
   );
 
@@ -91,18 +96,19 @@ export type GeneratedParticipant = Readonly<{
    * Exact optional grant bundles keyed by capability or resource identity.
    * Availability derives from the current signed application grant matching
    * these atoms, never from provider-binding presence alone.
+   * Native service descriptors omit this OAuth application projection.
    */
-  optionalGrants: Readonly<Record<string, readonly GeneratedPermissionAtom[]>>;
-  /** Compiler-owned required authority, used to detect a remembered-login upgrade. */
-  requiredGrants: readonly GeneratedPermissionAtom[];
-  /** Required consent labels; permission coverage alone cannot approve a new capability. */
-  requiredCapabilities: readonly Readonly<
-    { id: string; consentDigest: string }
-  >[];
+  optionalGrants?: Readonly<Record<string, readonly GeneratedPermissionAtom[]>>;
+  /** OAuth application authority used to detect a remembered-login upgrade. */
+  requiredGrants?: readonly GeneratedPermissionAtom[];
+  /** Native capability IDs or OAuth consent-bearing capability selections. */
+  requiredCapabilities: readonly (
+    string | Readonly<{ id: string; consentDigest: string }>
+  )[];
   actionNames: Readonly<Record<string, string>>;
   resources: Readonly<Record<string, GeneratedResourceDescriptor>>;
   companion?: Readonly<{
-    participant: GeneratedParticipant;
+    request: AppRequestDescriptor;
     availability: "required" | "optional";
   }>;
   packageEvidence: unknown;
@@ -112,35 +118,40 @@ type GeneratedSchema<T> = T extends { decode(value: unknown): infer V }
   ? Codec<V>
   : Extract<T, SchemaLike>;
 
-type GeneratedDescriptorRuntime<T> = T extends
-  { kind: "rpc"; input: infer I; output: infer O }
+type GeneratedDescriptorRuntime<T> = T extends {
+  kind: "rpc";
+  input: infer I;
+  output: infer O;
+}
   ? RPCDesc<GeneratedSchema<I>, GeneratedSchema<O>>
   : T extends {
-    kind: "operation";
-    input: infer I;
-    output?: infer O;
-    progress?: infer P;
-  } ?
-      & Omit<
+        kind: "operation";
+        input: infer I;
+        output?: infer O;
+        progress?: infer P;
+      }
+    ? Omit<
         OperationDesc<
           GeneratedSchema<I>,
           GeneratedSchema<P>,
           GeneratedSchema<O>
         >,
         "update" | "runtimeErrors"
-      >
-      & (T extends { update: infer U } ? { update: GeneratedSchema<U> }
-        : unknown)
-      & (T extends { errors: infer E } ? { runtimeErrors: E } : unknown)
-      & (T extends { upload: true } ? {
-          transfer: { direction: "send" };
-        }
-        : unknown)
-  : T extends { kind: "event"; payload: infer E }
-    ? EventDesc<GeneratedSchema<E>>
-  : T extends { kind: "live"; input: infer I; event: infer E }
-    ? LiveDesc<GeneratedSchema<I>, GeneratedSchema<E>>
-  : never;
+      > &
+        (T extends { update: infer U }
+          ? { update: GeneratedSchema<U> }
+          : unknown) &
+        (T extends { errors: infer E } ? { runtimeErrors: E } : unknown) &
+        (T extends { upload: true }
+          ? {
+              transfer: { direction: "send"; stream?: boolean };
+            }
+          : unknown)
+    : T extends { kind: "event"; payload: infer E }
+      ? EventDesc<GeneratedSchema<E>>
+      : T extends { kind: "live"; input: infer I; event: infer E }
+        ? LiveDesc<GeneratedSchema<I>, GeneratedSchema<E>>
+        : never;
 
 type GeneratedRuntimeEntries<
   TApi,
@@ -149,26 +160,28 @@ type GeneratedRuntimeEntries<
 > = TApi extends {
   identity: string;
   actions: Readonly<Record<string, unknown>>;
-} ? {
-    [K in keyof TApi["actions"]]: TApi["actions"][K] extends infer TAction
-      ? TAction extends {
-        kind: TKind;
-        descriptorName: infer TDescriptorName extends string;
-      } ? {
-          [
-            N in
-              & TNames[`${TApi["identity"]}:${TDescriptorName}`]
-              & string
-          ]: GeneratedDescriptorRuntime<TAction>;
-        }
-      : never
-      : never;
-  }[keyof TApi["actions"]]
+}
+  ? {
+      [K in keyof TApi["actions"]]: TApi["actions"][K] extends infer TAction
+        ? TAction extends {
+            kind: TKind;
+            descriptorName: infer TDescriptorName extends string;
+          }
+          ? {
+              [
+                N in TNames[`${TApi["identity"]}:${TDescriptorName}`] & string
+              ]: GeneratedDescriptorRuntime<TAction>;
+            }
+          : never
+        : never;
+    }[keyof TApi["actions"]]
   : never;
 
 type UnionToIntersection<T> = (
   T extends unknown ? (value: T) => void : never
-) extends (value: infer I) => void ? I : never;
+) extends (value: infer I) => void
+  ? I
+  : never;
 
 type GeneratedRuntimeFamily<
   TApi,
@@ -195,13 +208,15 @@ export type ParticipantJobsFromResources<
   TResources extends GeneratedParticipant["resources"],
 > = {
   [
-    K in keyof TResources as TResources[K] extends { kind: "job" } ? K
-      : never
-  ]: TResources[K] extends { payload: Codec<infer P> } ? {
-      payload: P;
-      result: TResources[K] extends { result: Codec<infer R> } ? R : undefined;
-      update: TResources[K] extends { update: Codec<infer U> } ? U : never;
-    }
+    K in keyof TResources as TResources[K] extends { kind: "job" } ? K : never
+  ]: TResources[K] extends { payload: Codec<infer P> }
+    ? {
+        payload: P;
+        result: TResources[K] extends { result: Codec<infer R> }
+          ? R
+          : undefined;
+        update: TResources[K] extends { update: Codec<infer U> } ? U : never;
+      }
     : never;
 };
 
@@ -210,22 +225,22 @@ export type ParticipantKvFromResources<
   TResources extends GeneratedParticipant["resources"],
 > = {
   [
-    K in keyof TResources as TResources[K] extends { kind: "kv" } ? K
-      : never
+    K in keyof TResources as TResources[K] extends { kind: "kv" } ? K : never
   ]: TResources[K] extends {
     availability: infer A;
     codec: { decode(value: unknown): unknown };
     version: infer Version;
     migrations: infer Migrations;
-  } ? {
-      required: A extends "required" ? true : false;
-      value: ReturnType<TResources[K]["codec"]["decode"]>;
-      schema: {
-        codec: TResources[K]["codec"];
-        version: Version;
-        migrations: Migrations;
-      };
-    }
+  }
+    ? {
+        required: A extends "required" ? true : false;
+        value: ReturnType<TResources[K]["codec"]["decode"]>;
+        schema: {
+          codec: TResources[K]["codec"];
+          version: Version;
+          migrations: Migrations;
+        };
+      }
     : never;
 };
 
@@ -267,7 +282,8 @@ function actionName(descriptorName: string): string {
   return descriptorName.slice(descriptorName.indexOf(":") + 1);
 }
 
-function permission(
+/** Project generated action coordinates; this metadata does not grant authority. */
+export function permission(
   apiId: string,
   descriptor: GeneratedActionDescriptor,
   action: PermissionAtom["action"],
@@ -292,34 +308,11 @@ function runtimeErrors(
   }));
 }
 
-function subject(
-  api: GeneratedApiDescriptor,
-  descriptor: GeneratedActionDescriptor,
-): string {
-  const name = actionName(descriptor.descriptorName);
-  const prefix = descriptor.kind === "event"
-    ? "events"
-    : descriptor.kind === "operation"
-    ? "operations"
-    : descriptor.kind;
-  const parameters =
-    descriptor.parameters?.map((path) => `.{/${path.join("/")}}`).join("") ??
-      "";
-  if (descriptor.kind === "event") {
-    return `${eventSubject(api.identity, name)}${parameters}`;
-  }
-  const apiName = api.identity.split(".").at(-1)?.split("@v")[0];
-  if (!apiName) {
-    throw new Error(`Invalid generated API identity '${api.identity}'`);
-  }
-  return `${prefix}.v1.${apiName}.${name}`;
-}
-
 function runtimeDescriptor(
   api: GeneratedApiDescriptor,
   descriptor: GeneratedActionDescriptor,
 ): RPCDesc | OperationDesc | EventDesc | LiveDesc {
-  const transportSubject = subject(api, descriptor);
+  const transportSubject = descriptor.subject;
   const errors = descriptor.errors?.map((error) => error.type);
   const declaredErrors = runtimeErrors(descriptor.errors);
   switch (descriptor.kind) {
@@ -340,22 +333,16 @@ function runtimeDescriptor(
         input: descriptor.input as Codec<unknown>,
         output: descriptor.output,
         progress: descriptor.progress,
-        update: descriptor.progress,
+        update: descriptor.update,
         permissions: {
           invoke: permission(api.identity, descriptor, "invoke"),
           observe: permission(api.identity, descriptor, "observe"),
           cancel: permission(api.identity, descriptor, "cancel"),
           control: Object.fromEntries(
-            Object.keys(descriptor.signals ?? {}).map((name) => {
-              const control = permission(api.identity, descriptor, "control");
-              return [
-                name,
-                {
-                  ...control,
-                  surfaceName: `${control.surfaceName}.${name}`,
-                },
-              ];
-            }),
+            Object.keys(descriptor.signals ?? {}).map((name) => [
+              name,
+              permission(api.identity, descriptor, "control"),
+            ]),
           ),
         },
         signals: Object.fromEntries(
@@ -368,7 +355,14 @@ function runtimeDescriptor(
         observeCapabilities: [],
         cancelCapabilities: [],
         controlCapabilities: [],
-        ...(descriptor.upload ? { transfer: { direction: "send" } } : {}),
+        ...(descriptor.upload
+          ? {
+              transfer: {
+                direction: "send",
+                ...(descriptor.stream ? { stream: true } : {}),
+              },
+            }
+          : {}),
         ...(errors ? { errors, declaredErrorTypes: errors } : {}),
         ...(declaredErrors ? { runtimeErrors: declaredErrors } : {}),
       };
@@ -381,8 +375,8 @@ function runtimeDescriptor(
           eventName,
           descriptor.parameters?.length ?? 0,
         ),
-        params: descriptor.parameters?.map((path) =>
-          `/${path.join("/")}` as `/${string}`
+        params: descriptor.parameters?.map(
+          (path) => `/${path.join("/")}` as `/${string}`,
         ),
         event: descriptor.payload as Codec<unknown>,
         publishPermission: permission(api.identity, descriptor, "publish"),
@@ -399,75 +393,6 @@ function runtimeDescriptor(
         permission: permission(api.identity, descriptor, "subscribe"),
         subscribeCapabilities: [],
       };
-  }
-}
-
-/** Applies bootstrap-selected provider deployments to request route subjects. */
-export function bindApiRoutes(
-  api: RuntimeApi,
-  apiBindings: Readonly<Record<string, unknown>>,
-): RuntimeApi {
-  const bind = <T extends RPCDesc | OperationDesc | LiveDesc>(
-    descriptor: T,
-    family: "rpc" | "operation" | "live",
-  ): T => {
-    const permission = "permissions" in descriptor
-      ? descriptor.permissions.invoke
-      : descriptor.permission;
-    const apiId = `${permission.apiId}@${permission.apiVersion}`;
-    const binding = apiBindings[apiId];
-    if (
-      !binding || typeof binding !== "object" ||
-      typeof Reflect.get(binding, "providerDeploymentId") !== "string"
-    ) {
-      throw new Error(
-        `Bootstrap did not bind API '${apiId}' to a provider deployment`,
-      );
-    }
-    return {
-      ...descriptor,
-      subject: boundApiSubject(
-        family,
-        apiId,
-        Reflect.get(binding, "providerDeploymentId"),
-        permission.surfaceName,
-      ),
-    };
-  };
-  return {
-    ...api,
-    rpc: Object.fromEntries(
-      Object.entries(api.rpc).map(([name, descriptor]) => [
-        name,
-        bind(descriptor, "rpc"),
-      ]),
-    ),
-    operations: Object.fromEntries(
-      Object.entries(api.operations).map(([name, descriptor]) => [
-        name,
-        bind(descriptor, "operation"),
-      ]),
-    ),
-    lives: Object.fromEntries(
-      Object.entries(api.lives ?? {}).map(([name, descriptor]) => [
-        name,
-        bind(descriptor, "live"),
-      ]),
-    ),
-  };
-}
-
-/** Replaces request subjects after an authorization binding refresh. */
-export function refreshApiRoutes(
-  api: RuntimeApi,
-  apiBindings: Readonly<Record<string, unknown>>,
-): void {
-  const next = bindApiRoutes(api, apiBindings);
-  for (const family of ["rpc", "operations", "lives"] as const) {
-    for (const [name, descriptor] of Object.entries(next[family] ?? {})) {
-      const current = api[family]?.[name];
-      if (current) current.subject = descriptor.subject;
-    }
   }
 }
 
@@ -491,13 +416,12 @@ function addAction(
 }
 
 function generatedActionName(
-  participant: GeneratedParticipant,
+  participant: GeneratedCaller,
   api: GeneratedApiDescriptor,
   descriptor: GeneratedActionDescriptor,
 ): string {
-  const name = participant.actionNames[
-    `${api.identity}:${descriptor.descriptorName}`
-  ];
+  const name =
+    participant.actionNames[`${api.identity}:${descriptor.descriptorName}`];
   if (!name) throw new Error("Generated participant action name is missing");
   return name;
 }
@@ -506,9 +430,30 @@ function emptyApi(): RuntimeApi {
   return { rpc: {}, operations: {}, events: {}, lives: {}, subjects: {} };
 }
 
+/** Project a generated API's descriptors without asserting participant implementation or authority. */
+export function getApiRuntime(api: GeneratedApiDescriptor): RuntimeApi {
+  const runtime = emptyApi();
+  for (const descriptor of Object.values(api.actions)) {
+    addAction(
+      runtime,
+      api,
+      descriptor,
+      `${api.identity}:${descriptor.descriptorName}`,
+    );
+  }
+  return runtime;
+}
+
 /** Projects generated descriptors into the participant runtime. */
 export function getParticipantRuntime(
   participant: GeneratedParticipant,
+): ParticipantRuntime {
+  return getCallerRuntime(participant);
+}
+
+/** Project callable descriptors and local codecs without inventing participant identity. */
+export function getCallerRuntime(
+  participant: GeneratedCaller,
 ): ParticipantRuntime {
   const ownedApi = emptyApi();
   const usedApi = emptyApi();
@@ -518,7 +463,7 @@ export function getParticipantRuntime(
   const jobs: Record<string, Readonly<Record<string, unknown>>> = {};
   const eventConsumers: Record<string, Readonly<Record<string, unknown>>> = {};
 
-  for (const api of participant.implements) {
+  for (const api of "implements" in participant ? participant.implements : []) {
     for (const descriptor of Object.values(api.actions)) {
       addAction(
         ownedApi,
@@ -543,18 +488,26 @@ export function getParticipantRuntime(
         descriptor,
         direction: selected.direction,
         name,
-        connectedName: descriptor.kind === "event"
-          ? `${selected.direction === "publish" ? "publish" : "on"}${
-            pascalSurfaceName(name)
-          }`
-          : lowerCamelSurfaceName(name),
+        connectedName:
+          descriptor.kind === "event"
+            ? `${selected.direction === "publish" ? "publish" : "on"}${pascalSurfaceName(
+                name,
+              )}`
+            : lowerCamelSurfaceName(name),
         optional: selected.optionalCapabilities.length > 0,
         optionalCapabilities: selected.optionalCapabilities,
       });
     }
   }
 
-  for (const [name, resource] of Object.entries(participant.resources)) {
+  if ("states" in participant) {
+    for (const [name, stateDescriptor] of Object.entries(participant.states)) {
+      state[name] = { kind: "value", value: undefined, ...stateDescriptor };
+    }
+  }
+  for (const [name, resource] of Object.entries(
+    "resources" in participant ? participant.resources : {},
+  )) {
     if (resource.kind === "state") {
       state[name] = {
         kind: "value",
@@ -577,11 +530,10 @@ export function getParticipantRuntime(
       };
     } else if (resource.kind === "consumer") {
       const uses: Record<string, string[]> = {};
-      for (
-        const [api, event] of resource.events as readonly (
-          readonly [string, string]
-        )[]
-      ) {
+      for (const [api, event] of resource.events as readonly (readonly [
+        string,
+        string,
+      ])[]) {
         const events = uses[api] ?? [];
         events.push(event);
         uses[api] = events;
@@ -612,82 +564,36 @@ export function getParticipantRuntime(
   };
 }
 
-/** Compares one signed grant permission with one authored grant atom. */
-export function sameGrantAtom(
-  permission: Readonly<
-    { action?: string; target: Readonly<Record<string, unknown>> }
-  >,
-  atom: Readonly<
-    { action?: string; target: Readonly<Record<string, unknown>> }
-  >,
-): boolean {
-  if (permission.action !== atom.action) return false;
-  const permissionTarget = permission.target as Record<string, unknown>;
-  const atomTarget = atom.target as Record<string, unknown>;
-  const fields = new Set([
-    ...Object.keys(permissionTarget),
-    ...Object.keys(atomTarget),
-  ]);
-  for (const field of fields) {
-    if (permissionTarget[field] !== atomTarget[field]) return false;
-  }
-  return true;
-}
-
-/** Projects installed API and resource bindings into one immutable participant snapshot. */
+/** Projects authenticated native resource bindings; caller action availability is supplied by the live authority view. */
 export function participantAvailability(
   participant: GeneratedParticipant,
-  apiBindings: Readonly<Record<string, unknown>>,
   resourceBindings: Readonly<{
+    state?: Readonly<Record<string, string>>;
     kv?: Readonly<Record<string, unknown>>;
     store?: Readonly<Record<string, unknown>>;
     jobs?: Readonly<{ queues: Readonly<Record<string, unknown>> }>;
     eventConsumers?: Readonly<Record<string, unknown>>;
   }>,
-  permissions: readonly Readonly<
-    { action?: string; target: Readonly<Record<string, unknown>> }
-  >[],
 ): TrellisAvailability {
   const capabilities: Record<string, boolean> = {};
   for (const selection of participant.uses) {
-    // A capability is available when its route is bound and the current signed
-    // application grant actually contains its exact bundle. Provider-binding
-    // presence alone answers a different question, and admitted transport
-    // authority is deliberately not consulted here: a granted capability that
-    // the current attachment has not adopted is still available at the
-    // application level; using it waits for automatic transport adoption.
-    const routeBound = selection.api.identity in apiBindings;
     for (const capability of selection.optionalCapabilities) {
-      const bundle = participant.optionalGrants[capability];
-      capabilities[capability] = routeBound &&
-        bundle !== undefined &&
-        bundle.every((atom) =>
-          permissions.some((permission) => sameGrantAtom(permission, atom))
-        );
+      capabilities[capability] = false;
     }
   }
 
   const resources: Record<string, boolean> = {};
-  const granted = (name: string, kind: string) =>
-    permissions.some((permission) =>
-      permission.target.kind === "participantResource" &&
-      permission.target.participant === participant.identity &&
-      permission.target.resource === kind &&
-      permission.target.name === name
-    );
   for (const [name, descriptor] of Object.entries(participant.resources)) {
     if (descriptor.availability !== "optional") continue;
     switch (descriptor.kind) {
       case "state":
-        resources[name] = granted(name, "state");
+        resources[name] = resourceBindings.state?.[name] !== undefined;
         break;
       case "kv":
-        resources[name] = resourceBindings.kv?.[name] !== undefined &&
-          granted(name, "kv");
+        resources[name] = resourceBindings.kv?.[name] !== undefined;
         break;
       case "store":
-        resources[name] = resourceBindings.store?.[name] !== undefined &&
-          granted(name, "store");
+        resources[name] = resourceBindings.store?.[name] !== undefined;
         break;
       case "job":
         resources[name] = resourceBindings.jobs?.queues[name] !== undefined;
@@ -711,9 +617,10 @@ export function participantEvidence(participant: GeneratedParticipant): {
   packageDigest: string;
 } {
   const evidence = participant.packageEvidence;
-  const packageDigest = evidence && typeof evidence === "object"
-    ? Reflect.get(evidence, "rootDigest")
-    : undefined;
+  const packageDigest =
+    evidence && typeof evidence === "object"
+      ? Reflect.get(evidence, "rootDigest")
+      : undefined;
   if (typeof packageDigest !== "string" || packageDigest.length === 0) {
     throw new Error("Generated participant has invalid package evidence");
   }

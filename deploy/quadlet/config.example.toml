@@ -1,48 +1,85 @@
+# Apply these deployment settings to a fresh `trellis init config` bundle.
+# Retain that bundle's unique auth.instance_id and all generated private files.
+# This template intentionally does not provide a reusable installation identity.
 instance_name = "Trellis"
-event_session_seed_file = "/etc/trellis/secrets/event-session.seed"
+event_session_seed_file = "./session.seed"
+
+[paths]
+data = "/var/lib/trellis"
+state = "/var/lib/trellis"
+runtime = "/run/trellis"
+logs = "/var/lib/trellis/log"
+
+[live_provider_seed_files]
+platform = "./live-providers/platform.seed"
+health = "./live-providers/health.seed"
+jobs = "./live-providers/jobs.seed"
+events = "./live-providers/events.seed"
+
+# Present when `trellis init config` generated the installation CA; the
+# runtime and Console then warn with its fingerprint. Omit with supplied TLS.
+[tls]
+generated_ca_certificate = "./tls/ca.crt"
 
 [http]
+bind_address = "0.0.0.0"
 port = 3000
-public_origin = "https://auth.example.com"
-origins = ["https://app.example.com"]
-allow_insecure_origins = []
-rate_limit_max = 60
-rate_limit_window_ms = 60000
+public_origin = "https://console.example.com"
+origins = ["https://console.example.com"]
+
+# Console is served as plaintext only to the external HTTPS proxy, which reaches
+# it through the published loopback port and the trellis.network subnet. Peers
+# outside it are refused and logged with their address. Use mode = "tls" with
+# the bundle certificate to terminate TLS here instead.
+[http.transport]
+mode = "proxy"
+trusted_proxies = ["10.89.70.0/24"]
 
 [nats]
-servers = "nats"
+servers = "tls://nats.example.com:4222"
+# The broker certificate chains to the installation CA.
+ca_certificate = "./tls/ca.crt"
 
 [nats.runtime]
-auth_creds_path = "/run/trellis/creds/auth-trellis.creds"
-trellis_creds_path = "/run/trellis/creds/trellis-trellis.creds"
-system_creds_path = "/run/trellis/creds/system.creds"
+auth_creds_path = "./nats/creds/auth-auth.creds"
+trellis_creds_path = "./nats/creds/trellis-auth.creds"
+system_creds_path = "./nats/creds/system.creds"
 
 [nats.auth_callout]
-issuer_signing_seed_file = "/etc/trellis/secrets/auth-issuer-signing.seed"
-target_signing_seed_file = "/etc/trellis/secrets/auth-target-signing.seed"
-xkey_seed_file = "/etc/trellis/secrets/auth-xkey.seed"
-sentinel_public_key_file = "/etc/trellis/secrets/auth-sentinel.pub"
+issuer_signing_seed_file = "./nats/secrets/auth-issuer-signing.seed"
+target_signing_seed_file = "./nats/secrets/auth-target-signing.seed"
+xkey_seed_file = "./nats/secrets/auth-sx.seed"
+sentinel_public_key_file = "./nats/secrets/auth-sentinel.pub"
+
+[auth]
+instance_id = "RETAIN_YOUR_GENERATED_AUTH_INSTANCE_ID"
+oauth_storage_key_file = "./auth/oauth-storage.key"
+
+[auth.oauth]
+origin = "https://auth.example.com"
+bind_address = "0.0.0.0"
+port = 3001
+# Behind a reverse proxy, list its addresses so request admission budgets each
+# forwarded client rather than the proxy. Forwarding headers are otherwise ignored.
+# trusted_proxies = ["10.0.0.5/32"]
+
+[auth.oauth.transport]
+mode = "tls"
+certificate_chain = "./tls/runtime.crt"
+private_key = "./tls/runtime.key"
 
 [auth.authorization]
-issuer_signing_seed_file = "/etc/trellis/secrets/authorization-issuer.seed"
+issuer_signing_seed_file = "./auth/authorization-issuer.seed"
 context_lifetime_seconds = 300
-refresh_lead_seconds = 60
-refresh_jitter_seconds = 15
-minimum_context_lifetime_seconds = 76
-maximum_bootstrap_jwt_lifetime_seconds = 3600
 allowed_clock_skew_seconds = 30
-maximum_context_bytes = 16384
-maximum_permissions = 4096
-context_bucket = "trellis_authorization_contexts"
-registry_replicas = 3
 
 [client]
 nats_servers = ["tls://nats.example.com:4222"]
-ws_nats_servers = ["wss://nats.example.com:443"]
+ws_nats_servers = ["wss://nats.example.com"]
 
 [leases]
 bucket = "trellis_runtime_leases"
-replicas = 3
+replicas = 1
 ttl_ms = 30000
 renew_ms = 5000
 
@@ -50,26 +87,12 @@ renew_ms = 5000
 enabled = true
 password_min_length = 12
 
-[oauth]
-redirect_base = "https://auth.example.com/auth/callback"
-always_show_provider_chooser = false
-
 [platform.storage]
 kind = "sqlite"
 path = "/var/lib/trellis/platform.sqlite"
 journal_mode = "wal"
 busy_timeout_ms = 5000
 single_writer = true
-
-[platform.ttl_ms]
-sessions = 86400000
-oauth = 300000
-device_flow = 1800000
-pending_auth = 300000
-
-[health]
-transport_retention_hours = 1
-transport_max_bytes = 1073741824
 
 [health.storage]
 kind = "sqlite"

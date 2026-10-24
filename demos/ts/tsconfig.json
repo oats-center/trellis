@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "target": "ES2022",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "module": "NodeNext",
+    "strict": true,
+    "noEmit": true,
+    "allowJs": true,
+    "rewriteRelativeImportExtensions": true,
+    "resolveJsonModule": true
+  },
+  "include": ["service/src/**/*.ts", "device/src/**/*.ts", "shared/**/*.ts"]
+}

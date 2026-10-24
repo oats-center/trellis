@@ -148,6 +148,20 @@ impl ErrorAnnotationContext {
 
 /// Async request handler trait used by host request loops.
 pub trait RequestHandler: Send + Sync {
+    /// Authenticate exact finite reply bytes against the verified opening and certified provider.
+    /// Unverified requests must never receive a reflected application reply.
+    fn reply_headers<'a>(
+        &'a self,
+        _context: &'a RequestContext,
+        _request_payload: &'a [u8],
+        _reply: &'a OutboundReply,
+    ) -> BoxFuture<'a, Result<HeaderMap, ServerError>> {
+        Box::pin(async {
+            Err(ServerError::Nats(
+                "request handler has no certified reply signer".into(),
+            ))
+        })
+    }
     fn handler_service_name(&self) -> Option<&str> {
         None
     }
@@ -224,6 +238,14 @@ pub trait RequestHandler: Send + Sync {
 }
 
 impl RequestHandler for Router {
+    fn reply_headers<'a>(
+        &'a self,
+        context: &'a RequestContext,
+        request_payload: &'a [u8],
+        reply: &'a OutboundReply,
+    ) -> BoxFuture<'a, Result<HeaderMap, ServerError>> {
+        Box::pin(self.sign_reply(context, request_payload, reply))
+    }
     fn route_token(&self, subject: &str) -> Option<&'static str> {
         Router::route_token(self, subject)
     }
@@ -273,6 +295,14 @@ impl<T> RequestHandler for std::sync::Arc<T>
 where
     T: RequestHandler + ?Sized,
 {
+    fn reply_headers<'a>(
+        &'a self,
+        context: &'a RequestContext,
+        request_payload: &'a [u8],
+        reply: &'a OutboundReply,
+    ) -> BoxFuture<'a, Result<HeaderMap, ServerError>> {
+        (**self).reply_headers(context, request_payload, reply)
+    }
     fn handler_service_name(&self) -> Option<&str> {
         (**self).handler_service_name()
     }
@@ -329,6 +359,14 @@ impl<V> RequestHandler for AuthenticatedRouter<V>
 where
     V: RequestValidator + 'static,
 {
+    fn reply_headers<'a>(
+        &'a self,
+        context: &'a RequestContext,
+        request_payload: &'a [u8],
+        reply: &'a OutboundReply,
+    ) -> BoxFuture<'a, Result<HeaderMap, ServerError>> {
+        Box::pin(self.inner().sign_reply(context, request_payload, reply))
+    }
     fn route_token(&self, subject: &str) -> Option<&'static str> {
         AuthenticatedRouter::route_token(self, subject)
     }
@@ -404,31 +442,30 @@ fn single_trace_header(message: &async_nats::Message, name: &str) -> Option<Stri
 pub fn decode_nats_request(message: &async_nats::Message) -> InboundRequest {
     let subject = message.subject.to_string();
     let reply_to = message.reply.as_ref().map(ToString::to_string);
-    let session_key = message
-        .headers
+    let session_request = message.headers.as_ref().and_then(|headers| {
+        let mut values = headers.get_all("Trellis-Session-Request");
+        let value = values.next()?;
+        if values.next().is_some() {
+            return None;
+        }
+        serde_json::from_str::<trellis_protocol::SessionRequest>(value.as_str()).ok()
+    });
+    let session_key = None;
+    let proof = message.headers.as_ref().and_then(|headers| {
+        let mut values = headers.get_all("proof");
+        let value = values.next()?;
+        if values.next().is_some() {
+            return None;
+        }
+        Some(value.as_str().to_owned())
+    });
+    let authorization_context = session_request
         .as_ref()
-        .and_then(|headers| headers.get("session-key"))
-        .map(|value| value.as_str().to_string());
-    let proof = message
-        .headers
+        .map(|request| request.authority_digest.clone());
+    let iat = session_request.as_ref().map(|request| request.issued_at);
+    let request_id = session_request
         .as_ref()
-        .and_then(|headers| headers.get("proof"))
-        .map(|value| value.as_str().to_string());
-    let authorization_context = message
-        .headers
-        .as_ref()
-        .and_then(|headers| headers.get("authorization-context"))
-        .map(|value| value.as_str().to_string());
-    let iat = message
-        .headers
-        .as_ref()
-        .and_then(|headers| headers.get("iat"))
-        .and_then(|value| value.as_str().parse::<i64>().ok());
-    let request_id = message
-        .headers
-        .as_ref()
-        .and_then(|headers| headers.get("request-id"))
-        .map(|value| value.as_str().to_string());
+        .map(|request| request.request_id.clone());
     // Trace context is validated at the real carrier boundary while the
     // original header set is available: `HeaderMap::get` returns only the
     // first value, so duplicates must be rejected here rather than silently
@@ -441,6 +478,8 @@ pub fn decode_nats_request(message: &async_nats::Message) -> InboundRequest {
         payload: message.payload.clone(),
         reply_to: reply_to.clone(),
         context: RequestContext {
+            session_request,
+            verified_opening: Default::default(),
             resuming: false,
             operation_progress: None,
             subject,
@@ -456,6 +495,9 @@ pub fn decode_nats_request(message: &async_nats::Message) -> InboundRequest {
             traceparent,
             tracestate,
             transport: Default::default(),
+            // Route authorization mode is assigned by AuthenticatedRouter,
+            // never by fields supplied in the inbound NATS message.
+            ..Default::default()
         },
     }
 }
@@ -789,6 +831,8 @@ async fn dispatch_outcome<T>(
 /// to the transport, so a failed handoff is not recorded as a success. Stream
 /// and live responses never carry the unary observation.
 pub(crate) struct DispatchedResponse {
+    pub(crate) context: RequestContext,
+    pub(crate) request_payload: Bytes,
     pub(crate) reply_to: String,
     pub(crate) response: HandlerResponse,
     pub(crate) annotations: ErrorAnnotationContext,
@@ -973,6 +1017,8 @@ where
     let reply_to = request.reply_to;
     let annotations =
         ErrorAnnotationContext::from_request(&request.subject, &request.context, handler);
+    let context = request.context.clone();
+    let request_payload = request.payload.clone();
     let call = handler.handle_response(&request.subject, request.payload, request.context);
     let (dispatch, result) = if let Some(unary) = &unary {
         dispatch_outcome(call.instrument(unary.span.clone())).await
@@ -990,6 +1036,16 @@ where
             Err(error) => Err(error),
         };
     };
+
+    if context.verified_request().is_none() {
+        if let Err(error) = &result {
+            tracing::debug!(subject = %context.subject, %error, "service request dropped before verification");
+        }
+        if let Some(unary) = &mut unary {
+            unary.finish(dispatch, None);
+        }
+        return Ok(DispatchResponse::NoReply);
+    }
 
     // The typed outcome from dispatch is authoritative even when the error was
     // translated into a wire envelope; only a reply-publication failure may
@@ -1023,6 +1079,8 @@ where
         }
     }
     Ok(DispatchResponse::Reply(Box::new(DispatchedResponse {
+        context,
+        request_payload,
         reply_to,
         response,
         annotations,
@@ -1031,39 +1089,145 @@ where
     })))
 }
 
-async fn publish_reply(
-    client: &async_nats::Client,
-    reply: OutboundReply,
-) -> Result<(), ServerError> {
-    if reply.is_error {
-        let mut headers = HeaderMap::new();
-        headers.insert("status", "error");
-        client
-            .publish_with_headers(reply.reply_to, headers, reply.payload)
+/// Sign exact application reply bytes with current certified provider material.
+pub async fn sign_verified_reply(
+    client: &crate::client::TrellisClient,
+    context: &RequestContext,
+    action: &trellis_protocol::CatalogActionIdentity,
+    reply: &OutboundReply,
+) -> Result<HeaderMap, ServerError> {
+    use base64::Engine as _;
+    let verified = context
+        .verified_request()
+        .ok_or_else(|| ServerError::RequestDenied {
+            subject: context.subject.clone(),
+            session_key: String::new(),
+        })?;
+    let opening = verified.request();
+    if verified.authorized_action() != Some(action)
+        || opening.reply_subject.as_deref() != Some(&reply.reply_to)
+        || opening.action != action.name
+    {
+        return Err(ServerError::Nats(
+            "reply does not match verified opening".into(),
+        ));
+    }
+    let owner = client.authorization_owner();
+    let nats = context
+        .transport
+        .lease()
+        .map(|lease| lease.nats().clone())
+        .unwrap_or_else(|| client.nats());
+    let deadline = client.transport_deadline();
+    loop {
+        let _published = client
+            .acquire_transport(&[], &[], deadline)
             .await
             .map_err(|error| ServerError::Nats(error.to_string()))?;
-        return Ok(());
+        let provider = owner
+            .own_authority()
+            .map_err(|error| ServerError::Nats(error.to_string()))?;
+        let result = async {
+            let certificate = owner
+                .authorize_provider(&nats, &provider, &opening.api_id, action)
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            let binding = provider
+                .authority()
+                .provider_bindings
+                .iter()
+                .find(|binding| {
+                    binding.api_id == opening.api_id && binding.generation == opening.api_generation
+                })
+                .ok_or_else(|| {
+                    ServerError::Nats("provider generation does not match opening".into())
+                })?;
+            if certificate.generation != opening.api_generation {
+                return Err(ServerError::Nats(
+                    "provider certificate generation mismatch".into(),
+                ));
+            }
+            let response = trellis_protocol::SessionResponse {
+                trellis_instance_id: provider.authority().trellis_instance_id.clone(),
+                audience_nats_account: provider.authority().audience_nats_account.clone(),
+                provider_authority_digest: provider.digest().to_owned(),
+                provider_certificate_digest: binding.provider_certificate_digest.clone(),
+                api_id: opening.api_id.clone(),
+                api_generation: opening.api_generation,
+                action: opening.action.clone(),
+                request_authority_digest: opening.authority_digest.clone(),
+                request_id: opening.request_id.clone(),
+                request_proof_digest: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(verified.digest()),
+                subject: reply.reply_to.clone(),
+                kind: if reply.is_error {
+                    trellis_protocol::SessionResponseKind::Error
+                } else {
+                    trellis_protocol::SessionResponseKind::Success
+                },
+                issued_at: owner.policy().now_unix_seconds,
+            };
+            let proof = client
+                .auth()
+                .create_response_proof(&response, &reply.payload)
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            owner
+                .assert_current(&provider)
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            // Admission authorized this finite work; only the provider must still be
+            // current when signing against the retained opening transcript.
+            owner
+                .assert_issuer_current(&certificate.issuer_key_id)
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "Trellis-Session-Response",
+                serde_json::to_string(&response)?,
+            );
+            headers.insert("proof", proof.as_str());
+            if reply.is_error {
+                headers.insert("status", "error");
+            }
+            Ok(headers)
+        }
+        .await;
+        // Cold certificate reads may overlap ordinary own-authority promotion.
+        // Reacquire only the local signing snapshot; never redispatch the handler
+        // or retransmit its request, and retain the original signing deadline.
+        if result.is_err()
+            && owner
+                .own_authority()
+                .map_or(true, |current| current.digest() != provider.digest())
+        {
+            continue;
+        }
+        return result;
     }
-
-    client
-        .publish(reply.reply_to, reply.payload)
-        .await
-        .map_err(|error| ServerError::Nats(error.to_string()))?;
-    Ok(())
 }
 
-async fn publish_response(
+async fn publish_response<H: RequestHandler>(
     client: &async_nats::Client,
+    handler: &H,
     dispatched: DispatchedResponse,
 ) -> Result<(), ServerError> {
     let DispatchedResponse {
+        context,
+        request_payload,
         reply_to,
         response,
         annotations: _,
         mut unary,
         outcome,
     } = dispatched;
-    let result = publish_handler_response(client, reply_to, response).await;
+    let result = publish_handler_response(
+        client,
+        handler,
+        &context,
+        &request_payload,
+        reply_to,
+        response,
+    )
+    .await;
     // The unary observation and its span end with the actual reply handoff. A
     // delivered business failure sets an error status with a static bounded
     // description; a failed publication is an unavailable request.
@@ -1073,15 +1237,25 @@ async fn publish_response(
     result
 }
 
-async fn publish_handler_response(
+async fn publish_handler_response<H: RequestHandler>(
     client: &async_nats::Client,
+    handler: &H,
+    context: &RequestContext,
+    request_payload: &[u8],
     reply_to: String,
     response: HandlerResponse,
 ) -> Result<(), ServerError> {
     match response {
         HandlerResponse::Frames(frames) => {
             for payload in frames {
-                publish_reply(client, encode_success_reply(reply_to.clone(), payload)).await?;
+                let reply = encode_success_reply(reply_to.clone(), payload);
+                let headers = handler
+                    .reply_headers(context, request_payload, &reply)
+                    .await?;
+                client
+                    .publish_with_headers(reply.reply_to, headers, reply.payload)
+                    .await
+                    .map_err(|error| ServerError::Nats(error.to_string()))?;
             }
         }
         HandlerResponse::Error(payload) => {
@@ -1090,7 +1264,13 @@ async fn publish_handler_response(
                 payload,
                 is_error: true,
             };
-            publish_reply(client, reply).await?;
+            let headers = handler
+                .reply_headers(context, request_payload, &reply)
+                .await?;
+            client
+                .publish_with_headers(reply.reply_to, headers, reply.payload)
+                .await
+                .map_err(|error| ServerError::Nats(error.to_string()))?;
         }
         HandlerResponse::LivePrepared(prepared) => {
             // One signed offer, no infinite reply loop. Ownership of the
@@ -1144,7 +1324,12 @@ where
         tokio::select! {
             message = stream.next() => {
                 let Some(message) = message else {
-                    tracing::info!(retired, in_flight = in_flight.len(), connection_state = ?client.connection_state(), "service request subscriptions exhausted");
+                    tracing::info!(
+                        retired,
+                        in_flight = in_flight.len(),
+                        connection_state = ?client.connection_state(),
+                        "service request subscriptions exhausted"
+                    );
                     break;
                 };
                 let mut request = decode_nats_request(&message);
@@ -1157,17 +1342,32 @@ where
                         Ok(DispatchResponse::Reply(dispatched)) => {
                             let reply_to = dispatched.reply_to.clone();
                             let request_id = dispatched.annotations.request_id.clone();
-                            tracing::debug!(%subject, %reply_to, request_id = ?request_id, "publishing service request reply");
-                            if let Err(error) = publish_response(client, *dispatched).await {
-                                tracing::warn!(%subject, %reply_to, request_id = ?request_id, %error, "service request reply publish failed");
+                            tracing::debug!(
+                                %subject,
+                                %reply_to,
+                                request_id = ?request_id,
+                                "publishing service request reply"
+                            );
+                            if let Err(error) =
+                                publish_response(client, handler, *dispatched).await
+                            {
+                                tracing::warn!(
+                                    %subject,
+                                    %reply_to,
+                                    request_id = ?request_id,
+                                    %error,
+                                    "service request reply publish failed"
+                                );
                                 return Err(error);
                             }
                         }
                         Ok(DispatchResponse::NoReply) => {}
-                        Err(_) => {}
+                        Err(error) => {
+                            tracing::debug!(%subject, %error, "service request rejected before handler dispatch");
+                        }
                     }
                     Ok::<(), ServerError>(())
-                });
+                            });
             }
             result = in_flight.next(), if !in_flight.is_empty() => {
                 // One callback failing must not cancel its accepted siblings.
@@ -1178,7 +1378,11 @@ where
                 }
             }
             () = &mut retire, if !retired => {
-                tracing::info!(in_flight = in_flight.len(), connection_state = ?client.connection_state(), "service request retirement requested");
+                tracing::info!(
+                    in_flight = in_flight.len(),
+                    connection_state = ?client.connection_state(),
+                    "service request retirement requested"
+                );
                 retired = true;
                 // Stop new broker deliveries on every subscription via the
                 // upstream drain, then keep polling so every message the broker
@@ -1471,7 +1675,194 @@ mod tests {
             traceparent: Some(TRACEPARENT.to_string()),
             tracestate: None,
             transport: Default::default(),
+            ..Default::default()
         }
+    }
+
+    /// Real native provisioning, SDK publication, and consumer verification share
+    /// the exact event bytes and descriptor; altered or fenced events are denied.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_event_publication_binds_payload_descriptor_and_currentness() {
+        use crate::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
+        use crate::client::{
+            PreparedTrellisEvent, ServiceConnectWithContractOptions, TrellisClient,
+            UserConnectOptions,
+        };
+        use crate::service::local_validator::LocalAuthVerifier;
+        use std::time::Duration;
+        use trellis_runtime_apis::apis::trellis_health_v1::events::StatusChanged;
+        use trellis_runtime_apis::participants::trellis_health_runtime::Participant;
+
+        let mut runtime = trellis_testkit::TrellisTestRuntime::builder()
+            .start()
+            .await
+            .unwrap();
+        let identity = runtime
+            .register_service::<Participant>("event-proof-health")
+            .await
+            .unwrap();
+        let server = discover_native_oauth(runtime.oauth_origin(), &runtime.trust_roots())
+            .await
+            .unwrap();
+        let publisher =
+            TrellisClient::connect_service_with_contract(ServiceConnectWithContractOptions {
+                nats_servers: server.nats_servers.clone(),
+                trust: server.trust.clone(),
+                participant_id: identity.participant_id(),
+                provisioned_identity_seed_base64url: identity.seed(),
+                name: Some(identity.name()),
+                timeout_ms: 10_000,
+            })
+            .await
+            .unwrap();
+
+        let native = NativeOAuthClient::open(
+            runtime.workdir().join("credentials/event-subscriber"),
+            NativeCredentialScope {
+                issuer: server.issuer,
+                instance_id: server.trust.instance_id.clone(),
+                account: server.trust.account.clone(),
+                client_id: "trellis.cli".into(),
+                credential_handle: ulid::Ulid::new(),
+            },
+            server.trust,
+        )
+        .await
+        .unwrap();
+        let login = native
+            .start_device(&serde_json::json!([
+                {
+                    "type":"trellis_capabilities",
+                    "required":StatusChanged::SUBSCRIBE_CAPABILITIES,
+                    "optional": []
+                }
+            ]))
+            .await
+            .unwrap();
+        runtime
+            .approve_device_login("trellis.cli", login.user_code())
+            .await
+            .unwrap();
+        let mut login = login.complete().await.unwrap();
+        login.refresh(login.trust.clone()).await.unwrap();
+        let subscriber = TrellisClient::connect_user(UserConnectOptions::new(
+            server.nats_servers,
+            10_000,
+            login,
+        ))
+        .await
+        .unwrap();
+        let mut messages = subscriber
+            .nats()
+            .subscribe(StatusChanged::SUBJECT)
+            .await
+            .unwrap();
+        subscriber.nats().flush().await.unwrap();
+
+        // Preserve non-normalized JSON exactly as a durable outbox does.
+        let payload = Bytes::from_static(b"{ \"status\" : \"offline\", \"extra\": true }");
+        let event = PreparedTrellisEvent::new(
+            StatusChanged::SUBJECT,
+            payload.clone(),
+            trellis_protocol::encode_event_descriptor_identity(
+                StatusChanged::API_ID,
+                StatusChanged::DESCRIPTOR_NAME
+                    .strip_prefix("event.")
+                    .unwrap(),
+                StatusChanged::SUBSCRIBE_SUBJECT
+                    .split('.')
+                    .filter(|token| *token == "*")
+                    .count(),
+            )
+            .unwrap(),
+        );
+        publisher.publish_prepared(&event).await.unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(10), messages.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.payload, payload);
+        let publication: trellis_protocol::SessionEvent = serde_json::from_str(
+            message
+                .headers
+                .as_ref()
+                .unwrap()
+                .get("Trellis-Session-Event")
+                .unwrap()
+                .as_str(),
+        )
+        .unwrap();
+        assert_eq!(publication.api_id, StatusChanged::API_ID);
+        assert_eq!(publication.action, "StatusChanged");
+        assert_eq!(publication.event_id, event.event_id());
+        let action = trellis_protocol::CatalogActionIdentity {
+            kind: trellis_protocol::ApiSurfaceKind::Event,
+            name: "StatusChanged".into(),
+            direction: trellis_protocol::PermissionAction::Publish,
+        };
+        let verifier = LocalAuthVerifier::new(
+            subscriber.authorization_owner().clone(),
+            subscriber.nats(),
+            StatusChanged::API_ID,
+        );
+        verifier
+            .verify_event(
+                message.subject.as_str(),
+                &message.payload,
+                message.headers.as_ref(),
+                StatusChanged::API_ID,
+                &action,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(verifier
+            .verify_event(
+                message.subject.as_str(),
+                b"{}",
+                message.headers.as_ref(),
+                StatusChanged::API_ID,
+                &action,
+                None
+            )
+            .await
+            .is_err());
+        let mut altered = message.headers.clone().unwrap();
+        let mut substituted = publication;
+        substituted.api_id = "trellis.jobs@v1".into();
+        altered.insert(
+            "Trellis-Session-Event",
+            serde_json::to_string(&substituted).unwrap(),
+        );
+        assert!(verifier
+            .verify_event(
+                message.subject.as_str(),
+                &message.payload,
+                Some(&altered),
+                StatusChanged::API_ID,
+                &action,
+                None
+            )
+            .await
+            .is_err());
+
+        // Terminal closure is a real lifecycle transition, not a coverage setter.
+        publisher.shutdown_native_runtime().await.unwrap();
+        assert!(publisher.publish_prepared(&event).await.is_err());
+        drop(messages);
+        subscriber.shutdown_native_runtime().await.unwrap();
+        assert!(verifier
+            .verify_event(
+                message.subject.as_str(),
+                &message.payload,
+                message.headers.as_ref(),
+                StatusChanged::API_ID,
+                &action,
+                None
+            )
+            .await
+            .is_err());
+        runtime.shutdown().await.unwrap();
     }
 
     fn reply_payload(reply: &OutboundReply) -> Value {
@@ -1678,8 +2069,8 @@ mod tests {
         // a malformed/nested opening cannot slip past a body discriminator.
         let mut request = test_request("test.live");
         request.payload = Bytes::from_static(
-            br#"{"format":"trellis.live.v1","type":"open","openId":"c29tZS1ub25jZS0xNg","receiveMaxPayloadBytes":1048576,"input":{}}"#,
-        );
+                br#"{"format":"trellis.live.v1","type":"open","openId":"c29tZS1ub25jZS0xNg","receiveMaxPayloadBytes":1048576,"input":{}}"#,
+            );
         let dropped = dispatch_all(&host, request)
             .await
             .expect("dispatch should not fail");
@@ -1707,21 +2098,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_unary_handoff_records_one_cancellation() {
+    async fn unfinished_unary_observation_records_one_cancellation() {
         let _guard = crate::telemetry::capture::meter_test_lock().await;
         let capture = crate::telemetry::capture::process_capture();
         capture.flush();
         let baseline = server_outcomes_for(&capture, SUCCESS_ROUTE)
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>();
-        let host = test_service_host(SuccessHandler);
-        let dispatched = dispatch_response(&host, test_request("test.success"))
-            .await
-            .unwrap();
-        let DispatchResponse::Reply(reply) = dispatched else {
-            panic!("expected unary reply");
-        };
-        drop(reply);
+        let observation = UnaryRequest::start(&RequestContext::default(), SUCCESS_ROUTE);
+        drop(observation);
         capture.flush();
         assert_eq!(
             added_since(&baseline, &server_outcomes_for(&capture, SUCCESS_ROUTE)),

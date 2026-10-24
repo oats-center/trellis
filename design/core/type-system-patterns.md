@@ -22,6 +22,13 @@ accept all caller inputs, while callers decode all promised outputs/events/
 updates/errors. Open output models permit extra fields. Versions are metadata,
 not admission authority.
 
+Trellis-owned platform protocol messages (Live, Transfer, admission, signed
+authority, and catalog envelopes) are closed: decoders reject unknown members,
+and each format names one exact version with no negotiation or fallback. An
+additive change to one of these messages after 1.0 therefore requires a new
+format version, not an extra optional field. Contract-authored models stay
+open as described above.
+
 Expected domain/RPC failures use generated Result-style variants. Transport,
 authorization, codec, unknown remote, and domain errors remain distinguishable.
 Do not erase them with unchecked casts or thrown exceptions inside public

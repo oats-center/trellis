@@ -67,7 +67,13 @@ export type {
   ConnectedTrellisClient,
   TrellisClientConnectArgs,
 } from "./client_connect.ts";
-export { ClientAuthHandledError, TrellisClient } from "./client_connect.ts";
+export { TrellisClient } from "./client_connect.ts";
+export type {
+  OwnAuthorityView,
+  OwnAuthoritySnapshot,
+  OwnAuthorizedAction,
+} from "./own_authority.ts";
+export type { AppRequestDescriptor } from "./generated_support.ts";
 export type { KvWatchItem, ResourceRevision, TypedKvEntry } from "./kv.ts";
 export type { TrellisErrorInstance } from "./errors/index.ts";
 export {
@@ -95,7 +101,7 @@ export type {
   StoreStatus,
   StoreWaitOptions,
 } from "./store.ts";
-export { FileInfoSchema, TransferGrantSchema } from "./transfer.ts";
+export { decodeTransferGrant, FileInfoSchema } from "./transfer.ts";
 export type {
   FileInfo,
   ReceiveTransferGrant,
@@ -123,6 +129,7 @@ export type {
   OperationStartOptions,
   OperationState,
   OperationTransferProgress,
+  OperationTransferStartOptions,
   OperationWatchOptions,
   ProgressOperationEvent,
   ProgressOperationSnapshot,
@@ -172,6 +179,7 @@ export type {
   RuntimeStateStoreShape,
   SessionCaller,
   StateFacade,
+  StateWatch,
   TrellisEventHeader,
   TrellisEventMessage,
   ValueStateStoreClient,

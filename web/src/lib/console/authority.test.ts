@@ -1,4 +1,6 @@
 import { equal } from "node:assert/strict";
+import { codecs } from "@oatscenter/trellis/generated";
+import { test } from "node:test";
 
 import {
   type AuthorityFailureClassifier,
@@ -6,15 +8,17 @@ import {
   ConsoleAuthorityCore,
 } from "./authority.ts";
 import type { Authority } from "../control-panel.ts";
-import type { AuthorityProfile } from "./authority.ts";
-
-declare const Deno: {
-  test(name: string, fn: () => void | Promise<void>): void;
-};
 
 const READY_AUTHORITY: Authority = {
-  platformPrivileges: ["trellis.auth::admin"],
-  grants: { format: "v1", permissions: [] } as Authority["grants"],
+  authorityDigest: "current-ui-snapshot",
+  capabilities: [
+    {
+      capabilityId: "trellis.auth.v1:users.manage",
+      identityGeneration: "1",
+      consentRevision: "1",
+    },
+  ],
+  actions: [],
 };
 
 function ready(principalId: string): AuthorityLoadResult {
@@ -22,9 +26,24 @@ function ready(principalId: string): AuthorityLoadResult {
     ok: true,
     authority: READY_AUTHORITY,
     profile: {
-      userId: principalId,
-      name: principalId,
-    } as unknown as AuthorityProfile,
+      principalId: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+      displayName: principalId,
+      emailVerified: false,
+      account: {
+        username: principalId,
+        hasLocalPassword: true,
+        profileRevision: 1n,
+        gravatarEnabled: true,
+        principal: {
+          principalId: codecs.ulid.decode("01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+          title: principalId,
+          enabled: true,
+          kind: "user",
+          createdAt: codecs.timestamp.decode("2026-01-01T00:00:00.000Z"),
+          revision: 1n,
+        },
+      },
+    },
     identity: {
       principalId,
       loginSessionId: `session-${principalId}`,
@@ -69,7 +88,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-Deno.test("U22 revalidation stops readiness immediately", async () => {
+test("U22 revalidation stops readiness immediately", async () => {
   const first = deferred<AuthorityLoadResult>();
   const second = deferred<AuthorityLoadResult>();
   let call = 0;
@@ -79,7 +98,7 @@ Deno.test("U22 revalidation stops readiness immediately", async () => {
   );
 
   const firstReload = core.reload();
-  first.resolve(ready("usr_a"));
+  first.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
   await firstReload;
   equal(core.snapshot.state, "ready");
 
@@ -90,12 +109,12 @@ Deno.test("U22 revalidation stops readiness immediately", async () => {
     "readiness must end as soon as a new validation starts",
   );
   equal(core.snapshot.authority, null);
-  second.resolve(ready("usr_a"));
+  second.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
   await secondReload;
   equal(core.snapshot.state, "ready");
 });
 
-Deno.test("U23 a stale completion cannot restore authority", async () => {
+test("U23 a stale completion cannot restore authority", async () => {
   const first = deferred<AuthorityLoadResult>();
   const second = deferred<AuthorityLoadResult>();
   let call = 0;
@@ -106,11 +125,11 @@ Deno.test("U23 a stale completion cannot restore authority", async () => {
 
   const stale = core.reload();
   const current = core.reload();
-  second.resolve(ready("usr_a"));
+  second.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
   await current;
   equal(core.snapshot.state, "ready");
 
-  first.resolve(ready("usr_a"));
+  first.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
   await stale;
   equal(
     core.snapshot.state,
@@ -123,9 +142,9 @@ Deno.test("U23 a stale completion cannot restore authority", async () => {
   equal(core.snapshot.generation, operationsAfterStale);
 });
 
-Deno.test("U24 invalidation advances the generation and clears readiness", async () => {
+test("U24 invalidation advances the generation and clears readiness", async () => {
   const core = new ConsoleAuthorityCore(
-    () => Promise.resolve(ready("usr_a")),
+    () => Promise.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV")),
     classify,
   );
   await core.reload();
@@ -135,15 +154,16 @@ Deno.test("U24 invalidation advances the generation and clears readiness", async
   equal(core.snapshot.authority, null);
   equal(core.snapshot.generation, before + 1);
   equal(
-    core.snapshot.profile?.userId,
-    "usr_a",
+    core.snapshot.profile?.account?.username,
+    "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     "last-known profile may remain for non-actionable display",
   );
 });
 
-Deno.test("U25 a transport failure is an error state with Retry, not forbidden", async () => {
+test("U25 a transport failure is an error state with Retry, not forbidden", async () => {
   const core = new ConsoleAuthorityCore(
-    () => Promise.resolve(failed("internal_error", "usr_a")),
+    () =>
+      Promise.resolve(failed("internal_error", "01ARZ3NDEKTSV4RRFFQ69G5FAV")),
     classify,
   );
   await core.reload();
@@ -151,9 +171,10 @@ Deno.test("U25 a transport failure is an error state with Retry, not forbidden",
   equal(core.snapshot.failure?.message, "internal_error");
 });
 
-Deno.test("U26 an authorization denial is forbidden, and a missing session is auth-required", async () => {
+test("U26 an authorization denial is forbidden, and a missing session is auth-required", async () => {
   const forbidden = new ConsoleAuthorityCore(
-    () => Promise.resolve(failed("not_authorized", "usr_a")),
+    () =>
+      Promise.resolve(failed("not_authorized", "01ARZ3NDEKTSV4RRFFQ69G5FAV")),
     classify,
   );
   await forbidden.reload();
@@ -167,19 +188,19 @@ Deno.test("U26 an authorization denial is forbidden, and a missing session is au
   equal(missing.snapshot.state, "auth-required");
 });
 
-Deno.test("U27 dispose commits nothing further", async () => {
+test("U27 dispose commits nothing further", async () => {
   const pending = deferred<AuthorityLoadResult>();
   const core = new ConsoleAuthorityCore(() => pending.promise, classify);
   const reload = core.reload();
   core.dispose();
-  pending.resolve(ready("usr_a"));
+  pending.resolve(ready("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
   await reload;
   equal(core.snapshot.state, "checking");
   equal(core.snapshot.authority, null);
   equal(core.disposed, true);
 });
 
-Deno.test("U28 a thrown loader is classified, not propagated", async () => {
+test("U28 a thrown loader is classified, not propagated", async () => {
   const core = new ConsoleAuthorityCore(
     () => Promise.reject(new Error("socket closed")),
     classify,
@@ -188,9 +209,9 @@ Deno.test("U28 a thrown loader is classified, not propagated", async () => {
   equal(core.snapshot.state, "error");
 });
 
-Deno.test("U29 identity change is principal and login-session scoped, not connection scoped", () => {
+test("U29 identity change is principal and login-session scoped, not connection scoped", () => {
   const base = {
-    principalId: "usr_a",
+    principalId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     loginSessionId: "session-a",
     connectionId: "connection-1",
   };
@@ -211,18 +232,21 @@ Deno.test("U29 identity change is principal and login-session scoped, not connec
   );
   equal(
     ConsoleAuthorityCore.identityChanged(base, {
-      principalId: "usr_b",
+      principalId: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
       loginSessionId: "session-b",
       connectionId: "connection-1",
     }),
     true,
   );
   equal(
-    ConsoleAuthorityCore.identityChanged({
-      principalId: null,
-      loginSessionId: null,
-      connectionId: null,
-    }, base),
+    ConsoleAuthorityCore.identityChanged(
+      {
+        principalId: null,
+        loginSessionId: null,
+        connectionId: null,
+      },
+      base,
+    ),
     false,
     "an operation dispatched before the first Me result adopts that result",
   );

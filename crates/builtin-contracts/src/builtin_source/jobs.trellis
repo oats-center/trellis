@@ -1,0 +1,575 @@
+import {
+  JobsHistoryRequest,
+  JobsHistoryResponse,
+  JobsSummaryRequest,
+  JobsSummaryResponse,
+  Empty,
+  EventConsumerStatusRow,
+  EventConsumerStatusRowManagedBy,
+  EventConsumerStatusRowStatus,
+  EventsConsumersInspectRequest,
+  EventsConsumersInspectResponse,
+  EventsConsumersQueryRequest,
+  EventsConsumersQueryRequestStatus,
+  EventsConsumersQueryResponse,
+  EventsInspectRequest,
+  EventsInspectResponse,
+  EventsMetricsRequest,
+  EventsMetricsResponse,
+  EventsMetricsResponseBucketsItem,
+  EventsMetricsResponseBucketsItemByResolution,
+  EventsMetricsResponseBucketsItemByVerificationStatus,
+  EventsMetricsResponseSummary,
+  EventsMetricsResponseSummaryByResolution,
+  EventsMetricsResponseSummaryByVerificationStatus,
+  EventsMetricsResponseSummaryEventTypesItem,
+  EventsQueryRequest,
+  EventsQueryRequestResolution,
+  EventsQueryRequestVerificationStatus,
+  EventsQueryRequestExcludeEventTypesItem,
+  EventsQueryRequestIncludeEventTypesItem,
+  EventsQueryRequestSort,
+  EventsQueryResponse,
+  EventsRow,
+  EventsRowPublisherKind,
+  EventsRowResolution,
+  EventsRowVerificationStatus,
+  EventsWatchFrame,
+  EventsWatchRequest,
+  EventsNotFoundErrorData,
+  EventsNotFoundErrorDataType,
+  EventsNotFoundErrorDataContext,
+  HealthHeartbeatSample,
+  HealthHeartbeatSampleReportedStatus,
+  HealthHeartbeatSampleChecksItem,
+  HealthHeartbeatSampleChecksItemStatus,
+  HealthHeartbeatSampleChecksItemInfo,
+  HealthHeartbeatSampleParticipant,
+  HealthHeartbeatSampleParticipantKind,
+  HealthHeartbeatSampleParticipantRuntime,
+  HealthHeartbeatSampleParticipantInfo,
+  HealthHeartbeatSampleSample,
+  HealthInspectRequest,
+  HealthInspectRequestParticipantKind,
+  HealthInspectResponse,
+  HealthInspectResponseHistoryItem,
+  HealthInspectResponseHistoryItemEffectiveStatus,
+  HealthInspectResponseHistoryItemReportedStatus,
+  HealthInspectResponseHistoryItemChecksItem,
+  HealthInspectResponseHistoryItemChecksItemStatus,
+  HealthInspectResponseInstancesItem,
+  HealthInspectResponseInstancesItemEffectiveStatus,
+  HealthInspectResponseInstancesItemReportedStatus,
+  HealthInspectResponseInstancesItemLatestSample,
+  HealthInspectResponseInstancesItemLatestSampleReportedStatus,
+  HealthInspectResponseInstancesItemLatestSampleChecksItem,
+  HealthInspectResponseInstancesItemLatestSampleChecksItemStatus,
+  HealthInspectResponseInstancesItemLatestSampleChecksItemInfo,
+  HealthInspectResponseInstancesItemLatestSampleParticipant,
+  HealthInspectResponseInstancesItemLatestSampleParticipantKind,
+  HealthInspectResponseInstancesItemLatestSampleParticipantRuntime,
+  HealthInspectResponseInstancesItemLatestSampleParticipantInfo,
+  HealthInspectResponseInstancesItemLatestSampleSample,
+  HealthInspectResponseParticipant,
+  HealthInspectResponseParticipantEffectiveStatus,
+  HealthInspectResponseParticipantParticipantKind,
+  HealthInspectResponseProjection,
+  HealthMetricsRequest,
+  HealthMetricsRequestParticipantKind,
+  HealthMetricsResponse,
+  HealthMetricsResponseProjection,
+  HealthMetricsResponseSeriesItem,
+  HealthMetricsResponseSeriesItemParticipantKind,
+  HealthMetricsResponseSeriesItemBucketsItem,
+  HealthMetricsResponseSeriesItemBucketsItemChecksItem,
+  HealthMetricsResponseSummary,
+  HealthNotFoundErrorData,
+  HealthNotFoundErrorDataType,
+  HealthNotFoundErrorDataContext,
+  HealthProjectionDiagnostics,
+  HealthQueryRequest,
+  HealthQueryRequestParticipantKinds,
+  HealthQueryRequestStatuses,
+  HealthQueryResponse,
+  HealthQueryResponseEntriesItem,
+  HealthQueryResponseEntriesItemEffectiveStatus,
+  HealthQueryResponseEntriesItemParticipantKind,
+  HealthQueryResponseProjection,
+  HealthStatusChangedEvent,
+  HealthStatusChangedEventPreviousStatus,
+  HealthStatusChangedEventReportedStatus,
+  HealthStatusChangedEventStatus,
+  HealthStatusChangedEventHeader,
+  HealthStatusChangedEventParticipant,
+  HealthStatusChangedEventParticipantKind,
+  HealthWatchFrame,
+  HealthWatchFrameValue1,
+  HealthWatchFrameValue1Type,
+  HealthWatchFrameValue2,
+  HealthWatchFrameValue2Type,
+  HealthWatchFrameValue2ChangesItem,
+  HealthWatchFrameValue2ChangesItemParticipantKind,
+  HealthWatchRequest,
+  HealthWatchRequestParticipantKinds,
+  Job,
+  JobConcurrencyMetadata,
+  JobContext,
+  JobErrorDetail,
+  JobErrorDetailCausesItem,
+  JobErrorDetailWorker,
+  JobLineage,
+  JobLogEntry,
+  JobLogEntryLevel,
+  JobProgress,
+  JobQueuePolicyMetadata,
+  JobState,
+  JobTimelineEvent,
+  JobTimelineEventPreviousState,
+  JobTimelineEventState,
+  JobTimelineEventErrorDetail,
+  JobTimelineEventErrorDetailCausesItem,
+  JobTimelineEventErrorDetailWorker,
+  JobTimelineEventLogsItem,
+  JobTimelineEventLogsItemLevel,
+  JobTimelineEventProgress,
+  JobTimelineEventWaitEdge,
+  JobTimelineEventWaitEdgeTarget,
+  JobTimelineEventWaitEdgeTargetKind,
+  JobTrigger,
+  JobTriggerKind,
+  JobWaitEdge,
+  JobWaitEdgeTarget,
+  JobWaitEdgeTargetKind,
+  JobWaitTarget,
+  JobWaitTargetKind,
+  JobConcurrency,
+  JobLogsItem,
+  JobLogsItemLevel,
+  JobQueuePolicy,
+  JobsCancelRequest,
+  JobsCancelResponse,
+  JobsCancelResponseJob,
+  JobsCancelResponseJobState,
+  JobsCancelResponseJobConcurrency,
+  JobsCancelResponseJobContext,
+  JobsCancelResponseJobErrorDetail,
+  JobsCancelResponseJobErrorDetailCausesItem,
+  JobsCancelResponseJobErrorDetailWorker,
+  JobsCancelResponseJobLineage,
+  JobsCancelResponseJobLogsItem,
+  JobsCancelResponseJobLogsItemLevel,
+  JobsCancelResponseJobProgress,
+  JobsCancelResponseJobQueuePolicy,
+  JobsCancelResponseJobTrigger,
+  JobsCancelResponseJobTriggerKind,
+  JobsCancelResponseJobWaitingOnItem,
+  JobsCancelResponseJobWaitingOnItemTarget,
+  JobsCancelResponseJobWaitingOnItemTargetKind,
+  JobsDismissDLQRequest,
+  JobsDismissDLQResponse,
+  JobsDismissDLQResponseJob,
+  JobsDismissDLQResponseJobState,
+  JobsDismissDLQResponseJobConcurrency,
+  JobsDismissDLQResponseJobContext,
+  JobsDismissDLQResponseJobErrorDetail,
+  JobsDismissDLQResponseJobErrorDetailCausesItem,
+  JobsDismissDLQResponseJobErrorDetailWorker,
+  JobsDismissDLQResponseJobLineage,
+  JobsDismissDLQResponseJobLogsItem,
+  JobsDismissDLQResponseJobLogsItemLevel,
+  JobsDismissDLQResponseJobProgress,
+  JobsDismissDLQResponseJobQueuePolicy,
+  JobsDismissDLQResponseJobTrigger,
+  JobsDismissDLQResponseJobTriggerKind,
+  JobsDismissDLQResponseJobWaitingOnItem,
+  JobsDismissDLQResponseJobWaitingOnItemTarget,
+  JobsDismissDLQResponseJobWaitingOnItemTargetKind,
+  JobsGetKeyRequest,
+  JobsGetKeyResponse,
+  JobsGetKeyResponseActiveItem,
+  JobsGetKeyResponseQueuedItem,
+  JobsInspectRequest,
+  JobsInspectResponse,
+  JobsInspectResponseAttemptsItem,
+  JobsInspectResponseAttemptsItemState,
+  JobsInspectResponseAttemptsItemError,
+  JobsInspectResponseAttemptsItemErrorCausesItem,
+  JobsInspectResponseAttemptsItemErrorWorker,
+  JobsInspectResponseErrorsItem,
+  JobsInspectResponseErrorsItemCausesItem,
+  JobsInspectResponseErrorsItemWorker,
+  JobsInspectResponseJob,
+  JobsInspectResponseJobState,
+  JobsInspectResponseJobConcurrency,
+  JobsInspectResponseJobContext,
+  JobsInspectResponseJobErrorDetail,
+  JobsInspectResponseJobErrorDetailCausesItem,
+  JobsInspectResponseJobErrorDetailWorker,
+  JobsInspectResponseJobLineage,
+  JobsInspectResponseJobLogsItem,
+  JobsInspectResponseJobLogsItemLevel,
+  JobsInspectResponseJobProgress,
+  JobsInspectResponseJobQueuePolicy,
+  JobsInspectResponseJobTrigger,
+  JobsInspectResponseJobTriggerKind,
+  JobsInspectResponseJobWaitingOnItem,
+  JobsInspectResponseJobWaitingOnItemTarget,
+  JobsInspectResponseJobWaitingOnItemTargetKind,
+  JobsInspectResponseLineage,
+  JobsInspectResponseRelatedItem,
+  JobsInspectResponseRelatedItemMatchedBy,
+  JobsInspectResponseRelatedItemState,
+  JobsInspectResponseRelatedItemContext,
+  JobsInspectResponseRelatedItemLineage,
+  JobsInspectResponseRelatedItemProgress,
+  JobsInspectResponseRelatedItemTrigger,
+  JobsInspectResponseRelatedItemTriggerKind,
+  JobsInspectResponseRelatedItemWaitingOnItem,
+  JobsInspectResponseRelatedItemWaitingOnItemTarget,
+  JobsInspectResponseRelatedItemWaitingOnItemTargetKind,
+  JobsInspectResponseTimelineItem,
+  JobsInspectResponseTimelineItemPreviousState,
+  JobsInspectResponseTimelineItemState,
+  JobsInspectResponseTimelineItemErrorDetail,
+  JobsInspectResponseTimelineItemErrorDetailCausesItem,
+  JobsInspectResponseTimelineItemErrorDetailWorker,
+  JobsInspectResponseTimelineItemLogsItem,
+  JobsInspectResponseTimelineItemLogsItemLevel,
+  JobsInspectResponseTimelineItemProgress,
+  JobsInspectResponseTimelineItemWaitEdge,
+  JobsInspectResponseTimelineItemWaitEdgeTarget,
+  JobsInspectResponseTimelineItemWaitEdgeTargetKind,
+  JobsInspectResponseTrigger,
+  JobsInspectResponseTriggerKind,
+  JobsListDLQRequest,
+  JobsListDLQResponse,
+  JobsListDLQResponseEntriesItem,
+  JobsListDLQResponseEntriesItemState,
+  JobsListDLQResponseEntriesItemConcurrency,
+  JobsListDLQResponseEntriesItemContext,
+  JobsListDLQResponseEntriesItemErrorDetail,
+  JobsListDLQResponseEntriesItemErrorDetailCausesItem,
+  JobsListDLQResponseEntriesItemErrorDetailWorker,
+  JobsListDLQResponseEntriesItemLineage,
+  JobsListDLQResponseEntriesItemLogsItem,
+  JobsListDLQResponseEntriesItemLogsItemLevel,
+  JobsListDLQResponseEntriesItemProgress,
+  JobsListDLQResponseEntriesItemQueuePolicy,
+  JobsListDLQResponseEntriesItemTrigger,
+  JobsListDLQResponseEntriesItemTriggerKind,
+  JobsListDLQResponseEntriesItemWaitingOnItem,
+  JobsListDLQResponseEntriesItemWaitingOnItemTarget,
+  JobsListDLQResponseEntriesItemWaitingOnItemTargetKind,
+  JobsListServicesRequest,
+  JobsListServicesResponse,
+  JobsListServicesResponseEntriesItem,
+  JobsListServicesResponseEntriesItemWorkersItem,
+  JobsMetricsBucket,
+  JobsMetricsBucketGroup,
+  JobsMetricsBucketGroupQueueWait,
+  JobsMetricsBucketGroupRuntime,
+  JobsMetricsBucketGroupsItem,
+  JobsMetricsBucketGroupsItemQueueWait,
+  JobsMetricsBucketGroupsItemRuntime,
+  JobsMetricsLatency,
+  JobsMetricsRequest,
+  JobsMetricsRequestGroupBy,
+  JobsMetricsRequestState,
+  JobsMetricsResponse,
+  JobsMetricsResponseBucketsItem,
+  JobsMetricsResponseBucketsItemGroupsItem,
+  JobsMetricsResponseBucketsItemGroupsItemQueueWait,
+  JobsMetricsResponseBucketsItemGroupsItemRuntime,
+  JobsMetricsResponseSummaryItem,
+  JobsMetricsResponseSummaryItemQueueWait,
+  JobsMetricsResponseSummaryItemRuntime,
+  JobsMetricsSummaryGroup,
+  JobsMetricsSummaryGroupQueueWait,
+  JobsMetricsSummaryGroupRuntime,
+  JobsNotFoundErrorData,
+  JobsNotFoundErrorDataType,
+  JobsNotFoundErrorDataContext,
+  JobsQueryRequest,
+  JobsQueryRequestGroupBy,
+  JobsQueryRequestRuntimeBand,
+  JobsQueryRequestState,
+  JobsQueryRequestSort,
+  JobsQueryRequestSortDirection,
+  JobsQueryRequestSortField,
+  JobsQueryResponse,
+  JobsQueryResponseEntriesItem,
+  JobsQueryResponseEntriesItemState,
+  JobsQueryResponseEntriesItemContext,
+  JobsQueryResponseEntriesItemLineage,
+  JobsQueryResponseEntriesItemProgress,
+  JobsQueryResponseEntriesItemTrigger,
+  JobsQueryResponseEntriesItemTriggerKind,
+  JobsQueryResponseEntriesItemWaitingOnItem,
+  JobsQueryResponseEntriesItemWaitingOnItemTarget,
+  JobsQueryResponseEntriesItemWaitingOnItemTargetKind,
+  JobsQueryResponseGroupsItem,
+  JobsQueryResponseGroupsItemState,
+  JobsQueryResponseStats,
+  JobsReplayDLQRequest,
+  JobsReplayDLQResponse,
+  JobsReplayDLQResponseJob,
+  JobsReplayDLQResponseJobState,
+  JobsReplayDLQResponseJobConcurrency,
+  JobsReplayDLQResponseJobContext,
+  JobsReplayDLQResponseJobErrorDetail,
+  JobsReplayDLQResponseJobErrorDetailCausesItem,
+  JobsReplayDLQResponseJobErrorDetailWorker,
+  JobsReplayDLQResponseJobLineage,
+  JobsReplayDLQResponseJobLogsItem,
+  JobsReplayDLQResponseJobLogsItemLevel,
+  JobsReplayDLQResponseJobProgress,
+  JobsReplayDLQResponseJobQueuePolicy,
+  JobsReplayDLQResponseJobTrigger,
+  JobsReplayDLQResponseJobTriggerKind,
+  JobsReplayDLQResponseJobWaitingOnItem,
+  JobsReplayDLQResponseJobWaitingOnItemTarget,
+  JobsReplayDLQResponseJobWaitingOnItemTargetKind,
+  JobsRetryRequest,
+  JobsRetryResponse,
+  JobsRetryResponseJob,
+  JobsRetryResponseJobState,
+  JobsRetryResponseJobConcurrency,
+  JobsRetryResponseJobContext,
+  JobsRetryResponseJobErrorDetail,
+  JobsRetryResponseJobErrorDetailCausesItem,
+  JobsRetryResponseJobErrorDetailWorker,
+  JobsRetryResponseJobLineage,
+  JobsRetryResponseJobLogsItem,
+  JobsRetryResponseJobLogsItemLevel,
+  JobsRetryResponseJobProgress,
+  JobsRetryResponseJobQueuePolicy,
+  JobsRetryResponseJobTrigger,
+  JobsRetryResponseJobTriggerKind,
+  JobsRetryResponseJobWaitingOnItem,
+  JobsRetryResponseJobWaitingOnItemTarget,
+  JobsRetryResponseJobWaitingOnItemTargetKind,
+  JobsWatchFrame,
+  JobsWatchFrameValue1,
+  JobsWatchFrameValue1Kind,
+  JobsWatchFrameValue2,
+  JobsWatchFrameValue2Kind,
+  JobsWatchFrameValue2State,
+  JobsWatchFrameValue3,
+  JobsWatchFrameValue3Kind,
+  JobsWatchFrameValue4,
+  JobsWatchFrameValue4Kind,
+  JobsWatchRequest,
+  JobsWatchRequestQuery,
+  JobsWatchRequestQueryGroupBy,
+  JobsWatchRequestQueryRuntimeBand,
+  JobsWatchRequestQueryState,
+  JobsWatchRequestQuerySort,
+  JobsWatchRequestQuerySortDirection,
+  JobsWatchRequestQuerySortField,
+  JobsWorkbenchGroup,
+  JobsWorkbenchGroupState,
+  JobsWorkbenchJobRow,
+  JobsWorkbenchJobRowState,
+  JobsWorkbenchJobRowContext,
+  JobsWorkbenchJobRowLineage,
+  JobsWorkbenchJobRowProgress,
+  JobsWorkbenchJobRowTrigger,
+  JobsWorkbenchJobRowTriggerKind,
+  JobsWorkbenchJobRowWaitingOnItem,
+  JobsWorkbenchJobRowWaitingOnItemTarget,
+  JobsWorkbenchJobRowWaitingOnItemTargetKind,
+  JobsWorkbenchStats,
+  JobWaitingOnItem,
+  JobWaitingOnItemTarget,
+  JobWaitingOnItemTargetKind,
+  TrellisSurfaceStatusRequest,
+  TrellisSurfaceStatusRequestAction,
+  TrellisSurfaceStatusRequestKind,
+  TrellisSurfaceStatusResponse,
+  TrellisSurfaceStatusResponseStatus1,
+  TrellisSurfaceStatusResponseStatus1Runtime,
+  TrellisSurfaceStatusResponseStatus1State,
+  TrellisSurfaceStatusResponseStatus2,
+  TrellisSurfaceStatusResponseStatus2Reason,
+  TrellisSurfaceStatusResponseStatus2State,
+  TrellisSurfaceStatusResponseStatus3,
+  TrellisSurfaceStatusResponseStatus3State,
+  TrellisSurfaceStatusResponseStatus4,
+  TrellisSurfaceStatusResponseStatus4State,
+  TrellisSurfaceStatusResponseStatus5,
+  TrellisSurfaceStatusResponseStatus5State,
+} from types;
+
+api jobs@v1 {
+  title "Trellis Jobs";
+  description "Trellis-managed background job administration API.";
+  version "1.0.0";
+  error NotFoundError(JobsNotFoundErrorData);
+  error UnexpectedError;
+  error ValidationError;
+  rpc History {
+    input JobsHistoryRequest;
+    output JobsHistoryResponse;
+    errors [UnexpectedError, ValidationError];
+  }
+  rpc Cancel {
+    input JobsCancelRequest;
+    output JobsCancelResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  rpc DismissDLQ {
+    input JobsDismissDLQRequest;
+    output JobsDismissDLQResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  rpc GetKey {
+    input JobsGetKeyRequest;
+    output JobsGetKeyResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  rpc Inspect {
+    input JobsInspectRequest;
+    output JobsInspectResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  rpc ListDLQ {
+    input JobsListDLQRequest;
+    output JobsListDLQResponse;
+    errors [UnexpectedError, ValidationError];
+    pagination cursor;
+  }
+  rpc ListServices {
+    input JobsListServicesRequest;
+    output JobsListServicesResponse;
+    errors [UnexpectedError, ValidationError];
+    pagination cursor;
+  }
+  rpc Metrics {
+    input JobsMetricsRequest;
+    output JobsMetricsResponse;
+    errors [UnexpectedError, ValidationError];
+  }
+  rpc Query {
+    input JobsQueryRequest;
+    output JobsQueryResponse;
+    errors [UnexpectedError, ValidationError];
+    pagination cursor;
+  }
+  rpc Summary {
+    input JobsSummaryRequest;
+    output JobsSummaryResponse;
+    errors [UnexpectedError, ValidationError];
+  }
+  rpc ReplayDLQ {
+    input JobsReplayDLQRequest;
+    output JobsReplayDLQResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  rpc Retry {
+    input JobsRetryRequest;
+    output JobsRetryResponse;
+    errors [NotFoundError, UnexpectedError, ValidationError];
+  }
+  live Watch {
+    input JobsWatchRequest;
+    event JobsWatchFrame;
+  }
+  capabilities {
+    capability jobs.query {
+      title "Search jobs";
+      description "Find background jobs.";
+      grants "Can see job summaries.";
+      allows { rpc Query; }
+    }
+    capability jobs.inspect {
+      title "Open jobs";
+      description "See a job's input, result, and history.";
+      grants "Can see job data.";
+      allows { rpc Inspect; }
+    }
+    capability jobs.findByKey {
+      title "Find jobs by key";
+      description "Look up a job by its key.";
+      grants "Can find jobs by key.";
+      allows { rpc GetKey; }
+    }
+    capability services.list {
+      title "See job services";
+      description "See which services run jobs.";
+      grants "Can see services and their queues.";
+      allows { rpc ListServices; }
+    }
+    capability summary.read {
+      title "See job overview";
+      description "See how many jobs are waiting, running, or failed.";
+      grants "Can see job counts.";
+      allows { rpc Summary; }
+    }
+    capability metrics.read {
+      title "See job metrics";
+      description "See job speed and throughput.";
+      grants "Can see job metrics.";
+      allows { rpc Metrics; }
+    }
+    capability jobs.cancel {
+      title "Cancel jobs";
+      description "Stop a waiting or running job.";
+      grants "Can stop work.";
+      allows { rpc Cancel; }
+    }
+    capability jobs.retry {
+      title "Retry jobs";
+      description "Run a job again.";
+      grants "Work may run again.";
+      allows { rpc Retry; }
+    }
+    capability deadLetters.read {
+      title "See failed jobs";
+      description "See jobs that failed for good.";
+      grants "Can see failed jobs.";
+      allows { rpc ListDLQ; }
+    }
+    capability deadLetters.replay {
+      title "Rerun failed jobs";
+      description "Send a failed job back to run again.";
+      grants "Work may run again and repeat its effects.";
+      allows { rpc ReplayDLQ; }
+    }
+    capability deadLetters.dismiss {
+      title "Dismiss failed jobs";
+      description "Clear a failed job from the list.";
+      grants "Removes it from follow-up.";
+      allows { rpc DismissDLQ; }
+    }
+    capability jobs.observe {
+      title "Watch jobs live";
+      description "Follow job changes as they happen.";
+      grants "Can see jobs live.";
+      allows { live Watch; }
+    }
+    capability history.read {
+      title "Read own job history";
+      description "Let a service read the history of its own jobs.";
+      grants "Only that service's jobs are returned.";
+      allows { rpc History; }
+    }
+    group operator {
+      title "Operate jobs";
+      description "Watch jobs and workers, and cancel, retry, replay, or dismiss jobs.";
+      grants "Can see job data and change how jobs run.";
+      capability jobs.query;
+      capability jobs.inspect;
+      capability jobs.findByKey;
+      capability jobs.cancel;
+      capability jobs.retry;
+      capability jobs.observe;
+      capability services.list;
+      capability summary.read;
+      capability metrics.read;
+      capability history.read;
+      capability deadLetters.read;
+      capability deadLetters.replay;
+      capability deadLetters.dismiss;
+    }
+  }
+}

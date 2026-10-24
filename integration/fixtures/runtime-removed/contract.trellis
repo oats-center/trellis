@@ -1,6 +1,8 @@
 import { auth } from trellis;
 
 model Value { value: string; }
+model UpdateDetail { count: int64; payload: bytes; }
+model Update { value: string; nested: UpdateDetail; }
 model Empty {}
 model Saved { value: string; }
 model Sample { site: string; value: string; }
@@ -11,11 +13,19 @@ api runtime@v1 {
   title "Runtime acceptance";
   description "Small generated transport and durability fixture.";
   rpc Echo { input Value; output Value; }
-  operation Work { input Value; output Value; }
-  operation Upload { input Value; output Value; upload; }
+  rpc Download { input Value; output Value; download; }
+  operation Work { input Value; progress Update; output Value; signals { Continue Value; } }
+  operation Upload { input Value; output Value; signals { Continue Value; } upload; }
+  operation Ingest { input Value; output Value; stream; }
+  rpc Generate { input Value; output Value; download; }
   event Changed { payload Value; }
   live Watch { input Empty; event Value; }
-  capabilities { public { allows { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; } } }
+  capabilities {
+    capability transfers.transport { title "Transport"; description "Exercise the runtime transport surfaces."; grants "The caller may invoke and observe the fixture transports."; allows { rpc Echo; operation Work; operation Upload; operation Ingest; publish event Changed; subscribe event Changed; live Watch; } }
+    capability echo.call { title "Echo"; description "Invoke the echo RPC."; grants "The caller may echo values."; allows { rpc Echo; } }
+    capability operations.work { title "Work"; description "Execute the work operation."; grants "The caller may execute and control work."; allows { operation Work; } }
+    capability transfers.download { title "Download"; description "Download a fixture value."; grants "The caller may download values."; allows { rpc Download; rpc Generate; } }
+  }
 }
 
 api events@v1 {
@@ -25,15 +35,21 @@ api events@v1 {
   event Beta { payload Sample; }
   rpc Observed { input Empty; output Observed; }
   rpc DropAlpha { input Empty; output Empty; }
-  capabilities { public { allows { publish event Alpha; publish event Beta; subscribe event Alpha; subscribe event Beta; rpc Observed; rpc DropAlpha; } } }
+  capabilities {
+    capability alpha.publish { title "Publish Alpha"; description "Publish Alpha samples."; grants "The caller may publish Alpha."; allows { publish event Alpha; } }
+    capability beta.publish { title "Publish Beta"; description "Publish Beta samples."; grants "The caller may publish Beta."; allows { publish event Beta; } }
+    capability events.inspect { title "Inspect delivery"; description "Read observed samples."; grants "The caller may inspect delivery results."; allows { rpc Observed; } }
+    capability alpha.drop { title "Drop Alpha"; description "Close the Alpha fixture subscription."; grants "The caller may stop Alpha observation."; allows { rpc DropAlpha; } }
+  }
 }
 
 service Provider { implements runtime; }
-app Caller {
-  use runtime { rpc Echo; operation Work; operation Upload; publish event Changed; subscribe event Changed; live Watch; }
+service ResourceProvider {}
+agent Caller {
+  use runtime { required capability transfers.transport; }
 }
 app Denied { use runtime; }
-service AdminService { use auth { rpc Grants.Get; rpc Grants.Revoke; rpc Sessions.List; } }
+service AdminService { use auth { required capability roles.manage; required capability users.manage; } }
 service EventService { implements events; }
-app Alpha { use events { publish event Alpha; rpc Observed; rpc DropAlpha; } }
-app Beta { use events { publish event Beta; } }
+app Alpha { use events { required capability alpha.publish; required capability events.inspect; required capability alpha.drop; } }
+app Beta { use events { required capability beta.publish; } }

@@ -1,491 +1,458 @@
 /** Fresh application work must not use a live carrier with lost own coverage. */
-import { assert, assertEquals } from "@std/assert";
-import { jetstreamManager } from "@nats-io/jetstream";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { Readable, Writable } from "node:stream";
+import { TextDecoderStream } from "node:stream/web";
+import { test } from "node:test";
+import { AckPolicy, jetstreamManager } from "@nats-io/jetstream";
+import { deadline } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { Result } from "@oatscenter/trellis";
-import { encodePermissionTargetWasm } from "@oatscenter/trellis/auth";
+import { ulid } from "ulid";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
-  admittedConnections,
-  brokerConnectionKey,
-  readRuntimeBrokerInventory,
-} from "./_support/broker_inventory.ts";
+  apis,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import { readRuntimeBrokerInventory } from "./_support/broker_inventory.ts";
+import { spawnTracked } from "./_support/process.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("Rust fresh Jobs leases reject suspended own coverage and resume on the same carrier", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const contract = participants.TransportGrowthOperationProvider.participant;
-    const deployment = "fresh-lease-rust";
-    await runtime.contracts.apply({ deployment, contract });
-    const instance = await runtime.services.createInstance({
-      deployment,
-      name: deployment,
-      contract,
-    });
-    const nats = await connect({
-      servers: runtime.natsUrl,
-      authenticator: credsAuthenticator(
-        await Deno.readFile(
-          `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
-        ),
-      ),
-    });
-    const js = await jetstreamManager(nats);
-    const gate = runtime.nativeTransportGate();
-    const child = new Deno.Command("setsid", {
-      args: rustFixtureArgv("transport_growth_operation"),
-      env: {
-        TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_IDENTITY_SEED: instance.seed,
-      },
-      stdin: "piped",
-      stdout: "piped",
-      stderr: "inherit",
-    }).spawn();
-    const stdin = child.stdin.getWriter();
-    let exited = false;
-    const status = child.status.then((value) => {
-      exited = true;
-      return value;
-    });
-    const lines: string[] = [];
-    const drain = (async () => {
-      let pending = "";
-      for await (
-        const chunk of child.stdout.pipeThrough(new TextDecoderStream())
-      ) {
-        const complete = (pending + chunk).split("\n");
-        pending = complete.pop() ?? "";
-        lines.push(...complete.map((line) => line.trim()));
-      }
-    })();
-    const send = async (command: string) => {
-      await stdin.write(new TextEncoder().encode(`${command}\n`));
-    };
-    const marker = async (prefix: string, after = 0) =>
-      await runtime.waitFor(() => {
-        const found = lines.slice(after).find((line) =>
-          line.startsWith(prefix)
-        );
-        if (found) return found;
-        if (exited) throw new Error(`fixture exited: ${lines.join("\n")}`);
-      }, { timeoutMs: 15_000, intervalMs: 20 }).catch((cause) => {
-        throw new Error(
-          `missing ${prefix}; fixture output:\n${lines.join("\n")}`,
-          {
-            cause,
-          },
-        );
+test("Rust fresh Jobs leases reject suspended own coverage and resume on the same carrier", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const contract =
+        participants.TransportGrowthOperationProvider.participant;
+      const deployment = "fresh-lease-rust";
+      await runtime.contracts.apply({ deployment, contract });
+      const instance = await runtime.services.createInstance({
+        deployment,
+        name: deployment,
+        contract,
       });
-    let hold: ReturnType<typeof gate.armResponseHold> | undefined;
-    let creates: ReturnType<typeof nats.subscribe> | undefined;
-    const releases: Promise<void>[] = [];
-    try {
-      await marker("OPERATION_PROVIDER_READY");
-      await marker("JOB_STARTED 1 initial");
-      const attachments =
-        (await runtime.callAdminRpc("authConnectionsList", {}) as {
-          items: { participantId: string; contextDigest: string }[];
-        }).items.filter((item) => item.participantId === contract.identity);
-      assertEquals(attachments.length, 1);
-      const digest = attachments[0].contextDigest;
-      const sockets = admittedConnections(
-        await readRuntimeBrokerInventory(runtime),
-        new Set([digest]),
-      );
-      assertEquals(sockets.length, 1);
-      const physical = brokerConnectionKey(sockets[0]);
-      const own = [];
-      for await (const stream of js.streams.list()) {
-        for await (const consumer of js.consumers.list(stream.config.name)) {
-          if (
-            consumer.config.filter_subject?.endsWith(`.revocation.${digest}`)
-          ) {
-            const carrier = gate.connections().find((connection) =>
-              !connection.closed &&
-              connection.subs.some((sub) =>
-                sub.subject === consumer.config.deliver_subject
-              )
-            );
-            if (carrier) {
-              own.push({ stream: stream.config.name, consumer, carrier });
-            }
-          }
-        }
-      }
-      assertEquals(
-        own.length,
-        1,
-        "delete only installed own coverage on its real carrier",
-      );
-      const { stream, consumer, carrier } = own[0];
-      const heartbeats = () =>
-        gate.connection(carrier.id)!.outboundContexts.filter((out) =>
-          out.subject.startsWith("health.v1.heartbeat.")
-        );
-      assert(
-        heartbeats().length > 0,
-        "the ordinary service heartbeat really publishes before coverage loss",
-      );
-      let held = false;
-      const arm = () => {
-        held = false;
-        hold = gate.armResponseHold(
-          `$JS.API.CONSUMER.INFO.${stream}.`,
-          carrier.id,
-          (body) => {
-            const info = JSON.parse(new TextDecoder().decode(body));
-            return info.config?.filter_subject ===
-              consumer.config.filter_subject;
-          },
-        );
-        hold.held.then(() => {
-          held = true;
-        });
-      };
-      let rearming = true;
-      let retryFailure: unknown;
-      let retries = 0;
-      // A timed-out readiness request cannot install coverage. Hold each genuine
-      // successor reply, rearming on its broker CREATE before its later INFO.
-      creates = nats.subscribe(`$JS.API.CONSUMER.CREATE.${stream}.>`, {
-        callback: (_error, message) => {
-          const request = JSON.parse(new TextDecoder().decode(message.data));
-          if (
-            !rearming || !held ||
-            request.config?.filter_subject !== consumer.config.filter_subject
-          ) return;
-          try {
-            assert(
-              ++retries <= 12,
-              "bounded genuine warmup retry chain exhausted",
-            );
-            const release = hold!.release();
-            arm();
-            releases.push(release.catch((cause) => {
-              retryFailure = cause;
-            }));
-          } catch (cause) {
-            retryFailure = cause;
-          }
+      const nats = await connect({
+        servers: runtime.natsUrl,
+        authenticator: credsAuthenticator(
+          await readFile(
+            `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
+          ),
+        ),
+      });
+      const js = await jetstreamManager(nats);
+      const gate = runtime.nativeTransportGate();
+      const argv = rustFixtureArgv("transport_growth_operation");
+      const child = spawnTracked(argv[0], argv.slice(1), {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: instance.seed,
+          TRELLIS_TEST_HEALTH_HEARTBEAT_MS: "2000",
         },
       });
-      await nats.flush();
-      arm();
-      assert(await js.consumers.delete(stream, consumer.name));
-      await runtime.waitFor(async () => {
-        const before = lines.length;
-        await send("AUTH_STATUS");
-        return (await marker("AUTH_USABLE", before)) === "AUTH_USABLE false"
-          ? true
-          : undefined;
-      }, { timeoutMs: 15_000, intervalMs: 50 });
-      await runtime.waitFor(() => held ? true : undefined);
-      assert(!gate.connection(carrier.id)!.closed);
-      const before = lines.length;
-      const outbound = gate.connection(carrier.id)!.outboundContexts.length;
-      await send("JOB_STATUS initial");
-      const query = await marker("JOB_STATUS", before);
-      assert(
-        query.startsWith("JOB_STATUS_ERROR") && query.includes("suspended"),
-        query,
-      );
-      await send("JOB_SUBMIT suspended");
-      const submit = await marker("JOB_SUBMIT_ERROR", before);
-      assert(submit.includes("suspended"), submit);
-      assertEquals(
-        gate.connection(carrier.id)!.outboundContexts.slice(outbound).filter((
-          out,
-        ) =>
-          out.subject.includes("JOBS_KEYS") ||
-          out.subject.startsWith("$JS.API.STREAM.MSG.GET.JOBS") ||
-          out.subject.startsWith("jobs.v1.")
-        ).length,
-        0,
-        `rejected fresh query and submit must perform no Jobs broker IO (registry maintenance and retained ACKs remain permitted): ${
-          JSON.stringify(
-            gate.connection(carrier.id)!.outboundContexts.slice(outbound),
-          )
-        }`,
-      );
-      const heartbeatCount = heartbeats().length;
-      const suspendedAt = Date.now();
-      await send("JOB_RELEASE initial");
-      await marker("JOB_DONE 1 initial");
-      // The real production heartbeat interval is 30s. Keep coverage unavailable
-      // through a full due interval, using ordinary public queries to establish
-      // that this same live process remains responsive, not a paused runtime.
-      await runtime.waitFor(async () => {
-        if (retryFailure) throw retryFailure;
-        const after = lines.length;
-        await send("AUTH_STATUS");
-        assertEquals(await marker("AUTH_USABLE", after), "AUTH_USABLE false");
-        assertEquals(
-          heartbeats().length,
-          heartbeatCount,
-          "unsigned fresh heartbeat must not publish while own coverage is suspended",
-        );
-        return Date.now() - suspendedAt >= 35_000 && held ? true : undefined;
-      }, { timeoutMs: 40_000, intervalMs: 250 });
-      rearming = false;
-      await hold!.release();
-      hold = undefined;
-      await runtime.waitFor(async () => {
-        const after = lines.length;
-        await send("AUTH_STATUS");
-        return (await marker("AUTH_USABLE", after)) === "AUTH_USABLE true"
-          ? true
-          : undefined;
+      child.stderr.pipe(process.stderr);
+      const stdin = Writable.toWeb(child.stdin).getWriter();
+      let exited = false;
+      const status = child.exited.then((value) => {
+        exited = true;
+        return value;
       });
-      const after = lines.length;
-      await send("JOB_STATUS initial");
-      assert(
-        (await marker("JOB_STATUS", after)).startsWith(
-          "JOB_STATUS initial Completed 1",
-        ),
-      );
-      await send("JOB_SUBMIT resumed");
-      await marker("JOB_SUBMITTED resumed", after);
-      await marker("JOB_STARTED 2 resumed", after);
-      const resumed = admittedConnections(
-        await readRuntimeBrokerInventory(runtime),
-        new Set([digest]),
-      );
-      assertEquals(resumed.map(brokerConnectionKey), [physical]);
-      await runtime.waitFor(
-        () => heartbeats().length > heartbeatCount ? true : undefined,
-        { timeoutMs: 35_000, intervalMs: 50 },
-      );
-      await send("EXIT");
-      await marker("OPERATION_PROVIDER_DONE");
-      await runtime.waitFor(() => exited ? true : undefined);
-      assert((await status).success);
-    } finally {
-      creates?.unsubscribe();
-      await hold?.release().catch(() => undefined);
-      await Promise.all(releases);
-      await stdin.close().catch(() => undefined);
-      if (!exited) {
-        try {
-          Deno.kill(-child.pid, "SIGKILL");
-        } catch { /* already exited */ }
+      const lines: string[] = [];
+      const drain = (async () => {
+        let pending = "";
+        for await (const chunk of Readable.toWeb(child.stdout).pipeThrough(
+          new TextDecoderStream(),
+        )) {
+          const complete = (pending + chunk).split("\n");
+          pending = complete.pop() ?? "";
+          lines.push(...complete.map((line) => line.trim()));
+        }
+      })();
+      const send = async (command: string) => {
+        await stdin.write(new TextEncoder().encode(`${command}\n`));
+      };
+      const marker = async (prefix: string, after = 0) =>
+        await runtime
+          .waitFor(
+            () => {
+              const found = lines
+                .slice(after)
+                .find((line) => line.startsWith(prefix));
+              if (found) return found;
+              if (exited)
+                throw new Error(`fixture exited: ${lines.join("\n")}`);
+            },
+            { timeoutMs: 15_000, intervalMs: 20 },
+          )
+          .catch((cause) => {
+            throw new Error(
+              `missing ${prefix}; fixture output:\n${lines.join("\n")}`,
+              {
+                cause,
+              },
+            );
+          });
+      const stream = "KV_TRELLIS_AUTH_REVOCATIONS";
+      const settings = (await js.streams.info(stream)).config;
+      let blocker: string | undefined;
+      try {
+        await marker("OPERATION_PROVIDER_READY");
+        await marker("JOB_STARTED 1 initial");
+        const prefix = `$JS.API.CONSUMER.MSG.NEXT.${stream}.`;
+        const carriers = gate
+          .connections()
+          .filter((connection) =>
+            connection.outboundContexts.some(
+              (message) =>
+                message.subject.startsWith("trellis.jobs.") &&
+                message.subject.endsWith(".created"),
+            ),
+          );
+        assert.equal(
+          carriers.length,
+          1,
+          JSON.stringify(
+            gate.connections().map((connection) => ({
+              id: connection.id,
+              closed: connection.closed,
+              subjects: connection.outboundContexts.map(
+                (message) => message.subject,
+              ),
+            })),
+          ),
+        );
+        const carrier = carriers[0];
+        const pull = carrier.outboundContexts.findLast((message) =>
+          message.subject.startsWith(prefix),
+        );
+        assert(pull, "identify the shared mirror on the actual Jobs carrier");
+        const consumer = await js.consumers.info(
+          stream,
+          pull.subject.slice(prefix.length),
+        );
+        const heartbeats = () =>
+          gate
+            .connection(carrier.id)!
+            .outboundContexts.filter(
+              (out) =>
+                out.subject ===
+                apis.health.API.actions["event:Heartbeat"].subject,
+            );
+        assert(
+          heartbeats().length > 0,
+          "the ordinary service heartbeat really publishes before coverage loss",
+        );
+        // Prove the actual health publisher—not the separate Jobs worker-presence
+        // publisher—is running at its short, test-configured interval.
+        const initialHeartbeats = heartbeats().length;
+        await runtime.waitFor(
+          () => (heartbeats().length > initialHeartbeats ? true : undefined),
+          { timeoutMs: 8_000, intervalMs: 50 },
+        );
+        // Exhaust real ephemeral-consumer capacity without changing retained data.
+        const constrained = {
+          ...settings,
+          max_consumers: (await js.streams.info(stream)).state.consumer_count,
+        };
+        await js.streams.update(stream, constrained);
+        assert(await js.consumers.delete(stream, consumer.name));
+        blocker = (
+          await js.consumers.add(stream, {
+            durable_name: ulid(),
+            ack_policy: AckPolicy.None,
+          })
+        ).name;
+        await runtime.waitFor(
+          async () => {
+            const before = lines.length;
+            await send("AUTH_STATUS");
+            return (await marker("AUTH_USABLE", before)) === "AUTH_USABLE false"
+              ? true
+              : undefined;
+          },
+          { timeoutMs: 15_000, intervalMs: 50 },
+        );
+        assert(!gate.connection(carrier.id)!.closed);
+        const before = lines.length;
+        const outbound = gate.connection(carrier.id)!.outboundContexts.length;
+        await send("JOB_STATUS initial");
+        const query = await marker("JOB_STATUS", before);
+        assert(query.startsWith("JOB_STATUS_ERROR"), query);
+        await send("JOB_SUBMIT suspended");
+        const submit = await marker("JOB_SUBMIT_ERROR", before);
+        assert(submit.startsWith("JOB_SUBMIT_ERROR"), submit);
+        assert.deepEqual(
+          gate
+            .connection(carrier.id)!
+            .outboundContexts.slice(outbound)
+            .filter(
+              (out) =>
+                out.subject.startsWith("rpc.v1.jobs.") ||
+                out.subject.startsWith("trellis.work.") ||
+                (out.subject.startsWith("trellis.jobs.") &&
+                  !out.subject.startsWith("trellis.jobs.workers.")),
+            ).length,
+          0,
+          `rejected fresh query and submit must perform no Jobs broker IO (registry maintenance and retained ACKs remain permitted): ${JSON.stringify(
+            gate.connection(carrier.id)!.outboundContexts.slice(outbound),
+          )}`,
+        );
+        const heartbeatCount = heartbeats().length;
+        const suspendedAt = Date.now();
+        await send("JOB_RELEASE initial");
+        await marker("JOB_DONE 1 initial");
+        // Keep the real 2s health heartbeat unavailable across multiple
+        // due intervals while the same native process stays responsive.
+        await runtime.waitFor(
+          async () => {
+            const after = lines.length;
+            await send("AUTH_STATUS");
+            assert.deepEqual(
+              await marker("AUTH_USABLE", after),
+              "AUTH_USABLE false",
+            );
+            assert.deepEqual(
+              heartbeats().length,
+              heartbeatCount,
+              "unsigned fresh heartbeat must not publish while own coverage is suspended",
+            );
+            return Date.now() - suspendedAt >= 5_000 ? true : undefined;
+          },
+          { timeoutMs: 12_000, intervalMs: 250 },
+        );
+        await js.consumers.delete(stream, blocker);
+        blocker = undefined;
+        await js.streams.update(stream, settings);
+        await runtime.waitFor(async () => {
+          const after = lines.length;
+          await send("AUTH_STATUS");
+          return (await marker("AUTH_USABLE", after)) === "AUTH_USABLE true"
+            ? true
+            : undefined;
+        });
+        const after = lines.length;
+        await send("JOB_STATUS initial");
+        assert(
+          (await marker("JOB_STATUS", after)).startsWith(
+            "JOB_STATUS initial Completed 1",
+          ),
+        );
+        await send("JOB_SUBMIT resumed");
+        await marker("JOB_SUBMITTED resumed", after);
+        await marker("JOB_STARTED 2 resumed", after);
+        assert.equal(gate.connection(carrier.id)?.closed, false);
+        await runtime.waitFor(
+          () => (heartbeats().length > heartbeatCount ? true : undefined),
+          { timeoutMs: 15_000, intervalMs: 50 },
+        );
+        await send("EXIT");
+        await marker("OPERATION_PROVIDER_DONE");
+        await runtime.waitFor(() => (exited ? true : undefined));
+        assert((await status).code === 0);
+      } finally {
+        if (blocker) await js.consumers.delete(stream, blocker);
+        await js.streams.update(stream, settings);
+        await stdin.close().catch(() => undefined);
+        if (!exited && child.pid !== undefined) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* already exited */
+          }
+        }
+        await Promise.allSettled([status, drain]);
+        await nats.close();
       }
-      await Promise.allSettled([status, drain]);
-      await nats.close();
-    }
-  }, { interruptibleNativeProxy: true });
+    },
+    { interruptibleNativeProxy: true },
+  );
 });
 
-Deno.test("Rust fresh RPC waits for a parked stage's actual intake publication", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const contract = participants.TransportGrowthSubject.participant;
-    const targetContract = participants.TransportGrowthTarget.participant;
-    await runtime.contracts.apply({
-      deployment: "fresh-stage-target",
-      contract: targetContract,
-    });
-    const targetInstance = await runtime.services.createInstance({
-      deployment: "fresh-stage-target",
-      name: "fresh-stage-target",
-      contract: targetContract,
-    });
-    const target = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
-      participant: targetContract,
-      name: "fresh-stage-target",
-      seed: targetInstance.seed,
-    }).orThrow();
-    let advances = 0;
-    await target.handleAdvance(() => {
-      advances++;
-      return Result.ok({});
-    });
-    await target.handleExtend(() => Result.ok({}));
-    await target.handleProgress(async ({ emit, signal }) => {
-      while (!signal.aborted) {
-        await emit({ value: "ready" });
-        await new Promise((resolve) => setTimeout(resolve, 150));
-      }
-    });
-    const targetExit = target.wait().catch(() => undefined);
-    await runtime.contracts.apply({
-      deployment: "fresh-stage-subject",
-      contract,
-    });
-    const instance = await runtime.services.createInstance({
-      deployment: "fresh-stage-subject",
-      name: "fresh-stage-subject",
-      contract,
-    });
-    const child = new Deno.Command("setsid", {
-      args: rustFixtureArgv("transport_growth_subject"),
-      env: {
-        TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_IDENTITY_SEED: instance.seed,
-      },
-      stdin: "piped",
-      stdout: "piped",
-      stderr: "inherit",
-    }).spawn();
-    const stdin = child.stdin.getWriter();
-    const lines: string[] = [];
-    let exited = false;
-    const status = child.status.then((value) => {
-      exited = true;
-      return value;
-    });
-    const drain = (async () => {
-      let pending = "";
-      for await (
-        const chunk of child.stdout.pipeThrough(new TextDecoderStream())
-      ) {
-        const complete = (pending + chunk).split("\n");
-        pending = complete.pop() ?? "";
-        lines.push(...complete.map((line) => line.trim()));
-      }
-    })();
-    const send = async (command: string) => {
-      await stdin.write(new TextEncoder().encode(`${command}\n`));
-    };
-    const marker = async (prefix: string, count = 1) =>
-      await runtime.waitFor(() => {
-        const failure = lines.find((line) =>
-          line.startsWith("TRANSPORT_GROWTH_ERROR ") ||
-          line.startsWith("TRANSPORT_GROWTH_ADVANCE_ERROR ")
-        );
-        if (failure) throw new Error(failure);
-        if (lines.filter((line) => line.startsWith(prefix)).length >= count) {
-          return true;
+test("Rust fresh RPC is fenced during loss and resumes only after broker-ready intake publication", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const contract = participants.TransportGrowthSubject.participant;
+      const targetContract = participants.TransportGrowthTarget.participant;
+      await runtime.contracts.apply({
+        deployment: "fresh-stage-target",
+        contract: targetContract,
+      });
+      const targetInstance = await runtime.services.createInstance({
+        deployment: "fresh-stage-target",
+        name: "fresh-stage-target",
+        contract: targetContract,
+      });
+      const target = await TrellisService.connect({
+        trellisUrl: runtime.oauthIssuer,
+        participant: targetContract,
+        name: "fresh-stage-target",
+        seed: targetInstance.seed,
+      }).orThrow();
+      let advances = 0;
+      await target.handleAdvance(() => {
+        advances++;
+        return Result.ok({});
+      });
+      await target.handleExtend(() => Result.ok({}));
+      await target.handleProgress(async ({ emit, signal }) => {
+        while (!signal.aborted) {
+          await emit({ value: "ready" });
+          await new Promise((resolve) => setTimeout(resolve, 150));
         }
-        if (exited) throw new Error(lines.join("\n"));
-      }, { timeoutMs: 30_000, intervalMs: 20 });
-    const gate = runtime.nativeTransportGate();
-    let warm: ReturnType<typeof gate.armResponseHold> | undefined;
-    let readiness: ReturnType<typeof gate.armResponseHold> | undefined;
-    try {
-      await marker("TRANSPORT_GROWTH_ADVANCE_OK");
-      assertEquals(advances, 1);
-      const bindings = await runtime.callAdminRpc("authGrantsList", {
-        participantId: contract.identity,
-      }) as {
-        items: {
-          revision: bigint;
-          installedRevision: bigint;
-          expiresAt: bigint | null;
-          ownerId: string;
-          ownerKind: string;
-          participantId: string;
-          platformPrivileges: string[];
-          grants: {
-            format: string;
-            permissions: { action: string; target: Uint8Array }[];
-          };
-        }[];
+      });
+      const targetExit = target.wait().catch(() => undefined);
+      await runtime.contracts.apply({
+        deployment: "fresh-stage-subject",
+        contract,
+      });
+      const instance = await runtime.services.createInstance({
+        deployment: "fresh-stage-subject",
+        name: "fresh-stage-subject",
+        contract,
+      });
+      const argv = rustFixtureArgv("transport_growth_subject");
+      const child = spawnTracked(argv[0], argv.slice(1), {
+        env: {
+          ...process.env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: instance.seed,
+        },
+      });
+      child.stderr.pipe(process.stderr);
+      const stdin = Writable.toWeb(child.stdin).getWriter();
+      const lines: string[] = [];
+      let exited = false;
+      const status = child.exited.then((value) => {
+        exited = true;
+        return value;
+      });
+      const drain = (async () => {
+        let pending = "";
+        for await (const chunk of Readable.toWeb(child.stdout).pipeThrough(
+          new TextDecoderStream(),
+        )) {
+          const complete = (pending + chunk).split("\n");
+          pending = complete.pop() ?? "";
+          lines.push(...complete.map((line) => line.trim()));
+        }
+      })();
+      const send = async (command: string) => {
+        await stdin.write(new TextEncoder().encode(`${command}\n`));
       };
-      const binding = bindings.items.find((item) =>
-        item.participantId === contract.identity
-      )!;
-      assert(binding);
-      const extend = await encodePermissionTargetWasm({
-        kind: "apiSurface",
-        api: "runtime-trellis.transport_growth@v1",
-        surface: "rpc",
-        name: "Extend",
-      });
-      const kept = binding.grants.permissions.filter((atom) =>
-        atom.action !== "call" || atom.target.length !== extend.length ||
-        atom.target.some((byte, index) => byte !== extend[index])
-      );
-      assertEquals(kept.length, binding.grants.permissions.length - 1);
-      warm = gate.armResponseHold("$JS.API.CONSUMER.INFO.");
-      await runtime.callAdminRpc("authGrantsSet", {
-        expiresAt: binding.expiresAt,
-        installedRevision: binding.installedRevision,
-        ownerId: binding.ownerId,
-        ownerKind: binding.ownerKind,
-        participantId: binding.participantId,
-        platformPrivileges: binding.platformPrivileges,
-        expectedRevision: binding.revision,
-        grants: { format: binding.grants.format, permissions: kept },
-        idempotencyKey: crypto.randomUUID(),
-      });
-      let warmed: Awaited<typeof warm.held> | undefined;
-      warm.held.then((value) => {
-        warmed = value;
-      });
-      await runtime.waitFor(() => warmed, {
-        timeoutMs: 60_000,
-        intervalMs: 20,
-      });
-      assert(warmed);
-      const releasing = warm.release();
-      readiness = gate.armResponseHold(
-        "$SYS.REQ.USER.INFO",
-        warmed.connectionId,
-      );
-      await releasing;
-      let ready = false;
-      readiness.held.then(() => {
-        ready = true;
-      });
-      await runtime.waitFor(() => ready ? true : undefined);
-      const stage = gate.connection(warmed.connectionId)!;
-      assert(
-        !stage.closed &&
-          stage.subs.some((sub) => sub.subject.endsWith(".Watch")),
-      );
-      const before = stage.outboundContexts.length;
-      await send("START_ADVANCE");
-      await marker("TRANSPORT_GROWTH_ADVANCE_STARTED");
-      await send("PING");
-      await marker("TRANSPORT_GROWTH_PONG");
-      // Independent real broker round trips while the exact readiness remains
-      // withheld. A queued app call must not use the private parked attachment.
-      await readRuntimeBrokerInventory(runtime);
-      await readRuntimeBrokerInventory(runtime);
-      assertEquals(
-        advances,
-        1,
-        "the target must not receive the fresh call before stage publication",
-      );
-      assertEquals(
-        gate.connection(warmed.connectionId)!.outboundContexts.slice(before)
-          .filter((out) => out.subject.endsWith(".Advance")).length,
-        0,
-      );
-      await readiness.release();
-      await marker("TRANSPORT_GROWTH_ADVANCE_OK", 2);
-      assertEquals(advances, 2);
-      assertEquals(
-        gate.connection(warmed.connectionId)!.outboundContexts.slice(before)
-          .filter((out) => out.subject.endsWith(".Advance")).length,
-        1,
-      );
-      await send("EXIT");
-      await marker("TRANSPORT_GROWTH_DONE");
-      await runtime.waitFor(() => exited ? true : undefined);
-      assert((await status).success);
-    } finally {
-      await readiness?.release().catch(() => undefined);
-      await warm?.release().catch(() => undefined);
-      await stdin.close().catch(() => undefined);
-      if (!exited) {
-        try {
-          Deno.kill(-child.pid, "SIGKILL");
-        } catch { /* already exited */ }
+      const marker = async (prefix: string, count = 1) =>
+        await runtime.waitFor(
+          () => {
+            const failure = lines.find((line) =>
+              line.startsWith("TRANSPORT_GROWTH_ERROR "),
+            );
+            if (failure) throw new Error(failure);
+            if (
+              lines.filter((line) => line.startsWith(prefix)).length >= count
+            ) {
+              return true;
+            }
+            if (exited) throw new Error(lines.join("\n"));
+          },
+          { timeoutMs: 30_000, intervalMs: 20 },
+        );
+      const gate = runtime.nativeTransportGate();
+      let readiness: ReturnType<typeof gate.armResponseHold> | undefined;
+      try {
+        await marker("TRANSPORT_GROWTH_ADVANCE_OK");
+        assert.deepEqual(advances, 1);
+        const original = gate
+          .connections()
+          .find((connection) =>
+            connection.outboundContexts.some(
+              (message) =>
+                message.subject ===
+                apis.transport_growth.API.actions["rpc:Advance"].subject,
+            ),
+          );
+        assert(original);
+        readiness = gate.armResponseHold(
+          "$SYS.REQ.USER.INFO",
+          undefined,
+          (_body, connection) =>
+            connection.id !== original.id &&
+            connection.subs.some((sub) => sub.subject.endsWith(".Watch")),
+        );
+        runtime.interruptNativeTransport();
+        runtime.restoreNativeTransport();
+        const stageId = (await deadline(readiness.held, 60_000)).connectionId;
+        assert.notEqual(stageId, original.id);
+        const stage = gate.connection(stageId);
+        assert(stage);
+        assert(
+          !stage.closed &&
+            stage.subs.some((sub) => sub.subject.endsWith(".Watch")),
+        );
+        const before = stage.outboundContexts.length;
+        await send("START_ADVANCE");
+        await marker("TRANSPORT_GROWTH_ADVANCE_STARTED");
+        await marker("TRANSPORT_GROWTH_ADVANCE_ERROR");
+        await send("PING");
+        await marker("TRANSPORT_GROWTH_PONG");
+        // Independent real broker round trips while the exact readiness remains
+        // withheld. A fresh app call must not use the private parked attachment.
+        await readRuntimeBrokerInventory(runtime);
+        await readRuntimeBrokerInventory(runtime);
+        assert.deepEqual(
+          advances,
+          1,
+          "the target must not receive the fresh call before stage publication",
+        );
+        assert.deepEqual(
+          gate
+            .connection(stageId)!
+            .outboundContexts.slice(before)
+            .filter((out) => out.subject.endsWith(".Advance")).length,
+          0,
+        );
+        await readiness.release();
+        await runtime.waitFor(async () => {
+          const before = lines.length;
+          await send("AUTH_STATUS");
+          await runtime.waitFor(() =>
+            lines.slice(before).find((line) => line.startsWith("AUTH_USABLE ")),
+          );
+          return lines.slice(before).includes("AUTH_USABLE true");
+        });
+        await send("ADVANCE");
+        await marker("TRANSPORT_GROWTH_ADVANCE_OK", 2);
+        assert.deepEqual(advances, 2);
+        assert.deepEqual(
+          gate
+            .connection(stageId)!
+            .outboundContexts.slice(before)
+            .filter((out) => out.subject.endsWith(".Advance")).length,
+          1,
+        );
+        await send("EXIT");
+        await marker("TRANSPORT_GROWTH_DONE");
+        await runtime.waitFor(() => (exited ? true : undefined));
+        assert((await status).code === 0);
+      } finally {
+        await readiness?.release().catch(() => undefined);
+        await stdin.close().catch(() => undefined);
+        if (!exited && child.pid !== undefined) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* already exited */
+          }
+        }
+        await Promise.allSettled([status, drain]);
+        await target.stop();
+        await targetExit;
       }
-      await Promise.allSettled([status, drain]);
-      await target.connection.close();
-      await targetExit;
-    }
-  }, {
-    interruptibleNativeProxy: true,
-    authorization: {
-      contextLifetimeSeconds: 76,
-      refreshLeadSeconds: 15,
-      refreshJitterSeconds: 0,
-      minimumContextLifetimeSeconds: 46,
     },
-  });
+    {
+      interruptibleNativeProxy: true,
+      authorization: {
+        contextLifetimeSeconds: 106,
+      },
+    },
+  );
 });

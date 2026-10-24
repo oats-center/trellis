@@ -1,51 +1,33 @@
-//! Local context-bound request and event verification for connected services.
-//!
-//! Connected services verify v2 request/event proofs entirely against
-//! in-process state: the digest-keyed [`AuthorizationProviderCache`] (verified
-//! caller contexts resolved through the connected NATS authorization registry,
-//! live revocation state, and verification policy) plus the exact permission
-//! surface recorded at route/event registration time. Verification performs no
-//! SQLite, HTTP, Auth RPC, or NATS registry I/O on cache hits: cache hits read
-//! only memory. Unknown context digests are resolved from the registry at most
-//! once per digest, and revocation watch updates are applied immediately.
+//! Generated-route verification through the connected runtime's shared authority owner.
 
-use base64::Engine;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
+use trellis_protocol::{CatalogActionIdentity, SessionRequestProof};
 
-use crate::client::{
-    AuthorizationProviderCache, AuthorizationVerificationCore, EventVerificationInput,
-    RequestVerificationInput,
-};
-use crate::service::{
-    RequestContext, RequestValidation, RequestValidator, RoutePermission, ServerError,
-};
+use crate::client::AuthorizationOwner;
+use crate::service::{RequestContext, RequestValidation, RequestValidator, ServerError};
 
-pub use crate::client::VerifiedCaller;
+pub use crate::client::AuthenticatedCaller;
 
-/// Local request/event verifier for one connected service runtime.
-///
-/// A verifier without a provider cache (constructed before the connected
-/// authorization registry is available) denies every request/event: local
-/// verification fails closed until provider evidence is ready.
-#[derive(Clone)]
+/// Local request and publication verifier sharing the connected runtime's authority owner.
+#[derive(Clone, Debug)]
 pub struct LocalAuthVerifier {
-    provider: Option<AuthorizationProviderCache>,
-    /// Versioned API/contract identity of the connected service, used to build
-    /// exact permission atoms for its own routed surfaces.
+    owner: AuthorizationOwner,
+    transport: async_nats::Client,
     contract_id: String,
-    verification: AuthorizationVerificationCore,
 }
 
 impl LocalAuthVerifier {
-    /// Build a verifier over the client's provider cache and the connected
-    /// service's versioned contract/API identity.
-    #[doc = concat!("Trellis API operation `", stringify!(new), "`.")]
-    pub fn new(provider: Option<AuthorizationProviderCache>, api_id: impl Into<String>) -> Self {
+    /// Use the ordinary connected transport and its shared, pinned authority owner.
+    pub fn new(
+        owner: AuthorizationOwner,
+        transport: async_nats::Client,
+        api_id: impl Into<String>,
+    ) -> Self {
         Self {
-            provider,
+            owner,
+            transport,
             contract_id: api_id.into(),
-            verification: AuthorizationVerificationCore::new(),
         }
     }
 
@@ -53,15 +35,24 @@ impl LocalAuthVerifier {
         &self.contract_id
     }
 
-    /// Verify a v1 request proof against the digest-keyed context and exact route.
-    async fn verify_request(
+    pub(crate) async fn historical_status(
         &self,
-        subject: &str,
-        payload: &[u8],
-        context: &RequestContext,
-    ) -> Result<RequestValidation, ServerError> {
-        self.verify_request_inner(subject, payload, context, true)
+        headers: Option<&async_nats::HeaderMap>,
+    ) -> Result<trellis_protocol::VerifiedIssuerMetadata, EventVerificationFailure> {
+        let headers = headers
+            .ok_or_else(|| EventVerificationFailure::rejected("missing event proof headers"))?;
+        let event: trellis_protocol::SessionEvent =
+            serde_json::from_str(&required_event_header(headers, "Trellis-Session-Event")?)
+                .map_err(|error| EventVerificationFailure::rejected(error.to_string()))?;
+        self.owner
+            .historical_status(&self.transport, &event.authority_digest)
             .await
+            .map_err(|error| match error {
+                crate::client::TrellisClientError::AuthorizationUnavailable(_) => {
+                    EventVerificationFailure::retryable(error.to_string())
+                }
+                _ => EventVerificationFailure::rejected(error.to_string()),
+            })
     }
 
     async fn verify_request_inner(
@@ -69,276 +60,237 @@ impl LocalAuthVerifier {
         subject: &str,
         payload: &[u8],
         context: &RequestContext,
-        require_exact_permission: bool,
+        possession_only: bool,
     ) -> Result<RequestValidation, ServerError> {
-        let session_key = context
-            .session_key
-            .clone()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ServerError::MissingSessionKey {
-                subject: subject.to_string(),
-            })?;
-        let proof = context
+        let Some(request) = context.session_request.as_ref() else {
+            return Ok(RequestValidation::denied());
+        };
+        // Header assertions cannot replace the actual publication destination.
+        if request.subject != subject || request.reply_subject != context.reply_to {
+            return Ok(RequestValidation::denied());
+        }
+        let Some(proof) = context
             .proof
-            .clone()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ServerError::MissingProof {
-                subject: subject.to_string(),
-            })?;
-        let authorization_context = context.authorization_context.clone().ok_or_else(|| {
-            ServerError::MissingAuthorizationContext {
-                subject: subject.to_string(),
-            }
-        })?;
-        let reply = context
-            .reply_to
-            .clone()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ServerError::MissingReply {
-                subject: subject.to_string(),
-            })?;
-        let iat = context.iat.ok_or_else(|| {
-            ServerError::Nats(format!("authenticated request for '{subject}' has no iat"))
-        })?;
-        let request_id = context.request_id.clone().ok_or_else(|| {
-            ServerError::Nats(format!(
-                "authenticated request for '{subject}' has no request-id"
-            ))
-        })?;
-        let route_permission = context.required_permission.as_ref();
-        if require_exact_permission && route_permission.is_none() {
-            tracing::warn!(
-                subject,
-                "authenticated request has no exact route permission"
-            );
-            return Ok(RequestValidation::denied());
-        }
-
-        // Resolve the presented context digest through the provider cache;
-        // cache hits are memory-only, unknown digests resolve once through the
-        // connected NATS authorization registry.
-        let Some(provider) = self.provider.as_ref() else {
-            tracing::warn!(subject, "local authorization provider unavailable");
+            .as_deref()
+            .and_then(|value| SessionRequestProof::parse(value).ok())
+        else {
             return Ok(RequestValidation::denied());
         };
-        if !provider
-            .health()
-            .map(|health| health.healthy)
-            .unwrap_or(false)
+        let transport = context
+            .transport
+            .lease()
+            .map_or(&self.transport, |lease| lease.nats());
+        if context
+            .required_permission
+            .as_ref()
+            .is_some_and(|route| route.api != request.api_id || route.name != request.action)
         {
-            tracing::warn!(subject, "local authorization provider is not ready");
             return Ok(RequestValidation::denied());
         }
-        let policy = match provider.policy() {
-            Ok(policy) => policy,
-            Err(error) => {
-                tracing::warn!(subject, %error, "local authorization policy unavailable");
+        let verified = if possession_only {
+            self.owner
+                .verify_possession(transport, request, payload, &proof)
+                .await
+        } else {
+            let Some(route) = context.required_permission.as_ref() else {
                 return Ok(RequestValidation::denied());
-            }
+            };
+            self.owner
+                .verify_request(transport, request, payload, &proof, &route.catalog_action())
+                .await
         };
-        let verified = match provider
-            .resolve_context(&authorization_context, policy.now_unix_seconds)
-            .await
-        {
+        let verified = match verified {
             Ok(verified) => verified,
             Err(error) => {
-                tracing::warn!(subject, %error, "local authorization context unavailable");
+                tracing::debug!(subject, %error, "session opening rejected");
                 return Ok(RequestValidation::denied());
             }
         };
-        // Memory-only revocation read: the provider watch applies revocations
-        // immediately and never un-revokes a digest. A revoked context denies.
-        match provider.revocation_time(&authorization_context) {
-            Ok(Some(_)) => {
+        if possession_only && context.handler_authorizes {
+            let Some(route) = context.required_permission.as_ref() else {
                 return Ok(RequestValidation::denied());
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(subject, %error, "local revocation evidence unavailable");
+            };
+            let provider = match self.owner.own_authority() {
+                Ok(provider) => provider,
+                Err(_) => return Ok(RequestValidation::denied()),
+            };
+            let certificate = match self
+                .owner
+                .authorize_provider(transport, &provider, &route.api, &route.catalog_action())
+                .await
+            {
+                Ok(certificate) => certificate,
+                Err(_) => return Ok(RequestValidation::denied()),
+            };
+            if certificate.generation != request.api_generation {
                 return Ok(RequestValidation::denied());
             }
         }
-        let permission = match route_permission
-            .map(RoutePermission::permission_atom)
-            .transpose()
-        {
-            Ok(permission) => permission,
-            Err(error) => {
-                tracing::debug!(subject, %error, "invalid route permission");
-                return Ok(RequestValidation::denied());
-            }
-        };
-        let required_permissions = permission.as_slice();
-        let verified = match self.verification.verify_request(RequestVerificationInput {
-            context: &verified,
-            context_digest: &authorization_context,
-            subject,
-            payload,
-            iat,
-            request_id: &request_id,
-            reply_subject: Some(&reply),
-            proof: &proof,
-            policy: &policy,
-            required_permissions,
-        }) {
-            Ok(verified) => verified,
-            Err(error) => {
-                tracing::debug!(subject, %error, "local request proof rejected");
-                return Ok(RequestValidation::denied());
-            }
-        };
-        let caller = verified.caller().clone();
-        if caller.session_key != session_key {
-            return Ok(RequestValidation::denied());
-        }
+        self.owner
+            .assert_current(verified.authority())
+            .map_err(|error| ServerError::Nats(error.to_string()))?;
         let result = RequestValidation {
             allowed: true,
-            caller: Some(caller),
+            caller: Some(verified.caller().clone()),
             inbox_prefix: Some(verified.caller().inbox_prefix.clone()),
         };
-        if provider
-            .revocation_time(&authorization_context)
-            .map_or(true, |revoked_at| revoked_at.is_some())
-        {
-            return Ok(RequestValidation::denied());
-        }
+        context.retain_verified_request(verified)?;
         Ok(result)
     }
 
-    /// Verify a v1 event proof against the digest-keyed context, historical
-    /// policy, and the publisher's exact `Publish` atom for `event_name`.
-    ///
-    /// `event_name` is the API-local event name derived from the registered
-    /// event descriptor, never parsed from the subject on the hot path.
+    /// Verify a live publication, or a historical publication with original broker chronology
+    /// and fresh signed cutoff evidence. Publisher time is never historical broker evidence.
     pub(crate) async fn verify_event(
         &self,
         subject: &str,
         payload: &[u8],
-        headers: Option<&async_nats::header::HeaderMap>,
-        expected_descriptor_identity: &str,
+        headers: Option<&async_nats::HeaderMap>,
+        api_id: &str,
+        action: &CatalogActionIdentity,
+        historical: Option<(
+            &trellis_protocol::OriginalEventPublication,
+            &trellis_protocol::VerifiedIssuerMetadata,
+        )>,
     ) -> Result<super::runtime_facade::ServiceEventPublisherContext, EventVerificationFailure> {
-        let Some(headers) = headers else {
-            return Err(EventVerificationFailure::rejected(
-                "missing event proof headers",
-            ));
-        };
-        let session_key = required_event_header(headers, "session-key")?;
-        let proof = required_event_header(headers, "proof")?;
-        let authorization_context = required_event_header(headers, "authorization-context")?;
-        let event_id = required_event_header(headers, "Nats-Msg-Id")?;
-        let event_time = required_event_header(headers, "Trellis-Event-Time")?;
-        let descriptor_identity = required_event_header(headers, "Trellis-Event-Descriptor")?;
-
-        // Historical resolution retains signed contexts after expiry; the
-        // strict eventTime window is enforced below by the protocol verifier.
-        let Some(provider) = self.provider.as_ref() else {
-            tracing::warn!(subject, "local authorization provider unavailable");
-            return Err(EventVerificationFailure::retryable(format!(
-                "local authorization context unavailable for {subject}"
-            )));
-        };
-        if !provider
-            .health()
-            .map(|health| health.healthy)
-            .unwrap_or(false)
+        let headers = headers
+            .ok_or_else(|| EventVerificationFailure::rejected("missing event proof headers"))?;
+        let event: trellis_protocol::SessionEvent =
+            serde_json::from_str(&required_event_header(headers, "Trellis-Session-Event")?)
+                .map_err(|error| EventVerificationFailure::rejected(error.to_string()))?;
+        if headers
+            .get("authorization-context")
+            .is_some_and(|digest| digest.as_str() != event.authority_digest)
         {
-            tracing::warn!(subject, "local authorization provider is not ready");
-            return Err(EventVerificationFailure::retryable(format!(
-                "local authorization context unavailable for {subject}"
-            )));
+            return Err(EventVerificationFailure::rejected(
+                "event authority header mismatch",
+            ));
         }
-        let policy = match provider.policy() {
-            Ok(policy) => policy,
-            Err(error) => {
-                tracing::warn!(subject, %error, "local event policy unavailable");
-                return Err(EventVerificationFailure::retryable(format!(
-                    "local event policy unavailable for {subject}"
-                )));
-            }
-        };
-        let context = match provider
-            .resolve_event_context_for_verification(
-                &authorization_context,
-                time::OffsetDateTime::parse(
-                    &event_time,
-                    &time::format_description::well_known::Rfc3339,
+        if event.subject != subject || event.api_id != api_id || event.action != action.name {
+            return Err(EventVerificationFailure::rejected(
+                "event does not match registered descriptor and transport",
+            ));
+        }
+        let proof =
+            trellis_protocol::SessionEventProof::parse(required_event_header(headers, "proof")?)
+                .map_err(|error| EventVerificationFailure::rejected(error.to_string()))?;
+        if action.kind != trellis_protocol::ApiSurfaceKind::Event
+            || action.direction != trellis_protocol::PermissionAction::Publish
+        {
+            return Err(EventVerificationFailure::rejected(
+                "event requires a registered publish action",
+            ));
+        }
+        let authority = if let Some((original_publication, status)) = historical {
+            self.owner
+                .verify_historical_event(
+                    &self.transport,
+                    crate::client::HistoricalEventVerificationInput {
+                        event: &event,
+                        payload,
+                        proof: &proof,
+                        action,
+                        original_publication,
+                        status,
+                    },
                 )
-                .map(|value| value.unix_timestamp())
-                .unwrap_or(policy.now_unix_seconds),
+                .await
+                .map(|verified| verified.authority().clone())
+                .map_err(|error| match error {
+                    crate::client::TrellisClientError::AuthorizationUnavailable(_) => {
+                        EventVerificationFailure::retryable(error.to_string())
+                    }
+                    _ => EventVerificationFailure::rejected(error.to_string()),
+                })?
+        } else {
+            let authority = self
+                .owner
+                .resolve_authority(&self.transport, &event.authority_digest)
+                .await
+                .map_err(|error| match error {
+                    crate::client::TrellisClientError::AuthorizationUnavailable(_) => {
+                        EventVerificationFailure::retryable(error.to_string())
+                    }
+                    _ => EventVerificationFailure::rejected(error.to_string()),
+                })?;
+            self.owner
+                .authorize_action(&self.transport, &authority, api_id, action)
+                .await
+                .map_err(|error| match error {
+                    crate::client::TrellisClientError::AuthorizationUnavailable(_) => {
+                        EventVerificationFailure::retryable(error.to_string())
+                    }
+                    _ => EventVerificationFailure::rejected(error.to_string()),
+                })?;
+            let payload_sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(payload).into();
+            trellis_protocol::verify_session_event(
+                trellis_protocol::SessionEventVerificationInput {
+                    authority: &authority,
+                    event: &event,
+                    payload_sha256,
+                    proof: &proof,
+                    policy: &self.owner.policy(),
+                    original_publication: None,
+                    known_revoked: false,
+                },
             )
-            .await
-        {
-            Ok(context) => context,
-            Err(error) => {
-                tracing::warn!(subject, %error, "local event context resolution failed");
-                return Err(error);
-            }
+            .map_err(|error| EventVerificationFailure::rejected(error.to_string()))?;
+            self.owner
+                .assert_current(&authority)
+                .map_err(|error| match error {
+                    crate::client::TrellisClientError::AuthorizationUnavailable(_) => {
+                        EventVerificationFailure::retryable(error.to_string())
+                    }
+                    _ => EventVerificationFailure::rejected(error.to_string()),
+                })?;
+            authority.verified().as_ref().clone()
         };
-        if session_key
-            != base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(context.session_key().as_bytes())
+        let authority = authority.authority();
+        if headers
+            .get("session-key")
+            .is_some_and(|key| key.as_str() != authority.session_public_key)
         {
             return Err(EventVerificationFailure::rejected(
-                "session key does not match authorization context",
+                "event session key header mismatch",
             ));
         }
-        // Memory-only revocation read; the provider watch applies revocations
-        // immediately. A revoked context denies.
-        let revoked_at = match provider.revocation_time(&authorization_context) {
-            Ok(Some(revoked_at)) => Some(revoked_at),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!(subject, %error, "local revocation evidence unavailable");
-                return Err(EventVerificationFailure::retryable(format!(
-                    "local revocation evidence unavailable for {subject}"
-                )));
-            }
+        let (kind, deployment_id, instance_id, participant_id) = match &authority.binding {
+            trellis_protocol::SessionBinding::Service {
+                participant_id,
+                deployment_id,
+                instance_id,
+            } => (
+                "service",
+                Some(deployment_id.clone()),
+                Some(instance_id.clone()),
+                Some(participant_id.clone()),
+            ),
+            trellis_protocol::SessionBinding::Device {
+                participant_id,
+                deployment_id,
+                instance_id,
+                ..
+            } => (
+                "device",
+                Some(deployment_id.clone()),
+                Some(instance_id.clone()),
+                Some(participant_id.clone()),
+            ),
+            trellis_protocol::SessionBinding::Browser { .. }
+            | trellis_protocol::SessionBinding::Native { .. } => ("user", None, None, None),
         };
-        // The caller supplies the API identity and event name from its
-        // precompiled descriptor; the verifier never infers either from the
-        // transport subject or the connected service's own participant.
-        if descriptor_identity != expected_descriptor_identity {
-            return Err(EventVerificationFailure::rejected(
-                "event descriptor identity does not match the registered listener",
-            ));
-        }
-        let verified_event = self
-            .verification
-            .verify_event(EventVerificationInput {
-                context: &context,
-                context_digest: &authorization_context,
-                subject,
-                descriptor_identity: &descriptor_identity,
-                payload,
-                event_id: &event_id,
-                event_time: &event_time,
-                proof: &proof,
-                policy: &policy,
-                revoked_at,
-            })
-            .map_err(|error| {
-                tracing::debug!(subject, %error, "local event proof rejected");
-                EventVerificationFailure::rejected(format!("invalid event proof: {error}"))
-            })?;
-        let publisher = verified_event.publisher();
-        let result = super::runtime_facade::ServiceEventPublisherContext {
-            kind: publisher.kind.clone(),
-            deployment_id: publisher.deployment_id.clone(),
-            instance_id: publisher.instance_id.clone(),
-            contract_id: Some(publisher.participant_id.clone()),
+        Ok(super::runtime_facade::ServiceEventPublisherContext {
+            kind: kind.to_owned(),
+            deployment_id,
+            instance_id,
+            contract_id: participant_id,
             contract_digest: None,
-            session_status: "active".to_owned(),
-        };
-        if provider
-            .revocation_time(&authorization_context)
-            .map_err(|error| EventVerificationFailure::retryable(error.to_string()))?
-            .is_some()
-        {
-            return Err(EventVerificationFailure::rejected(
-                "authorization context is revoked",
-            ));
-        }
-        Ok(result)
+            session_status: if historical.is_some() {
+                "historical"
+            } else {
+                "active"
+            }
+            .to_owned(),
+        })
     }
 }
 
@@ -349,7 +301,7 @@ impl RequestValidator for LocalAuthVerifier {
         payload: &'a Bytes,
         context: &'a RequestContext,
     ) -> BoxFuture<'a, Result<RequestValidation, ServerError>> {
-        Box::pin(async move { self.verify_request(subject, payload, context).await })
+        Box::pin(self.verify_request_inner(subject, payload, context, false))
     }
 
     fn validate_possession<'a>(
@@ -358,10 +310,7 @@ impl RequestValidator for LocalAuthVerifier {
         payload: &'a Bytes,
         context: &'a RequestContext,
     ) -> BoxFuture<'a, Result<RequestValidation, ServerError>> {
-        Box::pin(async move {
-            self.verify_request_inner(subject, payload, context, false)
-                .await
-        })
+        Box::pin(self.verify_request_inner(subject, payload, context, true))
     }
 
     fn revalidate_current<'a>(
@@ -369,22 +318,49 @@ impl RequestValidator for LocalAuthVerifier {
         context: &'a RequestContext,
     ) -> BoxFuture<'a, Result<bool, ServerError>> {
         Box::pin(async move {
-            let (Some(provider), Some(digest), Some(route)) = (
-                self.provider.as_ref(),
-                context.authorization_context.as_deref(),
-                context.required_permission.as_ref(),
-            ) else {
+            let Some(verified) = context.verified_request() else {
                 return Ok(false);
             };
-            let Ok(permission) = route.permission_atom() else {
+            if self.owner.assert_current(verified.authority()).is_err() {
+                return Ok(false);
+            }
+            let Some(action) = verified.authorized_action() else {
                 return Ok(false);
             };
-            Ok(provider.current_context_allows(digest, &permission))
+            let transport = context
+                .transport
+                .lease()
+                .map_or(&self.transport, |lease| lease.nats());
+            let provider = match self.owner.own_authority() {
+                Ok(provider) => provider,
+                Err(_) => return Ok(false),
+            };
+            if self
+                .owner
+                .authorize_provider(transport, &provider, &verified.request().api_id, action)
+                .await
+                .is_err()
+            {
+                return Ok(false);
+            }
+            if verified.handler_authorized() {
+                return Ok(self.owner.assert_current(verified.authority()).is_ok());
+            }
+            Ok(self
+                .owner
+                .authorize_action(
+                    transport,
+                    verified.authority(),
+                    &verified.request().api_id,
+                    action,
+                )
+                .await
+                .is_ok())
         })
     }
 }
 
-/// Two-way durable event verification outcome used to choose redelivery.
+/// Durable event verification outcome used to choose redelivery.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum EventVerificationFailure {
     /// Authorization infrastructure is temporarily unavailable; redelivery is required.
@@ -397,13 +373,10 @@ impl EventVerificationFailure {
     pub(crate) fn retryable(message: impl Into<String>) -> Self {
         Self::Retryable(message.into())
     }
-
     pub(crate) fn rejected(message: impl Into<String>) -> Self {
         Self::Rejected(message.into())
     }
-
     /// Return the diagnostic message without changing its retry classification.
-    #[must_use]
     pub fn message(&self) -> &str {
         match self {
             Self::Retryable(message) | Self::Rejected(message) => message,
@@ -418,18 +391,25 @@ impl std::fmt::Display for EventVerificationFailure {
 }
 
 fn required_event_header(
-    headers: &async_nats::header::HeaderMap,
+    headers: &async_nats::HeaderMap,
     name: &str,
 ) -> Result<String, EventVerificationFailure> {
-    headers
-        .get(name)
-        .map(|value| value.as_str().to_string())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| EventVerificationFailure::rejected(format!("missing event {name} header")))
+    let mut values = headers.get_all(name);
+    let value = values
+        .next()
+        .filter(|value| !value.as_str().is_empty())
+        .ok_or_else(|| {
+            EventVerificationFailure::rejected(format!("missing event {name} header"))
+        })?;
+    if values.next().is_some() {
+        return Err(EventVerificationFailure::rejected(format!(
+            "duplicate event {name} header"
+        )));
+    }
+    Ok(value.as_str().to_owned())
 }
 
 /// Canonical base64url SHA-256 payload digest used by request/event proofs.
-#[doc = concat!("Trellis API operation `", stringify!(payload_hash_base64url), "`.")]
 pub fn payload_hash_base64url(payload: &[u8]) -> String {
     use base64::Engine as _;
     use sha2::Digest as _;

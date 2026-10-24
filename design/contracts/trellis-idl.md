@@ -33,7 +33,8 @@ Generation targets are selected explicitly: a configured `[generate.rust]` or
 `[generate.typescript]` emits that package even when the project root has no
 matching toolchain file, so an app authored in one language can emit a
 projection in the other (for example a TypeScript app participant that needs a
-Rust crate for a Rust test harness). With no target configured, a single
+Rust crate for a Rust test harness). Explicit configuration selects only the named
+outputs, even if another toolchain file exists. With no target configured, a single
 detected language defaults to `trellis`; multiple targets require explicit
 `output` paths.
 
@@ -70,11 +71,18 @@ api orders@v1 {
   title "Orders";
   description "Order creation.";
   rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
-  capabilities { public { allows { rpc Create; } } }
+  capabilities {
+    capability create {
+      title "Create orders";
+      description "Create an order for a customer.";
+      grants "New orders enter the customer's workflow.";
+      allows { rpc Create; }
+    }
+  }
 }
 
 service OrdersService { implements orders; }
-app OrdersCaller { use orders { rpc Create; } }
+app OrdersCaller { use orders { required capability create; } }
 ```
 
 The authored API lineage token (`orders`) is lowercase alphanumeric and is used
@@ -88,10 +96,78 @@ Inputs, outputs, progress, events, and error payloads reference top-level types.
 There is no `rpc internal`, `EventClass`, per-action version, general transfer
 block, participant-local schema, or API State.
 
-Participants are `service`, `device`, `app`, or `agent`. A device may contain at
-most one named `app` or `agent`. Only service/device participants implement
-APIs. `use Api;` selects nothing; a nonempty use body selects exact
-interactions. Operation selection always includes its lifecycle and signals.
+Transfers are member flags, not a block. An RPC's `download;` lets its response
+carry a receive grant. An Operation's `upload;` accepts caller bytes that the
+runtime durably stages before the handler reads them, so a recovered execution
+can read them again. An Operation's `stream;` accepts caller bytes that go
+directly to its running handler: nothing is staged, and the bytes cannot be
+replayed, so an interrupted `stream` Operation fails and its caller starts a
+new one. `upload` and `stream` are mutually exclusive; both use the same caller
+helpers and wire protocol. See
+[Files Transfer Patterns](../core/files-transfer-patterns.md).
+
+Deployable participants are `service` and `device`. The `app` and `agent`
+declarations describe browser/native application requests, not installable
+principals. A device may contain one named `app` or `agent` companion request.
+Only service/device participants implement APIs.
+
+`use Api;` selects nothing. A use body selects whole capabilities:
+`required capability read;` is required; `capability export;` is optional.
+Duplicate requests normalize deterministically, and required wins over optional.
+Unknown authored capability references are compile errors. Generated callable
+surfaces are the union of the selected capabilities' actions; unrelated
+capabilities do not become requirements merely because they overlap those
+actions. Operation selections include the operation lifecycle and signals.
+
+Capabilities are named `area.action`, such as `sessions.read` or
+`users.manage`; the ID is the API's prefix and that name,
+`trellis.auth.v1:sessions.read`. Administrative Auth RPCs are allowed by
+administrative capabilities, declared with the `administrative;` marker. Only
+the built-in `trellis` package may use it, and Auth refuses any other API in
+the `trellis.` namespace. Own-authority and own-session maintenance are fixed
+session rights, not ordinary capability requests.
+
+Every authored capability has a `title`, a `description`, and `grants`: what
+holding it lets the holder do, shown when a user consents. A user approves that
+`grants` statement, and authors keep it honest. Auth owns each capability's
+consent revision and advances it when an accepted API changes the `grants`
+text; a user's approval then no longer covers the capability until they approve
+again. Other compatible changes, including adding actions to `allows`, reach
+approved apps within the same API version; a change that breaks what users
+agreed to belongs in a new API major version. Authors declare no revision
+counter. API generation, accepted revision, consent revisions, and
+action/membership introduction revisions are Auth-owned acceptance metadata.
+
+A group is a developer-defined bundle of an API's capabilities. It is granted,
+assigned to roles, mapped from identity providers, requested by participants,
+and consented to exactly like a capability, and it stands for its members:
+
+```trellis
+capabilities {
+  capability orders.read { ... }
+  capability orders.cancel { ... }
+  group support {
+    title "Support";
+    description "Look up and cancel customer orders.";
+    grants "Can see and cancel any order.";
+    capability orders.read;
+    capability orders.cancel;
+  }
+}
+service Desk { use orders { required group support; } }
+```
+
+A group's ID is the API prefix and its one-word name,
+`acme.orders.v1:support`; `public` is reserved for the public capability. It
+needs a title, description, grants, and at least one member, and lists only
+capabilities of the same API. Groups are part of the API's meaning, so they are in both canonical
+forms and change its digest. Whoever holds a group through a grant, role, or
+mapping holds its current members, so a membership change reaches them at once.
+Approval of a group covers its `grants` text, exactly as for a capability: an
+approved app gets the group's current members, including new ones, until the
+group's `grants` text changes and the user must approve again. A member's own
+`grants` change does not reopen an approved group. A group containing an administrative capability is
+administrative.
 
 Resource headers are `state`, `kv`, `store`, `job`, or `consumer`, optionally
 followed by `optional`, then a local name. Bodies require nonempty `title` and
@@ -99,6 +175,18 @@ followed by `optional`, then a local name. Bodies require nonempty `title` and
 authoring has events, concurrency, replay, and retry—never ordering, ack-wait,
 max-delivery, or DLQ switches. Job progress, logs, and dead lifecycle are always
 available rather than feature flags.
+
+Application requests may declare local typed State codecs, but cannot own KV,
+Store, Job, or Consumer resources. A State declaration grants no implicit
+Get/Put/Delete authority: the application must request the appropriate State
+capabilities explicitly. Deployable resources remain principal-owned.
+
+Built-in capability selections follow the same rule. State `read`, `write`, and
+`delete` select Get, Put, and Delete independently. A Jobs `query` selection
+exposes Query, not job inspection, cancellation, or dead-letter replay. Health
+`observeStatusChanges` selects event consumption, not publication; provider publication
+and Consumer delivery reporting are runtime responsibilities rather than caller
+capabilities.
 
 A participant declaring a Consumer requires a direct dependency on the `trellis`
 source package containing `trellis.events@v1`. The author chooses and locks that
@@ -144,12 +232,17 @@ The package digest is base64url SHA-256 of semantic canonical UTF-8 source.
 Package evidence contains the complete dependency closure exactly once with
 presentation canonical source. The server independently resolves it and rejects
 missing/extra packages, cycles, edge/version mismatches, or digest mismatches.
+Successful compilations may be reused from a bounded process-local cache only
+for identical complete evidence, including presentation source and dependencies;
+a claimed semantic digest alone is not a cache key. This reuses immutable
+compiler output, never policy, resource eligibility, or authorization decisions.
 Generated Rust constructors and runtime descriptors are compiler output, not
 contract-as-code builders.
 
 Published OCI source bundles contain the manifest, listed source, and frozen
-resolution metadata—not canonical API JSON. Generated language packages may be
-committed when consumers must build without the CLI/cache; never hand-edit them.
+resolution metadata—not canonical API JSON. Generated implementations are
+disposable build/release artifacts, not committed source; run generation before
+building local consumers and package generated code when distributing them.
 
 ## Pagination
 

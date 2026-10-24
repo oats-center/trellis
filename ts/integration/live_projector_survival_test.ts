@@ -10,12 +10,13 @@
 import { Result } from "@oatscenter/trellis";
 import type { CallerRuntime } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { assert } from "@std/assert";
-import { fromFileUrl } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
-import { participants as webParticipants } from "trellis-web-generated";
-
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
@@ -25,7 +26,7 @@ const runtimeOptions = {
 };
 
 type Runtime = Parameters<Parameters<typeof withTrellisRuntime>[0]>[0];
-type ConsoleClient = CallerRuntime<typeof webParticipants.Console.participant>;
+type ConsoleClient = CallerRuntime<typeof apps.Observer.request>;
 
 /** Connects one fixture Provider service that executes jobs and publishes. */
 async function connectProvider(runtime: Runtime, name: string) {
@@ -34,7 +35,7 @@ async function connectProvider(runtime: Runtime, name: string) {
     contract: participants.Provider.participant,
   });
   return await TrellisService.connect({
-    trellisUrl: runtime.trellisUrl,
+    trellisUrl: runtime.oauthIssuer,
     participant: participants.Provider.participant,
     name,
     seed: identity.seed,
@@ -71,8 +72,9 @@ async function observeAndCloseJobs(
   client: ConsoleClient,
 ): Promise<void> {
   const frames: Record<string, unknown>[] = [];
-  const iterator = (await client.jobsWatch({ includeInitial: false }).orThrow())
-    [Symbol.asyncIterator]();
+  const iterator = (
+    await client.jobsWatch({ includeInitial: false }).orThrow()
+  )[Symbol.asyncIterator]();
   const pump = pumpInto(iterator, frames);
   await runtime.waitFor(() => frames.some((frame) => frame.kind === "ready"), {
     timeoutMs: 30_000,
@@ -94,29 +96,34 @@ async function observeAndCloseEvents(
   const pump = pumpInto(iterator, frames);
   // Events.Watch has no initial frame; republish until the observer is
   // admitted so the admission event cannot be missed.
-  await runtime.waitFor(async () => {
-    if (frames.length > 0) return true;
-    await service.publishChanged({
-      value: `bi06-prime-${crypto.randomUUID()}`,
-    }).orThrow();
-    return false;
-  }, { timeoutMs: 30_000 });
+  await runtime.waitFor(
+    async () => {
+      if (frames.length > 0) return true;
+      await service
+        .publishChanged({
+          value: `bi06-prime-${crypto.randomUUID()}`,
+        })
+        .orThrow();
+      return false;
+    },
+    { timeoutMs: 30_000 },
+  );
   await iterator.return?.();
   await pump.catch(() => undefined);
 }
 
-Deno.test("BI06 closing a public observer leaves built-in Jobs and Events projectors running", async () => {
+test("BI06 closing a public observer leaves built-in Jobs and Events projectors running", async () => {
   await withTrellisRuntime(async (runtime) => {
     const client = await runtime.connectClient({
       name: `bi06-console-${crypto.randomUUID()}`,
-      contract: webParticipants.Console.participant,
+      contract: apps.Observer.request,
     });
     const service = await connectProvider(
       runtime,
       `bi06-provider-${crypto.randomUUID()}`,
     );
     await service.jobs.work.handle(({ job }) =>
-      Promise.resolve(Result.ok(job.payload))
+      Promise.resolve(Result.ok(job.payload)),
     );
     // Connect registers handlers; `wait()` starts the job workers that execute
     // them. Close the observer first so execution is proven without one.
@@ -129,22 +136,32 @@ Deno.test("BI06 closing a public observer leaves built-in Jobs and Events projec
       await observeAndCloseEvents(runtime, client, service);
 
       // Jobs execution and the built-in Jobs projection keep advancing.
-      await service.jobs.work.create({
-        value: `bi06-job-${crypto.randomUUID()}`,
-      }).orThrow();
-      await runtime.waitFor(async () => {
-        const summary = await client.jobsSummary({ state: ["completed"] })
-          .orThrow();
-        return summary.stats.total >= 1n;
-      }, { timeoutMs: 30_000 });
+      await service.jobs.work
+        .create({
+          value: `bi06-job-${crypto.randomUUID()}`,
+        })
+        .orThrow();
+      await runtime.waitFor(
+        async () => {
+          const summary = await client
+            .jobsSummary({ state: ["completed"] })
+            .orThrow();
+          return summary.stats.total >= 1n;
+        },
+        { timeoutMs: 30_000 },
+      );
 
       // The Events projector keeps capturing and exposing published events.
       await service.publishChanged({ value: published }).orThrow();
-      await runtime.waitFor(async () => {
-        const page = await client.eventsQuery({ ownerEventName: "Changed" })
-          .orThrow();
-        return page.items.length >= 1;
-      }, { timeoutMs: 30_000 });
+      await runtime.waitFor(
+        async () => {
+          const page = await client
+            .eventsQuery({ ownerEventName: "Changed" })
+            .orThrow();
+          return page.items.length >= 1;
+        },
+        { timeoutMs: 30_000 },
+      );
 
       // The runtime stayed healthy through ordinary use.
       const ready = await fetch(`${runtime.trellisUrl}/readyz`);

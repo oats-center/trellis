@@ -1,6 +1,6 @@
 # Design: Trellis CLI
 
-Status: authoritative command and project-tooling model after WO-02.
+Status: Revision 7 command and project-tooling model.
 
 ## Principles
 
@@ -15,13 +15,15 @@ Status: authoritative command and project-tooling model after WO-02.
 ```text
 trellis add <package> [--version <requirement>]
 trellis rm <package>
+trellis check
 trellis update
 trellis install
 trellis generate
 trellis publish
 ```
 
-`add`, `rm`, and `update` resolve the source-package graph and write an exact
+`check` parses, resolves, and validates the local source package without
+writing outputs. `add`, `rm`, and `update` resolve the source-package graph and write an exact
 `trellis.lock`. `install` recreates language outputs from that lock. `generate`
 compiles native Trellis IDL and stages all generated output before atomically
 replacing the last-good tree. `publish` pushes the source bundle and frozen
@@ -34,41 +36,36 @@ author wire schemas.
 ## Authentication
 
 ```text
-trellis login [--server <url>]
+trellis login <oauth-origin> [--ca-certificate <ca.crt>]
 trellis logout
 trellis whoami
 ```
 
-Login uses the browser request/bind flow, then context refresh. Local CLI state
-retains the session signing seed and nullable login metadata required for
-continuity; authorization contexts, route JWTs, transports, grants, and issuer
-keys are process-memory-only. Logout revokes the real login and clears local
-credentials.
-
-The CLI uses the installed `trellis-app.cli@v1` participant. First-admin setup
-creates its Admin `GrantBinding` atomically with the Console binding.
+Login uses public OAuth Device Code with explicit capability consent; the
+administrative `trellis.*` capabilities are optional and take the Portal's
+separate confirmation step. The registered client is `trellis.cli`; no app
+participant installation is involved. The native SDK owns durable P-256 custody,
+refresh-token rotation, locking and atomic replacement. Each process resumes
+custody and establishes fresh ephemeral runtime authority. `--ca-certificate`
+selects a private installation CA as the only trust anchor for that deployment's
+OAuth and broker TLS; login prints its fingerprint for out-of-band comparison
+and the selection retains its path. Logout revokes the
+application refresh family and clears the selected native credentials.
 
 ## Authorization Administration
 
 ```text
-trellis identity grants get <identity-id> <participant-id>
-trellis identity grants list [--identity <identity-id>]
-trellis identity grants set <identity-id> <participant-id> ...
-trellis identity grants revoke <identity-id> <participant-id> ...
-
-trellis participants get <participant-id> [--revision <revision>]
-trellis participants install <project-or-artifact> ...
-
-trellis issuers list
-trellis issuers rotate ...
+trellis clients list|get|put|disable|delete ...
+trellis apis list|get|review|accept|force-replace ...
 trellis issuers revoke <issuer-key-id> ...
 ```
 
-Grant commands call `Auth.Grants.*` and require explicit expected revisions for
-mutations. They operate on one identity/participant binding and may assign only
-declared atoms and finite platform privileges. Participant installation compiles
-verified source-package semantics and calls `Auth.Participants.Install`; it does
-not grant authority as a side effect.
+Client registration and catalog operations call the generated `Auth.OAuthClients`
+and `Auth.Apis` families. JSON request files use generated native-contract DTOs;
+the CLI does not author a second policy or contract schema. Mutations retain
+expected revisions and idempotency keys. Force replacement requires
+`trellis.auth.v1:apis.forceReplace` and explicit breakage/consent acknowledgements.
+Client configuration supports exact registered loopback browser callbacks.
 
 Issuer commands manage the online signer. No `infra`, trust-root, certificate,
 manifest, trust-floor, offline-signing, or compatibility command exists.
@@ -101,22 +98,45 @@ Provisioning returns one-use service/device material once. The CLI does not
 persist returned private identity material unless the caller explicitly directs
 output to a secure destination.
 
+## Resources And Events
+
+```text
+trellis resources list|inspect|destroy ...
+trellis events query|inspect ...
+trellis events consumers query|inspect ...
+trellis events dead-letters query|inspect|replay|dismiss ...
+```
+
+Resource commands use `Auth.Resources.*`. `destroy` accepts only a detached
+resource and requires exact confirmation; no lifecycle command destroys data
+implicitly. Event commands read the Events journal and administer durable
+consumers and dead letters through the Events API.
+
 ## Users And Portals
 
 ```text
 trellis users ...
-trellis portals ...
 ```
 
-These commands retain current account, user identity, portal route, login
-setting, and portal grant-override operations. Portal grant overrides select
-concrete atoms from an installed participant revision and do not create a second
-authority model.
+User commands use generated Auth account operations. The separately originated
+OAuth portal owns interactive login, device-code confirmation and consent;
+authenticated administration remains on NATS.
+
+Fresh administrator initialization uses `trellis init admin --config <path>`.
+`--username` defaults to `admin`; `--password` or `--password-stdin` sets initial
+credentials. With neither, the command returns a one-time password-setup URL on
+the isolated OAuth origin. Runtime startup offers corresponding
+`--admin-username`, `--admin-password`, and `--admin-password-stdin` options and
+uses the same atomic initialization. Existing administrator credentials are never
+overwritten by these options. `--reset-admin` is explicit local recovery using
+the existing password-reset flow, not administrative authority recreation.
 
 ## Utility Commands
 
 ```text
 trellis init ...
+trellis tls renew --bundle <dir> [--ca-dir <dir>]
+trellis tls status --config <config.toml>
 trellis keys ...
 trellis upgrade ...
 trellis version
@@ -124,7 +144,14 @@ trellis completion <shell>
 ```
 
 Initialization creates ordinary secure directories only when absent and rejects
-unsafe paths. Key commands generate or derive the requested online issuer,
+unsafe paths. `trellis init config` selects listener security with `--tls
+generated|supplied|loopback-development` (generated by default),
+`--trusted-proxy`, and `--nats-websocket-behind-proxy`, validates that every
+endpoint can be protected before writing, and writes a generated CA's private
+key to `<out>-tls-ca/` or `--tls-ca-dir`, outside the bundle. It always warns
+with the CA fingerprint when it generated one. `trellis tls renew` reissues the
+bundle's leaves from that CA with unchanged names; `trellis tls status` reports
+the CA fingerprint and expiry and repeats the warning. Key commands generate or derive the requested online issuer,
 identity, or session-compatible key material without introducing offline trust
 artifacts.
 
@@ -133,7 +160,7 @@ artifacts.
 Human output is concise and actionable. JSON mode emits one documented value to
 stdout and sends tracing/progress to stderr. Expected Auth RPC errors retain
 their generated result codes, including stale binding/deployment revisions,
-invalid participant artifacts, denied Admin privilege, missing required
+invalid participant artifacts, denied administration, missing required
 evidence, and unavailable issuer/runtime dependencies.
 
 ## Removed Surface

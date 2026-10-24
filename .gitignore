@@ -47,9 +47,8 @@ vite.config.ts.timestamp-*
 utils/arangodb/data/
 
 # Generated build artifacts
+/portal/dist/
 generated/
-!crates/trellis/src/internal_sdk/generated/
-!crates/trellis/src/internal_sdk/generated/**
 ts/packages/trellis/auth/protocol_wasm/
 docs/static/api/typescript/
 docs/static/api/rust/
@@ -68,19 +67,38 @@ demos/rust/target/
 demos/rust/**/target/
 xtask/Cargo.lock
 
-# Local generated packages; Orders is intentionally committed.
+# Disposable generated packages; SDK sources are prepared by xtask, private wrappers use OUT_DIR.
+/crates/builtin-contracts/trellis/
+/crates/runtime-apis/src/*
+!/crates/runtime-apis/src/lib.rs
 /crates/runtime/trellis/
 /crates/eventlog-runtime/trellis/
 /crates/jobs-runtime/trellis/
 /web/trellis/
 /ts/packages/trellis-testkit/trellis/
-/integration/fixtures/runtime/crates/runtime-trellis/
+/integration/fixtures/runtime/crates/runtime-trellis/*
+!/integration/fixtures/runtime/crates/runtime-trellis/Cargo.toml
+!/integration/fixtures/runtime/crates/runtime-trellis/build.rs
+!/integration/fixtures/runtime/crates/runtime-trellis/src/
+/integration/fixtures/runtime/crates/runtime-trellis/src/*
+!/integration/fixtures/runtime/crates/runtime-trellis/src/lib.rs
 /integration/fixtures/runtime/packages/runtime-trellis/
+/integration/fixtures/runtime/v2/packages/runtime-trellis/
 /integration/fixtures/runtime-pinned/packages/runtime-trellis/
 /demos/rust/service/trellis/
 /demos/rust/device/trellis/
 /demos/ts/service/trellis/
 /demos/ts/device/trellis/
 /demos/app/trellis/
+/integration/fixtures/testkit/crates/trellis-test-fixture/
+/integration/fixtures/testkit/packages/trellis-test-fixture/
+/integration/fixtures/runtime-removed/packages/runtime-trellis/
+/integration/fixtures/client-upgrade/packages/client-upgrade/
+/integration/fixtures/client-upgrade-narrow/packages/client-upgrade/
+/integration/fixtures/client-upgrade-consent/packages/client-upgrade/
+/integration/fixtures/client-upgrade-breaking/packages/client-upgrade/
+/benchmarks/runtime/crates/performance-trellis/
+/benchmarks/runtime/packages/performance-trellis/
+/docs/examples/orders/trellis/
 
 .cortexkit

@@ -1,20 +1,10 @@
+import { codecs } from "@oatscenter/trellis/generated";
 import {
-  type ClientAuthContinuation,
-  type ClientAuthRequiredContext,
-  TrellisClient,
-} from "@oatscenter/trellis";
-import {
-  createPortalBinding,
-  startPortalTransaction,
-} from "@oatscenter/trellis/auth/browser";
-
-import {
-  adminAccountTokenFromUrl,
-  approveLocalFlowIfNeeded,
-  completeLocalAuthFlow,
-  intentFromUrl,
-  performLocalLogin,
-} from "./admin/auth_flow.ts";
+  connectNativeClient,
+  type NativeOAuthSession,
+} from "@oatscenter/trellis/native";
+import { ulid } from "ulid";
+import { loginNativeTestClient } from "./admin/native_auth.ts";
 import * as adminDeployment from "./admin/deployment.ts";
 import {
   ADMIN_USERNAME,
@@ -26,10 +16,7 @@ import {
   type TrellisTestAdminRpcMethod,
 } from "./admin/methods.ts";
 import { recordTrellisDuration } from "./admin/metrics.ts";
-import { isRecord, postJson } from "./admin/transport.ts";
-import { generateSessionSeed } from "./auth/random.ts";
 import type {
-  TrellisTestParticipantApplyResult,
   TrellisTestParticipantApproval,
   TrellisTestParticipantLike,
   TrellisTestServiceKey,
@@ -39,10 +26,11 @@ export { adminMethods, type TrellisTestAdminRpcMethod };
 
 /** Internal public-surface admin automation used by `TrellisTestRuntime`. */
 export class TrellisTestAdminAutomation {
-  #configuredConsentPolicies = new Set<string>();
-  readonly #trellisUrl: string;
+  #clientCapabilitySetup = new Map<string, Promise<void>>();
+  readonly #oauthIssuer: string;
   readonly #adminPassword: string;
   readonly #getBootstrapUrl: () => Promise<string>;
+  #nativeSession: NativeOAuthSession | undefined;
   #bootstrapComplete: Promise<void> | undefined;
   #adminClient: Promise<AdminClient> | undefined;
   #connectedAdminClient: AdminClient | undefined;
@@ -50,25 +38,22 @@ export class TrellisTestAdminAutomation {
 
   /** Creates admin automation backed by the supplied bootstrap URL provider. */
   constructor(args: {
-    trellisUrl: string;
+    oauthIssuer: string;
     adminPassword: string;
     defaultDeployment: string;
     getBootstrapUrl: () => Promise<string>;
     bootstrapComplete?: boolean;
     resourceReadyTimeoutMs?: number;
   }) {
-    this.#trellisUrl = args.trellisUrl.replace(/\/$/, "");
+    this.#oauthIssuer = args.oauthIssuer;
     this.#adminPassword = args.adminPassword;
     this.#getBootstrapUrl = args.getBootstrapUrl;
     this.#deployment = {
       defaultDeployment: args.defaultDeployment,
-      createdDeployments: new Map(),
-      deploymentBindingRevisions: new Map(),
       deploymentIds: new Map(),
-      pendingApprovals: new Map(),
-      installedParticipants: new Map(),
-      deploymentResourceExpectations: new Map(),
-      resourceReadyTimeoutMs: args.resourceReadyTimeoutMs ?? 30_000,
+      deploymentRevisions: new Map(),
+      deploymentDigests: new Map(),
+      acceptedApis: new Map(),
       rpc: <M extends TrellisTestAdminRpcMethod>(
         method: M,
         input: AdminRpc[M]["input"],
@@ -85,14 +70,44 @@ export class TrellisTestAdminAutomation {
       const startedAt = performance.now();
       try {
         const bootstrapUrl = await this.#getBootstrapUrl();
-        const flowId = adminAccountTokenFromUrl(bootstrapUrl);
-        const response = await postJson(
-          `${this.#trellisUrl}/auth/account-flow/${
-            encodeURIComponent(flowId)
-          }/local-password`,
-          { username: ADMIN_USERNAME, password: this.#adminPassword },
-        );
-        if (!isRecord(response) || response.status !== "created") {
+        const url = new URL(bootstrapUrl);
+        const token = url.searchParams.get("token");
+        if (!token)
+          throw new Error(
+            "Trellis administrator URL is missing its reset token",
+          );
+        const page = await fetch(url, {
+          redirect: "error",
+          signal: AbortSignal.timeout(30_000),
+        });
+        const cookies = page.headers
+          .getSetCookie()
+          .map((cookie) => cookie.split(";", 1)[0]);
+        const csrf = cookies
+          .find((cookie) => cookie.startsWith("__Host-trellis-portal-csrf="))
+          ?.split("=", 2)[1];
+        if (!page.ok || !csrf)
+          throw new Error(
+            "Trellis administrator setup could not establish a portal session",
+          );
+        await page.body?.cancel();
+        const response = await fetch(new URL("/portal/account/reset", url), {
+          method: "POST",
+          redirect: "error",
+          signal: AbortSignal.timeout(30_000),
+          headers: {
+            Origin: url.origin,
+            Cookie: cookies.join("; "),
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({
+            token,
+            csrf,
+            password: this.#adminPassword,
+          }),
+        });
+        await response.body?.cancel();
+        if (!response.ok) {
           throw new Error(
             "Trellis first-admin bootstrap returned an unexpected response",
           );
@@ -113,23 +128,28 @@ export class TrellisTestAdminAutomation {
       const startedAt = performance.now();
       try {
         await this.completeBootstrap();
-        const sessionKeySeed = generateSessionSeed();
-        const client = await TrellisClient.connect({
-          trellisUrl: this.#trellisUrl,
+        const login = await loginNativeTestClient({
+          issuer: this.#oauthIssuer,
+          // OAuth registration identity is independent of the local generated request descriptor.
+          clientId: "trellis.cli",
+          request: adminParticipant,
+          username: ADMIN_USERNAME,
+          password: this.#adminPassword,
+          administrativeCapabilities: [
+            "trellis.auth.v1:users.manage",
+            "trellis.auth.v1:roles.manage",
+            "trellis.auth.v1:apis.accept",
+            "trellis.auth.v1:apis.forceReplace",
+            "trellis.auth.v1:clients.manage",
+            "trellis.auth.v1:platform.manage",
+          ],
+        });
+        this.#nativeSession = login.session;
+        const client = await connectNativeClient({
+          ...login,
           name: "trellis-testkit-admin",
           timeout: 60_000,
-          participant: adminParticipant,
-          auth: {
-            mode: "session_key",
-            sessionKeySeed,
-            redirectTo: `${this.#trellisUrl}/_trellis/test/admin-auth`,
-          },
-          onAuthRequired: (ctx: ClientAuthRequiredContext) =>
-            completeLocalAuthFlow({
-              trellisUrl: this.#trellisUrl,
-              loginUrl: ctx.loginUrl,
-              password: this.#adminPassword,
-            }),
+          request: adminParticipant,
         }).orThrow();
         this.#connectedAdminClient = client;
         return client;
@@ -144,11 +164,52 @@ export class TrellisTestAdminAutomation {
     return await this.#adminClient;
   }
 
-  /** Forwards one validated low-level Auth RPC over the local or shared admin transport. */
-  async callAdminRpc(
-    method: string,
-    input: unknown,
-  ): Promise<unknown> {
+  /** Grants declared test-user capabilities once, preserving subsequent explicit revocations. */
+  async prepareClientCapabilities(
+    capabilityIds: readonly string[],
+    targetPrincipalId?: string,
+  ): Promise<void> {
+    const client = await this.#client();
+    const principalId =
+      targetPrincipalId ??
+      (await client.sessionsMe({}).orThrow()).principal.principalId;
+    for (const capabilityId of new Set(capabilityIds)) {
+      const key = JSON.stringify([principalId, capabilityId]);
+      let setup = this.#clientCapabilitySetup.get(key);
+      if (!setup) {
+        setup = this.grantClientCapabilities(principalId, [capabilityId]);
+        this.#clientCapabilitySetup.set(key, setup);
+      }
+      await setup;
+    }
+  }
+
+  /** Explicitly grant missing capabilities to one principal, including after a deliberate revocation. */
+  async grantClientCapabilities(
+    principalId: string,
+    capabilityIds: readonly string[],
+  ): Promise<void> {
+    const principal = codecs.ulid.decode(principalId);
+    const client = await this.#client();
+    for (const capabilityId of new Set(capabilityIds)) {
+      const grants = await client
+        .capabilityGrantsList({ principalId: principal, capabilityId })
+        .orThrow();
+      if (grants.items.length === 0) {
+        await client
+          .capabilityGrantsGrant({
+            principalId: principal,
+            capabilityId,
+            expectedRevision: 0n,
+            idempotencyKey: ulid(),
+          })
+          .orThrow();
+      }
+    }
+  }
+
+  /** Forwards one low-level Auth RPC through generated model validation and encoding. */
+  async callAdminRpc(method: string, input: unknown): Promise<unknown> {
     if (!Object.hasOwn(adminMethods, method)) {
       throw new Error(`unsupported Trellis test admin RPC ${method}`);
     }
@@ -161,160 +222,58 @@ export class TrellisTestAdminAutomation {
     method: M,
     input: AdminRpc[M]["input"],
   ): Promise<AdminRpc[M]["output"]> {
-    return await this.callAdminRpc(method, input) as AdminRpc[M]["output"];
+    return (await this.callAdminRpc(method, input)) as AdminRpc[M]["output"];
   }
 
   /** Creates a service deployment through `Auth.Deployments.Create`. */
   async createDeployment(args: {
     deployment?: string;
-    kind?: "service" | "device";
-    reviewMode?: "none" | "required";
-  } = {}): Promise<void> {
+    contract: TrellisTestParticipantLike;
+  }): Promise<void> {
     return await adminDeployment.createDeployment(this.#deployment, args);
   }
 
   async provisionDevice(
     input: import("../trellis/index.js").apis.auth.DevicesProvisionInput,
-  ): Promise<
-    import("../trellis/index.js").apis.auth.DevicesProvisionOutput
-  > {
-    return await this.#rpc(
-      "authDevicesProvision",
-      {
-        ...input,
-        deploymentId: this.#deployment.deploymentIds.get(input.deploymentId) ??
-          input.deploymentId,
-      },
-    );
+  ): Promise<import("../trellis/index.js").apis.auth.DevicesProvisionOutput> {
+    return await this.#rpc("authDevicesProvision", {
+      ...input,
+      deploymentId:
+        this.#deployment.deploymentIds.get(input.deploymentId) ??
+        input.deploymentId,
+    });
   }
 
-  async stateResourcesInspect(
-    input: import("../trellis/index.js").apis.state.ResourcesInspectInput,
-  ): Promise<import("../trellis/index.js").apis.state.ResourcesInspectOutput> {
-    return await this.#rpc("stateResourcesInspect", input);
-  }
-
-  async stateResourcesQuery(
-    input: import("../trellis/index.js").apis.state.ResourcesQueryInput,
-  ): Promise<import("../trellis/index.js").apis.state.ResourcesQueryOutput> {
-    return await this.#rpc("stateResourcesQuery", input);
-  }
-
-  async eventsConsumersQuery(input: AdminRpcInput<"eventsConsumersQuery">) {
+  async eventsConsumersQuery(
+    input: AdminRpcInput<"eventsConsumersQuery">,
+  ): Promise<AdminRpc["eventsConsumersQuery"]["output"]> {
     return await this.#rpc("eventsConsumersQuery", input);
   }
 
-  async eventsDeadLettersQuery(input: AdminRpcInput<"eventsDeadLettersQuery">) {
+  async eventsDeadLettersQuery(
+    input: AdminRpcInput<"eventsDeadLettersQuery">,
+  ): Promise<AdminRpc["eventsDeadLettersQuery"]["output"]> {
     return await this.#rpc("eventsDeadLettersQuery", input);
   }
 
   async eventsDeadLettersInspect(
     input: AdminRpcInput<"eventsDeadLettersInspect">,
-  ) {
+  ): Promise<AdminRpc["eventsDeadLettersInspect"]["output"]> {
     return await this.#rpc("eventsDeadLettersInspect", input);
   }
 
   async eventsDeadLettersReplay(
     input: AdminRpcInput<"eventsDeadLettersReplay">,
-  ) {
+  ): Promise<AdminRpc["eventsDeadLettersReplay"]["output"]> {
     return await this.#rpc("eventsDeadLettersReplay", input);
   }
 
-  /** Completes a public app/client authentication flow as the test admin user. */
-  async completeClientAuth(
-    ctx: ClientAuthRequiredContext,
-  ): Promise<ClientAuthContinuation> {
-    const startedAt = performance.now();
-    await this.completeBootstrap();
-    const intent = intentFromUrl(ctx.loginUrl);
-    const portalBinding = await createPortalBinding();
-    const flowId = await startPortalTransaction(
-      {
-        authUrl: this.#trellisUrl,
-        portalOrigin: new URL(this.#trellisUrl).origin,
-      },
-      intent,
-      portalBinding,
-    );
-    const binding = await performLocalLogin({
-      trellisUrl: this.#trellisUrl,
-      flowId,
-      password: this.#adminPassword,
-      binding: portalBinding,
-    });
-    await approveLocalFlowIfNeeded({
-      trellisUrl: this.#trellisUrl,
-      flowId,
-      binding,
-      prepareApproval: async (state) => {
-        const participantId = state.approval.contractId;
-        await this.ensurePortalConsentPolicy(
-          participantId,
-          Object.keys(state.approval.capabilities),
-        );
-      },
-    });
-    recordTrellisDuration(
-      "trellis.admin.workflow.duration",
-      performance.now() - startedAt,
-      { operation: "register_client", phase: "total" },
-    );
-    return { status: "bound", transactionId: flowId };
-  }
-
-  /** Configures the built-in portal's test consent ceiling for a participant. */
-  async ensurePortalConsentPolicy(
-    participantId: string,
-    selectionIds: readonly string[],
-  ): Promise<void> {
-    if (this.#configuredConsentPolicies.has(participantId)) return;
-    await this.completeBootstrap();
-    await this.#rpc("authPortalsGrantOverridesPut", {
-      portalId: "builtin",
-      participantId,
-      directCapabilities: selectionIds
-        .filter((key) => key.startsWith("capability:"))
-        .map((key) => key.slice("capability:".length)),
-      capabilityGroupKeys: [],
-      roleMappings: [],
-      expectedVersion: null,
-      idempotencyKey: crypto.randomUUID(),
-    });
-    this.#configuredConsentPolicies.add(participantId);
-  }
-
-  /** Installs a participant and atomically replaces its deployment GrantBinding. */
+  /** Accepts generated APIs and applies the deployment's native source evidence. */
   async applyParticipant(args: {
     deployment?: string;
     contract: TrellisTestParticipantLike;
   }): Promise<TrellisTestParticipantApproval> {
     return await adminDeployment.applyParticipant(this.#deployment, args);
-  }
-
-  /** Applies a deployment without consent; returns the pending approval when required. */
-  async requestParticipantApply(args: {
-    deployment?: string;
-    contract: TrellisTestParticipantLike;
-  }): Promise<TrellisTestParticipantApplyResult> {
-    return await adminDeployment.requestParticipantApply(
-      this.#deployment,
-      args,
-    );
-  }
-
-  /** Completes a deployment apply with server-computed consent for a pending approval. */
-  async approveParticipantApply(
-    pendingId: string,
-    opts: {
-      excludeResources?: readonly string[];
-      excludeCapabilities?: readonly string[];
-    } = {},
-  ): Promise<TrellisTestParticipantApproval> {
-    return await adminDeployment.approveParticipantApply(
-      this.#deployment,
-      pendingId,
-      opts,
-    );
   }
 
   async installParticipant(args: {
@@ -368,8 +327,14 @@ export class TrellisTestAdminAutomation {
   /** Closes the lazily connected admin client, when it exists. */
   async close(): Promise<void> {
     const client = this.#connectedAdminClient;
+    const session = this.#nativeSession;
+    this.#nativeSession = undefined;
     this.#connectedAdminClient = undefined;
     this.#adminClient = undefined;
-    await client?.connection.close();
+    try {
+      await client?.connection.close();
+    } finally {
+      await session?.close();
+    }
   }
 }

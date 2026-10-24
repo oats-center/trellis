@@ -44,15 +44,6 @@ function isErrValue<T, E extends BaseError>(
 }
 
 /**
- * Extract Result<never, E> types from a union while preserving specific error types.
- * This is a distributive conditional type that processes each member of the union separately.
- * For `string | Result<never, E1> | Result<never, E2>`, returns `Result<never, E1> | Result<never, E2>`.
- * The distribution over union members is key to preserving specific error types.
- */
-type ExtractErrResult<U> = U extends Result<never, infer E> ? Result<never, E>
-  : never;
-
-/**
  * Extracts the Ok type T from a Result<T, E>.
  *
  * @example
@@ -93,9 +84,7 @@ export type InferErr<R> = R extends Result<unknown, infer E> ? E : never;
  * ```
  */
 export type MaybeAsync<T, E extends BaseError> =
-  | Result<T, E>
-  | AsyncResult<T, E>
-  | Promise<Result<T, E>>;
+  Result<T, E> | AsyncResult<T, E> | Promise<Result<T, E>>;
 
 /**
  * A synchronous Result class that represents either success (Ok) or failure (Err).
@@ -496,10 +485,12 @@ export class Result<T, E extends BaseError> {
   take(): [T] extends [never] ? Result<never, E> : T | Result<never, E> {
     const value = this._value;
     if (isOkValue(value)) {
-      return value.value as [T] extends [never] ? Result<never, E>
+      return value.value as [T] extends [never]
+        ? Result<never, E>
         : T | Result<never, E>;
     }
-    return Result.err(value.error) as [T] extends [never] ? Result<never, E>
+    return Result.err(value.error) as [T] extends [never]
+      ? Result<never, E>
       : T | Result<never, E>;
   }
 
@@ -761,8 +752,9 @@ export class Result<T, E extends BaseError> {
  * console.log(value); // "ALICE"
  * ```
  */
-export class AsyncResult<T, E extends BaseError>
-  implements PromiseLike<Result<T, E>> {
+export class AsyncResult<T, E extends BaseError> implements PromiseLike<
+  Result<T, E>
+> {
   constructor(private readonly promise: Promise<Result<T, E>>) {}
 
   /**
@@ -1019,8 +1011,7 @@ export class AsyncResult<T, E extends BaseError>
    */
   then<TResult1 = Result<T, E>, TResult2 = never>(
     onfulfilled?:
-      | ((value: Result<T, E>) => TResult1 | PromiseLike<TResult1>)
-      | null,
+      ((value: Result<T, E>) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): Promise<TResult1 | TResult2> {
     return this.promise.then(onfulfilled, onrejected);

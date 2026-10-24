@@ -1,0 +1,26 @@
+{
+  "name": "@oatscenter/trellis",
+  "version": "0.100.0-rc.3",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./generated": "./generated.ts",
+    "./auth": "./auth.ts",
+    "./auth/browser": "./auth/browser.ts",
+    "./native": "./native.ts",
+    "./device": "./device.ts",
+    "./service": "./service/mod.ts",
+    "./telemetry": "./telemetry.ts",
+    "./telemetry/browser": "./telemetry/browser.ts",
+    "./errors": "./errors/index.ts"
+  },
+  "scripts": {
+    "check": "tsc --project tsconfig.json",
+    "test": "node ../../tools/run_unit_tests.ts .",
+    "build": "node scripts/build_npm.ts"
+  },
+  "dependencies": {
+    "@oatscenter/result": "0.100.0-rc.3"
+  }
+}

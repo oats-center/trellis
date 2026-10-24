@@ -6,8 +6,7 @@ import {
 } from "@nats-io/nats-core";
 import { QueuedIteratorImpl } from "@nats-io/nats-core/internal";
 import { ulid } from "ulid";
-import { buildProofInput } from "../auth/proof.ts";
-import { base64urlEncode, sha256 } from "../auth/utils.ts";
+import { base64urlEncode } from "../auth/utils.ts";
 import type { TrellisAuth } from "../session.ts";
 import { TransferError } from "../errors/TransferError.ts";
 import { TransportError } from "../errors/TransportError.ts";
@@ -19,11 +18,62 @@ import { recordCatalogCounter } from "../telemetry/mod.ts";
 import {
   transferConstants,
   type TransferFrameDescriptor,
+  type TransferTerminalWire,
+  type SessionRequest,
+} from "../auth/protocol_wasm.ts";
+import {
+  sessionRequestSigningDigest,
   transferFrameDigest,
   transferServerProofDigest,
-  type TransferTerminalWire,
   transferVerifyServerProof,
-} from "../auth/protocol_wasm.ts";
+} from "../auth/message_digests.ts";
+
+/**
+ * Count one sent or verified received Transfer message at the endpoint that
+ * owns it, with the same families as the Rust SDK. DATA charges its payload to
+ * `payload.bytes` and its serialized message (NATS header block plus payload)
+ * to `wire.bytes`; every other message charges its serialized size to
+ * `control.bytes`. @internal
+ */
+export function recordTransferMessage(
+  direction: TransferGrant["direction"],
+  side: "client" | "provider",
+  kind: string,
+  messageHeaders: MsgHdrs | undefined,
+  payloadBytes: number,
+): void {
+  const labels = {
+    "trellis.direction": direction === "send" ? "upload" : "download",
+    "trellis.side": side,
+  } as const;
+  let headerBytes = 0;
+  if (messageHeaders) {
+    // `NATS/1.0\r\n`, one `name: value\r\n` per value, then a blank line.
+    headerBytes = 12;
+    for (const [name, values] of messageHeaders) {
+      for (const value of values) headerBytes += name.length + value.length + 4;
+    }
+  }
+  if (kind === "data") {
+    recordCatalogCounter("trellis.transfer.frames", 1, labels);
+    recordCatalogCounter(
+      "trellis.transfer.payload.bytes",
+      payloadBytes,
+      labels,
+    );
+    recordCatalogCounter(
+      "trellis.transfer.wire.bytes",
+      headerBytes + payloadBytes,
+      labels,
+    );
+    return;
+  }
+  recordCatalogCounter(
+    "trellis.transfer.control.bytes",
+    headerBytes + payloadBytes,
+    labels,
+  );
+}
 
 /** Owned transport/authority lifetime for a single pinned transfer. @internal */
 export class TransferSession {
@@ -59,34 +109,36 @@ export class TransferSession {
     );
     const status = statusQueue[Symbol.asyncIterator]();
     this.#status = status;
-    this.run((async () => {
-      while (!this.#finished) {
-        const event = await transferWait(
-          status.next(),
-          this.abort.signal,
-        );
-        if (event.done) throw new Error("transfer connection closed");
-        if (
-          (event.value as { type?: string }).type === "disconnect" ||
-          (event.value as { type?: string }).type === "close"
-        ) {
-          throw new Error("transfer physical connection lost");
+    this.run(
+      (async () => {
+        while (!this.#finished) {
+          const event = await transferWait(status.next(), this.abort.signal);
+          if (event.done) throw new Error("transfer connection closed");
+          if (
+            (event.value as { type?: string }).type === "disconnect" ||
+            (event.value as { type?: string }).type === "close"
+          ) {
+            throw new Error("transfer physical connection lost");
+          }
         }
-      }
-    })());
+      })(),
+    );
   }
 
   /** Retain local evidence and enforce the grant's logical connection identity. */
   async retainLocal(): Promise<void> {
-    const cache = this.auth.authorizationProviderCache;
+    const cache = this.auth.authorityOwner;
     if (!cache) throw new Error("transfer authorization cache unavailable");
-    const digest = typeof this.auth.contextDigest === "function"
-      ? this.auth.contextDigest()
-      : this.auth.contextDigest;
+    const digest =
+      typeof this.auth.contextDigest === "function"
+        ? this.auth.contextDigest()
+        : this.auth.contextDigest;
     if (!digest) throw new Error("transfer authorization context unavailable");
     const guard = await transferWait(
       LiveAuthorityGuard.retain(cache, digest, {
-        kind: "local-provider",
+        kind: this.provider ? "local-provider" : "observer",
+        apiId: this.grant.origin.apiId,
+        action: this.grant.origin.action,
       }).then((guard) => {
         if (this.abort.signal.aborted) {
           guard.release();
@@ -102,22 +154,24 @@ export class TransferSession {
     }
     const identity = this.provider ? this.grant.provider : this.grant.consumer;
     if (
-      guard.identity.sessionKey !== identity.sessionKey ||
-      guard.identity.connectionId !== identity.connectionId
+      guard.identity.sessionPublicKey !== identity.sessionKey ||
+      guard.identity.runtimeId !== identity.connectionId
     ) {
       guard.release();
       throw new Error("transfer local identity mismatch");
     }
     this.guards.push(guard);
     this.#unsubscribe = guard.subscribeChanges(() => {
-      this.run((async () => {
-        const lost = await this.#reconcileLocal();
-        if (lost) throw new Error(`transfer authority lost: ${lost}`);
-        if (this.peerGuard?.checkNow()) {
-          throw new Error("transfer peer authority lost");
-        }
-        this.refreshDeadline();
-      })());
+      this.run(
+        (async () => {
+          const lost = await this.#reconcileLocal();
+          if (lost) throw new Error(`transfer authority lost: ${lost}`);
+          if (this.peerGuard?.checkNow()) {
+            throw new Error("transfer peer authority lost");
+          }
+          this.refreshDeadline();
+        })(),
+      );
     });
     this.refreshDeadline();
   }
@@ -125,9 +179,9 @@ export class TransferSession {
   /** Own a task and turn failures into one terminal transfer error. */
   run(work: Promise<void>): void {
     let tracked: Promise<void>;
-    tracked = work.catch((cause) => this.fail(cause)).finally(() =>
-      this.tasks.delete(tracked)
-    );
+    tracked = work
+      .catch((cause) => this.fail(cause))
+      .finally(() => this.tasks.delete(tracked));
     this.tasks.add(tracked);
   }
 
@@ -147,7 +201,7 @@ export class TransferSession {
   async contextDigest(): Promise<string> {
     this.throwIfAborted();
     const guard = this.guards[0];
-    if (!guard || await this.#reconcileLocal()) {
+    if (!guard || (await this.#reconcileLocal())) {
       throw new Error("transfer local authority lost");
     }
     this.throwIfAborted();
@@ -160,7 +214,7 @@ export class TransferSession {
 
   async #reconcileLocal(): Promise<string | undefined> {
     const guard = this.guards[0];
-    if (!guard) return "coverage_lost";
+    if (!guard) return "unavailable";
     return await transferWait(
       guard.reconcile().finally(() => {
         if (this.abort.signal.aborted) guard.release();
@@ -177,33 +231,47 @@ export class TransferSession {
     control: TransferFrameDescriptor["kind"] = "data",
   ): Promise<MsgHdrs> {
     const contextDigest = await this.contextDigest();
-    const proofPayload = seq === undefined ? payload : transferFrameDigest(
-      {
-        transferId: this.grant.transferId,
-        direction: this.grant.direction,
-        sequence: seq.toString(),
-        kind: control,
-      },
-      payload,
-    );
+    const proofPayload =
+      seq === undefined
+        ? payload
+        : await transferFrameDigest(
+            {
+              transferId: this.grant.transferId,
+              direction: this.grant.direction,
+              sequence: seq.toString(),
+              kind: control,
+            },
+            payload,
+          );
     const iat = this.auth.currentIat?.() ?? Math.floor(Date.now() / 1000);
     const requestId = ulid();
-    const proof = await this.auth.sign(
-      await sha256(buildProofInput(
-        contextDigest,
-        subject,
-        this.grant.signalSubject,
-        await sha256(proofPayload),
-        iat,
-        requestId,
-      )),
+    const api = this.guards[0]?.apis.find(
+      (api) => api.apiId === this.grant.origin.apiId,
     );
+    if (!api) throw new Error("transfer origin API unavailable");
+    const request: SessionRequest = {
+      authorityDigest: contextDigest,
+      apiId: api.apiId,
+      apiGeneration: api.generation,
+      acceptedRevision: api.acceptedRevision,
+      action: this.grant.origin.action.name,
+      subject,
+      replySubject: this.grant.signalSubject,
+      requestId,
+      issuedAt: iat,
+    };
+    const proof = await this.auth.sign(
+      await sessionRequestSigningDigest(request, proofPayload),
+    );
+    await this.contextDigest();
     const result = headers();
     result.set("authorization-context", contextDigest);
     result.set("session-key", this.auth.sessionKey);
     result.set("proof", base64urlEncode(proof));
     result.set("iat", String(iat));
     result.set("request-id", requestId);
+    result.set("Trellis-Api-Generation", api.generation);
+    result.set("Trellis-Accepted-Revision", api.acceptedRevision);
     if (seq !== undefined) {
       result.set(transferConstants().sequenceHeader, seq.toString());
       result.set(transferConstants().controlHeader, control);
@@ -224,21 +292,24 @@ export class TransferSession {
     if (allowAfterAbort && (!local || local.checkNow())) {
       throw new Error("transfer authority unavailable for terminal signal");
     }
-    const contextDigest = allowAfterAbort && local
-      ? local.contextDigest
-      : await this.contextDigest();
-    const proof = await this.auth.sign(transferServerProofDigest(
-      contextDigest,
-      subject,
-      {
-        transferId: this.grant.transferId,
-        direction: this.grant.direction,
-        sequence: seq,
-        kind: control,
-        ...(terminal ? { terminal } : {}),
-      },
-      payload,
-    ));
+    const contextDigest =
+      allowAfterAbort && local
+        ? local.contextDigest
+        : await this.contextDigest();
+    const proof = await this.auth.sign(
+      await transferServerProofDigest(
+        contextDigest,
+        subject,
+        {
+          transferId: this.grant.transferId,
+          direction: this.grant.direction,
+          sequence: seq,
+          kind: control,
+          ...(terminal ? { terminal } : {}),
+        },
+        payload,
+      ),
+    );
     const result = headers();
     result.set("authorization-context", contextDigest);
     result.set("session-key", this.auth.sessionKey);
@@ -271,10 +342,12 @@ export class TransferSession {
     }
     const C = transferConstants();
     if (
-      single(C.sequenceHeader) !== seq || single(C.controlHeader) !== control ||
+      single(C.sequenceHeader) !== seq ||
+      single(C.controlHeader) !== control ||
       (!terminal && msg.headers?.values(C.terminalHeader)?.length)
-    ) throw new Error("transfer provider frame descriptor mismatch");
-    transferVerifyServerProof(
+    )
+      throw new Error("transfer provider frame descriptor mismatch");
+    await transferVerifyServerProof(
       single(C.proofHeader),
       contextDigest,
       msg.subject,
@@ -288,7 +361,14 @@ export class TransferSession {
       msg.data,
       sessionKey,
     );
-    const cache = this.auth.authorizationProviderCache;
+    recordTransferMessage(
+      this.grant.direction,
+      "client",
+      control,
+      msg.headers,
+      msg.data.length,
+    );
+    const cache = this.auth.authorityOwner;
     if (!cache) throw new Error("transfer authorization cache unavailable");
     if (this.peerGuard?.contextDigest === contextDigest) {
       if (this.peerGuard.checkNow()) {
@@ -297,38 +377,50 @@ export class TransferSession {
       return;
     }
     const verified = await transferWait(
-      cache.resolveContext(contextDigest),
-      this.abort.signal,
-    );
-    this.throwIfAborted();
-    if (
-      verified.context.connectionId !== this.grant.provider.connectionId ||
-      verified.context.sessionKey !== sessionKey
-    ) throw new Error("transfer provider identity mismatch");
-    const candidate = await transferWait(
-      LiveAuthorityGuard.retain(cache, contextDigest, {
-        kind: "peer-provider",
-        expected: {
-          connectionId: verified.context.connectionId,
-          sessionKey,
-          principalId: verified.context.principalId,
-          participantId: verified.context.participantId,
-          ...(verified.context.deploymentId
-            ? { deploymentId: verified.context.deploymentId }
-            : {}),
-          ...(verified.context.instanceId
-            ? { instanceId: verified.context.instanceId }
-            : {}),
-        },
-      }).then((candidate) => {
+      cache.peer(contextDigest).then((verified) => {
         if (this.abort.signal.aborted) {
-          candidate.release();
+          verified.release();
           this.throwIfAborted();
         }
-        return candidate;
+        return verified;
       }),
       this.abort.signal,
     );
+    let candidate: LiveAuthorityGuard;
+    try {
+      this.throwIfAborted();
+      if (
+        verified.authority.runtimeId !== this.grant.provider.connectionId ||
+        verified.authority.sessionPublicKey !== sessionKey
+      )
+        throw new Error("transfer provider identity mismatch");
+      candidate = await transferWait(
+        LiveAuthorityGuard.retain(cache, contextDigest, {
+          kind: "peer-provider",
+          expected: {
+            runtimeId: verified.authority.runtimeId,
+            sessionPublicKey: sessionKey,
+            principalId: verified.authority.principalId,
+            binding: verified.authority.binding,
+          },
+          apiId: this.grant.origin.apiId,
+          generation:
+            this.guards[0]?.apis.find(
+              (api) => api.apiId === this.grant.origin.apiId,
+            )?.generation ?? "",
+          action: this.grant.origin.action,
+        }).then((candidate) => {
+          if (this.abort.signal.aborted) {
+            candidate.release();
+            this.throwIfAborted();
+          }
+          return candidate;
+        }),
+        this.abort.signal,
+      );
+    } finally {
+      verified.release();
+    }
     if (this.abort.signal.aborted) {
       candidate.release();
       this.throwIfAborted();
@@ -361,22 +453,28 @@ export class TransferSession {
   refreshDeadline(): void {
     if (this.#finished || this.abort.signal.aborted) return;
     if (this.#authorityTimer !== undefined) clearTimeout(this.#authorityTimer);
-    const now = this.auth.authorizationProviderCache?.liveNowSeconds() ??
-      Date.now() / 1000;
+    const now =
+      this.auth.authorityOwner?.policy().nowUnixSeconds ?? Date.now() / 1000;
     const expires = Math.min(
       ...this.guards.map((guard) => guard.expiresAtSeconds),
     );
     if (!Number.isFinite(expires)) return;
-    this.#authorityTimer = setTimeout(() => {
-      this.#authorityTimer = undefined;
-      this.run((async () => {
-        if (
-          await this.#reconcileLocal() ||
-          this.guards.some((guard) => guard.checkNow())
-        ) throw new Error("transfer authority expired");
-        this.refreshDeadline();
-      })());
-    }, Math.max(0, (expires - now) * 1000));
+    this.#authorityTimer = setTimeout(
+      () => {
+        this.#authorityTimer = undefined;
+        this.run(
+          (async () => {
+            if (
+              (await this.#reconcileLocal()) ||
+              this.guards.some((guard) => guard.checkNow())
+            )
+              throw new Error("transfer authority expired");
+            this.refreshDeadline();
+          })(),
+        );
+      },
+      Math.max(0, (expires - now) * 1000),
+    );
   }
 
   /** Release exact subscriptions, retained evidence and the pinned generation. */
@@ -449,10 +547,13 @@ export class TransferCredit {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     const due = this.#scheduler.nextDue();
     if (due === undefined) return;
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
-      this.session.run(this.flush());
-    }, Math.max(0, due - performance.now()));
+    this.#timer = setTimeout(
+      () => {
+        this.#timer = undefined;
+        this.session.run(this.flush());
+      },
+      Math.max(0, due - performance.now()),
+    );
   }
 
   /** Force the exact latest cumulative cursor before terminal settlement. */
@@ -475,9 +576,9 @@ export class TransferCredit {
       this.#reportedSeq = consumed;
       this.#reportedBytes = bytes;
       recordCatalogCounter("trellis.transfer.credit.controls", 1, {
-        "trellis.direction": this.session.grant.direction === "send"
-          ? "upload"
-          : "download",
+        "trellis.direction":
+          this.session.grant.direction === "send" ? "upload" : "download",
+        "trellis.side": this.session.provider ? "provider" : "client",
       });
     } finally {
       this.#work = undefined;
@@ -506,13 +607,13 @@ export function transferWait<T>(
   promise: PromiseLike<T>,
   signal: AbortSignal,
 ): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise<T>((resolve, reject) => {
     const aborted = () => {
       signal.removeEventListener("abort", aborted);
       reject(signal.reason);
     };
-    signal.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) reject(signal.reason);
+    else signal.addEventListener("abort", aborted, { once: true });
     Promise.resolve(promise).then(
       (value) => {
         signal.removeEventListener("abort", aborted);

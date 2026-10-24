@@ -26,7 +26,6 @@ concurrency:
 env:
   CARGO_HTTP_MULTIPLEXING: false
   CARGO_TERM_COLOR: always
-  DENO_VERSION: 2.9.4
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   NODE_VERSION: 24
   REGISTRY: ghcr.io
@@ -42,6 +41,7 @@ jobs:
       release-base-version: ${{ steps.release.outputs.base-version }}
       should-publish: ${{ steps.release.outputs.should-publish }}
       should-create-tag: ${{ steps.release.outputs.should-create-tag }}
+      candidate-sha: ${{ steps.release.outputs.candidate-sha }}
 
     steps:
       - name: Check out repository
@@ -93,11 +93,22 @@ jobs:
             exit 1
           fi
 
+          candidate_sha="${GITHUB_SHA}"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${should_publish}" = "true" ]; then
+            remote_tag="$(git ls-remote --tags origin "refs/tags/${release_tag}")"
+            if [ -n "${remote_tag}" ]; then
+              # Workflow repairs cannot replace a published tag's candidate.
+              git fetch --no-tags origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+              candidate_sha="$(git rev-parse "refs/tags/${release_tag}^{commit}")"
+            fi
+          fi
+
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "base-version=${base_version}" >> "${GITHUB_OUTPUT}"
           echo "should-publish=${should_publish}" >> "${GITHUB_OUTPUT}"
           echo "should-create-tag=${should_create_tag}" >> "${GITHUB_OUTPUT}"
+          echo "candidate-sha=${candidate_sha}" >> "${GITHUB_OUTPUT}"
 
   prepare-release:
     name: Prepare release workspace
@@ -114,6 +125,7 @@ jobs:
       should-publish: ${{ needs.resolve-release.outputs.should-publish }}
       should-create-tag: ${{ needs.resolve-release.outputs.should-create-tag }}
       check-run-id: ${{ steps.check.outputs.run-id }}
+      candidate-sha: ${{ needs.resolve-release.outputs.candidate-sha }}
     env:
       RELEASE_TAG: ${{ needs.resolve-release.outputs.release-tag }}
       SHOULD_PUBLISH: ${{ needs.resolve-release.outputs.should-publish }}
@@ -122,6 +134,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-release.outputs.candidate-sha }}
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -134,9 +148,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+          CANDIDATE_SHA: ${{ needs.resolve-release.outputs.candidate-sha }}
         run: |
           set -euo pipefail
-          query="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/check.yml/runs?head_sha=${GITHUB_SHA}&per_page=100"
+          query="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/check.yml/runs?head_sha=${CANDIDATE_SHA}&per_page=100"
           runs_file="${RUNNER_TEMP}/check-runs.json"
           deadline=$((SECONDS + 5400))
           run_id=""
@@ -151,13 +166,13 @@ jobs:
             fi
             latest_status="$(jq -r '[.workflow_runs[]] | sort_by(.run_attempt) | last | .status // empty' "${runs_file}")"
             if [ "${latest_status}" = "completed" ]; then
-              echo "::error::The Check run for ${GITHUB_SHA} completed without success; refusing to publish."
+              echo "::error::The Check run for ${CANDIDATE_SHA} completed without success; refusing to publish."
               exit 1
             fi
             sleep 30
           done
           if [ -z "${run_id}" ]; then
-            echo "::error::Timed out waiting for a successful Check run for ${GITHUB_SHA}."
+            echo "::error::Timed out waiting for a successful Check run for ${CANDIDATE_SHA}."
             exit 1
           fi
           echo "run-id=${run_id}" >> "$GITHUB_OUTPUT"
@@ -208,12 +223,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.candidate-sha }}
 
       - name: Create and push release tag
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ needs.prepare-release.outputs.candidate-sha }}
         run: |
           set -euo pipefail
 
@@ -276,17 +293,43 @@ jobs:
           name: release-notes
           path: dist
 
-      - name: Publish release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-          tag_name: ${{ needs.prepare-release.outputs.release-tag }}
-          target_commitish: ${{ github.sha }}
-          files: |
-            dist/trellis-*-x86_64-unknown-linux-gnu.tar.gz
-            dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256
-          body_path: dist/release-notes.md
-          prerelease: ${{ contains(needs.prepare-release.outputs.release-tag, '-') }}
+      - name: Create missing release assets and verify existing bytes
+        env:
+          GH_TOKEN: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh api --paginate "repos/$GH_REPO/releases" --jq '.[] | select(.tag_name == env.RELEASE_TAG) | .id')"
+          if [ -z "$release_id" ]; then
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file dist/release-notes.md "${flags[@]}"
+          fi
+          release="$(gh release view "$RELEASE_TAG" --json assets)"
+          existing="$(mktemp -d "$RUNNER_TEMP/existing-release.XXXXXX")"
+          missing=()
+          for asset in dist/trellis-*-x86_64-unknown-linux-gnu.tar.gz dist/checksum-*-x86_64-unknown-linux-gnu-trellis.sha256; do
+            test -f "$asset"
+            name="$(basename "$asset")"
+            if jq -e --arg name "$name" '.assets | any(.name == $name)' <<< "$release" >/dev/null; then
+              gh release download "$RELEASE_TAG" --pattern "$name" --dir "$existing"
+              cmp "$asset" "$existing/$name"
+            else
+              missing+=("$asset")
+            fi
+          done
+          # Never overwrite published bytes, including after a partial upload.
+          if [ "${#missing[@]}" -gt 0 ]; then
+            gh release upload "$RELEASE_TAG" "${missing[@]}"
+          fi
+
+      - name: Publish complete release
+        env:
+          GH_TOKEN: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare-release.outputs.release-tag }}
+        run: gh release edit "$RELEASE_TAG" --draft=false
 
   publish-crates:
     name: Publish Rust crates
@@ -299,16 +342,30 @@ jobs:
       contents: read
       actions: read
       id-token: write
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.candidate-sha }}
 
       - name: Download the accepted Rust packages
         uses: actions/download-artifact@v4
         with:
           name: rust-testkit-packages
           path: dist/rust-packages
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+
+      - name: Download the accepted Rust consumer bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-testkit-bundle
+          path: dist/rust-testkit-bundle
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
@@ -319,21 +376,29 @@ jobs:
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
-      - name: Restore the accepted embedded browser apps
+      - name: Restore the accepted native archives
         uses: actions/download-artifact@v4
         with:
-          name: check-portal
-          path: crates/runtime/generated
+          name: trellis-cli-x86_64-unknown-linux-gnu
+          path: dist/native
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
+      # Runner tooling comes from this workflow's revision; the candidate may
+      # predate it.
+      - name: Check out release tooling
+        uses: actions/checkout@v4
         with:
-          deno-version: ${{ env.DENO_VERSION }}
+          ref: ${{ github.workflow_sha }}
+          path: .release-tooling
+          sparse-checkout: scripts/ensure-ci-zstd.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Enable multithreaded Zstandard caching
+        run: bash .release-tooling/scripts/ensure-ci-zstd.sh
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
@@ -354,6 +419,8 @@ jobs:
           set -euo pipefail
 
           workspace_version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
+          python3 scripts/prepare-rust-native.py dist/native crates/trellis-testkit/generated/trellis-binaries.json "$workspace_version"
+          crate_versions="$(cargo metadata --format-version 1 --no-deps --locked)"
           published=()
           skipped=()
 
@@ -381,24 +448,31 @@ jobs:
 
           record_skip() {
             local crate="$1"
-            echo "Skipping ${crate}@${workspace_version} (already published)"
-            skipped+=("${crate}@${workspace_version}")
-            wait_for_crate_index "$crate" "$workspace_version"
+            local version="$2"
+            echo "Skipping ${crate}@${version} (already published)"
+            skipped+=("${crate}@${version}")
+            wait_for_crate_index "$crate" "$version"
           }
 
           record_publish() {
             local crate="$1"
-            published+=("${crate}@${workspace_version}")
+            local version="$2"
+            published+=("${crate}@${version}")
           }
 
           run_publish() {
             local crate="$1"
-            shift
+            local version="$2"
+            shift 2
             local output
             local status
 
             time bash scripts/prepare-rust-publication.sh \
               dist/rust-packages target "$crate"
+            if [[ "$crate" == trellis-testkit ]]; then
+              bash scripts/verify-rust-test-package.sh \
+                --bundle dist/rust-testkit-bundle/rust-testkit-bundle.tar.gz --mode smoke
+            fi
 
             set +e
             output=$(time cargo publish --allow-dirty --locked \
@@ -409,13 +483,13 @@ jobs:
             printf '%s\n' "$output"
 
             if [ "$status" -eq 0 ]; then
-              record_publish "$crate"
-              wait_for_crate_index "$crate" "$workspace_version"
+              record_publish "$crate" "$version"
+              wait_for_crate_index "$crate" "$version"
               return 0
             fi
 
             if printf '%s\n' "$output" | grep -Fq "already exists on crates.io index"; then
-              record_skip "$crate"
+              record_skip "$crate" "$version"
               return 0
             fi
 
@@ -424,25 +498,20 @@ jobs:
 
           publish_workspace_crate() {
             local crate="$1"
+            local version
+            version="$(printf '%s' "$crate_versions" | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == sys.argv[1]))' "$crate")"
 
-            if crate_exists "$crate" "$workspace_version"; then
-              record_skip "$crate"
+            if crate_exists "$crate" "$version"; then
+              record_skip "$crate" "$version"
               return 0
             fi
 
-            run_publish "$crate" -p "$crate"
+            run_publish "$crate" "$version" -p "$crate"
           }
 
           publish_workspace_crate trellis-protocol
+          publish_workspace_crate trellis-models
           publish_workspace_crate trellis-rs
-          publish_workspace_crate trellis-runtime-apis
-          publish_workspace_crate trellis-idl
-          publish_workspace_crate trellis-local-bootstrap
-          publish_workspace_crate trellis-events-runtime
-          publish_workspace_crate trellis-jobs-runtime
-          publish_workspace_crate trellis-runtime
-          publish_workspace_crate trellis-bootstrap
-          publish_workspace_crate trellis-local-nats
           # Each dependency is available in the index before its consumer publishes.
           publish_workspace_crate trellis-testkit
 
@@ -470,6 +539,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.candidate-sha }}
 
       - name: Download the packaged CLI
         uses: actions/download-artifact@v4
@@ -498,10 +569,10 @@ jobs:
         run: |
           set -euo pipefail
           trellis="$GITHUB_WORKSPACE/bin/trellis"
-          # The canonical APIs live in one native package (`crates/runtime`,
+          # The canonical APIs live in one native package (`crates/builtin-contracts`,
           # package `trellis`); the other crates and TypeScript packages are
           # generated consumers and carry no publishable `trellis.toml`.
-          (cd crates/runtime && "$trellis" publish)
+          (cd crates/builtin-contracts && "$trellis" publish)
 
   publish-npm:
     name: Publish npm packages
@@ -520,6 +591,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-release.outputs.candidate-sha }}
 
       - name: Download npm package artifact
         uses: actions/download-artifact@v4
@@ -532,12 +605,21 @@ jobs:
           run-id: ${{ needs.prepare-release.outputs.check-run-id }}
           github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
 
+      - name: Download the exact staged testkit publication input
+        uses: actions/download-artifact@v4
+        with:
+          name: check-testkit-npm
+          path: dist
+          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
+          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Publish packages
+        # Consume Check's exact frozen testkit, never restage it during release.
         shell: bash
         run: |
           set -euo pipefail
@@ -565,7 +647,7 @@ jobs:
             fi
 
             set +e
-            output=$(npm publish --access public --tag "$npm_tag" "$pkg" 2>&1)
+            output=$(npm publish --access public --tag "$npm_tag" "./$pkg" 2>&1)
             status=$?
             set -e
 
@@ -594,6 +676,14 @@ jobs:
             ts/packages/trellis/npm
             ts/packages/trellis-svelte/npm
           )
+          mkdir -p dist/testkit-npm
+          tar -xzf dist/testkit-npm.tar.gz -C dist/testkit-npm
+          # npm checks repository identity against GitHub provenance with
+          # case-sensitive comparison. Normalize only this metadata field;
+          # all implementation files remain Check's accepted inputs.
+          for pkg in "${packages[@]}" dist/testkit-npm; do
+            npm pkg set "repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git" --prefix "$pkg"
+          done
           for pkg in "${packages[@]}"; do
             package_json="$pkg/package.json"
             name=$(node -p "require('./${package_json}').name")
@@ -601,191 +691,23 @@ jobs:
             publish_or_skip "$pkg" "$name" "$version"
           done
 
+          # The verified pinned testkit is published only after SDK dependencies.
+          npm ci
+          smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
+          mkdir -p "$smoke_root/home"
+          HOME="$smoke_root/home" TRELLIS_TEST_CACHE_DIR="$smoke_root/cache" TMPDIR="$smoke_root" \
+            node ts/tools/verify_testkit_package.ts dist/testkit-npm
+          pkg=dist/testkit-npm
+          name=$(node -p "require('./${pkg}/package.json').name")
+          version=$(node -p "require('./${pkg}/package.json').version")
+          publish_or_skip "$pkg" "$name" "$version"
+
           echo "Published ${#published[@]} package(s)"
           for item in "${published[@]}"; do
             echo "  published: $item"
           done
 
           echo "Skipped ${#skipped[@]} package(s)"
-          for item in "${skipped[@]}"; do
-            echo "  skipped: $item"
-          done
-
-  publish-jsr:
-    name: Publish JSR packages
-    if: always() && needs.prepare-release.outputs.should-publish == 'true' && needs.github-release.result == 'success'
-    needs:
-      - prepare-release
-      - github-release
-    runs-on: [self-hosted, Linux, X64]
-    permissions:
-      contents: read
-      id-token: write
-      actions: read
-    env:
-      RELEASE_VERSION: ${{ needs.prepare-release.outputs.release-version }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Download generated artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: check-generated
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Download protocol WASM
-        uses: actions/download-artifact@v4
-        with:
-          name: check-protocol-wasm
-          path: ts/packages/trellis/auth/protocol_wasm
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Set up Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: ${{ env.DENO_VERSION }}
-
-      - name: Cache Deno dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/deno
-            ts/node_modules
-          key: deno-${{ runner.os }}-${{ env.DENO_VERSION }}-${{ hashFiles('ts/deno.lock') }}
-          restore-keys: |
-            deno-${{ runner.os }}-${{ env.DENO_VERSION }}-
-
-      - name: Download the exact staged testkit publication input
-        uses: actions/download-artifact@v4
-        with:
-          name: check-testkit-jsr
-          path: dist
-          run-id: ${{ needs.prepare-release.outputs.check-run-id }}
-          github-token: ${{ secrets.TRELLIS_RELEASE_TOKEN || github.token }}
-
-      - name: Extract the exact staged testkit
-        run: mkdir -p dist/testkit-jsr && tar -xzf dist/testkit-jsr.tar.gz -C dist/testkit-jsr
-
-      - name: Publish JSR packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          published=()
-          skipped=()
-
-          # JSR cannot follow the workspace's local package paths. Rewrite every
-          # '@oatscenter/*' mapping to its published JSR specifier, using each
-          # package's own exports map so subpaths stay exact; trellis-svelte
-          # generates the equivalent manifest for itself.
-          deno eval '
-            const version = Deno.env.get("RELEASE_VERSION");
-            const read = (path) => JSON.parse(Deno.readTextFileSync(path));
-            const manifests = {
-              "trellis": "ts/packages/trellis/deno.json",
-              "result": "ts/packages/result/deno.json",
-              "trellis-svelte": "ts/packages/trellis-svelte/deno.json",
-            };
-            const exportsByFile = (dir) => {
-              const raw = read(manifests[dir]).exports;
-              const map = typeof raw === "string" ? { ".": raw } : raw;
-              return Object.fromEntries(
-                Object.entries(map).map(([key, value]) => [
-                  value.startsWith("./") ? value.slice(2) : value,
-                  key,
-                ]),
-              );
-            };
-            const tables = Object.fromEntries(
-              Object.keys(manifests).map((dir) => [dir, exportsByFile(dir)]),
-            );
-            const root = read("ts/deno.json");
-            for (const [name, spec] of Object.entries(root.imports ?? {})) {
-              if (!spec.startsWith("./packages/")) continue;
-              const [dir, ...rest] = spec.slice("./packages/".length).split("/");
-              const key = tables[dir]?.[rest.join("/")];
-              if (key === undefined) continue;
-              root.imports[name] = `jsr:@oatscenter/${dir}@^${version}${
-                key === "." ? "" : key.slice(1)
-              }`;
-            }
-            Deno.writeTextFileSync("ts/deno.json", JSON.stringify(root, null, 2) + "\n");
-          '
-
-          package_field() {
-            local manifest="$1"
-            local field="$2"
-            deno eval 'const manifest = JSON.parse(await Deno.readTextFile(Deno.args[0])); console.log(manifest[Deno.args[1]]);' "$manifest" "$field"
-          }
-
-          jsr_package_exists() {
-            local package_name="$1"
-            local package_version="$2"
-            curl -fsL -o /dev/null "https://jsr.io/${package_name}/${package_version}_meta.json"
-          }
-
-          wait_for_jsr_package() {
-            local package_name="$1"
-            local package_version="$2"
-
-            for attempt in {1..30}; do
-              if jsr_package_exists "$package_name" "$package_version"; then
-                return 0
-              fi
-              printf 'Waiting for %s@%s to appear on JSR (%s/30)\n' "$package_name" "$package_version" "$attempt"
-              sleep 10
-            done
-
-            echo "::error::${package_name}@${package_version} did not appear on JSR"
-            return 1
-          }
-
-          publish_or_skip() {
-            local package_dir="$1"
-            local manifest="${package_dir}/deno.json"
-            local package_name
-            local package_version
-            package_name="$(package_field "$manifest" name)"
-            package_version="$(package_field "$manifest" version)"
-
-            if jsr_package_exists "$package_name" "$package_version"; then
-              echo "Skipping ${package_name}@${package_version} (already published)"
-              skipped+=("${package_name}@${package_version}")
-              wait_for_jsr_package "$package_name" "$package_version"
-              return 0
-            fi
-
-            (cd "$package_dir" && time deno publish --allow-slow-types --allow-dirty)
-            published+=("${package_name}@${package_version}")
-            wait_for_jsr_package "$package_name" "$package_version"
-          }
-
-          publish_or_skip ts/packages/result
-          publish_or_skip ts/packages/trellis
-          # GitHub release assets already exist. With fresh state and no source
-          # override, exercise the exact staged package's pinned acquisition and
-          # a real generated RPC before authorizing its publication.
-          smoke_root="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
-          deno_bin="$(command -v deno)"
-          mkdir -p "$smoke_root/home"
-          PATH='' HOME="$smoke_root/home" TRELLIS_TEST_CACHE_DIR="$smoke_root/cache" TMPDIR="$smoke_root" \
-            "$deno_bin" run -A --config dist/testkit-jsr/deno.json \
-              dist/testkit-jsr/tests/release_smoke.ts
-          publish_or_skip dist/testkit-jsr
-
-          TRELLIS_SVELTE_JSR_RUNTIME_DEPENDENCY_VERSION="${RELEASE_VERSION}" \
-            deno task -c ts/packages/trellis-svelte/deno.json build:npm
-          publish_or_skip ts/packages/trellis-svelte/jsr
-
-          echo "Published ${#published[@]} JSR package(s)"
-          for item in "${published[@]}"; do
-            echo "  published: $item"
-          done
-
-          echo "Skipped ${#skipped[@]} JSR package(s)"
           for item in "${skipped[@]}"; do
             echo "  skipped: $item"
           done
@@ -825,9 +747,12 @@ jobs:
       - name: Normalize image owner
         id: owner
         shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.prepare-release.outputs.candidate-sha }}
         run: |
           set -euo pipefail
           echo "value=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "short-sha=${CANDIDATE_SHA:0:7}" >> "$GITHUB_OUTPUT"
 
       - name: Set up image promotion
         run: |
@@ -841,7 +766,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/${{ matrix.image }}
           tags: |
             type=raw,value=${{ env.RELEASE_TAG }},enable=${{ env.RELEASE_TAG != '' }}
-            type=sha,prefix=sha-
+            type=raw,value=sha-${{ steps.owner.outputs.short-sha }}
             type=raw,value=rc,enable=${{ env.RELEASE_TAG != '' && contains(env.RELEASE_TAG, '-') }}
             type=raw,value=latest,enable=${{ env.RELEASE_TAG != '' && !contains(env.RELEASE_TAG, '-') }}
 

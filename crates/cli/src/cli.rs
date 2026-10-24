@@ -58,22 +58,22 @@ pub enum TopLevelCommand {
     Generate(GenerateArgs),
     /// Publish every project-owned canonical API to OCI.
     Publish(PublishArgs),
-    /// Start a detached portal login against a Trellis auth service.
+    /// Authorize the native CLI through the selected server's device flow.
     Login(LoginArgs),
-    /// Revoke the current admin session and clear local session state.
+    /// Revoke the current login and clear the selected local credential.
     Logout,
-    /// Show the currently logged-in Trellis admin session.
+    /// Show the authenticated principal and login.
     Whoami,
-    /// Manage participant-scoped identity grants.
-    Identity(IdentityCommand),
-    /// Install participant definitions without granting authority.
-    Participants(ParticipantsCommand),
     /// Manage authorization signing issuers.
     Issuers(IssuersCommand),
     /// Manage Trellis users.
     Users(UsersCommand),
-    /// Inspect and manage login portals.
-    Portals(PortalsCommand),
+    /// Register public OAuth clients, including loopback development clients.
+    #[command(subcommand)]
+    Clients(ClientsCommand),
+    /// Review and accept API catalog definitions.
+    #[command(subcommand)]
+    Apis(ApisCommand),
     /// Manage service deployments.
     Svc(SvcCommand),
     /// Manage device deployments.
@@ -87,6 +87,9 @@ pub enum TopLevelCommand {
     /// Run one-time initialization workflows.
     #[cfg(feature = "runtime")]
     Init(InitCommand),
+    /// Manage Trellis-generated TLS certificates.
+    #[cfg(feature = "runtime")]
+    Tls(TlsCommand),
     /// Generate or derive Trellis keys.
     Keys(KeysCommand),
     /// Check for or install CLI updates.
@@ -113,17 +116,18 @@ impl TopLevelCommand {
             Self::Login(_) => "login",
             Self::Logout => "logout",
             Self::Whoami => "whoami",
-            Self::Identity(_) => "identity",
-            Self::Participants(_) => "participants",
             Self::Issuers(_) => "issuers",
             Self::Users(_) => "users",
-            Self::Portals(_) => "portals",
+            Self::Clients(_) => "clients",
+            Self::Apis(_) => "apis",
             Self::Svc(_) => "svc",
             Self::Dev(_) => "dev",
             Self::Resources(_) => "resources",
             Self::Events(_) => "events",
             #[cfg(feature = "runtime")]
             Self::Init(_) => "init",
+            #[cfg(feature = "runtime")]
+            Self::Tls(_) => "tls",
             Self::Keys(_) => "keys",
             Self::Upgrade(_) => "upgrade",
             Self::Version | Self::Completion { .. } => return None,

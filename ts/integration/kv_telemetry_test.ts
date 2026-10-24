@@ -5,15 +5,16 @@ import {
   MeterProvider,
   PeriodicExportingMetricReader,
 } from "@opentelemetry/sdk-metrics";
-import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
 import { TypedKV } from "../packages/trellis/kv.ts";
 import { fixedTransportProvider } from "../packages/trellis/transport/generations.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("typed KV records one bounded storage duration per caller operation", async () => {
+test("typed KV records one bounded storage duration per caller operation", async () => {
   const exporter = new InMemoryMetricExporter(
     AggregationTemporality.CUMULATIVE,
   );
@@ -21,25 +22,12 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
     exporter,
     exportIntervalMillis: 60_000,
   });
-  const captureEndpoint = Deno.env.get("TRELLIS_OBS_CAPTURE_ENDPOINT");
   const provider = new MeterProvider({
     resource: resourceFromAttributes({
       "service.name": "trellis-kv-acceptance",
       "service.instance.id": crypto.randomUUID(),
     }),
-    readers: [
-      reader,
-      ...(captureEndpoint
-        ? [
-          new PeriodicExportingMetricReader({
-            exporter: new OTLPMetricExporter({
-              url: `${captureEndpoint}/v1/metrics`,
-            }),
-            exportIntervalMillis: 1_000,
-          }),
-        ]
-        : []),
-    ],
+    readers: [reader],
   });
   metrics.setGlobalMeterProvider(provider);
   try {
@@ -47,7 +35,7 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
       const nats = await connect({
         servers: runtime.natsUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
           ),
         ),
@@ -68,26 +56,26 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
           { history: 4, isCurrent: () => current },
         ).orThrow();
 
-        assertEquals(await kv.get("absent").orThrow(), undefined);
+        assert.deepEqual(await kv.get("absent").orThrow(), undefined);
         const created = await kv.create("secret-key", 1).orThrow();
-        assertEquals(await kv.get("secret-key").orThrow(), 1);
-        assertEquals((await kv.getEntry("secret-key").orThrow())?.value, 1);
-        assertEquals(
+        assert.deepEqual(await kv.get("secret-key").orThrow(), 1);
+        assert.deepEqual((await kv.getEntry("secret-key").orThrow())?.value, 1);
+        assert.deepEqual(
           (await kv.replace("secret-key", created.revision, 2).orThrow()).value,
           2,
         );
         const conflict = await kv.replace("secret-key", created.revision, 3);
-        assertEquals(conflict.isErr(), true);
+        assert.deepEqual(conflict.isErr(), true);
         await kv.put("secret-key", 4).orThrow();
-        assertEquals((await kv.history("secret-key").orThrow()).length, 3);
+        assert.deepEqual((await kv.history("secret-key").orThrow()).length, 3);
         const keys = await kv.keys().orThrow();
-        for await (const key of keys) assertEquals(key, "secret-key");
+        for await (const key of keys) assert.deepEqual(key, "secret-key");
         await kv.status().orThrow();
         const watcher = await kv.watch("secret-key").orThrow();
         for await (const _entry of watcher) break;
         await kv.delete("secret-key").orThrow();
         current = false;
-        assertEquals((await kv.get("secret-key")).isErr(), true);
+        assert.deepEqual((await kv.get("secret-key")).isErr(), true);
 
         await provider.forceFlush();
         const counts = new Map<string, number>();
@@ -97,16 +85,16 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
               if (metric.descriptor.name !== "trellis.storage.duration") {
                 continue;
               }
-              assertEquals(metric.descriptor.unit, "s");
+              assert.deepEqual(metric.descriptor.unit, "s");
               for (const point of metric.dataPoints) {
-                assertEquals(point.attributes["trellis.backend"], "kv");
-                assertEquals(Object.keys(point.attributes).sort(), [
+                assert.deepEqual(point.attributes["trellis.backend"], "kv");
+                assert.deepEqual(Object.keys(point.attributes).sort(), [
                   "trellis.backend",
                   "trellis.operation",
                   "trellis.outcome",
                   "trellis.phase",
                 ]);
-                assertEquals(point.attributes["trellis.phase"], "total");
+                assert.deepEqual(point.attributes["trellis.phase"], "total");
                 const label = `${point.attributes["trellis.operation"]}:${
                   point.attributes["trellis.outcome"]
                 }`;
@@ -118,7 +106,7 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
             }
           }
         }
-        assertEquals(Object.fromEntries(counts), {
+        assert.deepEqual(Object.fromEntries(counts), {
           "read:ok": 3,
           "read:not_found": 1,
           "read:error": 1,
@@ -139,13 +127,13 @@ Deno.test("typed KV records one bounded storage duration per caller operation", 
   }
 });
 
-Deno.test("typed KV CAS remains intact with telemetry disabled", async () => {
+test("typed KV CAS remains intact with telemetry disabled", async () => {
   metrics.disable();
   await withTrellisRuntime(async (runtime) => {
     const nats = await connect({
       servers: runtime.natsUrl,
       authenticator: credsAuthenticator(
-        await Deno.readFile(
+        await readFile(
           `${runtime.workdir}/config/trellis/nats/creds/trellis-auth.creds`,
         ),
       ),
@@ -163,14 +151,14 @@ Deno.test("typed KV CAS remains intact with telemetry disabled", async () => {
           migrations: {},
         },
       ).orThrow();
-      assertEquals(await kv.get("absent").orThrow(), undefined);
+      assert.deepEqual(await kv.get("absent").orThrow(), undefined);
       const created = await kv.create("key", 1).orThrow();
       await kv.replace("key", created.revision, 2).orThrow();
-      assertEquals(
+      assert.deepEqual(
         (await kv.replace("key", created.revision, 3)).isErr(),
         true,
       );
-      assertEquals(await kv.get("key").orThrow(), 2);
+      assert.deepEqual(await kv.get("key").orThrow(), 2);
     } finally {
       await nats.close();
     }

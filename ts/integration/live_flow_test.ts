@@ -6,10 +6,13 @@
  */
 
 import { TrellisService } from "@oatscenter/trellis/service";
-import { assertEquals } from "@std/assert";
-import { fromFileUrl } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { repoTrellisSource, withTrellisRuntime } from "./_support/runtime.ts";
 
 /** Built server binary supplied by the live test harness. */
@@ -18,7 +21,7 @@ const runtimeOptions = {
   trellis: { source: repoTrellisSource() },
 };
 
-Deno.test("T03 a consumption pause fills the window and resumes in order", async () => {
+test("T03 a consumption pause fills the window and resumes in order", async () => {
   await withTrellisRuntime(async (runtime) => {
     const totalFrames = 200;
     let emitted = 0;
@@ -27,7 +30,7 @@ Deno.test("T03 a consumption pause fills the window and resumes in order", async
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       name: `live-flow-${crypto.randomUUID()}`,
       seed: identity.seed,
@@ -44,10 +47,10 @@ Deno.test("T03 a consumption pause fills the window and resumes in order", async
 
     const client = await runtime.connectClient({
       name: "live-flow-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const handle = await client.watch({}).orThrow();
+      const handle = await client.runtimeWatch({}).orThrow();
       const iterator = handle[Symbol.asyncIterator]();
       const seen: string[] = [];
       // Consume a few, then pause long enough for the provider to fill its
@@ -64,20 +67,20 @@ Deno.test("T03 a consumption pause fills the window and resumes in order", async
         seen.push((next.value as { value: string }).value);
       }
 
-      assertEquals(emitted, totalFrames);
-      assertEquals(seen.length, totalFrames);
+      assert.deepEqual(emitted, totalFrames);
+      assert.deepEqual(seen.length, totalFrames);
       for (let index = 0; index < totalFrames; index++) {
-        assertEquals(seen[index], `frame-${index + 1}`);
+        assert.deepEqual(seen[index], `frame-${index + 1}`);
       }
     } finally {
       await client.connection.close();
       await service.stop();
-      assertEquals(await serviceExit, undefined);
+      assert.deepEqual(await serviceExit, undefined);
     }
   }, runtimeOptions);
 });
 
-Deno.test("T12 large bodies stay ordered under the bounded byte window", async () => {
+test("T12 large bodies stay ordered under the bounded byte window", async () => {
   await withTrellisRuntime(async (runtime) => {
     const totalFrames = 24;
     const padding = "p".repeat(8_192);
@@ -87,7 +90,7 @@ Deno.test("T12 large bodies stay ordered under the bounded byte window", async (
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
       name: `live-flow-${crypto.randomUUID()}`,
       seed: identity.seed,
@@ -102,25 +105,25 @@ Deno.test("T12 large bodies stay ordered under the bounded byte window", async (
 
     const client = await runtime.connectClient({
       name: "live-flow-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const handle = await client.watch({}).orThrow();
+      const handle = await client.runtimeWatch({}).orThrow();
       const seen: string[] = [];
       for await (const value of handle) {
         seen.push((value as { value: string }).value);
       }
-      assertEquals(emitted, totalFrames);
-      assertEquals(seen.length, totalFrames);
+      assert.deepEqual(emitted, totalFrames);
+      assert.deepEqual(seen.length, totalFrames);
       // Raw ingress and decoded ownership share one byte budget; every frame
       // still arrives exactly once and in order.
       for (let index = 0; index < totalFrames; index++) {
-        assertEquals(seen[index], `${padding}:${index + 1}`);
+        assert.deepEqual(seen[index], `${padding}:${index + 1}`);
       }
     } finally {
       await client.connection.close();
       await service.stop();
-      assertEquals(await serviceExit, undefined);
+      assert.deepEqual(await serviceExit, undefined);
     }
   }, runtimeOptions);
 });

@@ -14,8 +14,9 @@
 //! dropping the real logical client releases a provisional transport resource
 //! and that the still-open process performs no recovery work afterwards.
 
+use trellis_rs::__internal::RuntimeOwner as _;
 use futures_util::{stream, StreamExt as _};
-use runtime_trellis::apis::runtime_trellis_transport_growth_v1::Client as SubjectGrowthClient;
+use runtime_trellis::participants::runtime_trellis_transport_growth_subject::runtime_trellis_transport_growth_v1::Client as SubjectGrowthClient;
 use runtime_trellis::participants::runtime_trellis_transport_growth_subject::{
     Participant as SubjectParticipant, Provider as SubjectProvider,
 };
@@ -26,7 +27,6 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use trellis_rs::service::ServiceConnectOptions;
 use trellis_rs::telemetry::{self, TelemetryGuard, TelemetryIdentity, TelemetryRole};
 
 /// Emits one flushable protocol line the harness can act on immediately.
@@ -38,6 +38,13 @@ fn emit(line: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
     let telemetry = telemetry::init_from_env(TelemetryIdentity::new(
         "transport-growth-subject",
         TelemetryRole::Service,
@@ -76,7 +83,9 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
     // call completes well within it; this is the ordinary public client option,
     // not a runtime or test-only timer.
     let mut runtime = SubjectParticipant::connect(
-        ServiceConnectOptions::new(&url, &seed).with_timeout_ms(60_000),
+        trellis_runtime_acceptance::service_options(&url, &seed)
+            .await?
+            .with_timeout_ms(60_000),
     )
     .await?;
     // The generated API and outer client handles each own a real reference to the
@@ -227,6 +236,16 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                     .await?;
                 emit("TRANSPORT_GROWTH_ADVANCE_OK")?;
             }
+            "AUTH_STATUS" => {
+                emit(&format!(
+                    "AUTH_USABLE {}",
+                    client
+                        .as_ref()
+                        .expect("connected client")
+                        .availability()
+                        .runtime_trellis_transport_growth_v1_growth_extend
+                ))?;
+            }
             "START_ADVANCE" => {
                 // Issue one real generated `Advance` on an owned task so stdin
                 // keeps processing commands while the call is held in flight by
@@ -271,6 +290,24 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
                 emit("TRANSPORT_GROWTH_EXTEND_AVAILABLE")?;
             }
             "EXTEND" => {
+                growth(&api)
+                    .extend(&Empty {
+                        extra: Default::default(),
+                    })
+                    .await?;
+                emit("TRANSPORT_GROWTH_EXTEND_OK")?;
+            }
+            "WAIT_EXTEND" => {
+                let client = client.as_ref().expect("client is still connected");
+                let mut availability = client.watch_availability();
+                while !client
+                    .availability()
+                    .action_runtime_trellis_transport_growth_v1_rpc_extend
+                {
+                    if availability.next().await.is_none() {
+                        return Err("connection closed before Extend became available".into());
+                    }
+                }
                 growth(&api)
                     .extend(&Empty {
                         extra: Default::default(),
@@ -344,13 +381,16 @@ async fn run(telemetry: &TelemetryGuard) -> Result<(), Box<dyn std::error::Error
 /// service facade hiding its client. Keep both real references after scope end.
 async fn run_native_owner_scope(url: &str, seed: &str) -> Result<(), Box<dyn std::error::Error>> {
     use trellis_rs::generated::ParticipantDescriptor as _;
+    let server =
+        trellis_rs::auth::discover_native_oauth(url, &trellis_runtime_acceptance::trust_roots())
+            .await?;
     let client = std::sync::Arc::new(
         trellis_rs::client::TrellisClient::connect_service_with_contract(
             trellis_rs::client::ServiceConnectWithContractOptions {
-                trellis_url: url,
+                nats_servers: std::env::var("TRELLIS_NATIVE_NATS_URL")
+                    .map_or(server.nats_servers, |url| vec![url]),
+                trust: server.trust,
                 participant_id: SubjectParticipant::ID,
-                participant_path: SubjectParticipant::PATH,
-                package_evidence: SubjectParticipant::package_evidence(),
                 name: Some("native-owner-scope"),
                 provisioned_identity_seed_base64url: seed,
                 timeout_ms: 60_000,
@@ -358,11 +398,85 @@ async fn run_native_owner_scope(url: &str, seed: &str) -> Result<(), Box<dyn std
         )
         .await?,
     );
-    let owner = trellis_rs::service::LiveProviderOwner::from_connected_client(client.clone());
+    let owner = trellis_rs::__internal::LiveProviderOwner::from_connected_client(client.clone());
+    let api = SubjectGrowthClient::from_generated(owner.runtime_generated_client());
+    let initial_session = client
+        .authorization_context()?
+        .ok_or("missing native authority")?
+        .context
+        .unsigned
+        .authorization_session_id;
     emit("TRANSPORT_GROWTH_READY")?;
     let mut commands = BufReader::new(tokio::io::stdin()).lines();
     while let Some(line) = commands.next_line().await? {
         match line.trim() {
+            "WAIT_REPLACEMENT" => {
+                let replaced = tokio::time::timeout(Duration::from_secs(60), async {
+                    loop {
+                        if client
+                            .authorization_context()
+                            .ok()
+                            .flatten()
+                            .is_some_and(|bundle| {
+                                bundle.context.unsigned.authorization_session_id != initial_session
+                            })
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .is_ok();
+                emit(if replaced {
+                    "TRANSPORT_GROWTH_REPLACED"
+                } else {
+                    "TRANSPORT_GROWTH_REPLACEMENT_UNAVAILABLE"
+                })?;
+            }
+            "CONTEXT" => {
+                let context = client
+                    .authorization_context()?
+                    .ok_or("missing native authority")?
+                    .context;
+                emit(&format!(
+                    "NATIVE_CONTEXT {}",
+                    serde_json::json!({
+                        "sessionId": context.unsigned.authorization_session_id,
+                        "expiresAt": context.unsigned.expires_at,
+                        "digest": context.digest()?,
+                    })
+                ))?;
+            }
+            "ADVANCE" => {
+                api.advance(&Empty {
+                    extra: Default::default(),
+                })
+                .await?;
+                emit("TRANSPORT_GROWTH_ADVANCE_OK")?;
+            }
+            "TRY_ADVANCE" => {
+                match api
+                    .advance(&Empty {
+                        extra: Default::default(),
+                    })
+                    .await
+                {
+                    Ok(_) => emit("TRANSPORT_GROWTH_ADVANCE_OK")?,
+                    Err(error) => emit(&format!("TRANSPORT_GROWTH_ADVANCE_DENIED {error}"))?,
+                }
+            }
+            "TRY_EXTEND" => {
+                match api
+                    .extend(&Empty {
+                        extra: Default::default(),
+                    })
+                    .await
+                {
+                    Ok(_) => emit("TRANSPORT_GROWTH_EXTEND_OK")?,
+                    Err(error) => emit(&format!("TRANSPORT_GROWTH_EXTEND_DENIED {error}"))?,
+                }
+            }
             "SHUTDOWN_NATIVE" => {
                 owner.shutdown_native_runtime().await?;
                 emit("TRANSPORT_GROWTH_CLOSED_AND_WAITING")?;
@@ -374,7 +488,9 @@ async fn run_native_owner_scope(url: &str, seed: &str) -> Result<(), Box<dyn std
             "PING" => {
                 // The client is still a usable Rust value after transport scope
                 // end; no last-reference drop or process exit proves retirement.
-                let _ = client.authorization_context()?;
+                if client.authorization_context().is_ok() {
+                    return Err("a stopped native owner exposed authorization".into());
+                }
                 emit("TRANSPORT_GROWTH_PONG")?;
             }
             "EXIT" => {

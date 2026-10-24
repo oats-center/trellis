@@ -42,6 +42,7 @@ pub fn api_digest(graph: &PackageGraph, api: &ApiId) -> miette::Result<String> {
     let mut projection = package.clone();
     projection.apis.retain(|id, _| id == api);
     projection.participants.clear();
+    projection.app_requests.clear();
     let mut local = BTreeSet::new();
     let mut external = BTreeSet::new();
     for reference in value.errors.values().flatten() {
@@ -129,6 +130,7 @@ pub(crate) fn selected_surface_digest_cached(
                 errors,
                 signals,
                 upload,
+                stream,
             } => {
                 append_schema(&mut output, graph, input, schemas)?;
                 append_schema(&mut output, graph, result, schemas)?;
@@ -146,7 +148,15 @@ pub(crate) fn selected_surface_digest_cached(
                     append_digest_field(&mut output, name);
                     append_schema(&mut output, graph, signal, schemas)?;
                 }
-                append_digest_field(&mut output, if *upload { "upload" } else { "" });
+                // One field keeps existing staged and non-upload digests stable.
+                append_digest_field(
+                    &mut output,
+                    match (*upload, *stream) {
+                        (_, true) => "stream",
+                        (true, false) => "upload",
+                        (false, false) => "",
+                    },
+                );
                 append_errors(&mut output, graph, api, errors, schemas)?;
             }
             ActionDefinition::Event {
@@ -165,8 +175,23 @@ pub(crate) fn selected_surface_digest_cached(
             }
         }
     }
-    for capability in &selection.optional_capabilities {
-        append_digest_field(&mut output, capability.as_str());
+    for (required, capabilities) in [
+        (true, &selection.required_capabilities),
+        (false, &selection.optional_capabilities),
+    ] {
+        for id in capabilities {
+            if !api.capabilities.contains_key(id) && !api.groups.contains_key(id) {
+                return Err(miette!(
+                    "selected capability '{id}' is absent from API '{}'",
+                    api.identity
+                ));
+            }
+            append_digest_field(&mut output, if required { "required" } else { "optional" });
+            append_digest_field(&mut output, id.as_str());
+            for action in api.selection_allows(id).unwrap_or_default() {
+                append_digest_field(&mut output, &selection_key(action));
+            }
+        }
     }
     Ok(sha256_base64url(&output))
 }
@@ -209,31 +234,6 @@ fn append_schema(
 fn append_digest_field(output: &mut String, value: &str) {
     write!(output, "{}:", value.len()).unwrap();
     output.push_str(value);
-}
-
-/// Compute consent-text identity independently of authority identity.
-pub fn capability_consent_digest(
-    graph: &PackageGraph,
-    capability: &CapabilityId,
-) -> miette::Result<String> {
-    let value = graph
-        .packages()
-        .values()
-        .flat_map(|package| package.apis.values())
-        .find_map(|api| api.capabilities.get(capability))
-        .ok_or_else(|| miette!("capability '{capability}' is absent from graph"))?;
-    let mut digest = Sha256::new();
-    for value in [
-        capability.as_str(),
-        value.description.as_str(),
-        value.consequence.as_str(),
-    ] {
-        let length = u32::try_from(value.len())
-            .map_err(|_| miette!("capability consent field exceeds u32 length"))?;
-        digest.update(length.to_be_bytes());
-        digest.update(value.as_bytes());
-    }
-    Ok(URL_SAFE_NO_PAD.encode(digest.finalize()))
 }
 
 pub(crate) fn digest_package(
@@ -297,15 +297,19 @@ fn render(
             participant
                 .companion
                 .as_ref()
-                .map(|value| value.participant.clone())
+                .map(|value| value.request.clone())
         })
         .collect::<BTreeSet<_>>();
-    for participant in package
-        .participants
-        .values()
-        .filter(|participant| !companions.contains(&participant.identity))
-    {
+    for participant in package.participants.values() {
         render_participant(&mut output, participant, mode, &imports, package, false);
+        output.push('\n');
+    }
+    for request in package
+        .app_requests
+        .values()
+        .filter(|request| !companions.contains(&request.identity))
+    {
+        render_app_request(&mut output, request, mode, &imports, false);
         output.push('\n');
     }
     Ok(output)
@@ -342,6 +346,19 @@ impl Imports {
             }
             participant
                 .resources
+                .values()
+                .for_each(|value| collect_resource(value, &package.identity, &mut refs));
+        }
+        for request in package.app_requests.values() {
+            for api in request.uses.keys() {
+                if let Some((owner, name)) = split_api(api.as_str()) {
+                    if owner != package.identity.as_str() {
+                        refs.insert((PackageId::new(owner), name.to_owned()));
+                    }
+                }
+            }
+            request
+                .states
                 .values()
                 .for_each(|value| collect_resource(value, &package.identity, &mut refs));
         }
@@ -395,7 +412,7 @@ fn render_type_definition(
         TypeDefinition::Enum(symbols) => {
             writeln!(output, "enum {id} {{").unwrap();
             for symbol in symbols {
-                writeln!(output, "  {symbol};").unwrap();
+                writeln!(output, "  {};", quote(symbol)).unwrap();
             }
             output.push_str("}\n");
         }
@@ -483,65 +500,100 @@ fn render_api(api: &ApiDefinition, mode: CanonicalMode, imports: &Imports) -> St
     }
     output.push_str("  capabilities {\n");
     for (id, capability) in &api.capabilities {
-        if capability.public {
-            output.push_str("    public {\n");
-        } else {
-            writeln!(
-                output,
-                "    capability {} {{",
-                id.as_str()
-                    .rsplit_once("::")
-                    .map_or(id.as_str(), |(_, name)| name)
-            )
-            .unwrap();
+        render_capability(&mut output, id, capability, mode);
+    }
+    // Groups grant their members, so both forms carry them.
+    for (id, group) in &api.groups {
+        render_group(&mut output, id, group, mode);
+    }
+    output.push_str("  }\n}\n");
+    output
+}
+
+fn render_group(
+    block: &mut String,
+    id: &CapabilityId,
+    group: &CapabilityGroupDefinition,
+    mode: CanonicalMode,
+) {
+    writeln!(
+        block,
+        "    group {} {{",
+        crate::semantic::capability_name(id.as_str())
+    )
+    .unwrap();
+    let title = if mode == CanonicalMode::Presentation {
+        group.title.as_str()
+    } else {
+        "_"
+    };
+    writeln!(block, "      title {};", quote(title)).unwrap();
+    writeln!(block, "      description {};", quote(&group.description)).unwrap();
+    writeln!(block, "      grants {};", quote(&group.grants)).unwrap();
+    for member in &group.members {
+        writeln!(
+            block,
+            "      capability {};",
+            crate::semantic::capability_name(member.as_str())
+        )
+        .unwrap();
+    }
+    block.push_str("    }\n");
+}
+
+fn render_capability(
+    block: &mut String,
+    id: &CapabilityId,
+    capability: &CapabilityDefinition,
+    mode: CanonicalMode,
+) {
+    if capability.public {
+        block.push_str("    public {\n");
+    } else {
+        writeln!(
+            block,
+            "    capability {} {{",
+            crate::semantic::capability_name(id.as_str())
+        )
+        .unwrap();
+    }
+    if capability.administrative {
+        block.push_str("      administrative;\n");
+    }
+    if mode == CanonicalMode::Presentation {
+        if !capability.title.is_empty() {
+            writeln!(block, "      title {};", quote(&capability.title)).unwrap();
         }
-        if mode == CanonicalMode::Presentation {
-            if !capability.title.is_empty() {
-                writeln!(output, "      title {};", quote(&capability.title)).unwrap();
-            }
-            if !capability.description.is_empty() {
-                writeln!(
-                    output,
-                    "      description {};",
-                    quote(&capability.description)
-                )
-                .unwrap();
-            }
-            if !capability.consequence.is_empty() {
-                writeln!(
-                    output,
-                    "      consequence {};",
-                    quote(&capability.consequence)
-                )
-                .unwrap();
-            }
-        } else if capability.public {
-            output.push_str("      title \"_\";\n");
-        } else {
-            output.push_str("      title \"_\";\n");
+        if !capability.description.is_empty() {
             writeln!(
-                output,
+                block,
                 "      description {};",
                 quote(&capability.description)
             )
             .unwrap();
-            writeln!(
-                output,
-                "      consequence {};",
-                quote(&capability.consequence)
-            )
-            .unwrap();
         }
-        output.push_str("      allows {\n");
-        let mut allows = capability.allows.iter().collect::<Vec<_>>();
-        allows.sort_by_key(|selection| selection_key(selection));
-        for selection in allows {
-            render_selection(&mut output, selection, "        ");
+        if !capability.grants.is_empty() {
+            writeln!(block, "      grants {};", quote(&capability.grants)).unwrap();
         }
-        output.push_str("      }\n    }\n");
+    } else if capability.public {
+        block.push_str("      title \"_\";\n");
+    } else {
+        block.push_str("      title \"_\";\n");
+        writeln!(
+            block,
+            "      description {};",
+            quote(&capability.description)
+        )
+        .unwrap();
+        writeln!(block, "      grants {};", quote(&capability.grants)).unwrap();
     }
-    output.push_str("  }\n}\n");
-    output
+    block.push_str("      allows {\n");
+    let mut allows = capability.allows.iter().collect::<Vec<_>>();
+    allows.sort_by_key(|selection| selection_key(selection));
+    for selection in allows {
+        render_selection(block, selection, "        ");
+    }
+    block.push_str("      }\n    }\n");
 }
 
 fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, imports: &Imports) {
@@ -572,6 +624,7 @@ fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, i
             errors,
             signals,
             upload,
+            stream,
         } => {
             writeln!(output, "    input {};", imports.ty(input)).unwrap();
             writeln!(output, "    output {};", imports.ty(result)).unwrap();
@@ -589,7 +642,9 @@ fn render_action(output: &mut String, id: &ActionId, value: &ActionDefinition, i
                 }
                 output.push_str("    }\n");
             }
-            if *upload {
+            if *stream {
+                output.push_str("    stream;\n");
+            } else if *upload {
                 output.push_str("    upload;\n");
             }
         }
@@ -662,35 +717,66 @@ fn render_participant(
     for api in &value.implements {
         writeln!(output, "  implements {};", imports.api(api)).unwrap();
     }
-    for (api, selections) in &value.uses {
-        writeln!(output, "  use {} {{", imports.api(api)).unwrap();
-        let mut actions = selections.actions.iter().collect::<Vec<_>>();
-        actions.sort_by_key(|selection| selection_key(selection));
-        for selection in actions {
-            render_selection(output, selection, "    ");
-        }
-        for capability in &selections.optional_capabilities {
-            writeln!(
-                output,
-                "    optional capability {};",
-                capability
-                    .as_str()
-                    .rsplit_once("::")
-                    .map_or(capability.as_str(), |(_, name)| name)
-            )
-            .unwrap();
-        }
-        output.push_str("  }\n");
-    }
+    render_uses(output, &value.uses, imports);
     for (name, resource) in &value.resources {
         render_resource(output, name, resource, imports, mode);
     }
     if let Some(companion) = &value.companion {
-        if let Some(child) = package.participants.get(&companion.participant) {
-            render_participant(output, child, mode, imports, package, companion.optional);
+        if let Some(child) = package.app_requests.get(&companion.request) {
+            render_app_request(output, child, mode, imports, companion.optional);
         }
     }
     output.push_str("}\n");
+}
+
+fn render_app_request(
+    output: &mut String,
+    value: &AppRequestDefinition,
+    mode: CanonicalMode,
+    imports: &Imports,
+    optional: bool,
+) {
+    writeln!(
+        output,
+        "{}{} {} {{",
+        match value.kind {
+            AppKind::Browser => "app",
+            AppKind::Native => "agent",
+        },
+        if optional { " optional" } else { "" },
+        value.name
+    )
+    .unwrap();
+    render_uses(output, &value.uses, imports);
+    for (name, state) in &value.states {
+        render_resource(output, name, state, imports, mode);
+    }
+    output.push_str("}\n");
+}
+
+fn render_uses(
+    output: &mut String,
+    uses: &BTreeMap<ApiId, InteractionSelection>,
+    imports: &Imports,
+) {
+    for (api, selections) in uses {
+        writeln!(output, "  use {} {{", imports.api(api)).unwrap();
+        for (prefix, selected) in [
+            ("required ", &selections.required_capabilities),
+            ("", &selections.optional_capabilities),
+        ] {
+            for capability in selected {
+                let name = crate::semantic::capability_name(capability.as_str());
+                let kind = if name.contains('.') || name == "public" {
+                    "capability"
+                } else {
+                    "group"
+                };
+                writeln!(output, "    {prefix}{kind} {name};").unwrap();
+            }
+        }
+        output.push_str("  }\n");
+    }
 }
 
 fn render_resource(
@@ -1090,8 +1176,6 @@ fn participant_kind(value: ParticipantKind) -> &'static str {
     match value {
         ParticipantKind::Service => "service",
         ParticipantKind::Device => "device",
-        ParticipantKind::App => "app",
-        ParticipantKind::Agent => "agent",
     }
 }
 fn primitive_name(value: Primitive) -> &'static str {

@@ -12,6 +12,9 @@ api performance@v1 {
   rpc ReadRecord { input Value; output Value; }
   rpc Download { input Value; output Value; download; }
   operation Upload { input Value; output Value; upload; }
+  operation UploadStaged { input Value; output Value; upload; }
+  operation UploadStream { input Value; output Value; stream; }
+  rpc DownloadStream { input Value; output Value; download; }
   operation Work { input Value; progress Value; output Value; }
   operation QueueWork { input Value; output Value; }
   operation AwaitCancellation { input Value; progress Value; output Value; }
@@ -21,7 +24,8 @@ api performance@v1 {
   event Changed { payload Value; }
   event Delivered { payload Value; }
   capabilities {
-    public { allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; publish event Delivered; subscribe event Delivered; } }
+    capability workloads.run { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; grants "The caller may run the benchmark workloads and observe their results."; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; rpc DownloadStream; operation Upload; operation UploadStaged; operation UploadStream; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
+    capability deliveries.publish { title "Publish delivery results"; description "Report a completed durable delivery."; grants "The provider may publish Delivered events."; allows { publish event Delivered; } }
   }
 }
 
@@ -35,8 +39,12 @@ service Provider {
   consumer changes { title "Changes"; description "Measured durable event delivery."; events [performance.Changed]; concurrency 1; replay new; }
 }
 
-app Caller {
-  use performance { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; operation Upload; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; }
-  use auth { rpc Sessions.Me; rpc Sessions.Logout; }
+agent Caller {
+  use performance { required capability workloads.run; }
+  use auth { required capability account.read; }
   state saved { title "Saved"; description "Measured client state round trips."; schema Value; version 1; }
+}
+
+app BrowserCaller {
+  use performance { required capability workloads.run; }
 }

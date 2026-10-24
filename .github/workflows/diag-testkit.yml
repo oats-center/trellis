@@ -34,7 +34,8 @@ jobs:
       - name: Download Check-built runtime and testkit binaries
         uses: actions/download-artifact@v4
         with:
-          name: check-runtime-binaries
+          pattern: check-*-binaries
+          merge-multiple: true
           path: ${{ env.EXECUTION_ROOT }}/binaries
           run-id: ${{ inputs.source-run-id }}
           github-token: ${{ github.token }}
@@ -47,6 +48,7 @@ jobs:
           mkdir -p "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime"
           chmod 700 "$EXECUTION_ROOT" "$EXECUTION_ROOT/nats" "$EXECUTION_ROOT/runtime"
           tar -xzf "$EXECUTION_ROOT/binaries/runtime-binaries.tar.gz" -C "$EXECUTION_ROOT/binaries"
+          tar --zstd -xf "$EXECUTION_ROOT/binaries/fixture-binaries.tar.zst" -C "$EXECUTION_ROOT/binaries"
           bash scripts/acquire-test-nats.sh --dest "$EXECUTION_ROOT/nats"
           sha256sum "$EXECUTION_ROOT/binaries/trellis-server" "$EXECUTION_ROOT/binaries/trellis" "$EXECUTION_ROOT/binaries/trellis-testkit-live" "$EXECUTION_ROOT/nats/nats-server"
 

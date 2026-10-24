@@ -251,29 +251,6 @@ pub fn derive_bound_live_subject(
     ))
 }
 
-/// Derive the wildcard control subscription for one Live owner instance.
-#[must_use]
-pub fn derive_live_control_subject(live_subject: &str, owner_instance_id: &str) -> String {
-    format!(
-        "{live_subject}.control.{}.*",
-        subject_token(owner_instance_id)
-    )
-}
-
-/// Derive the exact control subject for one Live instance.
-#[must_use]
-pub fn derive_live_instance_control_subject(
-    live_subject: &str,
-    owner_instance_id: &str,
-    live_id: &str,
-) -> String {
-    format!(
-        "{live_subject}.control.{}.{}",
-        subject_token(owner_instance_id),
-        subject_token(live_id)
-    )
-}
-
 /// Derive the one queue shared by replicas subscribed to an exact route.
 #[must_use]
 pub fn route_queue_group(subscription_subject: &str) -> String {
@@ -340,16 +317,16 @@ pub fn derive_event_wildcard_subject(
     Ok(subject)
 }
 
-/// Derive a live subject from its version and logical name.
+/// Derive the canonical Live v1 opening subject for a qualified application API.
 ///
 /// # Errors
 ///
-/// Returns [`ProtocolError::InvalidIdentifier`] for an invalid `vN` version or
-/// logical surface name.
-pub fn derive_live_subject(version: &str, logical_name: &str) -> Result<String, ProtocolError> {
-    validate_version(version)?;
-    validate_logical_name(logical_name)?;
-    Ok(format!("live.{version}.route.{logical_name}"))
+/// Returns [`ProtocolError::InvalidIdentifier`] for an invalid `lineage@vN` API
+/// identity or action name. The application major never selects the Live protocol.
+pub fn derive_live_subject(api_id: &str, action: &str) -> Result<String, ProtocolError> {
+    crate::validate_api_id(api_id)?;
+    validate_logical_name(action)?;
+    Ok(format!("live.v1.route.{}.{action}", subject_token(api_id)))
 }
 
 /// Return whether two tokenized event subject patterns can match the same subject.

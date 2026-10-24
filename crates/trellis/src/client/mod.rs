@@ -10,6 +10,7 @@ pub(crate) mod authorization;
 mod connection;
 mod error;
 mod events;
+#[cfg(feature = "http")]
 mod http_error;
 mod operations;
 mod proof;
@@ -19,31 +20,34 @@ mod transfer;
 mod transport_generations;
 
 pub use auth::SessionAuth;
-pub(crate) use authorization::AuthorizationContextLease;
-#[cfg(any(test, feature = "runtime-internals"))]
-pub use authorization::AuthorizationRegistryBinding;
-pub use authorization::{canonical_trellis_origin, AuthorizationProviderCache};
+pub use authorization::{
+    canonical_trellis_origin, AuthorizationLease, AuthorizationOwner,
+    HistoricalEventVerificationInput, ResponseVerificationInput, RuntimeAuthorizationTrust,
+    VerifiedAuthorizationResponse,
+};
 pub(crate) use authorization::{
     resource_action_marker, ResourceTransportAction, ResourceTransportKind,
 };
 pub use authorization::{
-    AuthorizationApiBinding, AuthorizationContextBundle, AuthorizationContextCache,
-    AuthorizationContextPolicy, AuthorizationInstallation, AuthorizationNativeTransport,
-    AuthorizationRoutingMaterial, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
+    AuthorizationContextBundle, AuthorizationContextCache, AuthorizationInstallation,
+    AuthorizationNativeTransport, AuthorizationRuntimeBinding, AuthorizationRuntimeTransports,
     AuthorizationVerificationCore, AuthorizationVerificationError, EventVerificationInput,
     RequestVerificationInput, VerifiedAuthorizationEvent, VerifiedAuthorizationRequest,
-    VerifiedCaller,
 };
-#[cfg(feature = "runtime-internals")]
-pub use authorization::{RuntimeAuthorizationIoCounters, RuntimeAuthorizationTrust};
+pub use trellis_protocol::transfer::TransferOrigin;
+pub use trellis_protocol::AuthenticatedCaller;
+pub use trellis_protocol::{ApiSurfaceKind, CatalogActionIdentity, PermissionAction};
 
 pub use crate::generated::{EventDescriptor, LiveDescriptor, RpcDescriptor};
+#[cfg(feature = "device")]
 pub(crate) use connection::fetch_device_activation;
+#[cfg(feature = "device")]
 pub(crate) use connection::DeviceEnrollmentResponse;
+#[cfg(feature = "native-oauth")]
+pub use connection::UserConnectOptions;
 pub use connection::{
     DeviceConnectOptions, EventMessage, EventReplayPolicy, EventSubscribeOptions,
-    EventSubscriptionMode, ServiceConnectWithContractOptions, TrellisClient, UserConnectOptions,
-    UserSessionCredentials,
+    EventSubscriptionMode, ServiceConnectWithContractOptions, TrellisClient,
 };
 pub use error::{
     AuthenticationError, CallError, ProtocolError, RemoteErrorPayload, RpcErrorPayload,
@@ -58,8 +62,11 @@ pub use events::{
 pub use events::{PostgresInboxStore, PostgresOutboxStore};
 #[cfg(feature = "event-store-sqlite")]
 pub use events::{SqliteInboxStore, SqliteOutboxStore};
+#[cfg(any(feature = "device", feature = "telemetry-otlp"))]
 pub(crate) use http_error::http_client_builder;
+#[cfg(feature = "device")]
 pub(crate) use http_error::read_bounded_http_body;
+#[cfg(feature = "http")]
 pub use http_error::{decode_trellis_http_error, TrellisHttpError};
 pub use operations::{
     control_subject, DeclaredOperationUpdates, HasOperationUpdates, NoOperationUpdates,
@@ -70,18 +77,13 @@ pub use operations::{
     StartedOperationTransfer, TransferOperationDescriptor,
 };
 pub(crate) use proof::{new_request_id, now_iat_seconds};
-pub use proof::{verify_event_proof, VerifyEventProofInput};
 #[doc(hidden)]
-pub use resources::{BoundStateResourceClient, ConnectedStateHandle};
+pub use resources::{BoundStateResourceClient, ConnectedStateHandle, StateWatch};
 pub use resources::{
     ConsumerDescriptor, ConsumerHandle, RawStateValue, RawStateWriteError, ResourceCodec,
     ResourceCodecError, ResourceRevision, StateHandle, StateReadError, StateResourceClient,
     StateValue, StateWriteError, StateWriteMode,
 };
-#[cfg(any(test, feature = "runtime-internals"))]
-#[doc(hidden)]
-pub use subject::resolve_subject;
-#[cfg(not(any(test, feature = "runtime-internals")))]
 pub(crate) use subject::resolve_subject;
 pub use subject::SubjectError;
 pub use transfer::{
@@ -89,8 +91,6 @@ pub use transfer::{
     UploadTransferGrant,
 };
 pub(crate) use transport_generations::{
-    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, LogicalTerminalCause,
-    TransportGeneration, TransportGenerationManager, TransportLease,
+    GenerationIntake, GenerationIntakeHandle, GenerationIntakeRetireReason, TransportGeneration,
+    TransportGenerationManager, TransportLease,
 };
-#[cfg(test)]
-mod tests;

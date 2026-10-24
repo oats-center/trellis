@@ -1,0 +1,44 @@
+/* ─── Trellis brand ───
+ * Signature: bronze. Warm metal: leaf olive (leaf gold on dark panels).
+ * Motif: a diamond lattice that the leaves climb.
+ * See src/lib/family/README.md for the family rules. */
+
+:root {
+  --brand: #8a7550;
+  --brand-deep: #6d5c3e;
+  --on-brand: #fffdf8;
+  --warm: #6b6540;
+  --warm-deep: #55502f;
+  --warm-ink: #fffdf8;
+  --ink: #26221c;
+  --on-ink: #f3efe6;
+  --on-ink-muted: #c2b9a6;
+  --console-bg: #1b1814;
+  --console-bar: #24201a;
+  --console-line: #3a342a;
+  --console-text: #e1d9c8;
+  --console-dim: #9a8f7b;
+  --paper-dark: #171512;
+}
+
+/* Bronze and olive go dim on a dark page, so both lift toward the leaf's light tones there */
+html.dark {
+  --brand: #c2a86e;
+  --brand-deep: #d6c193;
+  --on-brand: #1b1814;
+  --warm: #a8a070;
+  --warm-ink: #1b1814;
+}
+
+/* On dark panels the warm metal is the leaf's gold */
+.on-ink {
+  --warm: #c2a86e;
+  --warm-ink: #1b1814;
+}
+
+/* The lattice motif, reused by the hero and closing panels */
+.motif-lattice {
+  background-image:
+    repeating-linear-gradient(45deg, transparent 0 27px, color-mix(in srgb, var(--brand) 9%, transparent) 27px 28px),
+    repeating-linear-gradient(-45deg, transparent 0 27px, color-mix(in srgb, var(--brand) 9%, transparent) 27px 28px);
+}

@@ -1,7 +1,8 @@
-import { assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
 import { ulid } from "ulid";
 import { type BrowserContext, chromium, type Page } from "playwright";
-import { join } from "@std/path";
+import { browserTrustEnvironment } from "../packages/trellis-testkit/src/tls_trust.ts";
+import { join } from "node:path";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 import type { TrellisTestRuntimeStartOptions } from "@oatscenter/trellis-testkit";
 
@@ -9,13 +10,13 @@ import { repoTrellisSource } from "../integration/_support/runtime.ts";
 
 /** Local administrator credentials created through the browser bootstrap page. */
 export const BROWSER_ADMIN = {
-  username: "trellis-testkit-admin",
+  username: "admin",
   password: "browser-admin-password",
 };
 
 /** Returns the prebuilt server binary required by browser acceptance tests. */
 export function prebuiltServer(): string {
-  const server = Deno.env.get("TRELLIS_TEST_SERVER_BIN");
+  const server = process.env["TRELLIS_TEST_SERVER_BIN"];
   if (server === undefined) {
     throw new Error(
       "TRELLIS_TEST_SERVER_BIN must point to a prebuilt trellis-server",
@@ -44,7 +45,7 @@ export async function launchProfile(
 ): Promise<BrowserContext> {
   return await chromium.launchPersistentContext(
     join(runtime.workdir, "browser-profile"),
-    { headless: true },
+    { headless: true, env: browserTrustEnvironment() },
   );
 }
 
@@ -64,9 +65,33 @@ export async function approveConsentIfRequired(
   page: Page,
   timeoutMs = 5_000,
 ): Promise<void> {
-  const approve = page.getByRole("button", { name: "Approve" });
+  const approve = page.getByRole("button", {
+    name: "Allow",
+    exact: true,
+  });
   if (await visibleWithin(approve, timeoutMs)) {
+    for (const choice of await page.getByRole("checkbox").all()) {
+      if (await choice.isEnabled()) await choice.check();
+    }
     await approve.click();
+    await confirmAdministrationIfAsked(page);
+  }
+}
+
+/** Completes the portal's separate confirmation step for administration, when shown. */
+export async function confirmAdministrationIfAsked(
+  page: Page,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const allow = page.getByRole("button", {
+    name: "Allow management",
+    exact: true,
+  });
+  if (await visibleWithin(allow, timeoutMs)) {
+    await page
+      .getByRole("checkbox", { name: /I understand this app/ })
+      .check();
+    await allow.click();
   }
 }
 
@@ -79,9 +104,9 @@ export async function signInIfPrompted(
   const username = page.getByLabel("Username", { exact: true });
   if (await visibleWithin(username, timeoutMs)) {
     await username.fill(credentials.username);
-    await page.getByLabel("Password", { exact: true }).fill(
-      credentials.password,
-    );
+    await page
+      .getByLabel("Password", { exact: true })
+      .fill(credentials.password);
     await page.getByRole("button", { name: "Sign in" }).click();
   }
   await approveConsentIfRequired(page);
@@ -112,7 +137,7 @@ export async function openConsoleAsCredentials(
   await openConsole(page, runtime, credentials);
 }
 
-/** Creates the first administrator through the real portal bootstrap page. */
+/** Sets the initialized administrator's password through its one-time account link. */
 export async function completeAdminBootstrapInBrowser(
   page: Page,
   runtime: TrellisTestRuntime,
@@ -121,14 +146,21 @@ export async function completeAdminBootstrapInBrowser(
   await page.goto(await runtime.bootstrapUrl(), {
     waitUntil: "domcontentloaded",
   });
-  await page.getByLabel("Username", { exact: true }).fill(credentials.username);
-  await page.getByLabel("Password", { exact: true }).fill(credentials.password);
-  await page.getByLabel("Confirm password").fill(credentials.password);
-  await page.getByRole("button", { name: "Create administrator" }).click();
-  await page.waitForURL(
-    (url) => !url.pathname.startsWith("/login/admin/bootstrap"),
-    { timeout: 60_000 },
-  );
+  await page
+    .getByLabel("New password", { exact: true })
+    .fill(credentials.password);
+  await page
+    .getByRole("button", {
+      name: "Set password",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByText("Your new password is set")
+    .waitFor({ state: "visible" });
+  await page.goto(`${runtime.trellisUrl}/console`, {
+    waitUntil: "domcontentloaded",
+  });
 }
 
 /** Completes console entry whether the portal prompts for sign-in, consent, or attaches directly. */
@@ -136,28 +168,27 @@ export async function completeConsoleEntry(
   page: Page,
   credentials: { username: string; password: string },
 ): Promise<void> {
-  const ready = waitForConsoleConnected(page).then(() => "ready" as const)
-    .catch(
-      () => "waiting" as const,
-    );
+  const ready = waitForConsoleConnected(page)
+    .then(() => "ready" as const)
+    .catch(() => "waiting" as const);
   const form = page
     .getByLabel("Username", { exact: true })
     .first()
     .waitFor({ state: "visible", timeout: 60_000 })
     .then(() => "form" as const);
   const approval = page
-    .getByRole("button", { name: "Approve" })
+    .getByRole("button", { name: "Allow", exact: true })
     .waitFor({ state: "visible", timeout: 60_000 })
     .then(() => "approval" as const);
 
   const outcome = await Promise.race([ready, form, approval]);
   if (outcome === "form") {
-    await page.getByLabel("Username", { exact: true }).fill(
-      credentials.username,
-    );
-    await page.getByLabel("Password", { exact: true }).fill(
-      credentials.password,
-    );
+    await page
+      .getByLabel("Username", { exact: true })
+      .fill(credentials.username);
+    await page
+      .getByLabel("Password", { exact: true })
+      .fill(credentials.password);
     await page.getByRole("button", { name: "Sign in" }).click();
   }
   await approveConsentIfRequired(page);
@@ -176,7 +207,7 @@ export async function completePasswordReset(
   await page.goto(pageUrl.toString(), { waitUntil: "domcontentloaded" });
   const passwordFields = page.locator('input[autocomplete="new-password"]');
   await passwordFields.first().waitFor({ state: "visible", timeout: 30_000 });
-  assertEquals(await passwordFields.count(), 2);
+  assert.deepEqual(await passwordFields.count(), 2);
   const usernameField = page.locator('input[autocomplete="username"]');
   let username: string | undefined;
   if (await visibleWithin(usernameField, 5_000)) {
@@ -207,10 +238,20 @@ export async function waitForConsoleConnected(
   page: Page,
   timeoutMs = 60_000,
 ): Promise<void> {
-  await page.waitForURL(/\/console(\/|$)/, { timeout: timeoutMs });
+  await page
+    .waitForURL(/\/console(\/|$)/, { timeout: timeoutMs })
+    .catch(async (cause: unknown) => {
+      throw new Error(
+        `Console navigation failed at ${page.url()}: ${await page.locator("body").innerText()}`,
+        { cause },
+      );
+    });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const text = await page.locator("body").innerText().catch(() => "");
+    const text = await page
+      .locator("body")
+      .innerText()
+      .catch(() => "");
     if (text.includes("Connected")) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -228,31 +269,33 @@ export async function waitForConsoleReady(
     .waitFor({ state: "visible", timeout: timeoutMs });
 }
 
-/** Creates an ordinary user through admin RPCs and completes its password setup in the portal. */
+/** Creates a local-password Console user with its required non-administrative capabilities. */
 export async function createOrdinaryUserWithPassword(
   runtime: TrellisTestRuntime,
   user: { username: string; password: string; name?: string },
-): Promise<string> {
+) {
   const created = await runtime.callAdminRpc("authUsersCreate", {
-    email: null,
     idempotencyKey: ulid(),
-    image: null,
-    name: user.name ?? user.username,
+    displayName: user.name ?? user.username,
     username: user.username,
+    password: user.password,
   });
-  const userId = created.user.userId;
-  const reset = await runtime.callAdminRpc("authUsersPasswordResetCreate", {
-    idempotencyKey: ulid(),
-    returnTarget: null,
-    userId,
-  });
-  const resetUrl = reset.flow.completionUrl;
-  const context = await launchProfile(runtime);
-  try {
-    const page = await context.newPage();
-    await completePasswordReset(page, resetUrl, user.password);
-  } finally {
-    await context.close();
+  const principalId = created.user.principalId;
+  for (const capabilityId of [
+    "trellis.auth.v1:account.read",
+    "trellis.auth.v1:account.edit",
+    "trellis.auth.v1:identities.read",
+    "trellis.auth.v1:identities.manage",
+    "trellis.auth.v1:account.changePassword",
+    "trellis.auth.v1:sessions.read",
+    "trellis.auth.v1:sessions.revoke",
+  ]) {
+    await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+      principalId,
+      capabilityId,
+      expectedRevision: 0n,
+      idempotencyKey: ulid(),
+    });
   }
-  return userId;
+  return principalId;
 }

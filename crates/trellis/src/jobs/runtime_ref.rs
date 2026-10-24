@@ -15,6 +15,7 @@ const JOBS_STREAM: &str = "JOBS";
 /// NATS-backed implementation of Trellis service-local job waiting.
 #[derive(Clone)]
 pub struct NatsJobWaiter {
+    client: std::sync::Arc<crate::client::TrellisClient>,
     nats: async_nats::Client,
     queue: JobsQueueBinding,
     timeout: Duration,
@@ -22,8 +23,14 @@ pub struct NatsJobWaiter {
 
 impl NatsJobWaiter {
     /// Create a waiter for one bound service-local jobs queue.
-    pub fn new(nats: async_nats::Client, queue: JobsQueueBinding, timeout: Duration) -> Self {
+    pub fn new(
+        client: std::sync::Arc<crate::client::TrellisClient>,
+        nats: async_nats::Client,
+        queue: JobsQueueBinding,
+        timeout: Duration,
+    ) -> Self {
         Self {
+            client,
             nats,
             queue,
             timeout,
@@ -87,13 +94,12 @@ impl NatsJobWaiter {
 
     /// Read the latest lifecycle snapshot for one service-local job.
     pub async fn get(&self, seed: Job) -> Result<Job, JobsError> {
-        let subject = format!("{}.{}.*", self.queue.publish_prefix, seed.id);
-        let jetstream = jetstream::new(self.nats.clone());
-        let lifecycle_stream = jetstream
-            .get_stream_no_info(JOBS_STREAM)
+        let events = super::history::read(&self.client, &self.queue.queue_type, &seed.id)
             .await
-            .map_err(|error| jobs_message(format!("open jobs lifecycle stream failed: {error}")))?;
-        project_job_from_lifecycle(&lifecycle_stream, &subject, seed).await
+            .map_err(jobs_message)?;
+        Ok(events.into_iter().fold(seed, |current, (_, event)| {
+            apply_lifecycle_event(&current, &event)
+        }))
     }
 
     /// Subscribe to validated live-only updates until terminal lifecycle state.
@@ -141,16 +147,14 @@ impl NatsJobWaiter {
             .map_err(|error| {
                 jobs_message(format!("flush job update subscriptions failed: {error}"))
             })?;
-        let lifecycle_stream = jetstream::new(self.nats.clone())
-            .get_stream_no_info(JOBS_STREAM)
+        let latest = super::history::read(&self.client, &self.queue.queue_type, &job_id)
             .await
-            .map_err(|error| jobs_message(format!("open jobs lifecycle stream failed: {error}")))?;
-        let latest = latest_lifecycle_message(&lifecycle_stream, &lifecycle_subject).await?;
+            .map_err(jobs_message)?
+            .pop()
+            .map(|(_, event)| event);
         let mut attempt = 0;
         let mut terminal = false;
-        if let Some(message) = latest {
-            let event: JobEvent = serde_json::from_slice(&message.payload)
-                .map_err(|error| jobs_message(format!("decode job lifecycle event: {error}")))?;
+        if let Some(event) = latest {
             if event.job_id == job_id && event.job_type == self.queue.queue_type {
                 attempt = event.tries;
                 terminal = matches!(
@@ -182,10 +186,18 @@ impl NatsJobWaiter {
                                 message = updates.next() => message?,
                                 message = lifecycle.next() => {
                                     let message = message?;
-                                    let event: JobEvent = match serde_json::from_slice(&message.payload) {
-                                        Ok(event) => event,
-                                        Err(error) => return Some((Err(jobs_message(format!("decode job lifecycle event: {error}"))), (lifecycle, updates, attempt, sequence, true))),
-                                    };
+                                    let event: JobEvent =
+                                        match serde_json::from_slice(&message.payload) {
+                                            Ok(event) => event,
+                                            Err(error) => {
+                                                return Some((
+                                                    Err(jobs_message(format!(
+                                                        "decode job lifecycle event: {error}"
+                                                    ))),
+                                                    (lifecycle, updates, attempt, sequence, true),
+                                                ))
+                                            }
+                                        };
                                     if event.job_id != job_id || event.job_type != queue_type {
                                         continue;
                                     }
@@ -193,7 +205,16 @@ impl NatsJobWaiter {
                                         attempt = event.tries;
                                         sequence = 0;
                                     }
-                                    if matches!(event.event_type, JobEventType::Completed | JobEventType::Failed | JobEventType::Cancelled | JobEventType::Expired | JobEventType::Skipped | JobEventType::Dead | JobEventType::Dismissed) {
+                                    if matches!(
+                                        event.event_type,
+                                        JobEventType::Completed
+                                            | JobEventType::Failed
+                                            | JobEventType::Cancelled
+                                            | JobEventType::Expired
+                                            | JobEventType::Skipped
+                                            | JobEventType::Dead
+                                            | JobEventType::Dismissed
+                                    ) {
                                         terminal = true;
                                     }
                                     continue;
@@ -254,37 +275,6 @@ impl NatsJobWaiter {
     }
 }
 
-async fn project_job_from_lifecycle(
-    lifecycle_stream: &stream::Stream<()>,
-    subject: &str,
-    mut current: Job,
-) -> Result<Job, JobsError> {
-    let mut sequence = 1_u64;
-    loop {
-        let message = match lifecycle_stream
-            .get_first_raw_message_by_subject(subject, sequence)
-            .await
-        {
-            Ok(message) => message,
-            Err(error) if matches!(error.kind(), stream::RawMessageErrorKind::NoMessageFound) => {
-                return Ok(current);
-            }
-            Err(error) => {
-                return Err(jobs_message(format!(
-                    "read job lifecycle history failed: {error}"
-                )));
-            }
-        };
-        sequence = message
-            .sequence
-            .checked_add(1)
-            .ok_or_else(|| jobs_message("job lifecycle stream sequence overflow".to_string()))?;
-        let event: JobEvent = serde_json::from_slice(&message.payload)
-            .map_err(|error| jobs_message(format!("decode job lifecycle event: {error}")))?;
-        current = apply_lifecycle_event(&current, &event);
-    }
-}
-
 async fn latest_terminal_message(
     lifecycle_stream: &stream::Stream<()>,
     publish_prefix: &str,
@@ -320,40 +310,9 @@ async fn latest_lifecycle_message(
     subject: &str,
 ) -> Result<Option<async_nats::jetstream::message::StreamMessage>, JobsError> {
     match lifecycle_stream.direct_get_last_for_subject(subject).await {
-        Ok(message) => return Ok(Some(message)),
-        Err(error) if matches!(error.kind(), stream::DirectGetErrorKind::NotFound) => {}
-        Err(direct_error) => match lifecycle_stream
-            .get_last_raw_message_by_subject(subject)
-            .await
-        {
-            Ok(message) => return Ok(Some(message)),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    stream::LastRawMessageErrorKind::NoMessageFound
-                ) => {}
-            Err(error) => {
-                return Err(jobs_message(format!(
-                    "direct get failed: {direct_error}; raw get failed: {error}"
-                )));
-            }
-        },
-    }
-
-    match lifecycle_stream
-        .get_last_raw_message_by_subject(subject)
-        .await
-    {
         Ok(message) => Ok(Some(message)),
-        Err(error)
-            if matches!(
-                error.kind(),
-                stream::LastRawMessageErrorKind::NoMessageFound
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(jobs_message(format!("raw get failed: {error}"))),
+        Err(error) if error.kind() == stream::DirectGetErrorKind::NotFound => Ok(None),
+        Err(error) => Err(jobs_message(format!("read job lifecycle: {error}"))),
     }
 }
 

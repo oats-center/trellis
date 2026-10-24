@@ -7,10 +7,7 @@ export type FlowLimits = {
 
 /** Accounting failures mapped by the owning protocol, not wire error codes. */
 export type FlowError =
-  | "payload_too_large"
-  | "window_full"
-  | "invalid_cursor"
-  | "sequence_exhausted";
+  "payload_too_large" | "window_full" | "invalid_cursor" | "sequence_exhausted";
 const MAX_SEQUENCE = (1n << 64n) - 1n;
 
 /** Bounded sender ledger; the owner serializes validate/handoff/commit. */
@@ -52,13 +49,16 @@ export class SenderWindow {
     maxFrameBytes = this.#limits.maxFrameBytes,
   ): FlowError | undefined {
     if (
-      !Number.isSafeInteger(bytes) || bytes < 0 ||
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0 ||
       bytes > Math.min(maxFrameBytes, this.#limits.maxFrameBytes)
-    ) return "payload_too_large";
+    )
+      return "payload_too_large";
     if (
       this.#outstanding.length >= this.#limits.windowFrames ||
       bytes > this.#limits.windowBytes - this.#outstandingBytes
-    ) return "window_full";
+    )
+      return "window_full";
     return undefined;
   }
   /** Record successful handoff; never call this after a failed publication. */
@@ -83,9 +83,12 @@ export class SenderWindow {
     consumedBytes?: bigint,
   ): FlowError | undefined {
     if (
-      consumed > received || received > this.#highestSent ||
-      consumed < this.#highestConsumed || received < this.#highestReceived
-    ) return "invalid_cursor";
+      consumed > received ||
+      received > this.#highestSent ||
+      consumed < this.#highestConsumed ||
+      received < this.#highestReceived
+    )
+      return "invalid_cursor";
     if (consumedBytes !== undefined) {
       let expected = this.#consumedBytes;
       for (const frame of this.#outstanding) {
@@ -121,7 +124,8 @@ export class SenderWindow {
   /** Reject incomplete consumed delivery or a missing declared sequence. */
   validateComplete(finalSeq: bigint): FlowError | undefined {
     return finalSeq === this.#highestSent &&
-        finalSeq === this.#highestConsumed && this.outstandingEmpty()
+      finalSeq === this.#highestConsumed &&
+      this.outstandingEmpty()
       ? undefined
       : "invalid_cursor";
   }

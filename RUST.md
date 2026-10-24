@@ -88,5 +88,5 @@ cargo test --manifest-path Cargo.toml -p trellis-rs --features live-integration 
 ```
 
 That Rust suite is a peer of the TypeScript/Deno suite
-(`deno task -c ts/deno.json test:integration`). Both use native test discovery
+(`npm run test:integration`). Both use native test discovery
 and real runtime processes; see [the setup commands](../integration/README.md).

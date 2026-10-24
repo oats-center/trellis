@@ -19,6 +19,7 @@
 import type { NatsConnection } from "@nats-io/nats-core";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
+import { readFile } from "node:fs/promises";
 
 /** Marker the Trellis Auth Callout writes into the authenticated user field. */
 const ATTACHMENT_MARKER_PREFIX = "trellis.auth.v1:";
@@ -31,13 +32,76 @@ const CONNZ_REQUEST_ATTEMPTS = 3;
 /** Bounded CONNZ page count, so a broker that never reaches its total stops. */
 const MAX_CONNZ_PAGES = 128;
 
+/** Join admitted service attachments to their stable runtime identities through public Auth pages. */
+export async function readRuntimeServiceAttachments(
+  runtime: TrellisTestRuntime,
+  participantId: string,
+) {
+  const runtimes = new Map<string, string>();
+  let cursor: string | undefined;
+  do {
+    const page = await runtime.callAdminRpc("authAuthorizationSessionsList", {
+      page: { cursor, limit: 100 },
+    });
+    for (const session of page.items) {
+      if (
+        session.binding.kind === "service" &&
+        session.binding.participantId === participantId
+      )
+        runtimes.set(session.authorizationSessionId, session.runtimeId);
+    }
+    cursor = page.page.nextCursor;
+  } while (cursor);
+  const attachments = [];
+  do {
+    const page = await runtime.callAdminRpc("authConnectionsList", {
+      state: "admitted",
+      page: { cursor, limit: 100 },
+    });
+    for (const attachment of page.items) {
+      const runtimeId = runtimes.get(attachment.authorizationSessionId);
+      if (runtimeId !== undefined)
+        attachments.push({ ...attachment, runtimeId });
+    }
+    cursor = page.page.nextCursor;
+  } while (cursor);
+  return attachments;
+}
+
+/** Align a permission mutation before ordinary renewal without extending its acceptance deadline. */
+export async function waitForServiceRenewalWindow(
+  runtime: TrellisTestRuntime,
+  runtimeId: string,
+): Promise<void> {
+  let cursor: string | undefined;
+  let expiresAt: number | undefined;
+  do {
+    const page = await runtime.callAdminRpc("authAuthorizationSessionsList", {
+      page: { cursor, limit: 100 },
+    });
+    const session = page.items.find(
+      (entry) =>
+        entry.runtimeId === runtimeId && entry.binding.kind === "service",
+    );
+    if (session?.maximumContextExpiresAt !== undefined) {
+      expiresAt = Date.parse(String(session.maximumContextExpiresAt));
+      break;
+    }
+    cursor = page.page.nextCursor;
+  } while (cursor);
+  if (expiresAt === undefined)
+    throw new Error("service authorization session is not listed");
+  const window = expiresAt - 40_000;
+  await runtime.waitFor(() => Date.now() >= window, { timeoutMs: 45_000 });
+}
+
 /** One broker-reported connection identity. */
 export type BrokerConnection = {
   server: string;
   cid: number;
   /**
    * The broker's authenticated user field. A Trellis-admitted attachment
-   * carries `trellis.auth.v1:<contextDigest>`.
+   * carries `trellis.auth.v1:<attachmentId>`.
    */
   authorizedUser: string;
 };
@@ -59,6 +123,8 @@ export function brokerConnectionKey(connection: BrokerConnection): string {
 export type BrokerInventoryOptions = {
   /** Server ids that must be covered even if STATSZ does not name them. */
   requiredServerIds?: readonly string[];
+  /** Query one named host without discovery; not valid for cluster-wide absence. */
+  onlyRequiredServers?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -73,7 +139,9 @@ function decodeRecord(data: Uint8Array): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(new TextDecoder().decode(data));
     if (
-      parsed === null || typeof parsed !== "object" || Array.isArray(parsed)
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
     ) {
       return undefined;
     }
@@ -148,14 +216,15 @@ function validateConnzPage(
   }
   if (reply.error !== undefined) {
     throw new Error(
-      `broker CONNZ reply for ${serverId} carried an error: ${
-        String(reply.error)
-      }`,
+      `broker CONNZ reply for ${serverId} carried an error: ${String(
+        reply.error,
+      )}`,
     );
   }
   const envelopeServer = reply.server;
   if (
-    !isRecord(envelopeServer) || typeof envelopeServer.id !== "string" ||
+    !isRecord(envelopeServer) ||
+    typeof envelopeServer.id !== "string" ||
     envelopeServer.id.length === 0
   ) {
     throw new Error(
@@ -175,9 +244,9 @@ function validateConnzPage(
   }
   if (typeof page.server_id !== "string" || page.server_id !== serverId) {
     throw new Error(
-      `broker CONNZ reply data identified ${
-        String(page.server_id)
-      } but ${serverId} was requested`,
+      `broker CONNZ reply data identified ${String(
+        page.server_id,
+      )} but ${serverId} was requested`,
     );
   }
   if (!Array.isArray(page.connections)) {
@@ -187,24 +256,24 @@ function validateConnzPage(
   }
   if (!isSafeInteger(page.offset) || page.offset !== offset) {
     throw new Error(
-      `broker CONNZ reply for ${serverId} was not the requested page: offset ${
-        String(page.offset)
-      } wanted ${offset}`,
+      `broker CONNZ reply for ${serverId} was not the requested page: offset ${String(
+        page.offset,
+      )} wanted ${offset}`,
     );
   }
   if (!isSafeInteger(page.limit) || page.limit !== CONNZ_PAGE_LIMIT) {
     throw new Error(
-      `broker CONNZ reply for ${serverId} reported limit ${
-        String(page.limit)
-      } for a request of ${CONNZ_PAGE_LIMIT}`,
+      `broker CONNZ reply for ${serverId} reported limit ${String(
+        page.limit,
+      )} for a request of ${CONNZ_PAGE_LIMIT}`,
     );
   }
   const total = page.total;
   if (!isSafeInteger(total) || total < 0) {
     throw new Error(
-      `broker CONNZ reply for ${serverId} carried no valid total: ${
-        String(total)
-      }`,
+      `broker CONNZ reply for ${serverId} carried no valid total: ${String(
+        total,
+      )}`,
     );
   }
   if (
@@ -212,9 +281,9 @@ function validateConnzPage(
     page.num_connections !== page.connections.length
   ) {
     throw new Error(
-      `broker CONNZ reply for ${serverId} was inconsistent: num_connections ${
-        String(page.num_connections)
-      } for ${page.connections.length} records`,
+      `broker CONNZ reply for ${serverId} was inconsistent: num_connections ${String(
+        page.num_connections,
+      )} for ${page.connections.length} records`,
     );
   }
   const connections: BrokerConnection[] = [];
@@ -227,9 +296,9 @@ function validateConnzPage(
     const cid = raw.cid;
     if (!isSafeInteger(cid) || cid <= 0) {
       throw new Error(
-        `broker CONNZ connection record for ${serverId} carried no positive integer cid: ${
-          JSON.stringify(cid)
-        }`,
+        `broker CONNZ connection record for ${serverId} carried no positive integer cid: ${JSON.stringify(
+          cid,
+        )}`,
       );
     }
     const user = raw.authorized_user;
@@ -271,9 +340,11 @@ async function readConnzPage(
   for (let attempt = 1; attempt <= CONNZ_REQUEST_ATTEMPTS; attempt += 1) {
     let bytes: Uint8Array;
     try {
-      bytes = (await nc.request(subject, payload, {
-        timeout: SYS_REQUEST_TIMEOUT_MS,
-      })).data;
+      bytes = (
+        await nc.request(subject, payload, {
+          timeout: SYS_REQUEST_TIMEOUT_MS,
+        })
+      ).data;
     } catch (cause) {
       lastError = cause;
       continue;
@@ -357,9 +428,15 @@ export async function completeBrokerInventory(
       throw new Error("required broker server ids must be non-empty strings");
     }
   }
+  if (options.onlyRequiredServers && required.length !== 1) {
+    throw new Error("a host-specific inventory requires exactly one server id");
+  }
+  const candidates = options.onlyRequiredServers
+    ? required
+    : [...(await discoverServers(nc)), ...required];
   const requested: string[] = [];
   const seen = new Set<string>();
-  for (const serverId of [...(await discoverServers(nc)), ...required]) {
+  for (const serverId of candidates) {
     if (seen.has(serverId)) continue;
     seen.add(serverId);
     requested.push(serverId);
@@ -386,8 +463,9 @@ export async function readRuntimeBrokerInventory(
   runtime: Pick<TrellisTestRuntime, "workdir" | "natsUrl">,
   options: BrokerInventoryOptions = {},
 ): Promise<BrokerConnection[]> {
-  const creds = await Deno.readTextFile(
+  const creds = await readFile(
     `${runtime.workdir}/config/trellis/nats/creds/system.creds`,
+    "utf8",
   );
   const connection = await connect({
     servers: runtime.natsUrl,
@@ -412,22 +490,18 @@ export async function readRuntimeBrokerInventory(
   }
 }
 
-/** The admitted sockets whose authorization-context digest is in `digests`. */
+/** The admitted sockets whose Auth attachment ID is in `attachmentIds`. */
 export function admittedConnections(
   inventory: readonly BrokerConnection[],
-  digests: ReadonlySet<string>,
+  attachmentIds: ReadonlySet<string>,
 ): BrokerConnection[] {
   return inventory.filter((connection) => {
     if (!connection.authorizedUser.startsWith(ATTACHMENT_MARKER_PREFIX)) {
       return false;
     }
-    // The authenticated user is
-    // `trellis.auth.v1:<contextDigest>:<serverId>:<cid>`: match the digest
-    // field, not a prefix of the whole marker.
-    const rest = connection.authorizedUser.slice(
+    const attachmentId = connection.authorizedUser.slice(
       ATTACHMENT_MARKER_PREFIX.length,
     );
-    const digest = rest.split(":", 1)[0];
-    return digests.has(digest);
+    return attachmentIds.has(attachmentId);
   });
 }

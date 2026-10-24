@@ -52,6 +52,8 @@ pub enum DeadLetterCause {
     ReplayDispatched,
     /// Targeted replay succeeded.
     ReplaySucceeded,
+    /// The consumer permanently rejected this replay generation.
+    ReplayUnreplayable,
     /// An operator dismissed the dead letter.
     Dismissed,
 }
@@ -64,6 +66,8 @@ pub struct OriginalEvent {
     pub stream: String,
     /// Original stream sequence.
     pub sequence: u64,
+    /// Broker-assigned original publication time, retained across replay and source expiry.
+    pub published_at: String,
     /// Event identifier, when supplied by the publisher.
     pub event_id: Option<String>,
     /// Original concrete subject.

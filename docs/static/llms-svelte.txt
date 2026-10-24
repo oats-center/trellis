@@ -1,18 +1,15 @@
 # Trellis AI guidance for Svelte browser apps
 
-Use the guide from the same Trellis revision as the installed libraries. This
-guide describes the optional Trellis Svelte integration. Trellis does not
+Svelte and SvelteKit usage of Trellis, for AI coding agents working in a browser
+app repository. Read it with [the Trellis guide](llms-core.txt) and
+[the TypeScript guide](llms-typescript.txt) from the same Trellis revision as the
+installed libraries.
+
+## Overview
+
+This guide describes the optional Trellis Svelte integration. Trellis does not
 require Svelte, a UI design system, a configuration parser, or a particular
 application architecture.
-
-Use this file for AI coding agents working in a Svelte or SvelteKit browser app
-repository that consumes Trellis. The language-neutral guide is:
-
-https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt
-
-The TypeScript service guide is:
-
-https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-typescript.txt
 
 ## Browser app setup
 
@@ -34,7 +31,7 @@ type AppClient = TrellisClientFor<typeof participant>;
 
 export const trellisApp = createTrellisApp({
   participant,
-  trellisUrl: "http://localhost:3000",
+  trellisUrl: "https://localhost:3000",
 });
 ```
 
@@ -42,56 +39,28 @@ Trellis integration behavior:
 
 - `createTrellisApp(...)`, `TrellisProvider`, `SvelteTrellisConnection`, and
   browser client auth mode `"browser"` are the intended browser-app wiring.
-- Trellis browser HTTP is limited to browser flows, initial bootstrap,
-  proof-bound restart recovery, and portal assets. Connected control uses
-  generated APIs over NATS; do not add HTTP context, revocation, logout, or
-  client-bootstrap calls to Trellis. This does not restrict unrelated
-  application HTTP APIs.
-- Built-in browser routes are `/login/*` with `/assets/login/*` and `/console/*`
-  with `/console/assets/*`; auth APIs remain under `/auth/*`.
-- Browser bind verifies session-key possession and creates a user login, then a
-  separate refresh obtains and verifies the signed authorization context before
-  NATS opens. IndexedDB `trellis-auth` version 3 stores only the session seed,
-  nullable login metadata, pending signed intent/intent ID, and generation tombstone, keyed by
-  canonical origin plus stable participant ID. Contexts, route JWTs, transports,
-  grants, and issuer keys remain in memory. Use `AuthorizationContextController` only when UI
-  needs explicit reactive loading, ready, refreshing, degraded, expired,
-  auth-required, or failed state; do not implement a second verifier in Svelte
-  or TypeScript code because Rust/WASM is authoritative.
-- Issuer verification resolves online issuer public keys and watches explicit
-  revocation. Context refresh returns current runtime/transport metadata with a
-  renewed route credential and context; pending devices poll
-  `/auth/device/enroll`, while `/bootstrap/device` admits only approved devices.
-- Let Trellis-owned browser auth redirects complete through `TrellisProvider`
-  and the returned callback URL carrying `transactionId`. Creating an intent or
-  rendering a portal does not start the attempt deadline. The portal controller
-  loads the signed intent first; call `beginAuthentication()` when submitting
-  credentials or selecting a provider, not on mount. Its
-  `authenticationAttemptExpired` notice explains a deadline while retaining
-  the intent and allowing a fresh attempt in the portal. A plain expired-attempt
-  callback is a restart opportunity; explicit errors such as
-  `authError=approval_denied` remain denial outcomes. Valid-login authorization
-  denial surfaces its stable machine code without automatically starting login.
-- Portal approval is server-owned. `portal.approve()` selects required authority
-  only; pass only ids from `portal.state.optionalBundles` to select optional
-  authority. Never construct grant sets or capability lists in a Svelte portal.
-  Decide only against the current transaction-bound consent view. Stale
-  decisions are rejected and the controller reloads consent before another
-  decision. Compatible approved grants are reused; expanded authority eligible
-  for approval requests fresh consent without another password prompt.
-- OIDC provider links must navigate the same browser so Trellis can verify its
-  state-specific `HttpOnly` cookie and current portal policy at callback.
-  Start through the portal controller's POST-backed provider action, not a GET
-  link to `/auth/login/{providerId}`; callback continuation carries `transactionId`.
-  Portal progress requires the raw transaction binding. The controller persists
-  the pending binding before starting and reuses it after response loss or reload;
-  same-binding retries recover the active transaction without resetting its
-  state or expiry. Another binding receives `intent_transaction_active` and cannot
-  replace it. Public intent rendering exposes no transaction discovery; detached
-  initiating clients use a separate fresh initiating-key proof.
-- Trusted portal policy is administered for one exact portal + participant.
-  Capability groups and provider-role mappings are server-side macros bounded by
-  the immutable proposal; Svelte portal code never expands or applies them.
+- Browser sign-in is OAuth Authorization Code with PKCE and DPoP against the
+  installation's dedicated OAuth origin. Local-password or OIDC sign-in and
+  explicit capability consent happen on Trellis's own portal at that origin.
+  Application code never renders Trellis login or consent, handles upstream
+  provider callbacks, or constructs grant sets or capability lists.
+- Let `TrellisProvider` and `BrowserOAuthClient` from
+  `@oatscenter/trellis/auth/browser` own the redirect, callback, token exchange,
+  and refresh. Connected control uses generated APIs over NATS; do not call
+  Trellis HTTP endpoints directly or add HTTP context, logout, or bootstrap
+  calls. This does not restrict unrelated application HTTP APIs.
+- Browser custody lives in the `trellis-oauth` IndexedDB database: a
+  non-extractable DPoP key and an encrypted refresh credential scoped to the
+  selected installation and app. Ephemeral runtime keys, signed authority,
+  grants, transports, and issuer keys remain in memory.
+- Use `OwnAuthorityController` only when UI needs a reactive view of the SDK's
+  verified authority. It does not own refresh or verification; do not implement
+  a second verifier in Svelte or TypeScript code because Rust/WASM is
+  authoritative.
+- Issuer trust comes from the selected OAuth origin and authenticated rotation
+  links. Pending devices poll `/auth/device/enroll` through the device
+  activation helpers; approved devices connect with a signed provisioned
+  admission in NATS CONNECT, never an HTTP bootstrap.
 - `TrellisClientFor<typeof participant>` and `createTrellisApp(...)` consume the
   generated participant directly. Do not reconstruct participant evidence in
   application code.
@@ -120,31 +89,36 @@ clients. `@oatscenter/trellis-svelte` owns the app context created by
 ## Cross-participant clients
 
 For calls to another API, declare the narrow required or optional `use`
-selection in `contract.trellis`. Generated participant types expose only those
-selections.
+capability selection in `contract.trellis`. Generated participant types expose
+only the actions those capabilities allow.
 
-If the app needs labels for Trellis user ids already present on authorized
-records, `Auth.Users.Resolve` resolves explicit ids without requesting directory
-access. Application-owned profiles or user tables remain an application choice.
+For labels of other Trellis users, select and obtain consent to `usersRead`,
+then use `Auth.Users.List/Get` for active directory profiles. For owner edits,
+select `accountProfileWrite` and call generated `usersProfileUpdate` with the
+self account's `profileRevision` and an idempotency key. Omitted fields stay
+unchanged; explicit clears restore linked-provider defaults, and manually set
+email is unverified. Manual choices survive later OIDC login. `Users.Resolve`
+with `accountRead` is self-only. Ordinary profiles omit `account`; admin details
+require delegated and currently held `trellis.auth.v1:users.manage`. A directory match
+does not grant access to application-owned records; key those rules by immutable
+`principalId`, not names or email.
 
 ```trellis
 app Dashboard {
-  implements "acme.dashboard@v1";
-  use orders {
-    call rpc "Orders.Get";
-  }
+  use orders { required capability orders.read; }
 }
 ```
 
-## Vite, npm, JSR, and `svelte-check`
+## Vite, npm, and `svelte-check`
 
 Native generation does not execute TypeScript or require a Vite plugin. The
 application's bundler and type checker still need to resolve imports from the
 one generated package and the installed Trellis packages. Its executable `.js`
-and `.d.ts` require no consumer transpilation or Trellis CLI. Commit generated
-output for ordinary clone builds. Use the
+and `.d.ts` require no consumer transpilation or Trellis CLI once packaged. Keep
+generated implementations out of Git and run `trellis install` before local builds.
+Use the
 resolver configuration appropriate to that application; the checked-in app demo
-illustrates one Deno/Vite setup, not a required frontend stack.
+illustrates one npm/Vite setup, not a required frontend stack.
 
 When an import fails, inspect its actual generated specifier and the installed
 package exports. Regenerate stale code rather than editing generated imports.

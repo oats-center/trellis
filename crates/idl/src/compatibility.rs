@@ -313,6 +313,7 @@ fn compare_action(
                 update: d,
                 signals: e,
                 upload: f,
+                stream: g,
                 ..
             },
             ActionDefinition::Operation {
@@ -322,6 +323,7 @@ fn compare_action(
                 update: w,
                 signals: p,
                 upload: q,
+                stream: r,
                 ..
             },
         ) => {
@@ -371,7 +373,7 @@ fn compare_action(
                     ),
                 }
             }
-            if f != q {
+            if f != q || g != r {
                 issue(issues, path, "Operation upload contract changed");
             }
             compare_errors(old, new, comparison, path, issues);

@@ -4,17 +4,21 @@ use time::OffsetDateTime;
 use trellis_rs::service::{
     operation_invocation_digest, DurableOperationRecord, DurableOperationSignal,
     KvOperationRepository, OperationRepository, OperationSnapshot, OperationState, ServerError,
-    MAX_OPERATION_RECORD_BYTES, MAX_OPERATION_SIGNAL_BYTES,
+    MAX_OPERATION_SIGNAL_BYTES,
 };
 
 fn record(id: String) -> DurableOperationRecord {
     let input = json!({"name": "Ada"});
+    let binding = trellis_protocol::SessionBinding::Browser {
+        client_id: "operations-client".to_owned(),
+        origin: "https://operations.example".to_owned(),
+    };
     DurableOperationRecord {
         invocation_digest: operation_invocation_digest(
             "example.api@1",
             "run",
             "principal",
-            "participant",
+            &binding,
             &input,
         )
         .unwrap(),
@@ -23,7 +27,7 @@ fn record(id: String) -> DurableOperationRecord {
         operation: "run".to_owned(),
         deployment_id: "deployment".to_owned(),
         creator_principal_id: "principal".to_owned(),
-        creator_participant_id: "participant".to_owned(),
+        creator_binding: binding,
         caller_session_key: "session".to_owned(),
         caller: None,
         input,
@@ -43,19 +47,11 @@ fn record(id: String) -> DurableOperationRecord {
         owner_epoch: 0,
         lease_expires_at_ms: None,
         cancellation_requested: false,
+        cancellation_requested_at: None,
         next_signal_sequence: 1,
+        update_sequence: 0,
         signals: Vec::new(),
-        transfer: Some(json!({
-            "stagingKey": "operation-upload",
-            "state": "uploading",
-            "transferId": "01J00000000000000000000000",
-            "subject": "_INBOX.operation.upload",
-            "expiresAt": "2026-09-10T00:15:00Z",
-            "size": 7,
-            "digest": null,
-            "updatedAt": null,
-            "contentType": null
-        })),
+        transfer: None,
         telemetry: None,
     }
 }
@@ -108,13 +104,35 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         repository.create(created.record.clone()).await.unwrap(),
         created
     );
+    for binding in [
+        trellis_protocol::SessionBinding::Browser {
+            client_id: "operations-client".to_owned(),
+            origin: "https://another-origin.example".to_owned(),
+        },
+        trellis_protocol::SessionBinding::Browser {
+            client_id: "another-client".to_owned(),
+            origin: "https://operations.example".to_owned(),
+        },
+    ] {
+        let mut conflicting = created.record.clone();
+        conflicting.creator_binding = binding;
+        conflicting.invocation_digest = operation_invocation_digest(
+            &conflicting.api_id,
+            &conflicting.operation,
+            &conflicting.creator_principal_id,
+            &conflicting.creator_binding,
+            &conflicting.input,
+        )
+        .unwrap();
+        assert!(repository.create(conflicting).await.is_err());
+    }
     let mut conflicting = created.record.clone();
     conflicting.input = json!({"name": "Grace"});
     conflicting.invocation_digest = operation_invocation_digest(
         &conflicting.api_id,
         &conflicting.operation,
         &conflicting.creator_principal_id,
-        &conflicting.creator_participant_id,
+        &conflicting.creator_binding,
         &conflicting.input,
     )
     .unwrap();
@@ -225,7 +243,8 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         sequence: 1,
         request_id: "signal-request".to_owned(),
         name: "resume".to_owned(),
-        payload: serde_json::to_vec(&Some(json!({"ok": true}))).unwrap(),
+        payload: json!({"ok": true}),
+        accepted_at: "2026-09-10T00:00:00Z".to_owned(),
         acknowledged: false,
     });
     let signalled = repository
@@ -257,6 +276,11 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
     let mut cancelled = acknowledged.record.clone();
     cancelled.revision += 1;
     cancelled.cancellation_requested = true;
+    cancelled.cancellation_requested_at = Some(
+        OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
     cancelled.snapshot.state = OperationState::Cancelled;
     let cancelled = repository
         .compare_exchange(
@@ -286,7 +310,22 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         .await
         .is_err());
 
-    let before_capacity_rejections = repository.get(&operation_id).await.unwrap().unwrap();
+    let capacity_id = ulid::Ulid::new().to_string();
+    repository
+        .create(record(capacity_id.clone()))
+        .await
+        .unwrap();
+    let now_ms = (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+    let before_capacity_rejections = repository
+        .claim_for_connection(
+            &capacity_id,
+            "executor-b",
+            "connection-b",
+            now_ms,
+            now_ms + 60_000,
+        )
+        .await
+        .unwrap();
     let mut oversized_signal = before_capacity_rejections.record.clone();
     oversized_signal.revision += 1;
     oversized_signal.next_signal_sequence += 1;
@@ -294,7 +333,8 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         sequence: oversized_signal.next_signal_sequence - 1,
         request_id: "oversized-signal".to_owned(),
         name: "resume".to_owned(),
-        payload: vec![0; MAX_OPERATION_SIGNAL_BYTES + 1],
+        payload: json!("x".repeat(MAX_OPERATION_SIGNAL_BYTES + 1)),
+        accepted_at: "2026-09-10T00:00:00Z".to_owned(),
         acknowledged: false,
     });
     assert!(matches!(
@@ -312,15 +352,23 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         })
     ));
     assert_eq!(
-        repository.get(&operation_id).await.unwrap().unwrap(),
+        repository.get(&capacity_id).await.unwrap().unwrap(),
         before_capacity_rejections
     );
 
     let mut oversized_record = before_capacity_rejections.record.clone();
     oversized_record.revision += 1;
-    oversized_record.transfer = Some(json!({
-        "padding": "x".repeat(MAX_OPERATION_RECORD_BYTES)
-    }));
+    oversized_record.signals = (0..20)
+        .map(|index| DurableOperationSignal {
+            sequence: index + 1,
+            request_id: ulid::Ulid::new().to_string(),
+            name: "resume".to_owned(),
+            payload: json!("x".repeat(60 * 1024)),
+            acknowledged: false,
+            accepted_at: "2026-09-10T00:00:00Z".to_owned(),
+        })
+        .collect();
+    oversized_record.next_signal_sequence = oversized_record.signals.len() as u64 + 1;
     assert!(matches!(
         repository
             .compare_exchange(
@@ -336,10 +384,84 @@ async fn operation_records_persist_and_lease_writes_are_fenced() {
         })
     ));
     assert_eq!(
-        repository.get(&operation_id).await.unwrap().unwrap(),
+        repository.get(&capacity_id).await.unwrap().unwrap(),
         before_capacity_rejections
     );
 
+    // Production repositories are scoped by their deployment's provisioned KV
+    // bucket. Identical invocation ids are not a cross-deployment dedupe key.
+    let other_bucket = format!("trellis_test_operations_{}", ulid::Ulid::new());
+    let other_store = jetstream
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: other_bucket.clone(),
+            history: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let other_repository = KvOperationRepository::new(other_store);
+    let shared_id = ulid::Ulid::new().to_string();
+    let deployment_a = repository.create(record(shared_id.clone())).await.unwrap();
+    let mut other_operation = record(shared_id.clone());
+    other_operation.deployment_id = "other-deployment".to_owned();
+    let deployment_b = other_repository.create(other_operation).await.unwrap();
+    assert_eq!(
+        repository
+            .create(deployment_a.record.clone())
+            .await
+            .unwrap(),
+        deployment_a
+    );
+    assert_eq!(
+        other_repository
+            .create(deployment_b.record.clone())
+            .await
+            .unwrap(),
+        deployment_b
+    );
+
+    // Even with the destination's correct CAS revision, a control mutation
+    // carrying the other deployment's immutable identity must not cross over.
+    let mut misrouted_cancel = deployment_a.record.clone();
+    misrouted_cancel.revision += 1;
+    misrouted_cancel.cancellation_requested = true;
+    misrouted_cancel.cancellation_requested_at = Some(
+        OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
+    assert!(other_repository
+        .compare_record_exchange(deployment_b.revision, misrouted_cancel)
+        .await
+        .is_err());
+    assert_eq!(
+        other_repository.get(&shared_id).await.unwrap().unwrap(),
+        deployment_b
+    );
+
+    let mut cancel_b = deployment_b.record.clone();
+    cancel_b.revision += 1;
+    cancel_b.cancellation_requested = true;
+    cancel_b.cancellation_requested_at = Some(
+        OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    );
+    let cancelled_b = other_repository
+        .compare_record_exchange(deployment_b.revision, cancel_b)
+        .await
+        .unwrap();
+    assert!(cancelled_b.record.cancellation_requested);
+    assert_eq!(
+        repository.get(&shared_id).await.unwrap().unwrap(),
+        deployment_a
+    );
+    assert_eq!(
+        other_repository.create(deployment_b.record).await.unwrap(),
+        cancelled_b
+    );
+
+    jetstream.delete_key_value(other_bucket).await.unwrap();
     jetstream.delete_key_value(bucket).await.unwrap();
     nats.stop().unwrap();
 }

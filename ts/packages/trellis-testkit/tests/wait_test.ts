@@ -1,24 +1,30 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { waitFor } from "../src/wait.ts";
 
-Deno.test("waitFor returns first truthy value", async () => {
+test("waitFor returns first truthy value", async () => {
   let attempts = 0;
 
-  const value = await waitFor(() => {
-    attempts += 1;
-    return attempts === 3 ? "ready" : null;
-  }, { timeoutMs: 1_000, intervalMs: 1 });
+  const value = await waitFor(
+    () => {
+      attempts += 1;
+      return attempts === 3 ? "ready" : null;
+    },
+    { timeoutMs: 1_000, intervalMs: 1 },
+  );
 
-  assertEquals(value, "ready");
+  assert.equal(value, "ready");
 });
 
-Deno.test("waitFor preserves last thrown error in timeout", async () => {
-  await assertRejects(
+test("waitFor preserves last thrown error in timeout", async () => {
+  await assert.rejects(
     () =>
-      waitFor(() => {
-        throw new Error("still booting");
-      }, { timeoutMs: 5, intervalMs: 1 }),
-    Error,
-    "still booting",
+      waitFor(
+        () => {
+          throw new Error("still booting");
+        },
+        { timeoutMs: 5, intervalMs: 1 },
+      ),
+    /still booting/,
   );
 });

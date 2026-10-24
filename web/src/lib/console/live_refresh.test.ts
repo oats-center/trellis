@@ -1,4 +1,5 @@
 import { deepEqual, equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   IntervalTimer,
@@ -10,7 +11,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-Deno.test("U11 continuous events cannot starve a coalesced refresh", async () => {
+test("U11 continuous events cannot starve a coalesced refresh", async () => {
   let refreshes = 0;
   const scheduler = new RefreshScheduler({
     onRefresh: () => {
@@ -33,7 +34,7 @@ Deno.test("U11 continuous events cannot starve a coalesced refresh", async () =>
   scheduler.dispose();
 });
 
-Deno.test("U11 one in-flight read plus one trailing refresh", async () => {
+test("U11 one in-flight read plus one trailing refresh", async () => {
   let refreshes = 0;
   let release = () => {};
   const scheduler = new RefreshScheduler({
@@ -63,7 +64,7 @@ Deno.test("U11 one in-flight read plus one trailing refresh", async () => {
   scheduler.dispose();
 });
 
-Deno.test("U11 disposal stops timers and retries", async () => {
+test("U11 disposal stops timers and retries", async () => {
   let refreshes = 0;
   const scheduler = new RefreshScheduler({
     delayMs: 5,
@@ -78,7 +79,7 @@ Deno.test("U11 disposal stops timers and retries", async () => {
   equal(refreshes, 0);
 });
 
-Deno.test("U11 a suspended scope cancels its pending refresh", async () => {
+test("U11 a suspended scope cancels its pending refresh", async () => {
   let refreshes = 0;
   let allowed = false;
   const scheduler = new RefreshScheduler({
@@ -98,7 +99,7 @@ Deno.test("U11 a suspended scope cancels its pending refresh", async () => {
   scheduler.dispose();
 });
 
-Deno.test("a failed subscription reports pending recovery", async () => {
+test("a failed subscription reports pending recovery", async () => {
   const attempts: number[] = [];
   let opens = 0;
   const subscription = new LiveSubscription({
@@ -126,7 +127,7 @@ Deno.test("a failed subscription reports pending recovery", async () => {
   equal(attempts[0] > 0, true, "a failed open must not retry in a busy loop");
 });
 
-Deno.test("V13 repeated close and start never creates a second retry timer", async () => {
+test("V13 repeated close and start never creates a second retry timer", async () => {
   let opens = 0;
   let unsubscribe = 0;
   const subscription = new LiveSubscription({
@@ -164,7 +165,7 @@ Deno.test("V13 repeated close and start never creates a second retry timer", asy
   equal(unsubscribe, 1, "disposal releases exactly the owned watch");
 });
 
-Deno.test("V13 a late open completion cannot revive a disposed subscription", async () => {
+test("V13 a late open completion cannot revive a disposed subscription", async () => {
   let release = () => {};
   const subscription = new LiveSubscription({
     subscribe: async () => {
@@ -188,7 +189,7 @@ Deno.test("V13 a late open completion cannot revive a disposed subscription", as
   );
 });
 
-Deno.test("Z07 one in-flight read plus one trailing refresh uses the newest query", async () => {
+test("Z07 one in-flight read plus one trailing refresh uses the newest query", async () => {
   const seen: string[] = [];
   let query = "old";
   let release = () => {};
@@ -217,7 +218,7 @@ Deno.test("Z07 one in-flight read plus one trailing refresh uses the newest quer
   scheduler.dispose();
 });
 
-Deno.test("Z08 an immediate refresh cancels a pending timer instead of reading twice", async () => {
+test("Z08 an immediate refresh cancels a pending timer instead of reading twice", async () => {
   let refreshes = 0;
   const scheduler = new RefreshScheduler({
     delayMs: 40,
@@ -234,7 +235,7 @@ Deno.test("Z08 an immediate refresh cancels a pending timer instead of reading t
   scheduler.dispose();
 });
 
-Deno.test("V12 a hidden notification refreshes once on resume without a new event", async () => {
+test("V12 a hidden notification refreshes once on resume without a new event", async () => {
   let refreshes = 0;
   let visible = false;
   const scheduler = new RefreshScheduler({
@@ -264,7 +265,7 @@ Deno.test("V12 a hidden notification refreshes once on resume without a new even
   scheduler.dispose();
 });
 
-Deno.test("U11 disposal is final: no retry opens after it", async () => {
+test("U11 disposal is final: no retry opens after it", async () => {
   let opens = 0;
   const subscription = new LiveSubscription({
     subscribe: () => {
@@ -281,7 +282,7 @@ Deno.test("U11 disposal is final: no retry opens after it", async () => {
   equal(subscription.status, "closed");
 });
 
-Deno.test("U15 interval timer does not stack its reads and pauses while blocked", async () => {
+test("U15 interval timer does not stack its reads and pauses while blocked", async () => {
   let ticks = 0;
   let running = 0;
   let peak = 0;
@@ -304,7 +305,7 @@ Deno.test("U15 interval timer does not stack its reads and pauses while blocked"
   equal(peak, 0);
 });
 
-Deno.test("U15 interval timer runs one read at a time", async () => {
+test("U15 interval timer runs one read at a time", async () => {
   let running = 0;
   let peak = 0;
   let ticks = 0;
@@ -325,7 +326,7 @@ Deno.test("U15 interval timer runs one read at a time", async () => {
   equal(ticks > 0, true);
 });
 
-Deno.test("U15 a manual refresh cannot overlap the interval read", async () => {
+test("U15 a manual refresh cannot overlap the interval read", async () => {
   let running = 0;
   let peak = 0;
   const timer = new IntervalTimer({

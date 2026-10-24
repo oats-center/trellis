@@ -1,27 +1,20 @@
 /**
  * @module
- * Browser-based authentication utilities for session-key based authentication.
- * Uses WebCrypto API and IndexedDB for secure key storage.
+ * Browser OAuth credential custody. Durable DPoP keys are non-extractable;
+ * ephemeral runtime/NATS keys are owned by the connection lifecycle.
  */
 
 export {
-  type ApprovalDecision,
-  createPortalBinding,
-  fetchPortalFlowState,
-  fetchPortalIntentState,
-  getOrCreatePortalBinding,
-  type PortalBinding,
-  type PortalFlowState,
-  type PortalFlowState as BrowserPortalFlowState,
-  portalIntentFromUrl,
-  portalProviderLoginUrl,
-  portalRedirectLocation,
-  portalTransactionIdFromUrl,
-  readPortalLogin,
-  startPortalTransaction,
-  submitPortalApproval,
-} from "./browser/portal.ts";
-export { BrowserSessionStore } from "./browser/storage.ts";
+  type BrowserOAuthGrant,
+  type BrowserOAuthScope,
+  BrowserSessionStore,
+} from "./browser/storage.ts";
+export {
+  BrowserOAuthClient,
+  type BrowserOAuthAdmission,
+  type BrowserOAuthMetadata,
+  type BrowserCapabilityRequest,
+} from "./browser/oauth.ts";
 export {
   classifyBrowserAuthError,
   isRecoverableBrowserAuthError,

@@ -1,58 +1,53 @@
 import { equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import { canPerform, CONSOLE_OPERATIONS } from "./operations.ts";
 import type { Authority } from "../control-panel.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
-
 function authorityWith(
   permissions: Array<{
     api: string;
-    surface: string;
+    surface: Authority["actions"][number]["action"]["kind"] | "feed";
     name: string;
-    action: string;
+    action: Authority["actions"][number]["action"]["direction"];
   }>,
-  privileges: string[] = ["trellis.auth::admin"],
 ): Authority {
   return {
-    platformPrivileges: privileges,
-    grants: {
-      format: "v1",
-      permissions: permissions.map((permission) => ({
-        action: permission.action,
-        target: new TextEncoder().encode(
-          JSON.stringify({
-            kind: "apiSurface",
-            api: permission.api,
-            surface: permission.surface,
-            name: permission.name,
-          }),
-        ),
-      })),
-    } as Authority["grants"],
+    capabilities: [],
+    authorityDigest: "current-ui-snapshot",
+    actions: permissions.map((permission) => ({
+      apiId: permission.api,
+      action: {
+        kind: permission.surface === "feed" ? "live" : permission.surface,
+        name: permission.name,
+        direction: permission.action,
+      },
+    })),
   };
 }
 
-Deno.test("U16 an unregistered operation is never permitted", () => {
-  const authority = authorityWith([{
-    api: CONSOLE_OPERATIONS.deploymentsList.api,
-    surface: "rpc",
-    name: "Deployments.List",
-    action: "call",
-  }]);
+test("U16 an unregistered operation is never permitted", () => {
+  const authority = authorityWith([
+    {
+      api: CONSOLE_OPERATIONS.deploymentsList.api,
+      surface: "rpc",
+      name: "Deployments.List",
+      action: "call",
+    },
+  ]);
   equal(canPerform(authority, "notARegisteredOperation"), false);
 });
 
-Deno.test("U17 a registered operation requires its exact permission atom", () => {
+test("U17 a registered operation requires its exact permission atom", () => {
   const operation = CONSOLE_OPERATIONS.deploymentsList;
-  const permitted = authorityWith([{
-    api: operation.api,
-    surface: operation.surface,
-    name: "Deployments.List",
-    action: operation.action,
-  }]);
+  const permitted = authorityWith([
+    {
+      api: operation.api,
+      surface: operation.surface,
+      name: "Deployments.List",
+      action: operation.action,
+    },
+  ]);
   equal(canPerform(permitted, "deploymentsList"), true);
   equal(
     canPerform(permitted, "deploymentsGet"),
@@ -61,57 +56,56 @@ Deno.test("U17 a registered operation requires its exact permission atom", () =>
   );
 });
 
-Deno.test("U18 an administrative operation requires the platform privilege", () => {
-  const operation = CONSOLE_OPERATIONS.deploymentsGet;
+test("U18 an administrative operation requires only its exact action", () => {
+  const operation = CONSOLE_OPERATIONS.rolesPut;
   const atom = {
     api: operation.api,
     surface: operation.surface,
     name: operation.name,
     action: operation.action,
   };
-  equal(canPerform(authorityWith([atom], []), "deploymentsGet"), false);
-  equal(
-    canPerform(
-      authorityWith([atom], ["trellis.auth::admin"]),
-      "deploymentsGet",
-    ),
-    true,
-  );
+  equal(canPerform(authorityWith([]), "rolesPut"), false);
+  equal(canPerform(authorityWith([atom]), "rolesPut"), true);
 });
 
-Deno.test("U19 self-service operations do not require the admin privilege", () => {
+test("U19 self-service operations do not require the admin privilege", () => {
   const operation = CONSOLE_OPERATIONS.usersPasswordChange;
   const authority = authorityWith(
-    [{
-      api: operation.api,
-      surface: operation.surface,
-      name: operation.name,
-      action: operation.action,
-    }],
-    [],
+    [
+      {
+        api: operation.api,
+        surface: operation.surface,
+        name: operation.name,
+        action: operation.action,
+      },
+    ],
   );
   equal(canPerform(authority, "usersPasswordChange"), true);
 });
 
-Deno.test("U20 a feed subscription is not satisfied by an RPC permission", () => {
+test("U20 a feed subscription is not satisfied by an RPC permission", () => {
   const watch = CONSOLE_OPERATIONS.eventsWatch;
-  const asRpc = authorityWith([{
-    api: watch.api,
-    surface: "rpc",
-    name: watch.name,
-    action: "call",
-  }]);
+  const asRpc = authorityWith([
+    {
+      api: watch.api,
+      surface: "rpc",
+      name: watch.name,
+      action: "call",
+    },
+  ]);
   equal(canPerform(asRpc, "eventsWatch"), false);
-  const asFeed = authorityWith([{
-    api: watch.api,
-    surface: "feed",
-    name: watch.name,
-    action: "subscribe",
-  }]);
+  const asFeed = authorityWith([
+    {
+      api: watch.api,
+      surface: "feed",
+      name: watch.name,
+      action: watch.action,
+    },
+  ]);
   equal(canPerform(asFeed, "eventsWatch"), true);
 });
 
-Deno.test("U21 a null authority permits nothing", () => {
+test("U21 a null authority permits nothing", () => {
   for (const name of Object.keys(CONSOLE_OPERATIONS)) {
     equal(canPerform(null, name), false, name);
   }

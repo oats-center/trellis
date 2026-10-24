@@ -134,16 +134,12 @@ export function recordTrellisError(
   error: unknown,
   attributes: TrellisErrorMetricAttributes = {},
 ): void {
-  getTrellisMeter().createCounter("trellis.errors", {
-    description: "Trellis errors observed by runtime instrumentation.",
-    unit: "{error}",
-  }).add(
-    1,
-    buildTrellisErrorMetricAttributes(
-      error,
-      attributes,
-    ),
-  );
+  getTrellisMeter()
+    .createCounter("trellis.errors", {
+      description: "Trellis errors observed by runtime instrumentation.",
+      unit: "{error}",
+    })
+    .add(1, buildTrellisErrorMetricAttributes(error, attributes));
 }
 
 /**
@@ -166,7 +162,8 @@ export function buildTrellisErrorMetricAttributes(
     ),
   };
 
-  const remoteErrorType = lowCardinalityValue(attributes.remoteErrorType) ??
+  const remoteErrorType =
+    lowCardinalityValue(attributes.remoteErrorType) ??
     remoteSerializableErrorType(serializable);
   if (remoteErrorType) {
     metricAttributes["trellis.remote_error.type"] = remoteErrorType;
@@ -337,9 +334,7 @@ export function recordTrellisDuration(
   histogram.record(durationMs / 1000, metricAttributes);
 }
 
-function getDurationHistogram(
-  name: TrellisDurationMetricName,
-): Histogram {
+function getDurationHistogram(name: TrellisDurationMetricName): Histogram {
   let histogram = DURATION_HISTOGRAM_CACHE.get(name);
   if (!histogram) {
     histogram = getTrellisMeter().createHistogram(name, {
@@ -430,8 +425,8 @@ function authReason(
   if (type === "RemoteError") {
     const remoteError = safeProperty(serializable, "remoteError");
     if (
-      isRecord(remoteError) && objectStringProperty(remoteError, "type") ===
-        "AuthError"
+      isRecord(remoteError) &&
+      objectStringProperty(remoteError, "type") === "AuthError"
     ) {
       return boundedAuthReason(safeProperty(remoteError, "reason"));
     }
@@ -520,13 +515,14 @@ export const TRELLIS_CATALOG_DURATIONS = [
   "trellis.projection.duration",
   "trellis.storage.duration",
   "trellis.transfer.duration",
+  "trellis.transfer.wait.duration",
   "trellis.cli.duration",
   "trellis.browser.navigation.duration",
   "trellis.live.handshake.duration",
 ] as const;
 
 /** Duration metric names accepted by {@link recordCatalogDuration}. */
-export type TrellisCatalogDuration = typeof TRELLIS_CATALOG_DURATIONS[number];
+export type TrellisCatalogDuration = (typeof TRELLIS_CATALOG_DURATIONS)[number];
 
 /** Counter families in the production observability catalog. */
 export const TRELLIS_CATALOG_COUNTERS = [
@@ -541,7 +537,9 @@ export const TRELLIS_CATALOG_COUNTERS = [
   "trellis.live.ends",
   "trellis.live.frames",
   "trellis.live.rejections",
+  "trellis.transfer.payload.bytes",
   "trellis.transfer.wire.bytes",
+  "trellis.transfer.control.bytes",
   "trellis.transfer.frames",
   "trellis.transfer.credit.controls",
   "trellis.runtime.lease.events",
@@ -551,7 +549,7 @@ export const TRELLIS_CATALOG_COUNTERS = [
 ] as const;
 
 /** Counter metric names accepted by {@link recordCatalogCounter}. */
-export type TrellisCatalogCounter = typeof TRELLIS_CATALOG_COUNTERS[number];
+export type TrellisCatalogCounter = (typeof TRELLIS_CATALOG_COUNTERS)[number];
 
 /** Up/down counter families in the production observability catalog. */
 export const TRELLIS_CATALOG_UPDOWNS = [
@@ -564,7 +562,7 @@ export const TRELLIS_CATALOG_UPDOWNS = [
 ] as const;
 
 /** Up/down metric names accepted by {@link recordCatalogUpDown}. */
-export type TrellisCatalogUpDown = typeof TRELLIS_CATALOG_UPDOWNS[number];
+export type TrellisCatalogUpDown = (typeof TRELLIS_CATALOG_UPDOWNS)[number];
 
 /** Attribute keys permitted on catalog instruments. */
 const CATALOG_ATTRIBUTE_KEYS = new Set([
@@ -622,38 +620,12 @@ function bindInstrumentProvider(): void {
 
 /** Default catalog duration boundaries in seconds. */
 const CATALOG_DURATION_BOUNDARIES = [
-  0.001,
-  0.0025,
-  0.005,
-  0.01,
-  0.025,
-  0.05,
-  0.1,
-  0.25,
-  0.5,
-  1,
-  2.5,
-  5,
-  10,
+  0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
 ];
 
 /** Longer boundaries for attempt/execution/transfer/cli durations. */
 const CATALOG_LONG_DURATION_BOUNDARIES = [
-  0.01,
-  0.05,
-  0.1,
-  0.25,
-  0.5,
-  1,
-  2.5,
-  5,
-  10,
-  30,
-  60,
-  120,
-  300,
-  900,
-  3600,
+  0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 900, 3600,
 ];
 
 /** Explicit catalog boundaries for one duration family. */
@@ -695,9 +667,8 @@ function catalogAttributes(
       }
       continue;
     }
-    const bounded = typeof value === "string"
-      ? lowCardinalityValue(value)
-      : undefined;
+    const bounded =
+      typeof value === "string" ? lowCardinalityValue(value) : undefined;
     if (bounded) sanitized[key] = bounded;
   }
   return sanitized;
@@ -718,13 +689,10 @@ export function recordCatalogDuration(
   bindInstrumentProvider();
   let histogram = CATALOG_HISTOGRAM_CACHE.get(name);
   if (!histogram) {
-    histogram = getTrellisMeter().createHistogram(
-      name,
-      {
-        unit: "s",
-        advice: { explicitBucketBoundaries: catalogBoundaries(name) },
-      } as Parameters<Meter["createHistogram"]>[1],
-    );
+    histogram = getTrellisMeter().createHistogram(name, {
+      unit: "s",
+      advice: { explicitBucketBoundaries: catalogBoundaries(name) },
+    } as Parameters<Meter["createHistogram"]>[1]);
     CATALOG_HISTOGRAM_CACHE.set(name, histogram);
   }
   histogram.record(durationMs / 1000, catalogAttributes(attributes));
@@ -764,12 +732,7 @@ export function recordCatalogUpDown(
 
 /** Registration families for the bounded route token catalog. */
 export type TrellisRouteFamily =
-  | "rpc"
-  | "event"
-  | "consumer"
-  | "job"
-  | "operation"
-  | "http";
+  "rpc" | "event" | "consumer" | "job" | "operation" | "http";
 
 /** Maximum distinct route tokens per registration family. */
 export const ROUTE_LIMIT_PER_FAMILY = 128;

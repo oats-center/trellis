@@ -1,12 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "types": ["deno.ns"]
+    "types": ["node"]
   },
   "exclude": [
     "../ts/packages/trellis/service/runtime/**/*.ts",
     "../ts/services/**/*.ts",
-    "**/*.test.ts",
-    "./tests/**/*.ts"
+    "**/*.test.ts"
   ]
 }

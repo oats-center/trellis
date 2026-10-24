@@ -1,0 +1,13 @@
+{
+  "name": "@trellis-demo/device",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "update": "trellis update",
+    "generate": "trellis generate",
+    "check": "tsc --project tsconfig.json --noEmit",
+    "build": "tsc --project tsconfig.json && node -e \"require('node:fs').cpSync('trellis', 'build/device/trellis', {recursive: true})\"",
+    "start": "node --experimental-transform-types src/main.ts"
+  }
+}

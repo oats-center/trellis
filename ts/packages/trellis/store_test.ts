@@ -1,5 +1,7 @@
-import { assert, assertEquals, assertInstanceOf } from "@std/assert";
-import { Objm } from "@nats-io/obj";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { createHash } from "node:crypto";
+import { getSha256Backend, Objm } from "@nats-io/obj";
 import {
   type ConsumerInfo,
   jetstream,
@@ -12,28 +14,34 @@ import { StoreError } from "./errors/StoreError.ts";
 import { TypedStore } from "./store.ts";
 import { fixedTransportProvider } from "./transport/generations.ts";
 
-Deno.test("Store verifies demand-driven reads, cancellation, corruption and wait budgets", async () => {
+test("Store verifies demand-driven reads, cancellation, corruption and wait budgets", async () => {
   let nats: TrellisTestRuntime | undefined;
   try {
     nats = await startTrellisRuntime();
     const nc = await nats.connectNats();
-    const store = (await TypedStore.open(
-      fixedTransportProvider(nc),
-      "store_test",
-      {},
-    )).orThrow();
+    const store = (
+      await TypedStore.open(fixedTransportProvider(nc), "store_test", {})
+    ).orThrow();
 
     const payload = new TextEncoder().encode("stored generation bytes");
     await store.put("k", payload).orThrow();
+    // Trellis selects the Object Store SDK's native hash backend on Node,
+    // and the stored digest is the ordinary SHA-256 of the bytes.
+    assert.equal(getSha256Backend(), "native");
+    assert.equal(
+      (await new Objm(nc).open("store_test").then((os) => os.info("k")))
+        ?.digest,
+      `SHA-256=${createHash("sha256").update(payload).digest("base64url")}=`,
+    );
 
     const entry = (await store.get("k")).orThrow();
-    assertEquals(
+    assert.deepEqual(
       new TextDecoder().decode(await entry.bytes().orThrow()),
       "stored generation bytes",
     );
 
     const waited = (await store.waitFor("k", { timeoutMs: 2_000 })).orThrow();
-    assertEquals(waited.key, "k");
+    assert.deepEqual(waited.key, "k");
 
     const manager = await jetstreamManager(nc, { checkAPI: false });
     const native = await new Objm(nc).open("store_test");
@@ -52,10 +60,12 @@ Deno.test("Store verifies demand-driven reads, cancellation, corruption and wait
       assert(!first.done);
       let held: ConsumerInfo | undefined;
       await nats.waitFor(async () => {
-        held = (await manager.consumers.list("OBJ_store_test").next())
-          .find((item) => item.config.filter_subject === subject);
-        return !!held && held.num_waiting === 0 &&
-          held.delivered.consumer_seq > 0;
+        held = (await manager.consumers.list("OBJ_store_test").next()).find(
+          (item) => item.config.filter_subject === subject,
+        );
+        return (
+          !!held && held.num_waiting === 0 && held.delivered.consumer_seq > 0
+        );
       });
       assert(held);
       assert(held.config.max_bytes);
@@ -70,12 +80,12 @@ Deno.test("Store verifies demand-driven reads, cancellation, corruption and wait
       // A second independent read must complete without advancing this paused
       // reader. Real consumer deletion exercises the same resume path as native
       // inactive-threshold expiry, without waiting five minutes.
-      assertEquals(await largeEntry.bytes().orThrow(), large);
+      assert.deepEqual(await largeEntry.bytes().orThrow(), large);
       const stillHeld = await manager.consumers.info(
         "OBJ_store_test",
         held.name,
       );
-      assertEquals(
+      assert.deepEqual(
         stillHeld.delivered.consumer_seq,
         held.delivered.consumer_seq,
       );
@@ -83,38 +93,51 @@ Deno.test("Store verifies demand-driven reads, cancellation, corruption and wait
       const received = new Uint8Array(large.length);
       received.set(first.value);
       let offset = first.value.length;
+      let deletedDuringRead = false;
       for (;;) {
         const next = await reader.read();
         if (next.done) break;
         received.set(next.value, offset);
         offset += next.value.length;
+        if (!deletedDuringRead && offset >= large.length / 2) {
+          // Resume after buffered batches as well as an initially paused read.
+          // Recovery must restart at the last yielded chunk, never the broker's
+          // ahead-of-application delivery cursor.
+          await manager.consumers.delete("OBJ_store_test", held.name);
+          deletedDuringRead = true;
+        }
       }
-      assertEquals(offset, large.length);
-      assertEquals(received, large);
+      assert.deepEqual(offset, large.length);
+      assert.deepEqual(received, large);
     } finally {
       await reader.cancel();
       reader.releaseLock();
     }
-    assertEquals(
+    assert.deepEqual(
       (await manager.streams.info("OBJ_store_test")).state.consumer_count,
       0,
     );
 
     const cancelled = (await largeEntry.stream().orThrow()).getReader();
-    assert(!(await cancelled.read()).done);
+    let consumedBeforeCancel = 0;
+    while (consumedBeforeCancel < 2 * 1024 * 1024) {
+      const next = await cancelled.read();
+      assert(!next.done);
+      consumedBeforeCancel += next.value.length;
+    }
     await cancelled.cancel();
     cancelled.releaseLock();
-    assertEquals(
+    assert.deepEqual(
       (await manager.streams.info("OBJ_store_test")).state.consumer_count,
       0,
     );
 
     await store.put("empty", new Uint8Array()).orThrow();
-    assertEquals(
+    assert.deepEqual(
       await (await store.get("empty").orThrow()).bytes().orThrow(),
       new Uint8Array(),
     );
-    assertEquals(
+    assert.deepEqual(
       (await manager.streams.info("OBJ_store_test")).state.consumer_count,
       0,
     );
@@ -129,8 +152,8 @@ Deno.test("Store verifies demand-driven reads, cancellation, corruption and wait
     changed[0] ^= 1;
     await jetstream(nc).publish(corruptSubject, changed);
     const rejected = await (await store.get("corrupt").orThrow()).bytes();
-    assertInstanceOf(rejected.error, StoreError);
-    assertEquals(
+    assert(rejected.error instanceof StoreError);
+    assert.deepEqual(
       (await manager.streams.info("OBJ_store_test")).state.consumer_count,
       0,
     );
@@ -140,13 +163,13 @@ Deno.test("Store verifies demand-driven reads, cancellation, corruption and wait
       timeoutMs: 250,
       pollIntervalMs: 25,
     });
-    assertInstanceOf(missing.error, StoreError);
-    assertEquals(missing.error.getContext().reason, "timeout");
+    assert(missing.error instanceof StoreError);
+    assert.deepEqual(missing.error.getContext().reason, "timeout");
 
     await store.delete("k").orThrow();
     const deleted = await store.get("k");
-    assertInstanceOf(deleted.error, StoreError);
-    assertEquals(deleted.error.getContext().reason, "not_found");
+    assert(deleted.error instanceof StoreError);
+    assert.deepEqual(deleted.error.getContext().reason, "not_found");
   } finally {
     await nats?.stop();
   }

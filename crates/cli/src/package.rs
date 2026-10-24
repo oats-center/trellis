@@ -219,7 +219,8 @@ pub async fn update(format: OutputFormat, args: &UpdateArgs) -> Result<()> {
                 })?;
             miette::ensure!(
                 old == new,
-                "updating dependency alias '{alias}' changed locked package '{name}'; run `trellis update` to refresh every dependency"
+                "updating dependency alias '{alias}' changed locked package '{name}'; \
+                run `trellis update` to refresh every dependency"
             );
             pending.extend(
                 old.dependencies
@@ -279,7 +280,8 @@ pub async fn publish(format: OutputFormat, args: &PublishArgs) -> Result<()> {
             && lock.packages.iter().all(|locked| {
                 locked.name == lock.root || matches!(&locked.source, LockedSource::Registry { .. })
             }),
-        "publish requires every dependency to be an exact registry package; replace path dependencies first"
+        "publish requires every dependency to be an exact registry package; \
+        replace path dependencies first"
     );
     let graph = compile_project(&root, &manifest)?;
     validate_lock(&manifest, &lock, &graph)?;
@@ -317,9 +319,12 @@ pub async fn publish(format: OutputFormat, args: &PublishArgs) -> Result<()> {
         None => oci::publish(config, &package).await?,
     };
     if output::is_json(format) {
-        output::print_json(
-            &serde_json::json!({"name": package.name, "version": package.version, "digest": digest, "changed": changed}),
-        )
+        output::print_json(&serde_json::json!({
+            "name": package.name,
+            "version": package.version,
+            "digest": digest,
+            "changed": changed
+        }))
     } else {
         println!(
             "{} {} {}",
@@ -961,14 +966,18 @@ mod tests {
         fs::write(
             root.join("trellis.toml"),
             format!(
-                "[package]\nname = {name:?}\nversion = \"1.0.0\"\n[sources]\nmain = \"main.trellis\"\n"
+                "[package]\nname = {name:?}\nversion = \"1.0.0\"\n[sources]\nmain = \
+                \"main.trellis\"\n"
             ),
         )
         .unwrap();
         fs::write(
             root.join("main.trellis"),
             format!(
-                "model Value {{ {field}: string; }}\napi ping@v1 {{ title \"Ping\"; description \"Test\"; rpc Get {{ input Value; output Value; }} capabilities {{ public {{ allows {{ rpc Get; }} }} }} }}\n"
+                "model Value {{ {field}: string; }}\napi ping@v1 {{ title \"Ping\"; \
+                description \"Test\"; rpc Get {{ input Value; output Value; }} \
+                capabilities {{ public {{ allows {{ rpc Get; }} }} \
+                }} }}\n"
             ),
         )
         .unwrap();
@@ -981,7 +990,9 @@ mod tests {
         write_package(&root.path().join("beta"), "beta", "before");
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname = \"root\"\nversion = \"1.0.0\"\n[sources]\nmain = \"main.trellis\"\n[dependencies.alpha]\npackage = \"alpha\"\npath = \"alpha\"\n[dependencies.beta]\npackage = \"beta\"\npath = \"beta\"\n",
+            "[package]\nname = \"root\"\nversion = \"1.0.0\"\n[sources]\nmain = \
+            \"main.trellis\"\n[dependencies.alpha]\npackage = \"alpha\"\npath = \
+            \"alpha\"\n[dependencies.beta]\npackage = \"beta\"\npath = \"beta\"\n",
         )
         .unwrap();
         fs::write(root.path().join("main.trellis"), "model Root {}\n").unwrap();
@@ -1012,7 +1023,9 @@ mod tests {
         write_package(&root.path().join("child"), "child", "value");
         fs::write(
             root.path().join("trellis.toml"),
-            "[package]\nname = \"root\"\nversion = \"1.0.0\"\n[sources]\nmain = \"main.trellis\"\n[dependencies.child]\npackage = \"child\"\npath = \"child\"\n",
+            "[package]\nname = \"root\"\nversion = \"1.0.0\"\n[sources]\nmain = \
+            \"main.trellis\"\n[dependencies.child]\npackage = \"child\"\npath = \
+            \"child\"\n",
         )
         .unwrap();
         fs::write(root.path().join("main.trellis"), "model Root {}\n").unwrap();

@@ -1,0 +1,397 @@
+import {
+  AuthEmpty,
+  AuthUserProfileUpdateRequest,
+  AuthErrorDetails,
+  AuthPageRequest,
+  AuthMutationResult,
+  AuthCapabilitiesListRequest,
+  AuthCapabilitiesListResponse,
+  AuthRoleGetRequest,
+  AuthRoleGetResponse,
+  AuthRolesListResponse,
+  AuthRolePutRequest,
+  AuthRolePutResponse,
+  AuthRoleDeleteRequest,
+  AuthRoleAssignmentsListRequest,
+  AuthRoleAssignmentsListResponse,
+  AuthRoleAssignRequest,
+  AuthRoleAssignResponse,
+  AuthRoleRevokeRequest,
+  AuthCapabilityGrantsListRequest,
+  AuthCapabilityGrantsListResponse,
+  AuthCapabilityGrantRequest,
+  AuthCapabilityGrantResponse,
+  AuthCapabilityRevokeRequest,
+  AuthPrincipalRequest,
+  AuthEffectiveAccessResponse,
+  AuthApiGetRequest,
+  AuthApiGetResponse,
+  AuthApisListResponse,
+  AuthApiReviewRequest,
+  AuthApiReviewResponse,
+  AuthApiAcceptRequest,
+  AuthApiForceReplaceRequest,
+  AuthApiAcceptResponse,
+  AuthOAuthClientGetRequest,
+  AuthOAuthClientGetResponse,
+  AuthOAuthClientsListResponse,
+  AuthOAuthClientPutRequest,
+  AuthOAuthClientMutationRequest,
+  AuthDelegationsListRequest,
+  AuthDelegationsListResponse,
+  AuthDelegationReviewRequest,
+  AuthDelegationReviewResponse,
+  AuthDelegationRevokeRequest,
+  AuthAuthorizationSessionsListRequest,
+  AuthAuthorizationSessionsListResponse,
+  AuthAuthorizationSessionRevokeRequest,
+  AuthAuthorizationSessionRevokeResponse,
+  AuthConnectionsListRequest,
+  AuthConnectionsListResponse,
+  AuthConnectionsKickRequest,
+  AuthConnectionsKickResponse,
+  AuthAuthorityRenewRequest,
+  AuthAuthorityRenewResponse,
+  AuthAdmissionRenewRequest,
+  AuthAdmissionRenewResponse,
+  AuthIssuerRotateRequest,
+  AuthIssuerRotateResponse,
+  AuthIssuerRevokeRequest,
+  AuthIssuerRevokeResponse,
+  AuthSessionsListResponse,
+  AuthSessionsMeResponse,
+  AuthSessionsLogoutResponse,
+  AuthLoginRevokeRequest,
+  AuthUserGetRequest,
+  AuthUserGetResponse,
+  AuthUsersListResponse,
+  AuthUserCreateRequest,
+  AuthUserUpdateRequest,
+  AuthPasswordChangeRequest,
+  AuthPasswordResetCreateRequest,
+  AuthPasswordResetCreateResponse,
+  AuthUserIdentitiesListResponse,
+  AuthUserIdentityUnlinkRequest,
+  AuthIdentityLinkCreateRequest,
+  AuthIdentityLinkCreateResponse,
+  AuthOIDCProviderGetRequest,
+  AuthOIDCProviderGetResponse,
+  AuthOIDCProvidersListResponse,
+  AuthOIDCProviderPutRequest,
+  AuthOIDCProviderMutationRequest,
+  AuthOIDCRoleMappingsListRequest,
+  AuthOIDCRoleMappingsListResponse,
+  AuthOIDCRoleMappingPutRequest,
+  AuthOIDCRoleMappingPutResponse,
+  AuthOIDCRoleMappingDeleteRequest,
+  AuthDeploymentCreateRequest,
+  AuthDeploymentGetRequest,
+  AuthDeploymentGetResponse,
+  AuthDeploymentsListResponse,
+  AuthDeploymentApplyRequest,
+  AuthDeploymentMutationRequest,
+  AuthDeploymentMutationResponse,
+  AuthInstancesListRequest,
+  AuthInstancesListResponse,
+  AuthInstanceProvisionRequest,
+  AuthInstanceProvisionResponse,
+  AuthInstanceMutationRequest,
+  AuthInstanceMutationResponse,
+  AuthDeviceReviewGetRequest,
+  AuthDeviceReviewResponse,
+  AuthDeviceReviewsListResponse,
+  AuthAdministrationReviewDecideRequest,
+  AuthAdministrationReviewResponse,
+  AuthAdministrationReviewsListResponse,
+  AuthDeviceReviewDecideRequest,
+  AuthDeviceCompanionAttachRequest,
+  AuthDeviceCompanion,
+  AuthDeviceCompanionRevokeRequest,
+  AuthResourcesListRequest,
+  AuthResourcesListResponse,
+  AuthResourceGetRequest,
+  AuthResourceGetResponse,
+  AuthResourceRemoveRequest,
+  AuthResourceBindingsQueryRequest,
+  AuthResourceBindingsQueryResponse,
+  AuthSecurityEvent,
+} from auth_types;
+
+api auth@v1 {
+  title "Trellis Auth";
+  description "Manage principals, whole-capability roles, public OAuth clients, consent, accepted APIs, and logical authorization sessions.";
+  version "1.0.0";
+  error AuthError(AuthErrorDetails);
+  error UnexpectedError(AuthErrorDetails);
+  error ValidationError(AuthErrorDetails);
+
+  // trellis.auth.v1:roles.manage; role membership never contains action-level grants.
+  rpc Roles.List { input AuthPageRequest; output AuthRolesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Roles.Get { input AuthRoleGetRequest; output AuthRoleGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Roles.Put { input AuthRolePutRequest; output AuthRolePutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Roles.Delete { input AuthRoleDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc RoleAssignments.List { input AuthRoleAssignmentsListRequest; output AuthRoleAssignmentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc RoleAssignments.Assign { input AuthRoleAssignRequest; output AuthRoleAssignResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc RoleAssignments.Revoke { input AuthRoleRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc CapabilityGrants.List { input AuthCapabilityGrantsListRequest; output AuthCapabilityGrantsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc CapabilityGrants.Grant { input AuthCapabilityGrantRequest; output AuthCapabilityGrantResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc CapabilityGrants.Revoke { input AuthCapabilityRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Capabilities.List { input AuthCapabilitiesListRequest; output AuthCapabilitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Principals.EffectiveAccess { input AuthPrincipalRequest; output AuthEffectiveAccessResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // apis.accept; ForceReplace additionally requires apis.forceReplace.
+  rpc Apis.List { input AuthPageRequest; output AuthApisListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Apis.Get { input AuthApiGetRequest; output AuthApiGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Apis.Review { input AuthApiReviewRequest; output AuthApiReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Apis.Accept { input AuthApiAcceptRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Apis.ForceReplace { input AuthApiForceReplaceRequest; output AuthApiAcceptResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // trellis.manageClients.
+  rpc OAuthClients.List { input AuthPageRequest; output AuthOAuthClientsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc OAuthClients.Get { input AuthOAuthClientGetRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OAuthClients.Put { input AuthOAuthClientPutRequest; output AuthOAuthClientGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OAuthClients.Disable { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OAuthClients.Delete { input AuthOAuthClientMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // These handlers scope ordinary delegated access to the verified user.
+  // Cross-user administration additionally requires trellis.managePrincipals.
+  rpc Delegations.List { input AuthDelegationsListRequest; output AuthDelegationsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Delegations.Review { input AuthDelegationReviewRequest; output AuthDelegationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Delegations.Revoke { input AuthDelegationRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // trellis.auth.v1:users.manage; logical retirement and physical kicks are distinct.
+  rpc AuthorizationSessions.List { input AuthAuthorizationSessionsListRequest; output AuthAuthorizationSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc AuthorizationSessions.Revoke { input AuthAuthorizationSessionRevokeRequest; output AuthAuthorizationSessionRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Connections.List { input AuthConnectionsListRequest; output AuthConnectionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Connections.Kick { input AuthConnectionsKickRequest; output AuthConnectionsKickResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // Fixed authenticated-session rights. These cannot widen the original
+  // request, change the ephemeral key, or renew a retired session.
+  rpc Authority.Renew { input AuthAuthorityRenewRequest; output AuthAuthorityRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Admission.Renew { input AuthAdmissionRenewRequest; output AuthAdmissionRenewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Sessions.Me { input AuthEmpty; output AuthSessionsMeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Sessions.Logout { input AuthEmpty; output AuthSessionsLogoutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // trellis.managePlatform.
+  rpc Issuers.Rotate { input AuthIssuerRotateRequest; output AuthIssuerRotateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Issuers.Revoke { input AuthIssuerRevokeRequest; output AuthIssuerRevokeResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Administration.Reviews.List { input AuthPageRequest; output AuthAdministrationReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Administration.Reviews.Decide { input AuthAdministrationReviewDecideRequest; output AuthAdministrationReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // Own-account data, bounded by the named capabilities below.
+  rpc Users.Resolve { input AuthEmpty; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.Profile.Update { input AuthUserProfileUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.Password.Change { input AuthPasswordChangeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.IdentityLink.Create { input AuthIdentityLinkCreateRequest; output AuthIdentityLinkCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc UserIdentities.List { input AuthPageRequest; output AuthUserIdentitiesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc UserIdentities.Unlink { input AuthUserIdentityUnlinkRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Sessions.List { input AuthPageRequest; output AuthSessionsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Sessions.Revoke { input AuthLoginRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // trellis.managePrincipals. Administrative account access grants no domain data.
+  rpc Users.Get { input AuthUserGetRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.List { input AuthPageRequest; output AuthUsersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Users.Create { input AuthUserCreateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.Update { input AuthUserUpdateRequest; output AuthUserGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Users.PasswordReset.Create { input AuthPasswordResetCreateRequest; output AuthPasswordResetCreateResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.List { input AuthPageRequest; output AuthOIDCProvidersListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc OIDCProviders.Get { input AuthOIDCProviderGetRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.Put { input AuthOIDCProviderPutRequest; output AuthOIDCProviderGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.Disable { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCProviders.Delete { input AuthOIDCProviderMutationRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // trellis.auth.v1:roles.manage; mappings apply only to verified claims from this provider.
+  rpc OIDCRoleMappings.List { input AuthOIDCRoleMappingsListRequest; output AuthOIDCRoleMappingsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc OIDCRoleMappings.Put { input AuthOIDCRoleMappingPutRequest; output AuthOIDCRoleMappingPutResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc OIDCRoleMappings.Delete { input AuthOIDCRoleMappingDeleteRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+
+  // trellis.auth.v1:users.manage; only service/device implementations can be deployed.
+  rpc Devices.Reviews.Get { input AuthDeviceReviewGetRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Reviews.List { input AuthPageRequest; output AuthDeviceReviewsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Devices.Reviews.Decide { input AuthDeviceReviewDecideRequest; output AuthDeviceReviewResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc DeviceCompanions.Attach { input AuthDeviceCompanionAttachRequest; output AuthDeviceCompanion; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc DeviceCompanions.Revoke { input AuthDeviceCompanionRevokeRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Create { input AuthDeploymentCreateRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Get { input AuthDeploymentGetRequest; output AuthDeploymentGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.List { input AuthPageRequest; output AuthDeploymentsListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Deployments.Apply { input AuthDeploymentApplyRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Enable { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Disable { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Deployments.Remove { input AuthDeploymentMutationRequest; output AuthDeploymentMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc ServiceInstances.Provision { input AuthInstanceProvisionRequest; output AuthInstanceProvisionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.Enable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.Disable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ServiceInstances.Remove { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.List { input AuthInstancesListRequest; output AuthInstancesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Devices.Provision { input AuthInstanceProvisionRequest; output AuthInstanceProvisionResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Enable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Disable { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Devices.Remove { input AuthInstanceMutationRequest; output AuthInstanceMutationResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Resources.List { input AuthResourcesListRequest; output AuthResourcesListResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+  rpc Resources.Get { input AuthResourceGetRequest; output AuthResourceGetResponse; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc Resources.Remove { input AuthResourceRemoveRequest; output AuthMutationResult; errors [AuthError, UnexpectedError, ValidationError]; }
+  rpc ResourceBindings.Query { input AuthResourceBindingsQueryRequest; output AuthResourceBindingsQueryResponse; errors [AuthError, UnexpectedError, ValidationError]; pagination cursor; }
+
+  event Connections.Opened { payload AuthSecurityEvent; }
+  event Connections.Closed { payload AuthSecurityEvent; }
+  event Connections.Kicked { payload AuthSecurityEvent; }
+  event AuthorizationSessions.Retired { payload AuthSecurityEvent; }
+  event Issuers.Rotated { payload AuthSecurityEvent; }
+  event Issuers.Revoked { payload AuthSecurityEvent; }
+
+  capabilities {
+    capability account.linkDevice {
+      title "Link to a device";
+      description "Link this sign-in to a device you approved, or unlink it.";
+      grants "The device can recognize this sign-in. Unlinking signs it out.";
+      allows { rpc Devices.Reviews.Get; rpc DeviceCompanions.Attach; rpc DeviceCompanions.Revoke; }
+    }
+    capability account.read {
+      title "See your profile";
+      description "See your name, email, and account, and sign you out.";
+      grants "Can read your profile and email and end your current sign-in.";
+      allows { rpc Users.Resolve; rpc Sessions.Me; rpc Sessions.Logout; }
+    }
+    capability account.edit {
+      title "Edit your profile";
+      description "Change your display name, email, and photo.";
+      grants "Changes what other apps see about you. Emails entered here are not verified.";
+      allows { rpc Users.Profile.Update; }
+    }
+    capability account.changePassword {
+      title "Change your password";
+      description "Change your password using your current one.";
+      grants "Changes your password and signs out your other sessions.";
+      allows { rpc Users.Password.Change; }
+    }
+    capability identities.read {
+      title "See linked sign-ins";
+      description "See which company accounts you can sign in with.";
+      grants "Can see your linked accounts.";
+      allows { rpc UserIdentities.List; }
+    }
+    capability identities.manage {
+      title "Manage linked sign-ins";
+      description "Link or unlink company accounts.";
+      grants "Changes which accounts can sign in as you.";
+      allows { rpc Users.IdentityLink.Create; rpc UserIdentities.Unlink; }
+    }
+    capability sessions.read {
+      title "See your sign-ins";
+      description "See when and where you signed in.";
+      grants "Can see your sign-in history.";
+      allows { rpc Sessions.List; }
+    }
+    capability sessions.revoke {
+      title "Sign out your sessions";
+      description "End one of your sign-ins.";
+      grants "Signs out apps that use that sign-in.";
+      allows { rpc Sessions.Revoke; }
+    }
+    capability delegations.read {
+      title "See your connected apps";
+      description "See which apps you have allowed and what they can do.";
+      grants "Can see your app choices.";
+      allows { rpc Delegations.List; rpc Delegations.Review; }
+    }
+    capability delegations.revoke {
+      title "Disconnect your apps";
+      description "Remove an app's access to your account.";
+      grants "The app loses access and is signed out.";
+      allows { rpc Delegations.Revoke; }
+    }
+    capability users.read {
+      title "See users";
+      description "Find people and see their names, emails, and photos.";
+      grants "Can see everyone's name, email, and photo.";
+      allows { rpc Users.List; rpc Users.Get; }
+    }
+    capability users.manage {
+      administrative;
+      title "Manage users and services";
+      description "Add and change users, sign-in providers, services, devices, storage, sessions, and connections.";
+      grants "Can create and change any account or service in this Trellis and sign anyone out.";
+      allows { rpc Users.List; rpc Users.Get; rpc Users.Create; rpc Users.Update; rpc Users.PasswordReset.Create; rpc OIDCProviders.List; rpc OIDCProviders.Get; rpc OIDCProviders.Put; rpc OIDCProviders.Disable; rpc OIDCProviders.Delete; rpc AuthorizationSessions.List; rpc AuthorizationSessions.Revoke; rpc Connections.List; rpc Connections.Kick; rpc Deployments.List; rpc Deployments.Get; rpc Deployments.Create; rpc Deployments.Apply; rpc Deployments.Enable; rpc Deployments.Disable; rpc Deployments.Remove; rpc ServiceInstances.List; rpc ServiceInstances.Provision; rpc ServiceInstances.Enable; rpc ServiceInstances.Disable; rpc ServiceInstances.Remove; rpc Devices.List; rpc Devices.Provision; rpc Devices.Enable; rpc Devices.Disable; rpc Devices.Remove; rpc Devices.Reviews.List; rpc Devices.Reviews.Get; rpc Devices.Reviews.Decide; rpc Resources.List; rpc Resources.Get; rpc Resources.Remove; }
+    }
+    capability roles.manage {
+      administrative;
+      title "Manage roles and access";
+      description "Change roles, who has them, what each person may do, and roles given by company sign-in.";
+      grants "Can give any person or app access to anything in this Trellis.";
+      allows { rpc Roles.List; rpc Roles.Get; rpc Roles.Put; rpc Roles.Delete; rpc RoleAssignments.List; rpc RoleAssignments.Assign; rpc RoleAssignments.Revoke; rpc CapabilityGrants.List; rpc CapabilityGrants.Grant; rpc CapabilityGrants.Revoke; rpc Capabilities.List; rpc OIDCRoleMappings.List; rpc OIDCRoleMappings.Put; rpc OIDCRoleMappings.Delete; rpc Principals.EffectiveAccess; }
+    }
+    capability apis.accept {
+      administrative;
+      title "Install API updates";
+      description "Review and install compatible API updates.";
+      grants "Changes what installed APIs offer to every app.";
+      allows { rpc Apis.List; rpc Apis.Get; rpc Apis.Review; rpc Apis.Accept; }
+    }
+    capability apis.forceReplace {
+      administrative;
+      title "Force API replacements";
+      description "Install API updates that break compatibility.";
+      grants "Affected apps lose access and are signed out until people approve them again.";
+      allows { rpc Apis.List; rpc Apis.Get; rpc Apis.Review; rpc Apis.ForceReplace; }
+    }
+    capability clients.manage {
+      administrative;
+      title "Manage apps";
+      description "Register apps and change their sign-in settings.";
+      grants "Decides which apps can ask people for access.";
+      allows { rpc OAuthClients.List; rpc OAuthClients.Get; rpc OAuthClients.Put; rpc OAuthClients.Disable; rpc OAuthClients.Delete; }
+    }
+    capability security.observe {
+      title "Watch security activity";
+      description "Follow sign-ins, sign-outs, and key changes as they happen.";
+      grants "Can see security activity live.";
+      allows { subscribe event Connections.Opened; subscribe event Connections.Closed; subscribe event Connections.Kicked; subscribe event AuthorizationSessions.Retired; subscribe event Issuers.Rotated; subscribe event Issuers.Revoked; }
+    }
+    capability platform.manage {
+      administrative;
+      title "Manage this Trellis";
+      description "Decide who administers this Trellis and manage its signing keys.";
+      grants "Full control of this Trellis installation.";
+      allows { rpc Issuers.Rotate; rpc Issuers.Revoke; rpc Administration.Reviews.List; rpc Administration.Reviews.Decide; }
+    }
+    capability bindings.readJobs {
+      title "Read job storage settings";
+      description "Look up which services own which job queues.";
+      grants "Can see job queue ownership.";
+      allows { rpc ResourceBindings.Query; }
+    }
+    capability bindings.readEvents {
+      title "Read event delivery settings";
+      description "Look up which services own which event consumers.";
+      grants "Can see event consumer ownership.";
+      allows { rpc ResourceBindings.Query; }
+    }
+    group account {
+      title "Your account";
+      description "See and manage your profile, password, sign-ins, linked identities, connected apps, and devices.";
+      grants "Can read and change your account and sign you out.";
+      capability account.read;
+      capability account.edit;
+      capability account.changePassword;
+      capability account.linkDevice;
+      capability identities.read;
+      capability identities.manage;
+      capability sessions.read;
+      capability sessions.revoke;
+      capability delegations.read;
+      capability delegations.revoke;
+    }
+    group administration {
+      title "Administer this Trellis";
+      description "Manage users, roles, apps, APIs, and who administers this Trellis.";
+      grants "Full control of this Trellis installation.";
+      capability users.manage;
+      capability roles.manage;
+      capability apis.accept;
+      capability apis.forceReplace;
+      capability clients.manage;
+      capability platform.manage;
+    }
+  }
+}

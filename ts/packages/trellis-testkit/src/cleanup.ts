@@ -1,12 +1,13 @@
-import { join } from "@std/path";
+import { execFile } from "node:child_process";
+import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 let hasProc: boolean | undefined;
 
 async function canCheckProcesses(): Promise<boolean> {
   if (hasProc !== undefined) return hasProc;
   try {
-    const stat = await Deno.stat("/proc");
-    hasProc = stat.isDirectory;
+    hasProc = (await stat("/proc")).isDirectory();
   } catch {
     hasProc = false;
   }
@@ -14,28 +15,30 @@ async function canCheckProcesses(): Promise<boolean> {
 }
 
 async function psProbe(args: string[]): Promise<string> {
-  const result = await new Deno.Command("ps", {
-    args,
-    stdout: "piped",
-    stderr: "null",
-  }).output();
-  return new TextDecoder().decode(result.stdout).trim();
+  return await new Promise<string>((resolve, reject) => {
+    execFile("ps", args, { encoding: "utf8" }, (error, stdout) => {
+      // ps exits 1 when no process matches the requested pid.
+      if (error && error.code !== 1) reject(error);
+      else resolve(stdout.trim());
+    });
+  });
 }
 
 /** @internal Returns true only when the pid no longer names a live process. */
 export async function processIsGone(pid: number): Promise<boolean> {
   if (await canCheckProcesses()) {
     try {
-      await Deno.stat(`/proc/${pid}`);
+      await stat(`/proc/${pid}`);
       return false;
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return true;
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return true;
       return false;
     }
   }
   // No /proc (macOS): probe with ps so stale cleanup also runs there.
   try {
-    return await psProbe(["-p", String(pid), "-o", "pid="]) === "";
+    return (await psProbe(["-p", String(pid), "-o", "pid="])) === "";
   } catch {
     return false; // cannot probe; assume the pid is still in use
   }
@@ -58,11 +61,14 @@ export type ProcessIdentity = {
 /** @internal Reads the start time of a live process from `/proc/<pid>/stat` field 22. */
 async function linuxProcessStartTime(pid: number): Promise<string | undefined> {
   try {
-    const stat = await Deno.readTextFile(`/proc/${pid}/stat`);
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
     // `comm` is the parenthesized field and may contain spaces; the fields
     // after it are whitespace-separated and field 22 (`starttime`) is at
     // index 22 - 3 = 19.
-    const fields = stat.slice(stat.lastIndexOf(")") + 1).trim().split(/\s+/);
+    const fields = stat
+      .slice(stat.lastIndexOf(")") + 1)
+      .trim()
+      .split(/\s+/);
     return fields[19];
   } catch {
     return undefined;
@@ -136,7 +142,7 @@ export async function writeTrellisTestOwnerMarker(
   dir: string,
   markerName: string,
 ): Promise<void> {
-  await Deno.writeTextFile(join(dir, markerName), `${Deno.pid}\n`);
+  await writeFile(join(dir, markerName), `${process.pid}\n`);
 }
 
 /** @internal Removes marked test directories whose owner process is gone. */
@@ -145,22 +151,19 @@ export async function removeStaleMarkedDirectories(args: {
   readonly prefix: string;
   readonly markerName: string;
 }): Promise<void> {
-  const entries: Deno.DirEntry[] = [];
-  try {
-    for await (const entry of Deno.readDir(args.parent)) entries.push(entry);
-  } catch {
-    return;
-  }
+  const entries = await readdir(args.parent, { withFileTypes: true }).catch(
+    () => [],
+  );
 
   for (const entry of entries) {
-    if (!entry.isDirectory || !entry.name.startsWith(args.prefix)) continue;
+    if (!entry.isDirectory() || !entry.name.startsWith(args.prefix)) continue;
     const path = join(args.parent, entry.name);
-    const marker = await Deno.readTextFile(join(path, args.markerName)).catch(
+    const marker = await readFile(join(path, args.markerName), "utf8").catch(
       () => undefined,
     );
     const pid = marker === undefined ? undefined : parsePid(marker);
-    if (pid !== undefined && await processIsGone(pid)) {
-      await Deno.remove(path, { recursive: true }).catch(() => undefined);
+    if (pid !== undefined && (await processIsGone(pid))) {
+      await rm(path, { recursive: true }).catch(() => undefined);
     }
   }
 }

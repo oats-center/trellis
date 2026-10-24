@@ -1,186 +1,203 @@
 # Design: Auth API
 
-Status: authoritative public Auth surface after WO-02.
+The public Auth surface: the dedicated OAuth listener's HTTP routes, native
+admission, and the Auth contract's RPC families. See
+[trellis-auth.md](trellis-auth.md) for the authoritative core model and
+[auth-protocol.md](auth-protocol.md) for proofs, custody, and admission rules.
 
 ## Source Of Truth
 
-`crates/runtime/contract.trellis` is the native IDL source. Generated Rust and
-TypeScript clients and schemas are the public API reference. HTTP-only
-browser/bootstrap DTOs remain Rust-owned at their transport boundary.
+`crates/builtin-contracts/src/builtin_source/auth.trellis` is the native Auth
+source. Generated Rust and TypeScript clients and schemas are the public RPC
+reference. The OAuth listener's routes are defined by the router in
+`crates/runtime/src/platform/auth/oauth/http.rs`; their HTTP-only DTOs remain
+Rust-owned at that transport boundary.
 
 There are no handwritten desired/materialized-authority, proposal,
 reconciliation, identity-grant, trust-root, certificate, manifest, or legacy
-device-connect APIs.
+device-connect APIs, and no HTTP bootstrap or context-refresh endpoints.
 
 ## HTTP Surface
 
-| Method | Route                                         | Purpose                                                                                                     |
-| ------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/auth/keys/{keyId}`                          | Current issuer signing key by key ID                                                                        |
-| `POST` | `/bootstrap/service`                          | Admit a provisioned service and return shared installation data                                             |
-| `POST` | `/bootstrap/device`                           | Admit an approved device and return shared installation data                                                |
-| `POST` | `/auth/device/enroll`                         | Create/resume proof-bound device review                                                                     |
-| `POST` | `/auth/requests`                              | Validate a proof-bound request and return a signed intent and portal URL; no authentication attempt created |
-| `POST` | `/auth/intents/view`                          | Verify intent and read public portal-rendering choices; no transaction discovery                            |
-| `POST` | `/auth/intents/progress`                      | Discover progress with a fresh initiating-key proof; return a transaction ID only when ready to bind        |
-| `POST` | `/auth/transactions`                          | Start an independently portal-bound authentication attempt from a verified intent                           |
-| `GET`  | `/auth/transactions/{transactionId}`          | Read portal-binding-protected authentication-attempt progress                                               |
-| `POST` | `/auth/transactions/{transactionId}/portal`   | Read bound portal progress and current consent                                                              |
-| `POST` | `/auth/login/{providerId}`                    | Start browser OIDC with a JSON transaction ID and portal binding                                            |
-| `GET`  | `/auth/callback/{providerId}`                 | Verify provider callback and return to the portal with `transactionId`                                      |
-| `POST` | `/auth/transactions/{transactionId}/approval` | Apply a fresh transaction-bound consent decision                                                            |
-| `POST` | `/auth/transactions/{transactionId}/bind`     | Return the key-bound, idempotent login result and intent ID; no context returned                            |
-| `POST` | `/auth/context/refresh`                       | Revalidate and return current runtime installation data                                                     |
-| `POST` | `/auth/logout`                                | Revoke a real user login                                                                                    |
-| `POST` | `/auth/password`                              | Change password and revoke sibling logins                                                                   |
+All routes are served only by the dedicated OAuth listener (`auth.oauth`).
+Console and application routers are never mounted there.
 
-Browser sign-in separates a reusable signed request from a bounded server-owned
-authentication transaction. Rendering the portal verifies the intent without
-starting an attempt; starting authentication creates the transaction. Local
-login and registration carry `transactionId`; OIDC, consent, and completion
-belong to that transaction. Account-flow continuations use
-`browserTransactionId`; account and device review flows retain their own IDs and
-lifetimes. Portal-binding and OIDC-cookie/CAS controls are documented in
-`auth-protocol.md`.
+| Method | Route                                     | Purpose                                                                                         |
+| ------ | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `GET`  | `/.well-known/oauth-authorization-server` | Public OAuth metadata plus the Trellis installation, issuer, and NATS endpoint extension        |
+| `GET`  | `/.well-known/trellis/issuer-chain`       | Public authenticated issuer rotation chain                                                      |
+| `GET`  | `/authorize`                              | Authorization Code with PKCE for browser and native clients with callbacks                      |
+| `POST` | `/token`                                  | DPoP-bound `authorization_code`, `refresh_token`, and Device Code grants with Trellis admission |
+| `POST` | `/device_authorization`                   | Start an RFC 8628 Device Code authorization bound to the client's DPoP key                      |
+| `POST` | `/revoke`                                 | RFC 7009 token revocation                                                                       |
+| `POST` | `/auth/device/enroll`                     | Create or resume a proof-bound device review                                                    |
+| `GET`  | `/login`, `/consent`, `/device`           | Portal pages for sign-in, capability consent, and Device Code entry                             |
+| `GET`  | `/device/complete`                        | Portal page shown after a Device Code decision                                                  |
+| `GET`  | `/portal-assets/{path}`                   | Embedded portal assets                                                                          |
+| `POST` | `/portal/session`                         | Create a portal session cookie and CSRF token                                                   |
+| `POST` | `/portal/login`                           | Local username/password sign-in                                                                 |
+| `POST` | `/portal/logout`                          | End the portal login                                                                            |
+| `GET`  | `/portal/providers`                       | List enabled upstream OIDC providers                                                            |
+| `GET`  | `/portal/oidc/{provider}/begin`           | Start upstream OIDC with server-owned state, nonce, and PKCE                                    |
+| `GET`  | `/portal/oidc/callback`                   | Verify the upstream OIDC callback                                                               |
+| `GET`  | `/portal/authorization/{transaction}`     | Read a pending authorization's consent view                                                     |
+| `POST` | `/portal/approve`                         | Apply a fresh, transaction-bound consent decision                                               |
+| `POST` | `/portal/device`                          | Submit a Device Code user code for consent                                                      |
+| `GET`  | `/account/{kind}`                         | One-use account action page (`reset` for password reset, `link` for identity linking)           |
+| `POST` | `/portal/account/{kind}`                  | Complete an Origin-checked, CSRF-protected account action                                       |
+| `GET`  | `/profile/avatars/{token}`                | Expiring, sanitized profile image reference                                                     |
 
-An intent has at most one outstanding authentication transaction. Repository
-creation atomically claims the intent index. Retrying the same intent with the
-same portal binding returns its existing unexpired transaction without changing
-its deadline or state, including after approval while bind is outstanding. A
-different binding receives `intent_transaction_active`. The portal persists its
-pending binding before the first start request and reuses it after an uncertain
-response or reload. Denied, expired, and consumed transactions permit another
-attempt. Public intent rendering never discovers an attempt. Detached callers
-use their initiating private key to sign each `/auth/intents/progress` request.
+Discovery and the issuer chain allow credential-free cross-origin GETs. Token,
+Device Code, enrollment, and revocation endpoints allow CORS only from validated
+client callback origins. Cookie-authenticated portal routes never enable CORS.
+Request admission budgets are described in `trellis-auth.md`. All HTTP
+timestamps and expiries are epoch milliseconds.
 
-The bound portal response includes the authenticated user's `username` when the
-account has a local login. This is the current canonical login name from account
-storage, independent of the optional display name and email. Accounts without a
-local login omit it. Public intent and transaction-progress responses do not
-expose account identity.
+## Native Admission
 
-Native bootstrap request DTOs are strict and accept only identity/proof inputs.
-Browser request and bind proofs bind the complete raw body. All HTTP timestamps
-and expiries are epoch milliseconds.
-
-## Shared Installation Response
-
-Native bootstrap and context refresh return one shape:
-
-- `assignment`: server-owned deployment and instance identifiers;
-- `runtime`: exact package/participant evidence, effective grant, resource
-  evidence, signed context, route JWT, inbox, and expiries; and
-- `transports`: exact Core NATS and WebSocket endpoints/options.
-
-Bind returns the minimal login projection and its `intentId`. Browser clients
-validate the intent, participant, and initiating-key bindings, commit that
-result under their generation fence, then call context refresh. Exact supported
-replay of a completed transaction returns the same semantic login result.
+There is no HTTP bootstrap. Services and devices present a signed
+`trellis.provisioned-admission.v1` credential in NATS CONNECT, proving their
+provisioned identity key and fresh runtime session key; Auth Callout resolves
+deployment, instance, participant, accepted implementation, and resources from
+its own records. Users and applications obtain a DPoP-bound OAuth token whose
+`trellis.oauth-admission.v1` extension authorizes CONNECT for the same runtime
+key. Connected participants retrieve and renew their own signed authority over
+NATS through `Auth.Authority.*` and `Auth.Admission.Renew`, never over HTTP.
 
 ## RPC Surface
 
-### Participants
+The Auth contract groups its RPCs into these families. Generated clients carry
+the exact request, response, and error types.
 
-- `Auth.Participants.Get`
-- `Auth.Participants.Install`
-
-Installation accepts verified source-package evidence and exact participant
-lexical path, resolves semantics, rejects reserved Trellis namespaces except
-built-ins, and creates an immutable participant revision.
-
-### Grants
-
-- `Auth.Grants.Get`
-- `Auth.Grants.List`
-- `Auth.Grants.Set`
-- `Auth.Grants.Revoke`
-
-Bindings are keyed by identity plus participant. Mutations require
-`expectedRevision`, validate atoms against the selected installed revision, and
-carry a finite platform-privilege set containing only `Admin`.
-
-An exact binding stores the approved desired permission snapshot, not just the
-permissions whose resources are already available. A new binding can initiate
-resource provisioning; context issuance still requires the applicable resource
-evidence and readiness. Resource permissions remain bounded by the exact
-restrictions and delegation ceiling: approving a resource must not expand a
-read-only snapshot into write access.
+| Family                | RPCs                                                                                                                                                                             |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Own authority         | `Authority.Renew`, `Admission.Renew`                                                                                                                                             |
+| APIs and capabilities | `Apis.List/Get/Review/Accept/ForceReplace`, `Capabilities.List`                                                                                                                  |
+| Capability grants     | `CapabilityGrants.Grant/List/Revoke`, `Delegations.List/Review/Revoke`                                                                                                           |
+| Roles                 | `Roles.*`, `RoleAssignments.*`                                                                                                                                                   |
+| Administration        | `Administration.Reviews.List/Decide`                                                                                                                                             |
+| Principals            | `Principals.EffectiveAccess`                                                                                                                                                     |
+| OAuth clients         | `OAuthClients.List/Get/Put/Disable/Delete`                                                                                                                                       |
+| Upstream identity     | `OIDCProviders.*`, `OIDCRoleMappings.*`                                                                                                                                          |
+| Issuers               | `Issuers.Rotate`, `Issuers.Revoke`                                                                                                                                               |
+| Deployments           | `Deployments.Create/Apply/Get/List/Disable/Enable/Remove`                                                                                                                        |
+| Service instances     | `ServiceInstances.Provision/List/Disable/Enable/Remove`                                                                                                                          |
+| Devices               | `Devices.Provision/List/Disable/Enable/Remove`, `Devices.Reviews.*`, `DeviceCompanions.Attach/Revoke`                                                                            |
+| Resources             | `Resources.List/Get/Remove`, `ResourceBindings.Query`                                                                                                                            |
+| Sessions              | `Sessions.Me/List/Revoke/Logout`, `AuthorizationSessions.List/Revoke`                                                                                                            |
+| Connections           | `Connections.List`, `Connections.Kick`                                                                                                                                           |
+| Users                 | `Users.Create/Get/List/Resolve/Update`, `Users.Profile.Update`, `Users.Password.Change`, `Users.PasswordReset.Create`, `Users.IdentityLink.Create`, `UserIdentities.List/Unlink` |
 
 ### Issuers
 
-- `Auth.Issuers.Revoke`
-
-Issuer installation and rotation occur online during runtime startup from the
-configured private issuer seed. No offline root or manifest RPC exists.
-Historical contexts remain stored after ordinary rotation.
+Fresh initialization provisions the initial private issuer seed. Authorized
+rotation generates and durably stores successor custody locally before committing
+the signed trust transition and idempotent result. Startup reads the committed
+current key; it never rotates or recreates missing keys. No private key crosses
+an RPC, and no offline root or manifest RPC exists. Historical contexts remain
+stored after ordinary rotation; explicit issuer revocation remains separate.
 
 ### Deployments And Provisioning
-
-- `Auth.Deployments.Create`
-- `Auth.Deployments.Apply`
-- `Auth.Deployments.Get`
-- service and device provisioning/lifecycle RPCs;
-- device review list/decide operations; and
-- resource evidence and portal-policy operations retained by the contract.
 
 Deployment Apply is the direct mutation path. There is no proposal, plan,
 approve, reconcile, or materialized-authority RPC family.
 
-### Sessions And Connections
+### Resource administration
 
-- `Auth.Sessions.Me`
-- `Auth.Sessions.List`
-- `Auth.Sessions.Revoke`
-- `Auth.Connections.List`
+`Resources.List/Get` expose all catalog allocations, including detached resources,
+with digest resource IDs, explicit `user`/`deployment` owner kind and owner ID,
+participant, local name, kind, revision, and lifecycle state. List supports direct
+owner filters without joining only active deployments. They require
+`trellis.auth.v1:users.manage`.
+
+Declaration omission and deployment Remove detach resources and remove binding
+authority while retaining physical data. Disable preserves allocations and binding
+commitments but retires sessions and denies admission while disabled; Enable reuses
+those retained bindings without reapplying the contract. No lifecycle path automatically destroys
+an allocation. `Resources.Remove` is an explicit permanent deletion choice for a
+detached owned KV at its expected revision. Its typed idempotent result fences a
+durable manual intent before the ownership-checked broker deletion. The same
+manual request can retry after failure; no startup cleaner or automatic omission
+job consumes that intent. Reattachment uses a compatible retained allocation;
+retention reductions fail rather than purge or recreate data.
+
+### Sessions And Connections
 
 `Sessions.Me` returns the logical connection and nullable user login. Durable
 session RPCs are login-only; native service/device connections have no session
-row.
-
-### User Management
-
-`Auth.Users.Update` updates profile fields and account state with
-`expectedVersion`. Optional `username` renames an existing local login: the
-credential and local identity subject change atomically, while the principal ID
-and password remain unchanged. Usernames are normalized, uniqueness is enforced,
-and a conflicting username commits none of the accompanying profile changes.
-Accounts without a local login establish one through an account flow, not a
-profile update.
-
-`Auth.Users.PasswordReset.Create` accepts a target `userId` and returns a
-time-limited, one-use account-flow link. Creating the link does not itself
-change the password. Completing it changes the target account's credential and
-revokes its existing user sessions.
-
-`Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
-`Auth.Users.IdentityLink.Create` accept optional `userId`. Omission targets the
-caller; targeting another user requires platform administration. Unlinking still
-enforces the last-sign-in-method and protected-administrator checks. An
-identity-link flow is bound to its selected target user, not the administrator
-who generated the link.
-
-`Auth.Connections.List` supports `principalId` to inspect only the selected
+row. `Connections.List` supports `principalId` to inspect only the selected
 principal's physical connections. User-session revocation and connection kicks
 remain separate actions.
 
+### User Management
+
+`Auth.Users.Update` checks account lifecycle `expectedRevision`. Profile fields
+are optional: a lifecycle-only update leaves the profile untouched. An intentional
+profile edit must also supply `expectedProfileRevision`; its independent CAS is
+checked in the same transaction, so a stale combined update changes neither the
+account lifecycle nor its profile. Owner edits continue through
+`Auth.Users.Profile.Update` with the self account's profile revision. Creation
+does not provide a zero-revision bypass for updating existing profiles.
+
+`Auth.Users.PasswordReset.Create` accepts a target `userId` and returns a
+five-minute, one-use token. Open `/account/reset?token=...` on the
+isolated OAuth origin to complete it with an Origin-checked, CSRF-protected
+native form. Creating the token does not change the password. Completion checks
+credential CAS, the target's protected-administrator status, and the requester's
+still-active logical authorization session and current
+`trellis.auth.v1:users.manage`. It atomically changes the credential, consumes
+the action, and revokes existing logins, OAuth grants, and refresh families.
+Bootstrap administrators cannot use this RPC reset path; their existing local
+recovery path remains authoritative. Replay responses keep the same bearer token
+under existing OAuth sealing custody; replaying creation never makes a consumed
+action usable again.
+
+`Auth.UserIdentities.List`, `Auth.UserIdentities.Unlink`, and
+`Auth.Users.IdentityLink.Create` target the current user in the current generated
+contract. Identities have persisted ULIDs. Unlinking enforces owner isolation,
+last-sign-in-method and protected-administrator checks. Link creation returns a
+five-minute isolated portal URL. The portal requires the exact initiating user to
+be signed in, then starts fresh upstream authentication with server-owned state,
+nonce, and PKCE through the ordinary verified OIDC callback. Completion rechecks
+the portal session and provider revision/state, rejects identities owned by
+another user, and atomically inserts the identity and consumes the account action.
+
 ## Authorization
 
-Administrative RPCs require `PlatformPrivilege::Admin` in the caller's current
-participant-scoped `GrantBinding`. This privilege gates the administrative
-surface; it does not fabricate participant grants. Mutation authorization and
-idempotency replay are checked in the same SQL transaction using the current
-principal, login/credential, exact binding revision, expiry, and privilege.
+Administrative RPCs are allowed by the administrative capability that names
+them (for example `trellis.auth.v1:users.manage`, `trellis.auth.v1:clients.manage`, or
+`trellis.auth.v1:platform.manage`) and recheck it against the caller's current
+entitlements. Changing who holds an administrative capability, directly or
+through a role or identity-provider mapping, requires `trellis.auth.v1:platform.manage`.
+Mutation authorization and idempotency replay are checked in the same SQL
+transaction using the current principal, login/credential, exact authority
+revision, and expiry.
+
+`Administration.Reviews.List/Decide` require `trellis.auth.v1:platform.manage`. A review
+records a user's request that one app binding hold one administrative
+capability. Nobody decides their own review. Approval adds the capability to the
+user's live grants for that binding that asked for it, and later grants for the
+binding reuse it; rejection withholds it until the user asks again.
 
 ## Events And Post-Commit Work
 
-Participant, grant, principal, login, issuer, resource, device, and deployment
-changes emit ordered typed events through the transactional post-commit queue.
-Participant installation precedes the corresponding grant-change event.
-Superseded contexts are durably revoked before connection kicks are attempted.
+Authorization, issuer, resource, device, and deployment changes emit ordered
+typed events through the transactional post-commit queue. Superseded contexts
+are durably revoked before connection kicks are attempted.
 
-Auth's own event publisher uses the ordinary event authorization path and a
-durably prepared body/proof tuple. The Events journal retains the context digest
-rather than copying authorization state.
+Attachment admission, closure, and confirmed kicks enqueue their declared
+`Connections.Opened`, `Connections.Closed`, and `Connections.Kicked`
+events in the transition's SQL transaction. A confirmed kick is
+recorded separately from disconnect observation, so either callback order emits
+one closure and one kick event. Outbox retries retain the event ID, occurrence
+time, subject, descriptor, and generated payload.
+
+Auth's event publisher uses its ordinary admitted provider and signs each
+publication with current authority; it does not retain an expired proof.
+Publication failure retains durable work. Publication starts after provider
+admission, independently of the enforcement worker needed to establish that
+admission. The Events journal retains the context digest rather than copying
+authorization state.
 
 ## Non-Goals
 

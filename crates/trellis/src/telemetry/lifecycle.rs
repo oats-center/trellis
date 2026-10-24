@@ -153,6 +153,22 @@ mod registry_tests {
 
     #[tokio::test]
     async fn process_connection_gauge_survives_registration_churn() {
+        // This gauge counts the whole process, including connections owned by
+        // concurrently running tests. Observe lifecycle changes in an isolated
+        // libtest process rather than clearing or filtering production state.
+        if std::env::var_os("TRELLIS_CONNECTION_GAUGE_TEST_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "telemetry::lifecycle::registry_tests::process_connection_gauge_survives_registration_churn",
+                    "--nocapture",
+                ])
+                .env("TRELLIS_CONNECTION_GAUGE_TEST_CHILD", "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated connection gauge check failed");
+            return;
+        }
         let _guard = crate::telemetry::capture::meter_test_lock().await;
         let capture = crate::telemetry::capture::process_capture();
         // The production entry point retains its registration for the process
@@ -177,6 +193,18 @@ mod registry_tests {
                 .iter()
                 .all(|point| point.attributes.iter().all(|(_, value)| value != "usable")),
             "a closed connection must stop contributing usable count: {after:?}"
+        );
+        let replacement = ConnectionRegistration::start("service");
+        replacement.usable();
+        capture.flush();
+        let samples = capture.points_for("trellis.connection.count");
+        assert!(
+            samples.iter().any(|point| point.value == 1.0
+                && point
+                    .attributes
+                    .iter()
+                    .any(|(key, value)| key == "trellis.state" && value == "usable")),
+            "a later connection must still export its count: {samples:?}"
         );
     }
 }

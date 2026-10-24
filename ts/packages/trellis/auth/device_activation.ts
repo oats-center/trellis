@@ -1,32 +1,14 @@
-import type { AsyncResult, BaseError } from "@oatscenter/result";
 import type { StaticDecode } from "typebox";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { ulid } from "ulid";
 
-import type {
-  API as AUTH_API,
-  DeviceUserAuthoritiesListInput,
-  DeviceUserAuthoritiesListOutput,
-  DeviceUserAuthoritiesResolveInput,
-  DeviceUserAuthoritiesResolveOutput,
-  DeviceUserAuthoritiesResolveProgress,
-  DeviceUserAuthoritiesRevokeInput,
-  DeviceUserAuthoritiesRevokeOutput,
-} from "../internal_sdk/generated/apis/auth/mod.js";
-import type { OperationRef } from "../operations.ts";
 import type { GeneratedParticipant } from "../participant_runtime/participant.ts";
 import { decodeTrellisHttpError } from "./http_error.ts";
 import { trellisCrypto } from "./crypto.ts";
 import { publicKeyBase64urlFromSeed } from "./keys.ts";
 import { createAuth } from "./session_auth.ts";
-import {
-  base64urlDecode,
-  base64urlEncode,
-  canonicalizeJsonValue,
-  sha256,
-  utf8,
-} from "./utils.ts";
+import { base64urlDecode, base64urlEncode, sha256, utf8 } from "./utils.ts";
 
 const DEVICE_IDENTITY_HKDF_INFO = "trellis/device-identity/v1";
 const DEVICE_ACTIVATION_HKDF_INFO = "trellis/device-activate/v1";
@@ -46,19 +28,6 @@ export const DeviceActivationPayloadSchema = Type.Object({
 export type DeviceActivationPayload = StaticDecode<
   typeof DeviceActivationPayloadSchema
 >;
-export type AuthResolveDeviceUserAuthoritiesInput =
-  DeviceUserAuthoritiesResolveInput;
-export type AuthResolveDeviceUserAuthoritiesProgress =
-  DeviceUserAuthoritiesResolveProgress;
-export type AuthResolveDeviceUserAuthoritiesOutput =
-  DeviceUserAuthoritiesResolveOutput;
-export type AuthDeviceUserAuthoritiesListInput = DeviceUserAuthoritiesListInput;
-export type AuthDeviceUserAuthoritiesListOutput =
-  DeviceUserAuthoritiesListOutput;
-export type AuthDeviceUserAuthoritiesRevokeInput =
-  DeviceUserAuthoritiesRevokeInput;
-export type AuthDeviceUserAuthoritiesRevokeResponse =
-  DeviceUserAuthoritiesRevokeOutput;
 export type DeviceIdentity = {
   identitySeed: Uint8Array;
   identitySeedBase64url: string;
@@ -72,38 +41,6 @@ export type DeviceCompanionIdentity = {
   installationSeed: Uint8Array;
   installationSeedBase64url: string;
   installationPublicKey: string;
-};
-
-type AuthResolveDeviceUserAuthoritiesOperationShape = {
-  subject: string;
-  input:
-    typeof AUTH_API.actions["operation:DeviceUserAuthorities.Resolve"]["input"];
-  progress: typeof AUTH_API.actions["operation:DeviceUserAuthorities.Resolve"][
-    "progress"
-  ];
-  output: typeof AUTH_API.actions["operation:DeviceUserAuthorities.Resolve"][
-    "output"
-  ];
-};
-
-export type AuthResolveDeviceUserAuthoritiesOperation = OperationRef<
-  AuthResolveDeviceUserAuthoritiesOperationShape,
-  AuthResolveDeviceUserAuthoritiesProgress,
-  AuthResolveDeviceUserAuthoritiesOutput
->;
-
-export type DeviceActivationTransport = {
-  authDeviceUserAuthoritiesResolve(
-    input: AuthResolveDeviceUserAuthoritiesInput,
-  ): {
-    start(): AsyncResult<AuthResolveDeviceUserAuthoritiesOperation, BaseError>;
-  };
-  authDeviceUserAuthoritiesList(
-    input: AuthDeviceUserAuthoritiesListInput,
-  ): AsyncResult<AuthDeviceUserAuthoritiesListOutput, BaseError>;
-  authDeviceUserAuthoritiesRevoke(
-    input: AuthDeviceUserAuthoritiesRevokeInput,
-  ): AsyncResult<AuthDeviceUserAuthoritiesRevokeResponse, BaseError>;
 };
 
 function concatBytes(parts: Uint8Array[]): Uint8Array {
@@ -135,7 +72,9 @@ async function hkdfSha256(
   info: string | Uint8Array,
   length: number,
 ): Promise<Uint8Array> {
-  return await (await trellisCrypto()).hkdfSha256(
+  return await (
+    await trellisCrypto()
+  ).hkdfSha256(
     inputKeyingMaterial,
     new Uint8Array(0),
     typeof info === "string" ? utf8(info) : info,
@@ -233,7 +172,9 @@ export async function deriveDeviceUserCompanion(
     throw new Error("Companion participant ID must not be empty");
   }
   const url = new URL(trellisUrl);
-  const loopback = url.hostname === "localhost" || url.hostname === "[::1]" ||
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "[::1]" ||
     url.hostname.startsWith("127.");
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
     throw new Error("Trellis URL must use HTTPS except on loopback");
@@ -245,11 +186,13 @@ export async function deriveDeviceUserCompanion(
     encoder.encode(origin),
     encoder.encode(childParticipantId),
   ];
-  const info = concatBytes(parts.flatMap((part) => {
-    const length = new Uint8Array(8);
-    new DataView(length.buffer).setBigUint64(0, BigInt(part.length));
-    return [length, part];
-  }));
+  const info = concatBytes(
+    parts.flatMap((part) => {
+      const length = new Uint8Array(8);
+      new DataView(length.buffer).setBigUint64(0, BigInt(part.length));
+      return [length, part];
+    }),
+  );
   const installationSeed = await hkdfSha256(deviceRootSecret, info, 32);
   const installationAuth = await createAuth({
     sessionKeySeed: base64urlEncode(installationSeed),
@@ -339,8 +282,9 @@ export async function verifyDeviceConfirmationCode(input: {
   confirmationCode: string;
 }): Promise<boolean> {
   const expected = await deriveDeviceConfirmationCode(input);
-  return normalizeCrockford(expected) ===
-    normalizeCrockford(input.confirmationCode);
+  return (
+    normalizeCrockford(expected) === normalizeCrockford(input.confirmationCode)
+  );
 }
 
 /** Submit one proof-bound device enrollment request. */
@@ -356,11 +300,6 @@ export async function requestDeviceEnrollment(args: {
   packageDigest: string;
   challengeDigest: string;
   confirmationCode: string;
-  companion?: {
-    participantId: string;
-    kind: "app" | "agent";
-    installation: DeviceCompanionIdentity;
-  };
   provisioningSecret?: string;
   signal?: AbortSignal;
 }): Promise<Record<string, unknown>> {
@@ -379,39 +318,14 @@ export async function requestDeviceEnrollment(args: {
     requestId: ulid(),
     iat: Date.now(),
     participantId: args.participantId,
-    packageEvidence: args.packageEvidence,
-    participantPath: args.participantPath,
-    packageDigest: args.packageDigest,
     challengeDigest: args.challengeDigest,
     confirmationCode: args.confirmationCode,
-    ...(args.provisioningSecret === undefined ? {} : {
-      provisioningSecret: args.provisioningSecret,
-    }),
+    ...(args.provisioningSecret === undefined
+      ? {}
+      : {
+          provisioningSecret: args.provisioningSecret,
+        }),
   };
-  if (args.companion) {
-    const claim = {
-      participantId: args.companion.participantId,
-      kind: args.companion.kind,
-      installationPublicKey: args.companion.installation.installationPublicKey,
-    };
-    const requestDigest = base64urlEncode(
-      await sha256(utf8(canonicalizeJsonValue({
-        format: DEVICE_USER_COMPANION_DOMAIN,
-        origin: new URL(args.trellisUrl).origin,
-        enrollment: unsignedRequest,
-        claim,
-      }))),
-    );
-    const installationAuth = await createAuth({
-      sessionKeySeed: args.companion.installation.installationSeedBase64url,
-    });
-    unsignedRequest.companion = {
-      ...claim,
-      requestProof: base64urlEncode(
-        await installationAuth.sign(base64urlDecode(requestDigest)),
-      ),
-    };
-  }
   const response = await fetch(
     new URL("/auth/device/enroll", args.trellisUrl),
     {
@@ -424,6 +338,16 @@ export async function requestDeviceEnrollment(args: {
           purpose: "deviceEnrollment",
           origin: new URL(args.trellisUrl).origin,
           unsignedRequest,
+        }),
+        sessionProof: await args.sessionIdentity.signSessionProof({
+          purpose: "deviceEnrollment",
+          origin: new URL(args.trellisUrl).origin,
+          unsignedRequest: {
+            ...unsignedRequest,
+            identityKeyId: base64urlEncode(
+              await sha256(base64urlDecode(args.sessionIdentity.sessionKey)),
+            ),
+          },
         }),
       }),
     },
@@ -458,31 +382,22 @@ export async function waitForDeviceActivation(args: {
   pollIntervalMs?: number;
   sessionIdentity?: Awaited<ReturnType<typeof createAuth>>;
   connectionId?: string;
-  companion?: {
-    participantId: string;
-    kind: "app" | "agent";
-    installation: DeviceCompanionIdentity;
-  };
 }): Promise<{
   state: "ready";
   sessionIdentity: Awaited<ReturnType<typeof createAuth>>;
   bundle: Record<string, unknown>;
 }> {
   const pollIntervalMs = args.pollIntervalMs ?? DEFAULT_WAIT_POLL_INTERVAL_MS;
-  const nonce = args.nonce ??
-    base64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const nonce =
+    args.nonce ?? base64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
   const identitySeed = normalizeSecretBytes(args.identitySeed, "identitySeed");
-  const sessionIdentity = args.sessionIdentity ?? await createAuth({
-    sessionKeySeed: base64urlEncode(
-      crypto.getRandomValues(new Uint8Array(32)),
-    ),
-  });
-  const identityAuth = await createAuth({
-    sessionKeySeed: base64urlEncode(identitySeed),
-  });
-  const identityKeyId = base64urlEncode(
-    await sha256(base64urlDecode(identityAuth.sessionKey)),
-  );
+  const sessionIdentity =
+    args.sessionIdentity ??
+    (await createAuth({
+      sessionKeySeed: base64urlEncode(
+        crypto.getRandomValues(new Uint8Array(32)),
+      ),
+    }));
   const challengeDigest = base64urlEncode(await sha256(utf8(nonce)));
   const confirmationCode = await deriveDeviceConfirmationCode({
     activationKey: args.activationKey,
@@ -518,50 +433,19 @@ export async function waitForDeviceActivation(args: {
     }
     const state = Reflect.get(body, "state") as unknown;
     if (state === "approved") {
-      const bootstrapRequest = {
-        identityKeyId,
-        sessionKey: sessionIdentity.sessionKey,
-        connectionId,
-        requestId: ulid(),
-        iat: Date.now(),
-        packageEvidence: args.packageEvidence,
-        participantPath: args.participantPath,
-        packageDigest: args.packageDigest,
-      };
-      const bootstrapResponse = await fetch(
-        new URL("/bootstrap/device", args.trellisUrl),
-        {
-          method: "POST",
-          signal: args.signal,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...bootstrapRequest,
-            proof: await identityAuth.signSessionProof({
-              purpose: "deviceBootstrap",
-              origin: new URL(args.trellisUrl).origin,
-              unsignedRequest: bootstrapRequest,
-            }),
-          }),
-        },
-      );
-      if (!bootstrapResponse.ok) {
-        throw await decodeTrellisHttpError(bootstrapResponse);
-      }
       return {
         state: "ready",
         sessionIdentity,
-        bundle: await bootstrapResponse.json() as Record<string, unknown>,
+        bundle: body,
       };
     }
-    if (state === "rejected") {
+    if (state === "rejected" || state === "expired") {
       throw new Error("device activation rejected");
     }
-    const activation = Reflect.get(body, "activation") as
-      | Record<
-        string,
-        unknown
-      >
-      | null;
+    const activation = Reflect.get(body, "activation") as Record<
+      string,
+      unknown
+    > | null;
     const currentReviewId = activation?.reviewId;
     const serverNow = Reflect.get(body, "serverNow");
     const expiresAt = activation?.expiresAt;
@@ -579,9 +463,10 @@ export async function waitForDeviceActivation(args: {
       reviewId = currentReviewId;
       reviewDeadline = performance.now() + Math.max(0, expiresAt - serverNow);
     }
-    const retryAfterMs = typeof activation?.retryAfterMs === "number"
-      ? activation.retryAfterMs
-      : pollIntervalMs;
+    const retryAfterMs =
+      typeof activation?.retryAfterMs === "number"
+        ? activation.retryAfterMs
+        : pollIntervalMs;
     await sleep(
       Math.min(
         Math.max(pollIntervalMs, retryAfterMs),
@@ -593,24 +478,3 @@ export async function waitForDeviceActivation(args: {
 }
 
 /** Bind device activation helpers to the caller's typed transport. */
-export function createDeviceActivationClient(
-  client: DeviceActivationTransport,
-) {
-  return {
-    resolveDeviceUserAuthorities(
-      input: AuthResolveDeviceUserAuthoritiesInput,
-    ): Promise<AuthResolveDeviceUserAuthoritiesOperation> {
-      return client.authDeviceUserAuthoritiesResolve(input).start().orThrow();
-    },
-    listDeviceActivations(
-      input: AuthDeviceUserAuthoritiesListInput,
-    ): Promise<AuthDeviceUserAuthoritiesListOutput> {
-      return client.authDeviceUserAuthoritiesList(input).orThrow();
-    },
-    revokeDeviceActivation(
-      input: AuthDeviceUserAuthoritiesRevokeInput,
-    ): Promise<AuthDeviceUserAuthoritiesRevokeResponse> {
-      return client.authDeviceUserAuthoritiesRevoke(input).orThrow();
-    },
-  };
-}

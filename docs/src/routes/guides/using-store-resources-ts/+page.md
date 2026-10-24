@@ -1,0 +1,47 @@
+---
+title: "Store resources: TypeScript"
+description: "Declare and use service-owned `resources.store` from a TypeScript service for large unstructured blobs."
+---
+
+# Use Store resources from TypeScript
+
+Declare a `store` resource with title, description, TTL, and optional desired
+capacity. Store is raw object bytes plus metadata; it has no schema or
+representation migration.
+
+```trellis
+service Documents {
+  store documents {
+    title "Documents";
+    description "Document objects.";
+    ttl 0;
+    desired_max_object 1MiB;
+    desired_max_total 100MiB;
+  }
+}
+```
+
+`desired_max_object` and `desired_max_total` are planning hints. They do not
+grant approval, determine readiness, configure an enforced limit, or report the
+limits the service actually receives.
+
+Connect through the generated participant and use its Store handle. Trellis
+resolves physical identity and actual limits. Stream reads/writes, preserve
+checksums, and propagate cancellation; do not derive bucket names or buffer
+large objects for JSON validation.
+
+Bindings report observed or effective `ttlMs`, `maxTotalBytes`, and
+`maxObjectBytes`. `maxObjectBytes` is present only when the runtime write path
+actually enforces it; do not infer it from `desired_max_object`.
+
+List with `{ prefix?, cursor?, limit? }`. Results contain only `entries` and an
+optional `nextCursor`, ordered by object key. The default limit is `100`, and
+the maximum is `500`.
+
+Pass `nextCursor` unchanged with the same prefix. A malformed cursor or one from
+a different query is rejected. No `nextCursor` means the listing is complete.
+Listing is live rather than a snapshot, but inserting or deleting keys before
+the continuation does not duplicate or skip remaining keys after it.
+
+Trellis never adopts a foreign store as the declared resource and never destroys
+a store without matching Trellis ownership evidence.

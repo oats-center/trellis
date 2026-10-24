@@ -1,8 +1,10 @@
-import { join } from "@std/path";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 /** Returns a fresh path suitable for a service-owned SQLite database. */
 export async function tempSqlitePath(name = "test.sqlite"): Promise<string> {
-  const dir = await Deno.makeTempDir({ prefix: "trellis-testkit-sqlite-" });
+  const dir = await mkdtemp(join(tmpdir(), "trellis-testkit-sqlite-"));
   return join(dir, name);
 }
 

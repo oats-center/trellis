@@ -3,17 +3,19 @@
   import { afterNavigate } from "$app/navigation";
   import { page } from "$app/state";
   import EmptyState from "$lib/components/EmptyState.svelte";
-  import DataTable from "$lib/components/DataTable.svelte";
+  import Icon from "$lib/components/Icon.svelte";
+  import ColumnChart from "$lib/components/ColumnChart.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
+  import DataPanel from "$lib/components/DataPanel.svelte";
+  import DataTable from "$lib/components/DataTable.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import MetricsLedger from "$lib/components/MetricsLedger.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
   import StatusBadge from "$lib/components/StatusBadge.svelte";
-  import { boundedNumber, compactDuration, errorMessage, formatDate, jsonBlock } from "$lib/format";
+  import { boundedNumber, errorMessage, formatDate } from "$lib/format";
   import { getConnection, getTrellis } from "$lib/trellis";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import {
     consumerSeverityOf,
     consumerStatus,
@@ -30,11 +32,22 @@
     type WatchAttempt,
   } from "$lib/console/live_refresh.ts";
   import { classifyMutationError } from "$lib/console/mutation.ts";
+  import { decodeKnownJsonBytes } from "$lib/console/display_value.ts";
+  import {
+    apiLabel,
+    deliveryStatus,
+    errorText,
+    eventCheckLabel,
+    friendlyDuration,
+    sentenceName,
+  } from "$lib/console/plain_labels.ts";
+  import { createServiceNames } from "$lib/console/service_names.svelte.ts";
   import { type apis } from "trellis-web-generated";
   import { subjectMatches } from "./subject";
 
+  const names = createServiceNames();
+
   type WindowValue = "15m" | "1h" | "6h" | "24h" | "7d";
-  type EventResolution = "resolved" | "unresolved" | "malformed";
   type EventVerificationStatus =
     | "verified"
     | "missing-proof"
@@ -50,14 +63,15 @@
   type ConsumerManagedBy = "authority" | "platform" | "external";
 
   type EventRow = apis.events.QueryOutput["items"][number];
+  type DeadLetter = apis.events.DeadLettersQueryOutput["items"][number];
+  type DeadLetterDetail = apis.events.DeadLettersInspectOutput["deadLetter"];
+
+  /** An event's data, decoded for display when it is JSON or text. */
+  type EventData = { kind: "value"; value: unknown } | { kind: "text"; text: string } | { kind: "bytes"; size: number };
 
   type EventInspect = {
     event: EventRow;
-    headers: Record<string, string>;
-    payload?: Uint8Array;
-    payloadText?: string;
-    decodeError?: string;
-    related: Array<{ eventId: string; eventTime: string; subject: string; matchedBy: string }>;
+    data?: EventData;
   };
 
   type ConsumerRow = {
@@ -74,24 +88,19 @@
     ackPending: number;
     waitingPulls: number;
     redelivered?: number;
-    concurrency?: number;
-    ackWaitMs?: number;
-    maxDeliver?: number;
     oldestPendingAt?: string;
-    oldestPendingEventId?: string;
   };
 
   const trellis = getTrellis();
   const connection = getConnection();
-  const authority = getConsoleAuthority();
   const rpcTimeout = 10_000;
   const pageLimit = 40;
-  const windows: Array<{ value: WindowValue; label: string; minutes: number }> = [
-    { value: "15m", label: "15m", minutes: 15 },
-    { value: "1h", label: "1h", minutes: 60 },
-    { value: "6h", label: "6h", minutes: 360 },
-    { value: "24h", label: "24h", minutes: 1_440 },
-    { value: "7d", label: "7d", minutes: 10_080 },
+  const windows: Array<{ value: WindowValue; label: string; title: string; minutes: number }> = [
+    { value: "15m", label: "15m", title: "Last 15 minutes", minutes: 15 },
+    { value: "1h", label: "1h", title: "Last hour", minutes: 60 },
+    { value: "6h", label: "6h", title: "Last 6 hours", minutes: 360 },
+    { value: "24h", label: "24h", title: "Last 24 hours", minutes: 1_440 },
+    { value: "7d", label: "7d", title: "Last 7 days", minutes: 10_080 },
   ];
   const verificationIssues: EventVerificationStatus[] = [
     "missing-proof",
@@ -102,6 +111,11 @@
     "subject-denied",
     "outside-session-window",
     "auth-unavailable",
+  ];
+  const listTabs: Array<{ value: Focus; label: string }> = [
+    { value: "all", label: "All" },
+    { value: "exceptions", label: "Problems" },
+    { value: "largest", label: "Largest" },
   ];
 
   let loading = $state(true);
@@ -114,16 +128,19 @@
   let consumers = $state.raw<ConsumerRow[]>([]);
   let metrics = $state.raw<apis.events.MetricsOutput | null>(null);
   let diagnostics = $state.raw<apis.events.DiagnosticsOutput | null>(null);
-  let deadLetters = $state.raw<apis.events.DeadLettersQueryOutput["items"]>([]);
-  let selectedDeadLetter = $state.raw<apis.events.DeadLettersInspectOutput["deadLetter"] | null>(null);
+  let deadLetters = $state.raw<DeadLetter[]>([]);
+  let openDeadLetter = $state<string | null>(null);
+  let deadLetterDetail = $state.raw<DeadLetterDetail | null>(null);
   let deadLetterError = $state<Record<string, string>>({});
   let deadLetterBusy = $state<string | null>(null);
   let confirmationModal: ConfirmationModal | undefined = $state();
   let selectedEvent = $state.raw<EventInspect | null>(null);
-  let selectedConsumer = $state.raw<{ row: ConsumerRow; detail: Record<string, unknown> | null } | null>(null);
+  /** The event row whose details are open beneath it. */
+  let openEventKey = $state<string | null>(null);
+  let selectedConsumer = $state.raw<ConsumerRow | null>(null);
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
-  let focus = $state<Focus>(asEventFocus(page.url.searchParams.get("focus")) ?? "exceptions");
+  let focus = $state<Focus>(asEventFocus(page.url.searchParams.get("focus")) ?? "all");
   let handledFocusParam = page.url.searchParams.get("focus");
   /**
    * Completion status of each optional read, separate from its value.
@@ -211,16 +228,6 @@
     metricsScope === windowValue ? metricsState : "pending",
   );
   const metricsReady = $derived(visibleMetricsState === "ready" && metrics !== null);
-  const eventRate = $derived(
-    metricsReady && metrics
-      ? boundedNumber(metrics.summary.total) / windowOption.minutes
-      : null,
-  );
-  const averagePayload = $derived(
-    metricsReady && metrics && metrics.summary.total
-      ? boundedNumber(metrics.summary.payloadSizeBytes) / boundedNumber(metrics.summary.total)
-      : null,
-  );
   const eventTypesByCount = $derived.by(() => [...(metrics?.summary.eventTypes ?? [])].sort((a, b) => boundedNumber(b.count - a.count)));
   const matchingConsumers = $derived.by(() => {
     const subject = selectedEvent?.event.subject;
@@ -230,28 +237,37 @@
   });
   const sortedConsumers = $derived.by(() =>
     [...consumers].sort((a, b) =>
-      consumerSeverityOf(a.status) - consumerSeverityOf(b.status)
+      consumerSeverityOf(a.status) - consumerSeverityOf(b.status) ||
+      consumerName(a).localeCompare(consumerName(b))
     )
   );
   const attentionConsumers = $derived(sortedConsumers.filter(isAttentionConsumer));
   const displayedConsumers = $derived(attentionConsumersOnly ? attentionConsumers : sortedConsumers);
-  const oldestLagConsumer = $derived.by(() =>
-    consumers
-      .filter((consumer) => consumer.oldestPendingAt)
-      .sort((a, b) => new Date(a.oldestPendingAt ?? 0).getTime() - new Date(b.oldestPendingAt ?? 0).getTime())[0],
+  const consumersByResource = $derived(new Map(consumers.map((consumer) => [consumer.resourceId, consumer])));
+  const failedByResource = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const item of deadLetters) {
+      if (item.state === "dead") counts.set(item.resourceId, (counts.get(item.resourceId) ?? 0) + 1);
+    }
+    return counts;
+  });
+  const shownDeadLetters = $derived(
+    selectedConsumer ? deadLetters.filter((item) => item.resourceId === selectedConsumer?.resourceId) : deadLetters,
   );
-  const eventPoints = $derived(
+  const failedDeliveries = $derived(metricsReady && metrics ? metrics.summary.deadLettersByState.dead : undefined);
+  const chartPoints = $derived(
     metricsReady && metrics
-      ? chartPoints(metrics.buckets.map((bucket) => boundedNumber(bucket.total)))
-      : "",
+      ? metrics.buckets.map((bucket) => ({ ...bucketLabel(bucket.start), value: boundedNumber(bucket.total) }))
+      : [],
   );
-  const exceptionPoints = $derived(
-    metricsReady && metrics
-      ? chartPoints(metrics.buckets.map((bucket) => boundedNumber(bucket.integrityExceptions)))
-      : "",
-  );
-  const focusTitle = $derived(`${selectedEventType ? `${selectedEventType.ownerEventName} · ` : ""}${focusLabel(focus)}`);
-  const focusDescription = $derived(focusDetail(focus));
+  const problemCounts = $derived.by(() => {
+    if (!metricsReady || !metrics) return [];
+    const counts: Array<{ focus: Focus; label: string; count: bigint }> = verificationIssues
+      .map((status) => ({ focus: status as Focus, label: eventCheckLabel(status, "resolved").label, count: verificationCount(status) }));
+    counts.push({ focus: "unresolved", label: "Unknown event type", count: metrics.summary.byResolution.unresolved ?? 0n });
+    counts.push({ focus: "malformed", label: "Unreadable", count: metrics.summary.byResolution.malformed ?? 0n });
+    return counts.filter((item) => item.count > 0n);
+  });
 
   function objectRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -270,14 +286,9 @@
     return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
   }
 
-  function isResolution(value: unknown): value is EventResolution {
-    return value === "resolved" || value === "unresolved" || value === "malformed";
-  }
-
   function isVerificationStatus(value: unknown): value is EventVerificationStatus {
     return value === "verified" || verificationIssues.includes(value as EventVerificationStatus);
   }
-
 
   function isConsumerManagedBy(value: unknown): value is ConsumerManagedBy {
     return value === "authority" || value === "platform" || value === "external";
@@ -286,8 +297,8 @@
   function toConsumerRow(value: unknown): ConsumerRow | null {
     const row = objectRecord(value);
     const stream = stringValue(row.stream);
-    const consumerName = stringValue(row.consumerName);
-    if (!stream || !consumerName) return null;
+    const name = stringValue(row.consumerName);
+    if (!stream || !name) return null;
     const managedBy = isConsumerManagedBy(row.managedBy) ? row.managedBy : stringValue(row.deploymentId) ? "authority" : "external";
     return {
       resourceId: stringValue(row.resourceId) ?? "",
@@ -295,7 +306,7 @@
       contractId: stringValue(row.contractId),
       group: stringValue(row.group),
       stream,
-      consumerName,
+      consumerName: name,
       filterSubjects: stringArray(row.filterSubjects),
       managedBy,
       status: managedBy === "external" ? "unmanaged" : consumerStatus(row.status),
@@ -303,33 +314,24 @@
       ackPending: numberValue(row.ackPending) ?? 0,
       waitingPulls: numberValue(row.waitingPulls) ?? 0,
       redelivered: numberValue(row.redelivered),
-      concurrency: numberValue(row.concurrency),
-      ackWaitMs: numberValue(row.ackWaitMs),
-      maxDeliver: numberValue(row.maxDeliver),
       oldestPendingAt: stringValue(row.oldestPendingAt),
-      oldestPendingEventId: stringValue(row.oldestPendingEventId),
     };
   }
 
-  function toInspect(value: apis.events.InspectOutput): EventInspect {
-    const payload = value.event.payload;
+  /** Event data is shown as fields when it is JSON, as text, or by size. */
+  function decodeData(payload: Uint8Array | undefined): EventData | undefined {
+    if (!payload) return undefined;
+    const decoded = decodeKnownJsonBytes(payload);
+    if (decoded.ok) return { kind: "value", value: decoded.value };
     try {
-      return { event: value.event.row, headers: value.event.headers, payload, payloadText: new TextDecoder("utf-8", { fatal: true }).decode(payload), related: [] };
+      return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(payload) };
     } catch {
-      return { event: value.event.row, headers: value.event.headers, payload, payloadText: Array.from(payload, (byte) => byte.toString(16).padStart(2, "0")).join(" "), decodeError: "Payload is not valid UTF-8; showing hexadecimal bytes.", related: [] };
+      return { kind: "bytes", size: payload.byteLength };
     }
   }
 
   function isAttentionConsumer(consumer: ConsumerRow): boolean {
-    return consumer.status !== "current" && consumer.status !== "processing" &&
-      consumer.status !== "unmanaged";
-  }
-
-  function statusBadgeClass(status: string): string {
-    if (status === "verified" || status === "current") return "badge-success";
-    if (status === "processing" || status === "behind" || status === "saturated" || status === "orphaned" || status === "unresolved") return "badge-warning";
-    if (status === "missing-proof" || status === "auth-unavailable" || status === "inactive" || status === "unmanaged" || status.startsWith("unknown:")) return "badge-neutral";
-    return "badge-error";
+    return deliveryStatus(consumer.status).attention;
   }
 
   function verificationCount(status: EventVerificationStatus): bigint {
@@ -345,11 +347,38 @@
     return 0n;
   }
 
-  function consumerVariant(consumer: ConsumerRow): "healthy" | "degraded" | "unhealthy" | "offline" {
-    if (consumer.status === "current" || consumer.status === "processing") return "healthy";
-    if (consumer.status === "behind" || consumer.status === "saturated") return "degraded";
-    if (consumer.status === "unmanaged" || consumer.status.startsWith("unknown:")) return "offline";
-    return "unhealthy";
+  /** The service a delivery goes to, by name wherever Trellis knows it. */
+  function consumerName(consumer: ConsumerRow): string {
+    const named = names.deployment(consumer.deploymentId);
+    if (named) return named;
+    if (consumer.managedBy === "platform" && consumer.contractId) return `Trellis ${apiLabel(consumer.contractId).toLowerCase()}`;
+    return sentenceName(consumer.consumerName);
+  }
+
+  /** One short line saying how a service's deliveries stand. */
+  function consumerSummary(consumer: ConsumerRow): string {
+    const parts: string[] = [];
+    const failed = failedByResource.get(consumer.resourceId) ?? 0;
+    if (failed > 0) parts.push(`${failed} failed`);
+    if (consumer.pending > 0) parts.push(`${consumer.pending.toLocaleString()} waiting`);
+    if (consumer.oldestPendingAt) parts.push(`oldest ${ageLabel(consumer.oldestPendingAt)}`);
+    if (parts.length === 0) return consumer.ackPending > 0 ? `${consumer.ackPending} in progress` : "Nothing waiting";
+    return parts.join(" · ");
+  }
+
+  function deliveryExplanation(consumer: ConsumerRow): string {
+    switch (consumer.status) {
+      case "current": return "Has every event it listens for.";
+      case "processing": return "Handling events right now; nothing is waiting.";
+      case "behind": return "Events are waiting for this service to pick them up.";
+      case "saturated": return "Handling as many events as it is allowed to at once; more are waiting.";
+      case "failing": return "Some events are being delivered again after the service didn't finish them.";
+      case "inactive": return "Events are waiting and nothing is picking them up. Check that the service is running.";
+      case "missing": return "This service should receive events but its subscription doesn't exist.";
+      case "orphaned": return "A subscription remains for a service that no longer exists.";
+      case "unmanaged": return "Set up outside Trellis.";
+      default: return "";
+    }
   }
 
   const ledgerItems = $derived(projectEventsHealthLedger({
@@ -357,26 +386,26 @@
     consumersState,
     total: metricsReady && metrics ? metrics.summary.total : undefined,
     integrityExceptions: metricsReady && metrics ? metrics.summary.integrityExceptions : undefined,
-    unresolved: metricsReady && metrics ? metrics.summary.byResolution.unresolved : undefined,
-    payloadTotalLabel: formatBytes(
-      metricsReady && metrics ? boundedNumber(metrics.summary.payloadSizeBytes) : 0,
-    ),
-    payloadAverageLabel: formatBytes(averagePayload ?? 0),
+    failedDeliveries,
     windowMinutes: windowOption.minutes,
     attentionConsumers: attentionConsumers.length,
     shownConsumers: consumers.length,
-    oldestLagValue: ageLabel(oldestLagConsumer?.oldestPendingAt),
-    oldestLagDetail: oldestLagConsumer?.consumerName ?? "no pending events",
-    oldestLagDisabled: !oldestLagConsumer,
     focus,
     attentionConsumersOnly,
-    oldestLagActive: selectedConsumer?.row.consumerName === oldestLagConsumer?.consumerName,
+    failedActive: false,
   }));
 
   function handleLedgerSelect(id: string) {
-    if (id === "consumers") showAttentionConsumers();
-    else if (id === "oldest-lag") selectOldestLag();
-    else if (id === "all" || id === "exceptions" || id === "unresolved" || id === "largest") selectFocus(id);
+    if (id === "consumers") {
+      attentionConsumersOnly = !attentionConsumersOnly;
+      document.querySelector(".consumer-health")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else if (id === "failed") {
+      selectConsumer(null);
+      document.getElementById("failed-deliveries")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else if (id === "all" || id === "exceptions") {
+      selectFocus(id);
+      document.getElementById("recent-events")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }
 
   function formatBytes(bytes: number): string {
@@ -389,40 +418,45 @@
   function ageLabel(value: string | undefined): string {
     if (!value) return "-";
     const time = new Date(value).getTime();
-    return Number.isNaN(time) ? value : compactDuration(Date.now() - time);
+    return Number.isNaN(time) ? value : friendlyDuration(Date.now() - time);
   }
 
-  function subjectOwner(row: EventRow): string {
-    if (row.ownerContractId && row.ownerEventName) return `${row.ownerContractId} / ${row.ownerEventName}`;
-    return row.ownerContractId ?? row.ownerEventName ?? row.resolution;
+  function bucketLabel(iso: string): { label: string; tick: string } {
+    const date = new Date(iso);
+    return {
+      label: date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+      tick: windowValue === "7d"
+        ? date.toLocaleDateString(undefined, { weekday: "short" })
+        : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
+    };
+  }
+
+  /** "events.v1.<api>.Connections.Opened" → "Connections.Opened". */
+  function subjectEventName(subject: string): string {
+    const parts = subject.split(".");
+    return parts[0] === "events" && parts.length > 3 ? parts.slice(3).join(".") : (parts.at(-1) ?? subject);
+  }
+
+  function eventLabel(row: { ownerEventName?: string; subject: string }): string {
+    return sentenceName(row.ownerEventName ?? subjectEventName(row.subject));
   }
 
   function publisherLabel(row: EventRow): string {
-    return row.publisherDeploymentId ?? row.publisherParticipantId ?? row.publisherKind ?? "unverified";
+    const named = names.deployment(row.publisherDeploymentId);
+    if (named) return named;
+    if (row.publisherKind === "user") return "A person";
+    if (row.publisherKind === "device") return "A device";
+    if (row.publisherKind === "service") return "A service";
+    return "Unknown sender";
   }
 
-  function focusLabel(value: Focus): string {
-    if (value === "exceptions") return "Recent integrity exceptions";
-    if (value === "all") return "Recent event flow";
-    if (value === "unresolved") return "Unresolved events";
-    if (value === "malformed") return "Malformed events";
-    if (value === "largest") return "Largest event payloads";
-    return `${value.replaceAll("-", " ")} events`;
-  }
-
-  function focusDetail(value: Focus): string {
-    if (value === "exceptions") return "Events that could not be fully attributed or verified.";
-    if (value === "all") return "Newest projected events in the selected window.";
-    if (value === "unresolved") return "Subjects that could not be associated with a catalog event.";
-    if (value === "malformed") return "Event envelopes the projector could not interpret.";
-    if (value === "largest") return "Highest payload sizes in the selected window.";
-    return `Events with verification status ${value}.`;
-  }
-
-  function chartPoints(values: number[]): string {
-    if (values.length === 0) return "";
-    const maximum = Math.max(...values, 1);
-    return values.map((value, index) => `${values.length === 1 ? 130 : index * 260 / (values.length - 1)},${52 - value / maximum * 46}`).join(" ");
+  function focusTitle(value: Focus): string {
+    if (value === "exceptions") return "Events that couldn't be verified";
+    if (value === "all") return "Recent events";
+    if (value === "largest") return "Largest events";
+    if (value === "unresolved") return "Events of an unknown type";
+    if (value === "malformed") return "Unreadable events";
+    return `Events: ${eventCheckLabel(value, "resolved").label.toLowerCase()}`;
   }
 
   function buildEventQuery(): apis.events.QueryInput {
@@ -441,21 +475,18 @@
     return input;
   }
 
-  function buildConsumerQuery(): apis.events.ConsumersQueryInput {
-    return { page: { limit: 500 } };
-  }
-
   async function loadConsumers(): Promise<apis.events.ConsumersQueryOutput["items"]> {
     const items: apis.events.ConsumersQueryOutput["items"] = [];
-    for await (const item of trellis.consumersQuery.items(buildConsumerQuery(), { timeout: rpcTimeout })) {
+    for await (const item of trellis.consumersQuery.items({ page: { limit: 500 } }, { timeout: rpcTimeout })) {
       items.push(item.orThrow());
     }
     return items;
   }
 
-  async function loadDeadLetters(resourceId: string): Promise<apis.events.DeadLettersQueryOutput["items"]> {
-    const items: apis.events.DeadLettersQueryOutput["items"] = [];
-    for await (const item of trellis.deadLettersQuery.items({ resourceId, state: ["dead", "replayPending", "replaying"], page: { limit: 500 } }, { timeout: rpcTimeout })) {
+  /** Every delivery still awaiting a decision, across all services. */
+  async function loadDeadLetters(): Promise<DeadLetter[]> {
+    const items: DeadLetter[] = [];
+    for await (const item of trellis.deadLettersQuery.items({ state: ["dead", "replayPending", "replaying"], page: { limit: 500 } }, { timeout: rpcTimeout })) {
       items.push(item.orThrow());
     }
     return items;
@@ -465,10 +496,10 @@
     const message = errorMessage(loadError);
     const normalized = message.toLowerCase();
     if (normalized.includes("no responders") || normalized.includes("not currently reachable") || normalized.includes("inactive contract")) {
-      return "Events management is unavailable; event history, managed Consumer DLQ, and replay cannot be inspected.";
+      return "The events service isn't running, so event history and failed deliveries can't be shown.";
     }
     if (normalized.includes("permissions violation")) {
-      return "Your current session is not approved for Events access. Sign out and sign back in to refresh permissions.";
+      return "You haven't allowed the Console to see events. Use Change access on your account to allow it.";
     }
     return null;
   }
@@ -498,13 +529,11 @@
     const sequence = ++loadSequence;
     const capturedQuery = desiredQuery;
     const capturedEpoch = queryEpoch;
-    const capturedSelectionEpoch = selectionEpoch;
     const requestedWindow = capturedQuery.window;
     if (showLoading) loading = true;
     else refreshing = true;
-    const selectedResourceId = selectedConsumer?.row.resourceId;
-    // The event query is primary. Consumer query, metrics, diagnostics, and the
-    // dead-letter query are independent: a denied or failed optional read must
+    // The event query is primary. Delivery health, metrics, diagnostics, and
+    // failed deliveries are independent: a denied or failed optional read must
     // not blank permitted event rows.
     const [eventResult, consumerResult, metricsResult, diagnosticsResult, deadLetterResult] =
       await Promise.allSettled([
@@ -512,7 +541,7 @@
         loadConsumers(),
         trellis.eventsMetrics(capturedQuery.metricsInput, { timeout: rpcTimeout }).orThrow(),
         trellis.diagnostics({}, { timeout: rpcTimeout }).orThrow(),
-        selectedResourceId ? loadDeadLetters(selectedResourceId) : Promise.resolve(null),
+        loadDeadLetters(),
       ]);
     if (
       disposed ||
@@ -529,17 +558,12 @@
         lastUpdated = new Date();
       } else {
         const unavailable = unavailableText(eventResult.reason);
-        if (unavailable) {
-          unavailableMessage = unavailable;
-          rows = [];
-          nextCursor = undefined;
-        } else {
-          error = errorMessage(eventResult.reason);
-          rows = [];
-          nextCursor = undefined;
-        }
+        if (unavailable) unavailableMessage = unavailable;
+        else error = errorMessage(eventResult.reason);
+        rows = [];
+        nextCursor = undefined;
       }
-      if (consumerResult.status === "fulfilled" && consumerResult.value !== null) {
+      if (consumerResult.status === "fulfilled") {
         consumers = consumerResult.value
           .map(toConsumerRow)
           .filter((row): row is ConsumerRow => row !== null);
@@ -548,9 +572,9 @@
       } else {
         consumers = [];
         consumersState = "unavailable";
-        consumerError = consumerResult.status === "rejected" ? errorMessage(consumerResult.reason) : "Consumer query is not permitted.";
+        consumerError = errorMessage(consumerResult.reason);
       }
-      if (metricsResult.status === "fulfilled" && metricsResult.value !== null) {
+      if (metricsResult.status === "fulfilled") {
         metrics = metricsResult.value;
         metricsState = "ready";
         metricsScope = requestedWindow;
@@ -559,29 +583,21 @@
         metrics = null;
         metricsState = "unavailable";
         metricsScope = requestedWindow;
-        metricsError = metricsResult.status === "rejected" ? errorMessage(metricsResult.reason) : "Event metrics are not permitted.";
+        metricsError = errorMessage(metricsResult.reason);
       }
-      if (diagnosticsResult.status === "fulfilled" && diagnosticsResult.value !== null) {
+      if (diagnosticsResult.status === "fulfilled") {
         diagnostics = diagnosticsResult.value;
         diagnosticsError = null;
       } else {
         diagnostics = null;
-        diagnosticsError = diagnosticsResult.status === "rejected" ? errorMessage(diagnosticsResult.reason) : "Event diagnostics are not permitted.";
+        diagnosticsError = errorMessage(diagnosticsResult.reason);
       }
-      if (
-        capturedSelectionEpoch === selectionEpoch &&
-        deadLetterResult.status === "fulfilled" &&
-        deadLetterResult.value !== null &&
-        selectedResourceId === selectedConsumer?.row.resourceId
-      ) {
+      if (deadLetterResult.status === "fulfilled") {
         deadLetters = deadLetterResult.value;
         deadLetterPanelError = null;
-      } else if (
-        capturedSelectionEpoch === selectionEpoch &&
-        selectedResourceId === selectedConsumer?.row.resourceId
-      ) {
+      } else {
         deadLetters = [];
-        if (selectedResourceId) deadLetterPanelError = deadLetterResult.status === "rejected" ? errorMessage(deadLetterResult.reason) : "Dead-letter query is not permitted.";
+        deadLetterPanelError = errorMessage(deadLetterResult.reason);
       }
     } finally {
       if (
@@ -618,13 +634,13 @@
     selectionEpoch += 1;
     ++deadLetterSequence;
     selectedEvent = null;
+    openEventKey = null;
     selectedConsumer = null;
-    selectedDeadLetter = null;
+    openDeadLetter = null;
+    deadLetterDetail = null;
     detailError = null;
     detailLoading = false;
-    deadLetters = [];
     deadLetterError = {};
-    deadLetterPanelError = null;
   }
 
   function resetAndLoad() {
@@ -646,7 +662,10 @@
   }
 
   function selectEventType(eventType: EventTypeRef) {
-    selectedEventType = selectedEventType?.ownerContractId === eventType.ownerContractId && selectedEventType.ownerEventName === eventType.ownerEventName ? null : eventType;
+    // Metrics rows carry bigint counts; the filter keeps only the identity.
+    const { ownerContractId, ownerEventName } = eventType;
+    selectedEventType = selectedEventType?.ownerContractId === ownerContractId && selectedEventType.ownerEventName === ownerEventName ? null : { ownerContractId, ownerEventName };
+    if (selectedEventType && focus === "exceptions") focus = "all";
     resetAndLoad();
   }
 
@@ -655,25 +674,31 @@
     ownerContractId = "";
     publisherDeploymentId = "";
     selectedEventType = null;
-    focus = "exceptions";
-    resetAndLoad();
-  }
-
-  function showAttentionConsumers() {
-    attentionConsumersOnly = !attentionConsumersOnly;
-    document.querySelector(".consumer-health")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  function selectOwner(owner: string | undefined) {
-    if (!owner) return;
-    ownerContractId = owner;
     resetAndLoad();
   }
 
   function selectPublisher(deployment: string | undefined) {
     if (!deployment) return;
     publisherDeploymentId = deployment;
+    if (focus === "exceptions") focus = "all";
     resetAndLoad();
+  }
+
+  function eventKey(row: EventRow): string {
+    return row.eventId ?? String(row.streamSequence);
+  }
+
+  /** Opens a row's details beneath it, or closes them when already open. */
+  async function toggleEvent(row: EventRow) {
+    if (openEventKey === eventKey(row)) {
+      detailOwnership.invalidate();
+      openEventKey = null;
+      selectedEvent = null;
+      detailLoading = false;
+      return;
+    }
+    openEventKey = eventKey(row);
+    await inspectEvent(row);
   }
 
   async function inspectEvent(row: EventRow) {
@@ -682,68 +707,59 @@
     // Selecting B clears A's visible detail synchronously.
     detailLoading = true;
     detailError = null;
-    selectedConsumer = null;
-    selectedDeadLetter = null;
-    deadLetters = [];
     selectedEvent = null;
     try {
       const input: apis.events.InspectInput = row.eventId ? { eventId: row.eventId } : { streamSequence: row.streamSequence };
-      const detail = toInspect(await trellis.eventsInspect(input, { timeout: rpcTimeout }).orThrow());
+      const detail = await trellis.eventsInspect(input, { timeout: rpcTimeout }).orThrow();
       if (!detailOwnership.owns(token) || disposed) return;
-      selectedEvent = detail;
+      selectedEvent = { event: detail.event.row, data: decodeData(detail.event.payload) };
     } catch (inspectError) {
       if (!detailOwnership.owns(token) || disposed) return;
       detailError = errorMessage(inspectError);
-      selectedEvent = { event: row, headers: {}, related: [] };
+      selectedEvent = { event: row };
     } finally {
       if (detailOwnership.owns(token) && !disposed) detailLoading = false;
     }
   }
 
-  async function inspectConsumer(row: ConsumerRow) {
+  /** Selecting a service narrows the failed deliveries to it. */
+  function selectConsumer(row: ConsumerRow | null) {
     selectionEpoch += 1;
-    const token = detailOwnership.begin("consumer", row.consumerName);
     ++deadLetterSequence;
-    detailLoading = true;
-    detailError = null;
-    selectedEvent = null;
-    selectedDeadLetter = null;
-    deadLetters = [];
-    try {
-      const [detail, consumerDeadLetters] = await Promise.allSettled([
-        trellis.consumersInspect({ resourceId: row.resourceId }, { timeout: rpcTimeout }).orThrow(),
-        loadDeadLetters(row.resourceId),
-      ]);
-      // The selection may have changed while the read was in flight; only the
-      // consumer the page still has selected may publish a detail or its DLQ.
-      if (!detailOwnership.owns(token) || disposed) return;
-      selectedConsumer = { row, detail: detail.status === "fulfilled" && detail.value !== null ? objectRecord(detail.value) : null };
-      detailError = detail.status === "rejected" ? errorMessage(detail.reason) : detail.value === null ? "Consumer inspection is not permitted." : null;
-      deadLetters = consumerDeadLetters.status === "fulfilled" ? consumerDeadLetters.value ?? [] : [];
-      deadLetterPanelError = consumerDeadLetters.status === "rejected" ? errorMessage(consumerDeadLetters.reason) : consumerDeadLetters.value === null ? "Dead-letter query is not permitted." : null;
-    } catch (inspectError) {
-      if (!detailOwnership.owns(token) || disposed) return;
-      detailError = errorMessage(inspectError);
-      selectedConsumer = { row, detail: null };
-    } finally {
-      if (detailOwnership.owns(token) && !disposed) detailLoading = false;
+    openDeadLetter = null;
+    deadLetterDetail = null;
+    if (!row || selectedConsumer?.resourceId === row.resourceId) {
+      selectedConsumer = null;
+      return;
     }
+    detailOwnership.begin("consumer", row.consumerName);
+    selectedConsumer = row;
   }
 
-  async function inspectDeadLetter(deadLetter: apis.events.DeadLettersQueryOutput["items"][number]) {
+  async function toggleDeadLetter(deadLetter: DeadLetter) {
+    if (openDeadLetter === deadLetter.deadLetterId) {
+      openDeadLetter = null;
+      deadLetterDetail = null;
+      return;
+    }
     const sequence = ++deadLetterSequence;
+    openDeadLetter = deadLetter.deadLetterId;
+    deadLetterDetail = null;
     deadLetterError = { ...deadLetterError, [deadLetter.deadLetterId]: "" };
     try {
       const result = await trellis.deadLettersInspect({ resourceId: deadLetter.resourceId, deadLetterId: deadLetter.deadLetterId }, { timeout: rpcTimeout }).orThrow();
-      if (sequence === deadLetterSequence && !disposed && selectedConsumer?.row.resourceId === deadLetter.resourceId) selectedDeadLetter = result.deadLetter;
+      if (sequence === deadLetterSequence && !disposed && openDeadLetter === deadLetter.deadLetterId) deadLetterDetail = result.deadLetter;
     } catch (cause) {
       if (sequence === deadLetterSequence && !disposed) deadLetterError = { ...deadLetterError, [deadLetter.deadLetterId]: errorMessage(cause) };
     }
   }
 
-  async function changeDeadLetter(deadLetter: apis.events.DeadLettersQueryOutput["items"][number], action: "replay" | "dismiss") {
-    const resourceId = selectedConsumer?.row.resourceId;
-    if (resourceId !== deadLetter.resourceId) return;
+  function deadLetterService(deadLetter: DeadLetter): string {
+    const consumer = consumersByResource.get(deadLetter.resourceId);
+    return consumer ? consumerName(consumer) : "A service";
+  }
+
+  async function changeDeadLetter(deadLetter: DeadLetter, action: "replay" | "dismiss") {
     const capturedQueryEpoch = queryEpoch;
     const capturedKey = desiredQuery.key;
     const capturedSelectionEpoch = selectionEpoch;
@@ -753,14 +769,15 @@
       capturedKey === desiredQuery.key &&
       capturedSelectionEpoch === selectionEpoch;
     const input = { resourceId: deadLetter.resourceId, deadLetterId: deadLetter.deadLetterId, expectedRevision: deadLetter.revision, requestId: crypto.randomUUID() };
+    const service = deadLetterService(deadLetter);
     const confirmed = await confirmationModal?.confirm({
-      title: `${action === "replay" ? "Replay" : "Dismiss"} dead letter?`,
-      message: action === "replay" ? "The original event will be queued for another delivery attempt." : "The dead letter will be marked dismissed without redelivery.",
-      confirmLabel: action === "replay" ? "Replay" : "Dismiss",
-      targetLabel: "Dead letter",
-      targetName: deadLetter.deadLetterId,
+      title: action === "replay" ? "Retry this delivery?" : "Dismiss this failed delivery?",
+      message: action === "replay"
+        ? `The event is sent to ${service} again.`
+        : `${service} won't receive this event. This can't be undone.`,
+      confirmLabel: action === "replay" ? "Retry" : "Dismiss",
     });
-    if (!confirmed || !owned() || selectedConsumer?.row.resourceId !== resourceId ||
+    if (!confirmed || !owned() ||
       !deadLetters.some((item) => item.deadLetterId === input.deadLetterId && item.revision === input.expectedRevision)) return;
     const mutationToken = ++deadLetterBusyGeneration;
     deadLetterBusy = input.deadLetterId;
@@ -777,11 +794,11 @@
           return requestSnapshot(false);
         },
         onError: (cause) => {
-          if (!owned() || selectedConsumer?.row.resourceId !== resourceId) return;
+          if (!owned()) return;
           deadLetterError = {
             ...deadLetterError,
             [deadLetter.deadLetterId]: classifyMutationError(cause).kind === "unknown"
-              ? "Outcome unknown. Inspect this dead letter before attempting another action."
+              ? "Outcome unknown. Refresh and check this delivery before trying again."
               : errorMessage(cause),
           };
         },
@@ -789,10 +806,6 @@
     } finally {
       if (!disposed && deadLetterBusyGeneration === mutationToken && deadLetterBusy === input.deadLetterId) deadLetterBusy = null;
     }
-  }
-
-  function selectOldestLag() {
-    if (oldestLagConsumer) void inspectConsumer(oldestLagConsumer);
   }
 
   function goPrevious() {
@@ -835,7 +848,7 @@
         if (disposed) return;
         feedOnline = status === "live";
         feedMessage = status === "reconnecting"
-          ? `Live feed disconnected; retry ${detail?.attempt ?? 1} in ${((detail?.retryInMs ?? 1_000) / 1_000).toFixed(0)}s. Manual refresh remains available.`
+          ? `Live updates paused; trying again in ${((detail?.retryInMs ?? 1_000) / 1_000).toFixed(0)}s. Refresh still works.`
           : null;
       },
     });
@@ -887,129 +900,138 @@
   });
 </script>
 
+{#snippet eventDetail(detail: EventInspect)}
+  {@const event = detail.event}
+  {@const check = eventCheckLabel(event.verificationStatus, event.resolution)}
+  <div class="event-detail">
+    {#if detailError}<Notice variant="warning" role="status">Some details couldn't be loaded: {detailError}</Notice>{/if}
+    <div class="event-detail-grid">
+      <div class="min-w-0">
+        {#if detail.data?.kind === "value"}<DataPanel value={detail.data.value} />
+        {:else}
+          <h3 class="text-sm font-semibold">Data</h3>
+          <div class="mt-2">
+            {#if !detail.data}<p class="text-sm text-base-content/60">No data was loaded.</p>
+            {:else if detail.data.kind === "text"}<p class="text-sm whitespace-pre-wrap">{detail.data.text}</p>
+            {:else}<p class="text-sm text-base-content/60">This event's data isn't readable text ({formatBytes(detail.data.size)}).</p>{/if}
+          </div>
+        {/if}
+      </div>
+      <dl class="fact-list single">
+        <div><dt>Published</dt><dd>{formatDate(event.eventTime)}</dd></div>
+        <div><dt>From</dt><dd>{publisherLabel(event)}</dd></div>
+        <div><dt>Check</dt><dd><StatusBadge label={check.label} status={check.ok ? "healthy" : "degraded"} /></dd></div>
+        <div><dt>Delivered to</dt><dd>{matchingConsumers.map(consumerName).join(", ") || "No service listens for it"}</dd></div>
+      </dl>
+    </div>
+  </div>
+{/snippet}
+
 <svelte:document onvisibilitychange={handleVisibilityChange} />
+<svelte:head><title>Events · Trellis Console</title></svelte:head>
 
 <section class="events-page">
-  <PageToolbar title="Events" description="Delivery health, event integrity, and recent exceptions.">
+  <PageToolbar title="Events" description="What your services publish, and whether it reached the services listening for it.">
     {#snippet meta()}
-      <span class={['badge badge-sm', feedOnline ? 'badge-success' : 'badge-neutral']}>{feedOnline ? "Live" : "Historical"}</span>
-      {#if lastUpdated}<span class="text-xs text-base-content/50">Updated {lastUpdated.toLocaleTimeString()}</span>{/if}
+      <span class={["badge badge-sm", feedOnline ? "badge-success" : "badge-neutral"]}>{feedOnline ? "Live" : "Not live"}</span>
+      {#if lastUpdated}<span class="text-xs text-base-content/55">Updated {lastUpdated.toLocaleTimeString()}</span>{/if}
     {/snippet}
     {#snippet actions()}
-      <div class="trellis-segment" role="group" aria-label="Metrics window">
+      <div class="trellis-segment" role="group" aria-label="Time range">
         {#each windows as option (option.value)}
-          <button type="button" class:active={windowValue === option.value} aria-pressed={windowValue === option.value} onclick={() => { windowValue = option.value; resetAndLoad(); }}>{option.label}</button>
+          <button type="button" title={option.title} class:active={windowValue === option.value} aria-pressed={windowValue === option.value} onclick={() => { windowValue = option.value; resetAndLoad(); }}>{option.label}</button>
         {/each}
       </div>
-      <button class="btn btn-ghost btn-sm" onclick={() => { void requestSnapshot(false); }} disabled={loading || refreshing}>{refreshing ? "Refreshing" : "Refresh"}</button>
+      <button class="btn btn-outline btn-sm" onclick={() => { void requestSnapshot(false); }} disabled={loading || refreshing}>{refreshing ? "Refreshing" : "Refresh"}</button>
     {/snippet}
   </PageToolbar>
 
   {#if error}<Notice variant="error" role="alert">{error}</Notice>{/if}
-  {#if unavailableMessage}<Notice variant="info" role="status">{unavailableMessage}</Notice>{/if}
   {#if feedMessage}<Notice variant="warning" role="status">{feedMessage}</Notice>{/if}
 
   {#if loading}
-    <LoadingState label="Loading event health" />
+    <LoadingState label="Loading events" />
   {:else if unavailableMessage}
-    <EmptyState title="Events is unavailable" description="Event publishing and consuming continue without the optional visibility service." />
+    <EmptyState title="Events can't be shown" description={unavailableMessage} />
   {:else}
     <MetricsLedger ariaLabel="Event health summary" items={ledgerItems} onSelect={handleLedgerSelect} />
 
-    {#if diagnosticsError}
-      <Notice variant="info" role="status">{diagnosticsError} Completeness of retained event history is unknown.</Notice>
-    {:else if diagnostics?.gapDetected}
-      <Notice variant="warning">Event history has a retention gap. Complete since {diagnostics.completeSince ? formatDate(diagnostics.completeSince) : "unknown"}; revision {diagnostics.revision.toLocaleString()}.</Notice>
+    {#if diagnostics?.gapDetected}
+      <Notice variant="warning">Some older event history is missing. History is complete from {diagnostics.completeSince ? formatDate(diagnostics.completeSince) : "an unknown time"}.</Notice>
+    {:else if diagnosticsError}
+      <Notice variant="info" role="status">It isn't known whether event history is complete: {diagnosticsError}</Notice>
     {/if}
 
-    <div class="health-layout">
-      <Panel eyebrow="Secondary" title="Consumer delivery health" class="consumer-health min-w-0">
-        {#snippet actions()}<span class="text-sm text-base-content/70">{displayedConsumers.length} shown</span>{/snippet}
-        <p class="text-sm text-base-content/70">Known Trellis consumers first; external consumers remain neutral.</p>
+    <div class="events-grid">
+      <Panel title="Delivery to services" class="consumer-health min-w-0">
+        {#snippet actions()}
+          {#if attentionConsumersOnly}
+            <button type="button" class="btn btn-ghost btn-xs" onclick={() => { attentionConsumersOnly = false; }}>Show all</button>
+          {/if}
+        {/snippet}
         {#if consumerError}
-          <Notice variant="warning" role="status">
-            {consumerError} Consumer delivery health is unavailable; the event rows below are unaffected.
-          </Notice>
+          <Notice variant="warning" role="status">Delivery status can't be shown: {consumerError}</Notice>
         {:else if displayedConsumers.length === 0}
-          <EmptyState title="No consumers need attention" description="All known Trellis consumers are current or processing." />
+          <EmptyState
+            title={attentionConsumersOnly ? "Every service is caught up" : "No services receive events"}
+            description={attentionConsumersOnly ? "Nothing is waiting for delivery." : "Services that listen for events appear here."}
+          />
         {:else}
-          <DataTable>
-            <thead><tr><th>Consumer deployment / contract</th><th>Status</th><th>Pending</th><th>Ack</th><th>Pulls</th><th>Oldest</th><th>Redelivered</th></tr></thead>
-            <tbody>
-              {#each displayedConsumers as consumer (`${consumer.stream}:${consumer.consumerName}`)}
-                {@const selected = selectedConsumer?.row.consumerName === consumer.consumerName && selectedConsumer.row.stream === consumer.stream}
-                <tr class:row-selected={selected}>
-                  <td class="min-w-0">
-                    <button type="button" class="link link-hover block max-w-xs truncate text-left trellis-identifier" onclick={() => { void inspectConsumer(consumer); }}>{consumer.deploymentId ?? consumer.consumerName}</button>
-                    <span class="trellis-metadata trellis-identifier block max-w-xs truncate">{consumer.contractId ?? consumer.managedBy}{consumer.group ? ` / ${consumer.group}` : ""}</span>
-                  </td>
-                  <td><StatusBadge label={consumer.status} status={consumerVariant(consumer)} /></td>
-                  <td class="tabular-nums" class:cell-pressure={consumer.pending > 0}>{consumer.pending.toLocaleString()}</td>
-                  <td class="tabular-nums">{consumer.ackPending.toLocaleString()}</td>
-                  <td class="tabular-nums">{consumer.waitingPulls.toLocaleString()}</td>
-                  <td class="tabular-nums" class:cell-pressure={isAttentionConsumer(consumer)}>{ageLabel(consumer.oldestPendingAt)}</td>
-                  <td class="tabular-nums" class:cell-pressure={(consumer.redelivered ?? 0) > 0}>{consumer.redelivered ?? 0}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </DataTable>
+          <ul class="service-list">
+            {#each displayedConsumers as consumer (`${consumer.stream}:${consumer.consumerName}`)}
+              {@const status = deliveryStatus(consumer.status)}
+              {@const selected = selectedConsumer?.resourceId === consumer.resourceId}
+              <li class:selected>
+                <button type="button" class="service-row" aria-pressed={selected} onclick={() => selectConsumer(consumer)}>
+                  <span class="min-w-0">
+                    <span class="block truncate font-medium">{consumerName(consumer)}</span>
+                    <span class="block truncate text-xs text-base-content/60">{consumerSummary(consumer)}</span>
+                  </span>
+                  <StatusBadge label={status.label} status={status.tone} />
+                </button>
+                {#if selected}
+                  <div class="service-detail">
+                    <p>{deliveryExplanation(consumer)}</p>
+                    <dl>
+                      <div><dt>Waiting</dt><dd>{consumer.pending.toLocaleString()}</dd></div>
+                      <div><dt>In progress</dt><dd>{consumer.ackPending.toLocaleString()}</dd></div>
+                      <div><dt>Sent again</dt><dd>{(consumer.redelivered ?? 0).toLocaleString()}</dd></div>
+                      <div><dt>Oldest waiting</dt><dd>{consumer.oldestPendingAt ? ageLabel(consumer.oldestPendingAt) : "—"}</dd></div>
+                    </dl>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
         {/if}
       </Panel>
 
-      <aside class="event-rail flex flex-col gap-4" aria-label="Event flow and integrity">
-        <Panel eyebrow="Secondary" title="Event volume">
-          <p class="text-sm text-base-content/70">{windowOption.label}</p>
-          {#if !(metricsReady && metrics)}
-            <Notice variant="warning" role="status">
-              {visibleMetricsState === "pending" ? "Loading metrics for this window." : `${metricsError ?? "Event metrics are not permitted."} Event volume is unavailable for this window, not zero.`}
-            </Notice>
+      <aside class="events-rail" aria-label="Event activity">
+        <Panel title="Activity">
+          {#snippet actions()}<span class="text-sm text-base-content/60">{windowOption.title}</span>{/snippet}
+          {#if !metricsReady}
+            <p class="py-10 text-center text-sm text-base-content/60">
+              {visibleMetricsState === "pending" ? "Loading…" : `Activity can't be shown: ${metricsError ?? "not allowed"}`}
+            </p>
+          {:else if chartPoints.length === 0}
+            <p class="py-10 text-center text-sm text-base-content/60">No events in this period.</p>
           {:else}
-            {#snippet actions()}<strong class="tabular-nums">{eventRate?.toLocaleString(undefined, { maximumFractionDigits: 1 })}/min</strong>{/snippet}
-            <p class="text-sm text-base-content/70">{metrics?.summary.total.toLocaleString()} events · {windowOption.label}</p>
-            <svg viewBox="0 0 260 52" preserveAspectRatio="none" role="img" aria-label={`Event volume over ${windowOption.label}`}>
-              <path class="chart-grid" d="M0 46H260 M0 26H260" />
-              <polyline class="event-line" points={eventPoints} />
-            </svg>
+            <ColumnChart points={chartPoints} unit="events" />
           {/if}
         </Panel>
-        <Panel eyebrow="Secondary" title="Integrity exceptions">
-          {#if !(metricsReady && metrics)}
-            <Notice variant="warning" role="status">
-              {visibleMetricsState === "pending" ? "Loading metrics for this window." : `${metricsError ?? "Event metrics are not permitted."} Integrity exceptions are unavailable for this window, not zero.`}
-            </Notice>
-          {:else}
-            {#snippet actions()}<strong class="tabular-nums text-error">{metrics?.summary.integrityExceptions}</strong>{/snippet}
-            <p class="text-sm text-base-content/70">Verification and resolution failures</p>
-            <svg viewBox="0 0 260 52" preserveAspectRatio="none" role="img" aria-label={`Integrity exceptions over ${windowOption.label}`}>
-              <path class="chart-grid" d="M0 46H260 M0 26H260" />
-              <polyline class="exception-line" points={exceptionPoints} />
-            </svg>
-            <div class="integrity-breakdown">
-              {#each verificationIssues as status (status)}
-                {#if verificationCount(status) > 0n}
-                  <button aria-pressed={focus === status} onclick={() => selectFocus(status)}><span>{status.replaceAll("-", " ")}</span><strong>{verificationCount(status)}</strong></button>
-                {/if}
-              {/each}
-              {#if (metrics?.summary.byResolution.malformed ?? 0) > 0}
-                <button aria-pressed={focus === "malformed"} onclick={() => selectFocus("malformed")}><span>malformed</span><strong>{metrics?.summary.byResolution.malformed}</strong></button>
-              {/if}
-            </div>
-          {/if}
-        </Panel>
-        <Panel eyebrow="Secondary" title="Highest-volume types">
-          {#if !(metricsReady && metrics)}
-            <Notice variant="warning" role="status">
-              {visibleMetricsState === "pending" ? "Loading metrics for this window." : `${metricsError ?? "Event metrics are not permitted."} Event types by volume are unavailable for this window, not zero.`}
-            </Notice>
+        <Panel title="Most published">
+          {#if !metricsReady}
+            <p class="text-sm text-base-content/60">{visibleMetricsState === "pending" ? "Loading…" : "Not available."}</p>
           {:else}
             <div class="event-types">
               {#each eventTypesByCount.slice(0, 6) as eventType (`${eventType.ownerContractId}:${eventType.ownerEventName}`)}
-                <button class:active={selectedEventType?.ownerContractId === eventType.ownerContractId && selectedEventType.ownerEventName === eventType.ownerEventName} aria-pressed={selectedEventType?.ownerContractId === eventType.ownerContractId && selectedEventType.ownerEventName === eventType.ownerEventName} onclick={() => selectEventType(eventType)}>
-                  <span><strong>{eventType.ownerEventName}</strong><small>{eventType.ownerContractId}</small></span><b>{eventType.count.toLocaleString()}</b>
-                   <i style={`--width: ${metrics?.summary.total ? boundedNumber(eventType.count) / boundedNumber(metrics.summary.total) * 100 : 0}%`}></i>
+                {@const active = selectedEventType?.ownerContractId === eventType.ownerContractId && selectedEventType.ownerEventName === eventType.ownerEventName}
+                <button class:active aria-pressed={active} title="Show only these events" onclick={() => selectEventType(eventType)}>
+                  <span><strong>{sentenceName(eventType.ownerEventName)}</strong><small>{apiLabel(eventType.ownerContractId)}</small></span><b>{eventType.count.toLocaleString()}</b>
+                  <i style={`--width: ${metrics?.summary.total ? boundedNumber(eventType.count) / boundedNumber(metrics.summary.total) * 100 : 0}%`}></i>
                 </button>
               {:else}
-                <p class="text-sm text-base-content/70">No resolved event types in this window.</p>
+                <p class="text-sm text-base-content/60">No events in this period.</p>
               {/each}
             </div>
           {/if}
@@ -1017,144 +1039,193 @@
       </aside>
     </div>
 
-    <Panel eyebrow="Primary" title="Consumer dead letters">
-      {#if !selectedConsumer}
-        <EmptyState title="Select a consumer" description="Choose a managed Consumer above to inspect its active dead letters." />
-      {:else if deadLetterPanelError}
-        <Notice variant="warning" role="status">
-          {deadLetterPanelError} This consumer's dead letters could not be queried.
-        </Notice>
-      {:else if deadLetters.length === 0}
-        <EmptyState title="No active dead letters" description="Exhausted managed Consumer deliveries appear here for replay or dismissal." />
-      {:else}
-        <DataTable>
-          <thead><tr><th>Updated</th><th>Resource / dead letter</th><th>State</th><th>Deliveries</th><th>Error</th><th>Actions</th></tr></thead>
-          <tbody>
-            {#each deadLetters as deadLetter (deadLetter.deadLetterId)}
-              <tr>
-                <td>{formatDate(deadLetter.updatedAt)}</td>
-                <td><button class="link link-hover trellis-identifier" onclick={() => inspectDeadLetter(deadLetter)}>{deadLetter.resourceId}</button><small class="block trellis-metadata trellis-identifier">{deadLetter.deadLetterId}</small></td>
-                <td><StatusBadge label={deadLetter.state} status={deadLetter.state === "dead" ? "unhealthy" : "degraded"} /></td>
-                <td>{deadLetter.deliveries.toLocaleString()}</td>
-                <td>{deadLetterError[deadLetter.deadLetterId] || deadLetter.lastError || "-"}</td>
-                <td class="space-x-2"><button class="btn btn-outline btn-xs" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "replay")}>Replay</button><button class="btn btn-error btn-outline btn-xs" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "dismiss")}>Dismiss</button></td>
-              </tr>
+    <div id="failed-deliveries">
+      <Panel title="Failed deliveries">
+        {#snippet actions()}
+          {#if selectedConsumer}
+            <button type="button" class="trellis-chip" onclick={() => selectConsumer(null)}>For {consumerName(selectedConsumer)} <span aria-hidden="true">×</span><span class="sr-only">Show all services</span></button>
+          {/if}
+        {/snippet}
+        {#if deadLetterPanelError}
+          <Notice variant="warning" role="status">Failed deliveries can't be shown: {deadLetterPanelError}</Notice>
+        {:else if shownDeadLetters.length === 0}
+          <EmptyState
+            title="No failed deliveries"
+            description={selectedConsumer ? "Everything sent to this service was delivered." : "When a service keeps failing to handle an event, it waits here for you to retry or dismiss it."}
+          />
+        {:else}
+          <ul class="failure-list">
+            {#each shownDeadLetters as deadLetter (deadLetter.deadLetterId)}
+              {@const open = openDeadLetter === deadLetter.deadLetterId}
+              <li data-dead-letter={deadLetter.deadLetterId}>
+                <div class="failure-row">
+                  <button type="button" class="failure-main" aria-expanded={open} onclick={() => void toggleDeadLetter(deadLetter)}>
+                    <span class="font-medium">{deadLetterService(deadLetter)}</span>
+                    <span class="block text-sm text-error">{errorText(deadLetter.lastError) ?? "The service didn't finish handling this event."}</span>
+                    <span class="block text-xs text-base-content/60">Tried {deadLetter.deliveries} {deadLetter.deliveries === 1 ? "time" : "times"} · last {ageLabel(deadLetter.updatedAt)} ago{deadLetter.state === "dead" ? "" : " · retry in progress"}</span>
+                  </button>
+                  {#if deadLetter.state === "dead"}
+                    <span class="flex shrink-0 gap-2">
+                      <button class="btn btn-outline btn-sm" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "replay")}>Retry</button>
+                      <button class="btn btn-ghost btn-sm text-error" disabled={deadLetterBusy === deadLetter.deadLetterId} onclick={() => changeDeadLetter(deadLetter, "dismiss")}>Dismiss</button>
+                    </span>
+                  {/if}
+                </div>
+                {#if deadLetterError[deadLetter.deadLetterId]}<p class="mt-2 text-sm text-error">{deadLetterError[deadLetter.deadLetterId]}</p>{/if}
+                {#if open}
+                  <div class="failure-detail">
+                    {#if !deadLetterDetail}
+                      {#if !deadLetterError[deadLetter.deadLetterId]}<p class="text-sm text-base-content/60">Loading…</p>{/if}
+                    {:else}
+                      {@const data = decodeData(deadLetterDetail.originalPayload)}
+                      <dl class="fact-list">
+                        <div><dt>Event</dt><dd>{sentenceName(subjectEventName(deadLetterDetail.originalSubject))}</dd></div>
+                        <div><dt>Published</dt><dd>{formatDate(deadLetterDetail.originalPublishedAt)}</dd></div>
+                      </dl>
+                      <div class="mt-3">
+                        {#if data?.kind === "value"}<DataPanel value={data.value} />
+                        {:else}
+                          <h3 class="text-sm font-semibold">Data</h3>
+                          {#if data?.kind === "text"}<p class="text-sm whitespace-pre-wrap">{data.text}</p>
+                          {:else}<p class="text-sm text-base-content/60">This event's data isn't readable text ({data?.kind === "bytes" ? formatBytes(data.size) : "empty"}).</p>{/if}
+                        {/if}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+              </li>
             {/each}
-          </tbody>
-        </DataTable>
-      {/if}
-      {#if selectedDeadLetter}
-        <div class="payload-grid mt-4"><div><h3>Original event</h3><p class="trellis-identifier">{selectedDeadLetter.originalSubject}</p><pre>{jsonBlock(selectedDeadLetter.originalHeaders)}</pre></div><div><h3>Original payload bytes</h3><pre>{Array.from(selectedDeadLetter.originalPayload, (byte) => byte.toString(16).padStart(2, "0")).join(" ")}</pre></div></div>
-      {/if}
-    </Panel>
+          </ul>
+        {/if}
+      </Panel>
+    </div>
 
-    <Panel eyebrow="Primary" title={focusTitle}>
-      {#snippet actions()}
-        <div class="flex items-center gap-2">
-          <input class="input input-bordered input-sm w-56" placeholder="Search event metadata" bind:value={searchText} onchange={resetAndLoad} />
-          {#if selectedEventType || ownerContractId || publisherDeploymentId || searchText}<button class="btn btn-ghost btn-sm" onclick={clearEventFilters}>Clear scope</button>{/if}
-           <span class="text-sm text-base-content/70">{rows.length} shown</span>
-        </div>
-      {/snippet}
-      <p class="text-sm text-base-content/70">{focusDescription}</p>
-      {#if selectedEventType || ownerContractId || publisherDeploymentId}
-        <div class="active-scope" aria-label="Active event scope">
-          {#if selectedEventType}<button onclick={() => { selectedEventType = null; resetAndLoad(); }}>type: {selectedEventType.ownerContractId} / {selectedEventType.ownerEventName} ×</button>{/if}
-          {#if ownerContractId}<button onclick={() => { ownerContractId = ''; resetAndLoad(); }}>owner: {ownerContractId} ×</button>{/if}
-          {#if publisherDeploymentId}<button onclick={() => { publisherDeploymentId = ''; resetAndLoad(); }}>publisher: {publisherDeploymentId} ×</button>{/if}
-        </div>
-      {/if}
-      {#if rows.length === 0}
-        <EmptyState title="No events match this operational view" description="Choose another status, widen the window, or clear the active scope." />
-      {:else}
-        <DataTable>
-          <thead><tr><th>Time</th><th>Subject / event</th><th>Owner</th><th>Publisher</th><th>Integrity</th><th>Payload</th></tr></thead>
-          <tbody>
-            {#each rows as row (`${row.streamSequence}:${row.eventId}`)}
-              <tr>
-                <td class="whitespace-nowrap">{formatDate(row.eventTime)}</td>
-                <td class="min-w-0">
-                  <button type="button" class="link link-hover block max-w-md truncate text-left trellis-identifier" onclick={() => { void inspectEvent(row); }}>{row.subject}</button>
-                  <span class="trellis-metadata">seq {row.streamSequence}</span>
-                </td>
-                <td class="min-w-0"><button type="button" class="link link-hover block max-w-xs truncate text-left trellis-identifier" onclick={() => selectOwner(row.ownerContractId)}>{subjectOwner(row)}</button></td>
-                <td><button type="button" class="link link-hover trellis-identifier" onclick={() => selectPublisher(row.publisherDeploymentId)}>{publisherLabel(row)}</button></td>
-                <td><span class="flex gap-1"><span class={["badge badge-sm trellis-badge-soft border-0", statusBadgeClass(row.verificationStatus)]}>{row.verificationStatus}</span>{#if row.resolution !== "resolved"}<span class={["badge badge-sm trellis-badge-soft border-0", statusBadgeClass(row.resolution)]}>{row.resolution}</span>{/if}</span></td>
-                 <td class="tabular-nums">{formatBytes(boundedNumber(row.payloadSizeBytes))}</td>
-              </tr>
+    <div id="recent-events">
+      <Panel title={focusTitle(focus)}>
+        {#snippet actions()}
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="trellis-segment" role="group" aria-label="Which events">
+              {#each listTabs as tab (tab.value)}
+                <button type="button" class:active={focus === tab.value} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
+              {/each}
+            </div>
+            <label class="input input-sm w-56">
+              <span class="sr-only">Search events</span>
+              <input type="search" placeholder="Search events" bind:value={searchText} onchange={resetAndLoad} />
+            </label>
+          </div>
+        {/snippet}
+        {#if focus !== "all" && focus !== "largest" && problemCounts.length > 0}
+          <div class="chip-row" aria-label="Kinds of problem">
+            {#each problemCounts as problem (problem.focus)}
+              <button type="button" class="trellis-chip" class:active={focus === problem.focus} aria-pressed={focus === problem.focus} onclick={() => selectFocus(focus === problem.focus ? "exceptions" : problem.focus)}>{problem.label} <b>{problem.count.toLocaleString()}</b></button>
             {/each}
-          </tbody>
-        </DataTable>
-        {#if cursorBackStack.length > 0 || nextCursor}
-          <div class="flex items-center justify-end gap-3 text-sm text-base-content/70">
-            <button class="btn btn-outline btn-xs" onclick={goPrevious} disabled={cursorBackStack.length === 0}>Previous</button>
-            <span>Page {cursorBackStack.length + 1}</span>
-            <button class="btn btn-outline btn-xs" onclick={goNext} disabled={!nextCursor}>Next</button>
           </div>
         {/if}
-      {/if}
-    </Panel>
+        {#if selectedEventType || ownerContractId || publisherDeploymentId || searchText}
+          <div class="chip-row" aria-label="Active filter">
+            {#if selectedEventType}<button type="button" class="trellis-chip active" onclick={() => { selectedEventType = null; resetAndLoad(); }}>{sentenceName(selectedEventType.ownerEventName)} <span aria-hidden="true">×</span></button>{/if}
+            {#if ownerContractId}<button type="button" class="trellis-chip active" onclick={() => { ownerContractId = ""; resetAndLoad(); }}>{apiLabel(ownerContractId)} <span aria-hidden="true">×</span></button>{/if}
+            {#if publisherDeploymentId}<button type="button" class="trellis-chip active" onclick={() => { publisherDeploymentId = ""; resetAndLoad(); }}>From {names.deployment(publisherDeploymentId) ?? "one service"} <span aria-hidden="true">×</span></button>{/if}
+            <button type="button" class="btn btn-ghost btn-xs" onclick={clearEventFilters}>Clear filter</button>
+          </div>
+        {/if}
+        {#if rows.length === 0}
+          <EmptyState
+            title={focus === "exceptions" ? "Every event was verified" : "No events match"}
+            description={focus === "exceptions" ? "Events that can't be traced to a trusted sender show up here." : "Try another filter or a longer time range."}
+          />
+        {:else}
+          <DataTable>
+            <thead><tr><th class="w-6"><span class="sr-only">Details</span></th><th>When</th><th>Event</th><th>From</th><th>Check</th><th class="text-right">Size</th></tr></thead>
+            <tbody>
+              {#each rows as row (`${row.streamSequence}:${row.eventId}`)}
+                {@const check = eventCheckLabel(row.verificationStatus, row.resolution)}
+                {@const open = openEventKey === eventKey(row)}
+                <tr class="event-row" class:row-selected={open} data-event-type={`${row.ownerContractId ?? ""} / ${row.ownerEventName ?? ""}`} data-publisher={row.publisherDeploymentId} onclick={() => { void toggleEvent(row); }}>
+                  <td><Icon name={open ? "chevronDown" : "chevronRight"} size={14} class="text-base-content/50" /></td>
+                  <td class="whitespace-nowrap text-sm">{formatDate(row.eventTime)}</td>
+                  <td class="min-w-0">
+                    <button type="button" class="link link-hover block max-w-sm truncate text-left font-medium" aria-expanded={open} onclick={(event) => { event.stopPropagation(); void toggleEvent(row); }}>{eventLabel(row)}</button>
+                    <span class="block text-xs text-base-content/60">{apiLabel(row.ownerContractId)}</span>
+                  </td>
+                  <td class="text-sm">
+                    {#if row.publisherDeploymentId}<button type="button" class="link link-hover text-left" title="Show only events from this sender" onclick={(event) => { event.stopPropagation(); selectPublisher(row.publisherDeploymentId); }}>{publisherLabel(row)}</button>{:else}{publisherLabel(row)}{/if}
+                  </td>
+                  <td><StatusBadge label={check.label} status={check.ok ? "healthy" : row.resolution === "resolved" ? "degraded" : "unhealthy"} /></td>
+                  <td class="text-right text-sm tabular-nums">{formatBytes(boundedNumber(row.payloadSizeBytes))}</td>
+                </tr>
+                {#if open}
+                  <tr class="event-detail-row">
+                    <td colspan="6">
+                      {#if detailLoading}
+                        <LoadingState label="Loading event" />
+                      {:else if selectedEvent}
+                        {@render eventDetail(selectedEvent)}
+                      {/if}
+                    </td>
+                  </tr>
+                {/if}
+              {/each}
+            </tbody>
+          </DataTable>
+          {#if cursorBackStack.length > 0 || nextCursor}
+            <nav class="flex items-center justify-end gap-3 text-sm text-base-content/70" aria-label="Event pages">
+              <button class="btn btn-outline btn-xs" onclick={goPrevious} disabled={cursorBackStack.length === 0}>Previous</button>
+              <span>Page {cursorBackStack.length + 1}</span>
+              <button class="btn btn-outline btn-xs" onclick={goNext} disabled={!nextCursor}>Next</button>
+            </nav>
+          {/if}
+        {/if}
+      </Panel>
+    </div>
 
-    {#if detailLoading}
-      <Panel eyebrow="Detail" title="Loading detail"><LoadingState label="Loading detail" /></Panel>
-    {:else if selectedEvent}
-      <Panel eyebrow="Detail" title="Event inspect">
-        {#if detailError}<Notice variant="warning" role="status">{detailError}</Notice>{/if}
-        <div class="detail-grid">
-          <div><h3>Event identity</h3><p><span>id</span><code>{selectedEvent.event.eventId}</code></p><p><span>time</span><code>{selectedEvent.event.eventTime}</code></p><p><span>subject</span><code>{selectedEvent.event.subject}</code></p><p><span>stream sequence</span><code>{selectedEvent.event.streamSequence}</code></p></div>
-          <div><h3>Owner from subject/catalog</h3><p><span>contract</span><code>{selectedEvent.event.ownerContractId ?? "unresolved"}</code></p><p><span>event</span><code>{selectedEvent.event.ownerEventName ?? "-"}</code></p><p><span>resolution</span><code>{selectedEvent.event.resolution}</code></p></div>
-           <div><h3>Publisher from verified session</h3><p><span>status</span><code>{selectedEvent.event.verificationStatus}</code></p><p><span>deployment</span><code>{selectedEvent.event.publisherDeploymentId ?? "-"}</code></p><p><span>instance</span><code>{selectedEvent.event.publisherInstanceId ?? "-"}</code></p><p><span>participant</span><code>{selectedEvent.event.publisherParticipantId ?? "-"}</code></p><p><span>digest</span><code>{selectedEvent.event.publisherParticipantDigest ?? "-"}</code></p></div>
-           <div><h3>Matching consumers</h3><p><span>durables</span><code>{matchingConsumers.map((consumer) => consumer.consumerName).join(", ") || "-"}</code></p></div>
-        </div>
-        <div class="payload-grid"><div><h3>Headers</h3><pre>{jsonBlock(selectedEvent.headers)}</pre></div><div><h3>Payload</h3>{#if selectedEvent.decodeError}<p class="text-xs text-error">{selectedEvent.decodeError}</p>{/if}<pre>{selectedEvent.payloadText ?? jsonBlock(selectedEvent.payload)}</pre></div></div>
-      </Panel>
-    {:else if selectedConsumer}
-      <Panel eyebrow="Consumer" title={selectedConsumer.row.deploymentId ?? selectedConsumer.row.consumerName}>
-        {#if detailError}<Notice variant="warning" role="status">{detailError}</Notice>{/if}
-        <div class="detail-grid">
-          <div><h3>Ownership</h3><p><span>managed by</span><code>{selectedConsumer.row.managedBy}</code></p><p><span>deployment</span><code>{selectedConsumer.row.deploymentId ?? "-"}</code></p><p><span>contract</span><code>{selectedConsumer.row.contractId ?? "-"}</code></p><p><span>group</span><code>{selectedConsumer.row.group ?? "-"}</code></p></div>
-          <div><h3>Live state</h3><p><span>status</span><code>{selectedConsumer.row.status}</code></p><p><span>pending</span><code>{selectedConsumer.row.pending}</code></p><p><span>ack pending</span><code>{selectedConsumer.row.ackPending}</code></p><p><span>waiting pulls</span><code>{selectedConsumer.row.waitingPulls}</code></p></div>
-        </div>
-        <pre>{jsonBlock(selectedConsumer.detail)}</pre>
-      </Panel>
-    {/if}
   {/if}
   <ConfirmationModal bind:this={confirmationModal} />
 </section>
 
 <style>
-  .events-page { display: grid; gap: 1rem; }
-  .health-layout { display: grid; gap: 1.15rem; grid-template-columns: minmax(0, 1fr) 20rem; align-items: start; }
-  .event-rail { min-width: 0; }
-  .row-selected { background: color-mix(in oklab, var(--color-primary) 10%, var(--color-base-100)); }
-  .cell-pressure { color: var(--color-error); font-weight: 700; }
-  .event-rail svg { display: block; height: 3.5rem; width: 100%; }
-  .chart-grid { fill: none; stroke: color-mix(in oklab, var(--color-base-300) 75%, transparent); stroke-width: 1; }
-  .event-line, .exception-line { fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-  .event-line { stroke: var(--color-info); } .exception-line { stroke: var(--color-error); }
-  .integrity-breakdown { display: grid; gap: 0.25rem; }
-  .integrity-breakdown button { background: transparent; border: 0; cursor: pointer; display: flex; font-size: 0.8rem; justify-content: space-between; padding: 0.2rem 0; text-align: left; text-transform: capitalize; }
-  .integrity-breakdown button:hover span { text-decoration: underline; }
+  .events-page { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 1fr); }
+  .events-grid { display: grid; gap: 1.25rem; grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem); align-items: start; }
+  .events-rail { display: grid; gap: 1.25rem; min-width: 0; }
+  .row-selected { background: color-mix(in oklab, var(--color-primary) 8%, var(--color-base-100)); }
+  .service-list { display: grid; }
+  .service-list > li { border-top: 1px solid var(--color-base-300); }
+  .service-list > li:first-child { border-top: 0; }
+  .service-row { align-items: center; background: transparent; border: 0; cursor: pointer; display: flex; gap: 1rem; justify-content: space-between; padding: 0.75rem 0.25rem; text-align: left; width: 100%; }
+  .service-row:hover { background: color-mix(in oklab, var(--color-base-200) 60%, transparent); }
+  .service-list > li.selected .service-row { background: color-mix(in oklab, var(--color-primary) 7%, transparent); }
+  .service-detail { font-size: 0.875rem; padding: 0.25rem 0.25rem 0.9rem; }
+  .service-detail p { color: color-mix(in oklab, var(--color-base-content) 75%, transparent); }
+  .service-detail dl { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); margin-top: 0.6rem; }
+  .service-detail dt, .fact-list dt { color: color-mix(in oklab, var(--color-base-content) 60%, transparent); font-size: 0.8125rem; }
+  .service-detail dd { font-size: 1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .fact-list { display: grid; gap: 0.75rem 1.5rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); }
+  .fact-list dd { font-size: 0.9rem; overflow-wrap: anywhere; }
+  .failure-list { display: grid; }
+  .failure-list > li { border-top: 1px solid var(--color-base-300); padding: 0.85rem 0; }
+  .failure-list > li:first-child { border-top: 0; padding-top: 0; }
+  .failure-row { align-items: center; display: flex; gap: 1rem; justify-content: space-between; }
+  .failure-main { background: transparent; border: 0; cursor: pointer; min-width: 0; padding: 0; text-align: left; }
+  .failure-main:hover > span:first-child { text-decoration: underline; }
+  .failure-detail { background: color-mix(in oklab, var(--color-base-200) 55%, transparent); border-radius: var(--radius-field); margin-top: 0.75rem; padding: 0.9rem 1rem; }
+  .chip-row { align-items: center; display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.75rem; }
+  .event-row { cursor: pointer; }
+  .event-row:hover { background: color-mix(in oklab, var(--color-base-200) 55%, transparent); }
+  .event-detail-row > td { background: color-mix(in oklab, var(--color-base-200) 45%, transparent); padding: 1rem 1.25rem 1.25rem; }
+  .event-detail-grid { display: grid; gap: 1.5rem; grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem); }
+  .fact-list.single { grid-template-columns: minmax(0, 1fr); align-content: start; }
   .event-types { display: grid; gap: 0.35rem; min-width: 0; }
-  .event-types button { background: transparent; border: 0; border-radius: 0.35rem; cursor: pointer; display: grid; gap: 0.15rem 0.5rem; grid-template-columns: minmax(0, 1fr) auto; margin: 0 -0.25rem; padding: 0.3rem 0.25rem; text-align: left; width: calc(100% + 0.5rem); }
+  .event-types button { background: transparent; border: 0; border-radius: 0.5rem; cursor: pointer; display: grid; gap: 0.2rem 0.5rem; grid-template-columns: minmax(0, 1fr) auto; margin: 0 -0.35rem; padding: 0.4rem 0.35rem; text-align: left; width: calc(100% + 0.7rem); }
   .event-types button:hover, .event-types button.active { background: color-mix(in oklab, var(--color-base-200) 72%, transparent); }
   .event-types button span { min-width: 0; }
-  .event-types button strong, .event-types button small { display: block; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .event-types button strong { font-size: 0.8rem; } .event-types button small { color: color-mix(in oklab, var(--color-base-content) 62%, transparent); font-size: 0.72rem; }
-  .event-types button b { font-size: 0.8rem; font-variant-numeric: tabular-nums; }
-  .event-types button i { background: color-mix(in oklab, var(--color-info) 70%, var(--color-base-300)); border-radius: 0.2rem; grid-column: 1 / -1; height: 0.2rem; width: var(--width); }
-  .active-scope { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-  .active-scope button { background: color-mix(in oklab, var(--color-base-200) 82%, transparent); border: 1px solid var(--color-base-300); border-radius: 999px; cursor: pointer; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.72rem; padding: 0.25rem 0.6rem; }
-  .active-scope button:hover { background: color-mix(in oklab, var(--color-base-200) 60%, transparent); }
-  .detail-grid, .payload-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
-  .detail-grid h3 { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.08em; margin-bottom: 0.35rem; text-transform: uppercase; }
-  .detail-grid p { align-items: baseline; display: flex; gap: 0.45rem; margin: 0.15rem 0; }
-  .detail-grid p span { color: color-mix(in oklab, var(--color-base-content) 64%, transparent); font-size: 0.78rem; min-width: 6rem; }
-  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-  pre { background: color-mix(in oklab, var(--color-base-200) 80%, transparent); border: 1px solid var(--color-base-300); border-radius: var(--radius-box, 1rem); max-height: 24rem; overflow: auto; padding: 0.75rem; white-space: pre-wrap; }
+  .event-types button strong, .event-types button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .event-types button strong { font-size: 0.875rem; font-weight: 500; }
+  .event-types button small { color: color-mix(in oklab, var(--color-base-content) 60%, transparent); font-size: 0.75rem; }
+  .event-types button b { font-size: 0.875rem; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .event-types button i { background: color-mix(in oklab, var(--color-primary) 55%, var(--color-base-300)); border-radius: 999px; grid-column: 1 / -1; height: 0.25rem; width: var(--width); }
 
   @media (max-width: 75rem) {
-    .health-layout { grid-template-columns: 1fr; }
-    .event-rail { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); }
+    .events-grid { grid-template-columns: minmax(0, 1fr); }
   }
 </style>

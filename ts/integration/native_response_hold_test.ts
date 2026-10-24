@@ -13,8 +13,10 @@
 
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { headers as natsHeaders } from "@nats-io/nats-core";
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
-import { join } from "@std/path";
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { test } from "node:test";
+import { join } from "node:path";
 
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
@@ -73,10 +75,9 @@ function isConnzReply(body: Uint8Array): boolean {
   );
 }
 
-Deno.test(
-  "the readiness barrier holds sequential physical connections independently",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
+test("the readiness barrier holds sequential physical connections independently", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
       const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
@@ -86,7 +87,7 @@ Deno.test(
         servers: proxyUrl,
         timeout: REQUEST_TIMEOUT_MS,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config",
@@ -131,12 +132,16 @@ Deno.test(
         // barrier promises without timing sleeps.
         first.subscribe(route);
         await first.flush();
-        assertEquals(
+        assert.deepEqual(
           secondHeld,
           false,
           "rearming must not reuse the released connection's barrier result",
         );
-        assertThrows(() => gate.arm(route), Error, "already armed");
+        assert.throws(
+          () => gate.arm(route),
+          (error: unknown) =>
+            error instanceof Error && error.message.includes("already armed"),
+        );
 
         second = await connect(options);
         second.subscribe(route);
@@ -160,12 +165,16 @@ Deno.test(
           secondId !== firstId,
           "the second hold must select a fresh connection",
         );
-        assertEquals(
+        assert.deepEqual(
           await firstBarrier,
           firstId,
           "the old result must stay stable",
         );
-        assertThrows(() => gate.arm(route), Error, "already armed");
+        assert.throws(
+          () => gate.arm(route),
+          (error: unknown) =>
+            error instanceof Error && error.message.includes("already armed"),
+        );
 
         // Readiness and response holds are independent, including release.
         responseHold = gate.armResponseHold(CONNZ, firstId);
@@ -193,45 +202,48 @@ Deno.test(
           timeout: REQUEST_TIMEOUT_MS,
         });
         const serverId = assertServerReply(varz.data, VARZ);
-        assertEquals(
+        assert.deepEqual(
           secondFlushSettled,
           false,
           "the second flush must still be held",
         );
-        assertEquals(connzSettled, false);
+        assert.deepEqual(connzSettled, false);
 
         await gate.release();
         await secondFlush;
         await first.flush();
-        assertEquals(
+        assert.deepEqual(
           connzSettled,
           false,
           "readiness release must not release a reply",
         );
         await responseHold.release();
-        assertEquals(assertServerReply((await connz).data, CONNZ), serverId);
-        assertEquals(await firstBarrier, firstId);
-        assertEquals(await secondBarrier, secondId);
+        assert.deepEqual(
+          assertServerReply((await connz).data, CONNZ),
+          serverId,
+        );
+        assert.deepEqual(await firstBarrier, firstId);
+        assert.deepEqual(await secondBarrier, secondId);
       } finally {
         await gate.release().catch(() => undefined);
         await responseHold?.release().catch(() => undefined);
         await second?.close();
         await first.close();
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
 
-Deno.test(
-  "closed physical connections discard retained PONGs and replies without disturbing fresh holds",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
+test("closed physical connections discard retained PONGs and replies without disturbing fresh holds", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
       const proxyUrl = runtime.nativeProxyUrl();
       const options = {
         servers: proxyUrl,
         timeout: REQUEST_TIMEOUT_MS,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config",
@@ -262,14 +274,17 @@ Deno.test(
         const firstRequest = first.request(CONNZ, new Uint8Array(0), {
           timeout: REQUEST_TIMEOUT_MS,
         });
-        const requestRejected = firstRequest.then(() => false, () => true);
+        const requestRejected = firstRequest.then(
+          () => false,
+          () => true,
+        );
         const held = await Promise.race([
           responseHold.held,
           firstRequest.then(() => {
             throw new Error("the closing connection's reply escaped its hold");
           }),
         ]);
-        assertEquals(held.connectionId, firstId);
+        assert.deepEqual(held.connectionId, firstId);
 
         // Both real frames are retained before explicitly ending their owner.
         // Observe the proxy's physical close, not just the client close promise.
@@ -327,12 +342,12 @@ Deno.test(
           timeout: REQUEST_TIMEOUT_MS,
         });
         const serverId = assertServerReply(varz.data, VARZ);
-        assertEquals(flushSettled, false);
-        assertEquals(replySettled, false);
+        assert.deepEqual(flushSettled, false);
+        assert.deepEqual(replySettled, false);
         await gate.release();
         await secondFlush;
         await responseHold.release();
-        assertEquals(
+        assert.deepEqual(
           assertServerReply((await secondRequest).data, CONNZ),
           serverId,
         );
@@ -342,14 +357,14 @@ Deno.test(
         await second?.close();
         await first.close();
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
 
-Deno.test(
-  "the response barrier withholds only the targeted request's reply",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
+test("the response barrier withholds only the targeted request's reply", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
       // The system connection must traverse the intercepting native proxy, so
       // read its advertised URL from the generated control-plane config.
       const proxyUrl = runtime.nativeProxyUrl();
@@ -361,7 +376,7 @@ Deno.test(
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config",
@@ -377,10 +392,10 @@ Deno.test(
       const barrier = gate.armResponseHold(CONNZ);
       try {
         // A second hold while one is active is misuse; the original stays armed.
-        assertThrows(
+        assert.throws(
           () => gate.armResponseHold(CONNZ),
-          Error,
-          "already armed",
+          (error: unknown) =>
+            error instanceof Error && error.message.includes("already armed"),
         );
 
         const connz = nc.request(CONNZ, new Uint8Array(0), {
@@ -412,7 +427,7 @@ Deno.test(
             );
           }),
         ]);
-        assertEquals(held.requestSubject, CONNZ);
+        assert.deepEqual(held.requestSubject, CONNZ);
         assert(
           held.connectionId > 0,
           "the barrier must attribute the request's physical connection",
@@ -425,7 +440,7 @@ Deno.test(
         });
         const varzServerId = assertServerReply(varz.data, VARZ);
 
-        assertEquals(
+        assert.deepEqual(
           connzSettled,
           false,
           "the withheld CONNZ reply must not have settled",
@@ -433,7 +448,7 @@ Deno.test(
 
         await barrier.release();
         const connzReply = await connz;
-        assertEquals(
+        assert.deepEqual(
           assertServerReply(connzReply.data, CONNZ),
           varzServerId,
           "the released CONNZ reply must carry the same real server's data",
@@ -442,14 +457,14 @@ Deno.test(
         await barrier.release().catch(() => undefined);
         await nc.close();
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
 
-Deno.test(
-  "the response barrier selects the withheld request by its reply body",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
+test("the response barrier selects the withheld request by its reply body", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
       const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
@@ -459,7 +474,7 @@ Deno.test(
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config",
@@ -509,7 +524,7 @@ Deno.test(
             );
           }),
         ]);
-        assertEquals(held.requestSubject, CONNZ);
+        assert.deepEqual(held.requestSubject, CONNZ);
         assert(
           held.connectionId > 0,
           "the barrier must attribute the request's physical connection",
@@ -520,7 +535,7 @@ Deno.test(
         const varzReply = await varz;
         const varzServerId = assertServerReply(varzReply.data, VARZ);
 
-        assertEquals(
+        assert.deepEqual(
           connzSettled,
           false,
           "the withheld CONNZ reply must not have settled",
@@ -528,7 +543,7 @@ Deno.test(
 
         await barrier.release();
         const connzReply = await connz;
-        assertEquals(
+        assert.deepEqual(
           assertServerReply(connzReply.data, CONNZ),
           varzServerId,
           "the released CONNZ reply must carry the same real server's data",
@@ -537,14 +552,14 @@ Deno.test(
         await barrier.release().catch(() => undefined);
         await nc.close();
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
 
-Deno.test(
-  "the response barrier matches the exact reply body behind real NATS headers",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
+test("the response barrier matches the exact reply body behind real NATS headers", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
       const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
@@ -554,7 +569,7 @@ Deno.test(
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config",
@@ -576,20 +591,8 @@ Deno.test(
       // header block is excluded by declared length, not by scanning for a
       // terminator.
       const binaryBody = new Uint8Array([
-        0x00,
-        0x0d,
-        0x0a,
-        0x7f,
-        0xff,
-        0xc3,
-        0xa9,
-        0xf0,
-        0x9f,
-        0x8e,
-        0x89,
-        0x0d,
-        0x0a,
-        0x41,
+        0x00, 0x0d, 0x0a, 0x7f, 0xff, 0xc3, 0xa9, 0xf0, 0x9f, 0x8e, 0x89, 0x0d,
+        0x0a, 0x41,
       ]);
       const siblingBody = new TextEncoder().encode("sibling reply body");
       const targetHeaders = natsHeaders();
@@ -641,7 +644,7 @@ Deno.test(
             );
           }),
         ]);
-        assertEquals(held.requestSubject, targetSubject);
+        assert.deepEqual(held.requestSubject, targetSubject);
         assert(
           held.connectionId > 0,
           "the barrier must attribute the request's physical connection",
@@ -650,7 +653,7 @@ Deno.test(
         // selects, and it accepts only the exact header-free body: had the
         // parser offered the HMSG header block plus body, no candidate would
         // ever be accepted and `held` would never resolve.
-        assertEquals(seenBodies.size, 1);
+        assert.deepEqual(seenBodies.size, 1);
         assert(
           seenBodies.has(binaryKey),
           "the predicate must see the exact binary body behind the HMSG headers",
@@ -665,8 +668,8 @@ Deno.test(
           new Uint8Array(0),
           { timeout: REQUEST_TIMEOUT_MS },
         );
-        assertEquals(new Uint8Array(siblingReply.data), siblingBody);
-        assertEquals(
+        assert.deepEqual(new Uint8Array(siblingReply.data), siblingBody);
+        assert.deepEqual(
           targetSettled,
           false,
           "the withheld target reply must not have settled",
@@ -674,21 +677,21 @@ Deno.test(
 
         await barrier.release();
         const targetReply = await target;
-        assertEquals(new Uint8Array(targetReply.data), binaryBody);
-        assertEquals(targetReply.headers?.get("x-hold-proof"), "present");
-        assertEquals(targetReply.headers?.get("x-hold-note"), "héllo");
+        assert.deepEqual(new Uint8Array(targetReply.data), binaryBody);
+        assert.deepEqual(targetReply.headers?.get("x-hold-proof"), "present");
+        assert.deepEqual(targetReply.headers?.get("x-hold-note"), "héllo");
       } finally {
         await barrier.release().catch(() => undefined);
         await nc.close();
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});
 
-Deno.test(
-  "a throwing reply predicate rejects that hold, forwards the reply, and never disarms a newer hold",
-  async () => {
-    await withTrellisRuntime(async (runtime) => {
+test("a throwing reply predicate rejects that hold, forwards the reply, and never disarms a newer hold", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
       const proxyUrl = runtime.nativeProxyUrl();
       assert(
         proxyUrl !== runtime.natsUrl,
@@ -698,7 +701,7 @@ Deno.test(
       const nc = await connect({
         servers: proxyUrl,
         authenticator: credsAuthenticator(
-          await Deno.readFile(
+          await readFile(
             join(
               runtime.workdir,
               "config",
@@ -745,8 +748,8 @@ Deno.test(
           target,
           sibling,
         ]);
-        assertEquals(new Uint8Array(targetReply.data), targetBody);
-        assertEquals(new Uint8Array(siblingReply.data), siblingBody);
+        assert.deepEqual(new Uint8Array(targetReply.data), targetBody);
+        assert.deepEqual(new Uint8Array(siblingReply.data), siblingBody);
 
         // A real NATS round trip yields the macrotask queue, so a rejection that
         // arrived with no handler attached yet would surface here as an
@@ -756,13 +759,9 @@ Deno.test(
         // The failure is reported through `held`, not swallowed as a non-match.
         // Reading it only after the replies settled deliberately exercises a
         // rejection that arrives before the caller awaits it.
-        const rejected = await assertRejects(
+        await assert.rejects(
           () => barrier.held,
-          Error,
-          predicateFailure.message,
-        );
-        assert(
-          rejected === predicateFailure,
+          (error: unknown) => error === predicateFailure,
           "the hold must reject with the original predicate cause",
         );
 
@@ -803,17 +802,18 @@ Deno.test(
             );
           }),
         ]);
-        assertEquals(heldFresh.requestSubject, freshSubject);
-        assertEquals(freshSeenBodyKey, Array.from(freshBody).join(","));
-        assertEquals(freshSettled, false);
+        assert.deepEqual(heldFresh.requestSubject, freshSubject);
+        assert.deepEqual(freshSeenBodyKey, Array.from(freshBody).join(","));
+        assert.deepEqual(freshSettled, false);
 
         await fresh.release();
         const freshReply = await freshRequest;
-        assertEquals(new Uint8Array(freshReply.data), freshBody);
+        assert.deepEqual(new Uint8Array(freshReply.data), freshBody);
       } finally {
         await barrier.release().catch(() => undefined);
         await nc.close();
       }
-    }, { interruptibleNativeProxy: true });
-  },
-);
+    },
+    { interruptibleNativeProxy: true },
+  );
+});

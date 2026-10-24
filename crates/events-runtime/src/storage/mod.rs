@@ -185,11 +185,13 @@ impl EventsStore {
         connection.execute_batch(include_str!("sqlite/V4000__events_init.sql"))?;
         let projection_id = format!("{}-{}", std::process::id(), now_timestamp_string());
         connection.execute(
-            "INSERT OR IGNORE INTO events_projection_metadata (key, value) VALUES ('projection_id', ?1)",
+            "INSERT OR IGNORE INTO events_projection_metadata (key, value) \
+            VALUES ('projection_id', ?1)",
             params![projection_id],
         )?;
         connection.execute(
-            "INSERT OR IGNORE INTO events_projection_metadata (key, value) VALUES ('last_projected_sequence', '0')",
+            "INSERT OR IGNORE INTO events_projection_metadata (key, value) \
+            VALUES ('last_projected_sequence', '0')",
             [],
         )?;
         for (key, value) in [
@@ -377,7 +379,8 @@ impl EventsStore {
             && (complete_sequence == 0 || event.stream_sequence < complete_sequence)
         {
             transaction.execute(
-                "UPDATE events_projection_metadata SET value=?1 WHERE key='complete_since_sequence'",
+                "UPDATE events_projection_metadata \
+                SET value=?1 WHERE key='complete_since_sequence'",
                 [event.stream_sequence.to_string()],
             )?;
             transaction.execute(
@@ -398,7 +401,8 @@ impl EventsStore {
         let transaction = connection.transaction()?;
         transaction.execute(
             "UPDATE events_projection_metadata
-             SET value = CASE WHEN CAST(value AS INTEGER) < ?1 THEN ?2 ELSE value END
+             SET value = CASE WHEN CAST(value AS INTEGER) < ?1 THEN ?2 \
+                ELSE value END
              WHERE key = 'retention_gap_sequence'",
             params![sequence, sequence.to_string()],
         )?;
@@ -465,7 +469,17 @@ impl EventsStore {
         }
         params.push(SqlValue::from((filter.limit + 1) as i64));
         let mut statement = connection.prepare(&format!(
-            "SELECT stream_sequence, event_id, event_time, subject, owner_contract_id, owner_event_name, resolution, verification_status, publisher_kind, publisher_deployment_id, publisher_instance_id, publisher_participant_id, publisher_principal_id, publisher_connection_id, publisher_login_session_id, authorization_context_digest, trace_id, payload_size_bytes, headers_json FROM events {where_sql} ORDER BY {order_field} {order_direction}, stream_sequence {order_direction} LIMIT ?"
+            "SELECT stream_sequence, event_id, event_time, subject, \
+                owner_contract_id, owner_event_name, resolution, verification_status, \
+                publisher_kind, publisher_deployment_id, publisher_instance_id, \
+                publisher_participant_id, publisher_principal_id, \
+                publisher_connection_id, publisher_login_session_id, \
+                authorization_context_digest, trace_id, payload_size_bytes, \
+                headers_json \
+                FROM events {where_sql} \
+                ORDER BY {order_field} {order_direction}, stream_sequence \
+                {order_direction} \
+                LIMIT ?"
         ))?;
         let rows = statement
             .query_map(params_from_iter(params), row_to_summary_value)?
@@ -538,8 +552,13 @@ impl EventsStore {
         )?;
         let integrity_exceptions = connection.query_row(
             &format!(
-                "SELECT COUNT(*) FROM events {where_sql} {} (resolution != 'resolved' OR verification_status != 'verified')",
-                if where_sql.is_empty() { "WHERE" } else { " AND" }
+                "SELECT COUNT(*) FROM events {where_sql} {} (resolution != 'resolved' \
+                OR verification_status != 'verified')",
+                if where_sql.is_empty() {
+                    "WHERE"
+                } else {
+                    " AND"
+                }
             ),
             params_from_iter(params.clone()),
             |row| row.get::<_, u64>(0),
@@ -552,7 +571,10 @@ impl EventsStore {
             )
         };
         let mut statement = connection.prepare(&format!(
-            "SELECT owner_contract_id, owner_event_name, COUNT(*) FROM events {event_type_where} GROUP BY owner_contract_id, owner_event_name ORDER BY COUNT(*) DESC, owner_contract_id, owner_event_name"
+            "SELECT owner_contract_id, owner_event_name, COUNT(*) \
+            FROM events {event_type_where} \
+            GROUP BY owner_contract_id, owner_event_name \
+            ORDER BY COUNT(*) DESC, owner_contract_id, owner_event_name"
         ))?;
         let event_types = statement
             .query_map(params_from_iter(params.iter().cloned()), |row| {
@@ -725,9 +747,17 @@ impl EventsStore {
         if u64::try_from(journal_sequence).unwrap_or_default() <= checkpoint {
             let projected = transaction
                 .query_row(
-                    "SELECT dead_letter_id, revision, state FROM consumer_dlq_transitions WHERE journal_sequence = ?1",
+                    "SELECT dead_letter_id, revision, state \
+                    FROM consumer_dlq_transitions \
+                    WHERE journal_sequence = ?1",
                     [journal_sequence],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, String>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, u64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )
                 .optional()?;
             if projected.as_ref().is_some_and(|(id, revision, state)| {
@@ -747,9 +777,21 @@ impl EventsStore {
         }
         let current = transaction
             .query_row(
-                "SELECT resource_id, revision, generation, state, original_record_sequence, last_journal_sequence FROM consumer_dead_letters WHERE id = ?1",
+                "SELECT resource_id, revision, generation, state, original_record_sequence, \
+                last_journal_sequence \
+                FROM consumer_dead_letters \
+                WHERE id = ?1",
                 [&transition.id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?, row.get::<_, u64>(2)?, row.get::<_, String>(3)?, row.get::<_, u64>(4)?, row.get::<_, u64>(5)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, u64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, u64>(4)?,
+                        row.get::<_, u64>(5)?,
+                    ))
+                },
             )
             .optional()?;
         if let Some((
@@ -789,7 +831,9 @@ impl EventsStore {
                 return Err(EventsStoreError::ContradictoryDeadLetter {
                     id: transition.id.clone(),
                     details: format!(
-                        "current revision/generation/sequence is {current_revision}/{current_generation}/{current_sequence}, incoming is {}/{}/{} after {}",
+                        "current revision/generation/sequence is \
+                            {current_revision}/{current_generation}/{current_sequence}, incoming \
+                            is {}/{}/{} after {}",
                         transition.revision,
                         transition.generation,
                         journal_sequence,
@@ -798,8 +842,26 @@ impl EventsStore {
                 });
             }
             transaction.execute(
-                "UPDATE consumer_dead_letters SET revision=?2, generation=?3, state=?4, updated_at=?5, updated_at_ns=?6, deliveries=?7, last_error=?8, replay_stream_sequence=?9, last_journal_sequence=?10 WHERE id=?1",
-                params![transition.id, revision, generation, state_token(transition.state), transition.occurred_at, occurred_at_ns, deliveries, transition.last_error, transition.replay_stream_sequence.map(sql_sequence).transpose()?, journal_sequence],
+                "UPDATE consumer_dead_letters \
+                SET revision=?2, generation=?3, state=?4, updated_at=?5, \
+                updated_at_ns=?6, deliveries=?7, last_error=?8, \
+                replay_stream_sequence=?9, last_journal_sequence=?10 \
+                WHERE id=?1",
+                params![
+                    transition.id,
+                    revision,
+                    generation,
+                    state_token(transition.state),
+                    transition.occurred_at,
+                    occurred_at_ns,
+                    deliveries,
+                    transition.last_error,
+                    transition
+                        .replay_stream_sequence
+                        .map(sql_sequence)
+                        .transpose()?,
+                    journal_sequence
+                ],
             )?;
         } else {
             if transition.revision != 1 || transition.previous_subject_sequence != 0 {
@@ -829,53 +891,78 @@ impl EventsStore {
                 });
             }
             transaction.execute(
-                r#"INSERT INTO consumer_dead_letters (
+        r#"INSERT INTO consumer_dead_letters (
                     id, resource_id, revision, generation, state, created_at, updated_at, updated_at_ns,
                     original_stream, original_sequence, original_record_sequence, event_id,
                     subject, payload_bytes, headers_json, api_id, event_name, context_digest,
                     verification_status, deliveries, last_error, replay_stream_sequence,
                     last_journal_sequence
                 ) VALUES (?1,?2,?3,?4,?5,?6,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)"#,
-                params![
-                    transition.id,
-                    transition.resource_id,
-                    revision,
-                    generation,
-                    state_token(transition.state),
-                    transition.occurred_at,
-                    occurred_at_ns,
-                    original.stream,
-                    sql_sequence(original.sequence)?,
-                    original_record_sequence,
-                    original.event_id,
-                    original.subject,
-                    original.payload_bytes,
-                    serde_json::to_string(&original.headers).map_err(|error| EventsStoreError::EncodeJson { model: "dead-letter headers", details: error.to_string() })?,
-                    original.api_id,
-                    original.event_name,
-                    original.context_digest,
-                    original.verification_status,
-                    deliveries,
-                    transition.last_error,
-                    transition.replay_stream_sequence.map(sql_sequence).transpose()?,
-                    journal_sequence,
-                ],
+        params![
+            transition.id,
+            transition.resource_id,
+            revision,
+            generation,
+            state_token(transition.state),
+            transition.occurred_at,
+            occurred_at_ns,
+            original.stream,
+            sql_sequence(original.sequence)?,
+            original_record_sequence,
+            original.event_id,
+            original.subject,
+            original.payload_bytes,
+            serde_json::to_string(&original.headers).map_err(|error| {
+                EventsStoreError::EncodeJson {
+                    model: "dead-letter headers",
+                    details: error.to_string(),
+                }
+            })?,
+            original.api_id,
+            original.event_name,
+            original.context_digest,
+            original.verification_status,
+            deliveries,
+            transition.last_error,
+            transition.replay_stream_sequence.map(sql_sequence).transpose()?,
+            journal_sequence,
+        ],
             )?;
         }
         if let (Some(request_id), Some(request_digest)) =
             (&transition.request_id, &transition.request_digest)
         {
             transaction.execute(
-                "INSERT INTO consumer_dlq_commands (request_id,request_digest,dead_letter_id,revision,generation,state,journal_sequence) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![request_id, request_digest, transition.id, revision, generation, state_token(transition.state), journal_sequence],
+                "INSERT INTO consumer_dlq_commands (request_id,request_digest,\
+                dead_letter_id,revision,generation,state,journal_sequence) \
+                VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    request_id,
+                    request_digest,
+                    transition.id,
+                    revision,
+                    generation,
+                    state_token(transition.state),
+                    journal_sequence
+                ],
             )?;
         }
         transaction.execute(
-            "INSERT INTO consumer_dlq_transitions (journal_sequence,dead_letter_id,revision,state,occurred_at) VALUES (?1,?2,?3,?4,?5)",
-            params![journal_sequence, transition.id, revision, state_token(transition.state), transition.occurred_at],
+            "INSERT INTO consumer_dlq_transitions (journal_sequence,dead_letter_id,\
+            revision,state,occurred_at) \
+            VALUES (?1,?2,?3,?4,?5)",
+            params![
+                journal_sequence,
+                transition.id,
+                revision,
+                state_token(transition.state),
+                transition.occurred_at
+            ],
         )?;
         transaction.execute(
-            "UPDATE consumer_dlq_projection_checkpoint SET stream_sequence=?1 WHERE id=1 AND stream_sequence < ?1",
+            "UPDATE consumer_dlq_projection_checkpoint \
+            SET stream_sequence=?1 \
+            WHERE id=1 AND stream_sequence < ?1",
             [journal_sequence],
         )?;
         transaction.commit()?;
@@ -929,7 +1016,10 @@ impl EventsStore {
             .map_err(|_| EventsStoreError::Poisoned)?;
         connection
             .query_row(
-                "SELECT request_digest,revision,generation,state,journal_sequence FROM consumer_dlq_commands WHERE dead_letter_id=?1 AND request_id=?2",
+                "SELECT request_digest,revision,generation,state,journal_sequence \
+                FROM consumer_dlq_commands \
+                WHERE dead_letter_id=?1 \
+                AND request_id=?2",
                 params![dead_letter_id, request_id],
                 |row| {
                     Ok(json!({
@@ -956,7 +1046,9 @@ impl EventsStore {
             "DELETE FROM consumer_dlq_commands;
              DELETE FROM consumer_dead_letters;
              DELETE FROM consumer_dlq_transitions;
-             UPDATE consumer_dlq_projection_checkpoint SET stream_sequence=0 WHERE id=1;",
+             UPDATE consumer_dlq_projection_checkpoint \
+                SET stream_sequence=0 \
+                WHERE id=1;",
         )?;
         transaction.execute(
             "UPDATE events_projection_metadata SET value=?1 WHERE key='projection_id'",
@@ -1071,7 +1163,11 @@ impl EventsStore {
             .lock()
             .map_err(|_| EventsStoreError::Poisoned)?;
         let mut statement = connection.prepare(&format!(
-            "SELECT id,resource_id,revision,generation,state,updated_at,original_stream,original_sequence,deliveries,last_error FROM consumer_dead_letters {where_sql} ORDER BY updated_at_ns DESC, id ASC LIMIT ?"
+            "SELECT id,resource_id,revision,generation,state,updated_at,original_stream,\
+            original_sequence,deliveries,last_error \
+            FROM consumer_dead_letters {where_sql} \
+            ORDER BY updated_at_ns DESC, id ASC \
+            LIMIT ?"
         ))?;
         let mut rows = statement
             .query_map(params_from_iter(values), dead_letter_row)?
@@ -1106,17 +1202,28 @@ impl EventsStore {
             .map_err(|_| EventsStoreError::Poisoned)?;
         let row = connection
             .query_row(
-                "SELECT id,resource_id,revision,generation,state,updated_at,original_stream,original_sequence,deliveries,last_error,subject,payload_bytes,headers_json,verification_status FROM consumer_dead_letters WHERE id=?1",
+                "SELECT id,resource_id,revision,generation,state,updated_at,\
+                    original_stream,original_sequence,deliveries,last_error,subject,\
+                    payload_bytes,headers_json,verification_status \
+                    FROM consumer_dead_letters \
+                    WHERE id=?1",
                 [id],
                 |row| {
                     let summary = dead_letter_row(row)?;
                     let raw_headers = row.get::<_, String>(12)?;
-                    let headers = serde_json::from_str::<BTreeMap<String, Vec<String>>>(&raw_headers)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|(name, values)| (name, values.join(",")))
-                        .collect::<BTreeMap<_, _>>();
-                    Ok((summary, row.get::<_, String>(10)?, row.get::<_, Vec<u8>>(11)?, headers, row.get::<_, String>(13)?))
+                    let headers =
+                        serde_json::from_str::<BTreeMap<String, Vec<String>>>(&raw_headers)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|(name, values)| (name, values.join(",")))
+                            .collect::<BTreeMap<_, _>>();
+                    Ok((
+                        summary,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Vec<u8>>(11)?,
+                        headers,
+                        row.get::<_, String>(13)?,
+                    ))
                 },
             )
             .optional()?;
@@ -1124,7 +1231,10 @@ impl EventsStore {
             return Ok(None);
         };
         let mut statement = connection.prepare(
-            "SELECT journal_sequence FROM consumer_dlq_transitions WHERE dead_letter_id=?1 ORDER BY revision",
+            "SELECT journal_sequence \
+            FROM consumer_dlq_transitions \
+            WHERE dead_letter_id=?1 \
+            ORDER BY revision",
         )?;
         let references = statement
             .query_map([id], |row| row.get::<_, u64>(0))?
@@ -1203,9 +1313,11 @@ fn legal_dead_letter_successor(
             DeadLetterState::Resolved,
             DeadLetterCause::ReplaySucceeded,
         )
-        | ("replayPending" | "replaying", DeadLetterState::Dead, DeadLetterCause::Exhausted) => {
-            next.generation == current_generation
-        }
+        | (
+            "replayPending" | "replaying",
+            DeadLetterState::Dead,
+            DeadLetterCause::Exhausted | DeadLetterCause::ReplayUnreplayable,
+        ) => next.generation == current_generation,
         _ => false,
     }
 }
@@ -1308,7 +1420,16 @@ fn event_where_clause(filter: &EventsFilter) -> (String, Vec<SqlValue>) {
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
     {
-        clauses.push("(event_id LIKE ? ESCAPE '\\' OR subject LIKE ? ESCAPE '\\' OR owner_contract_id LIKE ? ESCAPE '\\' OR owner_event_name LIKE ? ESCAPE '\\' OR publisher_deployment_id LIKE ? ESCAPE '\\' OR publisher_participant_id LIKE ? ESCAPE '\\' OR trace_id LIKE ? ESCAPE '\\')".to_string());
+        clauses.push(
+            "(event_id LIKE ? ESCAPE '\\' \
+            OR subject LIKE ? ESCAPE '\\' \
+            OR owner_contract_id LIKE ? ESCAPE '\\' \
+            OR owner_event_name LIKE ? ESCAPE '\\' \
+            OR publisher_deployment_id LIKE ? ESCAPE '\\' \
+            OR publisher_participant_id LIKE ? ESCAPE '\\' \
+            OR trace_id LIKE ? ESCAPE '\\')"
+                .to_string(),
+        );
         let pattern = format!(
             "%{}%",
             value
@@ -1376,7 +1497,17 @@ fn row_to_summary_value(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 
 fn inspect_sql(predicate: &str) -> String {
     format!(
-        "SELECT stream_sequence, event_id, event_time, subject, owner_contract_id, owner_event_name, resolution, verification_status, publisher_kind, publisher_deployment_id, publisher_instance_id, publisher_participant_id, publisher_principal_id, publisher_connection_id, publisher_login_session_id, authorization_context_digest, trace_id, traceparent, payload_size_bytes, payload_bytes, headers_json, payload_json, payload_text, decode_error, projected_at FROM events WHERE {predicate} ORDER BY stream_sequence DESC LIMIT 1"
+        "SELECT stream_sequence, event_id, event_time, subject, \
+            owner_contract_id, owner_event_name, resolution, verification_status, \
+            publisher_kind, publisher_deployment_id, publisher_instance_id, \
+            publisher_participant_id, publisher_principal_id, \
+            publisher_connection_id, publisher_login_session_id, \
+            authorization_context_digest, trace_id, traceparent, \
+            payload_size_bytes, payload_bytes, headers_json, payload_json, \
+            payload_text, decode_error, projected_at \
+            FROM events WHERE {predicate} \
+            ORDER BY stream_sequence DESC \
+            LIMIT 1"
     )
 }
 
@@ -1518,7 +1649,8 @@ mod tests {
         let connection = store.connection.lock().expect("lock store");
         let value: String = connection
             .query_row(
-                "SELECT value FROM events_projection_metadata WHERE key = 'last_projected_sequence'",
+                "SELECT value FROM events_projection_metadata \
+                WHERE key = 'last_projected_sequence'",
                 [],
                 |row| row.get(0),
             )
@@ -1757,6 +1889,7 @@ mod tests {
                 original: Some(OriginalEvent {
                     stream: "trellis".to_owned(),
                     sequence,
+                    published_at: timestamp.to_owned(),
                     event_id: Some(format!("event-{sequence}")),
                     subject: "events.v1.orders.Created".to_owned(),
                     payload_bytes: Vec::new(),
@@ -1931,6 +2064,7 @@ mod tests {
             original: Some(OriginalEvent {
                 stream: "trellis".to_owned(),
                 sequence: 42,
+                published_at: "2026-01-01T00:00:00Z".to_owned(),
                 event_id: Some("event-42".to_owned()),
                 subject: "events.v1.orders.Created".to_owned(),
                 payload_bytes: vec![0, 1, 255],

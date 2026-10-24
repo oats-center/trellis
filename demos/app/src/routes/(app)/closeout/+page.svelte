@@ -42,7 +42,6 @@
   let inlineAction = $state("Ready to publish the final report.");
   let acceptedId = $state<string | null>(null);
   let terminal = $state<ReportTerminal | null>(null);
-  let currentRef: ReportOperationRef | null = null;
   let mounted = false;
   let assignmentRequestId = 0;
   let operationRunId = 0;
@@ -139,7 +138,6 @@
       const reportInput: ReportsGenerateInputWithComment = { inspectionId: selectedInspectionId, reportComment: comment };
       const ref = await trellis.reportsGenerate(reportInput).start().orThrow();
       if (!mounted || runId !== operationRunId) return;
-      currentRef = ref;
       acceptedId = ref.id;
       dispatchLiveUpdate({
         kind: "operation",
@@ -193,7 +191,6 @@
     } finally {
       if (!mounted || runId !== operationRunId) return;
       running = false;
-      currentRef = null;
     }
   }
 
@@ -227,7 +224,6 @@
     mounted = false;
     assignmentRequestId += 1;
     operationRunId += 1;
-    currentRef = null;
   });
 </script>
 

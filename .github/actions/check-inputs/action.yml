@@ -1,0 +1,45 @@
+name: Check inputs
+description: >-
+  Restores the artifacts the Check producer jobs built and sets up Node, so each
+  consumer job selects what it needs instead of repeating the same steps.
+inputs:
+  generated:
+    description: Download generated contract artifacts.
+    default: "false"
+  protocol-wasm:
+    description: Download the protocol WASM packages.
+    default: "false"
+  portal:
+    description: Download the embedded browser apps.
+    default: "false"
+  node:
+    description: Set up Node at the workflow's NODE_VERSION.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Download generated artifacts
+      if: inputs.generated == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        name: check-generated
+
+    - name: Download protocol WASM
+      if: inputs.protocol-wasm == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        name: check-protocol-wasm
+        path: ts/packages/trellis/auth/protocol_wasm
+
+    - name: Download embedded browser apps
+      if: inputs.portal == 'true'
+      uses: actions/download-artifact@v4
+      with:
+        name: check-portal
+        path: crates/runtime/generated
+
+    - name: Set up Node
+      if: inputs.node == 'true'
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}

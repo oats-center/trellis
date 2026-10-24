@@ -1,0 +1,14 @@
+{
+  "extends": "../trellis/tsconfig.npm.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "npm",
+    "resolveJsonModule": true,
+    "paths": {
+      "@oatscenter/result": ["../result/npm/mod.d.ts"],
+      "@oatscenter/trellis": ["../trellis/npm/index.d.ts"],
+      "@oatscenter/trellis/*": ["../trellis/npm/*"]
+    }
+  },
+  "files": ["index.ts"]
+}

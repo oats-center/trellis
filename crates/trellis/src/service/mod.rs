@@ -18,7 +18,7 @@ mod bootstrap_ports;
 mod core_bootstrap;
 mod error;
 mod events_runtime;
-mod live_router;
+pub(crate) mod live_router;
 mod local_validator;
 mod operation_repository;
 mod operations;
@@ -53,11 +53,10 @@ pub use error::{
     DeclaredRpcError, HandlerResult, SchemaValidationIssue, ServerError, ValidationIssue,
 };
 pub use events_runtime::{EventsMessageStream, EventsRuntime};
-#[cfg(feature = "runtime-internals")]
-pub use live_router::LiveProviderOwner;
+pub(crate) use live_router::LiveProviderOwner;
 #[doc(hidden)]
 pub use local_validator::{
-    payload_hash_base64url, EventVerificationFailure, LocalAuthVerifier, VerifiedCaller,
+    payload_hash_base64url, AuthenticatedCaller, EventVerificationFailure, LocalAuthVerifier,
 };
 pub use operation_repository::{
     operation_invocation_digest, DurableOperationRecord, DurableOperationSignal,
@@ -97,129 +96,37 @@ pub(crate) use service_host::bootstrap_service_host;
 pub(crate) use service_host::ServiceHost;
 pub use transfer::{
     plan_download_transfer_grant, plan_upload_transfer_grant, DownloadTransferGrant,
-    DownloadTransferGrantPlan, FileTransferInfo, TransferDownloadGrantArgs, TransferIdentity,
-    TransferUploadGrantArgs, UploadTransferCompletion, UploadTransferGrant,
+    DownloadTransferGrantPlan, FileTransferInfo, OperationUploadStream, TransferDownloadGrantArgs,
+    TransferIdentity, TransferUploadGrantArgs, UploadTransferCompletion, UploadTransferGrant,
     UploadTransferGrantPlan, UploadTransferSession,
 };
 pub use trellis_protocol::transfer::generate_transfer_id;
 
-#[doc(hidden)]
-pub mod internal {
-    #[cfg(feature = "runtime-internals")]
-    pub use super::operations::OperationHandlerRuntime;
-    #[cfg(feature = "runtime-internals")]
-    pub use super::operations::OperationTransport;
+/// Runtime-only service support, re-exported through [`crate::__internal`].
+pub(crate) mod internal {
     pub use super::request_loop::{
-        dispatch_one, encode_error_reply, encode_success_reply, HandlerResponse, InboundRequest,
-        OutboundReply, RequestHandler, ResponseStream,
+        dispatch_one, encode_error_reply, encode_success_reply, sign_verified_reply,
+        HandlerResponse, InboundRequest, OutboundReply, RequestHandler, ResponseStream,
     };
-    #[cfg(feature = "runtime-internals")]
-    pub use super::resources::backend::BoundStoreResourceClient;
-
     /// Run a Trellis-owned built-in router through the supplied local request
     /// verifier. Built-in runtimes without a verifier deny all requests
     /// fail-closed; the runtime Auth-side verifier supplies verification in
     /// platform mode.
-    #[cfg(feature = "runtime-internals")]
     pub async fn run_builtin_authenticated_router<V>(
         owner: super::LiveProviderOwner,
-        api_id: &str,
-        subjects: &[&str],
-        router: super::Router,
+        mut router: super::Router,
         validator: V,
     ) -> Result<(), super::ServerError>
     where
         V: super::RequestValidator + Send + Sync + 'static,
     {
-        let deployment_id = match api_id {
-            "trellis.auth@v1" | "trellis.core@v1" | "trellis.state@v1" => {
-                "dep_trellis_auth_runtime"
-            }
-            "trellis.events@v1" => "dep_trellis_events_runtime",
-            "trellis.health@v1" => "dep_trellis_health_runtime",
-            "trellis.jobs@v1" => "dep_trellis_jobs_runtime",
-            _ => {
-                return Err(super::ServerError::Nats(format!(
-                    "unknown built-in API {api_id}"
-                )))
-            }
-        };
-        let mut bound: Vec<String> = Vec::new();
-        for subject in subjects {
-            let family = subject.split('.').next().unwrap_or_default();
-            let wildcard = subject.ends_with(".>");
-            let subject = subject.strip_suffix(".>").unwrap_or(subject);
-            // An operation action name may contain dots (`Auth.X.Y`), so it
-            // spans every segment after the `operations.v1.<api>` prefix. RPC
-            // and Live wildcard entries keep the derived `Route` prefix form.
-            let action = if wildcard && family != "operations" {
-                "Route"
-            } else {
-                let logical = subject.splitn(4, '.').nth(3).unwrap_or_default();
-                // A live descriptor's logical name is `<ApiShortName>.<Action>`
-                // (for example `Health.Watch`); the bound route drops the API
-                // short-name group so it matches the client's bound subject.
-                if family == "live" {
-                    logical
-                        .split_once('.')
-                        .map_or(logical, |(_, action)| action)
-                } else {
-                    logical
-                }
-            };
-            match family {
-                "rpc" => {
-                    let derived =
-                        trellis_protocol::derive_bound_rpc_subject(api_id, deployment_id, action)
-                            .map_err(|error| super::ServerError::Nats(error.to_string()))?;
-                    bound.push(if wildcard {
-                        derived
-                            .strip_suffix("Route")
-                            .expect("derived subject contains action")
-                            .to_owned()
-                            + ">"
-                    } else {
-                        derived
-                    });
-                }
-                "live" => {
-                    let derived =
-                        trellis_protocol::derive_bound_live_subject(api_id, deployment_id, action)
-                            .map_err(|error| super::ServerError::Nats(error.to_string()))?;
-                    bound.push(if wildcard {
-                        derived
-                            .strip_suffix("Route")
-                            .expect("derived subject contains action")
-                            .to_owned()
-                            + ">"
-                    } else {
-                        derived
-                    });
-                }
-                "operations" => {
-                    let base = trellis_protocol::derive_bound_operation_subject(
-                        api_id,
-                        deployment_id,
-                        action,
-                    )
-                    .map_err(|error| super::ServerError::Nats(error.to_string()))?;
-                    if wildcard {
-                        // The provider transport grants this exact operation
-                        // subject, its `.control` lane, and its `.updates.*`
-                        // lane; a deployment-wide wildcard would exceed them.
-                        bound.push(format!("{base}.control"));
-                        bound.push(format!("{base}.updates.*"));
-                    } else {
-                        bound.push(base);
-                    }
-                }
-                _ => {
-                    return Err(super::ServerError::Nats(format!(
-                        "unsupported built-in subject {subject}"
-                    )))
-                }
-            }
-        }
+        let authority = owner
+            .client()
+            .authorization_owner()
+            .own_authority()
+            .map_err(|error| super::ServerError::Nats(error.to_string()))?;
+        router.bind_provider_owner(&authority)?;
+        let subjects = router.subjects();
         // A live-capable router must be given its connection's provider owner
         // before it serves any traffic; fail loudly here instead of surfacing
         // the mistake to the first caller.
@@ -227,7 +134,7 @@ pub mod internal {
         let router = std::sync::Arc::new(super::AuthenticatedRouter::new(router, validator));
         super::provider_ingress::run_provider_intake(
             owner.client().transport_generations(),
-            bound.into(),
+            subjects.into(),
             router,
         )
         .await

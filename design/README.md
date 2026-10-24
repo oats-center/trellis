@@ -55,15 +55,13 @@ These headings are intentionally named for fast human and AI lookup.
 
 ## Core Platform Docs
 
-| Document                                | Read When                                                                | Why                                                                                        |
-| --------------------------------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| `core/trellis-patterns.md`              | You need Trellis-wide architecture rules                                 | Service categories, platform boundaries, communication patterns                            |
-| `auth/trellis-auth.md`                  | You are changing auth architecture                                       | Principals, installed participants, GrantBinding, contexts, bootstrap, and Auth boundaries |
-| `auth/rust-authorization-state.md`      | You are changing Rust-owned auth state or materialization                | Durable records, exact authority materialization, issuable-state boundary                  |
-| `auth/rust-auth-service-ownership.md`   | You are changing external auth, bootstrap, session, or callout ownership | TypeScript inventory and permanent Rust cutover boundaries                                 |
-| `auth/device-activation.md`             | You are changing device preregistration or device activation             | Known-device activation flow, connect info, profiles, online activation                    |
-| `contracts/trellis-api-participants.md` | You are changing manifests, codegen inputs, or permission derivation     | Canonical contract format, `uses`, subject ownership, activation rules                     |
-| `contracts/trellis-idl.md`              | You are changing declarative contract source or compilation              | IDL source layouts, syntax, types, and protocol lowering boundary                          |
+| Document                                | Read When                                                            | Why                                                                                 |
+| --------------------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `core/trellis-patterns.md`              | You need Trellis-wide architecture rules                             | Service categories, platform boundaries, communication patterns                     |
+| `auth/trellis-auth.md`                  | You are changing auth architecture                                   | The auth model: entities, lifecycles, issuance and enforcement pipelines, and rules |
+| `auth/device-activation.md`             | You are changing device preregistration or device activation         | Known-device activation flow, connect info, profiles, online activation             |
+| `contracts/trellis-api-participants.md` | You are changing manifests, codegen inputs, or permission derivation | Canonical contract format, `uses`, subject ownership, activation rules              |
+| `contracts/trellis-idl.md`              | You are changing declarative contract source or compilation          | IDL source layouts, syntax, types, and protocol lowering boundary                   |
 
 ## Subsystem Design Docs
 
@@ -101,8 +99,8 @@ ergonomics.
 | Document                                       | Surface                     | Read When                                                                                                |
 | ---------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `auth/auth-protocol.md`                        | Auth protocol surface       | Implementing auth callout, proofs, reply validation, or auth state model                                 |
-| `auth/auth-api.md`                             | Auth public wire API        | Implementing `/auth/*`, `operations.v1.Auth.*`, `rpc.v1.Auth.*`, or auth events                          |
-| `auth/trellis-auth.md`                         | Auth system/runtime design  | Implementing principals, login sessions, GrantBinding, context issuance, bootstrap, or runtime auth      |
+| `auth/auth-api.md`                             | Auth public wire API        | Implementing OAuth listener routes, native admission, `Auth.*` RPCs, or auth events                      |
+| `auth/trellis-auth.md`                         | Auth system/runtime design  | Implementing principals, login sessions, capabilities, session authority issuance, or runtime auth       |
 | `auth/device-activation.md`                    | Device activation design    | Implementing known-device activation, connect info, or activation review flows                           |
 | `operations/trellis-operations.md`             | Operations design           | Implementing caller-visible async workflows in TypeScript or Rust                                        |
 | `jobs/trellis-jobs.md`                         | Jobs design                 | Implementing service-private background execution or jobs admin surfaces                                 |
@@ -161,7 +159,7 @@ For ordinary app/service library usage, prefer `/guides/libraries/typescript`,
 
 1. `core/testing-patterns.md`
 2. relevant subsystem design doc
-3. `docs/src/routes/guides/releasing-trellis/+page.svx` for verification
+3. `docs/src/routes/guides/releasing-trellis/+page.md` for verification
    commands
 
 ### Work on KV resources or projections

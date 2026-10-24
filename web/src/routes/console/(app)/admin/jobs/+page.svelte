@@ -3,7 +3,6 @@
   import { afterNavigate } from "$app/navigation";
   import { page } from "$app/state";
   import { onDestroy, untrack } from "svelte";
-  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
   import {
     beginOwnedWatch,
     LiveSubscription,
@@ -17,15 +16,14 @@
   import BulkResult from "$lib/components/BulkResult.svelte";
   import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import DataTable from "$lib/components/DataTable.svelte";
-  import JobsScopedCharts from "$lib/components/JobsScopedCharts.svelte";
+  import ColumnChart from "$lib/components/ColumnChart.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import MetricsLedger from "$lib/components/MetricsLedger.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
   import StatusBadge from "$lib/components/StatusBadge.svelte";
-  import Term from "$lib/components/Term.svelte";
-  import { boundedNumber, compactDuration, errorMessage } from "$lib/format";
+  import { boundedNumber, errorMessage } from "$lib/format";
   import { loadJobsMetrics } from "$lib/jobs_metrics.ts";
   import {
     cancelJob,
@@ -37,6 +35,10 @@
   import { getTrellis } from "$lib/trellis";
   import { nextCursorPage, previousCursorPage, resetCursorHistory } from "$lib/cursor_history.ts";
   import { SvelteSet } from "svelte/reactivity";
+  import { errorText, friendlyDuration, jobStateLabel as plainJobState, sentenceName } from "$lib/console/plain_labels.ts";
+  import { createServiceNames } from "$lib/console/service_names.svelte.ts";
+
+  const names = createServiceNames();
 
   type Job = apis.jobs.QueryOutput["items"][number];
   type JobState = Job["state"];
@@ -46,7 +48,6 @@
   type JobPathname = `/admin/jobs/${string}` & {};
 
   const trellis = getTrellis();
-  const authority = getConsoleAuthority();
   const rpcTimeout = 10_000;
   const windows: Array<{ value: MetricsWindow; label: string; title: string }> = [
     { value: "15m", label: "15m", title: "Last 15 minutes" },
@@ -68,7 +69,6 @@
   let jobs = $state.raw<Job[]>([]);
   let groups = $state.raw<apis.jobs.SummaryOutput["groups"]>([]);
   let stats = $state.raw<apis.jobs.SummaryOutput["stats"]>({ byState: {}, total: 0n });
-  let jobCount = $state<bigint | null>(null);
   let cursor = $state<string | undefined>();
   let cursorBackStack = $state<string[]>([]);
   let nextCursor = $state<string | undefined>();
@@ -202,25 +202,22 @@
     return ["pending", "retry"];
   }
 
-  function focusTitle(): string {
-    const prefix = selectedJobType ? `${selectedJobType} · ` : "";
-    if (focus === "running-risk") return `${prefix}Running and at risk`;
-    if (focus === "running") return `${prefix}Running jobs`;
-    if (focus === "action") return `${prefix}Jobs needing action`;
-    if (focus === "completed") return `${prefix}Completed jobs`;
-    if (focus === "failed") return `${prefix}Failed jobs`;
-    if (focus === "dead") return `${prefix}Dead-lettered jobs`;
-    return `${prefix}Backlog`;
-  }
+  const listTabs: Array<{ value: Focus; label: string }> = [
+    { value: "action", label: "Needs attention" },
+    { value: "running-risk", label: "Running" },
+    { value: "backlog", label: "Waiting" },
+    { value: "completed", label: "Finished" },
+    { value: "failed", label: "Failed" },
+    { value: "dead", label: "Failed for good" },
+  ];
 
-  function focusDescription(): string {
-    if (focus === "running-risk") return "Waiting, slow, and retrying work first";
-    if (focus === "running") return "Current active execution";
-    if (focus === "action") return "Retrying, failed, dead, and stale work";
-    if (focus === "completed") return "Most recently completed retained work";
-    if (focus === "failed") return "Non-retryable failures available for inspection";
-    if (focus === "dead") return "Exhausted deliveries awaiting replay or dismissal";
-    return "Pending and retrying work, oldest first";
+  function emptyText(): { title: string; description: string } {
+    if (focus === "action") return { title: "Nothing needs attention", description: "Failed, stuck, and retrying jobs show up here." };
+    if (focus === "running-risk" || focus === "running") return { title: "Nothing is running", description: "Jobs appear here while a service works on them." };
+    if (focus === "backlog") return { title: "Nothing is waiting", description: "Jobs wait here until a service is free to run them." };
+    if (focus === "dead") return { title: "No jobs failed for good", description: "Jobs that run out of tries wait here so you can run them again or dismiss them." };
+    if (focus === "failed") return { title: "No failed jobs", description: "Jobs that fail without retrying show up here." };
+    return { title: "No finished jobs", description: "Try a longer time range." };
   }
 
   function buildQuery(): apis.jobs.QueryInput {
@@ -283,12 +280,10 @@
       if (summaryResult.status === "fulfilled" && summaryResult.value.available) {
         groups = summaryResult.value.groups;
         stats = summaryResult.value.stats;
-        jobCount = summaryResult.value.count;
         summaryError = null;
       } else {
         groups = [];
         stats = { byState: {}, total: 0n };
-        jobCount = null;
         summaryError = summaryResult.status === "rejected"
           ? errorMessage(summaryResult.reason)
           : (summaryResult.value as { message: string }).message;
@@ -391,12 +386,6 @@
     return `/admin/jobs/${encodeURIComponent(id)}` as JobPathname;
   }
 
-  function jobStateLabel(job: Job): string {
-    if (job.state === "active" && (job.waitingOn?.length ?? 0) > 0) return "waiting";
-    if (job.state === "active" && job.runtimeBand === "slow") return "slow";
-    return job.state;
-  }
-
   function riskPriority(job: Job): number {
     if ((job.waitingOn?.length ?? 0) > 0) return 0;
     if (job.state === "retry") return 1;
@@ -406,13 +395,23 @@
 
   function jobNarrative(job: Job): string {
     const wait = job.waitingOn?.[0];
-    if (wait) return wait.label ?? wait.target.label ?? `Waiting on ${wait.target.kind}`;
-    return job.progress?.message ?? job.progress?.step ?? job.lastError ?? "Execution in progress";
+    if (job.state === "active" && wait) return `Waiting for ${wait.label ?? wait.target.label ?? sentenceName(wait.target.kind).toLowerCase()}`;
+    if (job.state === "retry") return "Will try again soon";
+    if (job.state === "stale") return "The service running it stopped responding";
+    if (job.state === "failed" || job.state === "dead") return errorText(job.lastError) ?? "No reason was given.";
+    if (job.state === "completed") return "Done";
+    if (job.state === "pending") return "Waiting for a service to pick it up";
+    return job.progress?.message ?? job.progress?.step ?? "Working";
+  }
+
+  function jobTypeLabel(type: string): string {
+    return sentenceName(type);
   }
 
   function jobDuration(job: Job): string {
-    const value = job.state === "pending" || job.state === "retry" ? job.queueAgeMs : job.runtimeMs;
-    return compactDuration(boundedNumber(value ?? 0n));
+    if (job.state === "pending" || job.state === "retry") return `Waiting ${friendlyDuration(boundedNumber(job.queueAgeMs ?? 0n))}`;
+    const runtime = friendlyDuration(boundedNumber(job.runtimeMs ?? 0n));
+    return job.state === "active" ? `Running ${runtime}` : `Took ${runtime}`;
   }
 
   function jobProgress(job: Job): number {
@@ -422,25 +421,27 @@
     return Math.min(100, Math.max(0, boundedNumber(current) / boundedNumber(total) * 100));
   }
 
-  function jobStateVariant(job: Job): "healthy" | "degraded" | "unhealthy" | "offline" {
-    const label = jobStateLabel(job);
-    if (label === "completed") return "healthy";
-    if (label === "waiting" || label === "slow" || label === "pending" || label === "retry") return "degraded";
-    if (label === "failed" || label === "dead" || label === "stale") return "unhealthy";
-    return "offline";
-  }
-
   const ledgerItems = $derived([
-    { id: "action", label: "Action needed", value: overview.action, detail: `${overview.failed} failed · ${overview.dead} dead · ${overview.retrying} retrying`, tone: "error" as const, active: focus === "action", attention: true },
-    { id: "running", label: "Running", value: overview.running, detail: `${overview.slow} slow · ${workerCount} workers`, tone: "success" as const, active: focus === "running" || focus === "running-risk" },
-    { id: "completed", label: "Processed", value: overview.processed.toLocaleString(), detail: "completed retained jobs", tone: "success" as const, active: focus === "completed" },
-    { id: "failed", label: "Failed", value: overview.failed, detail: `${overview.failureRate.toFixed(2)}% matching`, tone: "error" as const, active: focus === "failed" },
-    { id: "dead", label: "Dead", value: overview.dead, detail: "requires replay or dismissal", tone: "error" as const, active: focus === "dead" },
-    { id: "backlog", label: "Backlog", value: overview.backlog, detail: "pending + retrying", tone: "warning" as const, active: focus === "backlog" },
+    { id: "action", label: "Needs attention", value: overview.action, detail: overview.action > 0 ? [overview.failed + overview.dead > 0 ? `${overview.failed + overview.dead} failed` : "", overview.retrying > 0 ? `${overview.retrying} retrying` : "", overview.stale > 0 ? `${overview.stale} stuck` : ""].filter(Boolean).join(" · ") : "All good", tone: overview.action > 0 ? "error" as const : "success" as const, active: focus === "action", attention: overview.action > 0 },
+    { id: "running", label: "Running", value: overview.running, detail: overview.slow > 0 ? `${overview.slow} slower than usual` : `${workerCount} ${workerCount === 1 ? "worker" : "workers"} ready`, tone: "success" as const, active: focus === "running" || focus === "running-risk" },
+    { id: "backlog", label: "Waiting", value: overview.backlog, detail: "In line to run", tone: overview.backlog > 0 ? "warning" as const : "success" as const, active: focus === "backlog" },
+    { id: "completed", label: "Finished", value: overview.processed.toLocaleString(), detail: overview.failureRate > 0 ? `${overview.failureRate.toFixed(1)}% failed` : "None failed", tone: "info" as const, active: focus === "completed" },
   ]);
 
+  const chartPoints = $derived(
+    (metrics?.buckets ?? []).map((bucket) => {
+      const groups = selectedJobType ? bucket.groups.filter((group) => group.key === selectedJobType) : bucket.groups;
+      const date = new Date(bucket.start);
+      return {
+        label: date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+        tick: metricsWindow === "7d" ? date.toLocaleDateString(undefined, { weekday: "short" }) : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }),
+        value: boundedNumber(groups.reduce((sum, group) => sum + group.completed, 0n)),
+      };
+    }),
+  );
+
   function handleLedgerSelect(id: string) {
-    if (id === "running") selectFocus("running");
+    if (id === "running") selectFocus("running-risk");
     else if (id === "action" || id === "completed" || id === "failed" || id === "dead" || id === "backlog") selectFocus(id);
   }
 
@@ -507,9 +508,15 @@ untrack(() => {
 <svelte:head><title>Jobs · Trellis Console</title></svelte:head>
 
 <section class="jobs-page">
-  <PageToolbar title="Jobs" description="Execution health across services and job types.">
+  <PageToolbar title="Jobs" description="Background work your services run, and anything that needs a decision.">
+    {#snippet meta()}
+      {#if lastUpdated}
+        <span class={["badge badge-sm", watchStatus === "Live" ? "badge-success" : "badge-neutral"]}>{watchStatus === "Live" ? "Live" : "Not live"}</span>
+        <span class="jobs-updated text-xs text-base-content/55">Updated {lastUpdated.toLocaleTimeString()}<span class="sr-only" aria-live="polite">{watchStatus}</span></span>
+      {/if}
+    {/snippet}
     {#snippet actions()}
-      <div class="trellis-segment" role="group" aria-label="Metrics window">
+      <div class="trellis-segment" role="group" aria-label="Time range">
         {#each windows as option (option.value)}
           <button
             type="button"
@@ -526,37 +533,25 @@ untrack(() => {
     {/snippet}
   </PageToolbar>
 
-  {#if lastUpdated}
-    <p class="jobs-updated">Updated {lastUpdated.toLocaleTimeString()} · Live updates: <span aria-live="polite">{watchStatus}</span></p>
-  {/if}
-
   {#if error}
-    <Notice variant="error" role="alert">Jobs could not be loaded. {error}</Notice>
+    <Notice variant="error" role="alert">Jobs couldn't be loaded. {error}</Notice>
   {:else if unavailableMessage}
-    <Notice variant="info" role="status">{unavailableMessage} Job processing can continue while visibility is unavailable.</Notice>
+    <Notice variant="info" role="status">{unavailableMessage} Jobs keep running while this view is unavailable.</Notice>
   {/if}
 
   {#if servicesError}
-    <Notice variant="warning" role="status">
-      Service discovery is unavailable: {servicesError} Job results are unaffected.
-    </Notice>
+    <Notice variant="warning" role="status">Worker counts can't be shown: {servicesError}</Notice>
   {/if}
 
   {#if summaryError}
-    <Notice variant="warning" role="status">
-      The job summary is unavailable: {summaryError} Job results are unaffected.
-    </Notice>
+    <Notice variant="warning" role="status">Totals can't be shown: {summaryError}</Notice>
   {/if}
 
   {#if bulkUnknown.length > 0}
     <Notice variant="warning" role="status">
-      Cancellation outcome unknown for {bulkUnknown.join(", ")}. Inspect each job before any further action.
-      <button class="btn btn-ghost btn-xs" type="button" onclick={() => bulkUnknown = []}>Dismiss after inspection</button>
+      It isn't known whether {bulkUnknown.length} {bulkUnknown.length === 1 ? "job was" : "jobs were"} cancelled. Check them before trying again.
+      <button class="btn btn-ghost btn-xs" type="button" onclick={() => bulkUnknown = []}>Hide</button>
     </Notice>
-  {/if}
-
-  {#if metricsError}
-    <Notice variant="info" role="status">{metricsError}</Notice>
   {/if}
 
   {#if !loading && !unavailableMessage}
@@ -566,49 +561,60 @@ untrack(() => {
 
     <div class="jobs-overview">
       {#if !summaryError}
-      <Panel eyebrow="Secondary" title="Job-type health">
-        {#snippet actions()}<span class="text-sm text-base-content/70">{groups.length} matching types</span>{/snippet}
-        <p class="text-sm text-base-content/70">Complete retained totals by execution contract. Select a type to scope live work.</p>
-        <DataTable>
-          <thead><tr><th>Job type</th><th>Matching</th><th>Backlog</th><th>Failure rate</th><th>Oldest</th></tr></thead>
-          <tbody>
-            {#each groups as group (group.key)}
-              <tr class:row-selected={selectedJobType === group.key}>
-                <td><button type="button" class="link link-hover trellis-identifier" onclick={() => selectJobType(selectedJobType === group.key ? null : group.key)}>{group.label}</button></td>
-                <td class="tabular-nums">{group.count.toLocaleString()}</td>
-                <td class="tabular-nums">{(group.depth ?? 0n).toLocaleString()}</td>
-                <td class="tabular-nums">{group.failureRate === undefined ? "—" : `${(group.failureRate * 100).toFixed(1)}%`}</td>
-                <td>{group.oldestCreatedAt ? compactDuration(Date.now() - new Date(group.oldestCreatedAt).getTime()) : "—"}</td>
-              </tr>
-            {:else}
-              <tr><td colspan="5">No job types match this operational view.</td></tr>
-            {/each}
-          </tbody>
-        </DataTable>
+        <Panel title="Job types">
+          {#snippet actions()}
+            {#if selectedJobType}<button type="button" class="trellis-chip active" onclick={() => selectJobType(null)}>{jobTypeLabel(selectedJobType)} <span aria-hidden="true">×</span><span class="sr-only">Show all job types</span></button>{/if}
+          {/snippet}
+          {#if groups.length === 0}
+            <p class="py-6 text-center text-sm text-base-content/60">No jobs in this period.</p>
+          {:else}
+            <ul class="type-list">
+              {#each groups as group (group.key)}
+                {@const selected = selectedJobType === group.key}
+                <li>
+                  <button type="button" class="type-row" class:selected aria-pressed={selected} title="Show only this job type" onclick={() => selectJobType(selected ? null : group.key)}>
+                    <span class="min-w-0">
+                      <span class="block truncate font-medium">{jobTypeLabel(group.label)}</span>
+                      <span class="block truncate text-xs text-base-content/60">
+                        {group.count.toLocaleString()} {group.count === 1n ? "job" : "jobs"}{(group.depth ?? 0n) > 0n ? ` · ${(group.depth ?? 0n).toLocaleString()} waiting` : ""}{group.oldestCreatedAt && (group.depth ?? 0n) > 0n ? ` · oldest ${friendlyDuration(Date.now() - new Date(group.oldestCreatedAt).getTime())}` : ""}
+                      </span>
+                    </span>
+                    {#if group.failureRate !== undefined && group.failureRate > 0}
+                      <span class="text-sm text-error tabular-nums">{(group.failureRate * 100).toFixed(1)}% failed</span>
+                    {:else}
+                      <span class="text-sm text-base-content/50">No failures</span>
+                    {/if}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </Panel>
+      {/if}
+      <Panel title="Finished over time">
+        {#snippet actions()}<span class="text-sm text-base-content/60">{windowLabel}</span>{/snippet}
+        {#if metricsLoading && !metrics}
+          <LoadingState label="Loading job trends" />
+        {:else if metricsError}
+          <p class="py-10 text-center text-sm text-base-content/60">Trends can't be shown: {metricsError}</p>
+        {:else if chartPoints.length === 0}
+          <p class="py-10 text-center text-sm text-base-content/60">No jobs in this period.</p>
+        {:else}
+          <ColumnChart points={chartPoints} unit="jobs finished" />
+        {/if}
       </Panel>
-      {/if}
-      {#if metricsLoading && !metrics}
-        <LoadingState label="Loading job trends" />
-      {:else if metrics}
-        <JobsScopedCharts buckets={metrics.buckets} selectedKey={selectedJobType} {windowLabel} />
-      {/if}
     </div>
   {/if}
 
   {#if !unavailableMessage}
-    <Panel eyebrow="Primary" title={focusTitle()}>
+    <Panel title="Jobs">
       {#snippet actions()}
-        <div class="flex items-center gap-3">
-          <span class="text-sm text-base-content/70">{jobCount === null ? "Count unavailable" : `${jobCount} in scope (all states)`}</span>
-          {#if selectedJobType}
-            <button type="button" class="btn btn-ghost btn-sm" onclick={() => selectJobType(null)}>Clear type</button>
-          {/if}
+        <div class="trellis-segment" role="group" aria-label="Which jobs">
+          {#each listTabs as tab (tab.value)}
+            <button type="button" class:active={focus === tab.value || (tab.value === "running-risk" && focus === "running")} aria-pressed={focus === tab.value} onclick={() => selectFocus(tab.value)}>{tab.label}</button>
+          {/each}
         </div>
       {/snippet}
-      <p class="text-sm text-base-content/70">{focusDescription()}</p>
-      {#if focus === "dead"}
-        <p class="text-sm text-base-content/70">The <Term term="DLQ" /> holds jobs awaiting a replay or dismissal decision.</p>
-      {/if}
       {#if bulkResult}
         <BulkResult
           succeeded={bulkResult.succeeded}
@@ -626,57 +632,52 @@ untrack(() => {
         </BulkActionBar>
       {/if}
       {#if loading}
-        <LoadingState label="Loading focused jobs" class="min-h-32" />
+        <LoadingState label="Loading jobs" class="min-h-32" />
       {:else if jobs.length === 0}
-        <EmptyState title="No matching jobs" description="No retained jobs match this operational view." />
+        <EmptyState title={emptyText().title} description={emptyText().description} />
       {:else}
         <DataTable>
           <thead><tr>
-            <th>
-              <span class="sr-only">Select all cancellable jobs</span>
+            <th class="w-8">
               <input
                 type="checkbox"
                 class="checkbox checkbox-xs"
-                aria-label="Select all cancellable jobs"
+                aria-label="Select all jobs that can be cancelled"
                 disabled={bulkBusy || selectableJobIds.length === 0}
                 checked={selectableJobIds.length > 0 && selectableJobIds.every((id) => selectedJobs.has(id))}
                 indeterminate={selectableJobIds.some((id) => selectedJobs.has(id)) && !selectableJobIds.every((id) => selectedJobs.has(id))}
                 onchange={() => toggleAll(selectedJobs, selectableJobIds)}
               />
             </th>
-            <th>Job type / id</th><th>Queue key</th><th>State</th><th>Status</th><th>Duration</th><th>Attempt</th></tr></thead>
+            <th>Job</th><th>Status</th><th>What's happening</th><th>Time</th><th class="text-right">Tries</th></tr></thead>
           <tbody>
             {#each focusedJobs as job (job.id)}
               {@const progress = jobProgress(job)}
+              {@const state = plainJobState(job)}
               <tr>
                 <td>
                   {#if job.state === "active" || job.state === "pending" || job.state === "retry"}
                     <input
                       type="checkbox"
                       class="checkbox checkbox-xs"
-                      aria-label={`Select job {job.id}`}
+                      aria-label={`Select ${jobTypeLabel(job.type)} job`}
                       disabled={bulkBusy}
                       checked={selectedJobs.has(job.id)}
                       onchange={() => toggleId(selectedJobs, job.id)}
                     />
-                  {:else}
-                    <span class="text-xs text-base-content/50">—</span>
                   {/if}
                 </td>
                 <td class="min-w-0">
-                  <a class="link link-hover block max-w-md truncate text-left trellis-identifier font-medium" href={resolve(jobRoute(job.id))}>{job.type}</a>
-                  <span class="trellis-metadata trellis-identifier block max-w-md truncate">{job.service}</span>
-                  <span class="trellis-metadata block max-w-md truncate text-base-content/60">{job.id}</span>
+                  <a class="link link-hover block max-w-xs truncate font-medium" href={resolve(jobRoute(job.id))}>{jobTypeLabel(job.type)}</a>
+                  <span class="block max-w-xs truncate text-xs text-base-content/60">{names.participant(job.service)}</span>
                 </td>
-                <td class="trellis-metadata trellis-identifier block max-w-xs truncate">{job.queueKey ?? "Unkeyed"}</td>
-                <td><StatusBadge label={jobStateLabel(job)} status={jobStateVariant(job)} /></td>
+                <td><StatusBadge label={state.label} status={state.tone} /></td>
                 <td class="max-w-md">
-                  <span class="block truncate text-sm" title={jobNarrative(job)}>{jobNarrative(job)}</span>
-                  {#if job.progress?.step}<span class="trellis-metadata block truncate">{job.progress.step}</span>{/if}
+                  <span class={["block truncate text-sm", state.tone === "unhealthy" ? "text-error" : ""]} title={jobNarrative(job)}>{jobNarrative(job)}</span>
                   {#if progress > 0}<span class="jobs-progress"><i style:--job-progress={`${progress}%`}></i></span>{/if}
                 </td>
-                <td class="whitespace-nowrap tabular-nums text-sm">{job.state === "pending" || job.state === "retry" ? "Queue " : "Run "}{jobDuration(job)}</td>
-                <td class="tabular-nums text-sm">{job.tries}/{job.maxTries}</td>
+                <td class="whitespace-nowrap text-sm tabular-nums">{jobDuration(job)}</td>
+                <td class="text-right text-sm tabular-nums">{job.tries} of {job.maxTries}</td>
               </tr>
             {/each}
           </tbody>
@@ -698,46 +699,61 @@ untrack(() => {
 <style>
   .jobs-page {
     display: grid;
-    gap: 1.5rem;
-  }
-
-  .jobs-page :global(.mb-5) {
-    margin-bottom: 0;
-  }
-
-  .jobs-updated {
-    color: color-mix(in oklab, var(--color-base-content) 64%, transparent);
-    font-size: 0.72rem;
-    margin: -1.15rem 0 -0.75rem;
-    text-align: right;
+    gap: 1.25rem;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .jobs-overview {
     display: grid;
-    gap: 1.5rem;
-    grid-template-columns: minmax(0, 1.6fr) minmax(14rem, 0.52fr);
+    gap: 1.25rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: start;
   }
 
-  .jobs-overview > * {
+  .jobs-overview > :global(*) {
     min-width: 0;
   }
 
-  .row-selected {
-    background: color-mix(in oklab, var(--color-primary) 10%, var(--color-base-100));
+  .type-list > li {
+    border-top: 1px solid var(--color-base-300);
+  }
+
+  .type-list > li:first-child {
+    border-top: 0;
+  }
+
+  .type-row {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    padding: 0.7rem 0.25rem;
+    text-align: left;
+    width: 100%;
+  }
+
+  .type-row:hover {
+    background: color-mix(in oklab, var(--color-base-200) 60%, transparent);
+  }
+
+  .type-row.selected {
+    background: color-mix(in oklab, var(--color-primary) 7%, transparent);
   }
 
   .jobs-progress {
     background: color-mix(in oklab, var(--color-base-300) 70%, transparent);
     border-radius: 999px;
     display: block;
-    height: 0.22rem;
+    height: 0.25rem;
     margin-top: 0.35rem;
     overflow: hidden;
   }
 
   .jobs-progress i {
-    background: color-mix(in oklab, var(--color-primary) 75%, var(--color-base-content));
+    background: var(--color-primary);
     display: block;
     height: 100%;
     width: var(--job-progress);
@@ -745,7 +761,7 @@ untrack(() => {
 
   @media (max-width: 1100px) {
     .jobs-overview {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
   }
 </style>

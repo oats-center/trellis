@@ -1,0 +1,37 @@
+{
+  "name": "@trellis-demo/app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "update": "trellis update",
+    "generate": "trellis generate",
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.check.json"
+  },
+  "dependencies": {
+    "@oatscenter/result": "^0.100.0-rc.3",
+    "@oatscenter/trellis": "^0.100.0-rc.3",
+    "@oatscenter/trellis-svelte": "^0.100.0-rc.3",
+    "typebox": "^1.1.33",
+    "ulid": "^3.0.2"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-static": "3.0.10",
+    "@sveltejs/kit": "2.70.3",
+    "@sveltejs/vite-plugin-svelte": "7.0.0",
+    "@tailwindcss/vite": "4.2.4",
+    "@types/node": "^24.0.0",
+    "daisyui": "5.5.19",
+    "svelte": "5.56.4",
+    "svelte-check": "4.4.6",
+    "tailwindcss": "4.2.4",
+    "typescript": "6.0.3",
+    "vite": "8.3.4"
+  }
+}

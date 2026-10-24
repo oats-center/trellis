@@ -1,11 +1,15 @@
 import { TrellisService } from "@oatscenter/trellis/service";
-import { assert, assertEquals } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { ulid } from "ulid";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("concurrent admission preserves cancellation, frozen input and creator", async () => {
+test("concurrent admission preserves cancellation, frozen input and creator", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
       name: "atomic-admission",
@@ -18,16 +22,16 @@ Deno.test("concurrent admission preserves cancellation, frozen input and creator
     const services = await Promise.all(
       [identity, replica].map((instance) =>
         TrellisService.connect({
-          trellisUrl: runtime.trellisUrl,
+          trellisUrl: runtime.oauthIssuer,
           participant: participants.Provider.participant,
           name: "atomic-admission",
           seed: instance.seed,
-        }).orThrow()
+        }).orThrow(),
       ),
     );
     const client = await runtime.connectClient({
       name: "atomic-admission-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     const foreignIdentity = await runtime.registerService({
       name: "atomic-admission-foreign-caller",
@@ -35,7 +39,7 @@ Deno.test("concurrent admission preserves cancellation, frozen input and creator
       contract: participants.OperationCaller.participant,
     });
     const foreign = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.OperationCaller.participant,
       name: "atomic-admission-foreign-caller",
       seed: foreignIdentity.seed,
@@ -47,11 +51,11 @@ Deno.test("concurrent admission preserves cancellation, frozen input and creator
     let releaseCleanup = Promise.withResolvers<void>();
     for (const service of services) {
       await service.handleWork(async ({ input, caller, signal }) => {
-        assertEquals(input.value, expectedInput);
+        assert.deepEqual(input.value, expectedInput);
         assert(caller.type === "verified");
-        const identity = `${caller.principalId}:${caller.participantId}`;
+        const identity = `${caller.principalId}:${JSON.stringify(caller.binding)}`;
         creator ??= identity;
-        assertEquals(identity, creator);
+        assert.deepEqual(identity, creator);
         if (!signal.aborted) {
           businessExecutions++;
           await new Promise<void>((resolve) => {
@@ -78,22 +82,23 @@ Deno.test("concurrent admission preserves cancellation, frozen input and creator
         cleanupEntered = Promise.withResolvers<void>();
         releaseCleanup = Promise.withResolvers<void>();
         const admissions = await Promise.all(
-          Array.from(
-            { length: 12 },
-            (_, index) =>
-              client.work({ value: expectedInput }).start(undefined, {
+          Array.from({ length: 12 }, (_, index) =>
+            client
+              .work({ value: expectedInput })
+              .start(undefined, {
                 invocationId,
                 cancellationRequested: (index + round) % 3 === 0,
-              }).orThrow(),
+              })
+              .orThrow(),
           ),
         );
         const operation = admissions[0];
         for (const admission of admissions) {
-          assertEquals(admission.id, invocationId);
+          assert.deepEqual(admission.id, invocationId);
         }
         await cleanupEntered.promise;
         assert(businessExecutions <= 1);
-        assertEquals((await operation.get().orThrow()).state, "pending");
+        assert.deepEqual((await operation.get().orThrow()).state, "pending");
         const conflicting = await Promise.all([
           client.work({ value: "different-input" }).start(undefined, {
             invocationId,
@@ -105,14 +110,17 @@ Deno.test("concurrent admission preserves cancellation, frozen input and creator
           }),
         ]);
         for (const conflict of conflicting) assert(conflict.isErr());
-        await client.work({ value: expectedInput }).start(undefined, {
-          invocationId,
-        }).orThrow();
+        await client
+          .work({ value: expectedInput })
+          .start(undefined, {
+            invocationId,
+          })
+          .orThrow();
         releaseCleanup.resolve();
         const terminal = await operation.wait().orThrow();
-        assertEquals(terminal.state, "cancelled");
+        assert.deepEqual(terminal.state, "cancelled");
         for (const admission of admissions) {
-          assertEquals(await admission.get().orThrow(), terminal);
+          assert.deepEqual(await admission.get().orThrow(), terminal);
         }
         assert(businessExecutions <= 1);
       }
@@ -133,13 +141,13 @@ Deno.test("concurrent admission preserves cancellation, frozen input and creator
         }),
       ]);
       const winners = contested.filter((outcome) => outcome.isOk());
-      assertEquals(winners.length, 1);
+      assert.deepEqual(winners.length, 1);
       const winner = winners[0];
       assert(winner.isOk());
       await cleanupEntered.promise;
-      assertEquals(businessExecutions, 0);
+      assert.deepEqual(businessExecutions, 0);
       releaseCleanup.resolve();
-      assertEquals(
+      assert.deepEqual(
         (await winner.orThrow().wait().orThrow()).state,
         "cancelled",
       );
@@ -147,15 +155,19 @@ Deno.test("concurrent admission preserves cancellation, frozen input and creator
         { length: 131073 },
         (_, index) => index % 251,
       );
-      const upload = await client.upload({ value: "admission-upload" })
-        .transfer(bytes).start().orThrow();
-      const uploaded = await upload.wait().orThrow();
-      assertEquals(uploaded.terminal.state, "completed");
-      assertEquals(uploaded.terminal.output, { value: "admission-upload" });
-      assertEquals(uploaded.transferred.size, bytes.length);
-      const stored = await services[0].store.files.waitFor("admission-upload")
+      const upload = await client
+        .upload({ value: "admission-upload" })
+        .transfer(bytes)
+        .start()
         .orThrow();
-      assertEquals(await stored.bytes().orThrow(), bytes);
+      const uploaded = await upload.wait().orThrow();
+      assert.deepEqual(uploaded.terminal.state, "completed");
+      assert.deepEqual(uploaded.terminal.output, { value: "admission-upload" });
+      assert.deepEqual(uploaded.transferred.size, bytes.length);
+      const stored = await services[0].store.files
+        .waitFor("admission-upload")
+        .orThrow();
+      assert.deepEqual(await stored.bytes().orThrow(), bytes);
     } finally {
       releaseCleanup.resolve();
       await client.connection.close();

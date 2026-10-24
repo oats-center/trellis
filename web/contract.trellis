@@ -1,86 +1,56 @@
 import { auth, events, health, jobs, state } from trellis;
 
-app Portal {
-  use auth { operation DeviceUserAuthorities.Resolve; }
-}
-
 app Console {
   use auth {
-    rpc Capabilities.List;
-    rpc CapabilityGroups.Delete;
-    rpc CapabilityGroups.Get;
-    rpc CapabilityGroups.List;
-    rpc CapabilityGroups.Put;
-    rpc Connections.Kick;
-    rpc Connections.List;
-    rpc Deployments.Apply;
-    rpc Deployments.Get;
-    rpc Deployments.Create;
-    rpc Deployments.Disable;
-    rpc Deployments.Enable;
-    rpc Deployments.List;
-    rpc Deployments.Remove;
-    rpc DeviceUserAuthorities.List;
-    rpc DeviceUserAuthorities.Reviews.Decide;
-    rpc DeviceUserAuthorities.Reviews.List;
-    rpc DeviceUserAuthorities.Revoke;
-    rpc Devices.Disable;
-    rpc Devices.Enable;
-    rpc Devices.List;
-    rpc Devices.Provision;
-    rpc Devices.Remove;
-    rpc Grants.Get;
-    rpc Grants.List;
-    rpc Grants.Revoke;
-    rpc Grants.Set;
-    rpc Issuers.Revoke;
-    rpc Participants.Get;
-    rpc Participants.Install;
-    rpc Portals.Get;
-    rpc Portals.GrantOverrides.List;
-    rpc Portals.GrantOverrides.Put;
-    rpc Portals.GrantOverrides.Remove;
-    rpc Portals.List;
-    rpc Portals.LoginSettings.Get;
-    rpc Portals.LoginSettings.Update;
-    rpc Portals.Put;
-    rpc Portals.Remove;
-    rpc Portals.Routes.Put;
-    rpc Portals.Routes.Remove;
-    rpc ServiceInstances.Disable;
-    rpc ServiceInstances.Enable;
-    rpc ServiceInstances.List;
-    rpc ServiceInstances.Provision;
-    rpc ServiceInstances.Remove;
-    rpc Sessions.List;
-    rpc Sessions.Logout;
-    rpc Sessions.Me;
-    rpc Sessions.Revoke;
-    rpc UserIdentities.List;
-    rpc UserIdentities.Unlink;
-    rpc Users.Create;
-    rpc Users.Get;
-    rpc Users.IdentityLink.Create;
-    rpc Users.List;
-    rpc Users.Password.Change;
-    rpc Users.PasswordReset.Create;
-    rpc Users.Resolve;
-    rpc Users.Update;
+    capability roles.manage;
+    capability users.manage;
+    capability users.read;
+    capability platform.manage;
+    capability apis.accept;
+    capability apis.forceReplace;
+    capability clients.manage;
+    required capability sessions.read;
+    required capability sessions.revoke;
+    required capability identities.read;
+    required capability identities.manage;
+    required capability account.changePassword;
+    required capability account.read;
+    required capability account.edit;
   }
   use events {
-    rpc Consumers.Inspect;
-    rpc Consumers.Query;
-    rpc DeadLetters.Dismiss;
-    rpc DeadLetters.Inspect;
-    rpc DeadLetters.Query;
-    rpc DeadLetters.Replay;
-    rpc Diagnostics;
-    rpc Inspect;
-    rpc Metrics;
-    rpc Query;
-    live Watch;
+    required capability consumers.inspect;
+    required capability deadLetters.dismiss;
+    required capability deadLetters.inspect;
+    required capability deadLetters.replay;
+    required capability diagnostics.read;
+    required capability events.inspect;
+    required capability metrics.read;
+    required capability events.query;
+    required capability events.observe;
   }
-  use health { rpc Inspect; rpc Metrics; rpc Query; rpc Summary; subscribe event StatusChanged; live Watch; }
-  use jobs { rpc Cancel; rpc DismissDLQ; rpc GetKey; rpc Inspect; rpc ListDLQ; rpc ListServices; rpc Metrics; rpc Query; rpc ReplayDLQ; rpc Retry; rpc Summary; live Watch; }
-  use state { rpc Delete; rpc Resources.Inspect; rpc Resources.Query; }
+  use health {
+    required capability health.inspect;
+    required capability metrics.read;
+    required capability health.query;
+    required capability summary.read;
+    required capability status.observe;
+    required capability health.observe;
+  }
+  use jobs {
+    required capability jobs.cancel;
+    required capability deadLetters.dismiss;
+    required capability jobs.findByKey;
+    required capability jobs.inspect;
+    required capability deadLetters.read;
+    required capability services.list;
+    required capability metrics.read;
+    required capability jobs.query;
+    required capability deadLetters.replay;
+    required capability jobs.retry;
+    required capability summary.read;
+    required capability jobs.observe;
+  }
+  use state {
+    required capability values.delete;
+  }
 }

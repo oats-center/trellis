@@ -5,23 +5,18 @@ use serde::{de::DeserializeOwned, Serialize};
 use trellis_protocol::{
     decode_pagination_cursor, encode_pagination_cursor, pagination_query_digest,
 };
-use trellis_runtime_apis::__types::trellis::HealthHeartbeatSamplechecksItem as HealthHeartbeatSampleChecksItem;
+use trellis_runtime_apis::__types::trellis::HealthHeartbeatSampleChecksItem;
 use trellis_runtime_apis::__types::{CursorPageInfo, CursorQuery};
 use trellis_runtime_apis::types::{
-    HealthInspectRequest, HealthInspectResponse,
-    HealthInspectResponsehistoryItem as HealthInspectResponseHistoryItem,
-    HealthInspectResponsehistoryItemchecksItem as HealthInspectResponseHistoryItemChecksItem,
-    HealthInspectResponseinstancesItem as HealthInspectResponseInstancesItem,
-    HealthInspectResponseinstancesItemlatestSample as HealthInspectResponseInstancesItemLatestSample,
-    HealthInspectResponseparticipant as HealthInspectResponseParticipant,
-    HealthInspectResponseprojection as HealthInspectResponseProjection, HealthMetricsRequest,
-    HealthMetricsResponse, HealthMetricsResponseprojection as HealthMetricsResponseProjection,
-    HealthMetricsResponseseriesItem as HealthMetricsResponseSeriesItem,
-    HealthMetricsResponseseriesItembucketsItem as HealthMetricsResponseSeriesItemBucketsItem,
-    HealthMetricsResponseseriesItembucketsItemchecksItem as HealthMetricsResponseSeriesItemBucketsItemChecksItem,
-    HealthMetricsResponsesummary as HealthMetricsResponseSummary, HealthQueryRequest,
-    HealthQueryResponse, HealthQueryResponseentriesItem as HealthQueryResponseEntriesItem,
-    HealthSummaryRequest, HealthSummaryResponse, Number, Uint64,
+    HealthInspectRequest, HealthInspectResponse, HealthInspectResponseHistoryItem,
+    HealthInspectResponseHistoryItemChecksItem, HealthInspectResponseInstancesItem,
+    HealthInspectResponseInstancesItemLatestSample, HealthInspectResponseParticipant,
+    HealthInspectResponseProjection, HealthMetricsRequest, HealthMetricsResponse,
+    HealthMetricsResponseProjection, HealthMetricsResponseSeriesItem,
+    HealthMetricsResponseSeriesItemBucketsItem,
+    HealthMetricsResponseSeriesItemBucketsItemChecksItem, HealthMetricsResponseSummary,
+    HealthQueryRequest, HealthQueryResponse, HealthQueryResponseEntriesItem, HealthSummaryRequest,
+    HealthSummaryResponse, Number, Uint64,
 };
 
 use super::store::{rfc3339, HealthStore, HealthStoreError};
@@ -242,7 +237,7 @@ impl HealthStore {
         Ok(HealthSummaryResponse {
             as_of: rfc3339(now_ns)?,
             count: Uint64(count.try_into().unwrap_or(u64::MAX)),
-            projection: trellis_runtime_apis::types::HealthQueryResponseprojection {
+            projection: trellis_runtime_apis::types::HealthQueryResponseProjection {
                 last_stream_sequence: Uint64(
                     projection
                         .last_stream_sequence

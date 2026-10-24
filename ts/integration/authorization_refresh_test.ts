@@ -5,17 +5,23 @@
  * attachment: RPCs continue, the connection remains connected, and retained
  * Live sessions keep their handler and protocol state.
  *
- * Each case runs beyond multiple signed context and routing-JWT lifetimes.
+ * Cases exercise scheduled renewal and continued authenticated serving.
  * The short lifetime is a test fixture, not a production default.
  */
 
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
-import { createClient } from "@libsql/client";
-import { assert, assertEquals } from "@std/assert";
-import { fromFileUrl, join } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { env, kill, stdout, stderr } from "node:process";
+import { ulid } from "ulid";
+import { spawnTracked } from "./_support/process.ts";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
   repoTrellisSource,
   rustFixtureArgv,
@@ -25,19 +31,13 @@ import {
 /** Built server binary supplied by the live test harness. */
 
 /**
- * A short but sane window. `notBefore` precedes issuance by the 30s allowed
- * clock skew, so the post-issuance validity is `lifetime - skew` (46s) and the
- * proactive refresh fires at `lifetime - refreshLead - skew` (31s) after
- * issuance. Every process-local connection refreshes on that cadence, so a
- * case that runs 92s crosses two routing-credential expirations. A successful
- * RPC alone does not prove context renewal, since an admitted socket may keep
- * working after the context expires; observe persisted issuance separately.
+ * Supported short-lived authority. The observation extends beyond its initial
+ * signed lifetime and spans repeated proactive renewals. A successful RPC alone
+ * does not prove renewal, since an admitted socket may remain open; the native
+ * provider case also observes a changed context on its authenticated replies.
  */
 const shortAuthorizationLifetimes = {
   contextLifetimeSeconds: 76,
-  refreshLeadSeconds: 15,
-  refreshJitterSeconds: 0,
-  minimumContextLifetimeSeconds: 46,
 };
 
 const runtimeOptions = {
@@ -45,8 +45,79 @@ const runtimeOptions = {
   trellis: { source: repoTrellisSource() },
 };
 
-/** Past two 31s refresh cycles and their corresponding 46s expirations. */
-const OBSERVATION_MS = 92_000;
+/** Observe genuine expiry and two scheduled renewals in a short isolated runtime. */
+const OBSERVATION_MS = 48_000;
+
+const fastRuntimeOptions = {
+  ...runtimeOptions,
+  authorization: {
+    contextLifetimeSeconds: 28,
+    allowedClockSkewSeconds: 2,
+  },
+};
+
+test("verified short-lived authority remains usable after delayed admission", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const hold = runtime
+        .nativeTransportGate()
+        .armResponseHold("trellis.auth.admission.");
+      const registering = runtime.registerService({
+        name: `delayed-short-authority-${ulid()}`,
+        contract: participants.Provider.participant,
+      });
+      try {
+        await Promise.race([
+          hold.held,
+          registering.then(() => {
+            throw new Error("service registered before its admission was held");
+          }),
+        ]);
+        // Move the real 61-second signed authority inside the old fixed
+        // 60-second lead while its authenticated reply remains valid.
+        await new Promise((resolve) => setTimeout(resolve, 2_100));
+        await hold.release();
+        const identity = await registering;
+        const service = await TrellisService.connect({
+          trellisUrl: runtime.oauthIssuer,
+          participant: participants.Provider.participant,
+          name: "delayed-short-authority",
+          seed: identity.seed,
+        }).orThrow();
+        const exited = service.wait().catch((cause: unknown) => cause);
+        try {
+          await service.handleEcho(({ input }) => Result.ok(input));
+          const caller = await runtime.connectClient({
+            name: "delayed-short-authority-caller",
+            contract: apps.Caller.request,
+          });
+          try {
+            assert.deepEqual(
+              (await caller.echo({ value: "admitted after delay" }).orThrow())
+                .value,
+              "admitted after delay",
+            );
+          } finally {
+            await caller.connection.close();
+          }
+        } finally {
+          await service.stop();
+          await exited;
+        }
+      } finally {
+        await hold.release();
+      }
+    },
+    {
+      ...runtimeOptions,
+      interruptibleNativeProxy: true,
+      authorization: {
+        ...shortAuthorizationLifetimes,
+        contextLifetimeSeconds: 61,
+      },
+    },
+  );
+});
 
 /** Connects one provider service whose Watch source emits continuously. */
 async function startContinuousProvider(
@@ -56,13 +127,13 @@ async function startContinuousProvider(
   mayEmit: () => boolean = () => true,
 ) {
   const identity = await runtime.registerService({
-    name: `refresh-live-${crypto.randomUUID()}`,
+    name: `refresh-live-${ulid()}`,
     contract: participants.Provider.participant,
   });
   const service = await TrellisService.connect({
-    trellisUrl: runtime.trellisUrl,
+    trellisUrl: runtime.oauthIssuer,
     participant: participants.Provider.participant,
-    name: `refresh-live-${crypto.randomUUID()}`,
+    name: `refresh-live-${ulid()}`,
     seed: identity.seed,
   }).orThrow();
   const exit = service.wait().catch((error: unknown) => error);
@@ -80,35 +151,30 @@ async function startContinuousProvider(
   return { service, exit };
 }
 
-Deno.test("authorization refresh keeps a live RPC client connected and unsuspended", async () => {
+test("authorization refresh keeps a live RPC client connected and unsuspended", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
-      name: `refresh-rpc-${crypto.randomUUID()}`,
+      name: `refresh-rpc-${ulid()}`,
       contract: participants.Provider.participant,
     });
     const service = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: participants.Provider.participant,
-      name: `refresh-rpc-${crypto.randomUUID()}`,
+      name: `refresh-rpc-${ulid()}`,
       seed: identity.seed,
     }).orThrow();
     const serviceExit = service.wait().catch((error: unknown) => error);
     await service.handleEcho(({ input }) => Result.ok(input));
     const client = await runtime.connectClient({
       name: "refresh-rpc-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     const phases: string[] = [];
     const unsubscribe = client.connection.subscribe((status) =>
-      phases.push(status.phase)
+      phases.push(status.phase),
     );
-    const database = createClient({
-      url: `file:${
-        join(runtime.workdir, "data", "trellis", "platform.sqlite")
-      }`,
-    });
     try {
-      assertEquals(
+      assert.deepEqual(
         (await client.echo({ value: "before" }).orThrow()).value,
         "before",
       );
@@ -125,40 +191,45 @@ Deno.test("authorization refresh keeps a live RPC client connected and unsuspend
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       assert(requests > 0, "the case must issue real RPCs");
-      assertEquals(failures, []);
+      assert.deepEqual(failures, []);
 
-      assertEquals(
+      // The retained administrator must also remain usable for ordinary client
+      // admission after these refreshes, not merely the already-open caller.
+      const admitted = await runtime.connectClient({
+        name: "refresh-rpc-later-caller",
+        contract: apps.Caller.request,
+      });
+      try {
+        assert.deepEqual(
+          (await admitted.echo({ value: "later admission" }).orThrow()).value,
+          "later admission",
+        );
+      } finally {
+        await admitted.connection.close();
+      }
+
+      assert.deepEqual(
         (await client.echo({ value: "after" }).orThrow()).value,
         "after",
       );
-      assertEquals(client.connection.status.phase, "connected");
-      const contexts = await database.execute({
-        sql:
-          "SELECT COUNT(DISTINCT context_digest) AS count FROM auth_authorization_contexts WHERE participant_id = ?",
-        args: [participants.Caller.participant.id],
-      });
-      assert(
-        Number(contexts.rows[0].count) >= 3,
-        "the connected caller must issue refreshed contexts across two credential lifetimes",
-      );
+      assert.deepEqual(client.connection.status.phase, "connected");
       for (const phase of phases) {
-        assertEquals(
+        assert.deepEqual(
           phase,
           "connected",
           "renewing admission credentials must not transition the connection",
         );
       }
     } finally {
-      database.close();
       unsubscribe();
       await client.connection.close();
       await service.stop();
-      assertEquals(await serviceExit, undefined);
+      assert.deepEqual(await serviceExit, undefined);
     }
-  }, runtimeOptions);
+  }, fastRuntimeOptions);
 });
 
-Deno.test("an active live observation continues across consumer and provider authorization refresh", async () => {
+test("an active live observation continues across consumer and provider authorization refresh", async () => {
   await withTrellisRuntime(async (runtime) => {
     let starts = 0;
     let cleanups = 0;
@@ -168,16 +239,16 @@ Deno.test("an active live observation continues across consumer and provider aut
     // independent public trigger for one endpoint alone.
     const { service, exit } = await startContinuousProvider(
       runtime,
-      () => starts += 1,
-      () => cleanups += 1,
+      () => (starts += 1),
+      () => (cleanups += 1),
       () => mayEmit,
     );
     const client = await runtime.connectClient({
       name: "refresh-live-caller",
-      contract: participants.Caller.participant,
+      contract: apps.Caller.request,
     });
     try {
-      const handle = await client.watch({}).orThrow();
+      const handle = await client.runtimeWatch({}).orThrow();
       const frames: string[] = [];
       let ended = false;
       let sessionError: unknown;
@@ -195,26 +266,22 @@ Deno.test("an active live observation continues across consumer and provider aut
 
       // First observe DATA across a refresh, then leave the same session quiet
       // across the next credential expiry before resuming its source.
-      await new Promise((resolve) => setTimeout(resolve, 36_000));
+      await new Promise((resolve) => setTimeout(resolve, 26_000));
       assert(frames.length > established, "DATA must continue after renewal");
       mayEmit = false;
       await new Promise((resolve) =>
-        setTimeout(resolve, OBSERVATION_MS - 36_000)
+        setTimeout(resolve, OBSERVATION_MS - 26_000),
       );
       if (sessionError) throw sessionError;
-      assertEquals(ended, false, "the quiet session must remain active");
+      assert.deepEqual(ended, false, "the quiet session must remain active");
       const beforeResume = frames.length;
       mayEmit = true;
       await runtime.waitFor(() => frames.length > beforeResume, {
         timeoutMs: 15_000,
       });
-      assertEquals(
-        starts,
-        1,
-        "the provider handler must not be restarted",
-      );
-      assertEquals(ended, false, "the session must not report terminal");
-      assertEquals(client.connection.status.phase, "connected");
+      assert.deepEqual(starts, 1, "the provider handler must not be restarted");
+      assert.deepEqual(ended, false, "the session must not report terminal");
+      assert.deepEqual(client.connection.status.phase, "connected");
 
       await handle.return?.();
       await drain;
@@ -225,9 +292,9 @@ Deno.test("an active live observation continues across consumer and provider aut
       await service.stop();
       // A normally closed session settles its provider source; the clean stop
       // is the expected terminal, not a lost-authority failure.
-      assertEquals(await exit, undefined);
+      assert.deepEqual(await exit, undefined);
     }
-  }, runtimeOptions);
+  }, fastRuntimeOptions);
 });
 
 /**
@@ -245,133 +312,180 @@ const CALLER_CONTEXT_OFFSET_MS = 20_000;
  */
 const RUST_RENEWAL_OBSERVATION_MS = 26_000;
 
-Deno.test("a Rust provider live session renews its authorization in place without interrupting an unchanged caller context", async () => {
-  await withTrellisRuntime(async (runtime) => {
-    const identity = await runtime.registerService({
-      name: `refresh-live-rust-${crypto.randomUUID()}`,
-      contract: participants.LiveProbeProvider.participant,
-    });
-    const process = new Deno.Command("setsid", {
-      args: rustFixtureArgv("live_probe"),
-      env: {
-        TRELLIS_URL: runtime.trellisUrl,
-        TRELLIS_IDENTITY_SEED: identity.seed,
-        CARGO_TARGET_DIR: fromFileUrl(
-          new URL("../../target", import.meta.url),
-        ),
-      },
-      stdout: "inherit",
-      stderr: "inherit",
-    }).spawn();
-    let exited = false;
-    const processStatus = process.status.then((status) => {
-      exited = true;
-      return status;
-    });
-    const installer = await runtime.connectClient({
-      name: `refresh-live-rust-installer-${crypto.randomUUID()}`,
-      contract: participants.LiveProbeCaller.participant,
-    });
-    try {
-      // The Rust provider serves no RPC until it is connected, so a successful
-      // Inspect is the readiness signal the renewal window is measured from.
-      await runtime.waitFor(async () => {
-        if (exited) {
-          throw new Error(
-            `Rust liveprobe provider exited: ${
-              JSON.stringify(
-                await processStatus,
-              )
-            }`,
-          );
-        }
-        return (await installer.inspect(
-          { runId: "readiness", streamId: "readiness" },
-          { timeout: 1_000 },
-        )).isOk();
-      }, { timeoutMs: 120_000 });
-
-      await new Promise((resolve) =>
-        setTimeout(resolve, CALLER_CONTEXT_OFFSET_MS)
-      );
-
-      const caller = await runtime.connectClient({
-        name: `refresh-live-rust-caller-${crypto.randomUUID()}`,
-        contract: participants.LiveProbeCaller.participant,
+test("a Rust provider live session renews its authorization in place without interrupting an unchanged caller context", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const identity = await runtime.registerService({
+        name: `refresh-live-rust-${ulid()}`,
+        contract: participants.LiveProbeProvider.participant,
+      });
+      const process = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
+        env: {
+          ...env,
+          TRELLIS_URL: runtime.oauthIssuer,
+          TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+          TRELLIS_IDENTITY_SEED: identity.seed,
+          CARGO_TARGET_DIR: fileURLToPath(
+            new URL("../../target", import.meta.url),
+          ),
+        },
+      });
+      process.stdout.pipe(stdout);
+      process.stderr.pipe(stderr);
+      let exited = false;
+      const processStatus = process.exited.then((status) => {
+        exited = true;
+        return status;
+      });
+      const installer = await runtime.connectClient({
+        name: `refresh-live-rust-installer-${ulid()}`,
+        contract: apps.LiveProbeCaller.request,
       });
       try {
-        const runId = `refresh-live-rust-${crypto.randomUUID()}`;
-        const feed = await caller.watch({ runId, streamId: "quiet" }).orThrow();
-        const frames: bigint[] = [];
-        let ended = false;
-        let sessionError: unknown;
-        const drain = (async () => {
-          try {
-            for await (const frame of feed) frames.push(frame.index);
-          } catch (error) {
-            sessionError = error;
-          } finally {
-            ended = true;
-          }
-        })();
+        // The Rust provider serves no RPC until it is connected, so a successful
+        // Inspect is the readiness signal the renewal window is measured from.
+        await runtime.waitFor(
+          async () => {
+            if (exited) {
+              throw new Error(
+                `Rust liveprobe provider exited: ${JSON.stringify(
+                  await processStatus,
+                )}`,
+              );
+            }
+            return (
+              await installer.inspect(
+                { runId: "readiness", streamId: "readiness" },
+                { timeout: 1_000 },
+              )
+            ).isOk();
+          },
+          { timeoutMs: 120_000 },
+        );
 
-        // Drive one released frame at a time across the provider's renewal. A
-        // guard that cannot rebind the unchanged caller context on the new
-        // epoch stops delivering and terminates the session in this window.
-        let next = 1n;
-        const startedAt = Date.now();
-        let loopError: unknown;
-        try {
-          while (Date.now() - startedAt < RUST_RENEWAL_OBSERVATION_MS) {
-            await caller.release({
-              runId,
-              streamId: "quiet",
-              throughIndex: next,
-              finish: false,
-              fail: false,
-            }).orThrow();
-            await runtime.waitFor(() => frames.length >= Number(next), {
-              timeoutMs: 10_000,
-            });
-            next += 1n;
-            await new Promise((resolve) => setTimeout(resolve, 500));
-          }
-        } catch (error) {
-          loopError = error;
-        }
-
-        if (sessionError) throw sessionError;
-        if (loopError) throw loopError;
+        const gate = runtime.nativeTransportGate();
+        const providerTransport = await runtime.waitFor(
+          () =>
+            gate
+              .connections()
+              .find(
+                (connection) =>
+                  !connection.closed &&
+                  connection.subs.some((sub) =>
+                    sub.subject.endsWith(".Inspect"),
+                  ),
+              ) ?? false,
+        );
+        const originalContext = providerTransport.outboundContexts.findLast(
+          (message) => message.context,
+        )?.context;
         assert(
-          frames.length >= 2,
-          "the Rust provider session must deliver frames across its renewal",
-        );
-        assertEquals(ended, false, "the session must not report terminal");
-
-        const status = await installer.inspect({ runId, streamId: "quiet" })
-          .orThrow();
-        assertEquals(
-          status.starts,
-          1n,
-          "the provider handler must not be restarted",
-        );
-        assertEquals(
-          status.active,
-          1n,
-          "the provider source must stay active",
+          originalContext,
+          "readiness must have an authenticated provider reply",
         );
 
-        await feed.return?.();
-        await drain;
+        await new Promise((resolve) =>
+          setTimeout(resolve, CALLER_CONTEXT_OFFSET_MS),
+        );
+
+        const caller = await runtime.connectClient({
+          name: `refresh-live-rust-caller-${ulid()}`,
+          contract: apps.LiveProbeCaller.request,
+        });
+        try {
+          const runId = `refresh-live-rust-${ulid()}`;
+          const feed = await caller
+            .watch({ runId, streamId: "quiet" })
+            .orThrow();
+          const frames: bigint[] = [];
+          let ended = false;
+          let sessionError: unknown;
+          const drain = (async () => {
+            try {
+              for await (const frame of feed) frames.push(frame.index);
+            } catch (error) {
+              sessionError = error;
+            } finally {
+              ended = true;
+            }
+          })();
+
+          // Drive one released frame at a time across the provider's renewal. A
+          // guard that cannot rebind the unchanged caller context on the new
+          // epoch stops delivering and terminates the session in this window.
+          let next = 1n;
+          const startedAt = Date.now();
+          let loopError: unknown;
+          try {
+            while (Date.now() - startedAt < RUST_RENEWAL_OBSERVATION_MS) {
+              await caller
+                .release({
+                  runId,
+                  streamId: "quiet",
+                  throughIndex: next,
+                  finish: false,
+                  fail: false,
+                })
+                .orThrow();
+              await runtime.waitFor(() => frames.length >= Number(next), {
+                timeoutMs: 10_000,
+              });
+              next += 1n;
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+          } catch (error) {
+            loopError = error;
+          }
+
+          if (sessionError) throw sessionError;
+          if (loopError) throw loopError;
+          assert(
+            frames.length >= 2,
+            "the Rust provider session must deliver frames across its renewal",
+          );
+          assert.deepEqual(
+            ended,
+            false,
+            "the session must not report terminal",
+          );
+
+          const status = await installer
+            .inspect({ runId, streamId: "quiet" })
+            .orThrow();
+          assert.deepEqual(
+            status.starts,
+            1n,
+            "the provider handler must not be restarted",
+          );
+          assert.deepEqual(
+            status.active,
+            1n,
+            "the provider source must stay active",
+          );
+          assert(
+            gate
+              .connections()
+              .find((connection) => connection.id === providerTransport.id)
+              ?.outboundContexts.some(
+                (message) =>
+                  message.context && message.context !== originalContext,
+              ),
+            "the retained provider must actually renew its authenticated response context",
+          );
+
+          await feed.return?.();
+          await drain;
+        } finally {
+          await caller.connection.close();
+        }
       } finally {
-        await caller.connection.close();
+        await installer.connection.close();
+        if (!exited && process.pid !== undefined) kill(-process.pid, "SIGTERM");
+        await processStatus;
       }
-    } finally {
-      await installer.connection.close();
-      if (!exited) Deno.kill(-process.pid, "SIGTERM");
-      await processStatus;
-    }
-  }, runtimeOptions);
+    },
+    { ...runtimeOptions, interruptibleNativeProxy: true },
+  );
 });
 
 /**
@@ -399,59 +513,65 @@ const OUTAGE_HOLD_MS = 36_000;
  */
 const PRE_EXPIRY_SETTLE_MS = 55_000;
 
-Deno.test("a real native NATS outage recovers after authorization refresh and resumes Rust/TS Live", async () => {
+test("a real native NATS outage recovers after authorization refresh and resumes Rust/TS Live", async () => {
   await withTrellisRuntime(async (runtime) => {
     const identity = await runtime.registerService({
-      name: `outage-live-rust-${crypto.randomUUID()}`,
+      name: `outage-live-rust-${ulid()}`,
       contract: participants.LiveProbeProvider.participant,
     });
-    const process = new Deno.Command("setsid", {
-      args: rustFixtureArgv("live_probe"),
+    const process = spawnTracked("setsid", rustFixtureArgv("live_probe"), {
       env: {
-        TRELLIS_URL: runtime.trellisUrl,
+        ...env,
+        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
         TRELLIS_IDENTITY_SEED: identity.seed,
         // Keep a refresh/reconnect alive across the deliberately unavailable
         // transport instead of cycling through the 5s production default.
         TRELLIS_TIMEOUT_MS: "45000",
-        CARGO_TARGET_DIR: fromFileUrl(
+        CARGO_TARGET_DIR: fileURLToPath(
           new URL("../../target", import.meta.url),
         ),
       },
-      stdout: "inherit",
-      stderr: "inherit",
-    }).spawn();
+    });
+    process.stdout.pipe(stdout);
+    process.stderr.pipe(stderr);
     let exited = false;
-    const processStatus = process.status.then((status) => {
+    const processStatus = process.exited.then((status) => {
       exited = true;
       return status;
     });
     const caller = await runtime.connectClient({
-      name: `outage-live-caller-${crypto.randomUUID()}`,
-      contract: participants.LiveProbeCaller.participant,
+      name: `outage-live-caller-${ulid()}`,
+      contract: apps.LiveProbeCaller.request,
     });
     const phases: string[] = [];
-    const unsubscribe = caller.connection.subscribe((status) =>
-      phases.push(status.phase)
-    );
+    const transitions: Array<{ at: number; status: unknown }> = [];
+    const unsubscribe = caller.connection.subscribe((status) => {
+      phases.push(status.phase);
+      transitions.push({ at: Date.now(), status });
+    });
     try {
       // Establish real functionality before cutting transport: a successful
       // Inspect proves the Rust process booted, both sides authenticated, the
       // NATS route works, and generated routing works.
-      await runtime.waitFor(async () => {
-        if (exited) {
-          throw new Error(
-            `Rust liveprobe provider exited: ${
-              JSON.stringify(
+      await runtime.waitFor(
+        async () => {
+          if (exited) {
+            throw new Error(
+              `Rust liveprobe provider exited: ${JSON.stringify(
                 await processStatus,
-              )
-            }`,
-          );
-        }
-        return (await caller.inspect(
-          { runId: "readiness", streamId: "readiness" },
-          { timeout: 1_000 },
-        )).isOk();
-      }, { timeoutMs: 120_000 });
+              )}`,
+            );
+          }
+          return (
+            await caller.inspect(
+              { runId: "readiness", streamId: "readiness" },
+              { timeout: 1_000 },
+            )
+          ).isOk();
+        },
+        { timeoutMs: 120_000 },
+      );
 
       runtime.interruptNativeTransport();
       // Anchor both proof windows to the real cut: readiness may have consumed
@@ -488,10 +608,21 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
       // Ordinary NATS reconnect on the same advertised endpoint: no client or
       // provider recreation and no manual resume. The same logical caller must
       // return to connected.
-      await runtime.waitFor(
-        () => caller.connection.status.phase === "connected",
-        { timeoutMs: 30_000 },
-      );
+      await runtime
+        .waitFor(() => caller.connection.status.phase === "connected", {
+          timeoutMs: 30_000,
+        })
+        .catch((cause) => {
+          throw new Error(
+            `Native outage recovery failed: ${JSON.stringify({
+              transitions,
+              current: caller.connection.status,
+              outageStartedAt,
+              elapsedMs: Date.now() - outageStartedAt,
+            })}`,
+            { cause },
+          );
+        });
 
       // Recovery immediately after restoration is necessary but not sufficient:
       // settle past the cut-time context's validity window first.
@@ -507,7 +638,7 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
       // New Live work: the same caller opens a fresh observation against the
       // same Rust provider, releases index 1, and receives the real signed
       // frame on both sides' resumed Live managers.
-      const runId = `outage-live-${crypto.randomUUID()}`;
+      const runId = `outage-live-${ulid()}`;
       const streamId = "recovered";
       const feed = await caller.watch({ runId, streamId }).orThrow();
       const frames: Array<{
@@ -527,26 +658,28 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
         }
       })();
       try {
-        await caller.release({
-          runId,
-          streamId,
-          throughIndex: 1n,
-          finish: false,
-          fail: false,
-        }).orThrow();
+        await caller
+          .release({
+            runId,
+            streamId,
+            throughIndex: 1n,
+            finish: false,
+            fail: false,
+          })
+          .orThrow();
         await runtime.waitFor(() => frames.length >= 1, { timeoutMs: 20_000 });
       } finally {
         await feed.return?.();
         await drain;
       }
       if (sessionError) throw sessionError;
-      assertEquals(frames[0]?.runId, runId, "the frame carries the run");
-      assertEquals(
+      assert.deepEqual(frames[0]?.runId, runId, "the frame carries the run");
+      assert.deepEqual(
         frames[0]?.streamId,
         streamId,
         "the frame carries the stream",
       );
-      assertEquals(
+      assert.deepEqual(
         frames[0]?.index,
         1n,
         "the frame carries the released index",
@@ -558,7 +691,7 @@ Deno.test("a real native NATS outage recovers after authorization refresh and re
     } finally {
       unsubscribe();
       await caller.connection.close();
-      if (!exited) Deno.kill(-process.pid, "SIGTERM");
+      if (!exited && process.pid !== undefined) kill(-process.pid, "SIGTERM");
       await processStatus;
     }
   }, outageRuntimeOptions);

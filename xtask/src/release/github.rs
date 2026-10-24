@@ -182,7 +182,10 @@ fn print_pretag_fallback(tag: &str, git_ref: &str, dispatch_may_be_needed: bool)
     if dispatch_may_be_needed {
         eprintln!("{}", command_text(&pretag_dispatch_command(tag, git_ref)));
     } else {
-        eprintln!("A Release workflow dispatch may already have succeeded; inspect recent runs before dispatching another one.");
+        eprintln!(
+            "A Release workflow dispatch may already have succeeded; inspect recent \
+            runs before dispatching another one."
+        );
     }
     eprintln!("{}", command_text(&pretag_list_command(git_ref)));
     eprintln!("{}", command_text(&pretag_watch_command("<run-id>")));

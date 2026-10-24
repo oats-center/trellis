@@ -1,12 +1,16 @@
-import { join } from "@std/path";
+import { execFile } from "node:child_process";
+import * as fs from "node:fs/promises";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { Buffer } from "node:buffer";
 import { Parser, type ReadEntry } from "tar";
 import { z } from "zod";
-import packageConfig from "../deno.json" with { type: "json" };
-import nativeManifest from "./native/trellis-binaries.json" with {
-  type: "json",
-};
+import { ulid } from "ulid";
+import packageConfig from "../package.json" with { type: "json" };
+import nativeManifest from "./native/trellis-binaries.json" with { type: "json" };
 import type { TrellisNativeSource } from "./types.ts";
+
+const execFileAsync = promisify(execFile);
 
 const manifestSchema = z.object({
   version: z.string(),
@@ -24,16 +28,14 @@ export type TrellisNativeDistribution = { cli: string; server: string };
 
 /** Maps supported host platforms to targets published by the native Check jobs. */
 export function nativeTarget(os: string, arch: string): string {
-  const cpu = arch === "x86_64"
-    ? "x86_64"
-    : arch === "aarch64" || arch === "arm64"
-    ? "aarch64"
-    : undefined;
-  const platform = os === "linux"
-    ? "unknown-linux-gnu"
-    : os === "darwin"
-    ? "apple-darwin"
-    : undefined;
+  const cpu =
+    arch === "x64" ? "x86_64" : arch === "arm64" ? "aarch64" : undefined;
+  const platform =
+    os === "linux"
+      ? "unknown-linux-gnu"
+      : os === "darwin"
+        ? "apple-darwin"
+        : undefined;
   if (!cpu || !platform) {
     throw new Error(
       `Trellis native distributions do not support ${os}-${arch}`,
@@ -44,12 +46,14 @@ export function nativeTarget(os: string, arch: string): string {
 
 /** Shared cache for verified immutable native distributions and managed NATS. */
 export function trellisTestCacheDir(): string {
-  return Deno.env.get("TRELLIS_TEST_CACHE_DIR") ??
+  return (
+    process.env.TRELLIS_TEST_CACHE_DIR ??
     join(
-      Deno.env.get("HOME") ?? Deno.env.get("TMPDIR") ?? Deno.cwd(),
+      process.env.HOME ?? process.env.TMPDIR ?? process.cwd(),
       ".cache",
       "trellis-testkit",
-    );
+    )
+  );
 }
 
 /** Verify archive integrity against its release-generated pin. */
@@ -61,9 +65,8 @@ export async function verifyNativeArchive(
     "SHA-256",
     new Uint8Array(bytes).buffer,
   );
-  const actual = Array.from(
-    new Uint8Array(digest),
-    (byte) => byte.toString(16).padStart(2, "0"),
+  const actual = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
   ).join("");
   if (actual !== expected) {
     throw new Error("Trellis native archive SHA-256 mismatch");
@@ -78,19 +81,19 @@ export function extractNativeArchive(
     const files = new Map<string, Uint8Array>();
     const parser = new Parser({ strict: true });
     parser.on("error", reject);
-    parser.on(
-      "meta",
-      () => parser.abort(new Error("Unexpected native archive metadata")),
+    parser.on("meta", () =>
+      parser.abort(new Error("Unexpected native archive metadata")),
     );
-    parser.on(
-      "ignoredEntry",
-      () => parser.abort(new Error("Unexpected native archive entry")),
+    parser.on("ignoredEntry", () =>
+      parser.abort(new Error("Unexpected native archive entry")),
     );
     parser.on("entry", (entry: ReadEntry) => {
       if (
         entry.type !== "File" ||
         !["trellis", "trellis-server"].includes(entry.path) ||
-        files.has(entry.path) || entry.size <= 0 || entry.size > 1_073_741_824
+        files.has(entry.path) ||
+        entry.size <= 0 ||
+        entry.size > 1_073_741_824
       ) {
         parser.abort(
           new Error(
@@ -124,30 +127,30 @@ async function verifyDistribution(
 ): Promise<TrellisNativeDistribution> {
   const canonical = { cli: "", server: "" };
   for (const name of ["cli", "server"] as const) {
-    const info = await Deno.lstat(paths[name]);
-    if (
-      !info.isFile || info.isSymlink ||
-      info.mode !== null && (info.mode & 0o111) === 0
-    ) throw new Error(`Trellis ${name} must be a regular executable file`);
-    canonical[name] = await Deno.realPath(paths[name]);
-    const output = await new Deno.Command(canonical[name], {
-      args: name === "cli" ? ["--format", "json", "version"] : ["--version"],
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    if (!output.success) {
+    const info = await fs.lstat(paths[name]);
+    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o111) === 0)
+      throw new Error(`Trellis ${name} must be a regular executable file`);
+    canonical[name] = await fs.realpath(paths[name]);
+    const output = await execFileAsync(
+      canonical[name],
+      name === "cli" ? ["--format", "json", "version"] : ["--version"],
+      { encoding: "utf8" },
+    ).catch(() => {
       throw new Error(`Cannot verify Trellis ${name} version`);
-    }
-    const text = new TextDecoder().decode(output.stdout).trim();
+    });
+    const text = output.stdout.trim();
     if (name === "cli") {
       // Build provenance is not part of SemVer identity; checkout CLI builds add
       // +local.<commit>.dirty while retaining the exact package/prerelease version.
-      const version = z.object({
-        version: z.string().refine((value) =>
-          value.split("+", 1)[0] === packageConfig.version
-        ),
-      }).safeParse(JSON.parse(text));
+      const version = z
+        .object({
+          version: z
+            .string()
+            .refine(
+              (value) => value.split("+", 1)[0] === packageConfig.version,
+            ),
+        })
+        .safeParse(JSON.parse(text));
       if (!version.success) {
         throw new Error(
           `Trellis CLI must match testkit version ${packageConfig.version}`,
@@ -173,7 +176,7 @@ export async function resolveNativeDistribution(
       "Native manifest does not match the testkit package version",
     );
   }
-  const target = nativeTarget(Deno.build.os, Deno.build.arch);
+  const target = nativeTarget(process.platform, process.arch);
   const asset = manifest.targets[target];
   if (
     !asset ||
@@ -189,7 +192,7 @@ export async function resolveNativeDistribution(
     packageConfig.version,
     target,
   );
-  await Deno.mkdir(parent, { recursive: true, mode: 0o700 });
+  await fs.mkdir(parent, { recursive: true, mode: 0o700 });
   const installed = join(parent, asset.sha256);
   const paths = {
     cli: join(installed, "trellis"),
@@ -197,19 +200,19 @@ export async function resolveNativeDistribution(
   };
   let archive: Uint8Array | undefined;
   try {
-    const info = await Deno.lstat(installed);
-    if (!info.isDirectory || info.isSymlink) {
+    const info = await fs.lstat(installed);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
       throw new Error("Unsafe native cache entry");
     }
-    archive = await Deno.readFile(join(installed, "archive.tar.gz"));
+    archive = await fs.readFile(join(installed, "archive.tar.gz"));
     await verifyNativeArchive(archive, asset.sha256);
     const extracted = await extractNativeArchive(archive);
     for (const name of ["cli", "server"] as const) {
-      const info = await Deno.lstat(paths[name]);
-      if (!info.isFile || info.isSymlink) {
+      const info = await fs.lstat(paths[name]);
+      if (!info.isFile() || info.isSymbolicLink()) {
         throw new Error("Unsafe cached native executable");
       }
-      const cached = await Deno.readFile(paths[name]);
+      const cached = await fs.readFile(paths[name]);
       if (
         cached.length !== extracted[name].length ||
         cached.some((byte, index) => byte !== extracted[name][index])
@@ -235,16 +238,16 @@ export async function resolveNativeDistribution(
   archive = new Uint8Array(await response.arrayBuffer());
   await verifyNativeArchive(archive, asset.sha256);
   const extracted = await extractNativeArchive(archive);
-  const staging = await Deno.makeTempDir({ dir: parent, prefix: ".install-" });
+  const staging = await fs.mkdtemp(join(parent, ".install-"));
   let quarantine: string | undefined;
   try {
-    await Deno.writeFile(join(staging, "trellis"), extracted.cli, {
+    await fs.writeFile(join(staging, "trellis"), extracted.cli, {
       mode: 0o700,
     });
-    await Deno.writeFile(join(staging, "trellis-server"), extracted.server, {
+    await fs.writeFile(join(staging, "trellis-server"), extracted.server, {
       mode: 0o700,
     });
-    await Deno.writeFile(join(staging, "archive.tar.gz"), archive, {
+    await fs.writeFile(join(staging, "archive.tar.gz"), archive, {
       mode: 0o600,
     });
     await verifyDistribution({
@@ -252,43 +255,46 @@ export async function resolveNativeDistribution(
       server: join(staging, "trellis-server"),
     });
     try {
-      await Deno.rename(staging, installed);
+      await fs.rename(staging, installed);
     } catch (error) {
-      const installedInfo = await Deno.lstat(installed).catch(() => undefined);
+      const installedInfo = await fs.lstat(installed).catch(() => undefined);
       if (!installedInfo) throw error;
       // A concurrent installer may have completed while we downloaded. Compare
       // the winner with the pin, never overwrite a valid executable in use.
-      const existing = installedInfo.isDirectory && !installedInfo.isSymlink
-        ? await Deno.readFile(join(installed, "archive.tar.gz")).catch(() =>
-          new Uint8Array()
-        )
-        : new Uint8Array();
+      const existing =
+        installedInfo.isDirectory() && !installedInfo.isSymbolicLink()
+          ? await fs
+              .readFile(join(installed, "archive.tar.gz"))
+              .catch(() => new Uint8Array())
+          : new Uint8Array();
       let valid = false;
       try {
         await verifyNativeArchive(existing, asset.sha256);
         valid = true;
         for (const name of ["cli", "server"] as const) {
-          const info = await Deno.lstat(paths[name]);
-          const file = info.isFile && !info.isSymlink
-            ? await Deno.readFile(paths[name])
-            : new Uint8Array();
+          const info = await fs.lstat(paths[name]);
+          const file =
+            info.isFile() && !info.isSymbolicLink()
+              ? await fs.readFile(paths[name])
+              : new Uint8Array();
           if (
             file.length !== extracted[name].length ||
             file.some((byte, index) => byte !== extracted[name][index])
-          ) valid = false;
+          )
+            valid = false;
         }
       } catch {
         valid = false;
       }
       if (!valid) {
-        quarantine = join(parent, `.corrupt-${crypto.randomUUID()}`);
-        await Deno.rename(installed, quarantine);
-        await Deno.rename(staging, installed);
+        quarantine = join(parent, `.corrupt-${ulid()}`);
+        await fs.rename(installed, quarantine);
+        await fs.rename(staging, installed);
       }
     }
     return await verifyDistribution(paths);
   } finally {
-    await Deno.remove(staging, { recursive: true }).catch(() => undefined);
-    if (quarantine) await Deno.remove(quarantine, { recursive: true });
+    await fs.rm(staging, { recursive: true }).catch(() => undefined);
+    if (quarantine) await fs.rm(quarantine, { recursive: true });
   }
 }

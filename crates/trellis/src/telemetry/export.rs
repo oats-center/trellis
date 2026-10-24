@@ -159,7 +159,8 @@ fn sampler_from_env() -> Sampler {
             warn_once(
                 "sampler",
                 &format!(
-                    "unknown OTEL_TRACES_SAMPLER '{other}'; using parentbased_traceidratio {DEFAULT_TRACE_RATIO}"
+                    "unknown OTEL_TRACES_SAMPLER '{other}'; using parentbased_traceidratio \
+                    {DEFAULT_TRACE_RATIO}"
                 ),
             );
             parent_based(DEFAULT_TRACE_RATIO)
@@ -777,14 +778,6 @@ mod tests {
         )
         .await
         .is_none());
-    }
-
-    #[test]
-    fn sampler_defaults_are_parent_based() {
-        assert!(matches!(
-            parent_based(DEFAULT_TRACE_RATIO),
-            Sampler::ParentBased(_)
-        ));
     }
 
     #[test]

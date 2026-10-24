@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Isolated live Trellis runtimes for Rust integration tests."
 readme = "README.md"
 publish = ["crates-io"]
-include = ["Cargo.toml", "README.md", "src/**"]
+include = ["Cargo.toml", "README.md", "src/**", "generated/src/**", "generated/*.json", "generated/modules.rs"]
 
 [lints]
 workspace = true
@@ -21,17 +21,22 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tempfile.workspace = true
-thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
-tokio-util.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 toml = "1.1.2"
-trellis-rs = { path = "../trellis", version = "0.100.0" }
-trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0" }
-trellis-runtime = { path = "../runtime", version = "0.100.0" }
-trellis-bootstrap = { path = "../bootstrap", version = "0.100.0" }
-trellis-local-nats = { path = "../local-nats", version = "0.100.0" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.3" }
+trellis-protocol = { path = "../protocol", version = "0.100.0-rc.3" }
+trellis-models = { path = "../models", version = "0.102.0-rc.4" }
+flate2 = "1.1.9"
+tar = "0.4.46"
+libc = "0.2.186"
 ulid.workspace = true
 url = { workspace = true }
 
 [dev-dependencies]
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.3" }
+trellis-runtime-apis = { path = "../runtime-apis" }
+trellis-idl = { path = "../idl" }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+runtime-trellis = { path = "../../integration/fixtures/runtime/crates/runtime-trellis" }
+time = { workspace = true, features = ["formatting", "parsing"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

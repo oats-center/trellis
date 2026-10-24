@@ -1,0 +1,22 @@
+---
+title: "State: TypeScript"
+description: "Use Trellis-managed `State.*` RPCs from TypeScript apps and devices for semi-durable cloud-backed app memory with contract-lineage storage and state-version migrations."
+---
+
+# Use State from TypeScript
+
+Declare a typed `state` resource inside an app, agent, or device. State is one
+value with no key or TTL. Generated handles expose `get`, `create`, `set`,
+`replace`, and `delete`; revisions are opaque CAS tokens.
+
+An available but unwritten State returns no value, unlike an unavailable optional
+handle. State belongs to the stable principal and qualified participant. A
+device companion is a lexical child with its own user grant, login session,
+authorization context, resources, and connection. Its State is therefore owned
+by the user and qualified child participant: the same user's named child can
+share State across devices while each outer device's State remains isolated by
+the device principal.
+
+For accepted historical representations written by this architecture, register
+the generated direct historical-to-current migration. Reads and conflicts
+migrate in memory without changing stored bytes, revision, or timestamp.

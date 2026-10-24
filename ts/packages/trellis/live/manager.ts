@@ -115,10 +115,10 @@ export class LiveSessionManager {
   readonly #liveProviders = new Map<string, Set<unknown>>();
 
   #admission(): ProviderAdmission {
-    return this.#providers ??= new ProviderAdmission(
+    return (this.#providers ??= new ProviderAdmission(
       C.maxProviderSessions,
       C.maxProviderSessionsPerCaller,
-    );
+    ));
   }
 
   /** Return the manager's current generation. */

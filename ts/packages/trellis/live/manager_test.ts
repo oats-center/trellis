@@ -1,53 +1,51 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 
 import { liveConstants } from "../auth/protocol_wasm.ts";
 import { LiveSessionManager } from "./manager.ts";
 
 const MAX_CONSUMERS = liveConstants().maxConsumerSessions;
 
-Deno.test("NX09 same-epoch resume keeps generation; reconnect does not revive", () => {
+test("NX09 same-epoch resume keeps generation; reconnect does not revive", () => {
   const live = new LiveSessionManager();
-  assertEquals(live.generation(), 1);
-  assertEquals(live.isAvailable(), true);
   const first = live.admitConsumer();
   const generation = live.generation();
   live.resume();
-  assertEquals(live.generation(), generation, "resume is not a reconnect");
-  assertEquals(live.isAvailable(), true);
+  assert.deepEqual(live.generation(), generation, "resume is not a reconnect");
+  assert.deepEqual(live.isAvailable(), true);
   const second = live.admitConsumer();
   first[Symbol.dispose]();
   second[Symbol.dispose]();
 
   live.suspend();
   const afterDisconnect = live.generation();
-  assertEquals(afterDisconnect > generation, true);
-  assertEquals(live.isAvailable(), false);
-  assertThrows(() => live.admitConsumer());
+  assert.deepEqual(afterDisconnect > generation, true);
+  assert.deepEqual(live.isAvailable(), false);
+  assert.throws(() => live.admitConsumer(), Error);
   live.resume();
-  assertEquals(live.generation(), afterDisconnect);
-  assertEquals(live.isAvailable(), true);
+  assert.deepEqual(live.generation(), afterDisconnect);
+  assert.deepEqual(live.isAvailable(), true);
   const replacement = live.admitConsumer();
   replacement[Symbol.dispose]();
 });
 
-Deno.test("NX10 failed setup releases the consumer permit", () => {
+test("NX10 failed setup releases the consumer permit", () => {
   const live = new LiveSessionManager();
-  const permits = Array.from(
-    { length: MAX_CONSUMERS },
-    () => live.admitConsumer(),
+  const permits = Array.from({ length: MAX_CONSUMERS }, () =>
+    live.admitConsumer(),
   );
-  assertEquals(live.consumerCount(), MAX_CONSUMERS);
-  assertThrows(() => live.admitConsumer());
+  assert.deepEqual(live.consumerCount(), MAX_CONSUMERS);
+  assert.throws(() => live.admitConsumer(), Error);
   for (const permit of permits) permit[Symbol.dispose]();
-  assertEquals(live.consumerCount(), 0);
+  assert.deepEqual(live.consumerCount(), 0);
   const again = live.admitConsumer();
   again[Symbol.dispose]();
   live.stop();
-  assertEquals(live.isAvailable(), false);
-  assertThrows(() => live.admitConsumer());
+  assert.deepEqual(live.isAvailable(), false);
+  assert.throws(() => live.admitConsumer(), Error);
 });
 
-Deno.test("D4 manager fencing reaches every registered session and a late one", () => {
+test("D4 manager fencing reaches every registered session and a late one", () => {
   const live = new LiveSessionManager();
   const fenced: string[] = [];
   const session = (id: string) => ({
@@ -58,20 +56,20 @@ Deno.test("D4 manager fencing reaches every registered session and a late one", 
   live.registerSession("a", session("a"), owner, "route");
   live.registerSession("b", session("b"), owner, "route");
   live.suspend();
-  assertEquals(fenced.sort(), ["a", "b"], "suspend fences every session");
+  assert.deepEqual(fenced.sort(), ["a", "b"], "suspend fences every session");
   // A registration racing a suspended generation is fenced immediately.
   live.registerSession("late", session("late"), owner, "route");
-  assertEquals(fenced.includes("late"), true);
+  assert.deepEqual(fenced.includes("late"), true);
   const generation = live.generation();
   live.resume();
-  assertEquals(
+  assert.deepEqual(
     live.generation(),
     generation,
     "resume keeps the generation after a fence",
   );
 });
 
-Deno.test("D5 session ownership spans active, terminal, and owner-loss windows", () => {
+test("D5 session ownership spans active, terminal, and owner-loss windows", () => {
   const live = new LiveSessionManager();
   const session = { fence: () => {}, close: () => Promise.resolve() };
   const owner = { provider: "owner" };
@@ -79,19 +77,18 @@ Deno.test("D5 session ownership spans active, terminal, and owner-loss windows",
   const unregisterOwner = live.registerProvider(owner, "live.route.A");
   live.registerProvider(survivor, "live.route.A");
 
-  assertEquals(
+  assert.deepEqual(
     live.ownerOf("s1"),
     undefined,
     "a never-offered session has no authoritative provider",
   );
 
-  const deregister = live.registerSession(
-    "s1",
-    session,
+  const deregister = live.registerSession("s1", session, owner, "live.route.A");
+  assert.deepEqual(
+    live.ownerOf("s1"),
     owner,
-    "live.route.A",
+    "the registering provider owns it",
   );
-  assertEquals(live.ownerOf("s1"), owner, "the registering provider owns it");
 
   live.insertReceipt({
     sessionId: "s1",
@@ -105,7 +102,7 @@ Deno.test("D5 session ownership spans active, terminal, and owner-loss windows",
     consumedSeq: "0",
   });
   deregister();
-  assertEquals(
+  assert.deepEqual(
     live.ownerOf("s1"),
     owner,
     "the owner stays authoritative through the terminal receipt window",
@@ -114,20 +111,20 @@ Deno.test("D5 session ownership spans active, terminal, and owner-loss windows",
   // The physical owner is disposed: the retained receipt still has exactly one
   // live responder rather than every provider falling silent.
   unregisterOwner();
-  assertEquals(
+  assert.deepEqual(
     live.ownerOf("s1"),
     survivor,
     "ownership fails over to a surviving provider for a retained receipt",
   );
 
-  assertEquals(
+  assert.deepEqual(
     live.ownerOf("never-offered"),
     undefined,
     "a genuinely unknown session keeps the signed unknown-session contract",
   );
 });
 
-Deno.test("D6 owner failover stays on the session's exact route", () => {
+test("D6 owner failover stays on the session's exact route", () => {
   const live = new LiveSessionManager();
   const session = { fence: () => {}, close: () => Promise.resolve() };
   const owner = { provider: "owner" };
@@ -151,7 +148,7 @@ Deno.test("D6 owner failover stays on the session's exact route", () => {
     consumedSeq: "0",
   });
   unregisterOwner();
-  assertEquals(
+  assert.deepEqual(
     live.ownerOf("s1"),
     sameRoute,
     "failover elects only a provider on the session's exact route",

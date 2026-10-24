@@ -1,0 +1,9 @@
+[package]
+name = "compiler-fixture"
+version = "1.0.0"
+
+[sources]
+echo = "contract.trellis"
+
+[generate.rust]
+output = "trellis"

@@ -24,7 +24,7 @@
   const completed = $derived(rows.reduce((sum, row) => sum + row.completed, 0));
   const failures = $derived(rows.reduce((sum, row) => sum + row.failures, 0));
   const latestQueueP95 = $derived(rows.at(-1)?.queueP95 ?? 0);
-  const queueLabel = $derived(selectedKey ? "Queue wait p95" : "Highest queue p95");
+  const queueLabel = $derived(selectedKey ? "Wait before starting (p95)" : "Slowest wait before starting (p95)");
 
   function points(values: number[]): string {
     const maximum = Math.max(...values, 1);

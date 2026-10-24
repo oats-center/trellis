@@ -1,0 +1,75 @@
+import {
+  StateConflict,
+  StateDeleteRequest,
+  StateDeleteResponse,
+  StateGetRequest,
+  StateGetResponse,
+  StatePutRequest,
+  StatePutResponse,
+  StateRepresentationError,
+  StateRegisterRequest,
+  StateRegisterResponse,
+  StateRegistrationConflict,
+} from types;
+
+api state@v1 {
+  title "Trellis State";
+  description "Trellis-managed single-value State for user bindings and service/device principals.";
+  version "1.0.0";
+
+  error Conflict(StateConflict);
+  error CorruptRepresentation(StateRepresentationError);
+  error UnsupportedRepresentation(StateRepresentationError);
+  error RegistrationConflict(StateRegistrationConflict);
+
+  rpc Register {
+    input StateRegisterRequest;
+    output StateRegisterResponse;
+    errors [RegistrationConflict];
+  }
+
+  rpc Get {
+    input StateGetRequest;
+    output StateGetResponse;
+    errors [CorruptRepresentation, UnsupportedRepresentation];
+  }
+
+  rpc Put {
+    input StatePutRequest;
+    output StatePutResponse;
+    errors [Conflict, CorruptRepresentation, UnsupportedRepresentation];
+  }
+
+  rpc Delete {
+    input StateDeleteRequest;
+    output StateDeleteResponse;
+    errors [Conflict];
+  }
+
+
+  live Watch {
+    input StateGetRequest;
+    event StateGetResponse;
+  }
+
+  capabilities {
+    capability values.read {
+      title "Read saved data";
+      description "Read data saved in its space.";
+      grants "Can see saved data.";
+      allows { rpc Get; live Watch; }
+    }
+    capability values.write {
+      title "Save data";
+      description "Create or replace data in its space.";
+      grants "Can change saved data.";
+      allows { rpc Register; rpc Put; }
+    }
+    capability values.delete {
+      title "Delete saved data";
+      description "Delete data in its space.";
+      grants "Can remove saved data.";
+      allows { rpc Delete; }
+    }
+  }
+}

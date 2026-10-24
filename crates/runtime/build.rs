@@ -23,7 +23,8 @@ fn generate_index(root: &Path, output_name: &str) {
     }
     assert!(
         !files.is_empty(),
-        "embedded browser assets are missing at {}; run `cargo xtask build` to prepare them instead of invoking cargo directly",
+        "embedded browser assets are missing at {}; run `cargo xtask build` to \
+        prepare them instead of invoking cargo directly",
         root.display()
     );
     files.sort();

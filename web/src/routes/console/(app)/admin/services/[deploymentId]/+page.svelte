@@ -1,221 +1,352 @@
 <script lang="ts">
-  import { isErr } from "@oatscenter/result";
-  import { type apis } from "trellis-web-generated";
+  import { formatDate, humanizeName } from "$lib/format";
   import { page } from "$app/state";
-  import { RequestScope } from "$lib/console/request_scope.ts";
-  import {
-    decodeKnownJsonBytes,
-    displayJson,
-    formatTimestamp,
-    projectConsoleError,
-  } from "$lib/console/display_value.ts";
+  import { apis } from "trellis-web-generated";
+  import { onMount } from "svelte";
+  import { ulid } from "ulid";
+  import { getTrellis } from "$lib/trellis";
   import { resolve } from "$lib/console_paths";
-  import DataTable from "$lib/components/DataTable.svelte";
-  import EmptyState from "$lib/components/EmptyState.svelte";
+  import { getConsoleAuthority } from "$lib/console/authority.svelte.ts";
+  import { canPerform } from "$lib/console/operations.ts";
+  import { RequestScope } from "$lib/console/request_scope.ts";
+  import { traverseAll } from "$lib/console/paging.ts";
+  import { classifyMutationError } from "$lib/console/mutation.ts";
+  import { projectConsoleError } from "$lib/console/display_value.ts";
+  import ConfirmationModal from "$lib/components/ConfirmationModal.svelte";
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
   import Panel from "$lib/components/Panel.svelte";
-  import AccessGrants from "$lib/components/AccessGrants.svelte";
-  import StatusBadge from "$lib/components/StatusBadge.svelte";
-  import { getTrellis } from "$lib/trellis";
 
-  type DeploymentDetail = apis.auth.DeploymentsGetOutput;
-
+  type Deployment = apis.auth.DeploymentsGetOutput["deployment"];
+  type Instance = apis.auth.ServiceInstancesListOutput["items"][number];
   const trellis = getTrellis();
-  const RPC_TIMEOUT_MS = 10_000;
-
-  // SvelteKit reuses this component when only the parameter changes, so the
-  // exact deployment ID comes from page params and drives the read scope.
+  const authority = getConsoleAuthority();
+  const scope = new RequestScope("service-deployment");
   const deploymentId = $derived(page.params.deploymentId ?? "");
-  const scope = new RequestScope("");
-
+  let deployment = $state.raw<Deployment | null>(null);
+  let instances = $state.raw<Instance[]>([]);
   let loading = $state(true);
-  let error = $state<{ message: string; code?: string; id?: string } | null>(null);
-  let detail = $state.raw<DeploymentDetail | null>(null);
-  /** True when the current detail belongs to the current requested ID. */
-  let loadedFor = $state<string | null>(null);
-  /** True when the backend reported this exact deployment as absent. */
-  let notFound = $state(false);
+  let error = $state<string | null>(null);
+  let instanceError = $state<string | null>(null);
+  let busy = $state(false);
+  let uncertain = $state(false);
+  let title = $state("");
+  let identityPublicKey = $state("");
+  let receipt = $state.raw<apis.auth.ServiceInstancesProvisionOutput | null>(
+    null,
+  );
+  let confirmationModal: ConfirmationModal | undefined = $state();
 
-  function failureFrom(
-    cause: unknown,
-  ): { message: string; code?: string; id?: string } {
-    const projected = projectConsoleError(cause);
-    return {
-      message: projected.message,
-      ...(projected.code === undefined ? {} : { code: projected.code }),
-      ...(projected.id === undefined ? {} : { id: projected.id }),
-    };
-  }
-
-  async function load(): Promise<void> {
-    const requestedId = deploymentId;
-    const token = scope.begin();
-    // A new target must not show the previous deployment's data.
-    if (loadedFor !== requestedId) {
-      detail = null;
-      loadedFor = null;
-      notFound = false;
+  $effect(() => {
+    const id = deploymentId;
+    if (scope.setKey(id)) {
+      deployment = null;
+      receipt = null;
+      uncertain = false;
     }
+    void load(id);
+  });
+  async function load(id: string): Promise<void> {
+    const token = scope.begin();
     loading = true;
     error = null;
     try {
-      const response = await trellis.deploymentsGet({ deploymentId: requestedId }, {
-        timeout: RPC_TIMEOUT_MS,
-      }).take();
+      const input = apis.auth.API.actions["rpc:Deployments.Get"].input.decode({
+        deploymentId: id,
+      });
+      const result = await trellis.deploymentsGet(input).orThrow();
       if (!scope.isCurrent(token)) return;
-      if (isErr(response)) {
-        error = failureFrom(response);
-        notFound = error.code === "not_found";
-        return;
-      }
-      detail = response;
-      loadedFor = requestedId;
-      notFound = false;
+      if (result.deployment.kind !== "service")
+        throw new Error("This exact deployment is not a service deployment.");
+      deployment = result.deployment;
+      const listed = await traverseAll(async (page) => {
+        const response = await trellis.serviceInstancesList({ page }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      });
+      if (!scope.isCurrent(token)) return;
+      instances = listed.items.filter(
+        (item) => item.deploymentId === result.deployment.deploymentId,
+      );
+      instanceError = listed.complete
+        ? null
+        : projectConsoleError(listed.error).message;
     } catch (cause) {
-      if (!scope.isCurrent(token)) return;
-      error = failureFrom(cause);
-      notFound = error.code === "not_found";
+      if (scope.isCurrent(token)) error = projectConsoleError(cause).message;
     } finally {
       if (scope.settle(token)) loading = false;
     }
   }
-
-  // One effect keyed by the semantic target: a parameter change clears the old
-  // detail and starts a fresh read, and disposal invalidates late responses.
-  $effect(() => {
-    const requestedId = deploymentId;
-    if (requestedId.length === 0) return;
-    scope.setKey(requestedId);
-    void load();
-    return () => scope.invalidate();
-  });
-
-  const participantId = $derived(detail?.deployment.participantId ?? null);
-  const binding = $derived(detail?.binding ?? null);
-  const resources = $derived(detail?.resources ?? []);
-  const resourceError = $derived(
-    resources.find((resource) => resource.error)?.error ?? null,
-  );
-
-  function providerSummary(bytes: Uint8Array): string {
-    const decoded = decodeKnownJsonBytes(bytes);
-    if (!decoded.ok) return `Unreadable provider payload (${decoded.error})`;
-    return displayJson(decoded.value);
+  async function provision(): Promise<void> {
+    if (
+      !deployment ||
+      busy ||
+      uncertain ||
+      loading ||
+      deployment.state !== "enabled" ||
+      !canPerform(authority.authority, "serviceInstancesProvision")
+    )
+      return;
+    const target = deployment;
+    const route = scope.key;
+    busy = true;
+    error = null;
+    try {
+      const input = apis.auth.API.actions[
+        "rpc:ServiceInstances.Provision"
+      ].input.decode({
+        deploymentId: target.deploymentId,
+        title: title.trim(),
+        idempotencyKey: ulid(),
+        ...(identityPublicKey.trim()
+          ? { identityPublicKey: identityPublicKey.trim() }
+          : {}),
+      });
+      const result = await trellis.serviceInstancesProvision(input).orThrow();
+      if (scope.disposed || scope.key !== route) return;
+      receipt = result;
+      title = "";
+      identityPublicKey = "";
+      await load(target.deploymentId);
+    } catch (cause) {
+      if (scope.disposed || scope.key !== route) return;
+      uncertain = classifyMutationError(cause).kind === "unknown";
+      error = uncertain
+        ? "Provisioning outcome unknown. Inspect service instances; a one-time secret cannot be recovered."
+        : projectConsoleError(cause).message;
+    } finally {
+      busy = false;
+    }
   }
-
-  function resourceStateVariant(state: string): "healthy" | "degraded" | "unhealthy" {
-    if (state === "available") return "healthy";
-    if (state === "stale") return "degraded";
-    return "unhealthy";
+  async function disable(
+    instance: Instance | undefined = undefined,
+  ): Promise<void> {
+    if (
+      !deployment ||
+      busy ||
+      uncertain ||
+      loading ||
+      !canPerform(
+        authority.authority,
+        instance ? "serviceInstancesDisable" : "deploymentsDisable",
+      )
+    )
+      return;
+    const target = deployment;
+    const route = scope.key;
+    const key = ulid();
+    const confirmed = await confirmationModal?.confirm({
+      title: instance
+        ? "Disable service instance?"
+        : "Disable service deployment?",
+      message:
+        "Disable authentication eligibility for the exact target. This does not report process health.",
+      confirmLabel: "Disable",
+      targetLabel: instance ? "Instance" : "Deployment",
+      targetName: instance?.instanceId ?? target.deploymentId,
+      expectedValue: instance?.instanceId ?? target.deploymentId,
+    });
+    if (
+      !confirmed ||
+      scope.disposed ||
+      scope.key !== route ||
+      deployment?.revision !== target.revision
+    )
+      return;
+    busy = true;
+    try {
+      if (instance)
+        await trellis
+          .serviceInstancesDisable({
+            instanceId: instance.instanceId,
+            expectedRevision: instance.revision,
+            idempotencyKey: key,
+          })
+          .orThrow();
+      else
+        await trellis
+          .deploymentsDisable({
+            deploymentId: target.deploymentId,
+            expectedRevision: target.revision,
+            idempotencyKey: key,
+          })
+          .orThrow();
+      if (!scope.disposed && scope.key === route)
+        await load(target.deploymentId);
+    } catch (cause) {
+      if (scope.disposed || scope.key !== route) return;
+      uncertain = classifyMutationError(cause).kind === "unknown";
+      error = uncertain
+        ? "We couldn't confirm the change. Refresh before trying again."
+        : projectConsoleError(cause).message;
+    } finally {
+      busy = false;
+    }
   }
+  onMount(() => () => scope.dispose());
 </script>
 
-<PageToolbar
-  title={detail?.deployment.displayName ?? (loadedFor ?? deploymentId) ?? "Deployment"}
-  description="Current deployment, participant-scoped grant, and physical resource evidence."
->
-  {#snippet actions()}
-    <a class="btn btn-ghost btn-sm" href={resolve("/admin/services")}>Back to services</a>
-    <button class="btn btn-ghost btn-sm" onclick={load} disabled={loading}>Refresh</button>
-  {/snippet}
-</PageToolbar>
-
-{#if error && !notFound}
-  <Notice variant="error">
-    {error.message}
-    {#if error.id}<span class="ml-1 text-xs opacity-70">Reference: {error.id}</span>{/if}
-    <button class="btn btn-ghost btn-xs ml-2" type="button" onclick={load}>Retry</button>
-  </Notice>
-{/if}
-
-{#if loading && detail === null}
-  <LoadingState label="Loading deployment" />
-{:else if detail === null}
-  <EmptyState
-    title={notFound ? "Deployment unavailable" : "Deployment not loaded"}
-    description={`No deployment matches '${deploymentId}'. It may have been removed, access may be denied, or the link may be stale.`}
-    class="m-5"
+<section class="max-w-5xl space-y-5">
+  <PageToolbar
+    eyebrow="Services"
+    title={deployment ? humanizeName(deployment.title) : "Service"}
+    description={deployment
+      ? humanizeName(deployment.participantId)
+      : undefined}
+    >{#snippet actions()}<a
+        class="btn btn-ghost"
+        href={resolve("/admin/services")}>Back to services</a
+      ><button
+        class="btn btn-ghost"
+        disabled={loading}
+        onclick={() => void load(deploymentId)}>Refresh</button
+      >{#if deployment?.state === "enabled"}<button
+          class="btn btn-outline btn-error"
+          disabled={busy ||
+            uncertain ||
+            !canPerform(authority.authority, "deploymentsDisable")}
+          onclick={() => void disable()}>Disable service</button
+        >{/if}{/snippet}</PageToolbar
   >
-    {#snippet actions()}
-      <a class="btn btn-outline btn-sm" href={resolve("/admin/services")}>Back to services</a>
-      <button class="btn btn-ghost btn-sm" type="button" onclick={load}>Retry</button>
-    {/snippet}
-  </EmptyState>
-{:else}
-  <div
-    data-testid="console-page-ready"
-    class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_22rem]"
-  >
-    <Panel title="Resource evidence">
-      {#if resources.length === 0}
-        {#if participantId === null}
-          <EmptyState
-            title="No participant installed"
-            description="This deployment profile has no installed participant, so there is no grant or resource evidence. Installing a participant is a separate approval workflow."
-            class="m-5"
-          />
-        {:else if binding === null}
-          <EmptyState
-            title="No grant binding"
-            description="A participant is selected but no grant binding exists. This deployment is not authorized or running."
-            class="m-5"
-          />
-        {:else}
-          <EmptyState
-            title="This participant has no materialized resource bindings"
-            description="The installed participant declares no physical resources, or none have been reconciled yet."
-            class="m-5"
-          />
-        {/if}
-      {:else}
-        <DataTable size="sm">
-          <thead>
-            <tr><th>Resource</th><th>Kind</th><th>State</th><th>Binding</th><th>Observed</th><th>Provider</th></tr>
-          </thead>
-          <tbody>
-            {#each resources as resource (resource.bindingId)}
-              <tr>
-                <td class="trellis-identifier">{resource.localName}</td>
-                <td>{resource.resourceKind}</td>
-                <td>
-                  <StatusBadge
-                    label={resource.state}
-                    status={resourceStateVariant(resource.state)}
-                  />
-                </td>
-                <td class="trellis-identifier">{resource.bindingId}</td>
-                <td>{formatTimestamp(resource.materializedAt)}</td>
-                <td class="max-w-sm truncate text-xs text-base-content/70" title={providerSummary(resource.providerIdentity)}>
-                  {providerSummary(resource.providerIdentity)}
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </DataTable>
-        {#if resourceError}
-          <Notice variant="warning" class="m-3">Resource error: {resourceError}</Notice>
-        {/if}
-      {/if}
-    </Panel>
-
-    <div class="space-y-4">
-      <Panel title="Deployment">
-        <dl class="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm">
-          <dt class="text-base-content/60">State</dt>
-          <dd><StatusBadge label={detail.deployment.state} status={detail.deployment.state === "active" ? "healthy" : "offline"} /></dd>
-          <dt class="text-base-content/60">Deployment</dt>
-          <dd class="truncate">{detail.deployment.displayName}</dd>
-            <dd class="trellis-identifier truncate text-xs text-base-content/60">{detail.deployment.deploymentId}</dd>
-          <dt class="text-base-content/60">Participant</dt>
-          <dd class="trellis-identifier truncate">{participantId ?? "Not installed"}</dd>
-          <dt class="text-base-content/60">Version</dt><dd>{detail.deployment.version}</dd>
-          <dt class="text-base-content/60">Updated</dt><dd>{formatTimestamp(detail.deployment.updatedAt)}</dd>
+  {#if error}<Notice variant={uncertain ? "warning" : "error"}>{error}</Notice
+    >{/if}
+  {#if loading}<LoadingState label="Loading service" />{:else if deployment}
+    <div class="trellis-section p-5">
+      <div class="flex flex-wrap items-center gap-3">
+        <span
+          class={[
+            "badge",
+            deployment.state === "enabled" ? "badge-success" : "badge-neutral",
+          ]}>{deployment.state === "enabled" ? "Active" : "Disabled"}</span
+        >
+        <span class="text-sm text-base-content/65"
+          >{instances.filter((item) => item.principal.enabled).length} of {instances.length}
+          instances turned on</span
+        >
+      </div>
+      <details class="mt-4 text-sm">
+        <summary class="cursor-pointer text-base-content/70"
+          >Technical details</summary
+        >
+        <dl
+          class="mt-3 grid gap-x-4 gap-y-1.5 text-xs sm:grid-cols-[9rem_minmax(0,1fr)]"
+        >
+          <dt class="text-base-content/60">Service ID</dt>
+          <dd class="trellis-identifier">{deployment.deploymentId}</dd>
+          <dt class="text-base-content/60">Contract</dt>
+          <dd class="trellis-identifier">{deployment.participantId}</dd>
+          <dt class="text-base-content/60">Build</dt>
+          <dd class="trellis-identifier break-all">
+            {deployment.implementationDigest}
+          </dd>
+          <dt class="text-base-content/60">Revision</dt>
+          <dd>{deployment.revision}</dd>
         </dl>
-      </Panel>
-
+      </details>
     </div>
-  </div>
-  <AccessGrants ownerKind="deployment" ownerId={detail.deployment.deploymentId} ownerLabel={detail.deployment.displayName} participantId={participantId ?? undefined} disabled={detail.deployment.state !== "active"} />
-{/if}
+
+    <div class="trellis-section">
+      <h2 class="px-5 pt-5 text-base font-semibold">Instances</h2>
+      <p class="px-5 text-sm text-base-content/65">
+        Each running copy of this service.
+      </p>
+      {#if instanceError}<Notice variant="warning" class="mx-5 mt-3"
+          >Some instances couldn't be loaded: {instanceError}</Notice
+        >{/if}
+      <ul class="mt-3 divide-y divide-base-300 border-t border-base-300">
+        {#each instances as instance (instance.instanceId)}
+          <li class="flex items-center justify-between gap-3 px-5 py-3">
+            <span class="min-w-0">
+              <span class="block font-medium"
+                >{instance.principal.title &&
+                instance.principal.title !== instance.instanceId
+                  ? instance.principal.title
+                  : `Instance ${instance.instanceId.slice(-6)}`}</span
+              >
+              <span class="block text-xs text-base-content/60"
+                >Added {formatDate(instance.principal.createdAt)}</span
+              >
+            </span>
+            <span class="flex items-center gap-3">
+              <span
+                class={[
+                  "badge badge-sm",
+                  instance.principal.enabled
+                    ? "badge-success"
+                    : "badge-neutral",
+                ]}>{instance.principal.enabled ? "On" : "Off"}</span
+              >
+              {#if instance.principal.enabled}<button
+                  class="btn btn-ghost btn-xs text-error"
+                  disabled={busy || uncertain}
+                  onclick={() => void disable(instance)}>Turn off</button
+                >{/if}
+            </span>
+          </li>
+        {:else}
+          <li class="px-5 py-4 text-sm text-base-content/60">
+            No instances yet.
+          </li>
+        {/each}
+      </ul>
+    </div>
+
+    {#if receipt}<Panel title="Provisioning receipt"
+        ><p class="text-sm">
+          Added {receipt.instance.principal.title || "a new instance"}.
+        </p>
+        {#if receipt.provisioningSecret}<p class="trellis-field-help mt-2">
+            Give this one-time setup key to the new instance. You won't see it
+            again.
+          </p>
+          <code
+            class="mt-2 block break-all rounded-field bg-base-200 p-3 select-all"
+            >{receipt.provisioningSecret}</code
+          >{:else}<p class="trellis-field-help mt-2">
+            It will connect with its own key; no setup key is needed.
+          </p>{/if}</Panel
+      >{/if}
+    {#if deployment.state === "enabled"}<Panel title="Add an instance"
+        ><form
+          class="trellis-form"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void provision();
+          }}
+        >
+          <label class="trellis-field"
+            ><span class="trellis-field-label">Instance title</span><input
+              class="input w-full"
+              bind:value={title}
+              required
+            /></label
+          >
+          <details class="text-sm">
+            <summary class="cursor-pointer text-base-content/70"
+              >Use the instance's own key</summary
+            >
+            <label class="trellis-field mt-2"
+              ><span class="trellis-field-label">Public key</span><input
+                class="input w-full font-mono"
+                bind:value={identityPublicKey}
+              /><span class="trellis-field-help"
+                >Leave empty to get a one-time setup key instead.</span
+              ></label
+            >
+          </details>
+          <div class="trellis-action-row">
+            <button
+              class="btn btn-primary"
+              type="submit"
+              disabled={busy ||
+                uncertain ||
+                !title.trim() ||
+                !canPerform(authority.authority, "serviceInstancesProvision")}
+              >Provision</button
+            >
+          </div>
+        </form></Panel
+      >{/if}
+  {/if}
+</section>
+<ConfirmationModal bind:this={confirmationModal} />

@@ -1,21 +1,27 @@
-import { fromFileUrl, relative, resolve } from "@std/path";
-import { parseArgs } from "@std/cli/parse-args";
+import { mkdir } from "node:fs/promises";
+import { relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { z } from "zod";
+import { spawnTracked } from "../../ts/integration/_support/process.ts";
 
 // Reuse the first-party runtime runner and report, including integrity failures.
-const root = fromFileUrl(new URL("../../", import.meta.url));
-const args = parseArgs(Deno.args, {
-  string: [
-    "output",
-    "server",
-    "cli",
-    "samples",
-    "calls",
-    "warmups",
-    "compare",
-    "source-root",
-  ],
-  default: { samples: "21", calls: "100", warmups: "3" },
+const root = fileURLToPath(new URL("../../", import.meta.url));
+const { values: args } = parseArgs({
+  options: {
+    output: { type: "string" },
+    server: { type: "string" },
+    cli: { type: "string" },
+    samples: { type: "string", default: "21" },
+    calls: { type: "string", default: "100" },
+    warmups: { type: "string", default: "3" },
+    sizes: { type: "string", default: "8388608,134217728" },
+    diagnostics: { type: "boolean", default: false },
+    "http-tls": { type: "boolean", default: false },
+    "http-chunk": { type: "string" },
+    compare: { type: "string" },
+    "source-root": { type: "string" },
+  },
 });
 const output = resolve(z.string().min(1).parse(args.output));
 const sourceRoot = args["source-root"] ? resolve(args["source-root"]) : root;
@@ -30,22 +36,21 @@ if (sourceWithinRepo === ".." || sourceWithinRepo.startsWith("../")) {
 // Existing testkit infrastructure still owns lifecycle/cleanup; keep its
 // temporary state and binary cache inside the designated repository as well.
 const runtimeTemp = `${root}/target/transfer-runtime-temp`;
-await Deno.mkdir(runtimeTemp, { recursive: true });
+await mkdir(runtimeTemp, { recursive: true });
 const env = {
   TMPDIR: runtimeTemp,
   TRELLIS_TEST_CACHE_DIR: `${root}/target/transfer-testkit-cache`,
 };
-const run = await new Deno.Command(Deno.execPath(), {
-  cwd: sourceRoot,
-  env,
-  args: [
-    "run",
-    "-A",
-    "-c",
-    `${sourceRoot}/ts/deno.json`,
+const run = await spawnTracked(
+  process.execPath,
+  [
+    "--experimental-transform-types",
     `${sourceRoot}/benchmarks/runtime/run.ts`,
     "--lane=transfer",
-    "--sizes=8388608",
+    `--sizes=${args.sizes}`,
+    ...(args.diagnostics ? ["--diagnostics"] : []),
+    ...(args["http-tls"] ? ["--http-tls"] : []),
+    ...(args["http-chunk"] ? [`--http-chunk=${args["http-chunk"]}`] : []),
     "--sessions=1",
     "--idle-seconds=1",
     `--output=${output}`,
@@ -55,25 +60,20 @@ const run = await new Deno.Command(Deno.execPath(), {
     ...(args.server ? [`--server=${resolve(args.server)}`] : []),
     ...(args.cli ? [`--cli=${resolve(args.cli)}`] : []),
   ],
-  stdout: "inherit",
-  stderr: "inherit",
-}).output();
-if (!run.success) {
-  Deno.exitCode = run.code;
+  { cwd: sourceRoot, env: { ...process.env, ...env }, stdio: "inherit" },
+).exited;
+if (run.code !== 0) {
+  process.exitCode = run.code ?? 1;
 } else {
-  const report = await new Deno.Command(Deno.execPath(), {
-    cwd: root,
-    args: [
-      "run",
-      "-A",
-      "-c",
-      `${root}/ts/deno.json`,
+  const report = await spawnTracked(
+    process.execPath,
+    [
+      "--experimental-transform-types",
       `${root}/benchmarks/runtime/report.ts`,
       output,
       ...(args.compare ? [resolve(args.compare)] : []),
     ],
-    stdout: "inherit",
-    stderr: "inherit",
-  }).output();
-  Deno.exitCode = report.code;
+    { cwd: root, stdio: "inherit" },
+  ).exited;
+  process.exitCode = report.code ?? 1;
 }

@@ -3,8 +3,9 @@ use crate::{
     parser,
     project::PackageManifest,
     semantic::{
-        ActionDefinition, ActionId, ActionKind, ActionSelection, ApiDefinition, ApiId, Bounds,
-        CapabilityDefinition, CapabilityId, CompanionDefinition, Documentation,
+        ActionDefinition, ActionId, ActionKind, ActionSelection, ApiDefinition, ApiId, AppKind,
+        AppRequestDefinition, AppRequestId, Bounds, CapabilityDefinition,
+        CapabilityGroupDefinition, CapabilityId, CompanionDefinition, Documentation,
         HistoricRepresentation, InteractionDirection, InteractionSelection, KeyConcurrency,
         KeyConcurrencyPolicy, NumericBound, PackageGraph, PackageId, Pagination,
         ParticipantDefinition, ParticipantId, ParticipantKind, ParticipantNeeds, Primitive, Replay,
@@ -15,10 +16,6 @@ use crate::{
 use miette::{miette, IntoDiagnostic};
 use semver::VersionReq;
 use std::collections::{BTreeMap, BTreeSet};
-use trellis_protocol::{
-    ApiSurfaceKind, GrantSet, ParticipantResourceKind, PermissionAction, PermissionAtom,
-    PermissionTarget,
-};
 
 /// Dependency graphs supplied by acquisition tooling, keyed by manifest alias.
 pub type SuppliedDependencies = BTreeMap<String, PackageGraph>;
@@ -50,6 +47,7 @@ pub(crate) fn compile(
         types: BTreeMap::new(),
         apis: BTreeMap::new(),
         participants: BTreeMap::new(),
+        app_requests: BTreeMap::new(),
         sources: BTreeMap::new(),
     };
     let scope = Scope {
@@ -138,7 +136,7 @@ pub(crate) fn compile(
             );
         }
         for capability in api.capabilities.keys() {
-            let raw_name = capability.as_str().rsplit("::").next().unwrap_or_default();
+            let raw_name = crate::semantic::capability_name(capability.as_str());
             let raw_capability = raw
                 .capabilities
                 .iter()
@@ -167,17 +165,25 @@ pub(crate) fn compile(
         let Declaration::Participant(raw) = &declaration.value else {
             unreachable!()
         };
-        let (participant, companions) =
-            resolve_participant(raw, None, *source, &scope, &package)
-                .map_err(|error| at(&parsed[*source], declaration, error.to_string()))?;
+        let (definition, companion) = resolve_authoring(raw, None, *source, &scope, &package)
+            .map_err(|error| at(&parsed[*source], declaration, error.to_string()))?;
         record_participant_spans(&mut package, &parsed, *source, raw, None, &package_id);
-        package
-            .participants
-            .insert(participant.identity.clone(), participant);
-        for companion in companions {
+        match definition {
+            AuthoringDefinition::Participant(participant) => {
+                package
+                    .participants
+                    .insert(participant.identity.clone(), participant);
+            }
+            AuthoringDefinition::App(request) => {
+                package
+                    .app_requests
+                    .insert(request.identity.clone(), request);
+            }
+        }
+        if let Some(request) = companion {
             package
-                .participants
-                .insert(companion.identity.clone(), companion);
+                .app_requests
+                .insert(request.identity.clone(), request);
         }
     }
 
@@ -481,7 +487,8 @@ fn validate_imports(
                     },
                     import.span.clone(),
                     format!(
-                        "import '{local}' refers to unexported type or missing API '{}' in package '{}'",
+                        "import '{local}' refers to unexported type or missing API '{}' in \
+                        package '{}'",
                         import.name, package
                     ),
                 ));
@@ -684,11 +691,12 @@ fn bounds(kind: &str, constraints: &[(String, String)]) -> miette::Result<Bounds
         _ => None,
     };
     if domain.is_some_and(|(minimum, maximum)| {
-        bounds
-            .min
-            .into_iter()
-            .chain(bounds.max)
-            .any(|value| matches!(value, NumericBound::Integer(value) if value < minimum || value > maximum))
+        bounds.min.into_iter().chain(bounds.max).any(|value| {
+            matches!(
+                value,
+                NumericBound::Integer(value) if value < minimum || value > maximum
+            )
+        })
     }) {
         return Err(miette!("integer bound is outside the {kind} domain"));
     }
@@ -759,6 +767,29 @@ fn resolve_name(
     ))
 }
 
+/// The package whose APIs and administrative capabilities form the reserved
+/// `trellis.*` namespace.
+pub(crate) const BUILTIN_PACKAGE: &str = "trellis";
+
+/// Ordinary capabilities are scoped to their API; administrative capabilities
+/// name an installation-wide power in the reserved `trellis.*` namespace.
+fn capability_id(api: &ApiId, name: &str) -> CapabilityId {
+    CapabilityId::new(format!(
+        "{}:{name}",
+        crate::semantic::capability_prefix(api.as_str())
+    ))
+}
+
+/// Resolve a capability a participant names on a used API.
+fn named_capability(api: &ApiDefinition, name: &str) -> miette::Result<CapabilityId> {
+    let id = capability_id(&api.identity, name);
+    if api.capabilities.contains_key(&id) || api.groups.contains_key(&id) {
+        Ok(id)
+    } else {
+        Err(miette!("unknown capability '{id}'"))
+    }
+}
+
 fn resolve_api(
     raw: &ast::Api,
     source: usize,
@@ -821,15 +852,24 @@ fn resolve_api(
         if !capability.public
             && (capability.title.is_empty()
                 || capability.description.is_empty()
-                || capability.consequence.is_empty()
+                || capability.grants.is_empty()
                 || capability.allows.is_empty())
         {
             return Err(miette!(
-                "capability '{}' requires title, description, consequence, and nonempty allows",
+                "capability '{}' requires title, description, grants, and nonempty allows",
                 capability.name
             ));
         }
-        let id = CapabilityId::new(format!("{identity}::{}", capability.name));
+        if capability.administrative
+            && (scope.package.as_str() != BUILTIN_PACKAGE || capability.public)
+        {
+            return Err(miette!(
+                "capability '{}' cannot be administrative; only the builtin Trellis package \
+                declares administrative capabilities",
+                capability.name
+            ));
+        }
+        let id = capability_id(&identity, &capability.name);
         let allows: BTreeSet<ActionSelection> = capability
             .allows
             .iter()
@@ -847,7 +887,8 @@ fn resolve_api(
                 CapabilityDefinition {
                     title: capability.title.clone(),
                     description: capability.description.clone(),
-                    consequence: capability.consequence.clone(),
+                    grants: capability.grants.clone(),
+                    administrative: capability.administrative,
                     allows,
                     public: capability.public,
                 },
@@ -857,35 +898,49 @@ fn resolve_api(
             return Err(miette!("duplicate capability '{}'", capability.name));
         }
     }
-    if !capabilities.contains_key(&CapabilityId::new(format!("{identity}::public"))) {
-        return Err(miette!(
-            "API '{}' requires one public capability block",
-            raw.name
-        ));
-    }
-    for action in actions.keys() {
-        let directions: &[InteractionDirection] = match action.kind {
-            ActionKind::Rpc => &[InteractionDirection::Call],
-            ActionKind::Operation => &[InteractionDirection::Invoke],
-            ActionKind::Event => &[
-                InteractionDirection::Publish,
-                InteractionDirection::Subscribe,
-            ],
-            ActionKind::Live => &[InteractionDirection::Subscribe],
-        };
-        for direction in directions {
-            if !capabilities.values().any(|capability| {
-                capability.allows.contains(&ActionSelection {
-                    action: action.clone(),
-                    direction: *direction,
-                })
-            }) {
+    let mut groups = BTreeMap::new();
+    for group in &raw.capability_groups {
+        // A group and a capability would share one canonical identity.
+        if group.name == "public" {
+            return Err(miette!(
+                "group name 'public' is reserved for the public capability"
+            ));
+        }
+        if !canonical_unit
+            && (group.title.is_empty() || group.description.is_empty() || group.grants.is_empty())
+        {
+            return Err(miette!(
+                "group '{}' requires title, description, and grants",
+                group.name
+            ));
+        }
+        let mut members = BTreeSet::new();
+        for member in &group.members {
+            let id = capability_id(&identity, member);
+            if member == "public" || !capabilities.contains_key(&id) {
                 return Err(miette!(
-                    "externally usable action '{} {}' direction '{direction:?}' is not covered by a capability",
-                    raw_action_kind(action.kind),
-                    action.name
+                    "group '{}' names '{member}', which is not a capability of this API",
+                    group.name
                 ));
             }
+            if !members.insert(id) {
+                return Err(miette!("group '{}' names '{member}' twice", group.name));
+            }
+        }
+        if members.is_empty() {
+            return Err(miette!("group '{}' has no capabilities", group.name));
+        }
+        let definition = CapabilityGroupDefinition {
+            title: group.title.clone(),
+            description: group.description.clone(),
+            grants: group.grants.clone(),
+            members,
+        };
+        if groups
+            .insert(capability_id(&identity, &group.name), definition)
+            .is_some()
+        {
+            return Err(miette!("duplicate group '{}'", group.name));
         }
     }
     let subjects = derive_api_subjects(&identity, &raw.name, raw.major, &actions)?;
@@ -901,6 +956,7 @@ fn resolve_api(
         errors,
         actions,
         capabilities,
+        groups,
         subjects,
     })
 }
@@ -967,10 +1023,7 @@ fn derive_api_subjects(
             ActionDefinition::Live { .. } => {
                 result.lives.insert(
                     id.name.clone(),
-                    protocol(trellis_protocol::derive_live_subject(
-                        &version,
-                        &logical_name,
-                    ))?,
+                    protocol(trellis_protocol::derive_live_subject(api_id, &id.name))?,
                 );
             }
         }
@@ -988,7 +1041,7 @@ fn resolve_action(
     let allowed: &[&str] = match raw.kind.as_str() {
         "rpc" => &["input", "output", "errors", "download", "pagination"],
         "operation" => &[
-            "input", "output", "progress", "update", "errors", "signals", "upload",
+            "input", "output", "progress", "update", "errors", "signals", "upload", "stream",
         ],
         "event" => &["payload", "params"],
         "live" => &["input", "event"],
@@ -1047,6 +1100,13 @@ fn resolve_action(
             },
         },
         "operation" => {
+            let stream = raw.members.contains_key("stream");
+            if stream && raw.members.contains_key("upload") {
+                return Err(miette!(
+                    "operation declares both 'upload' and 'stream'; 'stream' already \
+                    accepts caller bytes"
+                ));
+            }
             let signals = match raw.members.get("signals") {
                 Some(MemberValue::Signals(values)) => values
                     .iter()
@@ -1062,7 +1122,8 @@ fn resolve_action(
                 update: optional_type("update")?,
                 errors: domain_errors,
                 signals,
-                upload: raw.members.contains_key("upload"),
+                upload: stream || raw.members.contains_key("upload"),
+                stream,
             }
         }
         "event" => {
@@ -1241,28 +1302,29 @@ fn resolve_api_ref(
         .ok_or_else(|| miette!("unknown API '{name}'"))
 }
 
-fn resolve_participant(
+enum AuthoringDefinition {
+    Participant(ParticipantDefinition),
+    App(AppRequestDefinition),
+}
+
+fn resolve_authoring(
     raw: &ast::Participant,
     parent: Option<&str>,
     source: usize,
     scope: &Scope<'_>,
     root: &SemanticPackage,
-) -> miette::Result<(ParticipantDefinition, Vec<ParticipantDefinition>)> {
+) -> miette::Result<(AuthoringDefinition, Option<AppRequestDefinition>)> {
     let kind = match raw.kind.as_str() {
-        "service" => ParticipantKind::Service,
-        "device" => ParticipantKind::Device,
-        "app" => ParticipantKind::App,
-        "agent" => ParticipantKind::Agent,
+        "service" => Some(ParticipantKind::Service),
+        "device" => Some(ParticipantKind::Device),
+        "app" | "agent" => None,
         _ => return Err(miette!("unknown participant kind '{}'", raw.kind)),
     };
     let lexical = parent.map_or_else(
         || raw.name.clone(),
         |parent| format!("{parent}.{}", raw.name),
     );
-    let identity = ParticipantId::new(format!("{}.{}", scope.package, lexical));
-    if !matches!(kind, ParticipantKind::Service | ParticipantKind::Device)
-        && !raw.implements.is_empty()
-    {
+    if kind.is_none() && !raw.implements.is_empty() {
         return Err(miette!(
             "only service and device participants may implement APIs"
         ));
@@ -1284,49 +1346,54 @@ fn resolve_participant(
             .or_insert_with(|| InteractionSelection {
                 api: api_id,
                 actions: BTreeSet::new(),
+                required_capabilities: BTreeSet::new(),
                 optional_capabilities: BTreeSet::new(),
             });
-        for selection in &use_.selections {
-            if !selected
-                .actions
-                .insert(resolve_selection(selection, &api.actions)?)
-            {
-                return Err(miette!("interaction is selected more than once"));
-            }
+        for name in &use_.required_capabilities {
+            selected
+                .required_capabilities
+                .insert(named_capability(&api, name)?);
         }
         for name in &use_.optional_capabilities {
-            let id = CapabilityId::new(format!("{}::{name}", api.identity));
-            if !selected.optional_capabilities.insert(id) {
-                return Err(miette!("optional capability is declared more than once"));
-            }
+            selected
+                .optional_capabilities
+                .insert(named_capability(&api, name)?);
         }
     }
-    for (api_id, selected) in &uses {
+    for (api_id, selected) in &mut uses {
         let api = &used_apis[api_id];
-        for capability_id in &selected.optional_capabilities {
-            let Some(capability) = api.capabilities.get(capability_id) else {
-                return Err(miette!("unknown optional capability '{capability_id}'"));
+        selected
+            .optional_capabilities
+            .retain(|id| !selected.required_capabilities.contains(id));
+        for capability_id in selected
+            .required_capabilities
+            .iter()
+            .chain(&selected.optional_capabilities)
+        {
+            let Some(allows) = api.selection_allows(capability_id) else {
+                return Err(miette!("unknown capability '{capability_id}'"));
             };
-            if capability.public
-                || !capability
-                    .allows
-                    .iter()
-                    .any(|allow| selected.actions.contains(allow))
-            {
-                return Err(miette!(
-                    "optional capability '{capability_id}' is not a named capability implicated by selected actions"
-                ));
-            }
+            selected.actions.extend(allows.into_iter().cloned());
         }
     }
     let mut resources = BTreeMap::new();
     for resource in &raw.resources {
+        if kind.is_none() && resource.kind != "state" {
+            return Err(miette!(
+                "application '{}' cannot own '{}' resources; app State declarations \
+                describe local codecs only",
+                raw.name,
+                resource.kind
+            ));
+        }
         let definition = resolve_resource(resource, kind, source, scope, root)?;
         if matches!(definition, ResourceDefinition::Consumer { .. }) {
             let trellis = PackageId::new("trellis");
             if scope.package != &trellis && !root.dependencies.contains_key(&trellis) {
                 return Err(miette!(
-                    "consumer '{}' requires a direct dependency on the trellis package containing trellis.events@v1; add trellis to trellis.toml and update trellis.lock",
+                    "consumer '{}' requires a direct dependency on the trellis package \
+                    containing trellis.events@v1; add trellis to trellis.toml and update \
+                    trellis.lock",
                     resource.name
                 ));
             }
@@ -1349,72 +1416,53 @@ fn resolve_participant(
             return Err(miette!("duplicate resource '{}'", resource.name));
         }
     }
-    if resources
-        .values()
-        .any(|resource| matches!(resource, ResourceDefinition::State { .. }))
-    {
-        let state_api_id = ApiId::new("trellis.state@v1");
-        if let Some(state_api) = scope
-            .dependencies
-            .get(&PackageId::new("trellis"))
-            .and_then(|package| package.apis.get(&state_api_id))
-        {
-            let selected =
-                uses.entry(state_api_id.clone())
-                    .or_insert_with(|| InteractionSelection {
-                        api: state_api_id,
-                        actions: BTreeSet::new(),
-                        optional_capabilities: BTreeSet::new(),
-                    });
-            for name in ["Get", "Put", "Delete"] {
-                let action = ActionId {
-                    kind: ActionKind::Rpc,
-                    name: name.to_owned(),
-                };
-                if !state_api.actions.contains_key(&action) {
-                    return Err(miette!("Trellis State API is missing RPC '{name}'"));
-                }
-                selected.actions.insert(ActionSelection {
-                    action,
-                    direction: InteractionDirection::Call,
-                });
-            }
-        }
-    }
-    let mut companions = Vec::new();
+    let mut companion_request = None;
     let companion = if let Some(child) = &raw.companion {
-        if kind != ParticipantKind::Device {
+        if kind != Some(ParticipantKind::Device) {
             return Err(miette!("only a device may contain a companion"));
         }
-        let (child_definition, descendants) =
-            resolve_participant(child, Some(&lexical), source, scope, root)?;
+        let (child_definition, _) = resolve_authoring(child, Some(&lexical), source, scope, root)?;
+        let AuthoringDefinition::App(request) = child_definition else {
+            return Err(miette!("device companions must be application requests"));
+        };
         let reference = CompanionDefinition {
-            participant: child_definition.identity.clone(),
+            request: request.identity.clone(),
             optional: child.optional,
         };
-        companions.push(child_definition);
-        companions.extend(descendants);
+        companion_request = Some(request);
         Some(reference)
     } else {
         None
     };
-    Ok((
-        ParticipantDefinition {
-            identity,
+    let definition = if let Some(kind) = kind {
+        AuthoringDefinition::Participant(ParticipantDefinition {
+            identity: ParticipantId::new(format!("{}.{}", scope.package, lexical)),
             name: raw.name.clone(),
             kind,
             implements,
             uses,
             resources,
             companion,
-        },
-        companions,
-    ))
+        })
+    } else {
+        AuthoringDefinition::App(AppRequestDefinition {
+            identity: AppRequestId::new(format!("{}.{}", scope.package, lexical)),
+            name: raw.name.clone(),
+            kind: if raw.kind == "app" {
+                AppKind::Browser
+            } else {
+                AppKind::Native
+            },
+            uses,
+            states: resources,
+        })
+    };
+    Ok((definition, companion_request))
 }
 
 fn resolve_resource(
     raw: &ast::Resource,
-    participant: ParticipantKind,
+    participant: Option<ParticipantKind>,
     source: usize,
     scope: &Scope<'_>,
     root: &SemanticPackage,
@@ -1446,19 +1494,21 @@ fn resolve_resource(
     }
     let accepts = accepts(raw, source, scope, version)?;
     Ok(match raw.kind.as_str() {
-        "state" if !matches!(participant, ParticipantKind::Service) => ResourceDefinition::State {
-            optional: {
-                reject_except(
-                    raw,
-                    &["title", "description", "schema", "version", "accepts"],
-                )?;
-                raw.optional
-            },
-            docs,
-            schema: type_ref("schema")?,
-            version,
-            accepts,
-        },
+        "state" if !matches!(participant, Some(ParticipantKind::Service)) => {
+            ResourceDefinition::State {
+                optional: {
+                    reject_except(
+                        raw,
+                        &["title", "description", "schema", "version", "accepts"],
+                    )?;
+                    raw.optional
+                },
+                docs,
+                schema: type_ref("schema")?,
+                version,
+                accepts,
+            }
+        }
         "state" => return Err(miette!("State resources are illegal for services")),
         "kv" => ResourceDefinition::Kv {
             optional: {
@@ -1688,10 +1738,21 @@ fn accepts(
         _ => return Err(miette!("invalid accepts member")),
     };
     let mut seen = BTreeSet::new();
-    values.iter().map(|(version, ty)| {
-        if *version == 0 || *version == current || !seen.insert(*version) { return Err(miette!("accepted representation versions must be distinct, positive, and differ from current")); }
-        Ok(HistoricRepresentation { version: *version, ty: resolve_type_ref(ty, source, scope)? })
-    }).collect()
+    values
+        .iter()
+        .map(|(version, ty)| {
+            if *version == 0 || *version == current || !seen.insert(*version) {
+                return Err(miette!(
+                    "accepted representation versions must be distinct, positive, \
+                    and differ from current"
+                ));
+            }
+            Ok(HistoricRepresentation {
+                version: *version,
+                ty: resolve_type_ref(ty, source, scope)?,
+            })
+        })
+        .collect()
 }
 
 fn resolve_event(
@@ -2113,9 +2174,8 @@ fn derive_participant_needs(
         .values()
         .find_map(|package| package.participants.get(participant_id))
         .ok_or_else(|| miette!("participant '{participant_id}' is absent from graph"))?;
-    let mut required = Vec::new();
-    let mut optional = BTreeMap::<String, Vec<PermissionAtom>>::new();
     let mut required_capabilities = BTreeSet::new();
+    let mut optional_capabilities = BTreeSet::new();
     let mut optional_action_capabilities =
         BTreeMap::<(ApiId, ActionSelection), BTreeSet<CapabilityId>>::new();
     for (api_id, selection) in &participant.uses {
@@ -2123,53 +2183,28 @@ fn derive_participant_needs(
             .api(api_id)
             .ok_or_else(|| miette!("selected API '{api_id}' is absent from graph"))?
             .definition;
+        required_capabilities.extend(selection.required_capabilities.iter().cloned());
+        optional_capabilities.extend(selection.optional_capabilities.iter().cloned());
         for selected in &selection.actions {
-            let atoms = selected_permission_atoms(api_id, selected, api)?;
-            let covering = api
-                .capabilities
+            let required_action = selection.required_capabilities.iter().any(|id| {
+                api.selection_allows(id)
+                    .is_some_and(|allows| allows.contains(selected))
+            });
+            // An authority carries a group's members, so a selected group
+            // offers the members that allow this action.
+            let optional_alternatives = selection
+                .optional_capabilities
                 .iter()
-                .filter(|(_, capability)| capability.allows.contains(selected))
-                .collect::<Vec<_>>();
-            let mut required_action = covering.is_empty();
-            let mut optional_alternatives = BTreeSet::new();
-            for (capability_id, capability) in covering {
-                if selection.optional_capabilities.contains(capability_id) {
-                    optional
-                        .entry(capability_id.as_str().to_owned())
-                        .or_default()
-                        .extend(atoms.iter().cloned());
-                    optional_alternatives.insert(capability_id.clone());
-                } else {
-                    required_action = true;
-                    if !capability.public {
-                        required_capabilities.insert(capability_id.clone());
-                    }
-                }
-            }
-            if required_action {
-                required.extend(atoms);
-            } else if !optional_alternatives.is_empty() {
+                .flat_map(|id| api.members(id).unwrap_or_default())
+                .filter(|id| api.capabilities[*id].allows.contains(selected))
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if !required_action && !optional_alternatives.is_empty() {
                 optional_action_capabilities
                     .insert((api_id.clone(), selected.clone()), optional_alternatives);
             }
         }
     }
-    for (name, resource) in &participant.resources {
-        let atoms = resource_permission_atoms(participant_id, name, resource)?;
-        if resource.optional() {
-            optional
-                .entry(format!("resource.{name}"))
-                .or_default()
-                .extend(atoms);
-        } else {
-            required.extend(atoms);
-        }
-    }
-    let required_grants = GrantSet::new(required);
-    let optional_grants = optional
-        .into_iter()
-        .map(|(key, permissions)| (key, GrantSet::new(permissions)))
-        .collect::<BTreeMap<_, _>>();
     let mut digest_input = String::new();
     let mut append = |value: &str| {
         use std::fmt::Write as _;
@@ -2179,11 +2214,9 @@ fn derive_participant_needs(
     append(match participant.kind {
         ParticipantKind::Service => "service",
         ParticipantKind::Device => "device",
-        ParticipantKind::App => "app",
-        ParticipantKind::Agent => "agent",
     });
     if let Some(companion) = &participant.companion {
-        append(companion.participant.as_str());
+        append(companion.request.as_str());
         append(if companion.optional {
             "optional"
         } else {
@@ -2202,27 +2235,17 @@ fn derive_participant_needs(
         append(name.as_str());
         append(&resource_needs_json(graph, resource)?);
     }
-    append(
-        &required_grants
-            .digest()
-            .map_err(|error| miette!(error.to_string()))?,
-    );
     for capability in &required_capabilities {
         append(capability.as_str());
     }
-    for (key, grants) in &optional_grants {
-        append(key);
-        append(
-            &grants
-                .digest()
-                .map_err(|error| miette!(error.to_string()))?,
-        );
+    for capability in &optional_capabilities {
+        append("optional");
+        append(capability.as_str());
     }
     Ok(ParticipantNeeds {
         digest: trellis_protocol::sha256_base64url(&digest_input),
-        required_grants,
-        optional_grants,
         required_capabilities,
+        optional_capabilities,
         optional_action_capabilities,
     })
 }
@@ -2335,116 +2358,6 @@ fn resource_needs_json(
         }),
     };
     trellis_protocol::canonicalize_json(&value).map_err(|error| miette!(error.to_string()))
-}
-
-/// Derive the complete exact permission atoms for one selected interaction.
-#[doc(hidden)]
-pub fn selected_permission_atoms(
-    api_id: &ApiId,
-    selected: &ActionSelection,
-    api: &ApiDefinition,
-) -> miette::Result<Vec<PermissionAtom>> {
-    let target = |surface, action| -> miette::Result<PermissionAtom> {
-        let target = PermissionTarget::api_surface(api_id.as_str(), surface, &selected.action.name)
-            .map_err(|error| miette!(error.to_string()))?;
-        PermissionAtom::new(target, action).map_err(|error| miette!(error.to_string()))
-    };
-    Ok(match (selected.action.kind, selected.direction) {
-        (ActionKind::Rpc, InteractionDirection::Call) => {
-            vec![target(ApiSurfaceKind::Rpc, PermissionAction::Call)?]
-        }
-        (ActionKind::Operation, InteractionDirection::Invoke) => {
-            let mut atoms = vec![
-                target(ApiSurfaceKind::Operation, PermissionAction::Invoke)?,
-                target(ApiSurfaceKind::Operation, PermissionAction::Observe)?,
-                target(ApiSurfaceKind::Operation, PermissionAction::Cancel)?,
-            ];
-            let ActionDefinition::Operation { signals, .. } = &api.actions[&selected.action] else {
-                unreachable!()
-            };
-            for signal in signals.keys() {
-                atoms.push(
-                    PermissionAtom::new(
-                        PermissionTarget::operation_signal(
-                            api_id.as_str(),
-                            &selected.action.name,
-                            signal,
-                        )
-                        .map_err(|error| miette!(error.to_string()))?,
-                        PermissionAction::Control,
-                    )
-                    .map_err(|error| miette!(error.to_string()))?,
-                );
-            }
-            atoms
-        }
-        (ActionKind::Event, InteractionDirection::Publish) => {
-            vec![target(ApiSurfaceKind::Event, PermissionAction::Publish)?]
-        }
-        (ActionKind::Event, InteractionDirection::Subscribe) => {
-            vec![target(ApiSurfaceKind::Event, PermissionAction::Subscribe)?]
-        }
-        (ActionKind::Live, InteractionDirection::Subscribe) => {
-            vec![target(ApiSurfaceKind::Live, PermissionAction::Subscribe)?]
-        }
-        _ => return Err(miette!("selected action direction is invalid")),
-    })
-}
-
-fn resource_permission_atoms(
-    participant: &ParticipantId,
-    name: &ResourceName,
-    resource: &ResourceDefinition,
-) -> miette::Result<Vec<PermissionAtom>> {
-    let (kind, actions): (_, &[PermissionAction]) = match resource {
-        ResourceDefinition::State { .. } => (
-            ParticipantResourceKind::State,
-            &[
-                PermissionAction::Read,
-                PermissionAction::Write,
-                PermissionAction::Delete,
-            ],
-        ),
-        ResourceDefinition::Kv { .. } => (
-            ParticipantResourceKind::Kv,
-            &[
-                PermissionAction::Read,
-                PermissionAction::Write,
-                PermissionAction::Delete,
-            ],
-        ),
-        ResourceDefinition::Store { .. } => (
-            ParticipantResourceKind::Store,
-            &[
-                PermissionAction::Read,
-                PermissionAction::Write,
-                PermissionAction::Delete,
-            ],
-        ),
-        ResourceDefinition::Job { .. } => (
-            ParticipantResourceKind::JobQueue,
-            &[PermissionAction::Submit, PermissionAction::Process],
-        ),
-        ResourceDefinition::Consumer { .. } => (
-            ParticipantResourceKind::EventConsumer,
-            &[
-                PermissionAction::Read,
-                PermissionAction::Consume,
-                PermissionAction::Control,
-            ],
-        ),
-    };
-    actions
-        .iter()
-        .map(|action| {
-            PermissionAtom::new(
-                PermissionTarget::participant_resource(participant.as_str(), kind, name.as_str())
-                    .map_err(|error| miette!(error.to_string()))?,
-                *action,
-            )
-            .map_err(|error| miette!(error.to_string()))
-        })
-        .collect()
 }
 
 fn exported_types(package: &SemanticPackage) -> BTreeSet<TypeId> {

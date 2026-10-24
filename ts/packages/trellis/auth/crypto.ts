@@ -53,22 +53,8 @@ export type TrellisCrypto = {
 };
 
 const ED25519_PKCS8_PREFIX = Uint8Array.from([
-  0x30,
-  0x2e,
-  0x02,
-  0x01,
-  0x00,
-  0x30,
-  0x05,
-  0x06,
-  0x03,
-  0x2b,
-  0x65,
-  0x70,
-  0x04,
-  0x22,
-  0x04,
-  0x20,
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
+  0x22, 0x04, 0x20,
 ]);
 
 function validateSeed(seed: Uint8Array): Uint8Array {
@@ -100,10 +86,10 @@ function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 function base64urlEncode(data: Uint8Array): string {
   let binary = "";
   for (const byte of data) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(
-    /=+$/g,
-    "",
-  );
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 /** Cryptographic random bytes; never falls back to `Math.random()`. */
@@ -116,11 +102,13 @@ export function randomUuid(): string {
   const bytes = randomBytes(16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x40;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${
-    hex.slice(16, 20)
-  }-${hex.slice(20)}`;
+  const hex = Array.from(bytes, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(
+    16,
+    20,
+  )}-${hex.slice(20)}`;
 }
 
 function webCryptoBackend(subtle: SubtleCrypto): TrellisCrypto {
@@ -297,10 +285,9 @@ let cachedBackend: Promise<TrellisCrypto> | undefined;
  * life of the module instance.
  */
 export function trellisCrypto(): Promise<TrellisCrypto> {
-  cachedBackend ??=
-    (async () =>
-      await webCryptoUsable()
-        ? webCryptoBackend(globalThis.crypto.subtle)
-        : portableBackend())();
+  cachedBackend ??= (async () =>
+    (await webCryptoUsable())
+      ? webCryptoBackend(globalThis.crypto.subtle)
+      : portableBackend())();
   return cachedBackend;
 }

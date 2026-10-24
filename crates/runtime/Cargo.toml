@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal production runtime entrypoint and configuration for Trellis."
-publish = ["crates-io"]
-include = ["Cargo.toml", "build.rs", "src/**", "migrations/**", "generated/web/**"]
+publish = false
+include = ["Cargo.toml", "build.rs", "src/**", "migrations/**", "generated/web/**", "generated/portal/**"]
 
 [lib]
 name = "trellis_runtime"
@@ -21,52 +21,56 @@ workspace = true
 
 [dependencies]
 argon2.workspace = true
-async-trait = "0.1.92"
 async-nats = { workspace = true, optional = true }
 axum.workspace = true
-axum-reverse-proxy = "2.2.0"
+axum-server.workspace = true
 base64.workspace = true
-data-encoding.workspace = true
 ed25519-dalek.workspace = true
 bytes = { workspace = true, optional = true }
-clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 jsonschema.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+ipnet = { version = "2.12.0", features = ["serde"] }
+libc = "0.2.186"
 nats-jwt-rs.workspace = true
 nkeys.workspace = true
-oauth2.workspace = true
+oauth-as.workspace = true
+ring = "0.17.14"
 openidconnect.workspace = true
-opentelemetry.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true
+rust-embed = "8"
 sha2.workspace = true
-subtle.workspace = true
 tempfile = { workspace = true, optional = true }
-rusqlite = { workspace = true, optional = true, features = ["backup"] }
+rusqlite = { workspace = true, optional = true, features = ["backup", "hooks"] }
+ref-cast = "1.0"
 refinery = { workspace = true, optional = true }
 reqwest.workspace = true
-webpki-roots.workspace = true
+x509-parser.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["net", "signal"] }
 tokio-util.workspace = true
 toml.workspace = true
-tower_governor.workspace = true
-tower-http.workspace = true
+tower-http = { workspace = true, features = ["cors"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 trellis-protocol.workspace = true
-trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0" }
-trellis-events-runtime = { path = "../events-runtime", version = "0.100.0" }
-trellis-idl = { path = "../idl", version = "0.100.0" }
-trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0" }
-trellis-rs = { path = "../trellis", version = "0.100.0", features = ["runtime-internals"] }
-tower = { version = "0.5.3", features = ["util"] }
+trellis-runtime-apis = { path = "../runtime-apis", version = "0.100.0-rc.3" }
+trellis-events-runtime = { path = "../events-runtime", version = "0.100.0-rc.3" }
+trellis-idl = { path = "../idl", version = "0.100.0-rc.3" }
+trellis-jobs-runtime = { path = "../jobs-runtime", version = "0.100.0-rc.3" }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.3" }
 ulid.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
+trellis-local-bootstrap = { path = "../local-bootstrap" }
+reqwest = { workspace = true, features = ["http2", "cookies"] }
+scraper = "0.25.0"
+tokio = { workspace = true, features = ["process", "io-util"] }
 trellis-local-nats = { path = "../local-nats" }
 tempfile.workspace = true

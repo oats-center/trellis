@@ -84,7 +84,6 @@ pub fn secure_consumer_routes(
             }
         }
     });
-    router.rpc_handler_authorizes::<rpc::ConsumersQuery>();
 
     router.register_rpc::<rpc::ConsumersInspect, _, _>({
         let query = query.clone();
@@ -118,7 +117,6 @@ pub fn secure_consumer_routes(
             }
         }
     });
-    router.rpc_handler_authorizes::<rpc::ConsumersInspect>();
 }
 
 /// Final generated Events management RPC backend.
@@ -182,7 +180,6 @@ impl EventsManagement {
                 }
             }
         });
-        router.rpc_handler_authorizes::<rpc::ConsumersReportDelivery>();
 
         router.register_rpc::<rpc::DeadLettersQuery, _, _>({
             let backend = self.clone();
@@ -224,7 +221,6 @@ impl EventsManagement {
                 }
             }
         });
-        router.rpc_handler_authorizes::<rpc::DeadLettersQuery>();
 
         router.register_rpc::<rpc::DeadLettersInspect, _, _>({
             let backend = self.clone();
@@ -247,6 +243,19 @@ impl EventsManagement {
                         .map_err(store_error)?
                         .filter(|detail| detail["deadLetter"]["resourceId"] == resource_id)
                         .ok_or_else(|| not_found(id))?;
+                    let (transition, _) = backend
+                        .journal
+                        .latest(id)
+                        .await
+                        .map_err(journal_error)?
+                        .ok_or_else(|| not_found(id))?;
+                    let original = backend
+                        .journal
+                        .original(&transition)
+                        .await
+                        .map_err(journal_error)?
+                        .ok_or_else(|| not_found(id))?;
+                    detail["originalPublishedAt"] = Value::String(original.published_at);
                     if let Some(payload) = detail["originalPayload"].as_array() {
                         let bytes = payload
                             .iter()
@@ -262,7 +271,6 @@ impl EventsManagement {
                 }
             }
         });
-        router.rpc_handler_authorizes::<rpc::DeadLettersInspect>();
 
         self.register_transition::<rpc::DeadLettersReplay>(router, true);
         self.register_transition::<rpc::DeadLettersDismiss>(router, false);
@@ -323,7 +331,6 @@ impl EventsManagement {
                 )
             }
         });
-        router.rpc_handler_authorizes::<D>();
     }
 
     async fn ensure_resource(&self, id: &str, resource_id: &str) -> Result<(), ServerError> {

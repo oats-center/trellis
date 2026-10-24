@@ -11,11 +11,7 @@ function delay(ms: number): Promise<void> {
 /** Polls until `fn` returns a truthy value, preserving the last thrown error on timeout. */
 export async function waitFor<T>(
   fn: () =>
-    | T
-    | null
-    | undefined
-    | false
-    | Promise<T | null | undefined | false>,
+    T | null | undefined | false | Promise<T | null | undefined | false>,
   opts: WaitForOptions = {},
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;

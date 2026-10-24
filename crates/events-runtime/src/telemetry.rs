@@ -14,11 +14,3 @@ pub struct DlqTelemetrySnapshot {
     /// One targeted replay generation dispatched.
     pub replaying: u64,
 }
-
-/// Whether one broker Consumer name belongs to the internal events projection.
-///
-/// The runtime telemetry sampler uses this to keep internal projector backlog
-/// out of the application Consumer gauges while reporting it separately.
-pub fn is_projection_consumer(name: &str) -> bool {
-    crate::projector::is_events_projector_consumer(name)
-}

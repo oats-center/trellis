@@ -2,12 +2,11 @@
 //! generated client against the live provider.
 use futures_util::StreamExt;
 use runtime_trellis::apis::runtime_trellis_runtime_v1::{lives, operations, rpc};
-use runtime_trellis::participants::runtime_trellis_caller::Client;
+use runtime_trellis::apps::runtime_trellis_caller::{Client, Request};
 use runtime_trellis::types::Value;
 use std::io::Write as _;
 use tracing_subscriber::prelude::*;
-use trellis_rs::auth::{load_admin_session, start_agent_login, StartAgentLoginOpts};
-use trellis_rs::client::{OperationState, UserConnectOptions, UserSessionCredentials};
+use trellis_rs::client::OperationState;
 use trellis_rs::telemetry::{init_from_env, TelemetryIdentity, TelemetryRole};
 
 #[tokio::main]
@@ -24,27 +23,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|tracer| tracing_opentelemetry::layer().with_tracer(tracer)),
         )
         .init();
-    let url = std::env::var("TRELLIS_URL")?;
-    let login = start_agent_login(&StartAgentLoginOpts {
-        trellis_url: &url,
-        participant_id: "runtime-trellis.Caller",
-    })
-    .await?;
-    println!("rust login {}", login.login_url());
-    std::io::stdout().flush()?;
-    let outcome = login.complete_without_persistence(&url).await?;
-    trellis_rs::auth::save_admin_session(&outcome.state)?;
-    let session = load_admin_session()?;
-    let client = Client::connect(UserConnectOptions::new(
-        &url,
-        5_000,
-        UserSessionCredentials {
-            login_session_id: &session.login_session_id,
-            session_key_seed_base64url: &session.session_seed,
-        },
-        "runtime-trellis.Caller",
-    ))
-    .await?;
+    let client = Client::from_generated(
+        trellis_rs::generated::Client::connect_user(
+            trellis_runtime_acceptance::user_options::<Request>(5_000).await?,
+        )
+        .await?,
+    );
     let runtime = client.runtime_trellis_runtime_v1();
     let echo = runtime
         .echo(&rpc::EchoInput {

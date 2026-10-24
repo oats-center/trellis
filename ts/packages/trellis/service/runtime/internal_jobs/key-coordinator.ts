@@ -118,26 +118,26 @@ export type JobAdmissionRequest = {
 export type JobAdmissionOutcome =
   | { kind: "accepted"; key: string; keyHash: string; state: JobKeyState }
   | {
-    kind: "rejected";
-    key: string;
-    reason: "active-limit" | "queue-depth" | "stale-blocked";
-    active: number;
-    queued: number;
-    limit: number;
-  }
+      kind: "rejected";
+      key: string;
+      reason: "active-limit" | "queue-depth" | "stale-blocked";
+      active: number;
+      queued: number;
+      limit: number;
+    }
   | {
-    kind: "coalesced";
-    key: string;
-    existing: JobKeyIdentity;
-    reason: "queue-full" | "active-limit";
-  }
+      kind: "coalesced";
+      key: string;
+      existing: JobKeyIdentity;
+      reason: "queue-full" | "active-limit";
+    }
   | {
-    kind: "replaced";
-    key: string;
-    keyHash: string;
-    replaced: ReplacedQueuedJob;
-    state: JobKeyState;
-  };
+      kind: "replaced";
+      key: string;
+      keyHash: string;
+      replaced: ReplacedQueuedJob;
+      state: JobKeyState;
+    };
 
 export type ActiveSlotAcquireRequest = {
   service: string;
@@ -155,21 +155,21 @@ export type ActiveSlotAcquireRequest = {
 
 export type ActiveSlotAcquireOutcome =
   | {
-    kind: "acquired";
-    key: string;
-    keyHash: string;
-    slotToken: string;
-    stale: JobKeyActiveSlot[];
-    state: JobKeyState;
-  }
+      kind: "acquired";
+      key: string;
+      keyHash: string;
+      slotToken: string;
+      stale: JobKeyActiveSlot[];
+      state: JobKeyState;
+    }
   | {
-    kind: "blocked";
-    key: string;
-    reason: "active-limit" | "not-queued" | "stale-blocked";
-    active: number;
-    queued: number;
-    limit: number;
-  };
+      kind: "blocked";
+      key: string;
+      reason: "active-limit" | "not-queued" | "stale-blocked";
+      active: number;
+      queued: number;
+      limit: number;
+    };
 
 export type ActiveSlotLease = {
   key: string;
@@ -179,12 +179,10 @@ export type ActiveSlotLease = {
 };
 
 export type ActiveSlotRenewOutcome =
-  | { kind: "renewed"; state: JobKeyState }
-  | { kind: "lost" };
+  { kind: "renewed"; state: JobKeyState } | { kind: "lost" };
 
 export type ActiveSlotReleaseOutcome =
-  | { kind: "released"; state: JobKeyState }
-  | { kind: "staleCompletion" };
+  { kind: "released"; state: JobKeyState } | { kind: "staleCompletion" };
 
 export type JobKeyCoordinator = {
   admitCreate(request: JobAdmissionRequest): Promise<JobAdmissionOutcome>;
@@ -235,8 +233,7 @@ export type JobKeyCoordinator = {
 };
 
 export type QueuedJobRemovalOutcome =
-  | { kind: "removed"; state: JobKeyState }
-  | { kind: "not-found" };
+  { kind: "removed"; state: JobKeyState } | { kind: "not-found" };
 
 export type QueuedJobRestoreOutcome = { kind: "restored"; state: JobKeyState };
 
@@ -248,14 +245,14 @@ export function normalizeJobKeyPolicy(args: {
   return {
     key: [...args.keyConcurrency.key],
     maxActive: args.keyConcurrency.maxActive ?? DEFAULT_MAX_ACTIVE,
-    heartbeatIntervalMs: args.keyConcurrency.heartbeatIntervalMs ??
-      DEFAULT_HEARTBEAT_INTERVAL_MS,
-    heartbeatTtlMs: args.keyConcurrency.heartbeatTtlMs ??
-      DEFAULT_HEARTBEAT_TTL_MS,
+    heartbeatIntervalMs:
+      args.keyConcurrency.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+    heartbeatTtlMs:
+      args.keyConcurrency.heartbeatTtlMs ?? DEFAULT_HEARTBEAT_TTL_MS,
     stalePolicy: args.keyConcurrency.stalePolicy ?? DEFAULT_STALE_POLICY,
     queue: {
-      maxQueuedPerKey: args.queue?.maxQueuedPerKey ??
-        DEFAULT_MAX_QUEUED_PER_KEY,
+      maxQueuedPerKey:
+        args.queue?.maxQueuedPerKey ?? DEFAULT_MAX_QUEUED_PER_KEY,
       whenFull: args.queue?.whenFull ?? DEFAULT_QUEUE_WHEN_FULL,
     },
   };
@@ -281,9 +278,7 @@ export async function deriveJobKey(args: {
     return value;
   });
   const key = segments.map((segment) => String(segment)).join(":");
-  const keyHash = await stableKeyHash(
-    JSON.stringify({ version: 1, segments }),
-  );
+  const keyHash = await stableKeyHash(JSON.stringify({ version: 1, segments }));
   return {
     service: args.service,
     jobType: args.jobType,
@@ -299,9 +294,8 @@ export async function stableKeyHash(value: string): Promise<string> {
     "SHA-256",
     new TextEncoder().encode(value),
   );
-  return Array.from(
-    new Uint8Array(digest),
-    (byte) => byte.toString(16).padStart(2, "0"),
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
   ).join("");
 }
 
@@ -312,14 +306,16 @@ export function reduceAdmission(args: {
   request: Omit<JobAdmissionRequest, "payload" | "policy">;
   policy: NormalizedJobKeyPolicy;
 }): JobAdmissionOutcome {
-  const state = args.state ?? emptyState({
-    service: args.request.service,
-    jobType: args.request.jobType,
-    key: args.derived.key,
-    keyHash: args.derived.keyHash,
-    now: args.request.createdAt,
-    policy: args.policy,
-  });
+  const state =
+    args.state ??
+    emptyState({
+      service: args.request.service,
+      jobType: args.request.jobType,
+      key: args.derived.key,
+      keyHash: args.derived.keyHash,
+      now: args.request.createdAt,
+      policy: args.policy,
+    });
 
   // Idempotent retry: if the same submissionId has already produced an outcome,
   // return it without modifying state again.
@@ -359,8 +355,8 @@ export function reduceAdmission(args: {
       };
     }
 
-    const alreadyQueued = state.queued.some((entry) =>
-      entry.submissionId === submissionId
+    const alreadyQueued = state.queued.some(
+      (entry) => entry.submissionId === submissionId,
     );
     if (alreadyQueued) {
       return {
@@ -374,7 +370,8 @@ export function reduceAdmission(args: {
 
   const active = state.active.length;
   const queued = state.queued.length;
-  const queueLimit = args.policy.queue.maxQueuedPerKey +
+  const queueLimit =
+    args.policy.queue.maxQueuedPerKey +
     Math.max(0, args.policy.maxActive - active);
 
   if (queued < queueLimit) {
@@ -387,9 +384,8 @@ export function reduceAdmission(args: {
   }
 
   if (args.request.strictCreate) {
-    const reason = active >= args.policy.maxActive
-      ? "active-limit"
-      : "queue-depth";
+    const reason =
+      active >= args.policy.maxActive ? "active-limit" : "queue-depth";
     return {
       kind: "rejected",
       key: state.key,
@@ -464,9 +460,8 @@ export function reduceAdmission(args: {
     };
   }
 
-  const reason = active >= args.policy.maxActive
-    ? "active-limit"
-    : "queue-depth";
+  const reason =
+    active >= args.policy.maxActive ? "active-limit" : "queue-depth";
   return {
     kind: "rejected",
     key: state.key,
@@ -487,27 +482,34 @@ export function reduceRestoreReplacedQueuedJob(args: {
   policy: NormalizedJobKeyPolicy;
   submissionId?: string;
 }): QueuedJobRestoreOutcome {
-  const base = args.state ?? emptyState({
-    service: args.replaced.service,
-    jobType: args.replaced.jobType,
-    key: args.derived.key,
-    keyHash: args.derived.keyHash,
-    now: args.now,
-    policy: args.policy,
-  });
-  const queuedWithoutReplacement = base.queued.filter((entry) =>
-    entry.jobId !== args.replacementJobId
+  const base =
+    args.state ??
+    emptyState({
+      service: args.replaced.service,
+      jobType: args.replaced.jobType,
+      key: args.derived.key,
+      keyHash: args.derived.keyHash,
+      now: args.now,
+      policy: args.policy,
+    });
+  const queuedWithoutReplacement = base.queued.filter(
+    (entry) => entry.jobId !== args.replacementJobId,
   );
   const alreadyPresent =
-    queuedWithoutReplacement.some((entry) =>
-      entry.jobId === args.replaced.id
+    queuedWithoutReplacement.some(
+      (entry) => entry.jobId === args.replaced.id,
     ) || base.active.some((slot) => slot.jobId === args.replaced.id);
-  const restoredQueued = alreadyPresent ? queuedWithoutReplacement : [{
-    jobId: args.replaced.id,
-    createdAt: args.replaced.createdAt,
-    requestId: args.replaced.requestId,
-    context: args.replaced.context,
-  }, ...queuedWithoutReplacement];
+  const restoredQueued = alreadyPresent
+    ? queuedWithoutReplacement
+    : [
+        {
+          jobId: args.replaced.id,
+          createdAt: args.replaced.createdAt,
+          requestId: args.replaced.requestId,
+          context: args.replaced.context,
+        },
+        ...queuedWithoutReplacement,
+      ];
 
   const replacedBySubmissionId = { ...base.replacedBySubmissionId };
   const acceptedBySubmissionId = { ...base.acceptedBySubmissionId };
@@ -523,12 +525,14 @@ export function reduceRestoreReplacedQueuedJob(args: {
       maxActive: args.policy.maxActive,
       maxQueuedPerKey: args.policy.queue.maxQueuedPerKey,
       queued: restoredQueued,
-      replacedBySubmissionId: Object.keys(replacedBySubmissionId).length > 0
-        ? replacedBySubmissionId
-        : undefined,
-      acceptedBySubmissionId: Object.keys(acceptedBySubmissionId).length > 0
-        ? acceptedBySubmissionId
-        : undefined,
+      replacedBySubmissionId:
+        Object.keys(replacedBySubmissionId).length > 0
+          ? replacedBySubmissionId
+          : undefined,
+      acceptedBySubmissionId:
+        Object.keys(acceptedBySubmissionId).length > 0
+          ? acceptedBySubmissionId
+          : undefined,
       updatedAt: args.now,
     },
   };
@@ -542,14 +546,16 @@ export function reduceAcquireActiveSlot(args: {
   policy: NormalizedJobKeyPolicy;
   slotToken: string;
 }): ActiveSlotAcquireOutcome {
-  const base = args.state ?? emptyState({
-    service: args.request.service,
-    jobType: args.request.jobType,
-    key: args.derived.key,
-    keyHash: args.derived.keyHash,
-    now: args.request.now,
-    policy: args.policy,
-  });
+  const base =
+    args.state ??
+    emptyState({
+      service: args.request.service,
+      jobType: args.request.jobType,
+      key: args.derived.key,
+      keyHash: args.derived.keyHash,
+      now: args.request.now,
+      policy: args.policy,
+    });
   const nowMs = Date.parse(args.request.now);
   const ownSlot = base.active.find((slot) => slot.jobId === args.request.jobId);
   if (ownSlot && Date.parse(ownSlot.leaseExpiresAt) > nowMs) {
@@ -573,14 +579,15 @@ export function reduceAcquireActiveSlot(args: {
     };
   }
   // Reclaiming this job fences its old owner without terminalizing the job.
-  const others = base.active.filter((slot) =>
-    slot.jobId !== args.request.jobId
+  const others = base.active.filter(
+    (slot) => slot.jobId !== args.request.jobId,
   );
-  const expired = others.filter((slot) =>
-    Date.parse(slot.leaseExpiresAt) <= nowMs
+  const expired = others.filter(
+    (slot) => Date.parse(slot.leaseExpiresAt) <= nowMs,
   );
   if (
-    expired.length > 0 && args.policy.stalePolicy === "block" &&
+    expired.length > 0 &&
+    args.policy.stalePolicy === "block" &&
     others.length >= args.policy.maxActive
   ) {
     return {
@@ -592,20 +599,25 @@ export function reduceAcquireActiveSlot(args: {
       limit: args.policy.maxActive,
     };
   }
-  const active = args.policy.stalePolicy === "fail-stale"
-    ? others.filter((slot) => Date.parse(slot.leaseExpiresAt) > nowMs)
-    : others;
-  const isQueued = base.queued.some((entry) =>
-    entry.jobId === args.request.jobId
+  const active =
+    args.policy.stalePolicy === "fail-stale"
+      ? others.filter((slot) => Date.parse(slot.leaseExpiresAt) > nowMs)
+      : others;
+  const isQueued = base.queued.some(
+    (entry) => entry.jobId === args.request.jobId,
   );
-  const isAlreadyActive = base.active.some((slot) =>
-    slot.jobId === args.request.jobId
+  const isAlreadyActive = base.active.some(
+    (slot) => slot.jobId === args.request.jobId,
   );
-  const isRetry = args.request.lifecycleState === "retry" ||
+  const isRetry =
+    args.request.lifecycleState === "retry" ||
     args.request.workEventType === "retried";
   const isActiveRedelivery = args.request.lifecycleState === "active";
   if (
-    !isQueued && !isAlreadyActive && !isRetry && !isActiveRedelivery &&
+    !isQueued &&
+    !isAlreadyActive &&
+    !isRetry &&
+    !isActiveRedelivery &&
     !base.cleanupPending.includes(args.request.jobId)
   ) {
     return {
@@ -628,10 +640,11 @@ export function reduceAcquireActiveSlot(args: {
     };
   }
 
-  const leaseExpiresAt = new Date(nowMs + args.policy.heartbeatTtlMs)
-    .toISOString();
-  const queued = base.queued.filter((entry) =>
-    entry.jobId !== args.request.jobId
+  const leaseExpiresAt = new Date(
+    nowMs + args.policy.heartbeatTtlMs,
+  ).toISOString();
+  const queued = base.queued.filter(
+    (entry) => entry.jobId !== args.request.jobId,
   );
   const slot: JobKeyActiveSlot = {
     jobId: args.request.jobId,
@@ -648,17 +661,18 @@ export function reduceAcquireActiveSlot(args: {
     maxActive: args.policy.maxActive,
     maxQueuedPerKey: args.policy.queue.maxQueuedPerKey,
     active: [...active, slot],
-    cleanupPending: args.policy.stalePolicy === "fail-stale"
-      ? [
-        ...new Set([
-          ...base.cleanupPending,
-          ...expired.map((slot) => slot.jobId),
-        ]),
-      ]
-      : base.cleanupPending,
+    cleanupPending:
+      args.policy.stalePolicy === "fail-stale"
+        ? [
+            ...new Set([
+              ...base.cleanupPending,
+              ...expired.map((slot) => slot.jobId),
+            ]),
+          ]
+        : base.cleanupPending,
     queued,
-    staleTakeoverCount: base.staleTakeoverCount + expired.length +
-      (ownSlot ? 1 : 0),
+    staleTakeoverCount:
+      base.staleTakeoverCount + expired.length + (ownSlot ? 1 : 0),
     updatedAt: args.request.now,
   };
   return {
@@ -682,8 +696,8 @@ export function reduceRemoveQueuedJob(args: {
   if (!args.state) {
     return { kind: "not-found" };
   }
-  const queued = args.state.queued.filter((entry) =>
-    entry.jobId !== args.jobId
+  const queued = args.state.queued.filter(
+    (entry) => entry.jobId !== args.jobId,
   );
   const active = args.terminal
     ? args.state.active.filter((slot) => slot.jobId !== args.jobId)
@@ -709,9 +723,10 @@ export function reduceRemoveQueuedJob(args: {
       queued,
       active,
       cleanupPending,
-      acceptedBySubmissionId: Object.keys(acceptedBySubmissionId).length > 0
-        ? acceptedBySubmissionId
-        : undefined,
+      acceptedBySubmissionId:
+        Object.keys(acceptedBySubmissionId).length > 0
+          ? acceptedBySubmissionId
+          : undefined,
       updatedAt: args.now,
     },
   };
@@ -738,8 +753,9 @@ export function reduceRenewHeartbeat(args: {
     return {
       ...slot,
       heartbeatAt: args.now,
-      leaseExpiresAt: new Date(nowMs + args.policy.heartbeatTtlMs)
-        .toISOString(),
+      leaseExpiresAt: new Date(
+        nowMs + args.policy.heartbeatTtlMs,
+      ).toISOString(),
     };
   });
   if (!renewed) {
@@ -761,8 +777,8 @@ export function reduceReleaseActiveSlot(args: {
   if (!args.state) {
     return { kind: "staleCompletion" };
   }
-  const nextActive = args.state.active.filter((slot) =>
-    slot.jobId !== args.jobId || slot.slotToken !== args.slotToken
+  const nextActive = args.state.active.filter(
+    (slot) => slot.jobId !== args.jobId || slot.slotToken !== args.slotToken,
   );
   if (nextActive.length === args.state.active.length) {
     return { kind: "staleCompletion" };
@@ -859,11 +875,15 @@ export function createNatsJobKeyCoordinator(
         const entry = await getStateEntry(kv, kvKey);
         const state = entry?.json<unknown>();
         if (
-          !isJobKeyState(state) || state.service !== args.service ||
+          !isJobKeyState(state) ||
+          state.service !== args.service ||
           state.jobType !== args.jobType ||
-          !(state.queued.some((queued) => queued.jobId === args.jobId) ||
-            (args.terminal && (state.cleanupPending.includes(args.jobId) ||
-              state.active.some((slot) => slot.jobId === args.jobId))))
+          !(
+            state.queued.some((queued) => queued.jobId === args.jobId) ||
+            (args.terminal &&
+              (state.cleanupPending.includes(args.jobId) ||
+                state.active.some((slot) => slot.jobId === args.jobId)))
+          )
         ) {
           continue;
         }
@@ -1026,9 +1046,9 @@ function appendQueued(
     ],
     acceptedBySubmissionId: request.submissionId
       ? {
-        ...state.acceptedBySubmissionId,
-        [request.submissionId]: { jobId: request.jobId },
-      }
+          ...state.acceptedBySubmissionId,
+          [request.submissionId]: { jobId: request.jobId },
+        }
       : state.acceptedBySubmissionId,
     updatedAt: request.createdAt,
   };
@@ -1059,9 +1079,10 @@ function emptyState(args: {
 }
 
 function resolveJsonPointer(payload: unknown, pointer: string): unknown {
-  const tokens = pointer.slice(1).split("/").map((token) =>
-    token.replaceAll("~1", "/").replaceAll("~0", "~")
-  );
+  const tokens = pointer
+    .slice(1)
+    .split("/")
+    .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
   let current = payload;
   for (const token of tokens) {
     if (Array.isArray(current)) {
@@ -1083,9 +1104,11 @@ function resolveJsonPointer(payload: unknown, pointer: string): unknown {
 function isScalarKeySegment(
   value: unknown,
 ): value is string | number | boolean {
-  return typeof value === "string" ||
+  return (
+    typeof value === "string" ||
     (typeof value === "number" && Number.isFinite(value)) ||
-    typeof value === "boolean";
+    typeof value === "boolean"
+  );
 }
 
 async function updateState<TOutcome>(
@@ -1116,7 +1139,7 @@ async function updateState<TOutcome>(
       if (attempt + 1 < MAX_CAS_ATTEMPTS) {
         // Spread competing writers rather than exhausting retries in lockstep.
         await new Promise((resolve) =>
-          setTimeout(resolve, Math.random() * Math.min(100, 5 * 2 ** attempt))
+          setTimeout(resolve, Math.random() * Math.min(100, 5 * 2 ** attempt)),
         );
       }
     }
@@ -1135,10 +1158,7 @@ async function getStateEntry(
   return entry;
 }
 
-function parseState(
-  entry: KvEntry,
-  derived: DerivedJobKey,
-): JobKeyState {
+function parseState(entry: KvEntry, derived: DerivedJobKey): JobKeyState {
   const decoded = entry.json<unknown>();
   if (!isJobKeyState(decoded)) {
     throw new Error(`Invalid keyed job state '${derived.kvKey}'`);
@@ -1152,7 +1172,8 @@ function assertStateMatchesDerived(
   derived: DerivedJobKey,
 ): void {
   if (
-    state.service !== derived.service || state.jobType !== derived.jobType ||
+    state.service !== derived.service ||
+    state.jobType !== derived.jobType ||
     state.keyHash !== derived.keyHash
   ) {
     throw new Error(
@@ -1165,15 +1186,21 @@ function assertStateMatchesDerived(
 export function isJobKeyState(value: unknown): value is JobKeyState {
   if (value === null || typeof value !== "object") return false;
   const state = value as Partial<JobKeyState>;
-  return state.version === 1 && isNonEmptyString(state.service) &&
-    isNonEmptyString(state.jobType) && typeof state.key === "string" &&
-    isNonEmptyString(state.keyHash) && isPositiveInteger(state.maxActive) &&
+  return (
+    state.version === 1 &&
+    isNonEmptyString(state.service) &&
+    isNonEmptyString(state.jobType) &&
+    typeof state.key === "string" &&
+    isNonEmptyString(state.keyHash) &&
+    isPositiveInteger(state.maxActive) &&
     (state.maxQueuedPerKey === undefined ||
       isNonNegativeInteger(state.maxQueuedPerKey)) &&
-    Array.isArray(state.active) && state.active.every(isJobKeyActiveSlot) &&
+    Array.isArray(state.active) &&
+    state.active.every(isJobKeyActiveSlot) &&
     Array.isArray(state.cleanupPending) &&
     state.cleanupPending.every(isNonEmptyString) &&
-    Array.isArray(state.queued) && state.queued.every(isJobKeyQueued) &&
+    Array.isArray(state.queued) &&
+    state.queued.every(isJobKeyQueued) &&
     isNonNegativeInteger(state.staleTakeoverCount) &&
     isValidIsoTimestamp(state.updatedAt) &&
     (state.acceptedBySubmissionId === undefined ||
@@ -1181,7 +1208,8 @@ export function isJobKeyState(value: unknown): value is JobKeyState {
     (state.coalescedBySubmissionId === undefined ||
       isRecordOfCoalesced(state.coalescedBySubmissionId)) &&
     (state.replacedBySubmissionId === undefined ||
-      isRecordOfReplaced(state.replacedBySubmissionId));
+      isRecordOfReplaced(state.replacedBySubmissionId))
+  );
 }
 
 function isRecordOfAccepted(
@@ -1204,8 +1232,10 @@ function isRecordOfCoalesced(
   return Object.values(value).every((entry) => {
     if (entry === null || typeof entry !== "object") return false;
     const e = entry as Record<string, unknown>;
-    return isNonEmptyString(e.existingJobId) &&
-      (e.reason === "queue-full" || e.reason === "active-limit");
+    return (
+      isNonEmptyString(e.existingJobId) &&
+      (e.reason === "queue-full" || e.reason === "active-limit")
+    );
   });
 }
 
@@ -1216,42 +1246,53 @@ function isRecordOfReplaced(
   return Object.values(value).every((entry) => {
     if (entry === null || typeof entry !== "object") return false;
     const r = entry as Partial<ReplacedQueuedJob>;
-    return isNonEmptyString(r.service) &&
+    return (
+      isNonEmptyString(r.service) &&
       isNonEmptyString(r.jobType) &&
       isNonEmptyString(r.id) &&
       isValidIsoTimestamp(r.createdAt) &&
       isNonEmptyString(r.requestId) &&
-      isJobContext(r.context);
+      isJobContext(r.context)
+    );
   });
 }
 
 function isJobKeyQueued(value: unknown): value is JobKeyQueued {
   if (value === null || typeof value !== "object") return false;
   const entry = value as Partial<JobKeyQueued>;
-  return isNonEmptyString(entry.jobId) &&
+  return (
+    isNonEmptyString(entry.jobId) &&
     isValidIsoTimestamp(entry.createdAt) &&
-    isNonEmptyString(entry.requestId) && isJobContext(entry.context) &&
-    (entry.submissionId === undefined || isNonEmptyString(entry.submissionId));
+    isNonEmptyString(entry.requestId) &&
+    isJobContext(entry.context) &&
+    (entry.submissionId === undefined || isNonEmptyString(entry.submissionId))
+  );
 }
 
 function isJobKeyActiveSlot(value: unknown): value is JobKeyActiveSlot {
   if (value === null || typeof value !== "object") return false;
   const slot = value as Partial<JobKeyActiveSlot>;
-  return isNonEmptyString(slot.jobId) && isNonEmptyString(slot.slotToken) &&
-    isNonEmptyString(slot.instanceId) && isValidIsoTimestamp(slot.startedAt) &&
+  return (
+    isNonEmptyString(slot.jobId) &&
+    isNonEmptyString(slot.slotToken) &&
+    isNonEmptyString(slot.instanceId) &&
+    isValidIsoTimestamp(slot.startedAt) &&
     isValidIsoTimestamp(slot.heartbeatAt) &&
     isValidIsoTimestamp(slot.leaseExpiresAt) &&
-    isNonNegativeInteger(slot.tries) && isJobContext(slot.context);
+    isNonNegativeInteger(slot.tries) &&
+    isJobContext(slot.context)
+  );
 }
 
 function isJobContext(value: unknown): value is JobContext {
   if (value === null || typeof value !== "object") return false;
   const context = value as Partial<JobContext>;
-  return isNonEmptyString(context.requestId) &&
+  return (
+    isNonEmptyString(context.requestId) &&
     isNonEmptyString(context.traceId) &&
     isNonEmptyString(context.traceparent) &&
-    (context.tracestate === undefined ||
-      typeof context.tracestate === "string");
+    (context.tracestate === undefined || typeof context.tracestate === "string")
+  );
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -1279,9 +1320,11 @@ function outcomeState(outcome: unknown): JobKeyState | undefined {
 function isCasConflict(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
-  return message.includes("wrong last sequence") ||
+  return (
+    message.includes("wrong last sequence") ||
     message.includes("wrong last_seq") ||
     message.includes("sequence mismatch") ||
     message.includes("entry exists") ||
-    message.includes("already exists");
+    message.includes("already exists")
+  );
 }

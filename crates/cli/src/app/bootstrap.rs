@@ -1,16 +1,10 @@
-use std::fs;
-use std::path::PathBuf;
-
 use crate::cli::*;
 use crate::output;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine as _;
 use miette::{miette, IntoDiagnostic};
-use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
-use time::OffsetDateTime;
-use trellis_bootstrap::{generate_trellis_bootstrap, BootstrapError, TrellisBootstrapOptions};
-use ulid::Ulid;
+use trellis_bootstrap::{
+    generate_trellis_bootstrap, BootstrapError, BootstrapTls, SuppliedTls, TrellisBootstrapOptions,
+};
 
 pub(super) async fn init(format: OutputFormat, command: InitCommand) -> miette::Result<()> {
     match command.command {
@@ -19,11 +13,43 @@ pub(super) async fn init(format: OutputFormat, command: InitCommand) -> miette::
     }
 }
 
-async fn init_admin_command(_format: OutputFormat, args: &InitAdminArgs) -> miette::Result<()> {
-    let Some((provider, subject)) = args.identity.split_once(':') else {
-        return Err(miette!("--identity must use PROVIDER:SUBJECT"));
+async fn init_admin_command(format: OutputFormat, args: &InitAdminArgs) -> miette::Result<()> {
+    let defaults = if args.system {
+        trellis_runtime::RuntimePathDefaults::system_profile()
+    } else {
+        trellis_runtime::RuntimePathDefaults::user_profile(|name| std::env::var_os(name))
+    }
+    .into_diagnostic()?;
+    let (config, _) =
+        trellis_runtime::RuntimeConfig::load_from_path_with_defaults(&args.config, defaults)
+            .into_diagnostic()?;
+    let password = if args.password_stdin {
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).into_diagnostic()?;
+        let input = input.trim_end_matches(['\n', '\r']).to_owned();
+        if input.is_empty() {
+            return Err(miette!("--password-stdin received an empty password"));
+        }
+        Some(input)
+    } else {
+        args.password.clone()
     };
-    bootstrap_admin_command(&args.db_path, provider, subject).await
+    let (principal, account_url) = trellis_runtime::platform::initialize_admin_credentials(
+        &config,
+        &args.username,
+        password.as_deref(),
+    )
+    .await
+    .into_diagnostic()?;
+    if matches!(format, OutputFormat::Json) {
+        output::print_json(&json!({"principalId":principal,"adminAccountUrl":account_url}))?;
+    } else {
+        output::print_success(&format!("initialized administrator '{principal}'"));
+        if let Some(url) = account_url {
+            output::print_info(&format!("adminAccountUrl={url}"));
+        }
+    }
+    Ok(())
 }
 
 fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::Result<()> {
@@ -31,79 +57,57 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     options.force = args.force;
     options.runtime.name = args.name.clone();
     options.runtime.trellis_port = args.trellis_port;
+    let loopback = args.tls == InitTlsMode::LoopbackDevelopment;
+    let (http, native, websocket) = if loopback {
+        ("http", "nats", "ws")
+    } else {
+        ("https", "tls", "wss")
+    };
     options.runtime.nats_server_url = args
         .nats_server_url
         .clone()
-        .unwrap_or_else(|| format!("nats://127.0.0.1:{}", args.nats_port));
+        .unwrap_or_else(|| format!("{native}://localhost:{}", args.nats_port));
     options.runtime.nats_websocket_url = args
         .nats_websocket_url
         .clone()
-        .unwrap_or_else(|| format!("ws://localhost:{}", args.nats_ws_port));
+        .unwrap_or_else(|| format!("{websocket}://localhost:{}", args.nats_ws_port));
     options.runtime.public_origin = args
         .public_origin
         .clone()
-        .unwrap_or_else(|| format!("http://localhost:{}", args.trellis_port));
+        .unwrap_or_else(|| format!("{http}://localhost:{}", args.trellis_port));
+    options.runtime.oauth_origin = args
+        .oauth_origin
+        .clone()
+        .unwrap_or_else(|| format!("{http}://localhost:{}", args.oauth_port));
+    options.runtime.oauth_port = args.oauth_port;
+    options.runtime.tls = match args.tls {
+        InitTlsMode::Generated => BootstrapTls::Generated {
+            ca_directory: args.tls_ca_dir.clone(),
+        },
+        InitTlsMode::Supplied => BootstrapTls::Supplied(SuppliedTls {
+            certificate_chain: required_path(
+                &args.tls_certificate_chain,
+                "--tls-certificate-chain",
+            )?,
+            private_key: required_path(&args.tls_private_key, "--tls-private-key")?,
+            nats_certificate_chain: required_path(
+                &args.nats_tls_certificate_chain,
+                "--nats-tls-certificate-chain",
+            )?,
+            nats_private_key: required_path(&args.nats_tls_private_key, "--nats-tls-private-key")?,
+            ca_certificate: args.tls_ca_certificate.clone(),
+        }),
+        InitTlsMode::LoopbackDevelopment => BootstrapTls::LoopbackDevelopment,
+    };
+    options.runtime.trusted_proxies = args.trusted_proxy.clone();
+    options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
     options.runtime.extra_origins = args.extra_origin.clone();
     options.runtime.bind_address = args.bind_address;
-    options.runtime.rate_limit_max = args.rate_limit_max;
-    options.runtime.rate_limit_window_ms = args.rate_limit_window_ms;
-    for (target, directory, proxy) in [
-        (
-            &mut options.runtime.web_source,
-            &args.web_directory,
-            &args.web_proxy,
-        ),
-        (
-            &mut options.runtime.portal_source,
-            &args.portal_directory,
-            &args.portal_proxy,
-        ),
-        (
-            &mut options.runtime.console_source,
-            &args.console_directory,
-            &args.console_proxy,
-        ),
-    ] {
-        *target = directory
-            .as_ref()
-            .map(|path| {
-                path.canonicalize()
-                    .map(trellis_runtime::WebSourceConfig::Directory)
-            })
-            .transpose()
-            .into_diagnostic()?
-            .or_else(|| {
-                proxy
-                    .as_ref()
-                    .map(|url| trellis_runtime::WebSourceConfig::Proxy(url.clone()))
-            });
-    }
-    options.runtime.ttl_ms = trellis_runtime::PlatformTtlConfig {
-        sessions: args.platform_sessions_ttl_ms,
-        oauth: args.platform_oauth_ttl_ms,
-        device_flow: args.platform_device_flow_ttl_ms,
-        pending_auth: args.platform_pending_auth_ttl_ms,
-    };
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
         context_lifetime_seconds: args.auth_context_lifetime_seconds,
-        refresh_lead_seconds: args.auth_refresh_lead_seconds,
-        refresh_jitter_seconds: args.auth_refresh_jitter_seconds,
-        minimum_context_lifetime_seconds: args.auth_minimum_context_lifetime_seconds,
+        oauth_admission_lifetime_seconds: args.auth_oauth_admission_lifetime_seconds,
+        allowed_clock_skew_seconds: args.auth_allowed_clock_skew_seconds,
     };
-    for path in &args.oauth_providers_file {
-        for (id, provider) in
-            trellis_bootstrap::read_oauth_providers(path).map_err(bootstrap_report)?
-        {
-            if options
-                .runtime
-                .oauth_providers
-                .insert(id, provider)
-                .is_some()
-            {
-                return Err(miette!("duplicate OAuth provider id in input files"));
-            }
-        }
-    }
     options.nats.nats_port = args.nats_port;
     options.nats.monitor_port = args.nats_monitor_port;
     options.nats.websocket_port = args.nats_ws_port;
@@ -113,7 +117,46 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     options.nats.names.trellis_account = args.trellis_account.clone();
     options.nats.names.server_name = args.server_name.clone();
 
-    generate_trellis_bootstrap(&options).map_err(bootstrap_report)?;
+    if args
+        .nats_data_dir
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err(miette!("--nats-data-dir must be absolute"));
+    }
+    let generated = generate_trellis_bootstrap(&options).map_err(bootstrap_report)?;
+    if let Some(data) = &args.nats_data_dir {
+        let nats = args.out.join("nats");
+        std::fs::create_dir_all(data.join("jwt")).into_diagnostic()?;
+        let jwt = std::fs::read_to_string(nats.join("jwt.conf")).into_diagnostic()?;
+        std::fs::write(
+            nats.join("jwt.conf"),
+            trellis_bootstrap::render_local_jwt_config(
+                &jwt,
+                &data.join("jwt").display().to_string(),
+            ),
+        )
+        .into_diagnostic()?;
+        std::fs::write(
+            nats.join("nats.conf"),
+            trellis_bootstrap::render_local_nats_config(
+                args.server_name.as_deref().unwrap_or("trellis"),
+                &data.display().to_string(),
+                "./jwt.conf",
+                args.nats_port,
+                args.nats_ws_port,
+                args.nats_monitor_port,
+                (!loopback)
+                    .then(|| trellis_bootstrap::NatsTlsFiles {
+                        certificate: nats.join("tls/nats.crt").display().to_string(),
+                        private_key: nats.join("tls/nats.key").display().to_string(),
+                        websocket_behind_proxy: args.nats_websocket_behind_proxy,
+                    })
+                    .as_ref(),
+            ),
+        )
+        .into_diagnostic()?;
+    }
     let trellis_config = args.out.join("config.toml");
     let nats_config = args.out.join("nats/nats.conf");
     if output::is_json(format) {
@@ -126,6 +169,12 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
             "publicOrigin": options.runtime.public_origin,
             "natsServer": options.runtime.nats_server_url,
             "natsWebsocket": options.runtime.nats_websocket_url,
+            "oauthOrigin": options.runtime.oauth_origin,
+            "generatedTls": generated.as_ref().map(|tls| json!({
+                "caCertificate": tls.ca_certificate.display().to_string(),
+                "caSha256Fingerprint": tls.ca_sha256_fingerprint,
+                "leafNotAfter": rfc3339(tls.leaf_not_after),
+            })),
         }))?;
         return Ok(());
     }
@@ -140,243 +189,137 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         "natsWebsocket={}",
         options.runtime.nats_websocket_url
     ));
+    output::print_info(&format!("oauthOrigin={}", options.runtime.oauth_origin));
+    if let Some(tls) = &generated {
+        warn_generated_tls(
+            &tls.ca_certificate,
+            &tls.ca_sha256_fingerprint,
+            tls.leaf_not_after,
+        );
+    }
     Ok(())
+}
+
+fn required_path(
+    value: &Option<std::path::PathBuf>,
+    flag: &str,
+) -> miette::Result<std::path::PathBuf> {
+    value
+        .clone()
+        .ok_or_else(|| miette!("{flag} is required with --tls supplied"))
+}
+
+fn rfc3339(value: time::OffsetDateTime) -> String {
+    value
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| value.to_string())
+}
+
+/// Always-on warning for installations serving their generated CA.
+fn warn_generated_tls(
+    ca: &std::path::Path,
+    fingerprint: &str,
+    leaf_not_after: time::OffsetDateTime,
+) {
+    output::print_warning(&format!(
+        "this installation uses Trellis-generated TLS from its own private \
+        CA.\n  Browsers and native clients must trust {} explicitly.\n  Verify \
+        this SHA-256 fingerprint out of band before trusting it:\n  \
+        {fingerprint}\n  Leaf certificates expire {}; renew them with `trellis \
+        tls renew`.",
+        ca.display(),
+        rfc3339(leaf_not_after),
+    ));
+}
+
+pub(super) fn tls(format: OutputFormat, command: TlsCommand) -> miette::Result<()> {
+    match command.command {
+        TlsSubcommand::Renew(args) => {
+            let ca_dir = args.ca_dir.clone().unwrap_or_else(|| {
+                let mut name = args
+                    .bundle
+                    .file_name()
+                    .map(std::ffi::OsStr::to_os_string)
+                    .unwrap_or_else(|| "trellis".into());
+                name.push("-tls-ca");
+                args.bundle.with_file_name(name)
+            });
+            let renewed = trellis_bootstrap::renew_generated_certificates(&args.bundle, &ca_dir)
+                .map_err(bootstrap_report)?;
+            if output::is_json(format) {
+                output::print_json(&json!({
+                    "renewed": renewed.iter().map(|certificate| json!({
+                        "certificate": certificate.certificate.display().to_string(),
+                        "notAfter": rfc3339(certificate.not_after),
+                    })).collect::<Vec<_>>(),
+                }))?;
+                return Ok(());
+            }
+            for certificate in &renewed {
+                output::print_success(&format!(
+                    "renewed {} (expires {})",
+                    certificate.certificate.display(),
+                    rfc3339(certificate.not_after)
+                ));
+            }
+            output::print_info(
+                "the runtime reloads replaced certificates automatically; reload NATS \
+                (`nats-server --signal reload` or restart its unit) to serve its \
+                replacement",
+            );
+            Ok(())
+        }
+        TlsSubcommand::Status(args) => {
+            let config =
+                trellis_runtime::RuntimeConfig::load_from_path(&args.config).into_diagnostic()?;
+            let notice = trellis_runtime::tls::GeneratedTlsNotice::from_config(
+                &config,
+                config.http_transport(),
+            )
+            .into_diagnostic()?;
+            if output::is_json(format) {
+                output::print_json(&json!({
+                    "generatedTls": notice.as_ref().map(|notice| json!({
+                        "caSha256Fingerprint": notice.ca.sha256_fingerprint,
+                        "caNotAfter": rfc3339(notice.ca.not_after),
+                        "leafNotAfter": notice.leaf.as_ref().map(|leaf| rfc3339(leaf.not_after)),
+                    })),
+                }))?;
+                return Ok(());
+            }
+            match notice {
+                Some(notice) => {
+                    let ca = config
+                        .tls
+                        .as_ref()
+                        .and_then(|tls| tls.generated_ca_certificate.clone())
+                        .unwrap_or_default();
+                    warn_generated_tls(
+                        &ca,
+                        &notice.ca.sha256_fingerprint,
+                        notice
+                            .leaf
+                            .as_ref()
+                            .map_or(notice.ca.not_after, |leaf| leaf.not_after),
+                    );
+                }
+                None => output::print_info("this installation does not use Trellis-generated TLS"),
+            }
+            Ok(())
+        }
+    }
 }
 
 fn bootstrap_report(error: BootstrapError) -> miette::Report {
     miette::Report::new(error)
 }
 
-async fn bootstrap_admin_command(
-    db_path: &PathBuf,
-    provider: &str,
-    subject: &str,
-) -> miette::Result<()> {
-    let capabilities = Vec::<String>::new();
-    let capability_groups = vec!["admin".to_string()];
-
-    let seed = seed_admin_user(
-        db_path,
-        provider,
-        subject,
-        &capabilities,
-        &capability_groups,
-    )?;
-
-    output::print_success("bootstrapped admin user");
-    output::print_info(&format!("dbPath={}", db_path.display()));
-    output::print_info(&format!("userId={}", seed.user_id));
-    output::print_info(&format!("identityId={}", seed.identity_id));
-    output::print_info(&format!(
-        "payload={}",
-        json!({
-            "userId": seed.user_id,
-            "identity": {
-                "identityId": seed.identity_id,
-                "provider": provider,
-                "subject": subject,
-            },
-            "active": true,
-            "capabilities": capabilities,
-            "capabilityGroups": capability_groups,
-        })
-    ));
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SeededAdminUser {
-    user_id: String,
-    identity_id: String,
-}
-
-fn seed_admin_user(
-    db_path: &PathBuf,
-    provider: &str,
-    subject: &str,
-    capabilities: &[String],
-    capability_groups: &[String],
-) -> miette::Result<SeededAdminUser> {
-    if let Some(parent) = db_path.parent() {
-        fs::create_dir_all(parent).into_diagnostic()?;
-    }
-
-    let conn = Connection::open(db_path).into_diagnostic()?;
-    seed_admin_user_in_connection(&conn, provider, subject, capabilities, capability_groups)
-}
-
-fn seed_admin_user_in_connection(
-    conn: &Connection,
-    provider: &str,
-    subject: &str,
-    capabilities: &[String],
-    capability_groups: &[String],
-) -> miette::Result<SeededAdminUser> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users (
-          id TEXT PRIMARY KEY,
-          user_id TEXT NOT NULL UNIQUE,
-          name TEXT,
-          email TEXT,
-          active INTEGER NOT NULL,
-          capabilities TEXT NOT NULL,
-          capability_groups TEXT NOT NULL,
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL
-        )",
-        [],
-    )
-    .into_diagnostic()?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS user_identities (
-          id TEXT PRIMARY KEY,
-          identity_id TEXT NOT NULL UNIQUE,
-          user_id TEXT NOT NULL,
-          provider TEXT NOT NULL,
-          subject TEXT NOT NULL,
-          display_name TEXT,
-          email TEXT,
-          email_verified INTEGER NOT NULL,
-          linked_at TEXT NOT NULL,
-          last_login_at TEXT,
-          UNIQUE(provider, subject)
-        )",
-        [],
-    )
-    .into_diagnostic()?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS users_active_idx ON users(active)",
-        [],
-    )
-    .into_diagnostic()?;
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS user_identities_user_id_idx ON user_identities(user_id)",
-        [],
-    )
-    .into_diagnostic()?;
-
-    let existing_user_id: Option<String> = conn
-        .query_row(
-            "SELECT user_id FROM user_identities WHERE provider = ?1 AND subject = ?2",
-            params![provider, subject],
-            |row| row.get(0),
-        )
-        .optional()
-        .into_diagnostic()?;
-    let user_id = existing_user_id.unwrap_or_else(|| format!("usr_{}", Ulid::new()));
-    let identity_id = identity_id_for_provider_subject(provider, subject);
-    let now = OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .into_diagnostic()?;
-    let capabilities_json = serde_json::to_string(capabilities).into_diagnostic()?;
-    let capability_groups_json = serde_json::to_string(capability_groups).into_diagnostic()?;
-
-    conn.execute(
-        "INSERT INTO users (id, user_id, name, email, active, capabilities, capability_groups, created_at, updated_at)
-         VALUES (?1, ?2, NULL, NULL, 1, ?3, ?4, ?5, ?5)
-         ON CONFLICT(user_id) DO UPDATE SET
-           active = excluded.active,
-           capabilities = excluded.capabilities,
-           capability_groups = excluded.capability_groups,
-           updated_at = excluded.updated_at",
-        params![
-            Ulid::new().to_string(),
-            &user_id,
-            capabilities_json,
-            capability_groups_json,
-            now
-        ],
-    )
-    .into_diagnostic()?;
-
-    conn.execute(
-        "INSERT INTO user_identities (id, identity_id, user_id, provider, subject, display_name, email, email_verified, linked_at, last_login_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 0, ?6, NULL)
-         ON CONFLICT(provider, subject) DO UPDATE SET
-           identity_id = excluded.identity_id,
-           user_id = excluded.user_id",
-        params![
-            Ulid::new().to_string(),
-            &identity_id,
-            &user_id,
-            provider,
-            subject,
-            now
-        ],
-    )
-    .into_diagnostic()?;
-
-    Ok(SeededAdminUser {
-        user_id,
-        identity_id,
-    })
-}
-
-fn identity_id_for_provider_subject(provider: &str, subject: &str) -> String {
-    format!(
-        "idn_{}",
-        URL_SAFE_NO_PAD.encode(format!("{provider}:{subject}").as_bytes())
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        identity_id_for_provider_subject, init_config_command, seed_admin_user_in_connection,
-    };
+    use super::init_config_command;
     use crate::cli::{Cli, InitConfigArgs, InitSubcommand, OutputFormat, TopLevelCommand};
     use clap::Parser as _;
-    use rusqlite::{params, Connection};
-    use std::fs;
     use std::path::Path;
-
-    #[test]
-    fn seed_admin_user_uses_account_first_storage_shape() {
-        let conn = Connection::open_in_memory().expect("open db");
-        let seeded =
-            seed_admin_user_in_connection(&conn, "github", "ada", &[], &["admin".to_string()])
-                .expect("seed admin");
-
-        assert!(seeded.user_id.starts_with("usr_"));
-        assert_eq!(
-            seeded.identity_id,
-            identity_id_for_provider_subject("github", "ada")
-        );
-
-        let user_row: (String, String, i64, String, String) = conn
-            .query_row(
-                "SELECT user_id, capabilities, active, capability_groups, created_at FROM users",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .expect("select user");
-        assert_eq!(user_row.0, seeded.user_id);
-        assert_eq!(user_row.1, "[]");
-        assert_eq!(user_row.2, 1);
-        assert_eq!(user_row.3, r#"["admin"]"#);
-        assert!(!user_row.4.is_empty());
-
-        let identity_row: (String, String, String, String, i64) = conn
-            .query_row(
-                "SELECT identity_id, user_id, provider, subject, email_verified FROM user_identities",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-            )
-            .expect("select identity");
-        assert_eq!(identity_row.0, seeded.identity_id);
-        assert_eq!(identity_row.1, seeded.user_id);
-        assert_eq!(identity_row.2, "github");
-        assert_eq!(identity_row.3, "ada");
-        assert_eq!(identity_row.4, 0);
-    }
 
     #[test]
     fn init_config_maps_bootstrap_policies_into_effective_runtime_configuration() {
@@ -394,36 +337,23 @@ mod tests {
                 "8183",
                 "--bind-address",
                 "127.0.0.1",
-                "--rate-limit-max",
-                "37",
-                "--rate-limit-window-ms",
-                "2300",
-                "--platform-sessions-ttl-ms",
-                "45678",
-                "--platform-oauth-ttl-ms",
-                "23456",
-                "--platform-device-flow-ttl-ms",
-                "34567",
-                "--platform-pending-auth-ttl-ms",
-                "12345",
                 "--auth-context-lifetime-seconds",
                 "90",
-                "--auth-refresh-lead-seconds",
-                "10",
-                "--auth-refresh-jitter-seconds",
+                "--auth-oauth-admission-lifetime-seconds",
+                "12",
+                "--auth-allowed-clock-skew-seconds",
                 "2",
-                "--auth-minimum-context-lifetime-seconds",
-                "43",
             ],
         );
         let http = config.http.as_ref().expect("http");
-        assert_eq!(http.public_origin.as_deref(), Some("http://localhost:3444"));
+        assert_eq!(
+            http.public_origin.as_deref(),
+            Some("https://localhost:3444")
+        );
         assert_eq!(http.bind_address, Some("127.0.0.1".parse().unwrap()));
-        assert_eq!(http.rate_limit_max, Some(37));
-        assert_eq!(http.rate_limit_window_ms, Some(2300));
         assert_eq!(
             config.resolve_nats_runtime().unwrap().servers,
-            "nats://127.0.0.1:4333"
+            "tls://localhost:4333"
         );
         assert_eq!(
             (listeners.native, listeners.monitor, listeners.websocket),
@@ -437,23 +367,12 @@ mod tests {
                 .ws_nats_servers
                 .as_ref()
                 .unwrap(),
-            &["ws://localhost:8183"]
-        );
-        let ttl = config.platform.as_ref().unwrap().ttl_ms.as_ref().unwrap();
-        assert_eq!(
-            (ttl.sessions, ttl.oauth, ttl.device_flow, ttl.pending_auth),
-            (Some(45678), Some(23456), Some(34567), Some(12345))
+            &["wss://localhost:8183"]
         );
         let auth = config.resolve_authorization().unwrap();
-        assert_eq!(
-            (
-                auth.context_lifetime_seconds,
-                auth.refresh_lead_seconds,
-                auth.refresh_jitter_seconds,
-                auth.minimum_context_lifetime_seconds
-            ),
-            (90, 10, 2, 43)
-        );
+        assert_eq!(auth.context_lifetime_seconds, 90);
+        assert_eq!(auth.oauth_admission_lifetime_seconds, 12);
+        assert_eq!(auth.allowed_clock_skew_seconds, 2);
     }
 
     #[test]
@@ -465,7 +384,7 @@ mod tests {
                 "--nats-port",
                 "4333",
                 "--nats-server-url",
-                "nats://nats.example.test:4999",
+                "tls://nats.example.test:4999",
                 "--nats-websocket-url",
                 "wss://nats.example.test/ws",
                 "--public-origin",
@@ -474,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             config.resolve_nats_runtime().unwrap().servers,
-            "nats://nats.example.test:4999"
+            "tls://nats.example.test:4999"
         );
         assert_eq!(
             config
@@ -505,11 +424,6 @@ mod tests {
             .unwrap()
             .iter()
             .any(|origin| origin == "http://localhost:5174"));
-        assert!(http
-            .allow_insecure_origins
-            .unwrap()
-            .iter()
-            .any(|origin| origin == "http://localhost:5174"));
     }
 
     #[test]
@@ -532,81 +446,6 @@ mod tests {
                 "{name}: rejected configuration must not write output"
             );
         }
-    }
-
-    #[test]
-    fn oauth_provider_files_round_trip_and_rejected_input_preserves_existing_bundle() {
-        let temp = tempfile::tempdir().expect("temp dir");
-        let input = temp.path().join("providers.json");
-        fs::write(&input, r#"{"identity":{"type":"oidc","issuer":"https://identity.example.test","clientId":"consumer","clientSecret":"private-provider-secret","scopes":["openid","email"],"roleClaims":["/roles"]}}"#).unwrap();
-        let out = temp.path().join("bundle");
-        let input_path = input.to_str().unwrap();
-        let (config, _) = generate_bundle(&out, &["--oauth-providers-file", input_path]);
-        let provider = &config.oauth.as_ref().unwrap().providers["identity"];
-        assert_eq!(
-            provider.issuer.as_deref(),
-            Some("https://identity.example.test")
-        );
-        assert_eq!(provider.client_id.as_deref(), Some("consumer"));
-        assert_eq!(
-            provider.client_secret.as_deref(),
-            Some("private-provider-secret")
-        );
-        assert_eq!(provider.scopes.as_ref().unwrap(), &["openid", "email"]);
-        assert_eq!(provider.role_claims, ["/roles"]);
-        let before = fs::read(out.join("config.toml")).unwrap();
-        let duplicate = init_config_args(
-            &out,
-            &[
-                "--force",
-                "--oauth-providers-file",
-                input_path,
-                "--oauth-providers-file",
-                input_path,
-            ],
-        );
-        init_config_command(OutputFormat::Json, &duplicate).expect_err("duplicate providers");
-        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
-        fs::write(&input, r#"{"identity":{"type":"oidc","clientId":"consumer","clientSecret":{"value":"do-not-echo-this-secret"}}}"#).unwrap();
-        let invalid = init_config_args(&out, &["--force", "--oauth-providers-file", input_path]);
-        let error =
-            init_config_command(OutputFormat::Json, &invalid).expect_err("invalid private input");
-        assert!(!format!("{error:?}").contains("do-not-echo-this-secret"));
-        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
-    }
-
-    #[test]
-    fn web_source_flags_round_trip_and_invalid_source_preserves_output() {
-        let temp = tempfile::tempdir().unwrap();
-        let web = temp.path().join("web");
-        fs::create_dir(&web).unwrap();
-        let out = temp.path().join("bundle");
-        let (config, _) = generate_bundle(
-            &out,
-            &[
-                "--web-directory",
-                web.to_str().unwrap(),
-                "--portal-proxy",
-                "http://127.0.0.1:5199",
-            ],
-        );
-        let http = config.http.unwrap();
-        assert_eq!(
-            http.web_source,
-            Some(trellis_runtime::WebSourceConfig::Directory(
-                web.canonicalize().unwrap()
-            ))
-        );
-        assert_eq!(
-            http.portal_source,
-            Some(trellis_runtime::WebSourceConfig::Proxy(
-                "http://127.0.0.1:5199".into()
-            ))
-        );
-        let before = fs::read(out.join("config.toml")).unwrap();
-        let args = init_config_args(&out, &["--force", "--web-proxy", "ftp://example.test"]);
-        init_config_command(OutputFormat::Json, &args).expect_err("invalid proxy scheme");
-        assert_eq!(fs::read(out.join("config.toml")).unwrap(), before);
     }
 
     fn init_config_args(out: &Path, flags: &[&str]) -> InitConfigArgs {
@@ -644,43 +483,5 @@ mod tests {
             trellis_bootstrap::read_nats_listen_ports(&out.join("nats/nats.conf"))
                 .expect("resolve native listener configuration"),
         )
-    }
-
-    #[test]
-    fn seed_admin_user_updates_existing_provider_subject() {
-        let conn = Connection::open_in_memory().expect("open db");
-        let first =
-            seed_admin_user_in_connection(&conn, "github", "ada", &["admin".to_string()], &[])
-                .expect("first seed");
-        let second = seed_admin_user_in_connection(
-            &conn,
-            "github",
-            "ada",
-            &["trellis.core::contract.read".to_string()],
-            &["admin".to_string()],
-        )
-        .expect("second seed");
-
-        assert_eq!(second, first);
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
-            .expect("count users");
-        assert_eq!(count, 1);
-        let capabilities: String = conn
-            .query_row(
-                "SELECT capabilities FROM users WHERE user_id = ?1",
-                params![second.user_id],
-                |row| row.get(0),
-            )
-            .expect("select capabilities");
-        assert_eq!(capabilities, r#"["trellis.core::contract.read"]"#);
-        let capability_groups: String = conn
-            .query_row(
-                "SELECT capability_groups FROM users WHERE user_id = ?1",
-                params![second.user_id],
-                |row| row.get(0),
-            )
-            .expect("select capability groups");
-        assert_eq!(capability_groups, r#"["admin"]"#);
     }
 }

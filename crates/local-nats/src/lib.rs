@@ -61,19 +61,28 @@ pub enum LocalNatsError {
         arch: String,
     },
     /// The pid file references a live nats-server process.
-    #[error("managed nats-server is already running (pid {pid}); stop it first or use plain trellis-server with configured external NATS")]
+    #[error(
+        "managed nats-server is already running (pid {pid}); stop it first or \
+        use plain trellis-server with configured external NATS"
+    )]
     AlreadyRunning {
         /// Process id read from the pid file.
         pid: i32,
     },
     /// A port needed by the managed server is already in use.
-    #[error("port {port} is already in use; stop the existing server or use plain trellis-server with configured external NATS")]
+    #[error(
+        "port {port} is already in use; stop the existing server or use plain \
+        trellis-server with configured external NATS"
+    )]
     PortInUse {
         /// Occupied port.
         port: u16,
     },
     /// The managed server did not listen on all ports in time.
-    #[error("managed nats-server did not listen on {ports:?} within {timeout:?}; check its dedicated child log")]
+    #[error(
+        "managed nats-server did not listen on {ports:?} within {timeout:?}; \
+        check its dedicated child log"
+    )]
     ReadinessTimeout {
         /// Ports that never accepted a TCP connection.
         ports: Vec<u16>,
@@ -87,7 +96,10 @@ pub enum LocalNatsError {
     SpawnFailed(String),
     /// The pid file exists but is not a regular file recording a pid; another owner may
     /// be mid-startup or the path may have been tampered with.
-    #[error("pid file {path} exists but is not a regular file recording a pid; inspect and remove it if no trellis-server process is running")]
+    #[error(
+        "pid file {path} exists but is not a regular file recording a pid; \
+        inspect and remove it if no trellis-server process is running"
+    )]
     PidFileUnparsable {
         /// Pid file path.
         path: PathBuf,
@@ -374,7 +386,9 @@ impl NatsServerBinary {
         }
         Err(LocalNatsError::InvalidBinaryPath {
             path: PathBuf::from("nats-server"),
-            reason: "not found on PATH; install nats-server, use --local-nats=<PATH>, or request --nats-download".to_string(),
+            reason: "not found on PATH; install nats-server, use --local-nats=<PATH>, \
+                or request --nats-download"
+                .to_string(),
         })
     }
 
@@ -694,6 +708,16 @@ impl LocalNatsBuilder {
                 &state.join("data/jwt").display().to_string(),
             ),
         )?;
+        // A bundle with broker certificates always serves TLS; the managed
+        // broker never downgrades it to plaintext.
+        let tls = source
+            .join("tls/nats.crt")
+            .is_file()
+            .then(|| trellis_bootstrap::NatsTlsFiles {
+                certificate: source.join("tls/nats.crt").display().to_string(),
+                private_key: source.join("tls/nats.key").display().to_string(),
+                websocket_behind_proxy: authored_config_websocket_plaintext(&authored_config),
+            });
         let config = state.join("nats.conf");
         fs::write(
             &config,
@@ -704,6 +728,7 @@ impl LocalNatsBuilder {
                 ports.nats,
                 ports.websocket,
                 ports.monitor,
+                tls.as_ref(),
             ),
         )?;
         let binary = NatsServerBinary::resolve(&binary_source, self.cache_dir.as_deref())?;
@@ -723,14 +748,27 @@ impl LocalNatsBuilder {
             &pid_file,
             &output,
         )?;
+        let (native, websocket) = match &tls {
+            Some(files) if files.websocket_behind_proxy => ("tls", "ws"),
+            Some(_) => ("tls", "wss"),
+            None => ("nats", "ws"),
+        };
         Ok(LocalNats {
             server,
-            nats_url: format!("nats://127.0.0.1:{}", ports.nats),
-            websocket_url: format!("ws://127.0.0.1:{}", ports.websocket),
+            nats_url: format!("{native}://127.0.0.1:{}", ports.nats),
+            websocket_url: format!("{websocket}://127.0.0.1:{}", ports.websocket),
             log_path,
             _temporary_state: temporary_state,
         })
     }
+}
+
+/// Whether the authored bundle serves its WebSocket listener as plaintext
+/// behind a TLS-terminating proxy while native NATS keeps TLS.
+fn authored_config_websocket_plaintext(config: &str) -> bool {
+    config
+        .split_once("websocket")
+        .is_some_and(|(_, websocket)| websocket.contains("no_tls: true"))
 }
 
 /// Returns `Ok(Some(path))` when the installed binary is a regular, executable file;

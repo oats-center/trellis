@@ -122,6 +122,7 @@ pub enum JobSubmitOutcome<TPayload, TResult> {
 pub struct JobRef<TPayload, TResult> {
     identity: JobIdentity,
     seed: Job,
+    client: std::sync::Arc<crate::client::TrellisClient>,
     generations: TransportGenerationManager,
     binding: JobsBinding,
     queue: JobsQueueBinding,
@@ -142,6 +143,7 @@ impl<TPayload, TResult> Clone for JobRef<TPayload, TResult> {
         Self {
             identity: self.identity.clone(),
             seed: self.seed.clone(),
+            client: self.client.clone(),
             generations: self.generations.clone(),
             binding: self.binding.clone(),
             queue: self.queue.clone(),
@@ -157,14 +159,15 @@ where
 {
     pub(crate) fn from_runtime(
         seed: Job,
-        generations: TransportGenerationManager,
+        client: std::sync::Arc<crate::client::TrellisClient>,
         binding: JobsBinding,
         queue: JobsQueueBinding,
     ) -> Self {
         Self {
             identity: JobIdentity::from(&seed),
             seed,
-            generations,
+            generations: client.transport_generations(),
+            client,
             binding,
             queue,
             _types: PhantomData,
@@ -177,6 +180,7 @@ where
             .acquire_application_published()
             .map_err(jobs_message)?;
         let waiter = NatsJobWaiter::new(
+            self.client.clone(),
             lease.nats().clone(),
             self.queue.clone(),
             Duration::from_secs(30),
@@ -209,18 +213,23 @@ where
         if is_terminal(current.state) {
             return JobSnapshot::try_from(current);
         }
-        let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
-            lease.nats().clone(),
-            &self.binding.namespace,
-        )
-        .await
-        .map_err(jobs_message)?;
-        let manager = JobManager::new_with_key_coordinator(
-            TrellisJobEventPublisher::new(lease.nats().clone()),
-            self.binding.clone(),
-            TrellisJobMetaSource,
-            Arc::new(coordinator),
-        );
+        let publisher = TrellisJobEventPublisher::new(lease.nats().clone());
+        let manager = if self.queue.key_concurrency.is_some() {
+            let coordinator = crate::jobs::keys::NatsKeyCoordinator::open_for_service(
+                lease.nats().clone(),
+                &self.binding.namespace,
+            )
+            .await
+            .map_err(jobs_message)?;
+            JobManager::new_with_key_coordinator(
+                publisher,
+                self.binding.clone(),
+                TrellisJobMetaSource,
+                Arc::new(coordinator),
+            )
+        } else {
+            JobManager::new(publisher, self.binding.clone(), TrellisJobMetaSource)
+        };
         manager.cancel(&current).await.map_err(jobs_message)?;
         waiter.wait_for_terminal(current).await?;
         JobSnapshot::try_from(waiter.get(self.seed.clone()).await?)

@@ -1,0 +1,128 @@
+import { auth } from auth;
+import { core } from core;
+import { state } from state;
+import { health } from health;
+import { jobs } from jobs;
+import { events } from events;
+import { AuthAttachment } from auth_types;
+
+service platform {
+  implements auth;
+  implements core;
+  implements state;
+  kv connections {
+    title "Connections";
+    description "Operational attachment presence; policy and enforcement remain in Auth's durable store.";
+    schema AuthAttachment;
+    ttl 2m;
+    desired_max_value 16KiB;
+  }
+}
+service healthRuntime { implements health; }
+service jobsRuntime {
+  implements jobs;
+  use auth { required capability bindings.readJobs; }
+}
+service eventsRuntime {
+  implements events;
+  use auth { required capability bindings.readEvents; }
+}
+
+// These declarations are developer requests, never installed principals.
+agent cli {
+  use auth {
+    capability roles.manage;
+    capability apis.accept;
+    capability apis.forceReplace;
+    capability clients.manage;
+    capability platform.manage;
+    capability users.manage;
+    capability users.read;
+    capability account.read;
+    capability account.edit;
+    capability account.changePassword;
+    capability identities.read;
+    capability identities.manage;
+    capability sessions.read;
+    capability sessions.revoke;
+    capability delegations.read;
+    capability delegations.revoke;
+  }
+  use state { capability values.delete; }
+  use core {
+    capability resources.destroy;
+    capability resources.read;
+  }
+  use health { capability health.query; capability health.observe; }
+  use jobs { capability jobs.query; }
+  use events {
+    capability consumers.inspect;
+    capability deadLetters.dismiss;
+    capability deadLetters.inspect;
+    capability deadLetters.replay;
+    capability events.query;
+  }
+}
+
+app console {
+  use auth {
+    capability roles.manage;
+    capability apis.accept;
+    capability apis.forceReplace;
+    capability clients.manage;
+    capability platform.manage;
+    capability users.manage;
+    capability users.read;
+    capability security.observe;
+    capability account.read;
+    capability account.edit;
+    capability account.changePassword;
+    capability identities.read;
+    capability identities.manage;
+    capability sessions.read;
+    capability sessions.revoke;
+    capability delegations.read;
+    capability delegations.revoke;
+  }
+  use state {
+    capability values.delete;
+    capability values.read;
+    capability values.write;
+  }
+  use core {
+    capability resources.destroy;
+    capability resources.read;
+  }
+  use health {
+    capability health.inspect;
+    capability metrics.read;
+    capability health.query;
+    capability summary.read;
+    capability health.observe;
+  }
+  use jobs {
+    capability jobs.cancel;
+    capability deadLetters.dismiss;
+    capability jobs.findByKey;
+    capability jobs.inspect;
+    capability deadLetters.read;
+    capability services.list;
+    capability metrics.read;
+    capability jobs.query;
+    capability summary.read;
+    capability deadLetters.replay;
+    capability jobs.retry;
+    capability jobs.observe;
+  }
+  use events {
+    capability consumers.inspect;
+    capability deadLetters.dismiss;
+    capability deadLetters.inspect;
+    capability deadLetters.replay;
+    capability diagnostics.read;
+    capability events.inspect;
+    capability metrics.read;
+    capability events.query;
+    capability events.observe;
+  }
+}

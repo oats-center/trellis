@@ -3,8 +3,9 @@
 //! The crate's instrumentation only uses the OpenTelemetry API: importing
 //! Trellis never installs providers or starts network activity. Native
 //! processes that want Trellis-owned OTLP export enable the non-default
-//! `telemetry-otlp` feature and call [`init_from_env`] once at process entry.
-//! Applications that already own OpenTelemetry call [`use_host_providers`]
+//! `telemetry-otlp` feature and call `init_from_env` once at process entry.
+//! Applications that already own OpenTelemetry call
+//! [`crate::telemetry::TelemetryGuard::use_host_providers`]
 //! instead, after their own providers are installed and before their first
 //! Trellis connection or mount.
 //!

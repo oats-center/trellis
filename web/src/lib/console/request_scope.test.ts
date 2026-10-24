@@ -1,8 +1,9 @@
 import { deepEqual, equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import { RequestScope } from "./request_scope.ts";
 
-Deno.test("U01 later request supersedes an earlier response", () => {
+test("U01 later request supersedes an earlier response", () => {
   const scope = new RequestScope("list");
   const first = scope.begin();
   const second = scope.begin();
@@ -12,7 +13,7 @@ Deno.test("U01 later request supersedes an earlier response", () => {
   equal(scope.settle(second), true);
 });
 
-Deno.test("U01 disposal prevents every later commit", () => {
+test("U01 disposal prevents every later commit", () => {
   const scope = new RequestScope("list");
   const token = scope.begin();
   scope.dispose();
@@ -22,7 +23,7 @@ Deno.test("U01 disposal prevents every later commit", () => {
   equal(scope.isCurrent(scope.begin()), false);
 });
 
-Deno.test("U02 a semantic key change clears old data and invalidates reads", () => {
+test("U02 a semantic key change clears old data and invalidates reads", () => {
   const scope = new RequestScope("service-a");
   const token = scope.begin();
   equal(scope.setKey("service-a"), false);
@@ -32,7 +33,7 @@ Deno.test("U02 a semantic key change clears old data and invalidates reads", () 
   equal(scope.key, "service-b");
 });
 
-Deno.test("U02 invalidate keeps the scope alive for a same-target refresh", () => {
+test("U02 invalidate keeps the scope alive for a same-target refresh", () => {
   const scope = new RequestScope("service-a");
   const first = scope.begin();
   scope.invalidate();
@@ -42,7 +43,7 @@ Deno.test("U02 invalidate keeps the scope alive for a same-target refresh", () =
   equal(scope.setKey("service-a"), false);
 });
 
-Deno.test("request scope tracks one in-flight token", () => {
+test("request scope tracks one in-flight token", () => {
   const scope = new RequestScope("jobs");
   equal(scope.pending, false);
   const token = scope.begin();
@@ -52,7 +53,7 @@ Deno.test("request scope tracks one in-flight token", () => {
   deepEqual(token, { generation: token.generation });
 });
 
-Deno.test("U02 a semantic target change clears the previous identity", () => {
+test("U02 a semantic target change clears the previous identity", () => {
   const scope = new RequestScope("deployment-a");
   const token = scope.begin();
   equal(scope.setKey("deployment-b"), true);
@@ -60,7 +61,7 @@ Deno.test("U02 a semantic target change clears the previous identity", () => {
   equal(scope.key, "deployment-b");
 });
 
-Deno.test("U32 independent domains do not invalidate each other", () => {
+test("U32 independent domains do not invalidate each other", () => {
   const primary = new RequestScope("events");
   const optional = new RequestScope("consumers");
   const primaryToken = primary.begin();
@@ -72,7 +73,7 @@ Deno.test("U32 independent domains do not invalidate each other", () => {
   );
 });
 
-Deno.test("U33 disposal prevents every later commit", () => {
+test("U33 disposal prevents every later commit", () => {
   const scope = new RequestScope("target");
   const token = scope.begin();
   scope.dispose();

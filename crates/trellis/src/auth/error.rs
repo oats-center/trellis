@@ -17,6 +17,7 @@ pub enum TrellisAuthError {
     Url(#[from] url::ParseError),
 
     /// The HTTP transport used for agent login or bind requests failed.
+    #[cfg(feature = "http")]
     #[error("http client error: {0}")]
     Http(#[from] reqwest::Error),
 

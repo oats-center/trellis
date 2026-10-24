@@ -32,13 +32,9 @@ pub type EventsRuntime = trellis_rs::service::EventsRuntime;
 #[derive(Clone, Debug)]
 pub struct EventAuthorizationInput {
     pub subject: String,
-    pub descriptor_identity: String,
     pub payload: Vec<u8>,
-    pub session_key: String,
-    pub proof: String,
-    pub authorization_context: String,
-    pub event_id: String,
-    pub event_time: String,
+    pub headers: Option<async_nats::HeaderMap>,
+    pub original_publication: trellis_protocol::OriginalEventPublication,
 }
 
 /// Publisher fields proven by a context-bound event proof.
@@ -132,7 +128,12 @@ pub async fn start_events_projector(
                 "failed to start Events projector consumer '{consumer_name}': {error}"
             ))
         })?;
-    tracing::info!(stream = EVENT_STREAM, consumer = %consumer_name, filter = EVENT_SUBJECT_WILDCARD, "started Events projector consumer");
+    tracing::info!(
+        stream = EVENT_STREAM,
+        consumer = %consumer_name,
+        filter = EVENT_SUBJECT_WILDCARD,
+        "started Events projector consumer"
+    );
 
     let task = tokio::spawn(async move {
         loop {
@@ -311,13 +312,15 @@ pub(crate) async fn project_message_inner(
     let publisher = if verification_status == "verified" {
         match verifier(EventAuthorizationInput {
             subject: message.subject.to_string(),
-            descriptor_identity: descriptor_identity.unwrap_or_default().to_owned(),
             payload: message.payload.to_vec(),
-            session_key: session_key.unwrap_or_default().to_owned(),
-            proof: proof.unwrap_or_default().to_owned(),
-            authorization_context: authorization_context.unwrap_or_default().to_owned(),
-            event_id: event_id.clone().unwrap_or_default(),
-            event_time: event_time.clone(),
+            headers: message.headers.clone(),
+            original_publication: trellis_protocol::OriginalEventPublication {
+                published_at: info
+                    .published
+                    .format(&Rfc3339)
+                    .map_err(|error| error.to_string())?,
+                stream_sequence: trellis_protocol::U64s::new(info.stream_sequence),
+            },
         })
         .await
         {
@@ -453,29 +456,9 @@ fn builtin_event_identity(subject: &str) -> Option<(&'static str, &'static str)>
             auth::ConnectionsOpened::DESCRIPTOR_NAME,
         ),
         (
-            auth::DeviceUserAuthoritiesApproved::SUBSCRIBE_SUBJECT,
-            auth::DeviceUserAuthoritiesApproved::API_ID,
-            auth::DeviceUserAuthoritiesApproved::DESCRIPTOR_NAME,
-        ),
-        (
-            auth::DeviceUserAuthoritiesRequested::SUBSCRIBE_SUBJECT,
-            auth::DeviceUserAuthoritiesRequested::API_ID,
-            auth::DeviceUserAuthoritiesRequested::DESCRIPTOR_NAME,
-        ),
-        (
-            auth::DeviceUserAuthoritiesResolved::SUBSCRIBE_SUBJECT,
-            auth::DeviceUserAuthoritiesResolved::API_ID,
-            auth::DeviceUserAuthoritiesResolved::DESCRIPTOR_NAME,
-        ),
-        (
-            auth::DeviceUserAuthoritiesReviewRequested::SUBSCRIBE_SUBJECT,
-            auth::DeviceUserAuthoritiesReviewRequested::API_ID,
-            auth::DeviceUserAuthoritiesReviewRequested::DESCRIPTOR_NAME,
-        ),
-        (
-            auth::GrantsChanged::SUBSCRIBE_SUBJECT,
-            auth::GrantsChanged::API_ID,
-            auth::GrantsChanged::DESCRIPTOR_NAME,
+            auth::AuthorizationSessionsRetired::SUBSCRIBE_SUBJECT,
+            auth::AuthorizationSessionsRetired::API_ID,
+            auth::AuthorizationSessionsRetired::DESCRIPTOR_NAME,
         ),
         (
             auth::IssuersRevoked::SUBSCRIBE_SUBJECT,
@@ -483,9 +466,9 @@ fn builtin_event_identity(subject: &str) -> Option<(&'static str, &'static str)>
             auth::IssuersRevoked::DESCRIPTOR_NAME,
         ),
         (
-            auth::SessionsRevoked::SUBSCRIBE_SUBJECT,
-            auth::SessionsRevoked::API_ID,
-            auth::SessionsRevoked::DESCRIPTOR_NAME,
+            auth::IssuersRotated::SUBSCRIBE_SUBJECT,
+            auth::IssuersRotated::API_ID,
+            auth::IssuersRotated::DESCRIPTOR_NAME,
         ),
         (
             health::StatusChanged::SUBSCRIBE_SUBJECT,
@@ -682,19 +665,6 @@ mod tests {
             (
                 Some("trellis.auth@v1".to_owned()),
                 Some("Connections.Opened".to_owned())
-            )
-        );
-    }
-
-    #[test]
-    fn event_identity_matches_parameterized_generated_subject() {
-        let subject = trellis_runtime_apis::apis::trellis_auth_v1::events::DeviceUserAuthoritiesApproved::SUBJECT
-            .replace("{/deploymentId}", "deployment-a");
-        assert_eq!(
-            resolve_event_identity(&subject),
-            (
-                Some("trellis.auth@v1".to_owned()),
-                Some("DeviceUserAuthorities.Approved".to_owned())
             )
         );
     }

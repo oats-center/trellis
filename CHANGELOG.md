@@ -10,9 +10,331 @@ and this project adheres to
 
 ### Added
 
+- `trellis-rs` features `native-oauth` and `device`, both on by default. A
+  service that connects with its provisioned identity can build with
+  `default-features = false`, skipping the HTTPS client, `hyper`, `tower`, and
+  P-256 (32 of the SDK's 215 crates).
+
+- **Breaking:** Administrative capabilities replace platform privileges.
+  Managing the installation uses six ordinary Auth capabilities:
+  `trellis.auth.v1:users.manage`, `trellis.auth.v1:roles.manage`,
+  `trellis.auth.v1:apis.accept`, `trellis.auth.v1:apis.forceReplace`,
+  `trellis.auth.v1:clients.manage`, and `trellis.auth.v1:platform.manage`.
+  Roles, direct grants, and identity-provider
+  mappings carry them; changing who holds one requires
+  `trellis.auth.v1:platform.manage`. The initialized administrator holds all six
+  inherently and cannot lose them. The IDL `administrative;` marker declares
+  them and is reserved to the built-in `trellis` package, and Auth refuses any
+  other API in the `trellis.` namespace.
+- Capability groups. An API declares `group name { title; description;
+grants; capability …; }` bundles of its own
+  capabilities, with IDs like `trellis.auth.v1:account`. Groups are granted,
+  assigned to roles, mapped, requested (`use api { group name; }`), and
+  consented to like capabilities. Holders get the group's current members live;
+  an app keeps the members its user approved, as they were then, until asked
+  again. Built-in groups: `account` and
+  `administration` (Auth), `operator` (Events, Jobs), `monitor` (Health).
+- `[auth.administration]` safeguards for delegating administration to an app,
+  each on by default: `confirm_on_consent` (a separate Portal confirmation
+  step), `require_peer_approval` (another `trellis.auth.v1:platform.manage` holder
+  decides through `Administration.Reviews.List/Decide`), and
+  `registered_clients_only`.
+
+- Rust generated open enums implement `From<String>` and `From<&str>`, and
+  `trellis_protocol::model::Timestamp::from_unix_seconds` builds a canonical
+  timestamp without a format/parse round trip.
+- `scripts/run-rust-tests.sh` runs the whole Rust test catalog locally with no
+  preset environment: it acquires the pinned NATS server, builds the pinned Dex
+  identity provider (`scripts/acquire-test-dex.sh`), and builds the CLI, server,
+  and Events fixture. Check runs the same script, so the upstream OIDC test runs
+  everywhere instead of failing for a missing executable.
+- Check fails when rustfmt leaves a Rust statement unformatted because part of
+  it cannot fit (`scripts/check-rust-width.py`).
+- Transfer receivers choose their outstanding window, up to 1,024 frames and
+  64 MiB, and admit it from one process-wide receive budget, released when the
+  transfer ends. A download consumer declares its window at activation; the
+  provider sends within the smaller of it and the grant. A transfer that does
+  not fit is refused with `transfer receive capacity exhausted`.
+
+- `stream;` Operations deliver caller bytes directly to a running handler,
+  with no staging. Callers use the existing transfer helpers. Handlers read the
+  live bytes once through TypeScript `transfer.stream()` or Rust
+  `OperationControl::take_upload_stream()`; the stream ends only after the
+  caller's size and digest are verified and the delivery is recorded. An
+  interrupted `stream` Operation fails with `OperationStreamInterrupted`
+  instead of resuming.
+- Receive grants can be served from any provider byte source whose size and
+  SHA-256 digest are declared up front: TypeScript
+  `createTransfer({ direction: "receive", stream, info })`, Rust
+  `plan_stream_download_transfer` with `spawn_stream_download_endpoint`.
+- `trellis.transfer.payload.bytes` counts DATA payload, and
+  `trellis.transfer.control.bytes` counts every serialized non-DATA Transfer
+  message, in both SDKs. Together with `trellis.transfer.wire.bytes` they give
+  the protocol's byte overhead.
+- `auth.oauth.trusted_proxies` lists reverse-proxy CIDR ranges whose
+  `X-Forwarded-For` identifies the client for OAuth request admission.
+  Forwarding headers from any other peer remain ignored.
+- `trellis.transfer.wait.duration` separates blocked sender credit waits from
+  streaming storage refill waits in both SDKs.
+- Automatic installation TLS. `trellis init config` generates a
+  name-constrained installation CA and short-lived certificates for Console,
+  OAuth, native NATS, and NATS WebSockets unless certificates are supplied
+  (`--tls supplied`) or plaintext loopback development is selected
+  (`--tls loopback-development`). The CA private key is written beside the
+  bundle, never inside it.
+- `trellis tls renew` reissues generated leaf certificates without changing
+  client trust, and `trellis tls status` reports the CA fingerprint and expiry.
+  Running listeners reload replaced certificates without a restart.
+- Installations serving their generated CA always warn: at initialization, at
+  runtime startup, and in `trellis tls status`. The Console and the Login
+  Portal show every user a short banner that the installation uses
+  self-generated certificates and may not be suitable for production.
+- The Rust and Node test kits run on generated TLS and trust each runtime's CA
+  explicitly; `browserTrustEnvironment()` gives Playwright a private NSS trust
+  store holding it.
+- Trusted reverse-proxy transport (`proxy` mode, `--trusted-proxy`) serves
+  Console and OAuth as plaintext only to listed proxy networks and keys
+  per-client limits on the forwarded client address; NATS WebSockets can also
+  sit behind a proxy (`--nats-websocket-behind-proxy`).
+- Explicit private-CA trust for clients: Rust
+  `RuntimeAuthorizationTrust.root_certificates`, a roots argument to
+  `discover_native_oauth`, `trellis login --ca-certificate`, and
+  `[nats] ca_certificate` for the runtime's own broker connections.
+
+### Changed
+
+- **Breaking:** Capabilities and groups no longer declare `consent_revision`,
+  and `consequence` is renamed `grants`. Users approve the `grants` text: Auth
+  asks them again exactly when an accepted API changes a capability's or
+  group's `grants`. Changing a title, description, `allows`, or a group's
+  members does not. `AuthCapabilityDefinition.consequence` is now `grants`.
+- **Breaking:** Built-in model names are PascalCase at every nested segment
+  (`HealthInspectResponseInstancesItemLatestSample`, not
+  `HealthInspectResponseinstancesItemlatestSample`), and inline copies of the
+  `Job` models are gone in favour of the named ones. Generated Rust and
+  TypeScript type names and the built-in contract digests change; wire payloads
+  do not.
+
+- The LLM guides are structured: `llms.txt` is an index, the new
+  `llms-core.txt` holds the language-neutral guide in sections, the language
+  guides keep only language-specific material, and `llms-full.txt` is generated
+  from them (`node docs/scripts/build_llms_full.ts`, checked by Lint).
+
+- `cargo xtask install` generates the runtime's built-in API bindings, as it
+  already does for the SDK and testkit, instead of a build script that compiled
+  the IDL compiler and Rust generator into every runtime build. Rerun it after
+  changing a built-in contract.
+
+- The SDK uses one RustCrypto generation (`sha2` 0.10, `hmac` 0.12, `hkdf`
+  0.12), matching what `async-nats` requires, removing duplicate `digest`,
+  `block-buffer`, `crypto-common`, and `const-oid` versions from every build.
+
+- **Breaking:** Presentation-only capability groups are gone; groups now grant
+  their members.
+- **Breaking:** Capability IDs are `<package>.<api>.v<major>:<area>.<action>`,
+  for example `trellis.auth.v1:users.edit`, and contracts name capabilities
+  `area.action` (`capability sessions.read { … }`). Auth's one-RPC
+  administrative capabilities fold into the administrative capabilities.
+
+- Signed issuer-metadata answers are `trellis-protocol` types:
+  `AuthorityMaterial`, `AuthorizationSessionStatus`, and `IssuerChain`, each
+  carrying the exact signed JSON of its artifacts. `verify_issuer_metadata`
+  decodes the answer for the query and exposes it as
+  `VerifiedIssuerMetadata::value`; TypeScript exports matching schemas. The
+  HTTP issuer chain returns `IssuerChain`, and the status answer carries only
+  the session ID, state, and signed revocation.
+
+- Native admission is about 2.8 times faster (6.5 ms to 2.3 ms per connection
+  in a release build), and its first ContextGet 2.6 times (6.4 ms to 2.4 ms).
+  Auth caches its prepared SQL statements, evaluates each admission once, signs
+  nothing just to measure a reply, and derives each accepted action's broker
+  route when the API is accepted instead of compiling IDL on every connection.
+- Auth's SQLite work no longer runs on async workers. OAuth storage, the portal,
+  consent, device and upstream-sign-in handlers, the token endpoint, and the
+  enforcement workers use the blocking pool. In WAL mode, read-only lookups use
+  a separate read-only connection, and CORS origins for `/token`, `/revoke`, and
+  `/device_authorization` are answered from memory.
+- Revocations take effect without waiting for the next one-second tick:
+  committing enforcement or effect work wakes the workers. Work naming one
+  session, grant, login, identity, principal, or deployment runs before broad
+  scans.
+- `trellis_idl::compile_evidence` returns `Arc<PackageGraph>`, sharing cached
+  compilations instead of cloning them.
+
+- The TypeScript SDK ships two protocol WASM builds. Callers load a client
+  build; services and devices load a provider build with the request-serving
+  verifiers, selected automatically by the `/service` and `/device`
+  entrypoints. Both are size-optimized with `wasm-opt`: the client build is
+  495 KB gzipped, down from 780 KB. Bundles no longer embed a base64 copy; the
+  module is fetched as a separate asset when connecting, and server runtimes
+  read it from disk.
+- The TypeScript SDK computes per-message proof digests natively: Transfer
+  DATA frame and provider proof digests, Live server proof digests, and
+  request, event and response signing digests. Signature verification and
+  authorization policy stay in the shared Rust protocol. Pinned vectors in
+  `integration/fixtures/protocol/message-digests` keep both implementations
+  byte-identical.
+- Request, event and response verification take the payload's SHA-256
+  instead of the payload, so TypeScript hashes natively and only 32 bytes
+  cross into WASM. In the Rust protocol crate, the session verification inputs
+  replace `raw_payload` with `payload_sha256: [u8; 32]`, and the verified
+  request, event and response types no longer return the payload; callers
+  keep the bytes they verified.
+- Signed catalogs and provider certificates are authenticated once when
+  fetched, in both SDKs. Each use rechecks only the issuer key and its
+  revocation state, the trust scope and the certificate's validity time,
+  instead of re-canonicalizing and re-verifying the record on every request,
+  Transfer frame and credit message. TypeScript also reuses transport
+  permission coverage between unchanged policies. In the Rust protocol crate,
+  `AuthenticatedCatalog` and `AuthenticatedProviderCertificate` carry that
+  authentication, and `SessionResponseVerificationInput::certificate` takes an
+  `AuthenticatedProviderCertificate`.
+- Transfer windows default to 64 frames and 16 MiB instead of 16 frames and
+  4 MiB, and TypeScript fills ready frames up to the negotiated 1 MiB limit
+  instead of capping them at 256 KiB, as Rust already did. Measured on
+  loopback, Rust streaming roughly doubles and TypeScript bulk transfers gain
+  about 30%, with loaded Live and RPC p95 within 25% of before.
+- Rust `TransferDownloadGrantArgs::store` is optional, and
+  `run_download_transfer_endpoint` takes a `DownloadSource`, so downloads no
+  longer require a store binding.
+- The TypeScript SDK hashes Transfer and Object Store bytes with
+  `node:crypto` where it is available (Node, Deno, Bun) and selects the NATS
+  Object Store SDK's native SHA-256 backend, which is process-wide. Browsers
+  keep the portable implementation. Digests are unchanged.
+- `trellis.transfer.wire.bytes` now counts serialized DATA messages, NATS
+  headers included, instead of payload alone. Use
+  `trellis.transfer.payload.bytes` for the previous meaning.
+- Operation upload grants follow one shared policy in both SDKs: a 15-minute
+  lifetime that bounds the whole upload and a 512 MiB size limit. TypeScript
+  providers previously expired uploads after 60 seconds with no size limit.
+- Transfer metrics use one vocabulary in both SDKs: `trellis.direction` is
+  `upload` or `download` and `trellis.side` is `client` or `provider`. Each
+  endpoint counts the DATA frames, wire bytes, and credit messages it sends or
+  verifies. TypeScript Live sessions report `trellis.kind` as `live` or
+  `operation_watch`, matching Rust and the metric catalog.
+- Transfer throughput: senders coalesce already-ready bytes into bounded frames
+  without waiting to fill them, unchanged peer authority is reused while every
+  frame is still verified, store readers fetch on demand, and the Rust Object
+  Store writer fills 128 KiB chunks and pipelines up to eight chunk
+  acknowledgements.
+- **Breaking:** fresh bundles default to HTTPS, `tls://`, and `wss://`
+  endpoints. `--oauth-origin` and `--oauth-port` configure the OAuth listener.
+- **Breaking:** `[auth.oauth.transport]` and the new `[http.transport]` share
+  one listener transport (`tls`, `proxy`, or `loopback_development`). An omitted
+  application transport is loopback development and binds loopback by default.
+- **Breaking:** `discover_native_oauth` takes the trusted root certificates.
+
+### Removed
+
+- **Breaking:** The `trellis-rs` `runtime-internals` feature. Trellis's own
+  runtime reaches its support through the hidden, unversioned
+  `trellis_rs::__internal` module instead, so no published feature exposes
+  it. `LiveProviderOwner` and `service::internal` moved there.
+
+- **Breaking:** Platform privileges: `PlatformPrivilege`, the authority's
+  `platformPrivileges`, the `trellis_platform_privileges` authorization detail,
+  client privilege eligibility, the `PlatformPrivileges.*` and
+  `PlatformDelegations.*` RPCs, `platformPrivileges` in effective access, and
+  the SDK `platformPrivileges` OAuth options. Apps request administrative
+  capabilities through their ordinary capability selections.
+
+- The `Authority.Resolve`, `Authority.Status`, and `Issuers.ResolveChain` Auth
+  RPCs and their models. Clients already read this material through the signed
+  `trellis.auth.metadata.get` exchange and the HTTP issuer chain, which remain.
+
+- **Breaking:** `AuthEnforcementState.failed`. Enforcement never gives up: a
+  page or kick that fails is retried, and `failedKicks` reports kicks that
+  needed a retry.
+- `GET /portal/tls` and the generated-CA fingerprint and expiry shown to users.
+  The Console and Login Portal now show a short banner that the installation
+  uses self-generated certificates and may not be suitable for production; the
+  fingerprint remains in operator output (`trellis init config`,
+  `trellis tls status`, and the startup warning).
+- The `http.web_source`, `http.portal_source`, and `http.console_source`
+  settings and the `trellis init config` `--web-*`, `--portal-*`, and
+  `--console-*` directory/proxy flags. They were accepted but had no effect: the
+  Console and the OAuth portal are served only from the assets built into
+  `trellis-server`. The "Create a custom portal" guide is removed for the same
+  reason.
+- The `http.rate_limit_max` and `http.rate_limit_window_ms` settings and their
+  `--rate-limit-*` flags, which were also accepted without effect. OAuth request
+  admission has its own fixed per-client budgets.
+- Unused public API: `createTransferHandle`'s inbox prefix argument, the
+  testkit's always-empty `TrellisTestError::server_code()`, and the testkit
+  `webSource`, `portalSource`, and `consoleSource` runtime options.
+- **Breaking:** `[http] allow_insecure_origins`. A remote origin is served only
+  over TLS or behind a trusted HTTPS proxy.
+- The `[auth.authorization]` settings `refresh_lead_seconds`,
+  `refresh_jitter_seconds`, `minimum_context_lifetime_seconds`,
+  `maximum_bootstrap_jwt_lifetime_seconds`, `maximum_context_bytes`,
+  `maximum_permissions`, `context_bucket`, and `registry_replicas`, the
+  `trellis init config` `--auth-refresh-lead-seconds`,
+  `--auth-refresh-jitter-seconds`, and `--auth-minimum-context-lifetime-seconds`
+  flags, and the matching testkit `authorization` options. They were validated
+  but had no effect. Existing configuration files still load.
+- The `[oauth.providers]` runtime section, the `trellis init config`
+  `--oauth-providers-file` flag, and the testkit `oauthProviders` option. They
+  were accepted without effect; upstream OIDC providers are managed with
+  `Auth.OIDCProviders.Put`.
+
+### Fixed
+
+- A stopping TypeScript service with replicas no longer swallows Operation
+  starts and control requests: `stop()` unsubscribes its operation intake at
+  the broker before resolving, so the broker routes those requests to a live
+  replica instead of the stopping one.
+- `auth.local_identity.enabled = false` now refuses username/password sign-in,
+  and the Portal hides its password form. `/portal/providers` returns
+  `{ localIdentity, providers }`.
+- `auth.local_identity.password_min_length` applies to every local password,
+  including user creation, password changes, and resets, not just the
+  initialized administrator.
+- An Auth effect queued with the same payload as an existing one but behind a
+  different predecessor kept only the first predecessor; each now keeps its own
+  ordering edge.
+
+- The Rust service and device demos and the native benchmark compile again: they
+  pass the installation CA to `discover_native_oauth` (`--ca-certificate` or
+  `TRELLIS_CA_CERTIFICATE`).
+- A kick that needs retries counts once in `failedKicks`, and Auth effect
+  retries are jittered.
+- Auth Callout accepts a broker request issued up to
+  `allowed_clock_skew_seconds` in the future instead of a fixed five seconds.
+- OAuth requests without an `Origin` header, including native token refreshes,
+  no longer share one server-wide request budget; each client has its own.
+- Idle Live routes adopt renewed provider authority before signing an offer, so
+  the first observer after the original context expires is not refused.
+- The Console Users list has Previous/Next pagination; users beyond the first
+  page were unreachable. The admin overview reports each panel's load failure
+  and shows `100+` when a bounded list has more entries, instead of zero or an
+  exact-looking count. The Events rail shows its event rate and integrity
+  exception counts, which were never rendered.
+- Rust transfer providers report their frames and wire bytes, and Rust
+  downloads record one transfer duration instead of two. Streamed TypeScript
+  downloads record their duration.
+
+## [0.100.0-rc.3] - 2026-10-21
+
+### Added
+
+- Revision 7 OAuth authorization for browser and native applications, including
+  Authorization Code with PKCE, Device Code, DPoP-bound credentials, explicit
+  capability consent, and client metadata discovery. Public discovery supports
+  first contact from previously unknown browser origins.
+- Administrator-owned issuer rotation with durable successor-key custody,
+  authenticated trust-chain recovery, and idempotent replay. Successor keys live
+  on private writable persistent storage separately from read-only configuration
+  and the OAuth credential-encryption key.
+- Capability-gated user directory profiles, owner-managed profile edits with
+  independent revision checks, linked-provider profile provenance, and cached,
+  sanitized avatars. Browser avatar delivery uses expiring image references
+  instead of exposing upstream image requests or credentials.
 - Console manages user profiles, local sign-in names, sign-in security, and
   application-scoped access grants inline. Grant revision conflicts preserve the
   draft while loading the latest version for renewed review.
+- Operation starts can select a deployment and caller-chosen invocation ID.
+  Missing targets do not fall back to a different deployment; exact-owner replay
+  preserves durable acceptance without automatically retransmitting starts.
 - Operations can reserve a caller-selected invocation with cancellation already
   requested. Cancellation survives replay and owner replacement, and cleanup
   must succeed before the operation becomes terminal.
@@ -26,6 +348,39 @@ and this project adheres to
 
 ### Fixed
 
+- Rust and TypeScript share Operation persistence for same-deployment takeover,
+  checkpoints, signals, cancellation, and committed uploads. Unfinished upload
+  locators and exact logical file metadata survive unrelated control writes.
+- RPC and Live-opening queue groups agree across Rust and TypeScript providers,
+  preventing one publication from executing once per SDK implementation.
+- Profile updates use their own compare-and-swap revision; lifecycle-only account
+  changes do not overwrite newer owner profile edits. Self-account access has an
+  explicit consent capability independently of directory access.
+- Finite RPC success and declared-error replies remain verifiable after their
+  accepted opening expires. Rust typed and explicit-ack Event consumers verify
+  publishers, including retained publications under historical authority.
+- Native and browser recovery preserves credential custody through issuer
+  rotation, attachment replacement, and missed retirement. Recovery survives
+  early retry timers and cancelled renewal, without authorizing expired contexts
+  or retrying potentially executed requests.
+- Credential close joins custody disposal; Rust credential leases explicitly
+  release file locks even when another process inherited a descriptor.
+- Fresh application leases require current authorization and revocation coverage;
+  private renewal can recover authority while application use remains fenced.
+- Identical deployment reapplication and disable/re-enable preserve valid resource
+  evidence and retained data. Missing previously committed infrastructure fails
+  closed rather than silently recreating empty storage; resource destruction
+  remains an explicit authorized administrative action.
+- Passwordless protected administrators receive a fresh one-time setup URL on
+  each startup until a password is installed; restarts preserve installed
+  passwords and do not emit another setup URL.
+- Packaged CLI generation no longer depends on its producer checkout. Clean demo
+  builds, source-free Rust consumers, non-root read-only images, managed broker
+  shutdown, and real TLS deployments are exercised by acceptance checks.
+- Canonical API publication validates the built-in package lock during normal
+  installation and accepts GHCR's empty final tag-pagination response.
+- Concurrent process-testkit startup waits for the broker's actual NATS greeting,
+  rather than treating an inherited reservation listener as a ready broker.
 - Exact grant approvals retain pending resource permissions while issuance uses
   only available permissions and keeps required-resource readiness retryable.
 - Correcting grant-draft expiry or permission errors allows review and saving
@@ -82,16 +437,37 @@ and this project adheres to
 
 ### Changed
 
-- Trellis NATS connections no longer present a client JWT in CONNECT. A client
-  authenticates with its session NKey signature and a connect token of wire
-  format `trellis.nats-connect-token.v2`, which carries the selected context
-  digest and the short-lived admission routing JWT. In operator mode a JWT-less
-  CONNECT is routed to the external Auth Callout through a server-generated,
-  non-expiring, server-only deny-all Auth-account `default_sentinel` that
-  confers no Trellis application authority; a CONNECT that supplies any other
-  client JWT is rejected, with no dual-protocol fallback. Clients keep the
-  routing JWT current for the next CONNECT independently of the policy already
-  admitted on the current socket.
+- This prerelease is a breaking authentication and persistence cutover. Retired
+  pre-OAuth bootstrap, browser-bind, proof-building, and context-refresh APIs are
+  removed without compatibility endpoints. Use fresh development/test databases
+  for the new schema; no automatic database or Operation-record migration is
+  provided, and existing installations are not deleted or rewritten.
+- Provisioned services and devices authenticate using their identity seed;
+  interactive applications use OAuth. NATS admission binds a fresh session NKey
+  to signed installation/account authority, and application messages carry
+  verified authorization-context references and proofs.
+- Standalone Live and Transfer use Trellis wire v1 independently of authored
+  application API majors. Live v1 supports concurrent application API majors
+  without cross-major routing or compatibility aliases.
+- Public Rust distribution consists of `trellis-rs`, `trellis-protocol`,
+  `trellis-models`, and `trellis-testkit`. Server/compiler implementation crates
+  remain private. Frozen built-in model bundles are independently versioned;
+  generated consumers share exact model types and can upgrade the SDK without
+  regenerating an unchanged model snapshot. Consumer builds do not require the
+  Trellis compiler or a repository checkout.
+- The Rust testkit owns production CLI/server and NATS processes rather than
+  embedding the runtime. It retains the broker through server restarts, verifies
+  cached release archives, and supports explicit offline executable inputs.
+- TypeScript native OAuth defaults to process-local custody without SQLite or a
+  credential directory. Retain `MemoryNativeOAuthCustody` for same-process
+  reconnects, or supply an application-owned custody adapter for persistent
+  login. Rust CLI file custody and browser IndexedDB custody are unchanged.
+- TypeScript tooling, tests, demos, and benchmark consumers use Node 24 and npm;
+  npm is the only JavaScript publication target.
+- Split runtime roles use authenticated resource-binding queries rather than
+  reading another role's database or signing secrets. Deployment configuration
+  separates application and OAuth listeners, installation identity, persistent
+  provider identity, and independent OAuth encryption custody.
 - Refreshing renewable Trellis authorization no longer restarts a healthy NATS
   connection. An identity-preserving refresh retains the new context in place
   and keeps the physical attachment; additional transport authority is adopted
@@ -110,7 +486,7 @@ and this project adheres to
   codecs, so additively extended payloads survive a decode/encode in both
   languages.
 - The TypeScript live integration suite runs through one self-contained task
-  (`deno task test:integration`). It stages the Rust executables it needs and
+  (`npm run test:integration`). It stages the Rust executables it needs and
   relies on the pinned NATS auto-download, so local development and CI run the
   same command without presetting environment variables and the tests never
   compile Rust while they run.

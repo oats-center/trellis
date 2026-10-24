@@ -29,7 +29,7 @@ schemas, constants, and error codes live in the shared protocol crate
 
 ## Wire flow
 
-1. The consumer sends one bounded opening request to the bound Live base with a
+1. The consumer sends one bounded opening request to the exact compiled Live base with a
    fresh request-proof reply inbox. An Operation watch opening is carried on the
    existing Operation control route.
 2. The provider authenticates the exact Live `Subscribe` (or Operation
@@ -49,11 +49,16 @@ starts a producer.
 
 ## Subjects
 
-Deployment-bound subject families are **singular** `live.v1.route` and
-`operation.v1`:
+Standalone Live uses protocol v1 independently of the application's API major.
+The opaque API token encodes the complete qualified API ID, so
+`documents@v1` and `documents@v2` have different routes without introducing a
+second Live protocol. Deployment-owned Operation controls keep `operation.v1`;
+canonical Operation starts keep the application's `operations.vN` major.
 
 ```text
-Standalone base:  live.v1.route.<b64(apiId)>.<b64(providerDeploymentId)>.<action>
+Standalone base:  live.v1.route.<b64(apiId)>.<action>
+Bound Live base:  live.v1.route.<b64(apiId)>.<b64(providerDeploymentId)>.<action>
+Operation base:   operation.v1.<b64(apiId)>.<b64(providerDeploymentId)>.<action>
 Owner controls:   <base>.observe.<b64(P)>.<sessionId>
 Live delivery:    live.v1.data.<b64(P)>.<b64(C)>.<sessionId>
 ```
@@ -63,11 +68,16 @@ it is permitted to receive. Owner controls are handled only by the replica that
 accepted the session; opening routes keep their queue groups, but owner-control
 subscriptions do not.
 
+Action names may contain dots. A component that happens to decode as base64url
+does not establish a deployment binding: the exact compiled, authenticated
+catalog route determines whether an opening is canonical or deployment-bound.
+Neither parsing nor provider selection falls back to another route or protocol.
+
 ## Identity and authentication
 
 Provider-origin messages (offer, control response, challenge, data, end) are
 signed over the **actual NATS subject and raw received bytes** with the
-`trellis-live-server-proof.v1` domain. Owner-control replies are signed over the
+`trellis.live-server-proof.v1` domain. Owner-control replies are signed over the
 reply inbox, never the request subject. The offer's identity fields use the
 canonical subject-token projection of the full runtime key; proof headers and
 retained identities use the full runtime key. A frame is accepted only when the
@@ -75,27 +85,32 @@ actual subject, current covered context, pinned provider tuple, session id, and
 signature all verify.
 
 Both endpoints retain a real covered authority lease, not a digest snapshot:
-self and peer for a consumer, self and admitted caller for a provider. The
-selected provider deployment comes from the installed binding (the bound subject
-for a Live, the bound route for an Operation), never from the offer's own claim;
-the complete advertised provider tuple must match its verified context, and the
-offered consumer tuple must match the opener's current local identity.
-Provider/caller contexts carry their authority through admission-time
-materialization rather than context atoms, so the peer check is the selected
-binding plus tuple/identity matching, while the locally retained observer atom
-is required exactly.
+self and peer for a consumer, self and admitted caller for a provider.
+Canonical Live openings use the shared request queue for eligible providers;
+there is no persisted caller-to-provider selection. The accepted provider must
+have independently verified authority for the exact API/action and generation.
+An explicit deployment-bound opening or retained Operation reference also fixes
+the expected deployment. The offer alone never establishes provider eligibility:
+its complete provider tuple must match its verified context, and the offered
+consumer tuple must match the opener's current local identity. The caller must
+retain the exact authenticated Subscribe or Observe authority throughout the
+observation, with current ordered revocation coverage on both sides.
 
 Ordinary identity-preserving authorization refresh retains and replaces covered
 authority evidence without replacing the physical transport, recreating the
 observation, resetting sequence/credit state, or restarting the source. Quiet
 sessions propagate fresh authority using existing signed controls and
-challenges. A real physical disconnect—including an application-requested
-transport refresh—is a real delivery interruption and follows ordinary
-observation-loss rules. Live does not add application-data replay, coordinated
+challenges. A real physical disconnect is a real delivery interruption and
+follows ordinary observation-loss rules. Live does not add application-data replay, coordinated
 pause/resume, or transparent subscription migration to hide that interruption. A
 changed runtime key, logical connection id, selected deployment, or removed
 route ends the session. Invalid or foreign frames are discarded without
 extending liveness and without closing an otherwise valid session.
+
+An idle route also adopts promoted own authority before signing a new offer.
+It cannot rely on an active session's timer to refresh the retained guard;
+otherwise the first observer after the old context expires receives stale
+authorization evidence despite a healthy renewed connection.
 
 ## Credit and buffering
 
@@ -104,7 +119,7 @@ cumulative-credit scheduling. This is not a public API or a shared wire
 protocol. Live retains its typed/filtered queues, encoded-body costs, existing
 limits, challenge/heartbeat and closure semantics; Transfer owns raw-byte queues
 and storage completion. Operation Watch remains Live, while Operation upload
-uses Transfer v2.
+uses Transfer v1.
 
 - The provider window is 64 outstanding frames and 1 MiB of exact encoded `DATA`
   bodies. Cost is the whole serialized frame body, not a surrogate.
@@ -179,7 +194,7 @@ both SDKs:
 - `trellis.live.cleanup.pending` counts owned cleanup that exceeded the grace
   until it truly settles.
 
-Each session reports its `trellis.kind` as `standalone` or `operation`. Labels
+Each session reports its `trellis.kind` as `live` or `operation_watch`. Labels
 are bounded; session and Operation ids, subjects, principals and arbitrary error
 text never become dimensions. No span is held open for the lifetime of a
 session, and no per-frame spans are emitted.

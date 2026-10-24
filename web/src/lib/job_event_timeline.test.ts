@@ -1,14 +1,11 @@
 import { deepEqual, equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   buildJobTimeline,
   type JobTimelineEvent,
   jobTimelineEventsForAttempt,
 } from "./job_event_timeline.ts";
-
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
 
 const start = new Date("2026-07-10T20:00:40.000Z");
 
@@ -29,7 +26,7 @@ function event(
   };
 }
 
-Deno.test("buildJobTimeline creates an execution story and nests dependency waits", () => {
+test("buildJobTimeline creates an execution story and nests dependency waits", () => {
   const waitEdge = {
     id: "wait-ai",
     startedAt: new Date(start.getTime() + 35).toISOString(),
@@ -68,11 +65,10 @@ Deno.test("buildJobTimeline creates an execution story and nests dependency wait
     event(8, "completed", "completed", 2_243, { previousState: "active" }),
   ]);
 
-  deepEqual(timeline.map((phase) => phase.kind), [
-    "queue",
-    "execution",
-    "outcome",
-  ]);
+  deepEqual(
+    timeline.map((phase) => phase.kind),
+    ["queue", "execution", "outcome"],
+  );
 
   const queue = timeline[0];
   equal(queue.kind, "queue");
@@ -86,11 +82,10 @@ Deno.test("buildJobTimeline creates an execution story and nests dependency wait
   equal(execution.duration, "2.243s");
   equal(execution.steps.length, 3);
   equal(execution.steps[1].detail, "ocr-page · Reported count: 1 of 1");
-  deepEqual(execution.steps.map((step) => step.interval), [
-    "17ms",
-    "14ms",
-    "2.200s",
-  ]);
+  deepEqual(
+    execution.steps.map((step) => step.interval),
+    ["17ms", "14ms", "2.200s"],
+  );
   equal(execution.steps[1].waits.length, 1);
   equal(execution.steps[1].waits[0].label, "AI API");
   equal(execution.steps[1].waits[0].duration, "2.190s");
@@ -103,7 +98,7 @@ Deno.test("buildJobTimeline creates an execution story and nests dependency wait
   equal(outcome.duration, "2.243s");
 });
 
-Deno.test("work reports retain historical counts, omit zero totals, and restart intervals per attempt", () => {
+test("work reports retain historical counts, omit zero totals, and restart intervals per attempt", () => {
   const phases = buildJobTimeline([
     event(1, "started", "active", 0),
     event(2, "progress", "active", 100, {
@@ -124,20 +119,18 @@ Deno.test("work reports retain historical counts, omit zero totals, and restart 
     }),
   ]);
   const executions = phases.filter((phase) => phase.kind === "execution");
-  deepEqual(executions[0].steps.map((step) => step.detail), [
-    undefined,
-    "Reported count: 0 of 10",
-    "Reported count: 10 of 10",
-  ]);
-  deepEqual(executions[0].steps.map((step) => step.interval), [
-    "100ms",
-    "1.400s",
-    "1.500s",
-  ]);
+  deepEqual(
+    executions[0].steps.map((step) => step.detail),
+    [undefined, "Reported count: 0 of 10", "Reported count: 10 of 10"],
+  );
+  deepEqual(
+    executions[0].steps.map((step) => step.interval),
+    ["100ms", "1.400s", "1.500s"],
+  );
   equal(executions[1].steps[0].interval, "200ms");
 });
 
-Deno.test("buildJobTimeline keeps dependency waits without a preceding step at execution level", () => {
+test("buildJobTimeline keeps dependency waits without a preceding step at execution level", () => {
   const waitEdge = {
     id: "wait-job",
     startedAt: start.toISOString(),
@@ -156,7 +149,7 @@ Deno.test("buildJobTimeline keeps dependency waits without a preceding step at e
   equal(execution.waits[0].duration, "25ms");
 });
 
-Deno.test("buildJobTimeline retains unmatched and uncommon runtime events", () => {
+test("buildJobTimeline retains unmatched and uncommon runtime events", () => {
   const resumed = event(1, "resumed", "active", 0, {
     waitEdge: {
       id: "missing-wait",
@@ -171,13 +164,13 @@ Deno.test("buildJobTimeline retains unmatched and uncommon runtime events", () =
   const execution = timeline[0];
   equal(execution.kind, "execution");
   if (execution.kind !== "execution") return;
-  deepEqual(execution.events.map((item) => item.label), [
-    "Resumed",
-    "Worker heartbeat",
-  ]);
+  deepEqual(
+    execution.events.map((item) => item.label),
+    ["Resumed", "Still working"],
+  );
 });
 
-Deno.test("buildJobTimeline preserves terminal error evidence", () => {
+test("buildJobTimeline preserves terminal error evidence", () => {
   const timeline = buildJobTimeline([
     event(1, "started", "active", 0),
     event(2, "error", "failed", 243, {
@@ -194,7 +187,7 @@ Deno.test("buildJobTimeline preserves terminal error evidence", () => {
   equal(outcome.duration, "243ms");
 });
 
-Deno.test("buildJobTimeline represents retries as a new queue and execution cycle", () => {
+test("buildJobTimeline represents retries as a new queue and execution cycle", () => {
   const timeline = buildJobTimeline([
     event(1, "created", "pending", 0),
     event(2, "started", "active", 100),
@@ -206,22 +199,18 @@ Deno.test("buildJobTimeline represents retries as a new queue and execution cycl
     }),
   ]);
 
-  deepEqual(timeline.map((phase) => phase.kind), [
-    "queue",
-    "execution",
-    "outcome",
-    "queue",
-    "execution",
-    "outcome",
-  ]);
+  deepEqual(
+    timeline.map((phase) => phase.kind),
+    ["queue", "execution", "outcome", "queue", "execution", "outcome"],
+  );
   const retryQueue = timeline[3];
   equal(retryQueue.kind, "queue");
   if (retryQueue.kind !== "queue") return;
-  equal(retryQueue.label, "Retry delay");
+  equal(retryQueue.label, "Waiting to retry");
   equal(retryQueue.duration, "250ms");
 });
 
-Deno.test("buildJobTimeline labels queued terminal duration separately from runtime", () => {
+test("buildJobTimeline labels queued terminal duration separately from runtime", () => {
   const timeline = buildJobTimeline([
     event(1, "created", "pending", 0, { tries: 0 }),
     event(2, "cancelled", "cancelled", 243, {
@@ -237,7 +226,7 @@ Deno.test("buildJobTimeline labels queued terminal duration separately from runt
   equal(outcome.durationKind, "queue");
 });
 
-Deno.test("jobTimelineEventsForAttempt includes the preceding queue boundary", () => {
+test("jobTimelineEventsForAttempt includes the preceding queue boundary", () => {
   const created = event(1, "created", "pending", 0, { tries: 0 });
   const started = event(2, "started", "active", 100, {
     previousState: "pending",
@@ -249,8 +238,8 @@ Deno.test("jobTimelineEventsForAttempt includes the preceding queue boundary", (
   });
 
   deepEqual(
-    jobTimelineEventsForAttempt([created, started, completed], 1).map((item) =>
-      item.sequence
+    jobTimelineEventsForAttempt([created, started, completed], 1).map(
+      (item) => item.sequence,
     ),
     [1, 2, 3],
   );
@@ -267,33 +256,40 @@ Deno.test("jobTimelineEventsForAttempt includes the preceding queue boundary", (
     [created, started, completed, retry, restarted],
     2,
   );
-  deepEqual(selectedRetry.map((item) => item.sequence), [4, 5]);
-  deepEqual(buildJobTimeline(selectedRetry).map((phase) => phase.kind), [
-    "queue",
-    "execution",
-  ]);
+  deepEqual(
+    selectedRetry.map((item) => item.sequence),
+    [4, 5],
+  );
+  deepEqual(
+    buildJobTimeline(selectedRetry).map((phase) => phase.kind),
+    ["queue", "execution"],
+  );
 
   const priorAttempt = jobTimelineEventsForAttempt(
     [created, started, retry, restarted],
     1,
   );
-  deepEqual(priorAttempt.map((item) => item.sequence), [1, 2, 4]);
-  deepEqual(buildJobTimeline(priorAttempt).map((phase) => phase.kind), [
-    "queue",
-    "execution",
-    "outcome",
-  ]);
+  deepEqual(
+    priorAttempt.map((item) => item.sequence),
+    [1, 2, 4],
+  );
+  deepEqual(
+    buildJobTimeline(priorAttempt).map((phase) => phase.kind),
+    ["queue", "execution", "outcome"],
+  );
 });
 
-Deno.test("buildJobTimeline preserves recorded log entries", () => {
+test("buildJobTimeline preserves recorded log entries", () => {
   const timeline = buildJobTimeline([
     event(1, "started", "active", 0),
     event(2, "logged", "active", 10, {
-      logs: [{
-        timestamp: new Date(start.getTime() + 9).toISOString(),
-        level: "warn",
-        message: "OCR response omitted page confidence",
-      }],
+      logs: [
+        {
+          timestamp: new Date(start.getTime() + 9).toISOString(),
+          level: "warn",
+          message: "OCR response omitted page confidence",
+        },
+      ],
     }),
   ]);
 

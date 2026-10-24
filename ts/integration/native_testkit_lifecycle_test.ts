@@ -1,5 +1,11 @@
-import { assert, assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { join } from "node:path";
+import { mkdtemp, readFile, readlink, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { createConnection } from "node:net";
+import { once } from "node:events";
+import { ulid } from "ulid";
 import {
   processIsGone,
   processMatchesIdentity,
@@ -8,14 +14,14 @@ import {
 import { startTrellisRuntime } from "./_support/runtime.ts";
 import { startTrellisProcess } from "../packages/trellis-testkit/src/trellis_process.ts";
 
-Deno.test("native startup rejects another host's ready listener without disturbing that host", async () => {
+test("native startup rejects another host's ready listener without disturbing that host", async () => {
   await using runtime = await startTrellisRuntime();
-  const logs = await Deno.makeTempDir({ prefix: "duplicate-host-proof-" });
+  const logs = await mkdtemp(join(tmpdir(), "duplicate-host-proof-"));
   let duplicate: Awaited<ReturnType<typeof startTrellisProcess>> | undefined;
   try {
-    const server = Deno.env.get("TRELLIS_TEST_SERVER_BIN");
+    const server = process.env["TRELLIS_TEST_SERVER_BIN"];
     assert(server);
-    await assertRejects(
+    await assert.rejects(
       async () => {
         duplicate = await startTrellisProcess({
           trellisUrl: runtime.trellisUrl,
@@ -35,32 +41,27 @@ Deno.test("native startup rejects another host's ready listener without disturbi
           shutdownTimeoutMs: 5_000,
         });
       },
-      Error,
-      "exited before readiness",
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.includes("exited before readiness"),
     );
     const { user } = await runtime.callAdminRpc("authUsersCreate", {
       username: "surviving-host",
-      name: "Surviving host",
-      email: null,
-      image: null,
-      idempotencyKey: crypto.randomUUID(),
+      displayName: "Surviving host",
+      idempotencyKey: ulid(),
     });
-    const { flow } = await runtime.callAdminRpc(
-      "authUsersPasswordResetCreate",
-      {
-        userId: user.userId,
-        returnTarget: null,
-        idempotencyKey: crypto.randomUUID(),
-      },
-    );
-    assertEquals(flow.targetPrincipalId, user.principalId);
+    const reset = await runtime.callAdminRpc("authUsersPasswordResetCreate", {
+      userId: user.principalId,
+      idempotencyKey: ulid(),
+    });
+    assert(reset.token);
   } finally {
     await duplicate?.stop();
-    await Deno.remove(logs, { recursive: true });
+    await rm(logs, { recursive: true, force: true });
   }
 });
 
-Deno.test("native testkit concurrent hosts isolate mutations, persist through restart, and close owned listeners", async () => {
+test("native testkit concurrent hosts isolate mutations, persist through restart, and close owned listeners", async () => {
   const runtimes: Awaited<ReturnType<typeof startTrellisRuntime>>[] = [];
   try {
     const results = await Promise.allSettled(
@@ -69,29 +70,26 @@ Deno.test("native testkit concurrent hosts isolate mutations, persist through re
         runtimes.push(runtime);
         const { user } = await runtime.callAdminRpc("authUsersCreate", {
           username: "same-user",
-          name: "Same user",
-          email: null,
-          image: null,
-          idempotencyKey: "same-mutation",
+          displayName: "Same user",
+          idempotencyKey: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         });
         await runtime.restart();
-        const { flow } = await runtime.callAdminRpc(
+        const reset = await runtime.callAdminRpc(
           "authUsersPasswordResetCreate",
           {
-            userId: user.userId,
-            returnTarget: null,
-            idempotencyKey: "same-reset",
+            userId: user.principalId,
+            idempotencyKey: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
           },
         );
-        assertEquals(flow.targetPrincipalId, user.principalId);
-        return user.userId;
+        assert(reset.token);
+        return user.principalId;
       }),
     );
     const users = results.map((result) => {
       if (result.status === "rejected") throw result.reason;
       return result.value;
     });
-    assertEquals(
+    assert.deepEqual(
       new Set(users).size,
       4,
       "same mutations in independent hosts must not share persisted users",
@@ -102,87 +100,102 @@ Deno.test("native testkit concurrent hosts isolate mutations, persist through re
   for (const runtime of runtimes) {
     for (const url of [runtime.trellisUrl, runtime.natsUrl]) {
       const endpoint = new URL(url);
-      await assertRejects(async () => {
-        const connection = await Deno.connect({
-          hostname: endpoint.hostname,
-          port: Number(endpoint.port),
-        });
-        connection.close();
-      }, Deno.errors.ConnectionRefused);
+      await assert.rejects(
+        async () => {
+          const connection = createConnection({
+            host: endpoint.hostname,
+            port: Number(endpoint.port),
+          });
+          try {
+            await once(connection, "connect");
+          } finally {
+            connection.destroy();
+          }
+        },
+        { code: "ECONNREFUSED" },
+      );
     }
   }
 });
 
 for (const failure of ["stalled", "crashed"] as const) {
-  Deno.test(`native testkit cleans up a ${failure} host and its broker without killing another host`, async () => {
+  test(`native testkit cleans up a ${failure} host and its broker without killing another host`, async () => {
     const runtime = await startTrellisRuntime({
       timeouts: { shutdownMs: 1_000 },
     });
     let survivor: Awaited<ReturnType<typeof startTrellisRuntime>> | undefined;
     const brokerPid = Number(
-      (await Deno.readTextFile(
-        join(runtime.workdir, "runtime", "trellis", "nats-server.pid"),
-      )).trim(),
+      (
+        await readFile(
+          join(runtime.workdir, "runtime", "trellis", "nats-server.pid"),
+          "utf8",
+        )
+      ).trim(),
     );
     assert(Number.isSafeInteger(brokerPid) && brokerPid > 0);
     const broker = await recordProcessIdentity(
       brokerPid,
-      await Deno.readLink(`/proc/${brokerPid}/exe`),
+      await readlink(`/proc/${brokerPid}/exe`),
     );
     assert(broker);
     const parent = Number(
-      (await Deno.readTextFile(`/proc/${brokerPid}/status`)).match(
+      (await readFile(`/proc/${brokerPid}/status`, "utf8")).match(
         /^PPid:\s+(\d+)$/m,
       )?.[1],
     );
     assert(Number.isSafeInteger(parent) && parent > 0);
     const host = await recordProcessIdentity(
       parent,
-      await Deno.readLink(`/proc/${parent}/exe`),
+      await readlink(`/proc/${parent}/exe`),
     );
     assert(host);
     try {
       survivor = await startTrellisRuntime();
-      Deno.kill(host.pid, failure === "stalled" ? "SIGSTOP" : "SIGKILL");
+      process.kill(host.pid, failure === "stalled" ? "SIGSTOP" : "SIGKILL");
       if (failure === "crashed") {
         await runtime.waitFor(() => processIsGone(host.pid));
       }
       await runtime.stop();
-      await runtime.waitFor(async () =>
-        await processIsGone(host.pid) && await processIsGone(brokerPid)
+      await runtime.waitFor(
+        async () =>
+          (await processIsGone(host.pid)) && (await processIsGone(brokerPid)),
       );
       for (const url of [runtime.trellisUrl, runtime.natsUrl]) {
         const endpoint = new URL(url);
-        await assertRejects(async () => {
-          const connection = await Deno.connect({
-            hostname: endpoint.hostname,
-            port: Number(endpoint.port),
-          });
-          connection.close();
-        }, Deno.errors.ConnectionRefused);
+        await assert.rejects(
+          async () => {
+            const connection = createConnection({
+              host: endpoint.hostname,
+              port: Number(endpoint.port),
+            });
+            try {
+              await once(connection, "connect");
+            } finally {
+              connection.destroy();
+            }
+          },
+          { code: "ECONNREFUSED" },
+        );
       }
       const { user } = await survivor.callAdminRpc("authUsersCreate", {
         username: "after-neighbor-force-close",
-        name: "Survivor",
-        email: null,
-        image: null,
-        idempotencyKey: "survivor-user",
+        displayName: "Survivor",
+        idempotencyKey: ulid(),
       });
-      const { flow } = await survivor.callAdminRpc(
+      const reset = await survivor.callAdminRpc(
         "authUsersPasswordResetCreate",
         {
-          userId: user.userId,
-          returnTarget: null,
-          idempotencyKey: "survivor-reset",
+          userId: user.principalId,
+          idempotencyKey: ulid(),
         },
       );
-      assertEquals(flow.targetPrincipalId, user.principalId);
+      assert(reset.token);
     } finally {
-      if (await processMatchesIdentity(host)) Deno.kill(host.pid, "SIGCONT");
+      if (await processMatchesIdentity(host)) process.kill(host.pid, "SIGCONT");
       await runtime.stop();
       await survivor?.stop();
       if (await processMatchesIdentity(broker)) {
-        Deno.kill(broker.pid, "SIGKILL");
+        process.kill(broker.pid, "SIGKILL");
       }
     }
   });

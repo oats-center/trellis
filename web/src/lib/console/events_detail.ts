@@ -190,18 +190,13 @@ export type EventsHealthLedgerInput = {
   readonly consumersState: OptionalReadState;
   readonly total?: bigint;
   readonly integrityExceptions?: bigint;
-  readonly unresolved?: bigint;
-  readonly payloadTotalLabel: string;
-  readonly payloadAverageLabel: string;
+  readonly failedDeliveries?: bigint;
   readonly windowMinutes: number;
   readonly attentionConsumers: number;
   readonly shownConsumers: number;
-  readonly oldestLagValue: string;
-  readonly oldestLagDetail: string;
-  readonly oldestLagDisabled: boolean;
   readonly focus: string;
   readonly attentionConsumersOnly: boolean;
-  readonly oldestLagActive: boolean;
+  readonly failedActive: boolean;
 };
 
 export type EventsHealthLedgerItem = {
@@ -211,11 +206,16 @@ export type EventsHealthLedgerItem = {
   readonly detail: string;
   readonly tone: "success" | "warning" | "error" | "info";
   readonly active: boolean;
+  readonly attention?: boolean;
   readonly disabled?: boolean;
 };
 
+function unavailableDetail(state: OptionalReadState, pending: string): string {
+  return state === "pending" ? pending : "Unavailable right now";
+}
+
 /**
- * Projects the Events health ledger. A pending or unavailable optional read
+ * Projects the Events health tiles. A pending or unavailable optional read
  * stays non-numeric; only a successful ready read may render zero.
  */
 export function projectEventsHealthLedger(
@@ -223,86 +223,63 @@ export function projectEventsHealthLedger(
 ): EventsHealthLedgerItem[] {
   const metrics = input.metricsState;
   const consumers = input.consumersState;
-  const exceptionShare = metrics !== "ready"
-    ? (metrics === "pending" ? "Loading this window" : "Metrics unavailable")
-    : `${
-      Number(input.total ?? 0n) > 0
-        ? (Number(input.integrityExceptions ?? 0n) /
-          Number(input.total ?? 0n) * 100).toFixed(2)
-        : "0.00"
-    }% of events`;
-  const payloadDetail = metrics !== "ready"
-    ? (metrics === "pending" ? "Loading this window" : "Metrics unavailable")
-    : `${input.payloadAverageLabel} average`;
+  const total = Number(input.total ?? 0n);
+  const exceptions = Number(input.integrityExceptions ?? 0n);
+  const failed = Number(input.failedDeliveries ?? 0n);
   return [
     {
       id: "all",
-      label: "Event flow",
+      label: "Published",
       value: optionalNumericLabel(metrics, input.total),
-      detail: optionalRateDetail(metrics, input.total, input.windowMinutes),
+      detail:
+        metrics === "ready"
+          ? optionalRateDetail(metrics, input.total, input.windowMinutes)
+          : unavailableDetail(metrics, "Loading this window"),
       tone: "info",
       active: input.focus === "all",
       disabled: metrics !== "ready",
     },
     {
-      id: "exceptions",
-      label: "Integrity exceptions",
-      value: optionalNumericLabel(metrics, input.integrityExceptions),
-      detail: exceptionShare,
-      tone: "error",
-      active: input.focus === "exceptions",
-      disabled: metrics !== "ready",
-    },
-    {
-      id: "unresolved",
-      label: "Unresolved",
-      value: optionalNumericLabel(metrics, input.unresolved),
-      detail: metrics === "ready"
-        ? "owner not resolved"
-        : (metrics === "pending"
-          ? "Loading this window"
-          : "Metrics unavailable"),
-      tone: "warning",
-      active: input.focus === "unresolved",
+      id: "failed",
+      label: "Failed deliveries",
+      value: optionalNumericLabel(metrics, input.failedDeliveries),
+      detail:
+        metrics === "ready"
+          ? failed > 0
+            ? "Retry or dismiss each one"
+            : "Nothing to decide"
+          : unavailableDetail(metrics, "Loading this window"),
+      tone: failed > 0 ? "error" : "success",
+      active: input.failedActive,
+      attention: failed > 0,
       disabled: metrics !== "ready",
     },
     {
       id: "consumers",
-      label: "Consumers",
-      value: consumers === "ready"
-        ? input.attentionConsumers
-        : optionalNumericLabel(consumers, undefined),
-      detail: consumers === "ready"
-        ? `need attention · ${input.shownConsumers} shown`
-        : (consumers === "pending"
-          ? "Loading consumers"
-          : "Consumer health unavailable"),
-      tone: "error",
+      label: "Services behind",
+      value:
+        consumers === "ready"
+          ? input.attentionConsumers
+          : optionalNumericLabel(consumers, undefined),
+      detail:
+        consumers === "ready"
+          ? `of ${input.shownConsumers} receiving events`
+          : unavailableDetail(consumers, "Loading services"),
+      tone: input.attentionConsumers > 0 ? "warning" : "success",
       active: input.attentionConsumersOnly,
+      attention: input.attentionConsumers > 0,
       disabled: consumers !== "ready",
     },
     {
-      id: "oldest-lag",
-      label: "Oldest lag",
-      value: consumers === "ready" ? input.oldestLagValue : "Unknown",
-      detail: consumers === "ready"
-        ? input.oldestLagDetail
-        : (consumers === "pending"
-          ? "Loading consumers"
-          : "Consumer health unavailable"),
-      tone: "warning",
-      active: input.oldestLagActive,
-      disabled: consumers !== "ready" || input.oldestLagDisabled,
-    },
-    {
-      id: "largest",
-      label: "Payload",
-      value: metrics === "ready"
-        ? input.payloadTotalLabel
-        : optionalNumericLabel(metrics, undefined),
-      detail: payloadDetail,
-      tone: "success",
-      active: input.focus === "largest",
+      id: "exceptions",
+      label: "Couldn't verify",
+      value: optionalNumericLabel(metrics, input.integrityExceptions),
+      detail:
+        metrics === "ready"
+          ? `${total > 0 ? ((exceptions / total) * 100).toFixed(1) : "0.0"}% of events`
+          : unavailableDetail(metrics, "Loading this window"),
+      tone: exceptions > 0 ? "warning" : "success",
+      active: input.focus === "exceptions",
       disabled: metrics !== "ready",
     },
   ];

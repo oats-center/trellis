@@ -18,7 +18,8 @@ export class CreditScheduler {
     if (
       frames >= this.#policy.frameStep ||
       (this.#policy.byteStep !== undefined && bytes >= this.#policy.byteStep)
-    ) this.force(nowMs);
+    )
+      this.force(nowMs);
     else this.#deadline ??= nowMs + this.#policy.maxDelayMs;
   }
   /** Force terminal/context-renewal credit without postponing an earlier deadline. */

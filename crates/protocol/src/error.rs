@@ -35,14 +35,20 @@ pub enum AuthorizationErrorCode {
     ContextLifetimeExceeded,
     /// The session verification key is malformed.
     InvalidSessionKey,
-    /// One or more exact permission atoms are absent.
+    /// Required capability/provider/API authority is absent.
     PermissionDenied,
+    /// The signed object belongs to another installation or NATS account.
+    ScopeMismatch,
+    /// The logical authorization session has been irreversibly retired.
+    SessionRevoked,
     /// The canonical signed context exceeds explicit policy.
     ContextTooLarge,
     /// The request issue time is outside the accepted skew.
     ProofIatOutOfRange,
     /// The context-bound request signature is invalid.
     InvalidRequestProof,
+    /// The provider response proof or its opening request binding is invalid.
+    InvalidResponseProof,
     /// The request reply subject is outside the caller inbox prefix.
     ReplySubjectMismatch,
     /// The event time is not canonical RFC 3339 UTC.

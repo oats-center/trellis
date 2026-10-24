@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use futures_util::{FutureExt, StreamExt};
@@ -8,6 +10,7 @@ use trellis_rs::jobs::types::{Job, JobEvent, JobEventType};
 use trellis_rs::jobs::{JobsRuntime, JobsRuntimeMessage};
 use trellis_rs::service::ServerError;
 
+use crate::bindings::{JobResourceBinding, JobResourceResolver};
 use crate::storage::{
     apply_job_metadata_patch_on_connection, get_job_from_connection,
     project_timeline_event_on_connection, project_wait_edge_on_connection,
@@ -24,6 +27,7 @@ const PROJECTOR_BATCH_SIZE: usize = 100;
 struct ProjectorEvent {
     event: JobEvent,
     raw_event: Value,
+    subject: String,
     stream_sequence: u64,
 }
 
@@ -63,6 +67,7 @@ pub async fn start_jobs_projector(
     jobs_runtime: JobsRuntime,
     store: SqliteJobsStore,
     jobs_stream: String,
+    resolver: Arc<dyn JobResourceResolver>,
 ) -> Result<JobsProjectorHandle, ServerError> {
     let consumer_name = projector_consumer_name(&store.projection_id().map_err(|error| {
         ServerError::Nats(format!(
@@ -91,6 +96,7 @@ pub async fn start_jobs_projector(
             consumer = %consumer_name,
             "jobs projector loop running"
         );
+        let mut owners: HashMap<String, JobResourceBinding> = HashMap::new();
         while let Some(message) = messages.next().await {
             let mut batch = Vec::new();
             collect_projector_message(message, &consumer_name, &jobs_stream, &mut batch).await?;
@@ -104,6 +110,44 @@ pub async fn start_jobs_projector(
                 collect_projector_message(message, &consumer_name, &jobs_stream, &mut batch)
                     .await?;
             }
+            // Project only what each event's authorized subject owns. An Auth
+            // lookup failure fails the batch unacknowledged, preserving order.
+            let mut authorized = Vec::with_capacity(batch.len());
+            for (message, event) in batch {
+                let owner = match subject_coordinates(&event.subject) {
+                    Some((prefix, _)) => match owners.get(prefix) {
+                        Some(owner) => Some(owner.clone()),
+                        None => {
+                            let owner =
+                                resolver.by_publish_prefix(prefix).await.map_err(|error| {
+                                    ServerError::Nats(format!(
+                                        "jobs projector could not resolve queue \
+                                        '{prefix}': {error}"
+                                    ))
+                                })?;
+                            if let Some(owner) = &owner {
+                                owners.insert(prefix.to_owned(), owner.clone());
+                            }
+                            owner
+                        }
+                    },
+                    None => None,
+                };
+                if owner.is_some_and(|owner| owns(&owner, &event)) {
+                    authorized.push((message, event));
+                } else {
+                    tracing::warn!(
+                        subject = %event.subject,
+                        stream_sequence = event.stream_sequence,
+                        service = %event.event.service,
+                        job_type = %event.event.job_type,
+                        job_id = %event.event.job_id,
+                        "rejected jobs event outside its publisher's queue"
+                    );
+                    let _ = message.ack().await;
+                }
+            }
+            let batch = authorized;
             if batch.is_empty() {
                 continue;
             }
@@ -169,7 +213,8 @@ async fn collect_projector_message(
 ) -> Result<(), ServerError> {
     let message = message.map_err(|error| {
         ServerError::Nats(format!(
-            "jobs projector failed to pull from consumer '{consumer_name}' on stream '{jobs_stream}': {error}"
+            "jobs projector failed to pull from consumer '{consumer_name}' on \
+            stream '{jobs_stream}': {error}"
         ))
     })?;
     let Some(event) = parse_projector_message(&message) else {
@@ -198,8 +243,22 @@ fn parse_projector_message(message: &JobsRuntimeMessage) -> Option<ProjectorEven
     Some(ProjectorEvent {
         event,
         raw_event,
+        subject: message.subject().to_owned(),
         stream_sequence,
     })
+}
+
+/// The queue publish prefix and job ID of a `<prefix>.<job id>.<event>` subject.
+fn subject_coordinates(subject: &str) -> Option<(&str, &str)> {
+    let (job, _event) = subject.rsplit_once('.')?;
+    job.rsplit_once('.')
+}
+
+/// Whether the queue that owns an event's subject is the job the payload names.
+fn owns(owner: &JobResourceBinding, event: &ProjectorEvent) -> bool {
+    subject_coordinates(&event.subject).is_some_and(|(_, job_id)| job_id == event.event.job_id)
+        && owner.service == event.event.service
+        && owner.job_type == event.event.job_type
 }
 
 /// Exact durable consumer name for one Jobs projection identity.
@@ -230,7 +289,7 @@ fn project_job_event_with_payload(
     raw_event: &Value,
 ) -> Result<Option<Job>, SqliteJobsStoreError> {
     store.with_write_transaction(|connection| {
-        project_job_event_with_payload_on_connection(connection, event, raw_event)
+        project_job_event_with_payload_on_connection(connection, event, raw_event, None)
     })
 }
 
@@ -239,23 +298,75 @@ fn project_job_events_with_payloads(
     events: &[ProjectorEvent],
 ) -> Result<Vec<Option<Job>>, SqliteJobsStoreError> {
     store.with_write_transaction(|connection| {
-        events
-            .iter()
-            .map(|event| {
-                project_job_event_with_payload_on_connection(
-                    connection,
-                    &event.event,
-                    &event.raw_event,
-                )
-            })
-            .collect()
+        let mut projected = Vec::with_capacity(events.len());
+        for event in events {
+            let sequence = i64::try_from(event.stream_sequence).map_err(|_| {
+                SqliteJobsStoreError::Validation {
+                    field: "stream sequence",
+                    details: event.stream_sequence.to_string(),
+                }
+            })?;
+            // A redelivery after a commit whose acknowledgement was lost
+            // changes nothing.
+            let seen: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM jobs_events_projection WHERE source_sequence=?1)",
+                [sequence],
+                |row| row.get(0),
+            )?;
+            if seen {
+                projected.push(None);
+                continue;
+            }
+            // A permanently unprojectable event is rejected alone; it must not
+            // stop the projector or redeliver forever.
+            connection.execute_batch("SAVEPOINT projector_event")?;
+            match project_job_event_with_payload_on_connection(
+                connection,
+                &event.event,
+                &event.raw_event,
+                Some(sequence),
+            ) {
+                Ok(job) => {
+                    connection.execute_batch("RELEASE projector_event")?;
+                    projected.push(job);
+                }
+                Err(error) if is_permanent(&error) => {
+                    connection
+                        .execute_batch("ROLLBACK TO projector_event; RELEASE projector_event")?;
+                    tracing::warn!(
+                        subject = %event.subject,
+                        stream_sequence = event.stream_sequence,
+                        job_id = %event.event.job_id,
+                        error = %error,
+                        "rejected unprojectable jobs event"
+                    );
+                    projected.push(None);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(projected)
     })
+}
+
+/// Whether projecting an event can never succeed, however often it is retried.
+fn is_permanent(error: &SqliteJobsStoreError) -> bool {
+    match error {
+        SqliteJobsStoreError::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => {
+            failure.code == rusqlite::ErrorCode::ConstraintViolation
+        }
+        SqliteJobsStoreError::EncodeJson { .. }
+        | SqliteJobsStoreError::DecodeJson { .. }
+        | SqliteJobsStoreError::Validation { .. } => true,
+        _ => false,
+    }
 }
 
 fn project_job_event_with_payload_on_connection(
     connection: &Connection,
     event: &JobEvent,
     raw_event: &Value,
+    source_sequence: Option<i64>,
 ) -> Result<Option<Job>, SqliteJobsStoreError> {
     let current =
         get_job_from_connection(connection, &event.service, &event.job_type, &event.job_id)?;
@@ -284,6 +395,7 @@ fn project_job_event_with_payload_on_connection(
         raw_event,
         projected.or(Some(next.is_some())),
         reason,
+        source_sequence,
     )?;
     project_wait_edge_on_connection(connection, event)?;
     let fallback_detail = event.error.as_deref().map(|message| {
@@ -410,7 +522,8 @@ fn optional_string(value: &Value, field: &str) -> Option<String> {
 mod tests {
     use serde_json::json;
     use trellis_rs::jobs::events::{
-        cancelled_by_admin, created, failed, resumed, started_with_concurrency, waiting, EventMeta,
+        cancelled_by_admin, created, failed, resumed, started, started_with_concurrency, waiting,
+        EventMeta,
     };
 
     fn meta<'a>(context: &'a JobContext, job_id: &'a str, timestamp: &'a str) -> EventMeta<'a> {
@@ -722,12 +835,7 @@ mod tests {
                     3,
                     None,
                 );
-                let raw_event = serde_json::to_value(&event).expect("event should encode");
-                ProjectorEvent {
-                    event,
-                    raw_event,
-                    stream_sequence: index as u64 + 1,
-                }
+                delivered(event, index as u64 + 1)
             })
             .collect::<Vec<_>>();
 
@@ -849,6 +957,141 @@ mod tests {
             .expect("error projection should exist");
         assert_eq!(aggregate.message, "boom\njob id 123");
         assert_eq!(aggregate.occurrence_count, 1);
+    }
+
+    /// One event as the projector receives it on its queue's lifecycle subject.
+    fn delivered(event: JobEvent, stream_sequence: u64) -> ProjectorEvent {
+        ProjectorEvent {
+            subject: format!(
+                "trellis.jobs.ns.{}.{}.{}",
+                event.job_type,
+                event.job_id,
+                event.event_type.as_token()
+            ),
+            raw_event: serde_json::to_value(&event).expect("event should encode"),
+            event,
+            stream_sequence,
+        }
+    }
+
+    #[test]
+    fn only_the_queue_that_owns_a_subject_projects_its_job() {
+        let owner = JobResourceBinding {
+            service: "documents".into(),
+            job_type: "document-process".into(),
+            stream: "JOBS_WORK".into(),
+            consumer: "work".into(),
+        };
+        let event = |service: &'static str, job_id: &str| {
+            created(
+                EventMeta {
+                    service,
+                    job_type: "document-process",
+                    job_id,
+                    context: &context(),
+                    timestamp: "2026-03-28T12:00:00.000Z",
+                },
+                json!({}),
+                3,
+                None,
+            )
+        };
+        let genuine = delivered(event("documents", "job-1"), 1);
+        assert!(owns(&owner, &genuine));
+        // Another deployment's payload, published on this queue's subject.
+        assert!(!owns(&owner, &delivered(event("billing", "job-1"), 2)));
+        // A payload naming a different job than its subject.
+        let mut retargeted = genuine.clone();
+        retargeted.subject = "trellis.jobs.ns.document-process.job-2.created".into();
+        assert!(!owns(&owner, &retargeted));
+    }
+
+    #[test]
+    fn redelivering_a_projected_batch_changes_nothing() {
+        let store = SqliteJobsStore::open_in_memory().expect("store should open");
+        let batch = vec![
+            delivered(
+                created(
+                    meta(&context(), "job-1", "2026-03-28T12:00:00.000Z"),
+                    json!({}),
+                    3,
+                    None,
+                ),
+                1,
+            ),
+            delivered(
+                started(
+                    meta(&context(), "job-1", "2026-03-28T12:01:00.000Z"),
+                    1,
+                    JobState::Pending,
+                ),
+                2,
+            ),
+        ];
+        project_job_events_with_payloads(&store, &batch).expect("first delivery projects");
+        let once = store.list_timeline_events("job-1", 50).expect("timeline");
+        let again = project_job_events_with_payloads(&store, &batch).expect("redelivery");
+        assert!(again.iter().all(Option::is_none));
+        assert_eq!(
+            store.list_timeline_events("job-1", 50).expect("timeline"),
+            once
+        );
+        assert_eq!(once.len(), 2);
+    }
+
+    #[test]
+    fn a_conflicting_job_id_is_rejected_without_stopping_the_batch() {
+        let store = SqliteJobsStore::open_in_memory().expect("store should open");
+        let original = created(
+            meta(&context(), "job-1", "2026-03-28T12:00:00.000Z"),
+            json!({ "documentId": "doc-1" }),
+            3,
+            None,
+        );
+        project_job_events_with_payloads(&store, &[delivered(original, 1)])
+            .expect("original projects");
+        // Another queue reuses the globally unique job ID.
+        let conflicting = created(
+            EventMeta {
+                service: "documents",
+                job_type: "document-archive",
+                job_id: "job-1",
+                context: &context(),
+                timestamp: "2026-03-28T12:02:00.000Z",
+            },
+            json!({ "documentId": "stolen" }),
+            3,
+            None,
+        );
+        let following = created(
+            meta(&context(), "job-2", "2026-03-28T12:03:00.000Z"),
+            json!({ "documentId": "doc-2" }),
+            3,
+            None,
+        );
+        let projected = project_job_events_with_payloads(
+            &store,
+            &[delivered(conflicting, 2), delivered(following, 3)],
+        )
+        .expect("a poison event does not fail the batch");
+        assert!(projected[0].is_none());
+        assert!(projected[1].is_some());
+        let kept = store
+            .get_job("documents", "document-process", "job-1")
+            .expect("get")
+            .expect("original job is kept");
+        assert_eq!(kept.payload, json!({ "documentId": "doc-1" }));
+        assert!(store
+            .get_job("documents", "document-archive", "job-1")
+            .expect("get")
+            .is_none());
+        assert_eq!(
+            store
+                .list_timeline_events("job-1", 50)
+                .expect("timeline")
+                .len(),
+            1
+        );
     }
 
     fn context() -> JobContext {

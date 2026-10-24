@@ -5,23 +5,124 @@
 
 use std::sync::Arc;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Serialize};
+
+pub use trellis_protocol::model::{
+    assert_model_binding, decode_typed_error, serde_base64, serde_f64, serde_i64, serde_u64, Bytes,
+    Codec, CodecError, CursorPage, CursorPageInfo, CursorQuery, Int64, ModelPackage, Nullable,
+    Number, SerializableErrorData, Timestamp, TimestampError, TrellisError, Uint64, Ulid,
+    UlidError,
+};
 
 /// Generated-code ABI version supported by this runtime.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// Fail compilation when generated source targets a different runtime ABI.
 pub const fn assert_abi(version: u32) {
     assert!(version == ABI_VERSION, "generated Trellis ABI mismatch");
 }
 
+/// Failure while traversing a cursor-paginated RPC.
+#[derive(Debug)]
+pub enum PaginationError<E: std::fmt::Debug> {
+    /// The RPC call failed.
+    Call(crate::client::CallError<E>),
+    /// The server returned a cursor already seen by this traversal.
+    RepeatedCursor(String),
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for PaginationError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Call(error) => error.fmt(formatter),
+            Self::RepeatedCursor(cursor) => {
+                write!(formatter, "server repeated pagination cursor '{cursor}'")
+            }
+        }
+    }
+}
+
+impl<E: std::fmt::Debug> std::error::Error for PaginationError<E> {}
+
+impl<E: std::fmt::Debug> From<crate::client::CallError<E>> for PaginationError<E> {
+    fn from(error: crate::client::CallError<E>) -> Self {
+        Self::Call(error)
+    }
+}
+
+/// Traverse cursor pages once, rejecting cursor loops before exposing their page.
+///
+/// Generated adapters return the page, next request, and next cursor from `fetch`.
+pub fn cursor_pages<I, P, E, F, Fut>(
+    input: I,
+    initial_cursor: Option<String>,
+    fetch: F,
+) -> futures_util::stream::BoxStream<'static, Result<P, PaginationError<E>>>
+where
+    I: Send + 'static,
+    P: Send + 'static,
+    E: std::fmt::Debug + Send + 'static,
+    F: FnMut(I) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<(P, I, Option<String>), crate::client::CallError<E>>>
+        + Send,
+{
+    use futures_util::StreamExt;
+    let seen = initial_cursor
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    futures_util::stream::try_unfold(
+        (input, fetch, seen, false),
+        |(input, mut fetch, mut seen, done)| async move {
+            if done {
+                return Ok(None);
+            }
+            let (page, input, next) = fetch(input).await.map_err(PaginationError::Call)?;
+            let done = next.is_none();
+            if let Some(cursor) = next {
+                if !seen.insert(cursor.clone()) {
+                    return Err(PaginationError::RepeatedCursor(cursor));
+                }
+            }
+            Ok(Some((page, (input, fetch, seen, done))))
+        },
+    )
+    .boxed()
+}
+
+/// Flatten successful pages without dropping page errors or stopping at empty pages.
+pub fn cursor_items<P, T, E, F>(
+    pages: futures_util::stream::BoxStream<'static, Result<P, PaginationError<E>>>,
+    mut items: F,
+) -> futures_util::stream::BoxStream<'static, Result<T, PaginationError<E>>>
+where
+    P: Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Debug + Send + 'static,
+    F: FnMut(P) -> Vec<T> + Send + 'static,
+{
+    use futures_util::{StreamExt, TryStreamExt};
+    pages
+        .map_ok(move |page| futures_util::stream::iter(items(page).into_iter().map(Ok)))
+        .try_flatten()
+        .boxed()
+}
+
 /// Immutable projection of optional surfaces installed with an authorization context.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AvailabilitySnapshot {
     usable: bool,
-    permissions: Arc<[trellis_protocol::PermissionAtom]>,
+    actions: Arc<[CatalogActionProjection]>,
+    capabilities: Arc<[trellis_protocol::CapabilityAuthority]>,
+    state_owner: Option<String>,
     resources: Arc<crate::service::ServiceResourceBindings>,
     resource_generations: Arc<std::collections::BTreeMap<(ResourceKind, String), u64>>,
+}
+
+/// Advisory membership of an action in an authenticated accepted catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CatalogActionProjection {
+    pub(crate) api_id: String,
+    pub(crate) action: trellis_protocol::CatalogActionIdentity,
 }
 
 impl AvailabilitySnapshot {
@@ -31,14 +132,16 @@ impl AvailabilitySnapshot {
 
     #[cfg(test)]
     pub(crate) fn new(
-        permissions: Vec<trellis_protocol::PermissionAtom>,
+        actions: Vec<CatalogActionProjection>,
         resources: crate::service::ServiceResourceBindings,
     ) -> Self {
-        Self::replacing(permissions, resources, &Self::default())
+        Self::replacing(actions, Vec::new(), None, resources, &Self::default())
     }
 
     pub(crate) fn replacing(
-        permissions: Vec<trellis_protocol::PermissionAtom>,
+        actions: Vec<CatalogActionProjection>,
+        capabilities: Vec<trellis_protocol::CapabilityAuthority>,
+        state_owner: Option<String>,
         resources: crate::service::ServiceResourceBindings,
         previous: &Self,
     ) -> Self {
@@ -46,7 +149,9 @@ impl AvailabilitySnapshot {
         let next = generations.values().copied().max().unwrap_or(0) + 1;
         let candidate = Self {
             usable: true,
-            permissions: permissions.into(),
+            actions: actions.into(),
+            capabilities: capabilities.into(),
+            state_owner,
             resources: Arc::new(resources),
             resource_generations: Arc::default(),
         };
@@ -70,11 +175,13 @@ impl AvailabilitySnapshot {
     }
 
     pub(crate) fn suspended(previous: &Self) -> Self {
+        Self::with_usability(previous, false)
+    }
+
+    pub(crate) fn with_usability(previous: &Self, usable: bool) -> Self {
         Self {
-            usable: false,
-            permissions: previous.permissions.clone(),
-            resources: previous.resources.clone(),
-            resource_generations: previous.resource_generations.clone(),
+            usable,
+            ..previous.clone()
         }
     }
 
@@ -88,18 +195,9 @@ impl AvailabilitySnapshot {
 
     fn resource_names(&self, kind: ResourceKind) -> Vec<String> {
         match kind {
-            ResourceKind::State => self
-                .permissions
-                .iter()
-                .filter_map(|permission| match permission.target() {
-                    trellis_protocol::PermissionTarget::ParticipantResource {
-                        resource: trellis_protocol::ParticipantResourceKind::State,
-                        name,
-                        ..
-                    } => Some(name.clone()),
-                    _ => None,
-                })
-                .collect(),
+            // State is principal-owned, not a native physical resource binding.
+            // Its declared name is validated by the State provider at dispatch.
+            ResourceKind::State => Vec::new(),
             ResourceKind::Kv => self.resources.kv.keys().cloned().collect(),
             ResourceKind::Store => self.resources.store.keys().cloned().collect(),
             ResourceKind::Job => self
@@ -113,7 +211,7 @@ impl AvailabilitySnapshot {
 
     fn same_binding(&self, previous: &Self, kind: ResourceKind, name: &str) -> bool {
         match kind {
-            ResourceKind::State => true,
+            ResourceKind::State => self.state_owner == previous.state_owner,
             ResourceKind::Kv => self.resources.kv.get(name) == previous.resources.kv.get(name),
             ResourceKind::Store => {
                 self.resources.store.get(name) == previous.resources.store.get(name)
@@ -165,15 +263,26 @@ impl AvailabilitySnapshot {
         self.resources.event_consumers.get(name)
     }
 
-    /// Test exact installed authority for an API action.
+    /// Test projected whole-capability membership for an API action.
     #[doc(hidden)]
     pub fn allows_action(&self, action: OptionalAction) -> bool {
         self.usable
-            && self.permissions.iter().any(|permission| {
-                permission.action() == action.action
-                    && permission.target().as_api_surface()
-                        == Some((action.api_id, action.surface, action.name))
+            && self.actions.iter().any(|allowed| {
+                allowed.api_id == action.api_id
+                    && allowed.action.kind == action.surface
+                    && allowed.action.name == action.name
+                    && allowed.action.direction == action.action
             })
+    }
+
+    /// Test a whole capability whose signed identity and meaning match its accepted catalog.
+    #[doc(hidden)]
+    pub fn allows_capability(&self, capability_id: &str) -> bool {
+        self.usable
+            && self
+                .capabilities
+                .iter()
+                .any(|capability| capability.capability_id == capability_id)
     }
 
     /// Reject an optional action absent from this installed snapshot.
@@ -199,16 +308,7 @@ impl AvailabilitySnapshot {
 
     fn has_installed_resource(&self, kind: ResourceKind, name: &str) -> bool {
         match kind {
-            ResourceKind::State => self.permissions.iter().any(|permission| {
-                matches!(
-                    permission.target(),
-                    trellis_protocol::PermissionTarget::ParticipantResource {
-                        resource: trellis_protocol::ParticipantResourceKind::State,
-                        name: resource_name,
-                        ..
-                    } if resource_name == name
-                )
-            }),
+            ResourceKind::State => self.state_owner.is_some(),
             ResourceKind::Kv => self.resources.kv.contains_key(name),
             ResourceKind::Store => self.resources.store.contains_key(name),
             ResourceKind::Job => self
@@ -323,36 +423,6 @@ pub enum ResourceKind {
     Consumer,
 }
 
-/// Failure while converting a generated wire value.
-#[derive(Debug, thiserror::Error)]
-pub enum CodecError {
-    /// The JSON representation did not match the generated Rust type.
-    #[error("invalid generated wire value: {0}")]
-    Json(#[from] serde_json::Error),
-}
-
-/// Bidirectional JSON codec implemented by generated wire types.
-pub trait Codec: Sized {
-    /// Encode this value to its JSON wire representation.
-    fn encode(&self) -> Result<serde_json::Value, CodecError>;
-
-    /// Decode this value from its JSON wire representation.
-    fn decode(value: serde_json::Value) -> Result<Self, CodecError>;
-}
-
-impl<T> Codec for T
-where
-    T: Serialize + DeserializeOwned,
-{
-    fn encode(&self) -> Result<serde_json::Value, CodecError> {
-        Ok(serde_json::to_value(self)?)
-    }
-
-    fn decode(value: serde_json::Value) -> Result<Self, CodecError> {
-        Ok(serde_json::from_value(value)?)
-    }
-}
-
 /// Metadata emitted for one generated RPC action.
 pub trait RpcDescriptor {
     /// Request payload type.
@@ -463,7 +533,8 @@ pub trait OperationDescriptor: Send + Sync + 'static {
     const DESCRIPTOR_NAME: &'static str;
     /// Concrete Operation start subject.
     const SUBJECT: &'static str;
-    /// Exact whole-Operation permission/action key.
+    /// Canonical durable identity: `<API_ID>:operation:<action name>`.
+    /// Independent of generated method aliases and transport-family versions.
     const KEY: &'static str;
     /// Capability requirements declared for callers.
     const CALLER_CAPABILITIES: &'static [&'static str];
@@ -475,6 +546,9 @@ pub trait OperationDescriptor: Send + Sync + 'static {
     const SIGNAL_INPUT_SCHEMAS_JSON: &'static str = "{}";
     /// Whether the Operation accepts an upload transfer.
     const UPLOAD: bool;
+    /// Whether the upload streams directly to the handler instead of being
+    /// durably staged first. Implies [`Self::UPLOAD`].
+    const STREAM: bool = false;
     /// Whether a typed progress payload is declared.
     const HAS_PROGRESS: bool;
     /// JSON Schema for live-only updates when declared.
@@ -531,6 +605,7 @@ where
     const CONTROL_CAPABILITIES: &'static [&'static str] = D::CALLER_CAPABILITIES;
     const CANCELABLE: bool = true;
     const UPLOAD: bool = D::UPLOAD;
+    const STREAM: bool = D::STREAM;
     const UPDATE_SCHEMA_JSON: Option<&'static str> = D::UPDATE_SCHEMA_JSON;
     const ERRORS: &'static [&'static str] = D::ERRORS;
     const INPUT_SCHEMA_JSON: &'static str = "{}";
@@ -611,6 +686,7 @@ impl Client {
     }
 
     /// Connect using a durable user login session.
+    #[cfg(feature = "native-oauth")]
     pub async fn connect_user(
         options: crate::client::UserConnectOptions<'_>,
     ) -> Result<Self, crate::client::TrellisClientError> {
@@ -651,10 +727,7 @@ impl Client {
             action_name(D::DESCRIPTOR_NAME),
         ))
         .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
-        let route = self
-            .client
-            .bound_key_subject("rpc", D::API_ID, D::KEY)
-            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        let route = D::SUBJECT;
         // The runtime transport layer acquires an admitted generation for this
         // exact route and inbox, waiting for automatic adoption when the
         // capability is granted but not yet admitted. A route current authority
@@ -665,7 +738,13 @@ impl Client {
         let output = self
             .client
             .request_json_value_routed(
-                &route,
+                D::API_ID,
+                trellis_protocol::CatalogActionIdentity {
+                    kind: trellis_protocol::ApiSurfaceKind::Rpc,
+                    name: action_name(D::DESCRIPTOR_NAME).to_owned(),
+                    direction: trellis_protocol::PermissionAction::Call,
+                },
+                route,
                 &input,
                 crate::telemetry::instruments::route_token(
                     crate::telemetry::instruments::RouteFamily::Rpc,
@@ -765,11 +844,11 @@ impl Client {
 
     /// Construct a generated typed State resource handle.
     #[doc(hidden)]
-    pub fn state_handle<T>(
+    pub fn state_handle<T, D: 'static>(
         &self,
         name: &str,
         codec: crate::client::ResourceCodec<T>,
-    ) -> Option<crate::client::ConnectedStateHandle<T>>
+    ) -> Option<crate::client::ConnectedStateHandle<T, D>>
     where
         T: Codec + Send + 'static,
     {
@@ -786,6 +865,27 @@ impl Client {
             })
     }
 
+    /// Construct an app State handle after the generated Register RPC succeeds.
+    /// App authority is checked by the shared connection owner on every request.
+    #[doc(hidden)]
+    pub fn registered_state_handle<T, D: 'static>(
+        &self,
+        name: &str,
+        codec: crate::client::ResourceCodec<T>,
+    ) -> crate::client::ConnectedStateHandle<T, D>
+    where
+        T: Codec + Send + 'static,
+    {
+        let mut handle = crate::client::StateHandle::from_generated(
+            name,
+            codec,
+            crate::client::BoundStateResourceClient::new(self.client.clone()),
+            self.client.watch_availability(),
+        );
+        handle.registered_app = true;
+        handle
+    }
+
     /// Open a generated typed KV resource handle from its current installation binding.
     #[doc(hidden)]
     pub async fn kv_handle<T>(
@@ -797,6 +897,9 @@ impl Client {
         T: Codec + Send + 'static,
     {
         let availability = self.client.availability();
+        if !availability.has_resource(ResourceKind::Kv, name) {
+            return Ok(None);
+        }
         let Some(binding) = availability.kv_binding(name).cloned() else {
             return Ok(None);
         };
@@ -825,6 +928,9 @@ impl Client {
         name: &str,
     ) -> Result<Option<crate::service::StoreHandle>, crate::service::ServerError> {
         let availability = self.client.availability();
+        if !availability.has_resource(ResourceKind::Store, name) {
+            return Ok(None);
+        }
         let Some(binding) = availability.store_binding(name).cloned() else {
             return Ok(None);
         };
@@ -895,16 +1001,6 @@ impl Client {
     pub(crate) fn inner(&self) -> &Arc<crate::client::TrellisClient> {
         &self.client
     }
-
-    pub(crate) async fn request_api_value(
-        &self,
-        api_id: &str,
-        action: &str,
-        input: serde_json::Value,
-    ) -> Result<serde_json::Value, crate::client::TrellisClientError> {
-        let subject = self.client.bound_api_subject("rpc", api_id, action)?;
-        self.client.request_json_value(&subject, &input).await
-    }
 }
 
 /// Typed client entrypoint for one generated Operation.
@@ -952,6 +1048,8 @@ where
     }
 
     /// Start or replay the Operation with a caller-selected ULID.
+    /// Replay deduplication is deployment-scoped. Do not automatically retry an
+    /// uncertain canonical start: another deployment can accept the same ID.
     ///
     /// Persist the chosen id before this network call to retain ownership even if
     /// the acceptance reply is lost. The invocation id is the durable Operation
@@ -975,6 +1073,9 @@ where
     }
 
     /// Admit or replay this Operation with cancellation durably requested.
+    /// Invocation deduplication applies only within the accepting deployment;
+    /// canonical routing does not guarantee cross-deployment cancellation of an
+    /// uncertain earlier start.
     ///
     /// Use the reserved invocation id and original input to prevent a delayed
     /// normal start from entering business work. Requires Invoke and Cancel
@@ -998,13 +1099,61 @@ where
             .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
     }
 
-    /// Open typed control for an existing durable Operation id without starting it.
+    /// Start or replay on the authenticated deployment persisted before the first request.
+    ///
+    /// Persist the deployment, invocation ULID, and identical input before sending.
+    /// A lost canonical reply has no known owner; choosing one afterward is not recovery.
+    /// No automatic retry, fallback, or cross-deployment deduplication is performed.
+    pub async fn start_on_deployment_with_invocation_id(
+        &self,
+        deployment_id: &str,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, D>, crate::client::CallError<D::Error>> {
+        self.client
+            .ensure_available(OptionalAction::operation(
+                D::API_ID,
+                action_name(D::DESCRIPTOR_NAME),
+            ))
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        self.inner
+            .start_on_deployment_with_invocation_id(deployment_id, invocation_id, input)
+            .await
+            .map(|inner| OperationRef { inner })
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
+    }
+
+    /// Admit cancellation on the deployment persisted before the first targeted start.
+    ///
+    /// Requires Invoke and Cancel; retries preserve durable monotone cancellation.
+    /// The returned owner reference acknowledges admission, not completed cleanup.
+    pub async fn start_cancelled_on_deployment_with_invocation_id(
+        &self,
+        deployment_id: &str,
+        invocation_id: impl Into<String>,
+        input: &D::Input,
+    ) -> Result<OperationRef<'a, D>, crate::client::CallError<D::Error>> {
+        self.client
+            .ensure_available(OptionalAction::operation(
+                D::API_ID,
+                action_name(D::DESCRIPTOR_NAME),
+            ))
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))?;
+        self.inner
+            .start_cancelled_on_deployment_with_invocation_id(deployment_id, invocation_id, input)
+            .await
+            .map(|inner| OperationRef { inner })
+            .map_err(|error| crate::client::CallError::from_client(error, D::decode_error))
+    }
+
+    /// Restore typed control from a complete serialized Operation reference.
+    /// Its deployment routes the durable workflow; receivers still authorize controls.
     pub fn control(
         &self,
-        operation_id: impl Into<String>,
+        reference: crate::client::OperationRefData,
     ) -> Result<OperationRef<'a, D>, crate::client::TrellisClientError> {
         self.inner
-            .control(operation_id)
+            .control(reference)
             .map(|inner| OperationRef { inner })
     }
 }
@@ -1044,6 +1193,12 @@ where
     /// Durable Operation id.
     pub fn id(&self) -> &str {
         self.inner.id()
+    }
+
+    /// Complete durable reference for serialization and later owner-directed control.
+    /// Restoring it does not grant authority or start another execution.
+    pub fn reference(&self) -> &crate::client::OperationRefData {
+        self.inner.reference()
     }
 
     /// Read the current durable snapshot.
@@ -1145,12 +1300,24 @@ where
         &self,
         body: impl AsRef<[u8]>,
     ) -> Result<crate::client::FileInfo, crate::client::TrellisClientError> {
+        self.upload_from(&mut body.as_ref()).await
+    }
+
+    /// Stream the declared Operation upload without collecting the body in memory.
+    /// Success requires authenticated Transfer commit, not just source exhaustion.
+    pub async fn upload_from<R>(
+        &self,
+        reader: &mut R,
+    ) -> Result<crate::client::FileInfo, crate::client::TrellisClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + ?Sized,
+    {
         if !D::UPLOAD {
             return Err(crate::client::TrellisClientError::OperationProtocol(
                 "operation does not declare an upload transfer".to_owned(),
             ));
         }
-        self.inner.transfer(body).await
+        self.inner.transfer_from(reader).await
     }
 }
 
@@ -1165,26 +1332,43 @@ pub trait ApiDescriptor {
     }
 }
 
-/// Kind of generated application participant.
+/// Kind of deployable principal descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParticipantKind {
     /// Long-running service participant.
     Service,
     /// Provisioned physical or embedded device participant.
     Device,
-    /// User-facing application participant.
-    App,
-    /// User-authorized agent participant.
-    Agent,
 }
 
-/// Exact lexical child installed alongside a device participant.
+/// Public-client authorization flow requested by an application.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppKind {
+    /// Browser application using an origin-bound client.
+    Browser,
+    /// Native application using a durable DPoP key.
+    Native,
+}
+
+/// Generated application selection metadata, never installation evidence.
+pub trait AppRequestDescriptor {
+    /// Source-local request identity, not an OAuth client identifier.
+    const ID: &'static str;
+    /// Public-client flow kind.
+    const KIND: AppKind;
+    /// Whole capabilities necessary for the application workflow.
+    const REQUIRED_CAPABILITIES: &'static [&'static str];
+    /// Whole capabilities requested only when authorized and approved.
+    const OPTIONAL_CAPABILITIES: &'static [&'static str];
+}
+
+/// Lexical application request associated with a device, not another principal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompanionDescriptor {
-    /// Fully qualified child participant identity.
-    pub id: &'static str,
-    /// Child participant kind, restricted to app or agent.
-    pub kind: ParticipantKind,
+    /// Fully qualified source-local application request identity.
+    pub request_id: &'static str,
+    /// Public-client flow kind.
+    pub kind: AppKind,
     /// Whether device readiness requires the child connection.
     pub required: bool,
 }
@@ -1198,11 +1382,14 @@ pub trait ParticipantDescriptor {
     /// Participant kind.
     const KIND: ParticipantKind;
 
-    /// Exact lexical app or agent companion, when declared by this device.
+    /// Lexical application request, when declared by this device.
     const COMPANION: Option<CompanionDescriptor> = None;
 
     /// APIs completely implemented by this participant.
     const IMPLEMENTED_API_IDS: &'static [&'static str] = &[];
+
+    /// APIs referenced by this participant's required or optional consumption selections.
+    const CONSUMED_API_IDS: &'static [&'static str] = &[];
 
     /// `event:<Name>` descriptor names this participant explicitly declares as
     /// subscribe needs. A declared durable consumer is not included: consumer
@@ -1224,11 +1411,11 @@ pub trait ParticipantDescriptor {
         }
         if let Some(companion) = Self::COMPANION {
             if Self::KIND != ParticipantKind::Device
-                || !matches!(
-                    companion.kind,
-                    ParticipantKind::App | ParticipantKind::Agent
-                )
-                || companion.id.rsplit_once('.').map(|(parent, _)| parent) != Some(Self::ID)
+                || companion
+                    .request_id
+                    .rsplit_once('.')
+                    .map(|(parent, _)| parent)
+                    != Some(Self::ID)
             {
                 return Err(DescriptorError::ParticipantPath);
             }
@@ -1375,411 +1562,62 @@ impl PackageEvidence {
     }
 }
 
-/// RFC 3339 timestamp normalized to canonical UTC by generated SDKs.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Timestamp(String);
-
-impl Timestamp {
-    /// Parse an RFC 3339 timestamp with up to nanosecond precision and normalize it.
-    pub fn parse(value: &str) -> Result<Self, TimestampError> {
-        use time::format_description::well_known::Rfc3339;
-
-        if !matches!(value.as_bytes().get(10), Some(b'T' | b't')) {
-            return Err(TimestampError::Separator);
-        }
-        if value.get(17..19) == Some("60") {
-            return Err(TimestampError::LeapSecond);
-        }
-        if value
-            .get(19..)
-            .and_then(|tail| tail.strip_prefix('.'))
-            .is_some_and(|fraction| fraction.bytes().take_while(u8::is_ascii_digit).count() > 9)
-        {
-            return Err(TimestampError::Precision);
-        }
-        let parsed = time::OffsetDateTime::parse(value, &Rfc3339)?;
-        Ok(Self(
-            parsed.to_offset(time::UtcOffset::UTC).format(&Rfc3339)?,
-        ))
-    }
-
-    /// Borrow the canonical wire string.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for Timestamp {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::str::FromStr for Timestamp {
-    type Err = TimestampError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl Serialize for Timestamp {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for Timestamp {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Invalid generated timestamp.
-#[derive(Debug, thiserror::Error)]
-pub enum TimestampError {
-    /// The value is not RFC 3339.
-    #[error("invalid RFC 3339 timestamp: {0}")]
-    Parse(#[from] time::error::Parse),
-    /// A parsed timestamp could not be rendered.
-    #[error("could not format RFC 3339 timestamp: {0}")]
-    Format(#[from] time::error::Format),
-    /// A fractional second exceeds nanosecond precision.
-    #[error("timestamp exceeds nanosecond precision")]
-    Precision,
-    /// A non-RFC 3339 date/time separator was used.
-    #[error("timestamp requires an RFC 3339 date/time separator")]
-    Separator,
-    /// Leap seconds cannot be represented without losing precision.
-    #[error("leap seconds are not supported in timestamps")]
-    LeapSecond,
-}
-
-/// Validated uppercase canonical ULID used by generated SDKs.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Ulid(ulid::Ulid);
-
-impl Ulid {
-    /// Parse an uppercase canonical ULID.
-    pub fn parse(value: &str) -> Result<Self, UlidError> {
-        let parsed = value.parse::<ulid::Ulid>().map_err(UlidError::Invalid)?;
-        if parsed.to_string() != value {
-            return Err(UlidError::NonCanonical);
-        }
-        Ok(Self(parsed))
-    }
-}
-
-impl std::fmt::Display for Ulid {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl std::str::FromStr for Ulid {
-    type Err = UlidError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::parse(value)
-    }
-}
-
-impl Serialize for Ulid {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for Ulid {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
-    }
-}
-
-/// Invalid or non-canonical generated ULID.
-#[derive(Debug, thiserror::Error)]
-pub enum UlidError {
-    /// The value is not a ULID.
-    #[error("invalid ULID: {0}")]
-    Invalid(ulid::DecodeError),
-    /// The value does not use uppercase canonical spelling.
-    #[error("ULID must use uppercase canonical spelling")]
-    NonCanonical,
-}
-
-/// Standard serializable fields carried by generated declared errors.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SerializableErrorData {
-    /// Error instance identifier.
-    pub id: String,
-    /// Contract error discriminator.
-    #[serde(rename = "type")]
-    pub error_type: String,
-    /// Human-facing error message.
-    pub message: String,
-    /// Optional structured context.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Optional distributed trace identifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub trace_id: Option<String>,
-    /// Additive fields from newer runtimes or declared error data.
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
-}
-
-/// Contract implemented by generated typed errors.
-pub trait TrellisError: std::error::Error + Serialize + DeserializeOwned {
-    /// Stable contract error discriminator.
-    const TYPE: &'static str;
-}
-
-/// Decode a generated typed error only when its discriminator matches.
-pub fn decode_typed_error<E>(value: serde_json::Value) -> Result<Option<E>, serde_json::Error>
-where
-    E: TrellisError,
-{
-    if value.get("type").and_then(serde_json::Value::as_str) != Some(E::TYPE) {
-        return Ok(None);
-    }
-    serde_json::from_value(value).map(Some)
-}
-
-/// Serde adapter for decimal-string `i64` wire values.
-pub mod serde_i64 {
-    use serde::{de::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize an `i64` as a decimal JSON string.
-    pub fn serialize<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    /// Deserialize an `i64` from a decimal JSON string.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<i64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        let digits = value.strip_prefix('-').unwrap_or(&value);
-        if digits.is_empty()
-            || !digits.bytes().all(|byte| byte.is_ascii_digit())
-            || (digits.len() > 1 && digits.starts_with('0'))
-            || value == "-0"
-        {
-            return Err(D::Error::custom("expected canonical i64 decimal string"));
-        }
-        value.parse().map_err(D::Error::custom)
-    }
-}
-
-/// Serde adapter for decimal-string `u64` wire values.
-pub mod serde_u64 {
-    use serde::{de::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize a `u64` as a decimal JSON string.
-    pub fn serialize<S>(value: &u64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-
-    /// Deserialize a `u64` from a decimal JSON string.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        if value.is_empty()
-            || !value.bytes().all(|byte| byte.is_ascii_digit())
-            || (value.len() > 1 && value.starts_with('0'))
-        {
-            return Err(D::Error::custom("expected canonical u64 decimal string"));
-        }
-        value.parse().map_err(D::Error::custom)
-    }
-}
-
-/// Serde adapter rejecting non-finite `f64` values at both codec boundaries.
-pub mod serde_f64 {
-    use serde::{de::Error as _, ser::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize a finite JSON number.
-    pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if !value.is_finite() {
-            return Err(S::Error::custom("expected finite f64"));
-        }
-        serializer.serialize_f64(*value)
-    }
-
-    /// Deserialize a finite JSON number.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<f64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = f64::deserialize(deserializer)?;
-        if !value.is_finite() {
-            return Err(D::Error::custom("expected finite f64"));
-        }
-        Ok(value)
-    }
-}
-
-/// Serde adapter for padded standard-base64 byte vectors.
-pub mod serde_base64 {
-    use base64::Engine as _;
-    use serde::{de::Error as _, Deserialize as _, Deserializer, Serializer};
-
-    /// Serialize bytes as padded standard base64.
-    pub fn serialize<S>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(value))
-    }
-
-    /// Deserialize bytes from canonical padded standard base64.
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&value)
-            .map_err(D::Error::custom)?;
-        if base64::engine::general_purpose::STANDARD.encode(&decoded) != value {
-            return Err(D::Error::custom(
-                "expected canonical padded standard base64",
-            ));
-        }
-        Ok(decoded)
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
     use std::fmt;
 
     use serde::{Deserialize, Serialize};
 
-    use super::{
-        ApiDescriptor, AvailabilitySnapshot, Codec as _, DeclaredOperationFailure,
-        OperationAdapter, OperationDeclaredError, OperationDescriptor, OperationSignal,
-        OptionalAction, PackageEvidence, PackageSourceEvidence, ResourceKind,
-        SerializableErrorData, Timestamp, TrellisError, Ulid,
-    };
-
-    #[test]
-    fn resource_generations_fence_removed_and_replaced_handles() {
-        let binding = crate::service::KvResourceBinding {
-            bucket: "KV_A".into(),
-            history: 2,
-            max_value_bytes: None,
-            ttl_ms: 0,
-        };
-        let resources = crate::service::ServiceResourceBindings {
-            kv: [("records".into(), binding.clone())].into(),
-            ..Default::default()
-        };
-        let first = AvailabilitySnapshot::replacing(vec![], resources.clone(), &Default::default());
-        let generation = first
-            .resource_generation(ResourceKind::Kv, "records")
-            .unwrap();
-
-        let suspended = AvailabilitySnapshot::suspended(&first);
-        assert!(!suspended.has_kv_binding("records", &binding));
+    #[tokio::test]
+    async fn cursor_traversal_continues_through_empty_pages_and_stops_at_terminal_page() {
+        use futures_util::TryStreamExt;
+        let pages = super::cursor_pages(0, None, |step| async move {
+            let (items, next) = match step {
+                0 => (vec![], Some("first".into())),
+                1 => (vec![1, 2], Some("second".into())),
+                2 => (vec![3], None),
+                _ => panic!("fetched beyond terminal page"),
+            };
+            Ok::<_, crate::client::CallError<Infallible>>((items, step + 1, next))
+        });
         assert_eq!(
-            suspended.resource_generation(ResourceKind::Kv, "records"),
-            None
-        );
-        let unchanged = AvailabilitySnapshot::replacing(vec![], resources, &suspended);
-        assert!(unchanged.has_kv_binding("records", &binding));
-        assert_eq!(
-            unchanged.resource_generation(ResourceKind::Kv, "records"),
-            Some(generation)
-        );
-
-        let removed = AvailabilitySnapshot::replacing(vec![], Default::default(), &unchanged);
-        let readded = AvailabilitySnapshot::replacing(
-            vec![],
-            crate::service::ServiceResourceBindings {
-                kv: [("records".into(), binding.clone())].into(),
-                ..Default::default()
-            },
-            &removed,
-        );
-        assert_ne!(
-            readded.resource_generation(ResourceKind::Kv, "records"),
-            Some(generation)
-        );
-
-        let replaced = AvailabilitySnapshot::replacing(
-            vec![],
-            crate::service::ServiceResourceBindings {
-                kv: [(
-                    "records".into(),
-                    crate::service::KvResourceBinding {
-                        bucket: "KV_B".into(),
-                        ..binding
-                    },
-                )]
-                .into(),
-                ..Default::default()
-            },
-            &readded,
-        );
-        assert_ne!(
-            replaced.resource_generation(ResourceKind::Kv, "records"),
-            readded.resource_generation(ResourceKind::Kv, "records")
+            super::cursor_items(pages, |items| items)
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap(),
+            [1, 2, 3]
         );
     }
 
     #[tokio::test]
-    async fn availability_snapshot_replacement_wakes_watchers() {
-        let initial = AvailabilitySnapshot::default();
-        let (sender, mut receiver) = tokio::sync::watch::channel(initial.clone());
-        let action = OptionalAction::rpc("fixture.Primary@v1", "Fetch");
-        let replacement = AvailabilitySnapshot::new(
-            vec![trellis_protocol::PermissionAtom::new(
-                trellis_protocol::PermissionTarget::api_surface(
-                    "fixture.Primary@v1",
-                    trellis_protocol::ApiSurfaceKind::Rpc,
-                    "Fetch",
-                )
-                .unwrap(),
-                trellis_protocol::PermissionAction::Call,
-            )
-            .unwrap()],
-            Default::default(),
-        );
+    async fn cursor_traversal_rejects_repeated_initial_cursor_and_preserves_fetch_errors() {
+        use futures_util::StreamExt;
+        let mut pages = super::cursor_pages((), Some("initial".into()), |()| async {
+            Ok::<_, crate::client::CallError<Infallible>>((vec![99], (), Some("initial".into())))
+        });
+        assert!(matches!(
+            pages.next().await,
+            Some(Err(super::PaginationError::RepeatedCursor(cursor))) if cursor == "initial"
+        ));
+        assert!(pages.next().await.is_none());
 
-        assert!(!initial.allows_action(action));
-        sender.send_replace(replacement.clone());
-        receiver.changed().await.unwrap();
-        assert_eq!(*receiver.borrow(), replacement);
-        assert!(receiver.borrow().allows_action(action));
+        let pages = super::cursor_pages((), None, |()| async {
+            Err::<(Vec<u8>, (), Option<String>), crate::client::CallError<Infallible>>(
+                crate::client::CallError::Timeout,
+            )
+        });
+        let mut items = super::cursor_items(pages, |items| items);
+        assert!(matches!(
+            items.next().await,
+            Some(Err(super::PaginationError::Call(
+                crate::client::CallError::Timeout
+            )))
+        ));
+        assert!(items.next().await.is_none());
     }
+
+    use super::{Codec as _, Timestamp, TrellisError, Ulid};
 
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     struct WireScalars {
@@ -1881,12 +1719,6 @@ mod tests {
         );
     }
 
-    struct ExampleApi;
-
-    impl ApiDescriptor for ExampleApi {
-        const ID: &'static str = "example/Orders@v1";
-    }
-
     #[derive(Debug, Deserialize, PartialEq, Serialize)]
     struct ExampleError {
         message: String,
@@ -1904,66 +1736,8 @@ mod tests {
         const TYPE: &'static str = "ExampleError";
     }
 
-    #[derive(Debug)]
-    struct ExampleOperationError(SerializableErrorData);
-
-    impl OperationDeclaredError for ExampleOperationError {
-        fn data(&self) -> &SerializableErrorData {
-            &self.0
-        }
-    }
-
-    struct ExampleOperation;
-
-    impl OperationDescriptor for ExampleOperation {
-        type Input = String;
-        type Output = bool;
-        type Progress = u32;
-        type Update = serde_json::Value;
-        type UpdateEvidence = crate::client::NoOperationUpdates;
-        type Error = ExampleOperationError;
-
-        const API_ID: &'static str = "example/Orders@v1";
-        const DESCRIPTOR_NAME: &'static str = "operation.Process";
-        const SUBJECT: &'static str = "operation.v1.Orders.Process";
-        const KEY: &'static str = "Orders.Process";
-        const CALLER_CAPABILITIES: &'static [&'static str] = &["orders.process"];
-        const ERRORS: &'static [&'static str] = &["example/Orders@v1.Rejected"];
-        const SIGNALS: &'static [&'static str] = &["Resume"];
-        const UPLOAD: bool = true;
-        const HAS_PROGRESS: bool = true;
-        const UPDATE_SCHEMA_JSON: Option<&'static str> = None;
-
-        fn decode_error(
-            value: serde_json::Value,
-        ) -> Result<Option<Self::Error>, serde_json::Error> {
-            serde_json::from_value(value).map(|data| Some(ExampleOperationError(data)))
-        }
-    }
-
-    struct Resume;
-
-    impl OperationSignal for Resume {
-        type Operation = ExampleOperation;
-        type Input = String;
-
-        const NAME: &'static str = "Resume";
-    }
-
     #[test]
-    fn generated_descriptors_validate_only_local_structure() {
-        ExampleApi::validate().unwrap();
-        const PACKAGES: &[PackageSourceEvidence] = &[PackageSourceEvidence::from_generated(
-            "example",
-            "1.0.0",
-            "digest",
-            "package \"example\";\n",
-        )];
-        let evidence = PackageEvidence::from_generated("example", "digest", PACKAGES);
-        evidence.validate().unwrap();
-        assert_eq!(evidence.root_package(), "example");
-        assert_eq!(evidence.root_digest(), "digest");
-        assert_eq!(evidence.packages()[0].name(), "example");
+    fn typed_error_decoder_rejects_foreign_discriminators() {
         assert_eq!(
             super::decode_typed_error::<ExampleError>(serde_json::json!({
                 "type": "ExampleError",
@@ -1981,45 +1755,6 @@ mod tests {
             }))
             .unwrap()
             .is_none()
-        );
-    }
-
-    #[test]
-    fn generated_operation_descriptor_projects_into_current_runtime() {
-        type Runtime = OperationAdapter<ExampleOperation>;
-
-        assert_eq!(
-            <Runtime as crate::client::OperationDescriptor>::KEY,
-            ExampleOperation::KEY
-        );
-        assert_eq!(
-            <Runtime as crate::client::OperationDescriptor>::SUBJECT,
-            ExampleOperation::SUBJECT
-        );
-        assert_eq!(
-            <Runtime as crate::client::OperationDescriptor>::PROGRESS_SCHEMA_JSON,
-            Some("{}")
-        );
-        assert_eq!(
-            <<Resume as OperationSignal>::Operation as OperationDescriptor>::SIGNALS,
-            &[<Resume as OperationSignal>::NAME]
-        );
-
-        let failure = DeclaredOperationFailure::new(ExampleOperationError(SerializableErrorData {
-            id: "error-1".into(),
-            error_type: "example/Orders@v1.Rejected".into(),
-            message: "rejected".into(),
-            context: None,
-            trace_id: None,
-            extra: serde_json::Map::new(),
-        }));
-        assert_eq!(
-            crate::service::OperationFailureLike::error_type(&failure),
-            "example/Orders@v1.Rejected"
-        );
-        assert_eq!(
-            crate::service::OperationFailureLike::message(&failure),
-            "rejected"
         );
     }
 }

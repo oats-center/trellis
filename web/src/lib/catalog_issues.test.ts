@@ -1,4 +1,5 @@
 import { equal } from "node:assert/strict";
+import { test } from "node:test";
 
 import {
   contractDependencyBlockLabel,
@@ -7,11 +8,7 @@ import {
   parseContractDependencyBlock,
 } from "./catalog_issues.ts";
 
-declare const Deno: {
-  test(name: string, fn: () => void): void;
-};
-
-Deno.test("parseContractDependencyBlock reads nested missing RPC details", () => {
+test("parseContractDependencyBlock reads nested missing RPC details", () => {
   const detail = parseContractDependencyBlock(
     "Active contract digest 'blocked-digest' for 'krishi.workspace@v1' has invalid active dependencies (Dependency 'sherpa' references missing rpc 'GetSampleForWorkspace' on 'sherpa@v1')",
   );
@@ -22,7 +19,7 @@ Deno.test("parseContractDependencyBlock reads nested missing RPC details", () =>
   equal(detail.providerContractId, "sherpa@v1");
 });
 
-Deno.test("dependency block helpers identify provider-side missing surfaces", () => {
+test("dependency block helpers identify provider-side missing surfaces", () => {
   const issue = {
     issueId: "issue-1",
     kind: "invalid-active-contract-uses",
@@ -36,7 +33,7 @@ Deno.test("dependency block helpers identify provider-side missing surfaces", ()
   equal(contractDependencyProviderContract(issue), "sherpa@v1");
 });
 
-Deno.test("parseContractDependencyBlock reads missing feed details", () => {
+test("parseContractDependencyBlock reads missing feed details", () => {
   const detail = parseContractDependencyBlock(
     "Dependency 'shares' references missing feed 'Activity' on 'krishi.shares@v1'",
   );
@@ -46,7 +43,7 @@ Deno.test("parseContractDependencyBlock reads missing feed details", () => {
   equal(detail.providerContractId, "krishi.shares@v1");
 });
 
-Deno.test("parseContractDependencyBlock reads inactive provider contract", () => {
+test("parseContractDependencyBlock reads inactive provider contract", () => {
   const detail = parseContractDependencyBlock(
     "Active contract digest 'blocked-digest' for 'krishi.workspace@v1' has invalid active dependencies (Dependency references inactive contract 'sherpa@v1')",
   );
@@ -54,7 +51,7 @@ Deno.test("parseContractDependencyBlock reads inactive provider contract", () =>
   equal(detail.providerContractId, "sherpa@v1");
 });
 
-Deno.test("parseContractDependencyBlock reads aliased unknown provider contract", () => {
+test("parseContractDependencyBlock reads aliased unknown provider contract", () => {
   const detail = parseContractDependencyBlock(
     "Dependency 'sherpa' references unknown contract 'sherpa@v1'",
   );

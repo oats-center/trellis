@@ -785,6 +785,16 @@ fn validate_package_digest(value: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn empty_registry_tag_page_accepts_null() {
+        // GHCR's valid final pagination response must terminate enumeration,
+        // not fail before a first publication or dependency resolution.
+        let page: oci_client::client::TagResponse =
+            serde_json::from_str(r#"{"name":"oats-center/trellis-apis/trellis","tags":null}"#)
+                .unwrap();
+        assert!(page.tags.is_empty());
+    }
+
     fn files() -> BTreeMap<PathBuf, Vec<u8>> {
         BTreeMap::from([
             (PathBuf::from("main.trellis"), b"api test@v1 {}\n".to_vec()),

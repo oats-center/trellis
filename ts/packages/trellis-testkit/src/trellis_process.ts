@@ -1,4 +1,8 @@
-import { dirname, join } from "@std/path";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { once } from "node:events";
+import { open, type FileHandle } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type { Readable } from "node:stream";
 
 import type { ReservedPort } from "./ports.ts";
 
@@ -7,7 +11,12 @@ const READINESS_POLL_INTERVAL_MS = 25;
 const READINESS_FETCH_TIMEOUT_MS = 250;
 
 /** @internal Resolved status of a spawned child process. */
-export type CommandStatus = Awaited<Deno.ChildProcess["status"]>;
+export type CommandStatus = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+};
+
+type TrellisChild = ChildProcessByStdio<null, Readable, Readable>;
 
 type BootstrapUrlWaiter = {
   resolve(value: string): void;
@@ -65,7 +74,8 @@ export class TextTail {
 
 class StartedTrellisProcess implements TrellisProcessHandle {
   readonly trellisUrl: string;
-  readonly #child: Deno.ChildProcess;
+  readonly #child: TrellisChild;
+  readonly #processId: number;
   readonly #status: Promise<CommandStatus>;
   readonly #stdoutReader: Promise<void>;
   readonly #stderrReader: Promise<void>;
@@ -77,21 +87,21 @@ class StartedTrellisProcess implements TrellisProcessHandle {
   #bootstrapWaiters: BootstrapUrlWaiter[] = [];
   #stopping: Promise<void> | undefined;
 
-  constructor(
-    args: {
-      trellisUrl: string;
-      child: Deno.ChildProcess;
-      status: Promise<CommandStatus>;
-      stdoutReader: Promise<void>;
-      stderrReader: Promise<void>;
-      stdoutTail: TextTail;
-      stderrTail: TextTail;
-      shutdownTimeoutMs: number;
-      isolatedProcessGroup: boolean;
-    },
-  ) {
+  constructor(args: {
+    trellisUrl: string;
+    child: TrellisChild;
+    processId: number;
+    status: Promise<CommandStatus>;
+    stdoutReader: Promise<void>;
+    stderrReader: Promise<void>;
+    stdoutTail: TextTail;
+    stderrTail: TextTail;
+    shutdownTimeoutMs: number;
+    isolatedProcessGroup: boolean;
+  }) {
     this.trellisUrl = args.trellisUrl;
     this.#child = args.child;
+    this.#processId = args.processId;
     this.#status = args.status;
     this.#stdoutReader = args.stdoutReader;
     this.#stderrReader = args.stderrReader;
@@ -172,9 +182,14 @@ class StartedTrellisProcess implements TrellisProcessHandle {
     // descendants before awaiting EOF on any inherited output pipes.
     if (this.#isolatedProcessGroup) {
       try {
-        Deno.kill(-this.#child.pid, "SIGKILL");
+        process.kill(-this.#processId, "SIGKILL");
       } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        if (!(
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "ESRCH"
+        ))
+          throw error;
       }
     }
     await Promise.allSettled([this.#stdoutReader, this.#stderrReader]);
@@ -185,7 +200,10 @@ class StartedTrellisProcess implements TrellisProcessHandle {
   }
 }
 
-function timeoutValue<T>(ms: number, value: T): {
+function timeoutValue<T>(
+  ms: number,
+  value: T,
+): {
   promise: Promise<T>;
   cancel(): void;
 } {
@@ -230,10 +248,7 @@ export async function waitForStatus(
 }
 
 /** @internal Sends a signal, ignoring races where the child already exited. */
-export function killProcess(
-  child: Deno.ChildProcess,
-  signal: Deno.Signal,
-): void {
+export function killProcess(child: TrellisChild, signal: NodeJS.Signals): void {
   try {
     child.kill(signal);
   } catch {
@@ -251,7 +266,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function jsonBootstrapUrl(line: string): string | undefined {
+/** @internal Parses the startup account URL from one structured output line. */
+export function parseTrellisBootstrapUrl(line: string): string | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -259,34 +275,21 @@ function jsonBootstrapUrl(line: string): string | undefined {
     return undefined;
   }
   if (!isRecord(parsed)) return undefined;
-  const value = parsed.adminAccountUrl ?? parsed.bootstrapUrl ??
-    (isRecord(parsed.fields)
-      ? parsed.fields.adminAccountUrl ?? parsed.fields.bootstrapUrl
-      : undefined);
+  const value = parsed.adminAccountUrl;
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function fallbackBootstrapUrl(line: string): string | undefined {
-  const match = line.match(/\bTRELLIS_ADMIN_BOOTSTRAP_URL=(\S+)/);
-  return match?.[1];
-}
-
-/** @internal Parses a bootstrap URL from one Trellis log line. */
-export function parseTrellisBootstrapUrl(line: string): string | undefined {
-  return jsonBootstrapUrl(line) ?? fallbackBootstrapUrl(line);
 }
 
 /** @internal Pipes child output to a log file while tracking a text tail. */
 export async function captureProcessOutput(
-  stream: ReadableStream<Uint8Array>,
+  stream: AsyncIterable<Uint8Array>,
   tail: TextTail,
   onLine: (line: string) => void,
-  log: Deno.FsFile,
+  log: FileHandle,
 ): Promise<void> {
   const decoder = new TextDecoder();
   let pending = "";
   for await (const chunk of stream) {
-    await log.write(chunk);
+    await log.writeFile(chunk);
     const text = decoder.decode(chunk, { stream: true });
     tail.append(text);
     pending += text;
@@ -294,7 +297,7 @@ export async function captureProcessOutput(
     while (newlineIndex >= 0) {
       const line = pending.slice(0, newlineIndex).replace(/\r$/, "");
       onLine(line);
-      if (Deno.env.get("TRELLIS_TEST_TRACE_OUTPUT") === "1") {
+      if (process.env.TRELLIS_TEST_TRACE_OUTPUT === "1") {
         console.error(line);
       }
       pending = pending.slice(newlineIndex + 1);
@@ -332,8 +335,9 @@ async function fetchReady(
   try {
     const response = await fetch(url, { signal: abort.signal });
     const metadata: unknown = await response.json();
-    return response.ok && isRecord(metadata) &&
-      metadata.processId === processId;
+    return (
+      response.ok && isRecord(metadata) && metadata.processId === processId
+    );
   } finally {
     clearTimeout(timeoutId);
   }
@@ -356,9 +360,9 @@ async function waitForTrellisReady(args: {
     if (status !== undefined) {
       await Promise.allSettled(args.readers);
       throw new Error(
-        `Trellis process exited before readiness (${
-          commandStatusText(status)
-        }) while polling ${url}\n${processOutputTails(args)}`,
+        `Trellis process exited before readiness (${commandStatusText(
+          status,
+        )}) while polling ${url}\n${processOutputTails(args)}`,
       );
     }
 
@@ -384,17 +388,17 @@ async function waitForTrellisReady(args: {
     if (exitDuringDelay !== undefined) {
       await Promise.allSettled(args.readers);
       throw new Error(
-        `Trellis process exited before readiness (${
-          commandStatusText(exitDuringDelay.status)
-        }) while polling ${url}\n${processOutputTails(args)}`,
+        `Trellis process exited before readiness (${commandStatusText(
+          exitDuringDelay.status,
+        )}) while polling ${url}\n${processOutputTails(args)}`,
       );
     }
   }
 
   throw new Error(
-    `Timed out after ${args.startupTimeoutMs}ms waiting for Trellis process readiness at ${url}\n${
-      processOutputTails(args)
-    }`,
+    `Timed out after ${args.startupTimeoutMs}ms waiting for Trellis process readiness at ${url}\n${processOutputTails(
+      args,
+    )}`,
   );
 }
 
@@ -406,36 +410,37 @@ export async function startTrellisProcess(
   const stdoutTail = new TextTail(DEFAULT_OUTPUT_TAIL_CHARS);
   const stderrTail = new TextTail(DEFAULT_OUTPUT_TAIL_CHARS);
   const logDir = dirname(args.configPath);
-  const stdoutLog = await Deno.open(join(logDir, "trellis.stdout.log"), {
-    write: true,
-    create: true,
-    truncate: true,
-  });
-  const stderrLog = await Deno.open(join(logDir, "trellis.stderr.log"), {
-    write: true,
-    create: true,
-    truncate: true,
+  const stdoutLog = await open(join(logDir, "trellis.stdout.log"), "w", 0o600);
+  const stderrLog = await open(
+    join(logDir, "trellis.stderr.log"),
+    "w",
+    0o600,
+  ).catch(async (error) => {
+    await stdoutLog.close();
+    throw error;
   });
 
-  let child: Deno.ChildProcess;
+  let child: TrellisChild;
   try {
-    for (const lease of args.portLeases ?? []) lease.releaseForSpawn();
-    child = new Deno.Command(command.cmd, {
-      args: [...command.args],
+    for (const lease of args.portLeases ?? []) await lease.releaseForSpawn();
+    child = spawn(command.cmd, [...command.args], {
       cwd: command.cwd,
-      env: command.env,
-      clearEnv: true,
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
+      env: command.env ?? {},
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await once(child, "spawn");
   } catch (error) {
-    for (const lease of args.portLeases ?? []) lease.release();
-    stdoutLog.close();
-    stderrLog.close();
+    for (const lease of args.portLeases ?? []) await lease.release();
+    await Promise.all([stdoutLog.close(), stderrLog.close()]);
     throw error;
   }
-  const status = child.status;
+  const status = new Promise<CommandStatus>((resolve, reject) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+    child.once("error", reject);
+  });
+  const processId = child.pid;
+  if (processId === undefined)
+    throw new Error("Spawned Trellis process has no pid");
 
   let handle: StartedTrellisProcess;
   const recordBootstrapLine = (line: string) => {
@@ -447,25 +452,30 @@ export async function startTrellisProcess(
     stdoutTail,
     recordBootstrapLine,
     stdoutLog,
-  ).catch((error) => {
-    stdoutTail.append(`\n<failed to read stdout: ${String(error)}>\n`);
-  }).finally(() => {
-    stdoutLog.close();
-  });
+  )
+    .catch((error) => {
+      stdoutTail.append(`\n<failed to read stdout: ${String(error)}>\n`);
+    })
+    .finally(async () => {
+      await stdoutLog.close();
+    });
   const stderrReader = captureProcessOutput(
     child.stderr,
     stderrTail,
     recordBootstrapLine,
     stderrLog,
-  ).catch((error) => {
-    stderrTail.append(`\n<failed to read stderr: ${String(error)}>\n`);
-  }).finally(() => {
-    stderrLog.close();
-  });
+  )
+    .catch((error) => {
+      stderrTail.append(`\n<failed to read stderr: ${String(error)}>\n`);
+    })
+    .finally(async () => {
+      await stderrLog.close();
+    });
 
   handle = new StartedTrellisProcess({
     trellisUrl: args.trellisUrl,
     child,
+    processId,
     status,
     stdoutReader,
     stderrReader,
@@ -477,7 +487,7 @@ export async function startTrellisProcess(
 
   try {
     await waitForTrellisReady({
-      processId: child.pid,
+      processId,
       trellisUrl: args.trellisUrl,
       startupTimeoutMs: args.startupTimeoutMs,
       status,
@@ -485,10 +495,10 @@ export async function startTrellisProcess(
       stderrTail,
       readers: [stdoutReader, stderrReader],
     });
-    for (const lease of args.portLeases ?? []) lease.release();
+    for (const lease of args.portLeases ?? []) await lease.release();
     return handle;
   } catch (error) {
-    for (const lease of args.portLeases ?? []) lease.release();
+    for (const lease of args.portLeases ?? []) await lease.release();
     try {
       await handle.stop();
     } catch (cleanupError) {

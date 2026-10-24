@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { type apis } from "trellis-web-generated";
-  import { resolve, consoleUrl } from "$lib/console_paths";
+  import { groupByArea } from "$lib/console/capability_areas.ts";
+  import type { apis } from "trellis-web-generated";
   import { onMount } from "svelte";
-  import { catalogPage, traverseAll } from "$lib/console/paging.ts";
+  import { resolve } from "$lib/console_paths";
+  import { getTrellis } from "$lib/trellis";
+  import { traverseAll } from "$lib/console/paging.ts";
+  import { RequestScope } from "$lib/console/request_scope.ts";
+  import { projectConsoleError } from "$lib/console/display_value.ts";
   import ActionMenu from "$lib/components/ActionMenu.svelte";
   import DataTable from "$lib/components/DataTable.svelte";
   import EmptyState from "$lib/components/EmptyState.svelte";
@@ -10,139 +14,215 @@
   import LoadingState from "$lib/components/LoadingState.svelte";
   import Notice from "$lib/components/Notice.svelte";
   import PageToolbar from "$lib/components/PageToolbar.svelte";
-  import Panel from "$lib/components/Panel.svelte";
-  import { errorMessage, formatDate } from "$lib/format";
-  import { getTrellis } from "$lib/trellis";
-  import { isErr } from "@oatscenter/result";
+  import { humanizeName } from "$lib/format";
 
-  type GrantBinding = apis.auth.GrantsListOutput["items"][number];
-  type GrantOwner = apis.auth.UsersListOutput["items"][number];
+  type Delegation = apis.auth.DelegationsListOutput["items"][number];
+  type Capability = apis.auth.CapabilitiesListOutput["items"][number];
 
   const trellis = getTrellis();
-
+  const scope = new RequestScope("app-delegations");
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let identityGrants = $state.raw<GrantBinding[]>([]);
-  let ownerNames = $state.raw(new Map<string, string>());
+  let search = $state("");
+  let open = $state<string | null>(null);
+  let delegations = $state.raw<Delegation[]>([]);
+  // Titles and groups make the allowed access readable; IDs are the fallback.
+  let capabilities = $state.raw<Map<string, Capability>>(new Map());
+  let userNames = $state.raw<Map<string, string>>(new Map());
 
-  async function load() {
-    loading = true;
-    error = null;
-    const result = await traverseAll<GrantBinding>(async (pageRequest) => {
-      const response = await trellis.grantsList({
-        ownerKind: "user",
-        page: catalogPage(pageRequest.cursor),
-      }).take();
-      if (isErr(response)) throw response;
-      return { items: response.items, cursor: response.page.nextCursor };
-    });
-    loading = false;
-    if (!result.complete) {
-      error = errorMessage(result.error);
-      return;
-    }
-    identityGrants = [...result.items];
-    // A name lookup is auxiliary metadata; absence must not keep grants hidden.
-    const ownerResult = await traverseAll<GrantOwner>(async (pageRequest) => {
-      const response = await trellis.usersList({ page: catalogPage(pageRequest.cursor) }).take();
-      if (isErr(response)) throw response;
-      return { items: response.items, cursor: response.page.nextCursor };
-    });
-    if (ownerResult.complete) {
-      ownerNames = new Map(ownerResult.items.map((owner) => [owner.userId, owner.username?.trim() || owner.name?.trim() || owner.email?.trim() || owner.userId]));
+  const visible = $derived(
+    delegations.filter((entry) =>
+      `${appName(entry)} ${userNames.get(entry.principalId) ?? ""}`
+        .toLowerCase()
+        .includes(search.trim().toLowerCase()),
+    ),
+  );
+
+  function appName(entry: Delegation): string {
+    return humanizeName(entry.binding.clientId);
+  }
+
+  function host(origin: string | undefined): string {
+    if (!origin) return "Native app";
+    try {
+      return new URL(origin).host;
+    } catch {
+      return origin;
     }
   }
 
-  onMount(load);
+  function allowed(entry: Delegation) {
+    return entry.choices.filter((choice) => choice.decision === "approved");
+  }
+
+  // Group the allowed permissions by API area, as people chose them.
+  function groupedAccess(entry: Delegation) {
+    return groupByArea(
+      allowed(entry).map((choice) => choice.capability.capabilityId),
+      (id) => id,
+    ).map((group) => ({
+      id: group.id,
+      title: group.title,
+      items: group.items.map((id) => capabilities.get(id)?.title ?? id),
+    }));
+  }
+
+  async function load(): Promise<void> {
+    const token = scope.begin();
+    loading = true;
+    const result = await traverseAll(async (page) => {
+      const response = await trellis.delegationsList({ page }).orThrow();
+      return { items: response.items, cursor: response.page.nextCursor };
+    });
+    if (!scope.settle(token)) return;
+    delegations = [...result.items];
+    error = result.complete ? null : projectConsoleError(result.error).message;
+    loading = false;
+  }
+
+  async function loadNames(): Promise<void> {
+    const [catalog, users] = await Promise.all([
+      traverseAll(async (page) => {
+        const response = await trellis.capabilitiesList({ page }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      }),
+      traverseAll(async (page) => {
+        const response = await trellis.usersList({ page }).orThrow();
+        return { items: response.items, cursor: response.page.nextCursor };
+      }),
+    ]);
+    capabilities = new Map(
+      catalog.items.map((item) => [item.identity.capabilityId, item]),
+    );
+    userNames = new Map(
+      users.items.map((user) => [user.principalId, user.displayName]),
+    );
+  }
+
+  onMount(() => {
+    void load();
+    void loadNames().catch(() => {});
+    return () => scope.dispose();
+  });
 </script>
 
-<section class="space-y-4">
+<section class="space-y-5">
   <PageToolbar
-    title="User-owned grants"
-    description="Inspect and revoke grant bindings owned by a user, such as delegated app and agent grants."
-  >
-    {#snippet actions()}
-      <div class="trellis-filterbar-actions">
-        <button class="btn btn-ghost btn-sm" onclick={load} disabled={loading}>
-          Refresh
-        </button>
-        <ActionMenu buttonBaseClass="btn btn-outline btn-sm" widthClass="w-64">
-          {#snippet summary()}
-            Actions <Icon name="chevronDown" size={14} />
-          {/snippet}
-          <li>
-            <a href={resolve("/admin/apps/revoke")}>Revoke user-owned grant</a>
-          </li>
-        </ActionMenu>
-      </div>
-    {/snippet}
-  </PageToolbar>
+    title="Connected apps"
+    description="Apps people have allowed to use their account."
+  />
+  {#if error}<Notice variant="warning">{error}</Notice>{/if}
 
-  {#if error}
-    <Notice variant="error">{error}</Notice>
-  {/if}
-
-  {#if loading}
-    <Panel><LoadingState label="Loading user-owned grants" /></Panel>
-  {:else if identityGrants.length === 0}
-    <EmptyState
-      title="No user-owned grants"
-      description="No user-owned grant bindings are currently visible."
-    />
-  {:else}
-    <Panel title="User-owned grants" eyebrow="Primary table">
+  <div class="trellis-section">
+    <div class="p-4">
+      <label class="input flex w-full max-w-md items-center gap-2 bg-base-100">
+        <Icon name="search" size={16} class="text-base-content/50" />
+        <input
+          class="grow"
+          bind:value={search}
+          placeholder="Search by app or person"
+          aria-label="Search connected apps"
+        />
+      </label>
+    </div>
+    {#if loading}
+      <LoadingState label="Loading connected apps" />
+    {:else if !visible.length}
+      <EmptyState
+        class="m-4"
+        title={delegations.length ? "No matches" : "No connected apps"}
+        description={delegations.length
+          ? "Try a different search."
+          : "Apps show up here after someone allows them."}
+      />
+    {:else}
       <DataTable>
         <thead>
           <tr>
-            <th>Owner</th>
-            <th>Participant</th>
-            <th>State</th>
-            <th>Installed revision</th>
-            <th>Grant revision</th>
-            <th>Updated</th>
-            <th></th>
+            <th>App</th>
+            <th>Person</th>
+            <th>Allowed</th>
+            <th><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody>
-          {#each identityGrants as entry (`${entry.ownerId}:${entry.participantId}`)}
+          {#each visible as entry (entry.delegationId)}
+            {@const groups = groupedAccess(entry)}
             <tr>
-              <td class="font-medium">{ownerNames.get(entry.ownerId) ?? entry.ownerId}</td>
-              <td>{entry.participantId}</td>
               <td>
-                <span class="badge badge-sm {entry.state === "active" ? "badge-success" : "badge-neutral"}">
-                  {entry.state}
-                </span>
+                <div class="flex items-center gap-3">
+                  <span
+                    class="grid h-9 w-9 place-items-center rounded-field bg-primary text-sm font-semibold text-primary-content"
+                    aria-hidden="true">{appName(entry).charAt(0)}</span
+                  >
+                  <span>
+                    <span class="block font-medium">{appName(entry)}</span>
+                    <span class="block text-xs text-base-content/60"
+                      >{host(entry.binding.origin)}</span
+                    >
+                  </span>
+                </div>
               </td>
-              <td class="text-base-content/60">{entry.installedRevision}</td>
-              <td class="text-base-content/60">{entry.revision}</td>
-              <td class="text-base-content/60">{formatDate(entry.updatedAt)}</td>
-              <td class="text-right">
-                {#if entry.state === "active"}
-                  <ActionMenu>
-                    <li>
-                      <a
-                        class="text-error"
-                        href={consoleUrl("/admin/apps/revoke", {
-                          query: {
-                            ownerKind: "user",
-                            ownerId: entry.ownerId,
-                            participantId: entry.participantId,
-                          },
-                        })}>Revoke</a
-                      >
-                    </li>
-                  </ActionMenu>
+              <td>{userNames.get(entry.principalId) ?? "Unknown user"}</td>
+              <td class="max-w-md whitespace-normal">
+                {#if groups.length}
+                  <button
+                    type="button"
+                    class="text-left hover:underline"
+                    aria-expanded={open === entry.delegationId}
+                    onclick={() =>
+                      (open =
+                        open === entry.delegationId
+                          ? null
+                          : entry.delegationId)}
+                  >
+                    {groups
+                      .slice(0, 3)
+                      .map((group) => group.title)
+                      .join(", ")}{groups.length > 3
+                      ? ` and ${groups.length - 3} more`
+                      : ""}
+                    <span class="text-base-content/55"
+                      >· {allowed(entry).length} permissions</span
+                    >
+                  </button>
+                  {#if open === entry.delegationId}
+                    <dl class="mt-3 space-y-2 text-sm">
+                      {#each groups as group (group.id)}
+                        <div>
+                          <dt class="font-medium">{group.title}</dt>
+                          <dd class="text-base-content/70">
+                            {group.items.join(", ")}
+                          </dd>
+                        </div>
+                      {/each}
+                    </dl>
+                  {/if}
                 {:else}
-                  <span class="text-xs text-base-content/50">retained</span>
+                  <span class="text-base-content/55"
+                    >Only what it always needs</span
+                  >
                 {/if}
+              </td>
+              <td class="text-right">
+                <ActionMenu
+                  widthClass="w-44"
+                  ariaLabel={`Actions for ${appName(entry)}`}
+                >
+                  <li>
+                    <a
+                      class="text-error"
+                      href={resolve(
+                        `/admin/apps/revoke?delegationId=${entry.delegationId}`,
+                      )}>Disconnect</a
+                    >
+                  </li>
+                </ActionMenu>
               </td>
             </tr>
           {/each}
         </tbody>
       </DataTable>
-      <p class="text-xs text-base-content/50">
-        {identityGrants.length} user-owned grant{identityGrants.length !== 1 ? "s" : ""} loaded
-      </p>
-    </Panel>
-  {/if}
+    {/if}
+  </div>
 </section>

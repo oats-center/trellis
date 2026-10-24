@@ -10,12 +10,29 @@ publish = false
 performance-trellis = { path = "../crates/performance-trellis" }
 trellis-rs = { path = "../../../crates/trellis" }
 axum = "0.8.8"
-reqwest = { version = "0.13", features = ["json", "query"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "net"] }
+reqwest = { version = "0.13", features = ["json", "query", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+opentelemetry = { version = "0.32", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.32", features = ["metrics"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "fs", "net", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+async-nats = "0.50"
+base64 = "0.22"
+bytes = "1"
+ed25519-dalek = "2"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 time = { version = "0.3", features = ["formatting"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [patch.crates-io]
+# Generated facades must share the source SDK's model and protocol type identities.
 trellis-rs = { path = "../../../crates/trellis" }
+trellis-protocol = { path = "../../../crates/protocol" }
+trellis-models = { path = "../../../crates/models" }

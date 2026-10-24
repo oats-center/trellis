@@ -1,0 +1,6 @@
+.svelte-kit
+.sveltepress
+build
+# Generated from ../design by scripts/sync_design_docs.ts
+src/routes/design/
+design-sidebar.json

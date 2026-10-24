@@ -27,10 +27,7 @@ export function withSpan<T>(span: Span, fn: () => T): T {
  * Trellis-owned continuations must use the explicitly captured span or context;
  * this helper does not preserve ambient context across awaits.
  */
-export function withSpanAsync<T>(
-  span: Span,
-  fn: () => Promise<T>,
-): Promise<T> {
+export function withSpanAsync<T>(span: Span, fn: () => Promise<T>): Promise<T> {
   const parent = trace.setSpan(context.active(), span);
   return context.with(parent, fn);
 }

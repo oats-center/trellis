@@ -19,23 +19,30 @@
  * inventory, never from the auth-side connection presence.
  */
 
-import { createClient } from "@libsql/client";
-import { assert, assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import assert from "node:assert/strict";
+import { TextDecoderStream } from "node:stream/web";
+import { test } from "node:test";
+import { ulid } from "ulid";
+import { Readable, Writable } from "node:stream";
 import { Result } from "@oatscenter/trellis";
 import { TrellisService } from "@oatscenter/trellis/service";
 import type { TrellisTestRuntime } from "@oatscenter/trellis-testkit";
 
-import { participants } from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
+import {
+  apps,
+  participants,
+} from "../../integration/fixtures/runtime/packages/runtime-trellis/index.js";
 import {
   admittedConnections,
   brokerConnectionKey,
   readRuntimeBrokerInventory,
+  readRuntimeServiceAttachments,
 } from "./_support/broker_inventory.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
+import { spawnTracked } from "./_support/process.ts";
 
 /** Optional capability id declined at consent and grown later. */
-const CAPABILITY_EXTEND = "runtime-trellis.transport_growth@v1::extend";
+const CAPABILITY_EXTEND = "runtime-trellis.transport_growth.v1:growth.extend";
 
 /**
  * One deployment carries one participant assignment, so the subject and its
@@ -47,19 +54,9 @@ const TARGET_DEPLOYMENT = "tg-target";
 /** Short lifetimes so the case crosses real ordinary renewals quickly. */
 const runtimeOptions = {
   authorization: {
-    contextLifetimeSeconds: 62,
-    refreshLeadSeconds: 25,
-    refreshJitterSeconds: 0,
-    minimumContextLifetimeSeconds: 32,
+    contextLifetimeSeconds: 55,
+    allowedClockSkewSeconds: 2,
   },
-};
-
-/** One admitted attachment as reported by the production admin surface. */
-type Attachment = {
-  participantId: string;
-  runtimeConnectionId: string;
-  connectionId: string;
-  contextDigest: string;
 };
 
 /** A bounded command channel to the Rust growth leg. */
@@ -81,23 +78,30 @@ async function withTransportGrowthLeg(
   deadlineMs: number,
   body: (leg: GrowthLeg) => Promise<void>,
 ): Promise<void> {
-  const child = new Deno.Command("setsid", {
-    args: rustFixtureArgv("transport_growth_subject"),
-    env: { TRELLIS_URL: runtime.trellisUrl, TRELLIS_IDENTITY_SEED: seed },
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "inherit",
-  }).spawn();
+  const child = spawnTracked(
+    "setsid",
+    rustFixtureArgv("transport_growth_subject"),
+    {
+      env: {
+        ...process.env,
+        TRELLIS_URL: runtime.oauthIssuer,
+        TRELLIS_CA_CERTIFICATE: runtime.caCertificate,
+        TRELLIS_IDENTITY_SEED: seed,
+      },
+    },
+  );
+  child.stderr.pipe(process.stderr);
   const lines: string[] = [];
   let output = "";
   let exited = false;
-  const status = child.status.then((result) => {
+  const status = child.exited.then((result) => {
     exited = true;
     return result;
   });
-  const stdin = child.stdin.getWriter();
+  const stdin = Writable.toWeb(child.stdin).getWriter();
   const drain = (async () => {
-    const reader = child.stdout.pipeThrough(new TextDecoderStream())
+    const reader = Readable.toWeb(child.stdout)
+      .pipeThrough(new TextDecoderStream())
       .getReader();
     let buffer = "";
     while (true) {
@@ -125,9 +129,10 @@ async function withTransportGrowthLeg(
         () => {
           const seen = lines.filter((line) => line.startsWith(marker)).length;
           if (seen >= count) return true;
-          const error = lines.find((line) =>
-            line.startsWith("TRANSPORT_GROWTH_ERROR ") ||
-            line.startsWith("TRANSPORT_GROWTH_ADVANCE_ERROR ")
+          const error = lines.find(
+            (line) =>
+              line.startsWith("TRANSPORT_GROWTH_ERROR ") ||
+              line.startsWith("TRANSPORT_GROWTH_ADVANCE_ERROR "),
           );
           if (error !== undefined) {
             throw new Error(`Rust transport growth leg failed: ${error}`);
@@ -159,8 +164,8 @@ async function withTransportGrowthLeg(
     try {
       await body(leg);
     } catch (cause) {
-      const markers = lines.filter((line) =>
-        !line.startsWith("TRANSPORT_GROWTH_OBSERVED ")
+      const markers = lines.filter(
+        (line) => !line.startsWith("TRANSPORT_GROWTH_OBSERVED "),
       );
       throw new Error(
         `${
@@ -169,7 +174,8 @@ async function withTransportGrowthLeg(
         { cause },
       );
     }
-    const finished = lines.includes("TRANSPORT_GROWTH_DONE") ||
+    const finished =
+      lines.includes("TRANSPORT_GROWTH_DONE") ||
       lines.includes("TRANSPORT_GROWTH_CLOSED");
     if (!finished && !exited) {
       await leg.send("EXIT");
@@ -180,16 +186,20 @@ async function withTransportGrowthLeg(
       intervalMs: 50,
     });
     const finalStatus = await status;
-    assert(finalStatus.success, `Rust transport growth leg failed: ${output}`);
+    assert.equal(
+      finalStatus.code,
+      0,
+      `Rust transport growth leg failed: ${output}`,
+    );
   } finally {
     try {
       await stdin.close();
     } catch {
       // stdin may already be closed once the process exited.
     }
-    if (!exited) {
+    if (!exited && child.pid !== undefined) {
       try {
-        Deno.kill(-child.pid, "SIGKILL");
+        process.kill(-child.pid, "SIGKILL");
       } catch {
         // the process may have exited between the check and the signal.
       }
@@ -198,7 +208,7 @@ async function withTransportGrowthLeg(
   }
 }
 
-Deno.test("Rust transport generations adopt grown authority automatically without an extra renewal socket", async () => {
+test("Rust transport generations adopt grown authority automatically without an extra renewal socket", async () => {
   await withTrellisRuntime(async (runtime) => {
     const subjectContract = participants.TransportGrowthSubject.participant;
     const targetContract = participants.TransportGrowthTarget.participant;
@@ -214,7 +224,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
       contract: targetContract,
     });
     const target = await TrellisService.connect({
-      trellisUrl: runtime.trellisUrl,
+      trellisUrl: runtime.oauthIssuer,
       participant: targetContract,
       name: "tg-target",
       seed: targetInstance.seed,
@@ -233,7 +243,8 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
       const caller = context.caller;
       advanceCallers.push({
         type: caller.type,
-        contextDigest: caller.type === "verified" ? caller.contextDigest : null,
+        contextDigest:
+          caller.type === "verified" ? caller.authorityDigest : null,
       });
       if (holdAdvance) {
         holdAdvance = false;
@@ -261,17 +272,9 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
 
     // The subject starts approved with the optional capability declined.
     await runtime.contracts.install({ contract: subjectContract });
-    const requested = await runtime.contracts.requestApply({
+    await runtime.contracts.apply({
       deployment: SUBJECT_DEPLOYMENT,
       contract: subjectContract,
-    });
-    assert(
-      requested.status === "approval_required",
-      "the subject deployment must require an approval",
-    );
-    if (requested.status !== "approval_required") return;
-    await runtime.contracts.approveApply(requested.pendingId, {
-      excludeCapabilities: [CAPABILITY_EXTEND],
     });
     const subjectInstance = await runtime.services.createInstance({
       deployment: SUBJECT_DEPLOYMENT,
@@ -279,36 +282,26 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
       contract: subjectContract,
     });
     const subjectId = subjectContract.identity;
+    const grants = await runtime.callAdminRpc("authCapabilityGrantsList", {
+      capabilityId: CAPABILITY_EXTEND,
+    });
+    const grant = grants.items[0];
+    assert(grant);
+    await runtime.callAdminRpc("authCapabilityGrantsRevoke", {
+      grantId: grant.grantId,
+      expectedRevision: grant.revision,
+      idempotencyKey: ulid(),
+    });
 
     // The subject's inbound Live consumer, kept for the whole case so its
     // receiving-generation behaviour is exercised across growth and renewal.
     const observer = await runtime.connectClient({
       name: "tg-subject-live",
-      contract: participants.LiveProbeCaller.participant,
+      contract: apps.LiveProbeCaller.request,
     });
 
     /** The subject's admitted physical attachments. */
-    const attachments = async (): Promise<Attachment[]> => {
-      const page = await runtime.callAdminRpc("authConnectionsList", {}) as {
-        items: Attachment[];
-      };
-      return page.items.filter((item) => item.participantId === subjectId);
-    };
-
-    const database = createClient({
-      url: `file:${
-        join(runtime.workdir, "data", "trellis", "platform.sqlite")
-      }`,
-    });
-    /** Distinct authorization-context digests persisted for the subject. */
-    const persistedDigests = async (): Promise<Set<string>> => {
-      const result = await database.execute({
-        sql:
-          "SELECT DISTINCT context_digest FROM auth_authorization_contexts WHERE participant_id = ?",
-        args: [subjectId],
-      });
-      return new Set(result.rows.map((row) => String(row.context_digest)));
-    };
+    const attachments = () => readRuntimeServiceAttachments(runtime, subjectId);
 
     try {
       await withTransportGrowthLeg(
@@ -319,13 +312,13 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           // The always-granted capability works on the initial attachment.
           await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_OK");
           const before = await attachments();
-          assertEquals(
+          assert.deepEqual(
             before.length,
             1,
             "a fresh subject has exactly one admitted attachment",
           );
-          const logical = before[0].runtimeConnectionId;
-          const baselineDigest = before[0].contextDigest;
+          const logical = before[0].runtimeId;
+          const baselineDigest = before[0].attachmentId;
 
           // The exact initial physical generation (G1) from the broker's own
           // inventory: its callout-owned socket is the single one admitted under
@@ -337,7 +330,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             await readRuntimeBrokerInventory(runtime),
             new Set([baselineDigest]),
           );
-          assertEquals(
+          assert.deepEqual(
             baselineSockets.length,
             1,
             "the baseline generation must own exactly one physical socket",
@@ -350,7 +343,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           await leg.send("OBSERVE");
           await leg.waitFor("TRANSPORT_GROWTH_OBSERVING");
           await runtime.waitFor(
-            () => (leg.latestObservedIndex() ?? -1) >= 0 ? true : undefined,
+            () => ((leg.latestObservedIndex() ?? -1) >= 0 ? true : undefined),
             { timeoutMs: 30_000, intervalMs: 50 },
           );
           const observedBefore = leg.latestObservedIndex();
@@ -362,30 +355,51 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           // The Rust subject also serves the generated `liveprobe Watch` source.
           // Observe it from a real LiveProbeCaller so the Rust provider's
           // receiving-generation owner controls are exercised across the growth.
-          const feed = await observer.watch({
-            runId: crypto.randomUUID(),
-            streamId: "growth",
-          }).orThrow();
+          const feed = await observer
+            .watch({
+              runId: ulid(),
+              streamId: "growth",
+            })
+            .orThrow();
           const liveFrames: bigint[] = [];
           const liveTask = (async () => {
             for await (const frame of feed) liveFrames.push(frame.index);
           })().catch(() => undefined);
           await runtime.waitFor(
-            () => liveFrames.length > 0 ? true : undefined,
+            () => (liveFrames.length > 0 ? true : undefined),
             { timeoutMs: 30_000, intervalMs: 50 },
           );
           const liveBefore = liveFrames.length;
+
+          // Start the held RPC near ordinary renewal, so its existing deadline
+          // spans maintenance rather than most of an issued authority lifetime.
+          const initialSessions = await runtime.callAdminRpc(
+            "authAuthorizationSessionsList",
+            {},
+          );
+          const initialSession = initialSessions.items.find(
+            (session) =>
+              session.authorizationSessionId ===
+              before[0].authorizationSessionId,
+          );
+          assert(initialSession?.maximumContextExpiresAt);
+          const initialExpiry = Date.parse(
+            initialSession.maximumContextExpiresAt,
+          );
+          await runtime.waitFor(() => Date.now() >= initialExpiry - 40_000, {
+            timeoutMs: 45_000,
+          });
 
           // Hold one real, accepted `Advance` RPC on G1. The target handler parks
           // until the test releases it, so stdin stays free for the rest of the
           // protocol. The handler entry is the observable, not the command echo.
           holdAdvance = true;
           await leg.send("START_ADVANCE");
-          await runtime.waitFor(
-            () => advanceCalls >= 2 ? true : undefined,
-            { timeoutMs: 30_000, intervalMs: 50 },
-          );
-          assertEquals(
+          await runtime.waitFor(() => (advanceCalls >= 2 ? true : undefined), {
+            timeoutMs: 30_000,
+            intervalMs: 50,
+          });
+          assert.deepEqual(
             leg.count("TRANSPORT_GROWTH_ADVANCE_OK"),
             1,
             "the held Advance must not complete before it is released",
@@ -393,12 +407,14 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
 
           // Grow the optional capability through the real deployment consent. It
           // publishes a wider authority and opens G2.
-          await runtime.contracts.apply({
-            deployment: SUBJECT_DEPLOYMENT,
-            contract: subjectContract,
+          await runtime.callAdminRpc("authCapabilityGrantsGrant", {
+            principalId: grant.principalId,
+            capabilityId: CAPABILITY_EXTEND,
+            expectedRevision: 0n,
+            idempotencyKey: ulid(),
           });
           await runtime.waitFor(
-            async () => (await attachments()).length >= 2 ? true : undefined,
+            async () => ((await attachments()).length >= 2 ? true : undefined),
             { timeoutMs: 45_000, intervalMs: 100 },
           );
 
@@ -407,45 +423,56 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           await leg.waitFor("TRANSPORT_GROWTH_EXTEND_AVAILABLE");
           await leg.send("EXTEND");
           await leg.waitFor("TRANSPORT_GROWTH_EXTEND_OK");
-          assertEquals(extendCalls, 1, "the grown capability ran exactly once");
+          assert.deepEqual(
+            extendCalls,
+            1,
+            "the grown capability ran exactly once",
+          );
 
           const after = await attachments();
-          const grown = after.find((item) =>
-            item.contextDigest !== baselineDigest
+          const grown = after.find(
+            (item) => item.attachmentId !== baselineDigest,
           );
           assert(
             grown !== undefined,
             "growth must admit a generation with a newer context",
           );
-          const grownDigest = grown.contextDigest;
+          const grownDigest = grown.attachmentId;
           // The wider generation (G2) is a single exact physical socket.
-          const grownSockets = await runtime.waitFor(async () => {
-            const inventory = await readRuntimeBrokerInventory(runtime, {
-              requiredServerIds: [brokerServerId],
-            });
-            const sockets = admittedConnections(
-              inventory,
-              new Set([grownDigest]),
-            );
-            return sockets.length === 1 ? sockets : undefined;
-          }, { timeoutMs: 45_000, intervalMs: 200 });
+          const grownSockets = await runtime.waitFor(
+            async () => {
+              const inventory = await readRuntimeBrokerInventory(runtime, {
+                requiredServerIds: [brokerServerId],
+              });
+              const sockets = admittedConnections(
+                inventory,
+                new Set([grownDigest]),
+              );
+              return sockets.length === 1 ? sockets : undefined;
+            },
+            { timeoutMs: 45_000, intervalMs: 200 },
+          );
           const g2Key = brokerConnectionKey(grownSockets[0]);
           // The wider generation is admitted with a new exact context and the
           // original attachment survives: make-before-break, not a replacement.
           assert(
-            after.some((item) => item.connectionId === before[0].connectionId),
+            after.some((item) => item.attachmentId === before[0].attachmentId),
             "the original attachment must keep serving covered work",
           );
-          assertEquals(
-            after[0].runtimeConnectionId,
+          assert.deepEqual(
+            after[0].runtimeId,
             logical,
             "the logical connection identity must be stable across growth",
           );
 
           // The held G1 call is still outstanding and both G1 Live sessions keep
           // delivering: growth did not move or interrupt accepted baseline work.
-          assertEquals(advanceCalls, 2, "the held Advance is still in flight");
-          assertEquals(
+          assert.deepEqual(
+            advanceCalls,
+            2,
+            "the held Advance is still in flight",
+          );
+          assert.deepEqual(
             leg.count("TRANSPORT_GROWTH_ADVANCE_OK"),
             1,
             "the held Advance still has not completed",
@@ -458,7 +485,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             { timeoutMs: 30_000, intervalMs: 50 },
           );
           await runtime.waitFor(
-            () => liveFrames.length > liveBefore ? true : undefined,
+            () => (liveFrames.length > liveBefore ? true : undefined),
             { timeoutMs: 30_000, intervalMs: 50 },
           );
 
@@ -476,7 +503,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           // retried or re-executed.
           advanceReleased.resolve();
           await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_OK", 2);
-          assertEquals(
+          assert.deepEqual(
             advanceCalls,
             2,
             "the held Advance must complete exactly once",
@@ -486,12 +513,12 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           // disposition: the close receipt reports whether the receiving
           // generation settled it, not merely that the local promise resolved.
           const receipt = await feed.close().orThrow();
-          assertEquals(
+          assert.deepEqual(
             receipt.remote,
             "confirmed",
             "the Live close must be remotely confirmed on the receiving generation",
           );
-          assertEquals(
+          assert.deepEqual(
             receipt.cleanup,
             "complete",
             "the closed observation must report a complete remote cleanup",
@@ -504,28 +531,32 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           // broker's complete inventory. Absence is only ever read from a
           // validated complete reply, never inferred from an error.
           try {
-            await runtime.waitFor(async () => {
-              const inventory = await readRuntimeBrokerInventory(runtime, {
-                requiredServerIds: [brokerServerId],
-              });
-              return inventory.some((item) =>
-                  brokerConnectionKey(item) === g1Key
+            await runtime.waitFor(
+              async () => {
+                const inventory = await readRuntimeBrokerInventory(runtime, {
+                  requiredServerIds: [brokerServerId],
+                });
+                return inventory.some(
+                  (item) => brokerConnectionKey(item) === g1Key,
                 )
-                ? undefined
-                : true;
-            }, { timeoutMs: 45_000, intervalMs: 400 });
+                  ? undefined
+                  : true;
+              },
+              { timeoutMs: 45_000, intervalMs: 400 },
+            );
           } catch (cause) {
             const inventory = await readRuntimeBrokerInventory(runtime, {
               requiredServerIds: [brokerServerId],
             });
             throw new Error(
-              `the exact baseline socket ${g1Key} was not reclaimed; callout sockets: ${
-                JSON.stringify(
-                  inventory.filter((item) =>
-                    item.authorizedUser.startsWith("trellis.auth.v1:")
-                  ).map(brokerConnectionKey).sort(),
-                )
-              }`,
+              `the exact baseline socket ${g1Key} was not reclaimed; callout sockets: ${JSON.stringify(
+                inventory
+                  .filter((item) =>
+                    item.authorizedUser.startsWith("trellis.auth.v1:"),
+                  )
+                  .map(brokerConnectionKey)
+                  .sort(),
+              )}`,
               { cause },
             );
           }
@@ -554,41 +585,34 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           progressRunning = false;
           await leg.waitFor("TRANSPORT_GROWTH_OBSERVED_ENDED");
 
-          // A subsequent ordinary renewal must be *installed*, not merely issued.
-          // The server persists a new context; a real RPC then has to carry that
-          // newly issued digest as its verified caller, without any forced
-          // refresh or reconnect.
-          const beforeDigests = await persistedDigests();
-          await runtime.waitFor(
-            async () =>
-              (await persistedDigests()).size > beforeDigests.size
-                ? true
-                : undefined,
-            { timeoutMs: 60_000, intervalMs: 250 },
+          // Observe renewal through authenticated RPCs, not private Auth storage.
+          await leg.send("ADVANCE");
+          await leg.waitFor("TRANSPORT_GROWTH_ADVANCE_OK", 3);
+          const beforeRenewal = advanceCallers.at(-1)?.contextDigest;
+          assert(beforeRenewal);
+          const sessions = await runtime.callAdminRpc(
+            "authAuthorizationSessionsList",
+            {},
           );
-          const renewedDigests = new Set(
-            [...await persistedDigests()].filter((digest) =>
-              !beforeDigests.has(digest)
-            ),
+          const current = sessions.items.find(
+            (session) =>
+              session.runtimeId === logical && session.state === "active",
           );
-          assert(
-            renewedDigests.size > 0,
-            "the ordinary renewal must persist a new authorization context",
-          );
+          assert(current?.maximumContextExpiresAt);
           let installedRenewedDigest: string | undefined;
-          const installDeadline = Date.now() + 30_000;
+          const installDeadline = Date.parse(current.maximumContextExpiresAt);
           while (Date.now() < installDeadline) {
             const expected = advanceCalls + 1;
             await leg.send("ADVANCE");
             await runtime.waitFor(
-              () => advanceCalls >= expected ? true : undefined,
+              () => (advanceCalls >= expected ? true : undefined),
               { timeoutMs: 15_000, intervalMs: 50 },
             );
             const latest = advanceCallers[advanceCalls - 1];
             if (
               latest?.type === "verified" &&
               latest.contextDigest !== null &&
-              renewedDigests.has(latest.contextDigest)
+              latest.contextDigest !== beforeRenewal
             ) {
               installedRenewedDigest = latest.contextDigest;
               break;
@@ -614,7 +638,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             ).length === 0,
             "the baseline context must stay unadmitted after renewal",
           );
-          assertEquals(
+          assert.deepEqual(
             admittedConnections(
               afterRenewalInventory,
               new Set([grownDigest]),
@@ -639,25 +663,27 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
 
           // The incoming Feed served by the Rust subject also opens on the
           // surviving generation and closes with a confirmed remote cleanup.
-          const freshFeed = await observer.watch({
-            runId: crypto.randomUUID(),
-            streamId: "growth",
-          }).orThrow();
+          const freshFeed = await observer
+            .watch({
+              runId: ulid(),
+              streamId: "growth",
+            })
+            .orThrow();
           const freshFrames: bigint[] = [];
           const freshTask = (async () => {
             for await (const frame of freshFeed) freshFrames.push(frame.index);
           })().catch(() => undefined);
           await runtime.waitFor(
-            () => freshFrames.length > 0 ? true : undefined,
+            () => (freshFrames.length > 0 ? true : undefined),
             { timeoutMs: 30_000, intervalMs: 50 },
           );
           const freshReceipt = await freshFeed.close().orThrow();
-          assertEquals(
+          assert.deepEqual(
             freshReceipt.remote,
             "confirmed",
             "the fresh Live close must be remotely confirmed",
           );
-          assertEquals(
+          assert.deepEqual(
             freshReceipt.cleanup,
             "complete",
             "the fresh Live close must report a complete remote cleanup",
@@ -668,7 +694,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           const freshCalls = advanceCalls + 1;
           await leg.send("ADVANCE");
           await runtime.waitFor(
-            () => advanceCalls >= freshCalls ? true : undefined,
+            () => (advanceCalls >= freshCalls ? true : undefined),
             { timeoutMs: 30_000, intervalMs: 50 },
           );
 
@@ -683,25 +709,23 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             "the exact baseline socket must stay reaped",
           );
           assert(
-            admittedConnections(
-              finalInventory,
-              new Set([baselineDigest]),
-            ).length === 0,
+            admittedConnections(finalInventory, new Set([baselineDigest]))
+              .length === 0,
             "the baseline context must stay unadmitted",
           );
           const finalAttachments = await attachments();
-          assertEquals(
+          assert.deepEqual(
             finalAttachments.length,
             1,
             "the grown attachment must be the only one left",
           );
-          assertEquals(
-            finalAttachments[0].runtimeConnectionId,
+          assert.deepEqual(
+            finalAttachments[0].runtimeId,
             logical,
             "the logical connection identity must stay stable",
           );
-          assertEquals(
-            finalAttachments[0].contextDigest,
+          assert.deepEqual(
+            finalAttachments[0].attachmentId,
             grownDigest,
             "the surviving attachment must keep its admitted grown context",
           );
@@ -709,7 +733,7 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
             finalInventory,
             new Set([grownDigest]),
           );
-          assertEquals(
+          assert.deepEqual(
             survivingSockets.map(brokerConnectionKey),
             [g2Key],
             "no ordinary renewal may open an extra socket",
@@ -719,13 +743,15 @@ Deno.test("Rust transport generations adopt grown authority automatically withou
           // resurrect the reaped baseline.
           await leg.send("CLOSE");
           await leg.waitFor("TRANSPORT_GROWTH_CLOSED");
-          await runtime.waitFor(async () => {
-            return (await attachments()).length === 0 ? true : undefined;
-          }, { timeoutMs: 30_000 });
+          await runtime.waitFor(
+            async () => {
+              return (await attachments()).length === 0 ? true : undefined;
+            },
+            { timeoutMs: 30_000 },
+          );
         },
       );
     } finally {
-      database.close();
       await observer.connection.close().catch(() => undefined);
       await target.connection.close().catch(() => undefined);
       await targetExit;

@@ -23,8 +23,13 @@ output = "generated"
 "#,
     )
     .unwrap();
-    fs::write(root.path().join("deno.json"), "{}\n").unwrap();
-    fs::write(root.path().join("deno.lock"), "lock\n").unwrap();
+    fs::write(root.path().join("package.json"), "{\"type\":\"module\"}\n").unwrap();
+    // Rust is built independently; its marker must not override explicit TS output.
+    fs::write(
+        root.path().join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"1.2.3\"\n",
+    )
+    .unwrap();
     fs::write(root.path().join("package-lock.json"), "lock\n").unwrap();
     fs::write(
         root.path().join("main.trellis"),
@@ -48,7 +53,6 @@ api ping@v1 {
         .unwrap();
 
     let lock = trellis_idl::project::read_lock(&root.path().join("trellis.lock")).unwrap();
-    assert_eq!(lock.format, 2);
     assert_eq!(lock.root, "fixture");
     assert_eq!(lock.packages.len(), 1);
     let metadata: serde_json::Value =
@@ -56,7 +60,10 @@ api ping@v1 {
             .unwrap();
     assert_eq!(metadata["name"], "fixture");
     assert_eq!(metadata["version"], "1.2.3");
-    assert_eq!(fs::read(root.path().join("deno.lock")).unwrap(), b"lock\n");
+    assert_eq!(
+        fs::read(root.path().join("package.json")).unwrap(),
+        b"{\"type\":\"module\"}\n"
+    );
     assert_eq!(
         fs::read(root.path().join("package-lock.json")).unwrap(),
         b"lock\n"

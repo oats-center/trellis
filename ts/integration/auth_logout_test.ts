@@ -1,66 +1,78 @@
-import { AuthorizationContextRefreshError } from "@oatscenter/trellis/auth";
-import { assertEquals, assertExists, assertRejects } from "@std/assert";
-import { participants } from "trellis-web-generated";
+import assert from "node:assert/strict";
+import { test } from "node:test";
 import { ulid } from "ulid";
+import { adminParticipant } from "../packages/trellis-testkit/src/admin/methods.ts";
 import { withTrellisRuntime } from "./_support/runtime.ts";
 
-Deno.test("logout confirms a revoked session after its transport has closed", async () => {
+test("revoking a closed login is idempotent and preserves a separate login", async () => {
   await withTrellisRuntime(async (runtime) => {
     const client = await runtime.connectClient({
       name: "already-revoked-logout",
-      contract: participants.Console.participant,
+      contract: adminParticipant,
     });
-    const session = (await client.sessionsMe({}).orThrow()).session;
-    assertExists(session);
-    await runtime.callAdminRpc("authSessionsRevoke", {
-      sessionId: session.sessionId,
-      expectedVersion: session.version,
-      idempotencyKey: ulid(),
-      reason: "Verify logout after physical closure",
+    const session = (await client.sessionsMe({}).orThrow()).login;
+    assert(session != null);
+    const other = await runtime.connectClient({
+      name: "separate-login",
+      contract: adminParticipant,
     });
+    const separate = (await other.sessionsMe({}).orThrow()).login;
+    assert(separate);
     await client.connection.close();
-    await client.logout();
-    assertEquals(
-      (await runtime.callAdminRpc("authSessionsList", {
-        participantId: session.participantId,
-      })).items.find((entry) => entry.sessionId === session.sessionId)?.state,
+    const revoke = {
+      loginSessionId: session.loginSessionId,
+      idempotencyKey: ulid(),
+    };
+    await runtime.callAdminRpc("authSessionsRevoke", revoke);
+    await runtime.callAdminRpc("authSessionsRevoke", revoke);
+    assert.deepEqual(
+      (
+        await runtime.callAdminRpc("authSessionsList", {
+          principalId: session.principalId,
+        })
+      ).items.find((entry) => entry.loginSessionId === session.loginSessionId)
+        ?.state,
       "revoked",
     );
+    assert.equal(
+      (await other.sessionsMe({}).orThrow()).login?.loginSessionId,
+      separate.loginSessionId,
+    );
+    await other.connection.close();
   });
 });
 
-Deno.test("logout does not mistake revoked authority for session revocation", async () => {
+test("authorization-session revocation preserves the login and permits fresh admission", async () => {
   await withTrellisRuntime(async (runtime) => {
     const client = await runtime.connectClient({
       name: "authority-revoked-logout",
-      contract: participants.Console.participant,
+      contract: adminParticipant,
     });
-    const session = (await client.sessionsMe({}).orThrow()).session;
-    assertExists(session);
-    const { binding } = await runtime.callAdminRpc("authGrantsGet", {
-      ownerKind: "user",
-      ownerId: session.principalId,
-      participantId: session.participantId,
-    });
-    assertExists(binding);
-    await runtime.callAdminRpc("authGrantsRevoke", {
-      ownerKind: "user",
-      ownerId: session.principalId,
-      participantId: session.participantId,
-      expectedRevision: binding.revision,
+    const before = await client.sessionsMe({}).orThrow();
+    const session = before.login;
+    assert(session != null);
+    await runtime.callAdminRpc("authAuthorizationSessionsRevoke", {
+      authorizationSessionId: before.authorizationSessionId,
       idempotencyKey: ulid(),
     });
-    await client.connection.close();
-    await assertRejects(
-      () => client.logout(),
-      AuthorizationContextRefreshError,
-      "not_authorized",
-    );
-    assertEquals(
-      (await runtime.callAdminRpc("authSessionsList", {
-        participantId: session.participantId,
-      })).items.find((entry) => entry.sessionId === session.sessionId)?.state,
+    const after = await runtime.waitFor(async () => {
+      const result = await client.sessionsMe({}, { timeout: 1000 });
+      if (result.isErr()) return false;
+      const value = result.orThrow();
+      return value.authorizationSessionId !== before.authorizationSessionId
+        ? value
+        : false;
+    });
+    assert.equal(after.login?.loginSessionId, session.loginSessionId);
+    assert.deepEqual(
+      (
+        await runtime.callAdminRpc("authSessionsList", {
+          principalId: session.principalId,
+        })
+      ).items.find((entry) => entry.loginSessionId === session.loginSessionId)
+        ?.state,
       "active",
     );
+    await client.connection.close();
   });
 });

@@ -191,11 +191,12 @@ export class UnexpectedError extends BaseError<UnexpectedErrorData> {
       while (root instanceof Error && root.cause) {
         root = root.cause;
       }
-      const causeMessage = root instanceof Error
-        ? root.message
-        : typeof root === "object"
-        ? JSON.stringify(root)
-        : String(root);
+      const causeMessage =
+        root instanceof Error
+          ? root.message
+          : typeof root === "object"
+            ? JSON.stringify(root)
+            : String(root);
       const causeStack = root instanceof Error ? root.stack : undefined;
       this.withContext({ causeMessage, causeStack });
     }

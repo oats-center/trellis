@@ -11,16 +11,14 @@ mod projection;
 mod semantic;
 
 pub use canonical::{
-    api_digest, canonical_package, capability_consent_digest, package_digest, participant_digest,
-    selected_surface_digest, CanonicalMode,
+    api_digest, canonical_package, package_digest, participant_digest, selected_surface_digest,
+    CanonicalMode,
 };
 pub use compatibility::{
     compare_implementation, compare_resource, compare_resource_evolution, compare_selected,
     CompatibilityIssue, CompatibilityReport, ResourceCompatibilityReport, RetainedResourceActual,
     SelectedCompatibilityCache,
 };
-#[doc(hidden)]
-pub use compile::selected_permission_atoms;
 pub use compile::SuppliedDependencies;
 pub use projection::json_schema;
 pub use semantic::*;
@@ -110,14 +108,141 @@ mod tests {
         let round_trip = compile(&canonical).unwrap();
         assert_eq!(round_trip.root_digest(), graph.root_digest());
     }
+
+    fn transfer_contract(member: &str) -> String {
+        format!(
+            r#"
+            model Value {{ value: string; }}
+            api files@v1 {{
+              title "Files";
+              description "Transfer fixture.";
+              operation Ingest {{ input Value; output Value; {member} }}
+              capabilities {{
+                capability files.write {{ title "Write"; description "Send bytes."; grants "Stores bytes."; allows {{ operation Ingest; }} }}
+              }}
+            }}
+            "#
+        )
+    }
+
+    #[test]
+    fn stream_operations_accept_caller_bytes_with_their_own_digest() {
+        let graph = compile(transfer_contract("stream;")).unwrap();
+        let action = graph
+            .root_package()
+            .apis()
+            .values()
+            .next()
+            .unwrap()
+            .actions()
+            .values()
+            .next()
+            .unwrap();
+        assert!(matches!(
+            action,
+            ActionDefinition::Operation {
+                upload: true,
+                stream: true,
+                ..
+            }
+        ));
+        let canonical =
+            canonical_package(&graph, graph.root(), CanonicalMode::Presentation).unwrap();
+        assert!(canonical.contains("stream;") && !canonical.contains("upload;"));
+        assert_eq!(
+            compile(&canonical).unwrap().root_digest(),
+            graph.root_digest()
+        );
+        let staged = compile(transfer_contract("upload;")).unwrap();
+        assert_ne!(staged.root_digest(), graph.root_digest());
+    }
+
+    fn grouped_contract(capabilities: &str) -> String {
+        format!(
+            r#"
+            model Value {{ value: string; }}
+            api files@v1 {{
+              title "Files";
+              description "File fixture.";
+              rpc Get {{ input Value; output Value; }}
+              rpc Put {{ input Value; output Value; }}
+              capabilities {{ {capabilities} }}
+            }}
+            "#
+        )
+    }
+
+    const READ: &str = r#"capability files.read { title "See files"; description "List files."; grants "Reveals files."; allows { rpc Get; } }"#;
+    const WRITE: &str = r#"capability files.write { title "Change files"; description "Write files."; grants "Changes files."; allows { rpc Put; } }"#;
+
+    #[test]
+    fn groups_bundle_capabilities_and_are_part_of_the_api_meaning() {
+        let group = r#"group editor { title "Editor"; description "Read and change files."; grants "Can change files."; capability files.read; capability files.write; }"#;
+        let grouped = compile(grouped_contract(&format!("{READ} {WRITE} {group}"))).unwrap();
+        let api = grouped.root_package().apis().values().next().unwrap();
+        let id = crate::CapabilityId::new("fixture.files.v1:editor");
+        let members: Vec<_> = api.groups()[&id]
+            .members
+            .iter()
+            .map(crate::CapabilityId::as_str)
+            .collect();
+        assert_eq!(
+            members,
+            [
+                "fixture.files.v1:files.read",
+                "fixture.files.v1:files.write"
+            ]
+        );
+        assert_eq!(api.selection_allows(&id).unwrap().len(), 2);
+
+        // Both canonical forms keep groups, and a group changes the API digest.
+        let canonical =
+            canonical_package(&grouped, grouped.root(), CanonicalMode::Presentation).unwrap();
+        let round_trip = compile(&canonical).unwrap();
+        assert_eq!(round_trip.root_digest(), grouped.root_digest());
+        let ungrouped = compile(grouped_contract(&format!("{READ} {WRITE}"))).unwrap();
+        assert_ne!(grouped.root_digest(), ungrouped.root_digest());
+    }
+
+    #[test]
+    fn groups_require_consent_text_and_own_capabilities() {
+        for (group, message) in [
+            (
+                r#"group editor { description "D"; grants "C"; capability files.read; }"#,
+                "requires title, description, and grants",
+            ),
+            (
+                r#"group editor { title "T"; description "D"; grants "C"; }"#,
+                "has no capabilities",
+            ),
+            (
+                r#"group editor { title "T"; description "D"; grants "C"; capability files.missing; }"#,
+                "not a capability of this API",
+            ),
+            (
+                r#"public { allows { rpc Put; } } group public { title "T"; description "D"; grants "C"; capability files.read; }"#,
+                "reserved for the public capability",
+            ),
+        ] {
+            let error = compile(grouped_contract(&format!("{READ} {group}"))).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn operations_cannot_declare_both_upload_and_stream() {
+        let error = compile(transfer_contract("upload; stream;")).unwrap_err();
+        assert!(error.to_string().contains("both 'upload' and 'stream'"));
+    }
 }
 
 use project::{Dependency, GenerateConfig, PackageManifest, PackageMetadata};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::PathBuf,
+    sync::{Arc, Mutex},
 };
 
 /// Compile a source package and supplied exact dependency graphs without I/O.
@@ -159,12 +284,32 @@ pub struct PackageEvidence {
     pub packages: Vec<PackageSourceEvidence>,
 }
 
-/// Recompile and verify generated package evidence without filesystem or network access.
+// Only successful compilations of exactly equal complete evidence are reusable.
+// Keep compilation outside the lock; concurrent misses may compile twice, but
+// never serialize unrelated evidence behind the compiler.
+static COMPILED_EVIDENCE: Mutex<VecDeque<(PackageEvidence, Arc<PackageGraph>)>> =
+    Mutex::new(VecDeque::new());
+
+/// Compile and verify generated package evidence without filesystem or network access.
+///
+/// A bounded process-local cache reuses successful compilations only when the
+/// complete evidence matches, including every source byte and dependency. Claimed
+/// digests alone never authorize reuse. No policy or authorization state is cached.
+/// The graph is shared with the cache, so a hit costs no copy.
 ///
 /// # Errors
 ///
 /// Returns an error when the closure is incomplete, cyclic, malformed, or digest-invalid.
-pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGraph> {
+pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<Arc<PackageGraph>> {
+    let cached = COMPILED_EVIDENCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(input, _)| input == &evidence)
+        .map(|(_, graph)| Arc::clone(graph));
+    if let Some(graph) = cached {
+        return Ok(graph);
+    }
     if !evidence
         .packages
         .windows(2)
@@ -199,6 +344,16 @@ pub fn compile_evidence(evidence: PackageEvidence) -> miette::Result<PackageGrap
         return Err(miette::miette!(
             "evidence root digest does not match recompiled semantics"
         ));
+    }
+    let graph = Arc::new(graph);
+    let mut cache = COMPILED_EVIDENCE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !cache.iter().any(|(input, _)| input == &evidence) {
+        if cache.len() == 16 {
+            cache.pop_front();
+        }
+        cache.push_back((evidence, Arc::clone(&graph)));
     }
     Ok(graph)
 }

@@ -7,13 +7,21 @@ license.workspace = true
 repository.workspace = true
 description = "Curated public Rust facade for Trellis clients and services."
 readme = "../../README.md"
+include = ["Cargo.toml", "src/**", "generated/**", "tests/**", "README.md"]
 
 [features]
+default = ["native-oauth", "device"]
+# An HTTPS client for OAuth, device enrollment, and OTLP export.
+http = ["dep:reqwest", "dep:rustls-platform-verifier"]
+# Native OAuth sign-in for user applications and tools.
+native-oauth = ["http", "dep:p256"]
+# Device enrollment and activation.
+device = ["native-oauth", "dep:hkdf", "dep:hmac"]
 event-store-sqlite = ["dep:rusqlite"]
 event-store-postgres = ["dep:postgres"]
 live-integration = []
-runtime-internals = []
 telemetry-otlp = [
+  "http",
   "dep:opentelemetry-otlp",
   "reqwest/blocking",
 ]
@@ -23,24 +31,26 @@ name = "integration"
 required-features = ["live-integration"]
 
 [dependencies]
+trellis-models.workspace = true
 async-nats.workspace = true
 base64.workspace = true
 bytes.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
-hkdf = "0.13.0"
-hmac = "0.13.0"
+hkdf = { version = "0.12.4", optional = true }
+hmac = { version = "0.12.1", optional = true }
 nkeys = "0.4"
+p256 = { version = "0.13.2", features = ["ecdsa"], optional = true }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry.workspace = true
 postgres = { version = "0.19.12", optional = true }
 rand.workspace = true
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "form"], optional = true }
 rusqlite = { workspace = true, optional = true }
 rustls.workspace = true
-rustls-platform-verifier.workspace = true
+rustls-platform-verifier = { workspace = true, optional = true }
 ryu-js.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
@@ -49,10 +59,10 @@ jsonschema.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "sync"] }
-trellis-protocol = { path = "../protocol", version = "0.100.0" }
+trellis-protocol = { path = "../protocol", version = "0.100.0-rc.3" }
 tracing.workspace = true
 tokio-util.workspace = true
-ulid.workspace = true
+ulid = { workspace = true, features = ["serde"] }
 url.workspace = true
 
 [dev-dependencies]
@@ -65,6 +75,9 @@ trellis-testkit = { path = "../trellis-testkit" }
 trellis-runtime-apis = { path = "../runtime-apis" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2.186"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
 
 [lints]

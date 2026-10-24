@@ -1,4 +1,5 @@
 import { boundedNumber, compactDuration } from "./format.ts";
+import { errorText } from "./console/plain_labels.ts";
 
 type Numeric = number | bigint;
 
@@ -85,7 +86,7 @@ export type JobTimelineRuntimeEvent = {
 /** Time spent waiting for a worker before an execution attempt. */
 export type JobTimelineQueuePhase = {
   kind: "queue";
-  label: "Queue" | "Retry delay";
+  label: "Waiting to start" | "Waiting to retry";
   enteredAt: string;
   enteredLabel: string;
   enteredType: string;
@@ -100,7 +101,7 @@ export type JobTimelineQueuePhase = {
 /** Work performed by one execution attempt. */
 export type JobTimelineExecutionPhase = {
   kind: "execution";
-  label: "Execution";
+  label: "Running";
   startedAt: string;
   startedType: string;
   endedAt?: string;
@@ -177,12 +178,12 @@ export function buildJobTimeline(
   const startQueue = (event: JobTimelineEvent, retry = false) => {
     queue = {
       kind: "queue",
-      label: retry ? "Retry delay" : "Queue",
+      label: retry ? "Waiting to retry" : "Waiting to start",
       enteredAt: event.timestamp,
       enteredLabel: retry
         ? "Retry scheduled"
         : event.type.toLowerCase() === "retried"
-        ? "Requeued"
+        ? "Sent back to wait"
         : "Created",
       enteredType: event.type,
       rawEvents: [event],
@@ -212,7 +213,7 @@ export function buildJobTimeline(
       }
       execution = {
         kind: "execution",
-        label: "Execution",
+        label: "Running",
         startedAt: event.timestamp,
         startedType: event.type,
         attempt: event.tries,
@@ -323,7 +324,7 @@ function startSyntheticExecution(
 ): JobTimelineExecutionPhase {
   const execution: JobTimelineExecutionPhase = {
     kind: "execution",
-    label: "Execution",
+    label: "Running",
     startedAt: event.timestamp,
     startedType: event.type,
     attempt: event.tries,
@@ -448,13 +449,13 @@ function transitionLabel(event: JobTimelineEvent): string | undefined {
 function activityLabel(type: string): string {
   switch (type) {
     case "heartbeat":
-      return "Worker heartbeat";
+      return "Still working";
     case "logged":
       return "Log entry recorded";
     case "resumed":
       return "Resumed";
     case "stalecompletionignored":
-      return "Stale completion ignored";
+      return "Late result ignored";
     default:
       return humanize(type);
   }
@@ -490,19 +491,9 @@ function elapsedLabel(start: string, end: string): string | undefined {
 }
 
 function parseErrorMessage(error?: string): string | undefined {
-  if (!error) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(error);
-    if (typeof parsed === "object" && parsed !== null) {
-      const message = "message" in parsed ? parsed.message : undefined;
-      const type = "type" in parsed ? parsed.type : undefined;
-      if (typeof message === "string") return message;
-      if (typeof type === "string") return type;
-    }
-  } catch {
-    // The wire format also permits plain-text errors.
-  }
-  return error.length > 120 ? `${error.slice(0, 120)}...` : error;
+  const text = errorText(error);
+  if (!text) return undefined;
+  return text.length > 120 ? `${text.slice(0, 120)}...` : text;
 }
 
 function humanize(value: string): string {

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Internal bootstrap generation for Trellis runtime configuration and NATS material."
-publish = ["crates-io"]
+publish = false
 
 [lints]
 workspace = true
@@ -17,13 +17,18 @@ nkeys = { version = "0.4.5", features = ["xkeys"] }
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
+ulid.workspace = true
 thiserror.workspace = true
 toml = "1.1.2"
-trellis-runtime = { path = "../runtime", version = "0.100.0" }
-trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.100.0" }
+trellis-runtime = { path = "../runtime", version = "0.100.0-rc.3" }
+trellis-local-bootstrap = { path = "../local-bootstrap", version = "0.100.0-rc.3" }
 miette.workspace = true
+ipnet.workspace = true
+rcgen.workspace = true
+time.workspace = true
 
 [dev-dependencies]
 async-nats.workspace = true
+rustls.workspace = true
 base64.workspace = true
 tempfile.workspace = true
