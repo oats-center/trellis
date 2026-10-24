@@ -490,7 +490,7 @@ CREATE TABLE auth_capability_identities (
     consent_revision INTEGER NOT NULL CHECK (consent_revision >= 1),
     title TEXT NOT NULL,
     description TEXT NOT NULL,
-    consequence TEXT NOT NULL,
+    grants TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('active', 'deleted')),
     created_at INTEGER NOT NULL,
     deleted_at INTEGER,
@@ -499,14 +499,17 @@ CREATE TABLE auth_capability_identities (
     PRIMARY KEY (capability_id, identity_generation),
     CHECK ((state = 'deleted') = (deleted_at IS NOT NULL))
 );
--- A group's members at each consent revision. Holders through grants, roles and
--- mappings get the current revision's members; an app keeps the members of the
--- revision its user consented to, less any since removed.
+-- A group's members at each consent revision, with the member meaning approved
+-- with it. Holders through grants, roles and mappings get the current
+-- revision's members; an app keeps the members of the revision its user
+-- consented to whose meaning is unchanged, less any since removed.
 CREATE TABLE auth_capability_group_members (
     group_id TEXT NOT NULL,
     group_generation INTEGER NOT NULL,
     consent_revision INTEGER NOT NULL CHECK (consent_revision >= 1),
     capability_id TEXT NOT NULL,
+    capability_generation INTEGER NOT NULL,
+    capability_consent_revision INTEGER NOT NULL CHECK (capability_consent_revision >= 1),
     PRIMARY KEY (group_id, group_generation, consent_revision, capability_id),
     FOREIGN KEY (group_id, group_generation)
         REFERENCES auth_capability_identities(capability_id, identity_generation)

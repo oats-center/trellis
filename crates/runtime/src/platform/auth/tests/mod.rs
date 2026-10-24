@@ -59,8 +59,8 @@ api documents@v1 {
  rpc Put { input Document; output Document; }
  rpc Export { input Document; output Document; }
  capabilities {
-  capability documents.read { title "Read"; description "Read documents."; consequence "Sees contents."; consent_revision 1; allows { rpc Get; } }
-  capability documents.write { title "Write"; description "Write documents."; consequence "Changes contents."; consent_revision 1; allows { rpc Put; } }
+  capability documents.read { title "Read"; description "Read documents."; grants "Sees contents."; allows { rpc Get; } }
+  capability documents.write { title "Write"; description "Write documents."; grants "Changes contents."; allows { rpc Put; } }
  }
 }
 service Reader { use documents { required capability documents.read; capability documents.write; } }

@@ -5,8 +5,8 @@ api upgrade@v1 {
   rpc Echo { input Value; output Value; }
   rpc Extra { input Value; output Value; }
   capabilities {
-    capability documents.read { title "Read documents"; description "Read fixture documents."; consequence "The caller may read documents through Echo and Extra."; consent_revision 1; allows { rpc Echo; rpc Extra; } }
-    capability echo.call { title "Echo"; description "Read through Echo only."; consequence "The caller may invoke Echo."; consent_revision 1; allows { rpc Echo; } }
+    capability documents.read { title "Read documents"; description "Read fixture documents."; grants "The caller may read documents through Echo and Extra."; allows { rpc Echo; rpc Extra; } }
+    capability echo.call { title "Echo"; description "Read through Echo only."; grants "The caller may invoke Echo."; allows { rpc Echo; } }
   }
 }
 service Provider { implements upgrade; }

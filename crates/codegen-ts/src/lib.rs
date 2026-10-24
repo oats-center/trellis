@@ -2628,16 +2628,16 @@ mod tests {
               operation Work { input Empty; output Node; progress Node; signals { Wake Empty; } upload; }
               event Changed { payload Node; }
               capabilities {
-                capability items.read { consent_revision 1; title "Read"; description "Read orders."; consequence "Reveals order data."; allows { rpc Get; } }
-                capability items.work { consent_revision 1; title "Work"; description "Run order work."; consequence "Changes orders."; allows { operation Work; } }
-                capability items.observe { consent_revision 1; title "Observe"; description "Observe order changes."; consequence "Reveals order updates."; allows { subscribe event Changed; } }
+                capability items.read { title "Read"; description "Read orders."; grants "Reveals order data."; allows { rpc Get; } }
+                capability items.work { title "Work"; description "Run order work."; grants "Changes orders."; allows { operation Work; } }
+                capability items.observe { title "Observe"; description "Observe order changes."; grants "Reveals order updates."; allows { subscribe event Changed; } }
               }
             }
             api catalog@v2 {
               title "Catalog";
               description "Catalog operations.";
               rpc List { input Empty; output Node; }
-              capabilities { public { consent_revision 1; allows { rpc List; } } }
+              capabilities { public { allows { rpc List; } } }
             }
             service Worker { implements orders; implements catalog; kv optional cache { title "Cache"; description "Cache"; schema PrivateState; version 2; accepts { 1: PrivateV1; } } job work { title "Work"; description "Work queue."; payload Empty; deadline 45s; retry { attempts 3; backoff [5s, 30s]; } } }
             app Viewer { use orders { required capability items.read; capability items.work; capability items.observe; } }
@@ -2740,7 +2740,7 @@ export async function useState(client: ConnectedTrellisClient<typeof apps.Sensor
               description "Work operations.";
               operation Run { input Empty; output Empty; progress Status; update Preview; }
               operation Step { input Empty; output Empty; progress Status; }
-               capabilities { public { consent_revision 1; allows { operation Run; operation Step; } } }
+               capabilities { public { allows { operation Run; operation Step; } } }
             }
             service Worker { implements work; }
             "#,

@@ -8,11 +8,10 @@ api upgrade@v1 {
     capability documents.read {
       title "Read documents";
       description "Approve the revised usage terms for these document reads.";
-      consequence "The caller can read documents under the revised usage terms.";
-      consent_revision 2;
+      grants "The caller can read documents under the revised usage terms.";
       allows { rpc Echo; rpc Extra; }
     }
-    capability echo.call { title "Echo"; description "Read through Echo only."; consequence "The caller may invoke Echo."; consent_revision 1; allows { rpc Echo; } }
+    capability echo.call { title "Echo"; description "Read through Echo only."; grants "The caller may invoke Echo."; allows { rpc Echo; } }
   }
 }
 service Provider { implements upgrade; }

@@ -75,8 +75,7 @@ api orders@v1 {
     capability create {
       title "Create orders";
       description "Create an order for a customer.";
-      consequence "New orders enter the customer's workflow.";
-      consent_revision 1;
+      grants "New orders enter the customer's workflow.";
       allows { rpc Create; }
     }
   }
@@ -128,13 +127,14 @@ the built-in `trellis` package may use it, and Auth refuses any other API in
 the `trellis.` namespace. Own-authority and own-session maintenance are fixed
 session rights, not ordinary capability requests.
 
-Every authored capability has an explicit positive integer `consent_revision`;
-descriptor projections must expose it as `consentRevision`. Authors change this
-when delegated meaning changes; prose edits do not increment it automatically.
-Compatibility checking rejects a decrease for an existing capability identity;
-Auth must enforce the same rule when accepting a force replacement. API
-generation, accepted revision, and action/membership introduction revisions are
-Auth-owned acceptance metadata, never authored counters.
+Every authored capability has a `title`, a `description`, and `grants`: what
+holding it lets the holder do, shown when a user consents. Authors declare no
+revision counter. Auth owns each capability's consent revision and advances it
+when an accepted API makes the capability allow more than before; a user's
+approval then no longer covers it until they approve again. Wording edits and
+narrowing never require new approval. API generation, accepted revision,
+consent revisions, and action/membership introduction revisions are Auth-owned
+acceptance metadata.
 
 A group is a developer-defined bundle of an API's capabilities. It is granted,
 assigned to roles, mapped from identity providers, requested by participants,
@@ -147,8 +147,7 @@ capabilities {
   group support {
     title "Support";
     description "Look up and cancel customer orders.";
-    consequence "Can see and cancel any order.";
-    consent_revision 1;
+    grants "Can see and cancel any order.";
     capability orders.read;
     capability orders.cancel;
   }
@@ -157,14 +156,15 @@ service Desk { use orders { required group support; } }
 ```
 
 A group's ID is the API prefix and its one-word name,
-`acme.orders.v1:support`; `public` is reserved for the public capability. It needs a title, description, consequence,
-`consent_revision`, and at least one member, and lists only capabilities of the
-same API. Groups are part of the API's meaning, so they are in both canonical
+`acme.orders.v1:support`; `public` is reserved for the public capability. It
+needs a title, description, grants, and at least one member, and lists only
+capabilities of the same API. Groups are part of the API's meaning, so they are in both canonical
 forms and change its digest. Whoever holds a group through a grant, role, or
 mapping holds its current members, so a membership change reaches them at once.
-Adding members requires a higher `consent_revision`: an app keeps the members
-its user consented to until the user approves again, while removed members are
-gone everywhere. A group containing an administrative capability is
+A group's consent revision advances when it gains a member or a member allows
+more. An app keeps the members its user consented to, as they were then, until
+the user approves again; a member that now allows more is withheld from the app
+meanwhile, and removed members are gone everywhere. A group containing an administrative capability is
 administrative.
 
 Resource headers are `state`, `kv`, `store`, `job`, or `consumer`, optionally

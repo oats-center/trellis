@@ -204,8 +204,8 @@ fn bootstrap_replay_does_not_grant_new_builtin_capabilities() {
         .replace(
             "capability rolesRead {",
             "capability future.read { title \"Future\"; description \"Future \
-            optional right.\"; consequence \"Reads future metadata.\"; \
-            consent_revision 1; allows { rpc Roles.List; } }\ncapability rolesRead \
+            optional right.\"; grants \"Reads future metadata.\"; \
+            allows { rpc Roles.List; } }\ncapability rolesRead \
             {",
         );
     let graph = compile_project(

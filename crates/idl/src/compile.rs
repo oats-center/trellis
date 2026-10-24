@@ -852,11 +852,11 @@ fn resolve_api(
         if !capability.public
             && (capability.title.is_empty()
                 || capability.description.is_empty()
-                || capability.consequence.is_empty()
+                || capability.grants.is_empty()
                 || capability.allows.is_empty())
         {
             return Err(miette!(
-                "capability '{}' requires title, description, consequence, and nonempty allows",
+                "capability '{}' requires title, description, grants, and nonempty allows",
                 capability.name
             ));
         }
@@ -885,12 +885,9 @@ fn resolve_api(
             .insert(
                 id,
                 CapabilityDefinition {
-                    consent_revision: capability.consent_revision.ok_or_else(|| {
-                        miette!("capability '{}' requires consent_revision", capability.name)
-                    })?,
                     title: capability.title.clone(),
                     description: capability.description.clone(),
-                    consequence: capability.consequence.clone(),
+                    grants: capability.grants.clone(),
                     administrative: capability.administrative,
                     allows,
                     public: capability.public,
@@ -910,12 +907,10 @@ fn resolve_api(
             ));
         }
         if !canonical_unit
-            && (group.title.is_empty()
-                || group.description.is_empty()
-                || group.consequence.is_empty())
+            && (group.title.is_empty() || group.description.is_empty() || group.grants.is_empty())
         {
             return Err(miette!(
-                "group '{}' requires title, description, and consequence",
+                "group '{}' requires title, description, and grants",
                 group.name
             ));
         }
@@ -936,12 +931,9 @@ fn resolve_api(
             return Err(miette!("group '{}' has no capabilities", group.name));
         }
         let definition = CapabilityGroupDefinition {
-            consent_revision: group
-                .consent_revision
-                .ok_or_else(|| miette!("group '{}' requires consent_revision", group.name))?,
             title: group.title.clone(),
             description: group.description.clone(),
-            consequence: group.consequence.clone(),
+            grants: group.grants.clone(),
             members,
         };
         if groups

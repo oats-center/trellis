@@ -27,12 +27,12 @@ and this project adheres to
   them and is reserved to the built-in `trellis` package, and Auth refuses any
   other API in the `trellis.` namespace.
 - Capability groups. An API declares `group name { title; description;
-consequence; consent_revision; capability …; }` bundles of its own
+grants; capability …; }` bundles of its own
   capabilities, with IDs like `trellis.auth.v1:account`. Groups are granted,
   assigned to roles, mapped, requested (`use api { group name; }`), and
   consented to like capabilities. Holders get the group's current members live;
-  growing a group needs a higher consent revision, and an app keeps the members
-  its user approved until asked again. Built-in groups: `account` and
+  an app keeps the members its user approved, as they were then, until asked
+  again. Built-in groups: `account` and
   `administration` (Auth), `operator` (Events, Jobs), `monitor` (Health).
 - `[auth.administration]` safeguards for delegating administration to an app,
   each on by default: `confirm_on_consent` (a separate Portal confirmation
@@ -103,6 +103,13 @@ consequence; consent_revision; capability …; }` bundles of its own
 
 ### Changed
 
+- **Breaking:** Capabilities and groups no longer declare `consent_revision`,
+  and `consequence` is renamed `grants`. Auth advances a capability's consent
+  revision itself when an accepted API makes it allow more, or a group gains a
+  member or a member allows more; users then approve again. Rewording never
+  requires new approval. `AuthCapabilityDefinition.consequence` is now
+  `grants`, and an app approved for a group no longer receives a member that
+  has since grown to allow more.
 - **Breaking:** Built-in model names are PascalCase at every nested segment
   (`HealthInspectResponseInstancesItemLatestSample`, not
   `HealthInspectResponseinstancesItemlatestSample`), and inline copies of the

@@ -180,20 +180,14 @@ pub(crate) fn selected_surface_digest_cached(
         (false, &selection.optional_capabilities),
     ] {
         for id in capabilities {
-            let consent_revision = api
-                .capabilities
-                .get(id)
-                .map(|capability| capability.consent_revision)
-                .or_else(|| api.groups.get(id).map(|group| group.consent_revision))
-                .ok_or_else(|| {
-                    miette!(
-                        "selected capability '{id}' is absent from API '{}'",
-                        api.identity
-                    )
-                })?;
+            if !api.capabilities.contains_key(id) && !api.groups.contains_key(id) {
+                return Err(miette!(
+                    "selected capability '{id}' is absent from API '{}'",
+                    api.identity
+                ));
+            }
             append_digest_field(&mut output, if required { "required" } else { "optional" });
             append_digest_field(&mut output, id.as_str());
-            append_digest_field(&mut output, &consent_revision.to_string());
             for action in api.selection_allows(id).unwrap_or_default() {
                 append_digest_field(&mut output, &selection_key(action));
             }
@@ -535,8 +529,7 @@ fn render_group(
     };
     writeln!(block, "      title {};", quote(title)).unwrap();
     writeln!(block, "      description {};", quote(&group.description)).unwrap();
-    writeln!(block, "      consequence {};", quote(&group.consequence)).unwrap();
-    writeln!(block, "      consent_revision {};", group.consent_revision).unwrap();
+    writeln!(block, "      grants {};", quote(&group.grants)).unwrap();
     for member in &group.members {
         writeln!(
             block,
@@ -579,13 +572,8 @@ fn render_capability(
             )
             .unwrap();
         }
-        if !capability.consequence.is_empty() {
-            writeln!(
-                block,
-                "      consequence {};",
-                quote(&capability.consequence)
-            )
-            .unwrap();
+        if !capability.grants.is_empty() {
+            writeln!(block, "      grants {};", quote(&capability.grants)).unwrap();
         }
     } else if capability.public {
         block.push_str("      title \"_\";\n");
@@ -597,19 +585,8 @@ fn render_capability(
             quote(&capability.description)
         )
         .unwrap();
-        writeln!(
-            block,
-            "      consequence {};",
-            quote(&capability.consequence)
-        )
-        .unwrap();
+        writeln!(block, "      grants {};", quote(&capability.grants)).unwrap();
     }
-    writeln!(
-        block,
-        "      consent_revision {};",
-        capability.consent_revision
-    )
-    .unwrap();
     block.push_str("      allows {\n");
     let mut allows = capability.allows.iter().collect::<Vec<_>>();
     allows.sort_by_key(|selection| selection_key(selection));

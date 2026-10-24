@@ -21,14 +21,13 @@ api echo@v1 {
   operation Upload { input Value; output Value; upload; }
   event Observed { payload Value; }
   capabilities {
-    capability echo.invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; consequence "The caller may invoke Echo, work operations, and observe results."; consent_revision 1; allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
-    capability files.upload { title "Upload"; description "Upload fixture values."; consequence "The caller may execute uploads."; consent_revision 1; allows { operation Upload; } }
-    capability events.publishObserved { title "Publish observations"; description "Publish fixture observations."; consequence "The publisher may emit Observed events."; consent_revision 1; allows { publish event Observed; } }
+    capability echo.invoke { title "Invoke and observe"; description "Invoke fixture work and observe its events."; grants "The caller may invoke Echo, work operations, and observe results."; allows { rpc Echo; operation Work; operation UpdateOnly; operation Silent; subscribe event Observed; } }
+    capability files.upload { title "Upload"; description "Upload fixture values."; grants "The caller may execute uploads."; allows { operation Upload; } }
+    capability events.publishObserved { title "Publish observations"; description "Publish fixture observations."; grants "The publisher may emit Observed events."; allows { publish event Observed; } }
     capability echo.optionalSilent {
       title "Optional silent operation";
       description "Partial lifecycle authorization acceptance.";
-      consequence "The caller can invoke and manage the optional silent operation.";
-      consent_revision 1;
+      grants "The caller can invoke and manage the optional silent operation.";
       allows { operation OptionalSilent; }
     }
   }

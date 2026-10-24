@@ -20,20 +20,17 @@ api documents@v1 {
   capabilities {
     capability documents.read {
       title "Read"; description "Read a document.";
-      consequence "The caller sees document contents.";
-      consent_revision 2;
+      grants "The caller sees document contents.";
       allows { rpc Get; }
     }
     capability documents.write {
       title "Write"; description "Update a document.";
-      consequence "The caller can overwrite document contents.";
-      consent_revision 1;
+      grants "The caller can overwrite document contents.";
       allows { rpc Put; }
     }
     capability documents.export {
       title "Export"; description "Export a document.";
-      consequence "The caller can retain document contents elsewhere.";
-      consent_revision 1;
+      grants "The caller can retain document contents elsewhere.";
       allows { rpc Export; }
     }
   }
@@ -138,24 +135,19 @@ fn application_requests_refuse_private_resource_ownership() {
 }
 
 #[test]
-fn unknown_capability_and_nonpositive_consent_revision_are_refused() {
+fn unknown_capability_is_refused() {
     assert!(compile(&SOURCE.replace(
         "required capability documents.read;",
         "required capability documents.missing;"
     ))
     .is_err());
-    assert!(compile(&SOURCE.replace("consent_revision 2;", "consent_revision 0;")).is_err());
 }
 
 #[test]
-fn compatibility_refuses_consent_rollback_but_allows_editorial_changes() {
+fn compatibility_allows_editorial_changes() {
     let original = compile(SOURCE).unwrap();
-    let lowered = compile(&SOURCE.replace("consent_revision 2;", "consent_revision 1;")).unwrap();
     let edited = compile(&SOURCE.replace("Read a document.", "Read document contents.")).unwrap();
     let api = original.root_package().apis().keys().next().unwrap();
-    assert!(
-        !compare_implementation(original.api(api).unwrap(), lowered.api(api).unwrap()).compatible
-    );
     assert!(
         compare_implementation(original.api(api).unwrap(), edited.api(api).unwrap()).compatible
     );
@@ -267,7 +259,7 @@ fn selecting_a_group_selects_what_its_members_allow() {
         .replace(
             "  }\n}\nservice Reader",
             "    group editor { title \"Editor\"; description \"Read and write.\"; \
-             consequence \"Changes documents.\"; consent_revision 1; \
+             grants \"Changes documents.\"; \
              capability documents.read; capability documents.write; }\n  }\n}\nservice Reader",
         )
         .replace(

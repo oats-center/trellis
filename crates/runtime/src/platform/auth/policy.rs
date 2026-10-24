@@ -180,7 +180,8 @@ pub(super) fn covers(
     })
 }
 
-/// A group's active members as of one consent revision.
+/// A group's members as of one consent revision, keeping only those whose
+/// meaning is still the one approved with that revision.
 pub(super) fn members_at(
     connection: &Connection,
     id: &str,
@@ -192,6 +193,8 @@ pub(super) fn members_at(
             "SELECT m.capability_id FROM auth_capability_group_members m \
             JOIN auth_capability_identities c ON c.capability_id=m.capability_id \
             AND c.state='active' \
+            AND c.identity_generation=m.capability_generation \
+            AND c.consent_revision=m.capability_consent_revision \
             WHERE m.group_id=?1 AND m.group_generation=?2 AND m.consent_revision=?3 \
             ORDER BY m.capability_id",
         )?

@@ -87,14 +87,12 @@ api orders@v1 {
   }
   capabilities {
     public {
-      consent_revision 1;
       allows { publish event Changed; subscribe event Changed; }
     }
     capability items.read {
-      consent_revision 1;
       title "Read orders";
       description "Reads orders.";
-      consequence "Order data is shared.";
+      grants "Order data is shared.";
       allows { rpc Get; }
     }
   }
@@ -418,8 +416,8 @@ fn shared_schema_changes_update_only_affected_participant_needs() {
         .replace(
             "    capability items.read {",
             "    capability items.again { title \"Read again\"; description \"Read \
-            another page.\"; consequence \"Order data is shared.\"; \
-            consent_revision 1; allows { rpc Again; } }\n    capability items.read {",
+            another page.\"; grants \"Order data is shared.\"; \
+            allows { rpc Again; } }\n    capability items.read {",
         );
     let compile = |types: &str| {
         compile_project(
@@ -598,7 +596,7 @@ fn consumer_requires_explicit_trellis_events_dependency() {
 api orders@v1 {
   title "Orders"; description "Orders";
   event Changed { payload Value; }
-  capabilities { public { consent_revision 1; allows { publish event Changed; subscribe event Changed; } } }
+  capabilities { public { allows { publish event Changed; subscribe event Changed; } } }
 }
 service Worker {
   consumer changes {
@@ -877,7 +875,7 @@ api common@v1 {
   title "Common";
   description "Common values.";
   rpc Get { input Empty; output Shared; }
-    capabilities { public { consent_revision 1; allows { rpc Get; } } }
+    capabilities { public { allows { rpc Get; } } }
 }
 "#,
         )],
@@ -1055,10 +1053,9 @@ api work@v2 {
   operation Run { input Empty; output Empty; signals { stop Empty; } }
   capabilities {
     capability items.execute {
-      consent_revision 1;
       title "Execute work";
       description "Runs work.";
-      consequence "Work is executed.";
+      grants "Work is executed.";
       allows { operation Run; }
     }
   }
@@ -1167,18 +1164,18 @@ api state@v1 {
   capabilities {
     capability values.read {
       title "Read"; description "Read a State value.";
-      consequence "The caller sees saved values.";
-      consent_revision 1; allows { rpc Get; }
+      grants "The caller sees saved values.";
+      allows { rpc Get; }
     }
     capability values.write {
       title "Write"; description "Overwrite a State value.";
-      consequence "The caller replaces saved values.";
-      consent_revision 1; allows { rpc Put; }
+      grants "The caller replaces saved values.";
+      allows { rpc Put; }
     }
     capability values.delete {
       title "Delete"; description "Delete a State value.";
-      consequence "The caller removes saved values.";
-      consent_revision 1; allows { rpc Delete; }
+      grants "The caller removes saved values.";
+      allows { rpc Delete; }
     }
   }
 }
@@ -1240,7 +1237,7 @@ api work@v1 {
   title "Work";
   description "Work operations.";
   operation Run { input Empty; output Empty; progress Status; update Preview; }
-  capabilities { public { consent_revision 1; allows { operation Run; } } }
+  capabilities { public { allows { operation Run; } } }
 }
 service Worker { implements work; }
 "#;

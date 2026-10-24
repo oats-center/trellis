@@ -594,15 +594,12 @@ pub enum Pagination {
 /// group's current members, so a membership change reaches them directly.
 #[derive(Clone, Debug)]
 pub struct CapabilityGroupDefinition {
-    /// Explicit revision of the delegated meaning shown for consent; it must
-    /// increase whenever members are added.
-    pub consent_revision: u64,
     /// Presentation title.
     pub title: String,
     /// Consent description.
     pub description: String,
-    /// Consent consequence.
-    pub consequence: String,
+    /// What holding it lets the holder do, shown for consent.
+    pub grants: String,
     /// Member capabilities of the same API.
     pub members: BTreeSet<CapabilityId>,
 }
@@ -610,14 +607,12 @@ pub struct CapabilityGroupDefinition {
 /// Capability policy and consent text.
 #[derive(Clone, Debug)]
 pub struct CapabilityDefinition {
-    /// Explicit revision of the delegated meaning shown for consent.
-    pub consent_revision: u64,
     /// Presentation title.
     pub title: String,
     /// Consent description.
     pub description: String,
-    /// Consent consequence.
-    pub consequence: String,
+    /// What holding it lets the holder do, shown for consent.
+    pub grants: String,
     /// Manages the Trellis installation itself. Only the builtin `trellis`
     /// package declares these.
     pub administrative: bool,

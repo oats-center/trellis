@@ -24,8 +24,8 @@ api performance@v1 {
   event Changed { payload Value; }
   event Delivered { payload Value; }
   capabilities {
-    capability workloads.run { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; consequence "The caller may run the benchmark workloads and observe their results."; consent_revision 1; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; rpc DownloadStream; operation Upload; operation UploadStaged; operation UploadStream; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
-    capability deliveries.publish { title "Publish delivery results"; description "Report a completed durable delivery."; consequence "The provider may publish Delivered events."; consent_revision 1; allows { publish event Delivered; } }
+    capability workloads.run { title "Run performance workloads"; description "Exercise measured RPC, operation, transfer, and event paths."; grants "The caller may run the benchmark workloads and observe their results."; allows { rpc Echo; rpc PutRecord; rpc ReadRecord; rpc Download; rpc DownloadStream; operation Upload; operation UploadStaged; operation UploadStream; operation Work; operation QueueWork; operation AwaitCancellation; operation AwaitObject; operation QueueKeyed; live Watch; publish event Changed; subscribe event Changed; subscribe event Delivered; } }
+    capability deliveries.publish { title "Publish delivery results"; description "Report a completed durable delivery."; grants "The provider may publish Delivered events."; allows { publish event Delivered; } }
   }
 }
 

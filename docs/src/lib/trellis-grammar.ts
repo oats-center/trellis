@@ -70,14 +70,7 @@ const members = [
   "desired_max_value",
 ];
 
-const properties = [
-  "title",
-  "description",
-  "consequence",
-  "consent_revision",
-  "version",
-  "digest",
-];
+const properties = ["title", "description", "grants", "version", "digest"];
 
 const types = [
   "string",

@@ -70,12 +70,12 @@ test(
           ) +
           "\nservice EchoProvider { implements runtime; }\n";
         const baseline = original.replace(
-          "consent_revision 1; allows { rpc Echo; }",
-          "consent_revision 1; allows { rpc Download; }",
+          "allows { rpc Echo; }",
+          "allows { rpc Download; }",
         );
         const expanded = baseline.replace(
-          "consent_revision 1; allows { rpc Download; }",
-          "consent_revision 1; allows { rpc Download; rpc Echo; }",
+          "allows { rpc Download; }",
+          "allows { rpc Download; rpc Echo; }",
         );
         const incompatible = expanded.replace(
           "rpc Echo { input Value; output Value; }",

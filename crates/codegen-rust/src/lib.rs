@@ -2857,7 +2857,7 @@ mod tests {
         let graph = graph(
             "model FooBar {} model Foo_Bar {} api main@v1 { title \"Main\"; \
             description \"Main API.\"; rpc Get { input FooBar; output Foo_Bar; } \
-            capabilities { public { consent_revision 1; allows { rpc Get; } } } }",
+            capabilities { public { allows { rpc Get; } } } }",
         );
         let output = tempfile::tempdir().unwrap().path().join("generated");
         assert!(matches!(
@@ -2909,7 +2909,7 @@ mod tests {
             version 1; } }",
             "type Value = string; api main@v1 { title \"Main\"; description \"Main \
             API\"; rpc Get { input Value; output Value; } capabilities { public { \
-            consent_revision 1; allows { rpc Get; } } } } app Caller { use main; \
+            allows { rpc Get; } } } } app Caller { use main; \
             state fixture_main_v1 { title \"Value\"; description \"Saved value\"; \
             schema Value; version 1; } }",
             "type Value = string; device Sensor { state connect { title \"Value\"; \
@@ -2938,8 +2938,8 @@ mod tests {
             "model Value { counter: int64; observedAt: timestamp; } api main@v1 { \
             title \"Main\"; description \"Read values.\"; rpc Get { input Value; \
             output Value; } capabilities { capability items.read { title \"Read\"; \
-            description \"Read values.\"; consequence \"Reveals values.\"; \
-            consent_revision 1; allows { rpc Get; } } } }",
+            description \"Read values.\"; grants \"Reveals values.\"; \
+            allows { rpc Get; } } } }",
         );
         let output = tempfile::tempdir().unwrap();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -3093,18 +3093,18 @@ fn main() {
     finite: number; bytes: bytes; } api main@v1 { title \"Main\"; \
     description \"Main API.\"; error Bad(Values); rpc Get { input Values; \
     output Values; errors [Bad]; download; } rpc Write { input Values; \
-    output Values; } capabilities { capability items.read { consent_revision 1; \
-    title \"Read\"; description \"Read values.\"; consequence \"Reveals \
-    values.\"; allows { rpc Get; } } capability items.work { consent_revision 1; \
-    title \"Work\"; description \"Run work.\"; consequence \"Changes \
+    output Values; } capabilities { capability items.read { \
+    title \"Read\"; description \"Read values.\"; grants \"Reveals \
+    values.\"; allows { rpc Get; } } capability items.work { \
+    title \"Work\"; description \"Run work.\"; grants \"Changes \
     values.\"; allows { operation Work; } } capability items.write { \
-    consent_revision 1; title \"Write\"; description \"Write values.\"; \
-    consequence \"Changes values.\"; allows { rpc Write; } } } operation \
+    title \"Write\"; description \"Write values.\"; \
+    grants \"Changes values.\"; allows { rpc Write; } } } operation \
     Work { input Values; output Values; progress Values; errors [Bad]; \
     signals { resume Values; } upload; } } api other@v2 { title \"Other\"; \
     description \"Other API.\"; capabilities { capability other.observe { \
-    consent_revision 1; title \"Observe\"; description \"Observe \
-    values.\"; consequence \"Reveals value changes.\"; allows { subscribe \
+    title \"Observe\"; description \"Observe \
+    values.\"; grants \"Reveals value changes.\"; allows { subscribe \
     event Changed; live Watch; } } } event Changed { payload Values; } \
     live Watch { input Values; event Values; } } service Backend { \
     implements main; implements other; kv cache { title \"Cache\"; \
@@ -3493,7 +3493,7 @@ fn download_output_round_trips_transfer_grant() {
     \"Main\"; description \"Main API.\"; operation Work { input Values; \
     output Values; progress Status; update Preview; } operation Step { \
     input Values; output Values; progress Status; } capabilities { public \
-    { consent_revision 1; allows { operation Work; operation Step; } } } } \
+    { allows { operation Work; operation Step; } } } } \
     service Backend { implements main; } app Caller { use main { required \
     capability public; } } device Sensor { state value { title \"Value\"; \
     description \"Device value without an API dependency\"; schema Values; \

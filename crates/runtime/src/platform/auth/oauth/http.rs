@@ -737,14 +737,14 @@ async fn consent_data(
                 }
                 let metadata: Option<(String, String, String)> = connection
                     .query_row(
-                        "SELECT title,description,consequence \
+                        "SELECT title,description,grants \
                         FROM auth_capability_identities \
                         WHERE capability_id=?1 AND state='active'",
                         [capability],
                         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()?;
-                let (title, description, consequence) = metadata.unwrap_or_else(|| {
+                let (title, description, grants) = metadata.unwrap_or_else(|| {
                     (
                         capability.clone(),
                         "This capability is not installed.".into(),
@@ -805,7 +805,7 @@ async fn consent_data(
                     "capabilityId":capability,
                     "title":title,
                     "description":description,
-                    "consequence":consequence,
+                    "grants":grants,
                     "kind": if members.is_some() { "group" } else { "capability" },
                     "members":members,
                     "administrative":administrative,

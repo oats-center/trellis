@@ -56,22 +56,19 @@ api state@v1 {
     capability values.read {
       title "Read saved data";
       description "Read data saved in its space.";
-      consequence "Can see saved data.";
-      consent_revision 2;
+      grants "Can see saved data.";
       allows { rpc Get; live Watch; }
     }
     capability values.write {
       title "Save data";
       description "Create or replace data in its space.";
-      consequence "Can change saved data.";
-      consent_revision 2;
+      grants "Can change saved data.";
       allows { rpc Register; rpc Put; }
     }
     capability values.delete {
       title "Delete saved data";
       description "Delete data in its space.";
-      consequence "Can remove saved data.";
-      consent_revision 1;
+      grants "Can remove saved data.";
       allows { rpc Delete; }
     }
   }

@@ -36,8 +36,7 @@ api scale@v1 {
     capability workloads.run {
       title "Run scaled workloads";
       description "Invoke the measured generated RPC surface.";
-      consequence "The caller may invoke every scaled Echo action.";
-      consent_revision 1;
+      grants "The caller may invoke every scaled Echo action.";
       allows { ${actions.map((name) => `rpc ${name};`).join(" ")} }
     }
   }

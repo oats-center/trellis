@@ -673,10 +673,10 @@ pub(super) fn read_capability(
     connection: &Connection,
     capability_id: &str,
 ) -> Result<AuthCapabilityDefinition, AuthError> {
-    let (generation, consent_revision, api_id, title, description, consequence, kind) = connection
+    let (generation, consent_revision, api_id, title, description, grants, kind) = connection
         .query_row(
             "SELECT identity_generation,consent_revision,api_id,title,\
-            description,consequence,kind \
+            description,grants,kind \
             FROM auth_capability_identities \
             WHERE capability_id=?1 \
             AND state='active'",
@@ -731,7 +731,7 @@ pub(super) fn read_capability(
         api_id: api_id.into(),
         title,
         description,
-        consequence,
+        grants,
         kind: kind.into(),
         members,
         allows,

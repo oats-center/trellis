@@ -428,21 +428,26 @@ fn optional_reduction_requires_new_logical_id_and_old_admission_stays_closed() {
 }
 
 #[test]
-fn sdk_dispatch_checks_signed_bytes_new_membership_and_session_retirement() {
+fn sdk_dispatch_checks_signed_bytes_and_withholds_widened_capabilities() {
     use trellis_protocol::{sign_session_request, SessionRequest};
     use trellis_rs::client::{AuthorizationVerificationCore, RequestVerificationInput};
 
     let f = fixture();
     let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
-    let updated = SOURCE.replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
+    // Writing now also exports, which the user has not approved.
+    let updated = SOURCE.replace("allows { rpc Put; }", "allows { rpc Put; rpc Export; }");
     let catalog = accept(&f.store, &f.admin, &updated, false, NOW + 1);
-    let renewed = issue_authority(
-        &f.store,
-        &f.admission,
-        Some(&issued.authority.unsigned.authorization_session_id),
-        NOW + 1,
-    )
-    .unwrap();
+    // The session would lose write, so it retires; a new one omits write.
+    assert!(matches!(
+        issue_authority(
+            &f.store,
+            &f.admission,
+            Some(&issued.authority.unsigned.authorization_session_id),
+            NOW + 1,
+        ),
+        Err(AuthError::Retired)
+    ));
+    let renewed = issue_authority(&f.store, &f.admission, None, NOW + 1).unwrap();
     let issuer = f.store.issuer().unwrap();
     let catalog = trellis_protocol::AuthenticatedCatalog::authenticate(
         catalog,
@@ -459,12 +464,13 @@ fn sdk_dispatch_checks_signed_bytes_new_membership_and_session_retirement() {
         maximum_entries: 256,
     };
     let verifier = AuthorizationVerificationCore::new();
-    let action = CatalogActionIdentity {
-        kind: ApiSurfaceKind::Rpc,
-        name: "Export".into(),
-        direction: PermissionAction::Call,
-    };
-    for (candidate, allowed) in [(&issued, false), (&renewed, true)] {
+    let candidate = &renewed;
+    for (name, allowed) in [("Get", true), ("Put", false), ("Export", false)] {
+        let action = CatalogActionIdentity {
+            kind: ApiSurfaceKind::Rpc,
+            name: name.into(),
+            direction: PermissionAction::Call,
+        };
         let authority = Arc::new(
             verify_session_authority(SessionAuthorityVerificationInput {
                 issuer: &issuer,
@@ -483,8 +489,8 @@ fn sdk_dispatch_checks_signed_bytes_new_membership_and_session_retirement() {
             api_id: api.api_id.clone(),
             api_generation: api.generation,
             accepted_revision: api.accepted_revision,
-            action: "Export".into(),
-            subject: "test.Export".into(),
+            action: name.into(),
+            subject: format!("test.{name}"),
             reply_subject: Some(format!(
                 "{}.reply",
                 candidate.authority.unsigned.inbox_prefix

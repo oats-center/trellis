@@ -22,8 +22,7 @@ api catalog@v1 {
     capability items.list {
       title "List catalog rows";
       description "Read a cursor-paginated catalog.";
-      consequence "Catalog rows are visible to the caller.";
-      consent_revision 1;
+      grants "Catalog rows are visible to the caller.";
       allows { rpc List; }
     }
   }

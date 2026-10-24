@@ -12,7 +12,7 @@ fn installed_project_checks_and_reports_invalid_authored_types() {
     .unwrap();
     let source = "model Value { value: string; }\napi ping@v1 { title \"Ping\"; \
         description \"Command fixture\"; rpc Get { input Value; output Value; \
-        } capabilities { public { consent_revision 1; allows { rpc Get; } } } \
+        } capabilities { public { allows { rpc Get; } } } \
         }\n";
     fs::write(root.path().join("main.trellis"), source).unwrap();
 

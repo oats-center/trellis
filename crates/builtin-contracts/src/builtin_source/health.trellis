@@ -440,57 +440,49 @@ api health@v1 {
     capability health.query {
       title "Search health";
       description "Find services and devices by health.";
-      consequence "Can see health summaries.";
-      consent_revision 1;
+      grants "Can see health summaries.";
       allows { rpc Query; }
     }
     capability health.inspect {
       title "See health details";
       description "See a service's or device's health history.";
-      consequence "Can see health details.";
-      consent_revision 1;
+      grants "Can see health details.";
       allows { rpc Inspect; }
     }
     capability summary.read {
       title "See health overview";
       description "See how many things are healthy or not.";
-      consequence "Can see overall health.";
-      consent_revision 1;
+      grants "Can see overall health.";
       allows { rpc Summary; }
     }
     capability metrics.read {
       title "See health metrics";
       description "See health measurements over time.";
-      consequence "Can see health metrics.";
-      consent_revision 1;
+      grants "Can see health metrics.";
       allows { rpc Metrics; }
     }
     capability health.observe {
       title "Watch health live";
       description "Follow health changes as they happen.";
-      consequence "Can see health live.";
-      consent_revision 1;
+      grants "Can see health live.";
       allows { live Watch; }
     }
     capability status.observe {
       title "Get health alerts";
       description "Be told when something becomes healthy or unhealthy.";
-      consequence "Receives health changes.";
-      consent_revision 1;
+      grants "Receives health changes.";
       allows { subscribe event StatusChanged; }
     }
     capability health.report {
       title "Report own health";
       description "Let a service or device report its own health.";
-      consequence "Records health for that service or device only.";
-      consent_revision 1;
+      grants "Records health for that service or device only.";
       allows { publish event Heartbeat; }
     }
     group monitor {
       title "Monitor health";
       description "See the health of services and devices and get alerts.";
-      consequence "Can see health data.";
-      consent_revision 1;
+      grants "Can see health data.";
       capability health.query;
       capability health.inspect;
       capability health.observe;

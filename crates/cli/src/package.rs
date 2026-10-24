@@ -976,7 +976,7 @@ mod tests {
             format!(
                 "model Value {{ {field}: string; }}\napi ping@v1 {{ title \"Ping\"; \
                 description \"Test\"; rpc Get {{ input Value; output Value; }} \
-                capabilities {{ public {{ consent_revision 1; allows {{ rpc Get; }} }} \
+                capabilities {{ public {{ allows {{ rpc Get; }} }} \
                 }} }}\n"
             ),
         )

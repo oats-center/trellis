@@ -44,8 +44,7 @@ api orders@v1 {
     capability orders.create {
       title "Create orders";
       description "Create an order for a customer.";
-      consequence "The caller may create customer orders.";
-      consent_revision 1;
+      grants "The caller may create customer orders.";
       allows { rpc Create; }
     }
   }

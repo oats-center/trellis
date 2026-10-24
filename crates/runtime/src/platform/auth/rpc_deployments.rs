@@ -754,17 +754,14 @@ pub(super) fn review_api(
                 description: if review.removed_capabilities.contains(name) {
                     "Removed"
                 } else {
-                    "Consent meaning changed"
+                    "Allows more; users approve again"
                 }
                 .into(),
                 previous_identity_generation: previous.map(|value| AuthRevision(value.0.into())),
                 previous_consent_revision: previous.map(|value| AuthRevision(value.1.into())),
-                proposed_consent_revision: candidate
-                    .definition()
-                    .capabilities()
-                    .iter()
-                    .find(|(id, _)| id.as_str() == name)
-                    .map(|(_, definition)| AuthRevision(definition.consent_revision.into())),
+                proposed_consent_revision: previous
+                    .filter(|_| !review.removed_capabilities.contains(name))
+                    .map(|value| AuthRevision((value.1 + 1).into())),
                 extra: Default::default(),
             });
         }

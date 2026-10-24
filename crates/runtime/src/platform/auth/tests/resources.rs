@@ -253,7 +253,7 @@ async fn native_resource_materialization_preserves_data_delivery_and_rejects_for
         api resource@v1 {
           title "Resource"; description "Resource delivery";
           event Changed { payload Payload; }
-          capabilities { capability events.read { title "Read"; description "Read events"; consequence "Read events"; consent_revision 1; allows { subscribe event Changed; } } }
+          capabilities { capability events.read { title "Read"; description "Read events"; grants "Read events"; allows { subscribe event Changed; } } }
         }
         service Owner {
           store files { title "Files"; description "Retained bytes"; ttl 0; desired_max_object 1KiB; }

@@ -85,7 +85,7 @@ model AuthCapabilityDefinition {
   consentRevision: AuthRevision;
   title: string;
   description: string;
-  consequence: string;
+  grants: string;
   // A group's current member capabilities.
   members: list<string>;
   allows: list<AuthActionSummary>;

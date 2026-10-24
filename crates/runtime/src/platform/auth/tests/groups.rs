@@ -1,7 +1,7 @@
 use super::*;
 
-/// The fixture API with an `editor` group at a revision and member list.
-fn grouped(revision: u64, members: &[&str]) -> String {
+/// The fixture API with an `editor` group of the given members.
+fn grouped(members: &[&str]) -> String {
     let members: String = members
         .iter()
         .map(|member| format!("capability documents.{member}; "))
@@ -10,7 +10,7 @@ fn grouped(revision: u64, members: &[&str]) -> String {
         "\n }\n}\nservice Reader",
         &format!(
             "\n  group editor {{ title \"Editor\"; description \"Edit documents.\"; \
-            consequence \"Changes documents.\"; consent_revision {revision}; {members}}}\
+            grants \"Changes documents.\"; {members}}}\
             \n }}\n}}\nservice Reader"
         ),
     )
@@ -73,13 +73,7 @@ fn app_holds(f: &Fixture, grant: String, now: i64) -> Vec<String> {
 #[test]
 fn holding_a_group_follows_its_membership_live() {
     let f = fixture();
-    accept(
-        &f.store,
-        &f.admin,
-        &grouped(1, &["read", "write"]),
-        false,
-        NOW,
-    );
+    accept(&f.store, &f.admin, &grouped(&["read", "write"]), false, NOW);
     let user = create_user(&f.store, &f.admin, NOW);
     policy(
         &f.store,
@@ -94,14 +88,14 @@ fn holding_a_group_follows_its_membership_live() {
     );
     assert!(holds(&f, &user, &f.read) && holds(&f, &user, &f.write));
     // Removing a member reaches holders at once.
-    accept(&f.store, &f.admin, &grouped(1, &["read"]), false, NOW + 1);
+    accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW + 1);
     assert!(holds(&f, &user, &f.read));
     assert!(!holds(&f, &user, &f.write));
-    // So does adding one, with the consent revision raised.
+    // So does adding one.
     accept(
         &f.store,
         &f.admin,
-        &grouped(2, &["read", "write"]),
+        &grouped(&["read", "write"]),
         false,
         NOW + 2,
     );
@@ -111,7 +105,7 @@ fn holding_a_group_follows_its_membership_live() {
 #[test]
 fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
     let f = fixture();
-    accept(&f.store, &f.admin, &grouped(1, &["read"]), false, NOW);
+    accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW);
     let user = create_user(&f.store, &f.admin, NOW);
     policy(
         &f.store,
@@ -132,7 +126,7 @@ fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
     accept(
         &f.store,
         &f.admin,
-        &grouped(2, &["read", "write"]),
+        &grouped(&["read", "write"]),
         false,
         NOW + 1,
     );
@@ -146,21 +140,57 @@ fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
 }
 
 #[test]
-fn a_group_cannot_grow_without_a_new_consent_revision() {
+fn an_app_loses_a_group_member_that_now_allows_more_until_asked_again() {
     let f = fixture();
-    accept(&f.store, &f.admin, &grouped(1, &["read"]), false, NOW);
-    let proposed = evidence(&grouped(1, &["read", "write"]));
-    let graph = trellis_idl::compile_evidence(proposed.clone()).unwrap();
-    let api = graph
-        .root_package()
-        .apis()
-        .keys()
-        .next()
-        .unwrap()
-        .to_string();
-    let error = f
-        .store
-        .review_api(&f.admin, proposed, &api, NOW + 1)
-        .unwrap_err();
-    assert!(error.to_string().contains("consent_revision must increase"));
+    accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW);
+    let user = create_user(&f.store, &f.admin, NOW);
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::CapabilityGrant {
+            principal_id: user.clone(),
+            capability_id: editor(&f),
+            expected_revision: 0,
+            expires_at: None,
+        },
+        NOW,
+    );
+    let grant = approve_editor(&f, &user, NOW);
+    assert_eq!(
+        app_holds(&f, grant.clone(), NOW),
+        std::slice::from_ref(&f.read)
+    );
+    // Reading now also exports: the user approved less than that.
+    let widened =
+        grouped(&["read"]).replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
+    accept(&f.store, &f.admin, &widened, false, NOW + 1);
+    assert!(holds(&f, &user, &f.read));
+    assert!(app_holds(&f, grant, NOW + 1).is_empty());
+    let regranted = approve_editor(&f, &user, NOW + 2);
+    assert_eq!(
+        app_holds(&f, regranted, NOW + 2),
+        std::slice::from_ref(&f.read)
+    );
+}
+
+#[test]
+fn rewording_a_group_member_keeps_the_app_approval() {
+    let f = fixture();
+    accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW);
+    let user = create_user(&f.store, &f.admin, NOW);
+    policy(
+        &f.store,
+        &f.admin,
+        PolicyMutation::CapabilityGrant {
+            principal_id: user.clone(),
+            capability_id: editor(&f),
+            expected_revision: 0,
+            expires_at: None,
+        },
+        NOW,
+    );
+    let grant = approve_editor(&f, &user, NOW);
+    let reworded = grouped(&["read"]).replace("Sees contents.", "Sees document contents.");
+    accept(&f.store, &f.admin, &reworded, false, NOW + 1);
+    assert_eq!(app_holds(&f, grant, NOW + 1), std::slice::from_ref(&f.read));
 }

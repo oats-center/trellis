@@ -39,7 +39,7 @@ api ping@v1 {
   title "Ping";
   description "A generation fixture.";
   rpc Get { input Empty; output Empty; }
-  capabilities { public { consent_revision 1; allows { rpc Get; } } }
+  capabilities { public { allows { rpc Get; } } }
 }
 "#,
     )

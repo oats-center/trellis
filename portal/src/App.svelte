@@ -6,7 +6,7 @@
     capabilityId: string;
     title: string;
     description: string;
-    consequence: string;
+    grants: string;
     /** A group stands for the capabilities it lists. */
     kind: "capability" | "group";
     members: { capabilityId: string; title: string }[] | null;
@@ -50,7 +50,7 @@
     id: string;
     title: string;
     description: string;
-    consequence: string;
+    grants: string;
     members: string[];
     administrative: boolean;
     required: boolean;
@@ -174,7 +174,7 @@
       id: capability.capabilityId,
       title: capability.title,
       description: capability.description,
-      consequence: capability.consequence,
+      grants: capability.grants,
       members: capability.members?.map((member) => member.title) ?? [],
       administrative: capability.administrative,
       required: capability.required,
@@ -823,7 +823,7 @@
           <ul>
             {#each selectedAdministration as choice (choice.id)}
               <li>
-                <strong>{choice.title}</strong>{#if choice.consequence}: {choice.consequence}{/if}
+                <strong>{choice.title}</strong>{#if choice.grants}: {choice.grants}{/if}
               </li>
             {/each}
           </ul>

@@ -374,8 +374,7 @@ impl<'a> Parser<'a> {
                 name,
                 title: String::new(),
                 description: String::new(),
-                consequence: String::new(),
-                consent_revision: None,
+                grants: String::new(),
                 members: Vec::new(),
                 span: start..start,
             };
@@ -388,15 +387,7 @@ impl<'a> Parser<'a> {
                 match field.as_str() {
                     "title" => group.title = self.string_statement()?,
                     "description" => group.description = self.string_statement()?,
-                    "consequence" => group.consequence = self.string_statement()?,
-                    "consent_revision" => {
-                        let revision = self.integer()?;
-                        if revision == 0 {
-                            return Err(self.error_previous("consent_revision must be positive"));
-                        }
-                        self.token(TokenKind::Semi)?;
-                        group.consent_revision = Some(revision);
-                    }
+                    "grants" => group.grants = self.string_statement()?,
                     "capability" => group.members.push(self.name_statement()?),
                     other => {
                         return Err(
@@ -425,8 +416,7 @@ impl<'a> Parser<'a> {
             public,
             title: String::new(),
             description: String::new(),
-            consequence: String::new(),
-            consent_revision: None,
+            grants: String::new(),
             administrative: false,
             allows: Vec::new(),
             span: start..start,
@@ -440,15 +430,7 @@ impl<'a> Parser<'a> {
             match member.as_str() {
                 "title" => capability.title = self.string_statement()?,
                 "description" => capability.description = self.string_statement()?,
-                "consequence" => capability.consequence = self.string_statement()?,
-                "consent_revision" => {
-                    let revision = self.integer()?;
-                    if revision == 0 {
-                        return Err(self.error_previous("consent_revision must be positive"));
-                    }
-                    self.token(TokenKind::Semi)?;
-                    capability.consent_revision = Some(revision);
-                }
+                "grants" => capability.grants = self.string_statement()?,
                 "allows" => capability.allows = self.selection_block(false)?,
                 "administrative" => {
                     self.token(TokenKind::Semi)?;

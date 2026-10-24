@@ -43,12 +43,11 @@ api primary@v1 {
   event Changed { payload Node; }
   live Watch { input Empty; event Node; }
   capabilities {
-    public { consent_revision 1; allows { publish event Changed; } }
+    public { allows { publish event Changed; } }
     capability fixture.access {
       title "Access";
       description "Fixture access.";
-      consequence "The caller can use the fixture.";
-      consent_revision 1;
+      grants "The caller can use the fixture.";
       allows { rpc Fetch; operation Process; subscribe event Changed; live Watch; }
     }
   }
@@ -60,12 +59,11 @@ api secondary@v2 {
   event Ping { payload Empty; }
   live Monitor { input Empty; event Empty; }
   capabilities {
-    public { consent_revision 1; allows { publish event Ping; } }
+    public { allows { publish event Ping; } }
     capability fixture.observe {
       title "Observe";
       description "Fixture observation.";
-      consequence "The caller can observe the fixture.";
-      consent_revision 1;
+      grants "The caller can observe the fixture.";
       allows { subscribe event Ping; live Monitor; }
     }
   }

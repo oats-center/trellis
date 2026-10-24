@@ -38,10 +38,11 @@ wording. A capability declaration or approval does not itself confer runtime
 authority. The server derives and signs the exact selected permission atoms for
 the current revision and current policy ceiling.
 
-Capability approval is keyed by qualified capability ID and a consent digest of
-its description and consequence. Changing those words requires new approval;
-changing a title or the exact actions covered does not, provided newly selected
-actions remain within the approved capability and delegation ceiling. Public
+Capability approval is keyed by qualified capability ID, identity generation,
+and Auth's consent revision. Auth advances that revision when an accepted API
+makes the capability allow more actions, which requires new approval. Changing
+its title, description, or `grants` wording, or narrowing what it allows, does
+not. Public
 actions remain selected exact actions, not anonymous wildcard grants.
 
 Live observations and Operation observation are declared through this same API/capability

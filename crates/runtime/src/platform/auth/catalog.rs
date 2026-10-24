@@ -156,14 +156,16 @@ fn builtin_api_digests() -> &'static BTreeMap<String, String> {
 
 /// The consent meaning of a capability or group.
 struct Meaning<'a> {
-    consent_revision: u64,
+    /// It now covers more than its users approved.
+    widened: bool,
     title: &'a str,
     description: &'a str,
-    consequence: &'a str,
+    grants: &'a str,
 }
 
 /// Update an active capability or group identity's meaning, or start a new
-/// identity generation, and return the generation.
+/// identity generation. Auth owns the consent revision: it advances only when
+/// the identity covers more. Returns the generation and consent revision.
 fn upsert_identity(
     connection: &Connection,
     api_id: &str,
@@ -171,7 +173,7 @@ fn upsert_identity(
     kind: &str,
     meaning: Meaning<'_>,
     now: i64,
-) -> Result<u64, AuthError> {
+) -> Result<(u64, u64), AuthError> {
     let current: Option<(u64, u64)> = connection
         .query_row(
             "SELECT identity_generation,consent_revision \
@@ -182,23 +184,21 @@ fn upsert_identity(
         )
         .optional()?;
     if let Some((generation, consent_revision)) = current {
-        if meaning.consent_revision < consent_revision {
-            return Err(AuthError::Invalid("consent rollback".into()));
-        }
+        let consent_revision = consent_revision + u64::from(meaning.widened);
         connection.execute(
             "UPDATE auth_capability_identities \
-            SET consent_revision=?1,title=?2,description=?3,consequence=?4 \
+            SET consent_revision=?1,title=?2,description=?3,grants=?4 \
             WHERE capability_id=?5 AND identity_generation=?6",
             params![
-                meaning.consent_revision,
+                consent_revision,
                 meaning.title,
                 meaning.description,
-                meaning.consequence,
+                meaning.grants,
                 id,
                 generation
             ],
         )?;
-        return Ok(generation);
+        return Ok((generation, consent_revision));
     }
     let generation: u64 = connection.query_row(
         "SELECT coalesce(max(identity_generation),0)+1 \
@@ -213,15 +213,15 @@ fn upsert_identity(
             id,
             generation,
             api_id,
-            meaning.consent_revision,
+            1,
             meaning.title,
             meaning.description,
-            meaning.consequence,
+            meaning.grants,
             now,
             kind
         ],
     )?;
-    Ok(generation)
+    Ok((generation, 1))
 }
 
 impl SqliteAuthorizationStore {
@@ -299,39 +299,28 @@ impl SqliteAuthorizationStore {
                     .into_iter()
                     .map(|issue| format!("{}: {}", issue.path, issue.message))
                     .collect();
-                for (group, definition) in old.definition().groups() {
-                    match candidate.definition().groups().get(group) {
-                        None => review.removed_capabilities.push(group.to_string()),
-                        Some(next) if next.consent_revision < definition.consent_revision => {
-                            return Err(AuthError::Invalid(
-                                "consent revision cannot decrease".into(),
-                            ))
-                        }
-                        Some(next)
-                            if next.consent_revision == definition.consent_revision
-                                && !next.members.is_subset(&definition.members) =>
-                        {
-                            return Err(AuthError::Invalid(format!(
-                                "group '{group}' gains capabilities, so its consent_revision \
-                                must increase"
-                            )))
-                        }
-                        Some(next) if next.consent_revision != definition.consent_revision => {
-                            review.consent_changes.push(group.to_string())
+                // Consent covers what was approved. Allowing more, or a group
+                // gaining a member or a member allowing more, needs approval
+                // again; wording edits and narrowing never do.
+                let mut widened = BTreeSet::new();
+                for (capability, definition) in old.definition().capabilities() {
+                    match candidate.definition().capabilities().get(capability) {
+                        None => review.removed_capabilities.push(capability.to_string()),
+                        Some(next) if !next.allows.is_subset(&definition.allows) => {
+                            widened.insert(capability.clone());
+                            review.consent_changes.push(capability.to_string());
                         }
                         _ => {}
                     }
                 }
-                for (capability, definition) in old.definition().capabilities() {
-                    match candidate.definition().capabilities().get(capability) {
-                        None => review.removed_capabilities.push(capability.to_string()),
-                        Some(next) if next.consent_revision < definition.consent_revision => {
-                            return Err(AuthError::Invalid(
-                                "consent revision cannot decrease".into(),
-                            ))
-                        }
-                        Some(next) if next.consent_revision != definition.consent_revision => {
-                            review.consent_changes.push(capability.to_string())
+                for (group, definition) in old.definition().groups() {
+                    match candidate.definition().groups().get(group) {
+                        None => review.removed_capabilities.push(group.to_string()),
+                        Some(next)
+                            if !next.members.is_subset(&definition.members)
+                                || next.members.iter().any(|member| widened.contains(member)) =>
+                        {
+                            review.consent_changes.push(group.to_string());
                         }
                         _ => {}
                     }
@@ -604,16 +593,16 @@ impl SqliteAuthorizationStore {
             }
             snapshot.actions = actions.into_values().collect();
             for (name, definition) in api.capabilities() {
-                let identity_generation = upsert_identity(
+                let (identity_generation, consent_revision) = upsert_identity(
                     connection,
                     &review.api_id,
                     name.as_str(),
                     "capability",
                     Meaning {
-                        consent_revision: definition.consent_revision,
+                        widened: review.consent_changes.contains(&name.to_string()),
                         title: &definition.title,
                         description: &definition.description,
-                        consequence: &definition.consequence,
+                        grants: &definition.grants,
                     },
                     now,
                 )?;
@@ -657,39 +646,38 @@ impl SqliteAuthorizationStore {
                 snapshot.capabilities.push(CatalogCapability {
                     capability_id: name.to_string(),
                     identity_generation: U64s::new(identity_generation),
-                    consent_revision: U64s::new(definition.consent_revision),
+                    consent_revision: U64s::new(consent_revision),
                     memberships,
                 });
             }
             for (id, group) in api.groups() {
-                let generation = upsert_identity(
+                let (generation, consent_revision) = upsert_identity(
                     connection,
                     &review.api_id,
                     id.as_str(),
                     "group",
                     Meaning {
-                        consent_revision: group.consent_revision,
+                        widened: review.consent_changes.contains(&id.to_string()),
                         title: &group.title,
                         description: &group.description,
-                        consequence: &group.consequence,
+                        grants: &group.grants,
                     },
                     now,
                 )?;
-                // Members only shrink within one consent revision.
+                // Members only shrink within one consent revision. Each row
+                // records the member meaning approved with that revision.
                 connection.execute(
                     "DELETE FROM auth_capability_group_members \
                     WHERE group_id=?1 AND group_generation=?2 AND consent_revision=?3",
-                    params![id.as_str(), generation, group.consent_revision],
+                    params![id.as_str(), generation, consent_revision],
                 )?;
                 for member in &group.members {
                     connection.execute(
-                        "INSERT INTO auth_capability_group_members VALUES(?1,?2,?3,?4)",
-                        params![
-                            id.as_str(),
-                            generation,
-                            group.consent_revision,
-                            member.as_str()
-                        ],
+                        "INSERT INTO auth_capability_group_members \
+                        SELECT ?1,?2,?3,capability_id,identity_generation,consent_revision \
+                        FROM auth_capability_identities \
+                        WHERE capability_id=?4 AND state='active'",
+                        params![id.as_str(), generation, consent_revision, member.as_str()],
                     )?;
                 }
             }
