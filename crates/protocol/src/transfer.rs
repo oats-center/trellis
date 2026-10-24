@@ -725,7 +725,7 @@ pub struct TransferFileInfo {
     /// Optional media type.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub content_type: Option<String>,
@@ -796,32 +796,24 @@ pub struct TransferSendGrant {
     /// Optional full-object size cap.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub max_bytes: Option<u64>,
     /// Optional retained media type.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub content_type: Option<String>,
     /// Optional application metadata; omitted is an empty set at runtime.
     #[serde(
         default,
-        deserialize_with = "present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub metadata: Option<std::collections::BTreeMap<String, String>>,
-}
-
-pub(crate) fn present_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
 }
 
 /// Provider-to-caller grant payload; direction is owned by [`TransferGrant`].

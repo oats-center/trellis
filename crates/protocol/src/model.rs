@@ -5,7 +5,8 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 #[path = "model_scalars.rs"]
 mod scalars;
 pub use scalars::{
-    Bytes, CursorPage, CursorPageInfo, CursorQuery, Int64, Nullable, Number, Uint64,
+    present_optional, Bytes, CursorPage, CursorPageInfo, CursorQuery, Int64, Nullable, Number,
+    Uint64,
 };
 
 /// Exact native package identity for compiled models, not authority evidence.

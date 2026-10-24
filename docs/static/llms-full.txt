@@ -1429,6 +1429,12 @@ package-name equality alone never substitutes one schema for another. A
 support-ABI mismatch fails compilation and is not resolved through compatibility
 wrappers.
 
+Generated models keep wire distinctions: an optional field is `Option<T>`
+(`None` when omitted), `T | null` is `Nullable<T>`, so an optional nullable
+field decodes an explicit `null` as `Some(Nullable::Null)`. Every model has an
+`extra` map preserving unknown fields and every enum an `Unknown(String)`
+variant; authored field `extra` or enum value `unknown` is rejected.
+
 #### Features
 
 `trellis-rs` enables `native-oauth` (native OAuth sign-in) and `device` (device

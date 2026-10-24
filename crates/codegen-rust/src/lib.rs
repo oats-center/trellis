@@ -608,7 +608,28 @@ fn render_type_definition(
                 if rust_field.trim_start_matches("r#") != field {
                     out.push_str(&format!("#[serde(rename = {field:?})]\n"));
                 }
-                if value.optional {
+                // Serde reads a null optional field as `None`; a nullable
+                // one must keep its explicit null.
+                let mut nullable = &value.ty;
+                let mut seen = BTreeSet::new();
+                while let TypeExpression::Named(reference) = nullable {
+                    match graph
+                        .package(&reference.package)
+                        .and_then(|package| package.types().get(&reference.id))
+                    {
+                        Some(TypeDefinition::Alias(expression)) if seen.insert(reference) => {
+                            nullable = expression;
+                        }
+                        _ => break,
+                    }
+                }
+                if value.optional && matches!(nullable, TypeExpression::Nullable(_)) {
+                    out.push_str(
+                        "#[serde(default, deserialize_with = \
+                        \"trellis_protocol::model::present_optional\", \
+                        skip_serializing_if = \"Option::is_none\")]\n",
+                    );
+                } else if value.optional {
                     out.push_str("#[serde(default, skip_serializing_if = \"Option::is_none\")]\n");
                 }
                 let ty = render_expr(&value.ty, Some(&source), recursive);
@@ -3140,7 +3161,7 @@ fn main() {
     fn generated_crate_compiles_against_current_abi() {
         let graph = graph(
             "type Name = string; type Branch = Tree | null; model Tree { label: \
-    string; next?: Branch; } enum Status { ready; } model OldValues {} model \
+    string; note?: string | null; next?: Branch; } enum Status { ready; } model OldValues {} model \
     Values { name: Name; status: Status; signed: int64; unsigned: uint64; \
     finite: number; bytes: bytes; } api main@v1 { title \"Main\"; \
     description \"Main API.\"; error Bad(Values); rpc Get { input Values; \
@@ -3412,6 +3433,20 @@ fn recursion_through_an_alias_round_trips() {
     let Nullable::Value(middle) = next.as_ref() else { panic!("null branch") };
     assert_eq!(middle.label, "middle");
     assert_eq!(serde_json::to_value(&tree).unwrap(), wire);
+}
+
+#[test]
+fn optional_nullable_fields_keep_an_explicit_null() {
+    use fixture_sdk::__types::{fixture::Tree, Nullable};
+
+    let wire = serde_json::json!({ "label": "leaf", "note": null, "next": null });
+    let tree: Tree = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(tree.note, Some(Nullable::Null));
+    assert_eq!(serde_json::to_value(&tree).unwrap(), wire);
+    let absent = serde_json::json!({ "label": "leaf" });
+    let tree: Tree = serde_json::from_value(absent.clone()).unwrap();
+    assert_eq!(tree.note, None);
+    assert_eq!(serde_json::to_value(&tree).unwrap(), absent);
 }
 
 #[test]

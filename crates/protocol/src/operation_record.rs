@@ -419,7 +419,7 @@ pub struct OperationSnapshot<TProgress = Value, TOutput = Value> {
     /// Descriptor-encoded progress.
     #[serde(
         default,
-        deserialize_with = "crate::transfer::present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub progress: Option<TProgress>,
@@ -429,7 +429,7 @@ pub struct OperationSnapshot<TProgress = Value, TOutput = Value> {
     /// Descriptor-encoded output.
     #[serde(
         default,
-        deserialize_with = "crate::transfer::present_optional",
+        deserialize_with = "crate::model::present_optional",
         skip_serializing_if = "Option::is_none"
     )]
     pub output: Option<TOutput>,

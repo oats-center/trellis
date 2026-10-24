@@ -12,6 +12,19 @@ pub enum Nullable<T> {
     Value(T),
 }
 
+/// Deserialize a present optional field as `Some`, so an explicit JSON null in
+/// an optional nullable field stays `Some(Nullable::Null)` instead of `None`.
+///
+/// Generated models use this with `#[serde(default, deserialize_with = ...)]`;
+/// an omitted field still defaults to `None`.
+pub fn present_optional<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 /// A signed integer encoded as a canonical decimal string.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Int64(
