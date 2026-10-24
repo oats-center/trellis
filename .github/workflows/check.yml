@@ -821,7 +821,7 @@ jobs:
           - users_sessions
           - observability
           - navigation_permissions
-          - privilege_consent
+          - administration_consent
           - resources
     steps:
       - name: Check out repository
