@@ -21,7 +21,7 @@
     "test:package-version": "node --test ts/tools/package_build/release_build_version_test.ts",
     "test:packages": "node ts/tools/run_unit_tests.ts ts/tools/package_build",
     "check:sdk": "npm run build:packages && npm run check --workspace @oatscenter/trellis && npm run check --workspace @oatscenter/trellis-testkit && npm run check:benchmarks",
-    "test:sdk": "npm test --workspace @oatscenter/result --workspace @oatscenter/trellis --workspace @oatscenter/trellis-testkit --workspace @oatscenter/trellis-svelte --workspace @trellis/console && node ts/tools/run_unit_tests.ts ts/tools && npm run test:benchmarks",
+    "test:sdk": "bash scripts/run-sdk-tests.sh",
     "check:benchmarks": "tsc -p benchmarks/runtime/tsconfig.json",
     "test:benchmarks": "node --experimental-transform-types --test benchmarks/runtime/*_test.ts",
     "bench:runtime": "node --experimental-transform-types benchmarks/runtime/run.ts",
