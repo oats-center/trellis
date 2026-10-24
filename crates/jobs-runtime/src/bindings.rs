@@ -33,6 +33,15 @@ pub trait JobResourceResolver: Send + Sync {
         consumer: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Option<JobResourceBinding>, String>> + Send + 'a>>;
 
+    /// Resolve the queue whose lifecycle subjects start with `publish_prefix`.
+    ///
+    /// NATS authorization confines each deployment to its own prefix, so this
+    /// is the authoritative owner of every event published under it.
+    fn by_publish_prefix<'a>(
+        &'a self,
+        publish_prefix: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<JobResourceBinding>, String>> + Send + 'a>>;
+
     /// Read one current managed keyed coordinator entry and capture its Jobs stream horizon.
     fn key_snapshot<'a>(
         &'a self,

@@ -103,6 +103,15 @@ successful admission and slot-acquisition transitions. The Jobs projection uses
 that evidence to associate queued and active jobs with their key; `GetKey`
 requires the projection and coordinator membership to agree before returning.
 
+The projection trusts an event's subject, not its payload. NATS confines each
+deployment to its Auth-allocated `trellis.jobs.<namespace>.<queue>` prefix; the
+projector resolves that prefix through Auth resource evidence and projects only
+events whose service, queue, and job ID match it. Each event projects in its own
+savepoint: a permanently unprojectable event, such as one reusing another
+queue's job ID, is rejected and acknowledged alone, while a transient failure
+fails the batch unacknowledged so it redelivers in order. Timeline rows record
+their stream sequence, so redelivery after a lost acknowledgement is a no-op.
+
 Key paths compile to typed scalar accessors. Optional or nonscalar leaves are
 compile errors. Existing collision-safe key encoding and reject/coalesce/
 replace-oldest queue behavior remain.

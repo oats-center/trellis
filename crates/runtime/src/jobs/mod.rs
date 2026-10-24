@@ -32,11 +32,13 @@ impl RuntimeLoops {
         jobs_runtime: trellis_rs::jobs::JobsRuntime,
         resources: &JobsAdminResources,
         store: SqliteJobsStore,
+        resolver: Arc<dyn JobResourceResolver>,
     ) -> Result<Self, RuntimeError> {
         let projector = start_jobs_projector(
             jobs_runtime.clone(),
             store.clone(),
             resources.jobs_stream.clone(),
+            resolver,
         )
         .await
         .map_err(runtime_error)?;
@@ -115,7 +117,7 @@ pub(crate) async fn start(context: &RuntimeContext) -> Result<SubsystemHandle, R
         resources.jobs_stream.clone(),
     );
     let sampler_store = store.clone();
-    let loops = RuntimeLoops::start(jobs_runtime, &resources, store).await?;
+    let loops = RuntimeLoops::start(jobs_runtime, &resources, store, Arc::clone(&resolver)).await?;
     let sampler_nats = context.trellis_nats.clone();
     let context_nats = context.trellis_nats.clone();
     let live_owner = context

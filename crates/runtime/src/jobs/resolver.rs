@@ -54,6 +54,42 @@ impl JobResourceResolver for AuthJobResourceResolver {
         })
     }
 
+    fn by_publish_prefix<'a>(
+        &'a self,
+        publish_prefix: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<JobResourceBinding>, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let rows = self
+                .evidence
+                .query(AuthResourceBindingsQueryRequest {
+                    instance_id: None,
+                    kind: AuthResourceEvidenceKind::JobQueue,
+                    owner_id: None,
+                    participant_id: None,
+                    local_name: None,
+                    resource_id: None,
+                    page: None,
+                    extra: Default::default(),
+                })
+                .await?;
+            Ok(rows.into_iter().find_map(|row| {
+                if !matches!(
+                    row.state,
+                    AuthResourceEvidenceState::Available | AuthResourceEvidenceState::Stale
+                ) {
+                    return None;
+                }
+                let job = row.job?;
+                (job.publish_prefix == publish_prefix).then_some(JobResourceBinding {
+                    service: row.participant_id,
+                    job_type: row.local_name,
+                    stream: job.work_stream,
+                    consumer: job.consumer,
+                })
+            }))
+        })
+    }
+
     fn key_snapshot<'a>(
         &'a self,
         service: &'a str,

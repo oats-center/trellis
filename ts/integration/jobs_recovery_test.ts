@@ -12,6 +12,7 @@ import { connect } from "@nats-io/transport-node";
 import { join } from "node:path";
 import { RetryJobError, TrellisService } from "@oatscenter/trellis/service";
 import { Result } from "@oatscenter/trellis";
+import { codecs } from "@oatscenter/trellis/generated";
 import { inspect } from "node:util";
 import {
   apps,
@@ -580,6 +581,27 @@ for (const ordering of [
           name: "takeover-admin",
           contract: adminParticipant,
         });
+        // Run on a queue Auth really allocated: Jobs projects only events
+        // whose subject and payload belong to the publishing deployment.
+        const provider = await runtime.registerService({
+          name: "takeover",
+          contract: participants.Provider.participant,
+        });
+        const evidence = await runtime.connectClient({
+          name: "takeover-evidence",
+          contract: apps.JobEvidenceReader.request,
+        });
+        const allocated = (
+          await evidence
+            .resourceBindingsQuery({
+              kind: "jobQueue",
+              ownerId: codecs.ulid.decode(provider.deploymentId),
+            })
+            .orThrow()
+        ).items.find((row) => row.localName === "keyedWork");
+        assert(allocated?.job && allocated.participantId);
+        const serviceName = allocated.participantId;
+        const { namespace, publishPrefix: prefix } = allocated.job;
         const nc = await connect({
           servers: runtime.natsUrl,
           authenticator: credsAuthenticator(
@@ -622,7 +644,7 @@ for (const ordering of [
         let recoveryWorker: typeof worker;
         try {
           const kvm = new Kvm(nc);
-          const keys = await kvm.create("JOBS_KEYS_takeover");
+          const keys = await kvm.create(`JOBS_KEYS_${namespace}`);
           const effects = await kvm.create("TAKEOVER_EFFECTS");
           const jsm = await jetstreamManager(nc);
           await jsm.consumers.add("JOBS", {
@@ -630,7 +652,7 @@ for (const ordering of [
             ack_policy: AckPolicy.Explicit,
             ack_wait: 1_000_000_000,
             max_deliver: -1,
-            filter_subject: "trellis.jobs.takeover.work.*.created",
+            filter_subject: `${prefix}.*.created`,
           });
           const keyConcurrency = {
             key: ["key"],
@@ -641,13 +663,13 @@ for (const ordering of [
           };
           const queue = { maxQueuedPerKey: 2, whenFull: "reject" as const };
           const jobs = {
-            serviceName: "takeover",
-            namespace: "takeover",
+            serviceName,
+            namespace,
             queues: {
-              work: {
-                queueType: "work",
-                publishPrefix: "trellis.jobs.takeover.work",
-                workSubject: "trellis.jobs.takeover.work.*.created",
+              keyedWork: {
+                queueType: "keyedWork",
+                publishPrefix: prefix,
+                workSubject: `${prefix}.*.created`,
                 consumerName: "takeover-work",
                 payload: { schema: "KeyedValue" },
                 result: { schema: "KeyedValue" },
@@ -667,7 +689,7 @@ for (const ordering of [
             keyCoordinator: createNatsJobKeyCoordinator(nc),
             meta: { nextJobId: () => crypto.randomUUID(), nowIso: () => now },
           });
-          const a = await owner.create("work", { key: "shared" });
+          const a = await owner.create("keyedWork", { key: "shared" });
           const aStarted = Promise.withResolvers<void>();
           const bStarted = Promise.withResolvers<void>();
           let cleanupAttempts = 0;
@@ -676,8 +698,10 @@ for (const ordering of [
             const acquired = await createNatsJobKeyCoordinator(
               nc,
             ).acquireActiveSlot({
-              service: "takeover",
-              jobType: "work",
+              // Key coordination is scoped by the queue's namespace, as the
+              // job manager does.
+              service: namespace,
+              jobType: "keyedWork",
               jobId: a.id,
               payload: a.payload,
               context: a.context,
@@ -691,25 +715,20 @@ for (const ordering of [
             now = "2026-10-01T00:00:31.000Z";
           }
           let b = !wasStarted
-            ? await owner.create("work", { key: "shared" })
+            ? await owner.create("keyedWork", { key: "shared" })
             : undefined;
           if (b) {
             await jsm.consumers.update("JOBS", "takeover-work", {
-              filter_subject: `trellis.jobs.takeover.work.${b.id}.created`,
+              filter_subject: `${prefix}.${b.id}.created`,
             });
           }
           const options = {
             nats: nc,
             instanceId: "takeover-worker",
-            queueConcurrency: { work: 2 },
+            queueConcurrency: { keyedWork: 2 },
             manager: owner,
             getLatestLifecycleEvent: (job) =>
-              getLatestLifecycleEvent(
-                jsm.direct,
-                "JOBS",
-                "trellis.jobs.takeover.work",
-                job,
-              ),
+              getLatestLifecycleEvent(jsm.direct, "JOBS", prefix, job),
             handler: async (active) => {
               if (active.job().id === a.id) {
                 if (active.cancellationToken().reason() === "stale-attempt") {
@@ -742,7 +761,7 @@ for (const ordering of [
           if (wasStarted) {
             await runtime.waitFor(() => enteredA);
             now = "2026-10-01T00:00:31.000Z";
-            b = await owner.create("work", { key: "shared" });
+            b = await owner.create("keyedWork", { key: "shared" });
           }
           assert(b);
           let enteredB = false;
@@ -751,7 +770,7 @@ for (const ordering of [
           const afterTakeover = await (
             await jetstreamManager(nc)
           ).streams.getMessage("JOBS", {
-            last_by_subj: `trellis.jobs.takeover.work.${a.id}.>`,
+            last_by_subj: `${prefix}.${a.id}.>`,
           });
           assert(afterTakeover);
           assert.deepEqual(
@@ -773,7 +792,7 @@ for (const ordering of [
               async () =>
                 !!(await jsm.direct
                   .getMessage("JOBS", {
-                    last_by_subj: `trellis.jobs.takeover.work.${a.id}.staleCompletionIgnored`,
+                    last_by_subj: `${prefix}.${a.id}.staleCompletionIgnored`,
                   })
                   .catch(() => undefined)),
             );
@@ -796,19 +815,19 @@ for (const ordering of [
                     await getLatestLifecycleEvent(
                       jsm.direct,
                       "JOBS",
-                      "trellis.jobs.takeover.work",
+                      prefix,
                       b!,
                     )
                   )?.state === "completed",
               );
-              held = gate.armResponseHold("$KV.JOBS_KEYS_takeover.");
+              held = gate.armResponseHold(`$KV.JOBS_KEYS_${namespace}.`);
             }
             await jsm.consumers.add("JOBS", {
               durable_name: "takeover-recovery",
               ack_policy: AckPolicy.Explicit,
               max_deliver: -1,
               ack_wait: 1_000_000_000,
-              filter_subject: `trellis.jobs.takeover.work.${a.id}.created`,
+              filter_subject: `${prefix}.${a.id}.created`,
             });
             recoveryWorker = await startNatsWorkerHostFromBinding(
               {
@@ -817,9 +836,9 @@ for (const ordering of [
                   ...jobs,
                   queues: {
                     work: {
-                      ...jobs.queues.work,
+                      ...jobs.queues.keyedWork,
                       consumerName: "takeover-recovery",
-                      workSubject: `trellis.jobs.takeover.work.${a.id}.created`,
+                      workSubject: `${prefix}.${a.id}.created`,
                     },
                   },
                 },
@@ -858,18 +877,12 @@ for (const ordering of [
                 )
                   break;
                 const released = held!.release();
-                held = gate.armResponseHold("$KV.JOBS_KEYS_takeover.");
+                held = gate.armResponseHold(`$KV.JOBS_KEYS_${namespace}.`);
                 await released;
               }
               assert.deepEqual(
-                (
-                  await getLatestLifecycleEvent(
-                    jsm.direct,
-                    "JOBS",
-                    "trellis.jobs.takeover.work",
-                    a,
-                  )
-                )?.state,
+                (await getLatestLifecycleEvent(jsm.direct, "JOBS", prefix, a))
+                  ?.state,
                 "stale",
               );
               assert.deepEqual(
@@ -887,7 +900,7 @@ for (const ordering of [
                 async () =>
                   !!(await jsm.direct
                     .getMessage("JOBS", {
-                      last_by_subj: `trellis.jobs.takeover.work.${a.id}.staleCompletionIgnored`,
+                      last_by_subj: `${prefix}.${a.id}.staleCompletionIgnored`,
                     })
                     .catch(() => undefined)),
               );
@@ -899,9 +912,9 @@ for (const ordering of [
                     ...jobs,
                     queues: {
                       work: {
-                        ...jobs.queues.work,
+                        ...jobs.queues.keyedWork,
                         consumerName: "takeover-recovery",
-                        workSubject: `trellis.jobs.takeover.work.${a.id}.created`,
+                        workSubject: `${prefix}.${a.id}.created`,
                       },
                     },
                   },
@@ -926,14 +939,8 @@ for (const ordering of [
           if (!lateCompletion) {
             await runtime.waitFor(
               async () =>
-                (
-                  await getLatestLifecycleEvent(
-                    jsm.direct,
-                    "JOBS",
-                    "trellis.jobs.takeover.work",
-                    a,
-                  )
-                )?.eventType === "stale",
+                (await getLatestLifecycleEvent(jsm.direct, "JOBS", prefix, a))
+                  ?.eventType === "stale",
             );
           }
           await runtime.waitFor(
@@ -959,7 +966,7 @@ for (const ordering of [
           const terminal = await (
             await jetstreamManager(nc)
           ).streams.getMessage("JOBS", {
-            last_by_subj: `trellis.jobs.takeover.work.${a.id}.stale`,
+            last_by_subj: `${prefix}.${a.id}.stale`,
           });
           assert(terminal);
           assert.deepEqual(terminal.json<{ state: string }>().state, "stale");

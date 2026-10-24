@@ -584,7 +584,7 @@ impl SqliteJobsStore {
             .connection
             .lock()
             .map_err(|_| SqliteJobsStoreError::Poisoned)?;
-        project_timeline_event_on_connection(&connection, event, raw_event, projected, reason)
+        project_timeline_event_on_connection(&connection, event, raw_event, projected, reason, None)
     }
 
     /// Project one wait-edge lifecycle event into the current active waits table.
@@ -1809,6 +1809,7 @@ pub(crate) fn project_timeline_event_on_connection(
     raw_event: &serde_json::Value,
     projected: Option<bool>,
     reason: Option<&str>,
+    source_sequence: Option<i64>,
 ) -> Result<(), SqliteJobsStoreError> {
     let raw_event_json =
         serde_json::to_string(raw_event).map_err(|error| SqliteJobsStoreError::EncodeJson {
@@ -1856,8 +1857,10 @@ pub(crate) fn project_timeline_event_on_connection(
         INSERT INTO jobs_events_projection
             (service, job_type, id, sequence, event_type, state, previous_state,
              timestamp, timestamp_nanos, tries, message, error_message, progress_json,
-             logs_json, worker_instance_id, raw_event_json, projected, reason)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             logs_json, worker_instance_id, raw_event_json, projected, reason,
+             source_sequence)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19)
         "#,
         params![
             event.service,
@@ -1881,6 +1884,7 @@ pub(crate) fn project_timeline_event_on_connection(
             raw_event_json,
             projected.map(i64::from),
             reason,
+            source_sequence,
         ],
     )?;
     Ok(())
