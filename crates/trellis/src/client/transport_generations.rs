@@ -1901,12 +1901,10 @@ impl TransportGenerationManager {
         self.inner.signal_state();
     }
 
-    #[cfg(feature = "runtime-internals")]
     pub(crate) fn close_runtime(&self, _transition: &OwnTransitionGuard<'_>) {
         self.close();
     }
 
-    #[cfg(feature = "runtime-internals")]
     pub(crate) async fn wait_stopped(&self) {
         let mut stopped = self.inner.stopped.subscribe();
         while !*stopped.borrow_and_update() {

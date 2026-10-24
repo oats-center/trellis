@@ -1,5 +1,6 @@
 //! Public generated finite-RPC caller controlled through ordinary application tasks.
 
+use trellis_rs::__internal::RuntimeOwner as _;
 use runtime_trellis::apis::runtime_trellis_finite_v1::{rpc::HoldDeclaredError, Client};
 use runtime_trellis::participants::runtime_trellis_finite_caller::Participant;
 use runtime_trellis::types::Value;
@@ -34,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?,
     );
-    let owner = trellis_rs::service::LiveProviderOwner::from_connected_client(client.clone());
+    let owner = trellis_rs::__internal::LiveProviderOwner::from_connected_client(client.clone());
     let api = Client::from_generated(owner.runtime_generated_client());
     let mut calls = Vec::new();
     emit("FINITE_READY");

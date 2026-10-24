@@ -5,6 +5,7 @@ mod store;
 
 use std::collections::HashSet;
 use std::time::Duration;
+use trellis_rs::__internal::RuntimeOwner as _;
 
 use async_nats::jetstream::{self, consumer, AckKind};
 use bytes::Bytes;
@@ -13,10 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
+use trellis_rs::__internal::run_builtin_authenticated_router;
 use trellis_rs::client::{EventDescriptor, PreparedTrellisEvent};
-use trellis_rs::service::{
-    internal::run_builtin_authenticated_router, DeclaredRpcError, Router, ServerError,
-};
+use trellis_rs::service::{DeclaredRpcError, Router, ServerError};
 use trellis_runtime_apis::__types::trellis::HealthHeartbeatSample;
 use trellis_runtime_apis::apis::trellis_health_v1::events::Heartbeat;
 use trellis_runtime_apis::apis::trellis_health_v1::events::StatusChanged as HealthStatusChangedEvent;
@@ -282,7 +282,7 @@ async fn run_owner(
     owner: crate::ownership::OwnerContext,
     store: HealthStore,
     config: OwnerConfig,
-    event_owner: trellis_rs::service::LiveProviderOwner,
+    event_owner: trellis_rs::__internal::LiveProviderOwner,
     stop: StopHandle,
 ) -> Result<(), RuntimeError> {
     tracing::debug!(
@@ -373,7 +373,7 @@ async fn project_message(
     nats: &async_nats::Client,
     store: &HealthStore,
     invalidation_subject: &str,
-    verifier: &trellis_rs::service::LiveProviderOwner,
+    verifier: &trellis_rs::__internal::LiveProviderOwner,
     message: jetstream::Message,
 ) -> Result<(), RuntimeError> {
     let info = message
@@ -597,7 +597,7 @@ fn validate_sample(
 
 async fn publish_outbox(
     store: &HealthStore,
-    owner: &trellis_rs::service::LiveProviderOwner,
+    owner: &trellis_rs::__internal::LiveProviderOwner,
 ) -> Result<(), RuntimeError> {
     for transition in store
         .pending_transitions(100)

@@ -1,6 +1,7 @@
 use super::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::task::AbortOnDropHandle;
+use trellis_rs::__internal::RuntimeClient as _;
 use trellis_rs::auth::{discover_native_oauth, NativeCredentialScope, NativeOAuthClient};
 use trellis_rs::client::{TrellisClientError, UserConnectOptions};
 

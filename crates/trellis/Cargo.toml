@@ -10,11 +10,18 @@ readme = "../../README.md"
 include = ["Cargo.toml", "src/**", "generated/**", "tests/**", "README.md"]
 
 [features]
+default = ["native-oauth", "device"]
+# An HTTPS client for OAuth, device enrollment, and OTLP export.
+http = ["dep:reqwest", "dep:rustls-platform-verifier"]
+# Native OAuth sign-in for user applications and tools.
+native-oauth = ["http", "dep:p256"]
+# Device enrollment and activation.
+device = ["native-oauth", "dep:hkdf", "dep:hmac"]
 event-store-sqlite = ["dep:rusqlite"]
 event-store-postgres = ["dep:postgres"]
 live-integration = []
-runtime-internals = []
 telemetry-otlp = [
+  "http",
   "dep:opentelemetry-otlp",
   "reqwest/blocking",
 ]
@@ -30,20 +37,20 @@ base64.workspace = true
 bytes.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
-hkdf = "0.13.0"
-hmac = "0.13.0"
+hkdf = { version = "0.12.4", optional = true }
+hmac = { version = "0.12.1", optional = true }
 nkeys = "0.4"
-p256 = { version = "0.13.2", features = ["ecdsa"] }
+p256 = { version = "0.13.2", features = ["ecdsa"], optional = true }
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry.workspace = true
 postgres = { version = "0.19.12", optional = true }
 rand.workspace = true
-reqwest = { workspace = true, features = ["json", "form"] }
+reqwest = { workspace = true, features = ["json", "form"], optional = true }
 rusqlite = { workspace = true, optional = true }
 rustls.workspace = true
-rustls-platform-verifier.workspace = true
+rustls-platform-verifier = { workspace = true, optional = true }
 ryu-js.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

@@ -1,5 +1,7 @@
 use async_nats::jetstream::stream::RawMessageErrorKind;
-use trellis_rs::service::{LiveProviderOwner, Router, ServerError};
+use trellis_rs::__internal::LiveProviderOwner;
+use trellis_rs::__internal::RuntimeOwner as _;
+use trellis_rs::service::{Router, ServerError};
 use trellis_runtime_apis::apis::trellis_jobs_v1::rpc::History;
 
 pub(super) fn register(

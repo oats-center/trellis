@@ -262,6 +262,12 @@ jobs:
       - name: Lint Rust
         run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --features trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres -- -D warnings
 
+      - name: Lint the Rust SDK's reduced feature sets
+        run: |
+          for features in "" native-oauth device telemetry-otlp; do
+            cargo clippy --manifest-path Cargo.toml -p trellis-rs --lib --no-default-features --features "$features" -- -D warnings
+          done
+
   build-fixtures:
     name: Build integration fixture binaries
     needs: [install, portal]

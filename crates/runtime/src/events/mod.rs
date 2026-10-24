@@ -1,6 +1,7 @@
 //! Built-in Events subsystem.
 
 use std::sync::Arc;
+use trellis_rs::__internal::{FromProviderNats as _, RuntimeOwner as _};
 
 use trellis_events_runtime::{
     secure_consumer_routes, start_dead_letter_projector, start_events_projector,
@@ -9,9 +10,8 @@ use trellis_events_runtime::{
     EventsStore, ManagementAction, VerifiedEventPublisher,
 };
 use trellis_protocol::{ApiSurfaceKind, PermissionAction};
-use trellis_rs::service::{
-    internal::run_builtin_authenticated_router, RequestContext, ServerError,
-};
+use trellis_rs::__internal::run_builtin_authenticated_router;
+use trellis_rs::service::{RequestContext, ServerError};
 use trellis_runtime_apis::apis::trellis_events_v1 as events;
 
 use crate::shutdown::StopHandle;

@@ -42,6 +42,17 @@ These additive features also expose the corresponding database-specific
 `EventStoreError` variants. Services using only RPCs, Live, events, or runtime
 resources do not need either feature.
 
+Two default features cover connections a service does not make:
+`native-oauth` (signing in as a user, `UserConnectOptions`, and a device's
+companion session) and `device` (device enrollment and activation, which
+implies `native-oauth`). A service that connects with its provisioned identity
+can turn them off and skip the HTTPS client and P-256 dependencies:
+
+```toml
+[dependencies]
+trellis-rs = { version = "0.100.0", default-features = false }
+```
+
 SDK HTTP connections and optional `telemetry-otlp` exporters preserve an
 application-installed Rustls provider. Otherwise they use ring locally without
 changing the process-wide provider, with platform certificate verification.

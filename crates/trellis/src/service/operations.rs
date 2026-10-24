@@ -344,93 +344,40 @@ where
 /// Generation-following transport for operation execution support traffic.
 ///
 /// A service provider's accepted executions and control/observe calls pin the
-/// exact generation that accepted them; a runtime-internal provider (and unit
-/// tests) keeps one fixed connection.
+/// exact generation that accepted them.
 #[derive(Clone)]
-pub struct OperationTransport {
-    fixed: Option<async_nats::Client>,
-    manager: Option<crate::client::TransportGenerationManager>,
+pub(crate) struct OperationTransport {
+    manager: crate::client::TransportGenerationManager,
     timeout_ms: u64,
 }
 
 impl OperationTransport {
-    /// A fixed connection with no generation following.
-    #[cfg(any(feature = "runtime-internals", test))]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn fixed(nats: async_nats::Client) -> Self {
-        Self {
-            fixed: Some(nats),
-            manager: None,
-            timeout_ms: 30_000,
-        }
-    }
-
     /// A generation-following transport for one connected service.
     pub(crate) fn managed(
         manager: crate::client::TransportGenerationManager,
         timeout_ms: u64,
     ) -> Self {
         Self {
-            fixed: None,
-            manager: Some(manager),
+            manager,
             timeout_ms,
-        }
-    }
-
-    /// The accepting generation's support connection for one request.
-    ///
-    /// A managed (connected service) request must carry the generation that
-    /// accepted it: routing its physical exchange to a different generation would
-    /// violate the accepted-execution pin. Only a fixed transport (runtime
-    /// internals, tests) has no generation to require.
-    async fn for_request(&self, context: &RequestContext) -> Result<SupportTransport, ServerError> {
-        match &self.manager {
-            None => Ok(SupportTransport {
-                nats: self
-                    .fixed
-                    .clone()
-                    .expect("fixed operation transport has a connection"),
-                lease: None,
-            }),
-            Some(_) => match context.transport.lease() {
-                Some(lease) => Ok(SupportTransport {
-                    nats: lease.nats().clone(),
-                    lease: Some(lease.clone()),
-                }),
-                None => Err(ServerError::Nats(
-                    "operation request is missing its accepting transport generation".to_owned(),
-                )),
-            },
         }
     }
 
     /// A current-generation support connection for framework recovery.
     async fn current(&self) -> Result<SupportTransport, ServerError> {
-        match &self.manager {
-            None => Ok(SupportTransport {
-                nats: self
-                    .fixed
-                    .clone()
-                    .expect("fixed operation transport has a connection"),
-                lease: None,
-            }),
-            Some(manager) => {
-                let lease = manager
-                    .acquire_for(
-                        &[],
-                        &[],
-                        std::time::Instant::now()
-                            + std::time::Duration::from_millis(self.timeout_ms),
-                    )
-                    .await
-                    .map_err(|error| ServerError::Nats(error.to_string()))?;
-                Ok(SupportTransport {
-                    nats: lease.nats().clone(),
-                    lease: Some(lease),
-                })
-            }
-        }
+        let lease = self
+            .manager
+            .acquire_for(
+                &[],
+                &[],
+                std::time::Instant::now() + std::time::Duration::from_millis(self.timeout_ms),
+            )
+            .await
+            .map_err(|error| ServerError::Nats(error.to_string()))?;
+        Ok(SupportTransport {
+            nats: lease.nats().clone(),
+            lease: Some(lease),
+        })
     }
 }
 
@@ -439,6 +386,25 @@ impl OperationTransport {
 struct SupportTransport {
     nats: async_nats::Client,
     lease: Option<crate::client::TransportLease>,
+}
+
+impl SupportTransport {
+    /// The accepting generation's support connection for one request.
+    ///
+    /// The request must carry the generation that accepted it: routing its
+    /// physical exchange to a different generation would violate the
+    /// accepted-execution pin.
+    fn accepting(context: &RequestContext) -> Result<SupportTransport, ServerError> {
+        match context.transport.lease() {
+            Some(lease) => Ok(SupportTransport {
+                nats: lease.nats().clone(),
+                lease: Some(lease.clone()),
+            }),
+            None => Err(ServerError::Nats(
+                "operation request is missing its accepting transport generation".to_owned(),
+            )),
+        }
+    }
 }
 
 pub(crate) struct RuntimeOperationProvider<D: OperationDescriptor, F, V> {
@@ -477,11 +443,6 @@ impl<D, F, V> RuntimeOperationProvider<D, F, V>
 where
     D: OperationDescriptor + 'static,
 {
-    #[cfg(any(feature = "runtime-internals", test))]
-    pub(crate) fn new(runtime: OperationHandlerRuntime<V>, handler: F) -> Self {
-        Self::new_authenticated(runtime, handler, String::new(), None)
-    }
-
     pub(crate) fn new_authenticated(
         runtime: OperationHandlerRuntime<V>,
         handler: F,
@@ -867,10 +828,10 @@ where
         let executor_id = self.executor_id.clone();
         let connection_id = self.connection_id.clone();
         let repository = self.repository.clone();
+        let transport = self.transport.clone();
         let mutation_gate = Arc::clone(&self.mutation_gate);
         let handler = Arc::clone(&self.handler);
         let staging = self.staging.clone();
-        let transport = self.transport.clone();
         let publisher = self.publisher.clone();
         let next_update_sequence = Arc::clone(&self.next_update_sequence);
         let schemas = Arc::clone(&self.schemas);
@@ -1073,7 +1034,6 @@ where
         let repository = self.repository.clone();
         let mutation_gate = Arc::clone(&self.mutation_gate);
         let handler = Arc::clone(&self.handler);
-        let transport = self.transport.clone();
         let publisher = self.publisher.clone();
         let service_session_key = self.service_session_key.clone();
         let staging = self.staging.clone();
@@ -1122,7 +1082,7 @@ where
             }
             // Accepted executions pin the exact generation that accepted the
             // start; support traffic stays on it until completion or real loss.
-            let support = transport.for_request(&context).await?;
+            let support = SupportTransport::accepting(&context)?;
             let repository = repository.pinned(support.lease.as_ref()).await?;
             let caller = context.caller.as_ref().ok_or_else(|| {
                 ServerError::Nats("operation start is missing verified caller".to_owned())
@@ -1895,10 +1855,9 @@ where
 
     fn get(&self, context: RequestContext, operation_id: String) -> OperationSnapshotFuture<D> {
         let repository = self.repository.clone();
-        let transport = self.transport.clone();
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
-            let support = transport.for_request(&context).await?;
+            let support = SupportTransport::accepting(&context)?;
             let repository = repository.pinned(support.lease.as_ref()).await?;
             let record = repository
                 .get(&operation_id)
@@ -1916,10 +1875,9 @@ where
 
     fn wait(&self, context: RequestContext, operation_id: String) -> OperationSnapshotFuture<D> {
         let repository = self.repository.clone();
-        let transport = self.transport.clone();
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
-            let support = transport.for_request(&context).await?;
+            let support = SupportTransport::accepting(&context)?;
             let repository = repository.pinned(support.lease.as_ref()).await?;
             let mut watch = repository.watch(&operation_id).await?;
             while let Some(record) = watch.next().await {
@@ -1947,7 +1905,6 @@ where
         operation_id: String,
     ) -> OperationLiveWatch<D::Progress, D::Update, D::Output> {
         let repository = self.repository.clone();
-        let transport = self.transport.clone();
         let deployment_id = self.deployment_id.clone();
         let validator = self.validator.clone();
         let provider_participant_id = self.provider_participant_id.clone();
@@ -1956,7 +1913,7 @@ where
         Box::pin(
             stream::once(async move {
                 let schemas = Arc::clone(schemas.get()?);
-                let support = transport.for_request(&context).await?;
+                let support = SupportTransport::accepting(&context)?;
                 let repository = repository.pinned(support.lease.as_ref()).await?;
                 let updates = support
                     .nats
@@ -2231,11 +2188,10 @@ where
 
     fn cancel(&self, context: RequestContext, operation_id: String) -> OperationSnapshotFuture<D> {
         let repository = self.repository.clone();
-        let transport = self.transport.clone();
         let gate = Arc::clone(&self.mutation_gate);
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
-            let support = transport.for_request(&context).await?;
+            let support = SupportTransport::accepting(&context)?;
             let repository = repository.pinned(support.lease.as_ref()).await?;
             let _guard = gate.lock().await;
             let current = repository.get(&operation_id).await?.ok_or_else(|| {
@@ -2282,11 +2238,10 @@ where
         input: Option<Value>,
     ) -> OperationSignalFuture<D> {
         let repository = self.repository.clone();
-        let transport = self.transport.clone();
         let gate = Arc::clone(&self.mutation_gate);
         let deployment_id = self.deployment_id.clone();
         Box::pin(async move {
-            let support = transport.for_request(&context).await?;
+            let support = SupportTransport::accepting(&context)?;
             let repository = repository.pinned(support.lease.as_ref()).await?;
             let _guard = gate.lock().await;
             let current = repository.get(&operation_id).await?.ok_or_else(|| {

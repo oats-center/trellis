@@ -42,92 +42,10 @@ impl LiveProviderOwner {
         Self { client }
     }
 
-    /// Construct one live provider owner from a connected client.
-    ///
-    /// Exposed to the runtime crate so built-in subsystems can adopt the
-    /// normal authenticated provider connection they bootstrapped with.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn from_connected_client(client: std::sync::Arc<TrellisClient>) -> Self {
-        Self { client }
-    }
-
     /// Return the owning client.
     #[must_use]
     pub(crate) fn client(&self) -> &std::sync::Arc<TrellisClient> {
         &self.client
-    }
-
-    /// Return the authenticated NATS connection of the owning client.
-    ///
-    /// Exposed to the runtime crate so built-in subsystems serve their public
-    /// routers over the exact connection they bootstrapped with.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn runtime_nats(&self) -> async_nats::Client {
-        self.client.runtime_nats()
-    }
-
-    /// Call generated service APIs through this provider's ordinary authenticated client.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    #[must_use]
-    pub fn runtime_generated_client(&self) -> crate::generated::Client {
-        crate::generated::Client::from_client(self.client.clone())
-    }
-
-    /// Verify built-in requests through this connection's shared authority owner.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub fn runtime_validator(&self, api_id: impl Into<String>) -> super::LocalAuthVerifier {
-        super::LocalAuthVerifier::new(
-            self.client.authorization_owner().clone(),
-            self.runtime_nats(),
-            api_id,
-        )
-    }
-
-    /// Share this connection's pinned verification and revocation state with built-in adapters.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub fn runtime_authorization_owner(&self) -> crate::client::AuthorizationOwner {
-        self.client.authorization_owner().clone()
-    }
-
-    /// Publish durable subsystem output through the installed provider authority.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub async fn publish_prepared(
-        &self,
-        event: &crate::client::PreparedTrellisEvent,
-    ) -> Result<(), crate::client::TrellisClientError> {
-        self.client.publish_prepared(event).await
-    }
-
-    /// End the runtime-owned logical connection after its subsystem stops.
-    ///
-    /// Child routers may still retain client references. This closes their
-    /// transport ownership rather than waiting for the last reference to drop.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the own authorization transition cannot be fenced.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub async fn shutdown_native_runtime(&self) -> Result<(), crate::client::TrellisClientError> {
-        self.client.shutdown_native_runtime().await
-    }
-
-    /// Request terminal transport closure when the production runtime owner is cancelled.
-    ///
-    /// Unlike orderly shutdown, this does not await physical generation drainage.
-    /// Retained child references cannot keep recovery or authorization refresh running.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub fn abort_native_runtime(&self) {
-        self.client.abort_native_runtime();
     }
 
     /// Return the connection's live manager.

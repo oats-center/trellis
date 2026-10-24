@@ -686,6 +686,7 @@ impl Client {
     }
 
     /// Connect using a durable user login session.
+    #[cfg(feature = "native-oauth")]
     pub async fn connect_user(
         options: crate::client::UserConnectOptions<'_>,
     ) -> Result<Self, crate::client::TrellisClientError> {

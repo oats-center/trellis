@@ -76,5 +76,9 @@ pub mod jobs;
 /// Reusable OpenTelemetry ownership and instrumentation.
 pub mod telemetry;
 
+#[doc(hidden)]
+#[path = "internal.rs"]
+pub mod __internal;
+
 extern crate self as trellis_rs;
 include!("../generated/modules.rs");

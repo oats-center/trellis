@@ -4,6 +4,7 @@
 //! replaces them; native admission and store provisioning own provider authority.
 
 use std::path::PathBuf;
+use trellis_rs::__internal::RuntimeOwner as _;
 use trellis_rs::client::SessionAuth;
 
 use super::RuntimeError;
@@ -54,7 +55,7 @@ impl LiveProviderRole {
     }
 }
 
-type OwnerSlot = Option<trellis_rs::service::LiveProviderOwner>;
+type OwnerSlot = Option<trellis_rs::__internal::LiveProviderOwner>;
 
 /// Delivery slots for independently supervised native provider owners.
 #[derive(Clone)]
@@ -99,7 +100,7 @@ impl LiveProviderSlots {
     pub(crate) fn install(
         &self,
         role: LiveProviderRole,
-        owner: trellis_rs::service::LiveProviderOwner,
+        owner: trellis_rs::__internal::LiveProviderOwner,
     ) {
         if let Some(sender) = self.senders.get(&role) {
             let _ = sender.send(Some(owner));
@@ -123,7 +124,7 @@ impl LiveProviderSlots {
         let results = futures_util::future::join_all(
             owners
                 .iter()
-                .map(trellis_rs::service::LiveProviderOwner::shutdown_native_runtime),
+                .map(trellis_rs::__internal::LiveProviderOwner::shutdown_native_runtime),
         )
         .await;
         for result in results {
@@ -137,7 +138,7 @@ impl LiveProviderSlots {
 pub(crate) async fn await_live_owner(
     receiver: &mut tokio::sync::watch::Receiver<OwnerSlot>,
     stop: &crate::shutdown::StopHandle,
-) -> Option<trellis_rs::service::LiveProviderOwner> {
+) -> Option<trellis_rs::__internal::LiveProviderOwner> {
     loop {
         if let Some(owner) = receiver.borrow_and_update().clone() {
             return Some(owner);

@@ -151,6 +151,7 @@ impl AuthorizationContextCache {
 
     /// Retain a newly acquired OAuth CONNECT credential without changing logical
     /// application authority. The durable OAuth client owns HTTP token refresh.
+    #[cfg_attr(not(feature = "native-oauth"), allow(dead_code))]
     pub(crate) fn replace_oauth_admission(
         &self,
         auth: &SessionAuth,

@@ -45,6 +45,7 @@ pub struct AuthorizationContextBundle {
 
 /// CONNECT credentials are independent of short-lived application authority.
 pub(crate) enum AuthorizationCredential {
+    #[cfg_attr(not(feature = "native-oauth"), allow(dead_code))]
     OAuth(trellis_protocol::SignedOAuthAdmission),
     Provisioned {
         admission: trellis_protocol::ProvisionedAdmission,

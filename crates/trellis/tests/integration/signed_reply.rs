@@ -3,16 +3,17 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
+use trellis_rs::__internal::{
+    dispatch_one, encode_success_reply, sign_verified_reply, InboundRequest, LiveProviderOwner,
+    RuntimeOwner,
+};
 use trellis_rs::auth::{NativeCredentialScope, NativeOAuthClient};
 use trellis_rs::client::{
     ResponseVerificationInput, ServiceConnectWithContractOptions, TrellisClient, UserConnectOptions,
 };
 use trellis_rs::generated::RpcDescriptor;
-use trellis_rs::service::internal::{
-    dispatch_one, encode_success_reply, sign_verified_reply, InboundRequest,
-};
 use trellis_rs::service::{
-    AuthenticatedRouter, DeclaredRpcError, LiveProviderOwner, RequestContext, Router, ServerError,
+    AuthenticatedRouter, DeclaredRpcError, RequestContext, Router, ServerError,
 };
 use trellis_runtime_apis::apis::{trellis_auth_v1, trellis_health_v1::rpc::Query};
 use trellis_runtime_apis::participants::trellis_health_runtime::Participant;

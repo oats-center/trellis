@@ -1,5 +1,6 @@
 //! Provisioned identity and independently consented user authority have separate lifecycles.
 
+use trellis_rs::__internal::RuntimeOwner as _;
 use trellis_test_fixture::apps::trellis_test_fixture_companion_device_companion as companion_app;
 use trellis_test_fixture::apps::trellis_test_fixture_optional_companion_device_companion as optional_companion_app;
 use serde_json::json;
@@ -985,7 +986,7 @@ async fn provisioned_device_and_oauth_user_revoke_independently() {
             .await
             .unwrap(),
     );
-    let raw_owner = trellis_rs::service::LiveProviderOwner::from_connected_client(raw_user);
+    let raw_owner = trellis_rs::__internal::LiveProviderOwner::from_connected_client(raw_user);
     let raw = async_nats::jetstream::new(raw_owner.runtime_nats());
     assert!(raw.get_key_value(&records.binding().bucket).await.is_err());
     assert!(raw.get_object_store(&objects.binding().name).await.is_err());

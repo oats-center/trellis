@@ -18,7 +18,7 @@ mod bootstrap_ports;
 mod core_bootstrap;
 mod error;
 mod events_runtime;
-mod live_router;
+pub(crate) mod live_router;
 mod local_validator;
 mod operation_repository;
 mod operations;
@@ -53,8 +53,7 @@ pub use error::{
     DeclaredRpcError, HandlerResult, SchemaValidationIssue, ServerError, ValidationIssue,
 };
 pub use events_runtime::{EventsMessageStream, EventsRuntime};
-#[cfg(feature = "runtime-internals")]
-pub use live_router::LiveProviderOwner;
+pub(crate) use live_router::LiveProviderOwner;
 #[doc(hidden)]
 pub use local_validator::{
     payload_hash_base64url, AuthenticatedCaller, EventVerificationFailure, LocalAuthVerifier,
@@ -103,24 +102,16 @@ pub use transfer::{
 };
 pub use trellis_protocol::transfer::generate_transfer_id;
 
-#[doc(hidden)]
-pub mod internal {
-    #[cfg(feature = "runtime-internals")]
-    pub use super::operations::OperationHandlerRuntime;
-    #[cfg(feature = "runtime-internals")]
-    pub use super::operations::OperationTransport;
+/// Runtime-only service support, re-exported through [`crate::__internal`].
+pub(crate) mod internal {
     pub use super::request_loop::{
         dispatch_one, encode_error_reply, encode_success_reply, sign_verified_reply,
         HandlerResponse, InboundRequest, OutboundReply, RequestHandler, ResponseStream,
     };
-    #[cfg(feature = "runtime-internals")]
-    pub use super::resources::backend::BoundStoreResourceClient;
-
     /// Run a Trellis-owned built-in router through the supplied local request
     /// verifier. Built-in runtimes without a verifier deny all requests
     /// fail-closed; the runtime Auth-side verifier supplies verification in
     /// platform mode.
-    #[cfg(feature = "runtime-internals")]
     pub async fn run_builtin_authenticated_router<V>(
         owner: super::LiveProviderOwner,
         mut router: super::Router,

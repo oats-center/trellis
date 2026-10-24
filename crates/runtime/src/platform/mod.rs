@@ -1,6 +1,7 @@
 //! Runtime ownership of the authoritative Auth store and its serving boundaries.
 
 use std::{path::Path, sync::Arc, time::Duration};
+use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 
 pub mod auth;
 pub mod auth_callout;

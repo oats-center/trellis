@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use trellis_rs::__internal::RuntimeOwner as _;
 
 use serde::Serialize;
 use thiserror::Error;
@@ -1067,7 +1068,7 @@ async fn bootstrap_live_providers(context: &RuntimeContext) -> Result<(), Runtim
         }
         context.live_providers.install(
             role,
-            trellis_rs::service::LiveProviderOwner::from_connected_client(Arc::new(client)),
+            trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(client)),
         );
     }
     Ok(())

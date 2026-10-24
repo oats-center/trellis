@@ -2467,6 +2467,7 @@ impl AuthorizationOwner {
     }
 
     /// Apply HTTP-authenticated OAuth rotation links through the shared pinned owner.
+    #[cfg_attr(not(feature = "native-oauth"), allow(dead_code))]
     pub(crate) async fn install_oauth_rotations(
         &self,
         rotations: Vec<trellis_protocol::SignedIssuerRotation>,

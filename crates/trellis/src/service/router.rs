@@ -1083,25 +1083,6 @@ impl Router {
         self.register_operation_routes::<D, P>(Arc::new(provider));
     }
 
-    /// Register an operation business handler while the router owns lifecycle control.
-    #[cfg(feature = "runtime-internals")]
-    pub fn register_operation_handler<D, F, Fut, V>(
-        &mut self,
-        runtime: super::operations::OperationHandlerRuntime<V>,
-        handler: F,
-    ) where
-        D: OperationDescriptor + 'static,
-        D::Progress: serde::de::DeserializeOwned,
-        D::Output: serde::de::DeserializeOwned,
-        F: Fn(RequestContext, D::Input, super::OperationControl<D>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<(), ServerError>> + Send + 'static,
-        V: super::RequestValidator + Clone + 'static,
-    {
-        self.register_operation_provider::<D, _>(super::operations::RuntimeOperationProvider::new(
-            runtime, handler,
-        ));
-    }
-
     #[doc(hidden)]
     pub async fn recover_operations(&self) -> Result<(), ServerError> {
         for recover in &self.operation_recoveries {

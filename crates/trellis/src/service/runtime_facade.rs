@@ -1266,17 +1266,6 @@ impl<C> ConnectedServiceRuntime<C> {
         EventPublisher::new(Arc::clone(self.client()))
     }
 
-    /// Retain the service's native logical owner for host-managed shutdown.
-    ///
-    /// The host must close and join this owner before releasing its broker,
-    /// including when cancellation drops the service's running future while
-    /// accepted callbacks still retain client references.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub fn runtime_native_owner(&self) -> super::LiveProviderOwner {
-        super::LiveProviderOwner::from_connected_client(Arc::clone(self.client()))
-    }
-
     /// Start a descriptor-backed event listener.
     pub async fn listen_event<D, F, Fut>(
         &self,

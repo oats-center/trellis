@@ -1,5 +1,6 @@
 //! A real RPC provider whose accepted mutations remain independently observable.
 
+use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 use runtime_trellis::participants::runtime_trellis_transport_growth_operation_provider::{
     Participant, Provider,
 };

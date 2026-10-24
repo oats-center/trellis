@@ -14,6 +14,7 @@
 //! dropping the real logical client releases a provisional transport resource
 //! and that the still-open process performs no recovery work afterwards.
 
+use trellis_rs::__internal::RuntimeOwner as _;
 use futures_util::{stream, StreamExt as _};
 use runtime_trellis::participants::runtime_trellis_transport_growth_subject::runtime_trellis_transport_growth_v1::Client as SubjectGrowthClient;
 use runtime_trellis::participants::runtime_trellis_transport_growth_subject::{
@@ -397,7 +398,7 @@ async fn run_native_owner_scope(url: &str, seed: &str) -> Result<(), Box<dyn std
         )
         .await?,
     );
-    let owner = trellis_rs::service::LiveProviderOwner::from_connected_client(client.clone());
+    let owner = trellis_rs::__internal::LiveProviderOwner::from_connected_client(client.clone());
     let api = SubjectGrowthClient::from_generated(owner.runtime_generated_client());
     let initial_session = client
         .authorization_context()?

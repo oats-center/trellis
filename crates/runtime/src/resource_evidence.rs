@@ -1,7 +1,8 @@
 //! Auth-owned resource evidence read through ordinary generated RPC clients.
 
 use futures_util::TryStreamExt;
-use trellis_rs::service::LiveProviderOwner;
+use trellis_rs::__internal::LiveProviderOwner;
+use trellis_rs::__internal::RuntimeOwner as _;
 use trellis_runtime_apis::{
     apis::trellis_auth_v1,
     types::{AuthResourceBindingsQueryRequest, AuthResourceEvidence},

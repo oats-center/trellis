@@ -1,5 +1,6 @@
 //! Ordinary service workers recover durable history without shared stream access.
 
+use trellis_rs::__internal::RuntimeClient as _;
 use serde_json::json;
 use std::time::Duration;
 use trellis_rs::client::{ServiceConnectWithContractOptions, TrellisClient};

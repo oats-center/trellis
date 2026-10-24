@@ -33,7 +33,7 @@ ulid.workspace = true
 url = { workspace = true }
 
 [dev-dependencies]
-trellis-rs = { path = "../trellis", version = "0.100.0-rc.3", features = ["runtime-internals"] }
+trellis-rs = { path = "../trellis", version = "0.100.0-rc.3" }
 trellis-runtime-apis = { path = "../runtime-apis" }
 trellis-idl = { path = "../idl" }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

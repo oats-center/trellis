@@ -40,9 +40,7 @@ impl EventsRuntime {
     }
 
     /// Create the Events runtime facade for a Trellis-owned built-in provider.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
-    pub fn from_nats(nats: async_nats::Client) -> Self {
+    pub(crate) fn from_provider_nats(nats: async_nats::Client) -> Self {
         Self { nats }
     }
 

@@ -46,6 +46,7 @@ pub use sandbox::{remove_retained_workdirs, WorkdirRetention};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trellis_rs::__internal::RuntimeClient as _;
     use trellis_runtime_apis::participants::trellis_health_runtime;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

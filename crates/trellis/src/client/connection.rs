@@ -7,6 +7,7 @@ use futures_util::stream::{self, BoxStream};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
+#[cfg(feature = "device")]
 use sha2::{Digest as _, Sha256};
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
+#[cfg(feature = "device")]
 use trellis_protocol::{DeviceEnrollmentSessionProofInput, SessionProofInput};
 
 use crate::telemetry::instruments::{CounterFamily, DurationFamily};
@@ -62,12 +64,13 @@ pub struct ServiceConnectWithContractOptions<'a> {
 ///
 /// The type parameter `C` supplies the generated participant identity.
 pub struct DeviceConnectOptions<'a, C> {
+    #[cfg_attr(not(feature = "device"), allow(dead_code))]
     trellis_url: &'a str,
     nats_servers: Vec<String>,
     trust: crate::client::RuntimeAuthorizationTrust,
     participant_id: &'a str,
     identity_seed_base64url: &'a str,
-    companion: Option<UserConnectOptions<'a>>,
+    companion: Option<CompanionSession<'a>>,
     timeout_ms: u64,
     name: Option<&'a str>,
     contract_type: std::marker::PhantomData<C>,
@@ -118,11 +121,13 @@ impl<'a, C> DeviceConnectOptions<'a, C> {
 
     /// Supply the companion's independently consented OAuth session.
     /// The signed device assignment must identify this exact grant.
+    #[cfg(feature = "native-oauth")]
     pub fn with_companion(mut self, companion: UserConnectOptions<'a>) -> Self {
         self.companion = Some(companion);
         self
     }
 
+    #[cfg(feature = "device")]
     pub(crate) fn activation_origin_digest(
         &self,
         activation_key_base64url: &str,
@@ -386,12 +391,14 @@ fn record_delivery_disposition(action: &'static str, result: &Result<(), Trellis
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(feature = "device")]
 pub(crate) struct DeviceEnrollmentResponse {
     pub(crate) server_now: i64,
     pub(crate) state: String,
     pub(crate) activation: Option<DeviceBootstrapActivation>,
 }
 
+#[cfg(feature = "device")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeviceBootstrapActivation {
@@ -415,7 +422,9 @@ struct ServiceBootstrapAuthorization {
 #[serde(rename_all = "camelCase")]
 struct CompanionBootstrapAuthorization {
     request_id: String,
+    #[cfg_attr(not(feature = "native-oauth"), allow(dead_code))]
     oauth_grant_id: String,
+    #[cfg_attr(not(feature = "native-oauth"), allow(dead_code))]
     client_id: String,
     required: bool,
 }
@@ -432,7 +441,7 @@ struct NativeConnectOptions<'a> {
     trust: crate::client::RuntimeAuthorizationTrust,
     participant_id: &'a str,
     identity_seed: &'a str,
-    companion_session: Option<UserConnectOptions<'a>>,
+    companion_session: Option<CompanionSession<'a>>,
     companion_descriptor: Option<crate::generated::CompanionDescriptor>,
     name: Option<&'a str>,
     timeout_ms: u64,
@@ -440,6 +449,7 @@ struct NativeConnectOptions<'a> {
     kind: trellis_protocol::PrincipalKind,
 }
 
+#[cfg(feature = "device")]
 pub(crate) async fn fetch_device_activation<C: crate::generated::ParticipantDescriptor>(
     opts: &DeviceConnectOptions<'_, C>,
     session_auth: &SessionAuth,
@@ -521,6 +531,7 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
+#[cfg(feature = "device")]
 fn now_context_millis() -> Result<i64, TrellisClientError> {
     i64::try_from(
         std::time::SystemTime::now()
@@ -965,7 +976,18 @@ async fn attach_authorization_provider(
     })
 }
 
+/// A device's companion OAuth session, which needs the `native-oauth` feature.
+#[cfg(feature = "native-oauth")]
+type CompanionSession<'a> = UserConnectOptions<'a>;
+/// Without `native-oauth` a device has no companion session.
+#[cfg(not(feature = "native-oauth"))]
+enum CompanionSession<'a> {
+    #[allow(dead_code)]
+    Never(std::convert::Infallible, std::marker::PhantomData<&'a ()>),
+}
+
 /// Connection options for an OAuth-authorized native application.
+#[cfg(feature = "native-oauth")]
 pub struct UserConnectOptions<'a> {
     nats_servers: Vec<String>,
     timeout_ms: u64,
@@ -973,6 +995,7 @@ pub struct UserConnectOptions<'a> {
     name: Option<&'a str>,
 }
 
+#[cfg(feature = "native-oauth")]
 impl<'a> UserConnectOptions<'a> {
     /// Create user-authenticated connection options.
     pub fn new(
@@ -1327,6 +1350,7 @@ impl TrellisClient {
                     "device bootstrap companion does not match its descriptor".into(),
                 ));
             }
+            #[cfg(feature = "native-oauth")]
             if let Some(companion_session) = companion_session {
                 if companion_session
                     .session
@@ -1355,6 +1379,12 @@ impl TrellisClient {
             } else if companion.required {
                 return Err(TrellisClientError::Bootstrap(
                     "device companion OAuth session is required".into(),
+                ));
+            }
+            #[cfg(not(feature = "native-oauth"))]
+            if companion.required || companion_session.is_some() {
+                return Err(TrellisClientError::Bootstrap(
+                    "a device companion needs the native-oauth feature".into(),
                 ));
             }
         } else if companion_descriptor.is_some_and(|descriptor| descriptor.required) {
@@ -1392,6 +1422,7 @@ impl TrellisClient {
     }
 
     /// Connect with a verified native OAuth admission, then retrieve application authority.
+    #[cfg(feature = "native-oauth")]
     pub async fn connect_user(opts: UserConnectOptions<'_>) -> Result<Self, TrellisClientError> {
         let observation = Observation::start(
             DurationFamily::Connect,
@@ -1413,6 +1444,7 @@ impl TrellisClient {
         result
     }
 
+    #[cfg(feature = "native-oauth")]
     async fn connect_user_inner(opts: UserConnectOptions<'_>) -> Result<Self, TrellisClientError> {
         let mut session = opts.session;
         let auth = session.auth.clone();
@@ -1589,10 +1621,8 @@ impl TrellisClient {
     /// Exposed to the runtime crate so a built-in subsystem can serve its
     /// public router over the exact authenticated provider connection it
     /// bootstrapped with.
-    #[cfg(feature = "runtime-internals")]
-    #[doc(hidden)]
     #[must_use]
-    pub fn runtime_nats(&self) -> async_nats::Client {
+    pub(crate) fn provider_nats(&self) -> async_nats::Client {
         self.nats.clone()
     }
 
@@ -2286,13 +2316,11 @@ impl TrellisClient {
 }
 
 impl TrellisClient {
-    #[cfg(feature = "runtime-internals")]
     pub(crate) fn abort_native_runtime(&self) {
         self.stop_background_tasks();
         self.generations.close();
     }
 
-    #[cfg(feature = "runtime-internals")]
     pub(crate) async fn shutdown_native_runtime(&self) -> Result<(), TrellisClientError> {
         {
             let contexts = self.authorization_contexts.as_ref().ok_or_else(|| {

@@ -1,13 +1,15 @@
 //! Built-in Jobs admin subsystem.
 
 use std::sync::Arc;
+use trellis_rs::__internal::{FromProviderNats as _, RuntimeOwner as _};
 
 use trellis_jobs_runtime::{
     jobs_admin_resources, start_jobs_projector, start_worker_presence_projector,
     JobResourceResolver, JobsAdminResources, JobsProjectorHandle, JobsQuery, SqliteJobsStore,
     WorkerPresenceProjectorHandle,
 };
-use trellis_rs::service::{internal::run_builtin_authenticated_router, ServerError};
+use trellis_rs::__internal::run_builtin_authenticated_router;
+use trellis_rs::service::ServerError;
 
 use crate::shutdown::StopHandle;
 use crate::supervisor::{RuntimeContext, RuntimeError, SubsystemHandle};

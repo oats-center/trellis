@@ -1,5 +1,6 @@
 //! Generated application-major interoperability over the one Live protocol.
 
+use trellis_rs::__internal::{RuntimeOwner as _, RuntimeService as _};
 use futures_util::{stream, StreamExt};
 use runtime_live_v2::apis::runtime_trellis_documents_v2::lives as v2_lives;
 use runtime_live_v2::participants::runtime_trellis_live_v2_provider::{Participant, Provider};

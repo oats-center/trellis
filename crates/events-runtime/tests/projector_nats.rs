@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use trellis_rs::__internal::{FromProviderNats as _, RuntimeOwner as _};
 
 use trellis_events_runtime::{
     start_events_projector, EventVerifier, EventsRuntime, EventsStore, VerifiedEventPublisher,
@@ -54,9 +55,9 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         .unwrap();
 
     let publisher =
-        trellis_rs::service::LiveProviderOwner::from_connected_client(Arc::new(publisher));
+        trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(publisher));
     let receiver =
-        trellis_rs::service::LiveProviderOwner::from_connected_client(Arc::new(receiver));
+        trellis_rs::__internal::LiveProviderOwner::from_connected_client(Arc::new(receiver));
 
     // The production runtime's operational credentials administer the broker.
     // Publications and their verifier use separate ordinary provisioned clients.

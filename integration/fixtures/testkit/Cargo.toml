@@ -12,7 +12,7 @@ trellis-rs = "0.100.0-rc.3"
 trellis-test-fixture = { path = "crates/trellis-test-fixture" }
 
 [dev-dependencies]
-trellis-rs = { version = "0.100.0-rc.3", features = ["runtime-internals"] }
+trellis-rs = { version = "0.100.0-rc.3" }
 async-nats = "0.50"
 runtime-trellis = { path = "../runtime/crates/runtime-trellis" }
 trellis-runtime-apis = { path = "../../../crates/runtime-apis" }

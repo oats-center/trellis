@@ -6,7 +6,7 @@ use super::super::TrellisClientError;
 /// interpreting ambiguous endpoint configuration. HTTP policy belongs to the
 /// selected deployment; this helper does not discover application authority.
 pub fn canonical_trellis_origin(trellis_url: &str) -> Result<String, TrellisClientError> {
-    let url = reqwest::Url::parse(trellis_url)
+    let url = url::Url::parse(trellis_url)
         .map_err(|error| TrellisClientError::Bootstrap(format!("invalid Trellis URL: {error}")))?;
     if !matches!(url.scheme(), "https" | "http")
         || url.host().is_none()

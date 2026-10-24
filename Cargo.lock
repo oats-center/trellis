@@ -1363,7 +1363,7 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
- "hkdf 0.12.4",
+ "hkdf",
  "pem-rfc7468",
  "pkcs8",
  "rand_core 0.6.4",
@@ -1832,15 +1832,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
 dependencies = [
  "hmac 0.12.1",
-]
-
-[[package]]
-name = "hkdf"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aaa26c720c68b866f2c96ef5c1264b3e6f473fe5d4ce61cd44bbe913e553018"
-dependencies = [
- "hmac 0.13.0",
 ]
 
 [[package]]
@@ -5907,7 +5898,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "tar",
  "tempfile",
  "time",
@@ -5973,7 +5964,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -5997,7 +5988,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "toml",
  "trellis-protocol",
 ]
@@ -6037,7 +6028,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -6066,7 +6057,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
  "time",
  "ulid",
@@ -6095,8 +6086,8 @@ dependencies = [
  "bytes",
  "ed25519-dalek",
  "futures-util",
- "hkdf 0.13.0",
- "hmac 0.13.0",
+ "hkdf",
+ "hmac 0.12.1",
  "jsonschema",
  "libc",
  "nkeys",
@@ -6113,7 +6104,7 @@ dependencies = [
  "ryu-js",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -6163,7 +6154,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "time",
@@ -6233,7 +6224,7 @@ dependencies = [
  "runtime-trellis",
  "serde",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "tar",
  "tempfile",
  "time",
@@ -7095,7 +7086,7 @@ dependencies = [
  "miette",
  "semver",
  "serde_json",
- "sha2 0.11.0",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "toml_edit",

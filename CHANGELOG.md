@@ -10,6 +10,11 @@ and this project adheres to
 
 ### Added
 
+- `trellis-rs` features `native-oauth` and `device`, both on by default. A
+  service that connects with its provisioned identity can build with
+  `default-features = false`, skipping the HTTPS client, `hyper`, `tower`, and
+  P-256 (32 of the SDK's 215 crates).
+
 - **Breaking:** Administrative capabilities replace platform privileges.
   Managing the installation uses six ordinary Auth capabilities:
   `trellis.auth.v1:users.manage`, `trellis.auth.v1:roles.manage`,
@@ -97,6 +102,10 @@ consequence; consent_revision; capability …; }` bundles of its own
   `[nats] ca_certificate` for the runtime's own broker connections.
 
 ### Changed
+
+- The SDK uses one RustCrypto generation (`sha2` 0.10, `hmac` 0.12, `hkdf`
+  0.12), matching what `async-nats` requires, removing duplicate `digest`,
+  `block-buffer`, `crypto-common`, and `const-oid` versions from every build.
 
 - **Breaking:** Presentation-only capability groups are gone; groups now grant
   their members.
@@ -194,6 +203,11 @@ consequence; consent_revision; capability …; }` bundles of its own
 - **Breaking:** `discover_native_oauth` takes the trusted root certificates.
 
 ### Removed
+
+- **Breaking:** The `trellis-rs` `runtime-internals` feature. Trellis's own
+  runtime reaches its support through the hidden, unversioned
+  `trellis_rs::__internal` module instead, so no published feature exposes
+  it. `LiveProviderOwner` and `service::internal` moved there.
 
 - **Breaking:** Platform privileges: `PlatformPrivilege`, the authority's
   `platformPrivileges`, the `trellis_platform_privileges` authorization detail,

@@ -10,6 +10,7 @@ pub(crate) mod authorization;
 mod connection;
 mod error;
 mod events;
+#[cfg(feature = "http")]
 mod http_error;
 mod operations;
 mod proof;
@@ -38,11 +39,15 @@ pub use trellis_protocol::AuthenticatedCaller;
 pub use trellis_protocol::{ApiSurfaceKind, CatalogActionIdentity, PermissionAction};
 
 pub use crate::generated::{EventDescriptor, LiveDescriptor, RpcDescriptor};
+#[cfg(feature = "device")]
 pub(crate) use connection::fetch_device_activation;
+#[cfg(feature = "device")]
 pub(crate) use connection::DeviceEnrollmentResponse;
+#[cfg(feature = "native-oauth")]
+pub use connection::UserConnectOptions;
 pub use connection::{
     DeviceConnectOptions, EventMessage, EventReplayPolicy, EventSubscribeOptions,
-    EventSubscriptionMode, ServiceConnectWithContractOptions, TrellisClient, UserConnectOptions,
+    EventSubscriptionMode, ServiceConnectWithContractOptions, TrellisClient,
 };
 pub use error::{
     AuthenticationError, CallError, ProtocolError, RemoteErrorPayload, RpcErrorPayload,
@@ -57,8 +62,11 @@ pub use events::{
 pub use events::{PostgresInboxStore, PostgresOutboxStore};
 #[cfg(feature = "event-store-sqlite")]
 pub use events::{SqliteInboxStore, SqliteOutboxStore};
+#[cfg(any(feature = "device", feature = "telemetry-otlp"))]
 pub(crate) use http_error::http_client_builder;
+#[cfg(feature = "device")]
 pub(crate) use http_error::read_bounded_http_body;
+#[cfg(feature = "http")]
 pub use http_error::{decode_trellis_http_error, TrellisHttpError};
 pub use operations::{
     control_subject, DeclaredOperationUpdates, HasOperationUpdates, NoOperationUpdates,
@@ -76,10 +84,6 @@ pub use resources::{
     ResourceCodecError, ResourceRevision, StateHandle, StateReadError, StateResourceClient,
     StateValue, StateWriteError, StateWriteMode,
 };
-#[cfg(any(test, feature = "runtime-internals"))]
-#[doc(hidden)]
-pub use subject::resolve_subject;
-#[cfg(not(any(test, feature = "runtime-internals")))]
 pub(crate) use subject::resolve_subject;
 pub use subject::SubjectError;
 pub use transfer::{
