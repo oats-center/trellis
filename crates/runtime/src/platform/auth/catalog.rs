@@ -13,7 +13,7 @@ use trellis_protocol::{
     CATALOG_SNAPSHOT_FORMAT_V1,
 };
 
-use super::policy::{apply_policy, PolicyMutation};
+use super::policy::{apply_policy_in_transaction, PolicyMutation};
 use super::revocation::EnforcementScope;
 use super::sqlite::{
     decode, digest, id, json, AuthError, Connection, Mutation, SqliteAuthorizationStore,
@@ -703,13 +703,7 @@ impl SqliteAuthorizationStore {
                 ) {
                     return Err(AuthError::Denied);
                 }
-                Self::require_administration(
-                    connection,
-                    &identity.actor,
-                    Administration::ManageRoles,
-                )?;
-                let (scope, _) = apply_policy(connection, edit, now)?;
-                Self::policy_changed(connection, &scope, now)?;
+                apply_policy_in_transaction(connection, identity, edit, now)?;
             }
             let snapshot = snapshot.sign(&self.current_signer(connection)?)?;
             connection.execute(

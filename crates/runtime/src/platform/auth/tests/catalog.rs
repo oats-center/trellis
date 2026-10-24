@@ -288,3 +288,73 @@ fn stale_review_and_force_without_privilege_are_atomic_failures() {
     ));
     assert_eq!(f.store.current_catalog(&f.api).unwrap().generation.get(), 1);
 }
+
+#[test]
+fn acceptance_role_edits_need_platform_management_to_bundle_administration() {
+    let f = fixture();
+    let manager = create_user(&f.store, &f.admin, NOW);
+    administer(
+        &f.store,
+        &f.admin,
+        &manager,
+        &[Administration::AcceptApis, Administration::ManageRoles],
+        NOW,
+    );
+    let expansion = SOURCE.replace(
+        "rpc Export",
+        "rpc Archive { input Document; output Document; } rpc Export",
+    );
+    let role_id = ulid::Ulid::new().to_string();
+    let accept_with = |actor: &str, capability: &str, now: i64| {
+        let review = f
+            .store
+            .review_api(actor, evidence(&expansion), &f.api, now)
+            .unwrap();
+        let acceptance = ApiAcceptance {
+            review_id: review.review_id,
+            reviewed_digest: review.definition_digest,
+            force: false,
+            acknowledge_breakage: false,
+            confirm_consent_meanings: false,
+            materially_changed: review.consent_changes,
+            policy_edits: vec![PolicyMutation::RolePut {
+                role_id: role_id.clone(),
+                expected_revision: 0,
+                title: "Bundled".into(),
+                description: String::new(),
+                capabilities: vec![capability.into()],
+            }],
+        };
+        f.store
+            .accept_api(&mutation(actor, &acceptance), &acceptance, now)
+    };
+    let role_exists = || {
+        f.store
+            .read(|connection| {
+                Ok(connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auth_roles WHERE role_id=?1)",
+                    [&role_id],
+                    |row| row.get::<_, bool>(0),
+                )?)
+            })
+            .unwrap()
+    };
+    let before = f.store.current_catalog(&f.api).unwrap().accepted_revision;
+
+    assert!(matches!(
+        accept_with(
+            &manager,
+            Administration::ManagePlatform.capability_id(),
+            NOW + 1
+        ),
+        Err(AuthError::Denied)
+    ));
+    assert_eq!(
+        f.store.current_catalog(&f.api).unwrap().accepted_revision,
+        before
+    );
+    assert!(!role_exists());
+
+    accept_with(&manager, &f.read, NOW + 2).unwrap();
+    assert!(role_exists());
+}
