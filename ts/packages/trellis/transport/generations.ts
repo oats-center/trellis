@@ -899,6 +899,28 @@ export class TransportGenerationManager implements TrellisTransportProvider {
     this.#emitLogical({ type: "closed" });
     for (const closer of [...this.#logicalClosers]) closer();
     this.#notify();
+    if (result.kind === "closed") {
+      // An orderly close unsubscribes every intake at the broker before the
+      // sockets go: until then the broker can still route a request in a queue
+      // group here, where it is lost instead of reaching a live replica.
+      // Bounded, because a broken connection may never finish draining.
+      await Promise.allSettled(
+        this.#generations
+          .filter(
+            (generation) =>
+              generation.state !== "closed" && !generation.nc.isClosed(),
+          )
+          .map((generation) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            return Promise.race([
+              Promise.resolve(generation.nc.drain()).catch(() => undefined),
+              new Promise<void>((resolve) => {
+                timer = setTimeout(resolve, 2_000);
+              }),
+            ]).finally(() => clearTimeout(timer));
+          }),
+      );
+    }
     const generations = [...this.#generations];
     for (const generation of generations) {
       this.#closeGeneration(generation, "logical_close");
