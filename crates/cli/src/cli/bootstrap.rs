@@ -136,6 +136,12 @@ pub struct InitConfigArgs {
     /// proxy. Native NATS always terminates its own TLS.
     pub nats_websocket_behind_proxy: bool,
 
+    #[arg(long, conflicts_with_all = ["nats_websocket_url", "nats_websocket_behind_proxy"])]
+    /// Serve browser NATS WebSockets on the Console origin at `/nats`, relayed
+    /// by the runtime, so browsers trust one host and certificate. The broker's
+    /// WebSocket port then serves plaintext and must stay private.
+    pub nats_websocket_via_runtime: bool,
+
     #[arg(long = "extra-origin", value_name = "ORIGIN")]
     /// Additional allowed browser origin, for callers served elsewhere; repeatable.
     pub extra_origin: Vec<String>,

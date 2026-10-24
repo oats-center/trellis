@@ -110,6 +110,11 @@ pub struct TrellisRuntimeBootstrapConfig {
     /// Serve browser WebSockets as plaintext behind an HTTPS-terminating proxy.
     /// Native NATS always terminates its own TLS.
     pub nats_websocket_behind_proxy: bool,
+    /// Relay browser WebSockets through the application listener at
+    /// `<public origin>/nats`, so browsers need one host and one certificate.
+    /// The broker's WebSocket listener then serves plaintext for the runtime,
+    /// and `nats_websocket_url` is not used.
+    pub nats_websocket_via_runtime: bool,
     /// Human-readable Trellis name written to runtime config.
     pub name: String,
     /// Trellis HTTP port written to `config.toml`.
@@ -137,6 +142,7 @@ impl Default for TrellisRuntimeBootstrapConfig {
             tls: BootstrapTls::Generated { ca_directory: None },
             trusted_proxies: Vec::new(),
             nats_websocket_behind_proxy: false,
+            nats_websocket_via_runtime: false,
             name: DEFAULT_TRELLIS_NAME.to_string(),
             trellis_port: DEFAULT_TRELLIS_PORT,
             nats_server_url: DEFAULT_NATS_SERVER_URL.to_string(),

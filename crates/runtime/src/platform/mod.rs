@@ -456,12 +456,13 @@ fn advertised_endpoints(
             .and_then(|value| value.nats_servers.clone())
             .unwrap_or_else(|| resolved.servers.split(',').map(str::to_owned).collect())
     };
-    let websocket = || {
-        config
+    let websocket = || match config.same_origin_websocket_url() {
+        Some(url) => vec![url],
+        None => config
             .client
             .as_ref()
             .and_then(|value| value.ws_nats_servers.clone())
-            .unwrap_or_default()
+            .unwrap_or_default(),
     };
     match nats_override {
         Some(value) => (

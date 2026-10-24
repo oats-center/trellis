@@ -75,6 +75,18 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
         .public_origin
         .clone()
         .unwrap_or_else(|| format!("{http}://localhost:{}", args.trellis_port));
+    if args.nats_websocket_via_runtime {
+        // Reported for operators; the runtime derives the same URL itself.
+        options.runtime.nats_websocket_url = format!(
+            "{}{}",
+            options
+                .runtime
+                .public_origin
+                .trim_end_matches('/')
+                .replacen("http", "ws", 1),
+            trellis_runtime::nats_websocket::PATH
+        );
+    }
     options.runtime.oauth_origin = args
         .oauth_origin
         .clone()
@@ -101,6 +113,7 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
     };
     options.runtime.trusted_proxies = args.trusted_proxy.clone();
     options.runtime.nats_websocket_behind_proxy = args.nats_websocket_behind_proxy;
+    options.runtime.nats_websocket_via_runtime = args.nats_websocket_via_runtime;
     options.runtime.extra_origins = args.extra_origin.clone();
     options.runtime.bind_address = args.bind_address;
     options.runtime.authorization = trellis_bootstrap::BootstrapAuthorizationPolicy {
@@ -150,7 +163,8 @@ fn init_config_command(format: OutputFormat, args: &InitConfigArgs) -> miette::R
                     .then(|| trellis_bootstrap::NatsTlsFiles {
                         certificate: nats.join("tls/nats.crt").display().to_string(),
                         private_key: nats.join("tls/nats.key").display().to_string(),
-                        websocket_behind_proxy: args.nats_websocket_behind_proxy,
+                        websocket_behind_proxy: args.nats_websocket_behind_proxy
+                            || args.nats_websocket_via_runtime,
                     })
                     .as_ref(),
             ),

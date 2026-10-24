@@ -773,8 +773,9 @@ export class TrellisTestRuntime implements AsyncDisposable {
         String(websocketPort),
         "--nats-server-url",
         natsUrl,
-        "--nats-websocket-url",
-        websocketUrl,
+        ...(options.sameOriginWebsocket
+          ? ["--nats-websocket-via-runtime"]
+          : ["--nats-websocket-url", websocketUrl]),
         "--public-origin",
         publicOrigin,
         "--oauth-origin",

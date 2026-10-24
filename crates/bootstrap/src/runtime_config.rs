@@ -87,6 +87,15 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
                 origins
             }),
             transport: (transport != ListenerTransport::LoopbackDevelopment).then_some(transport),
+            // The runtime reaches the broker's WebSocket listener on the host
+            // it uses for native NATS.
+            nats_websocket_upstream: options.runtime.nats_websocket_via_runtime.then(|| {
+                let host = url::Url::parse(&options.runtime.nats_server_url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_owned))
+                    .unwrap_or_else(|| "127.0.0.1".into());
+                format!("{host}:{}", options.nats.websocket_port)
+            }),
         }),
         nats: Some(NatsConfig {
             servers: Some(options.runtime.nats_server_url.clone()),
@@ -108,7 +117,8 @@ pub fn trellis_runtime_config(options: &TrellisBootstrapOptions) -> RuntimeConfi
             }),
         }),
         client: Some(ClientConfig {
-            ws_nats_servers: Some(vec![options.runtime.nats_websocket_url.clone()]),
+            ws_nats_servers: (!options.runtime.nats_websocket_via_runtime)
+                .then(|| vec![options.runtime.nats_websocket_url.clone()]),
             nats_servers: Some(vec![options.runtime.nats_server_url.clone()]),
         }),
         leases: Some(LeasesConfig {

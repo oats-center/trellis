@@ -15,6 +15,35 @@ import {
 } from "./browser_test_support.ts";
 import { openConsoleAsRuntimeAdmin } from "./console_test_support.ts";
 
+test("Console reaches NATS on its own origin when the runtime relays WebSockets", async () => {
+  await withTrellisRuntime(
+    async (runtime) => {
+      const context = await launchProfile(runtime);
+      try {
+        const page = await context.newPage();
+        const sockets: URL[] = [];
+        page.on("websocket", (socket) => sockets.push(new URL(socket.url())));
+        await openConsoleAsRuntimeAdmin(page, runtime);
+        await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+          waitUntil: "domcontentloaded",
+        });
+        // Listed users arrive over an authenticated NATS RPC.
+        await page.locator(".users-row").first().waitFor({ state: "visible" });
+        assert(sockets.length > 0, "the Console opened a broker WebSocket");
+        const console = new URL(runtime.trellisUrl);
+        for (const socket of sockets) {
+          assert.equal(socket.protocol, "wss:");
+          assert.equal(socket.host, console.host);
+          assert.equal(socket.pathname, "/nats");
+        }
+      } finally {
+        await context.close();
+      }
+    },
+    browserRuntimeOptions({ sameOriginWebsocket: true }),
+  );
+});
+
 test("browser carrier interruption resumes a fresh authenticated RPC without reloading", async () => {
   await withTrellisRuntime(async (runtime) => {
     const context = await launchProfile(runtime);

@@ -360,6 +360,34 @@ impl RuntimeConfig {
             })
     }
 
+    /// Returns the broker WebSocket listener the application listener relays
+    /// `/nats` upgrades to, when configured.
+    #[must_use]
+    pub fn nats_websocket_upstream(&self) -> Option<&str> {
+        self.http
+            .as_ref()
+            .and_then(|http| http.nats_websocket_upstream.as_deref())
+    }
+
+    /// The browser NATS WebSocket URL on the application origin, advertised
+    /// whenever the application listener relays the broker's WebSocket.
+    #[must_use]
+    pub fn same_origin_websocket_url(&self) -> Option<String> {
+        self.nats_websocket_upstream()?;
+        let origin = self.public_origin();
+        let scheme = if origin.starts_with("https://") {
+            "wss"
+        } else {
+            "ws"
+        };
+        let (_, authority) = origin.split_once("://")?;
+        Some(format!(
+            "{scheme}://{}{}",
+            authority.trim_end_matches('/'),
+            crate::nats_websocket::PATH
+        ))
+    }
+
     /// Returns the application listener transport; omission selects loopback development.
     #[must_use]
     pub fn http_transport(&self) -> &ListenerTransport {
@@ -787,6 +815,11 @@ pub struct HttpConfig {
     /// Listener transport. Absent selects loopback-only plaintext development.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<ListenerTransport>,
+    /// `host:port` of the broker's plaintext WebSocket listener. When set, the
+    /// listener relays WebSocket upgrades on `/nats` to it, so browsers reach
+    /// NATS on this origin with this listener's certificate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nats_websocket_upstream: Option<String>,
 }
 
 /// A canonical `scheme://host[:port]` browser origin.

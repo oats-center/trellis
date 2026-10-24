@@ -483,7 +483,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
             policy.paths.config.display()
         ));
     }
-    let (config, paths) = load_runtime_config(&policy)?;
+    let (mut config, paths) = load_runtime_config(&policy)?;
 
     if let Some(bootstrap) = policy.bootstrap_admin.as_ref() {
         let password =
@@ -607,7 +607,16 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 .into_diagnostic()?;
             info!("managed NATS ready");
             let servers = server.nats_url().to_string();
-            let websocket = server.websocket_url().to_string();
+            // A runtime relaying browser WebSockets relays to the broker it
+            // just started, and keeps advertising its own origin.
+            let websocket = match config.http.as_mut() {
+                Some(http) if http.nats_websocket_upstream.is_some() => {
+                    http.nats_websocket_upstream =
+                        Some(format!("127.0.0.1:{}", nats_ports.websocket));
+                    config.same_origin_websocket_url()
+                }
+                _ => Some(server.websocket_url().to_string()),
+            };
             managed = Some(server);
             Some(NatsEndpointOverride {
                 runtime_servers: servers.clone(),
@@ -618,7 +627,7 @@ async fn run(policy: StartupPolicy) -> miette::Result<()> {
                 advertised_websocket: policy
                     .advertised_websocket
                     .clone()
-                    .or_else(|| Some(vec![websocket])),
+                    .or_else(|| websocket.map(|url| vec![url])),
             })
         }
     };

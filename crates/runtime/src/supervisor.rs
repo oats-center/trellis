@@ -828,7 +828,10 @@ async fn supervise_owned(
         root_stop.clone(),
     );
     let server_stop = root_stop.clone();
-    let http_router = context.take_http_router()?;
+    let mut http_router = context.take_http_router()?;
+    if let Some(upstream) = context.config.nats_websocket_upstream() {
+        http_router = http_router.merge(crate::nats_websocket::router(upstream.to_owned()));
+    }
     // Readiness stays false until built-in live providers have finished their
     // bootstrap, so callers never begin work against half-started routes.
     let http_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

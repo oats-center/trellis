@@ -115,7 +115,8 @@ pub fn generate_trellis_bootstrap(
         (options.runtime.tls != BootstrapTls::LoopbackDevelopment).then(|| NatsTlsFiles {
             certificate: "/etc/nats/tls/nats.crt".into(),
             private_key: "/etc/nats/tls/nats.key".into(),
-            websocket_behind_proxy: options.runtime.nats_websocket_behind_proxy,
+            websocket_behind_proxy: options.runtime.nats_websocket_behind_proxy
+                || options.runtime.nats_websocket_via_runtime,
         });
     generate_nats_bootstrap_inner(&nats_options, &options.runtime.name, nats_tls.as_ref())?;
     let summary = match &options.runtime.tls {
@@ -130,10 +131,14 @@ pub fn generate_trellis_bootstrap(
                 &options.runtime.oauth_origin,
             ])?;
             // Managed brokers are reached over loopback by the co-located runtime.
-            let mut nats_hosts = hosts(&[
-                &options.runtime.nats_server_url,
-                &options.runtime.nats_websocket_url,
-            ])?;
+            let mut nats_hosts = if options.runtime.nats_websocket_via_runtime {
+                hosts(&[&options.runtime.nats_server_url])?
+            } else {
+                hosts(&[
+                    &options.runtime.nats_server_url,
+                    &options.runtime.nats_websocket_url,
+                ])?
+            };
             nats_hosts.push(CertificateHost::Dns("localhost".into()));
             nats_hosts.push(CertificateHost::Ip(std::net::Ipv4Addr::LOCALHOST.into()));
             nats_hosts.sort();
@@ -241,10 +246,11 @@ fn resolve_path(path: &Path) -> Result<PathBuf, BootstrapError> {
 /// loopback development may use plaintext broker endpoints.
 fn validate_nats_urls(options: &TrellisBootstrapOptions) -> Result<(), BootstrapError> {
     let loopback = options.runtime.tls == BootstrapTls::LoopbackDevelopment;
-    for (url, secure, plaintext) in [
-        (&options.runtime.nats_server_url, "tls", "nats"),
-        (&options.runtime.nats_websocket_url, "wss", "ws"),
-    ] {
+    let mut urls = vec![(&options.runtime.nats_server_url, "tls", "nats")];
+    if !options.runtime.nats_websocket_via_runtime {
+        urls.push((&options.runtime.nats_websocket_url, "wss", "ws"));
+    }
+    for (url, secure, plaintext) in urls {
         let parsed = url::Url::parse(url)
             .map_err(|_| BootstrapError::InvalidTls(format!("'{url}' is not an absolute URL")))?;
         let expected = if loopback { plaintext } else { secure };

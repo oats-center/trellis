@@ -235,7 +235,12 @@ Remote deployments use native TLS NATS and WSS in addition to the dedicated
 HTTPS OAuth listener. Native NATS always terminates its own TLS, because its
 protocol upgrades to TLS after a plaintext `INFO` and an ordinary TLS proxy
 cannot terminate it; only the WebSocket listener may sit behind an
-HTTPS-terminating proxy. Runtime startup selects its rustls provider before
+HTTPS-terminating proxy. The runtime can be that proxy: with
+`[http] nats_websocket_upstream`, the application listener relays WebSocket
+upgrades on `/nats` to the broker's plaintext WebSocket listener and advertises
+`wss://<public origin>/nats` instead of configured WebSocket hints, so a browser
+trusts one host and certificate. Production deployments with publicly trusted
+certificates can still expose the broker's WebSocket listener directly. Runtime startup selects its rustls provider before
 opening NATS. `[nats] ca_certificate` names a private CA the runtime trusts for
 its own broker connections, built-in providers, and split-role Auth discovery;
 publicly trusted brokers omit it.

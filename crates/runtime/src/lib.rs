@@ -14,6 +14,7 @@ pub mod config;
 mod listener;
 /// Runtime mode parsing and subsystem selection.
 pub mod mode;
+pub mod nats_websocket;
 /// Minimal HTTP readiness and version server.
 pub mod server;
 /// Cooperative runtime shutdown primitives.
