@@ -103,6 +103,11 @@ consequence; consent_revision; capability …; }` bundles of its own
 
 ### Changed
 
+- `cargo xtask install` generates the runtime's built-in API bindings, as it
+  already does for the SDK and testkit, instead of a build script that compiled
+  the IDL compiler and Rust generator into every runtime build. Rerun it after
+  changing a built-in contract.
+
 - The SDK uses one RustCrypto generation (`sha2` 0.10, `hmac` 0.12, `hkdf`
   0.12), matching what `async-nats` requires, removing duplicate `digest`,
   `block-buffer`, `crypto-common`, and `const-oid` versions from every build.

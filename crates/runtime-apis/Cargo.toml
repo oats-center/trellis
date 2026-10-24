@@ -15,6 +15,3 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures-util = "0.3"
 
-[build-dependencies]
-trellis-builtin-contracts = { path = "../builtin-contracts", version = "0.100.0-rc.3" }
-trellis-codegen-rust = { path = "../codegen-rust", version = "0.100.0-rc.3" }

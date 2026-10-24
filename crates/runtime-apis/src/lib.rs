@@ -1,5 +1,4 @@
-//! Typed APIs and participants generated from Trellis-owned native IDL at build time.
+//! Typed APIs and participants generated from Trellis-owned native IDL by
+//! `cargo xtask install`.
 
-include!(concat!(env!("OUT_DIR"), "/modules.rs"));
-
-pub use generated::*;
+include!("../generated/modules.rs");

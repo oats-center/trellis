@@ -276,27 +276,8 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
     }
     std::fs::write(fresh.join("modules.rs"), format!("{HEADER}{modules}")).into_diagnostic()?;
     let testkit = root.join("crates/trellis-testkit");
-    let testkit_stage = tempfile::Builder::new()
-        .prefix(".generated-staging-")
-        .tempdir_in(&testkit)
-        .into_diagnostic()?;
-    let testkit_fresh = testkit_stage.path().join("new");
-    trellis_codegen_rust::generate_rust_package(
-        &graph,
-        &testkit_fresh,
-        "trellis-testkit-bindings",
-        &[
-            trellis_codegen_rust::RustModelBinding::from_package_manifest(
-                &graph,
-                include_str!("../../crates/models/Cargo.toml"),
-            )
-            .into_diagnostic()?,
-        ],
-    )
-    .into_diagnostic()?;
-    // These bindings are package-relative modules, not a nested Cargo package.
-    // Cargo excludes nested packages even when their sources are included explicitly.
-    std::fs::remove_file(testkit_fresh.join("Cargo.toml")).into_diagnostic()?;
+    let (testkit_stage, testkit_fresh, testkit_target) =
+        stage_bindings(&graph, &testkit, "trellis-testkit-bindings")?;
     std::fs::copy(
         root.join("crates/local-nats/nats-binaries.json"),
         testkit_fresh.join("nats-binaries.json"),
@@ -312,38 +293,16 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         testkit_fresh.join("trellis-binaries.json"),
     )
     .into_diagnostic()?;
-    let testkit_target = testkit.join("generated");
-    if testkit_target.exists() {
-        miette::ensure!(
-            std::fs::symlink_metadata(&testkit_target)
-                .into_diagnostic()?
-                .is_dir(),
-            "refusing to replace a non-directory testkit output"
-        );
-        let mut directories = vec![testkit_target.clone()];
-        while let Some(directory) = directories.pop() {
-            for entry in std::fs::read_dir(directory).into_diagnostic()? {
-                let entry = entry.into_diagnostic()?;
-                let kind = entry.file_type().into_diagnostic()?;
-                if kind.is_dir() {
-                    directories.push(entry.path());
-                    continue;
-                }
-                let path = entry.path();
-                let relative = path.strip_prefix(&testkit_target).into_diagnostic()?;
-                let generated = testkit_fresh.join(relative).is_file()
-                    || (kind.is_file() && {
-                        let bytes = std::fs::read(&path).into_diagnostic()?;
-                        bytes.starts_with(b"//! Generated") || bytes.starts_with(b"// Generated")
-                    });
-                miette::ensure!(
-                    kind.is_file() && generated,
-                    "refusing to replace non-generated testkit input {}",
-                    path.display()
-                );
-            }
-        }
-    }
+    ensure_generated(&testkit_fresh, &testkit_target)?;
+    let runtime_apis = root.join("crates/runtime-apis");
+    let (runtime_apis_stage, runtime_apis_fresh, runtime_apis_target) =
+        stage_bindings(&graph, &runtime_apis, "trellis-runtime-apis")?;
+    std::fs::write(
+        runtime_apis_fresh.join("modules.rs"),
+        "#[path = \"src/lib.rs\"] mod generated;\npub use generated::*;\n",
+    )
+    .into_diagnostic()?;
+    ensure_generated(&runtime_apis_fresh, &runtime_apis_target)?;
     let target = root.join("ts/packages/trellis/internal_sdk/generated");
     let staging = root.join("ts/packages/trellis/internal_sdk/.generated-staging");
     let backup = root.join("ts/packages/trellis/internal_sdk/.generated-backup");
@@ -369,8 +328,86 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
             &testkit_target,
             &testkit.join(".generated-backup"),
         ),
+        (
+            &runtime_apis_fresh,
+            &runtime_apis_target,
+            &runtime_apis.join(".generated-backup"),
+        ),
         (&staging, &target, &backup),
-    ])
+    ])?;
+    drop((testkit_stage, runtime_apis_stage));
+    Ok(())
+}
+
+/// Refuses to replace a `generated` directory holding anything that is neither
+/// in the staged replacement nor marked as generated.
+fn ensure_generated(fresh: &Path, target: &Path) -> Result<()> {
+    if target.exists() {
+        miette::ensure!(
+            std::fs::symlink_metadata(target)
+                .into_diagnostic()?
+                .is_dir(),
+            "refusing to replace non-directory output {}",
+            target.display()
+        );
+        let mut directories = vec![target.to_path_buf()];
+        while let Some(directory) = directories.pop() {
+            for entry in std::fs::read_dir(directory).into_diagnostic()? {
+                let entry = entry.into_diagnostic()?;
+                let kind = entry.file_type().into_diagnostic()?;
+                if kind.is_dir() {
+                    directories.push(entry.path());
+                    continue;
+                }
+                let path = entry.path();
+                let relative = path.strip_prefix(target).into_diagnostic()?;
+                let generated = fresh.join(relative).is_file()
+                    || (kind.is_file() && {
+                        let bytes = std::fs::read(&path).into_diagnostic()?;
+                        bytes.starts_with(b"//! Generated") || bytes.starts_with(b"// Generated")
+                    });
+                miette::ensure!(
+                    kind.is_file() && generated,
+                    "refusing to replace non-generated input {}",
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Generates the built-in API bindings a crate includes from its `generated`
+/// directory, staged beside it. Returns the staging guard, the staged output,
+/// and the target.
+fn stage_bindings(
+    graph: &trellis_idl::PackageGraph,
+    crate_dir: &Path,
+    package_name: &str,
+) -> Result<(tempfile::TempDir, PathBuf, PathBuf)> {
+    let stage = tempfile::Builder::new()
+        .prefix(".generated-staging-")
+        .tempdir_in(crate_dir)
+        .into_diagnostic()?;
+    let fresh = stage.path().join("new");
+    trellis_codegen_rust::generate_rust_package(
+        graph,
+        &fresh,
+        package_name,
+        &[
+            trellis_codegen_rust::RustModelBinding::from_package_manifest(
+                graph,
+                include_str!("../../crates/models/Cargo.toml"),
+            )
+            .into_diagnostic()?,
+        ],
+    )
+    .into_diagnostic()?;
+    // These bindings are package-relative modules, not a nested Cargo package.
+    // Cargo excludes nested packages even when their sources are included explicitly.
+    std::fs::remove_file(fresh.join("Cargo.toml")).into_diagnostic()?;
+    let target = crate_dir.join("generated");
+    Ok((stage, fresh, target))
 }
 
 fn publish_generated_directories(outputs: &[(&Path, &Path, &Path)]) -> Result<()> {

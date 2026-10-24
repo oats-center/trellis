@@ -125,7 +125,10 @@ fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
         NOW,
     );
     let grant = approve_editor(&f, &user, NOW);
-    assert_eq!(app_holds(&f, grant.clone(), NOW), std::slice::from_ref(&f.read));
+    assert_eq!(
+        app_holds(&f, grant.clone(), NOW),
+        std::slice::from_ref(&f.read)
+    );
     accept(
         &f.store,
         &f.admin,
