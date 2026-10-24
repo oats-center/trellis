@@ -39,6 +39,12 @@
     displayName: string;
   }
 
+  /** The sign-in methods the server accepts. */
+  interface SignIn {
+    localIdentity: boolean;
+    providers: Provider[];
+  }
+
   /** One consent row. */
   interface Choice {
     id: string;
@@ -145,6 +151,7 @@
   let confirming = $state(false);
   let error = $state(false);
   let providers = $state.raw<Provider[]>([]);
+  let localIdentity = $state(true);
   let providerError = $state(false);
   // The server marks pages it serves with Trellis-generated certificates.
   const generatedTls =
@@ -299,7 +306,10 @@
         cache: "no-store",
       })
         .then(async (response) => {
-          if (response.ok) providers = await response.json();
+          if (!response.ok) return;
+          const result: SignIn = await response.json();
+          providers = result.providers;
+          localIdentity = result.localIdentity;
         })
         .catch(() => {});
       return;
@@ -318,8 +328,10 @@
       })
         .then(async (response) => {
           if (!response.ok) throw new Error("providers_unavailable");
-          const result: Provider[] = await response.json();
-          if (!controller.signal.aborted) providers = result;
+          const result: SignIn = await response.json();
+          if (controller.signal.aborted) return;
+          providers = result.providers;
+          localIdentity = result.localIdentity;
         })
         .catch(() => {
           if (!controller.signal.aborted) providerError = true;
@@ -474,31 +486,34 @@
             </a>
           {/each}
         </div>
-        <p class="divider"><span>or</span></p>
+        {#if localIdentity}<p class="divider"><span>or</span></p>{/if}
       {/if}
-      <form method="post" action="/portal/device-review/login">
-        <input type="hidden" name="csrf" value={csrf} />
-        <input type="hidden" name="review_id" value={reviewId} />
-        <label class="field" for="enrollment-username">Username</label>
-        <input
-          id="enrollment-username"
-          name="username"
-          type="text"
-          autocomplete="username"
-          autocapitalize="none"
-          spellcheck="false"
-          required
-        />
-        <label class="field" for="enrollment-password">Password</label>
-        <input
-          id="enrollment-password"
-          name="password"
-          type="password"
-          autocomplete="current-password"
-          required
-        />
-        <button class="primary block" type="submit">Sign in</button>
-      </form>
+      {#if localIdentity}<form
+          method="post"
+          action="/portal/device-review/login"
+        >
+          <input type="hidden" name="csrf" value={csrf} />
+          <input type="hidden" name="review_id" value={reviewId} />
+          <label class="field" for="enrollment-username">Username</label>
+          <input
+            id="enrollment-username"
+            name="username"
+            type="text"
+            autocomplete="username"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+          />
+          <label class="field" for="enrollment-password">Password</label>
+          <input
+            id="enrollment-password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+          <button class="primary block" type="submit">Sign in</button>
+        </form>{/if}
     {:else}
       <p class="muted">Enter the code shown on the device.</p>
       <form
@@ -589,38 +604,38 @@
           </a>
         {/each}
       </div>
-      <p class="divider"><span>or</span></p>
+      {#if localIdentity}<p class="divider"><span>or</span></p>{/if}
     {/if}
     {#if providerError}<p class="alert" role="status">
         Company sign-in is unavailable right now.
       </p>{/if}
-    <form method="post" action="/portal/login">
-      <input type="hidden" name="csrf" value={csrf} />
-      <input type="hidden" name="request_id" value={transaction} />
-      <label class="field" for="username">Username</label>
-      <input
-        id="username"
-        name="username"
-        type="text"
-        autocomplete="username"
-        autocapitalize="none"
-        spellcheck="false"
-        required
-      />
-      <label class="field" for="password">Password</label>
-      <input
-        id="password"
-        name="password"
-        type="password"
-        autocomplete="current-password"
-        required
-      />
-      <button
-        class="primary block"
-        type="submit"
-        disabled={!csrf || !transaction}>Sign in</button
-      >
-    </form>
+    {#if localIdentity}<form method="post" action="/portal/login">
+        <input type="hidden" name="csrf" value={csrf} />
+        <input type="hidden" name="request_id" value={transaction} />
+        <label class="field" for="username">Username</label>
+        <input
+          id="username"
+          name="username"
+          type="text"
+          autocomplete="username"
+          autocapitalize="none"
+          spellcheck="false"
+          required
+        />
+        <label class="field" for="password">Password</label>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <button
+          class="primary block"
+          type="submit"
+          disabled={!csrf || !transaction}>Sign in</button
+        >
+      </form>{/if}
   </main>
 {:else if view}
   <main class="card consent">

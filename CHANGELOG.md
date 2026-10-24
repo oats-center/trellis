@@ -274,6 +274,12 @@ consequence; consent_revision; capability …; }` bundles of its own
 
 ### Fixed
 
+- `auth.local_identity.enabled = false` now refuses username/password sign-in,
+  and the Portal hides its password form. `/portal/providers` returns
+  `{ localIdentity, providers }`.
+- `auth.local_identity.password_min_length` applies to every local password,
+  including user creation, password changes, and resets, not just the
+  initialized administrator.
 - An Auth effect queued with the same payload as an existing one but behind a
   different predecessor kept only the first predecessor; each now keeps its own
   ordering edge.

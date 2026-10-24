@@ -269,6 +269,9 @@ impl SqliteAuthorizationStore {
         now: i64,
     ) -> Result<PortalLogin, AuthError> {
         let (username, password) = credentials;
+        if !self.settings.local_identity_enabled {
+            return Err(AuthError::Denied);
+        }
         if username.len() > 256 || password.len() > 4096 || replacement_cookie.len() != 43 {
             return Err(AuthError::Denied);
         }

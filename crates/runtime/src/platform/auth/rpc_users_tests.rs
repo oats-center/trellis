@@ -762,7 +762,7 @@ fn account_reset_is_one_use_expires_and_revokes_existing_real_local_logins() {
         reset
     );
     let guest = store.create_portal_session(NOW + 1).unwrap();
-    let replacement = hash_password("replacement alice password").unwrap();
+    let replacement = hash_password("replacement alice password", 12).unwrap();
     assert!(matches!(
         complete_reset(
             &storage,
@@ -923,7 +923,7 @@ fn reset_redemption_rechecks_requester_privileges_and_conflicts_roll_back_consum
     )
     .unwrap();
     let guest = store.create_portal_session(NOW + 1).unwrap();
-    let replacement = hash_password("replacement account password").unwrap();
+    let replacement = hash_password("replacement account password", 12).unwrap();
     assert!(matches!(
         complete_reset(
             &storage,
@@ -1090,7 +1090,7 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
         let cookie = guest.cookie.clone();
         let csrf = guest.csrf.clone();
         std::thread::spawn(move || {
-            let replacement = hash_password(password).unwrap();
+            let replacement = hash_password(password, 12).unwrap();
             barrier.wait();
             (
                 password,
@@ -1115,4 +1115,48 @@ fn competing_reset_redemptions_commit_exactly_one_password() {
             NOW + 2
         )
         .is_ok());
+}
+
+#[test]
+fn local_identity_settings_govern_password_length_and_password_sign_in() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut store = open(&directory, SigningKey::from_bytes(&[45; 32]));
+    store.settings.password_min_length = 20;
+    store.initialize_issuer(NOW).unwrap();
+    let admin = store
+        .initialize_administrator("admin", Some("an administrator password"), None, None, NOW)
+        .map(|initialized| initialized.principal_id)
+        .unwrap();
+    let account = |username: &str, password: &str| AuthUserCreateRequest {
+        given_name: None,
+        family_name: None,
+        email: None,
+        username: username.to_string().into(),
+        display_name: "Configured".to_string().into(),
+        password: Some(password.to_string().into()),
+        idempotency_key: id().into(),
+        extra: Default::default(),
+    };
+    let short = account("short", "nineteen characters");
+    assert!(matches!(
+        create_user(&store, &mutation(&admin, &short), &short, NOW),
+        Err(AuthError::Invalid(_))
+    ));
+    let long = account("long", "twenty characters ok");
+    create_user(&store, &mutation(&admin, &long), &long, NOW).unwrap();
+    let sign_in = |store: &SqliteAuthorizationStore| {
+        let cookie = store.create_portal_session(NOW).unwrap();
+        store.portal_local_login(
+            &cookie.cookie,
+            &cookie.csrf,
+            &"e".repeat(43),
+            ("long", "twenty characters ok"),
+            &id(),
+            NOW,
+        )
+    };
+    sign_in(&store).unwrap();
+
+    store.settings.local_identity_enabled = false;
+    assert!(matches!(sign_in(&store), Err(AuthError::Denied)));
 }

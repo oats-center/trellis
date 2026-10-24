@@ -38,12 +38,15 @@ pub(super) async fn providers(State(engine): State<Arc<OAuthEngine>>) -> Respons
                     }))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(providers)
+            Ok(json!({
+                "localIdentity": store.authority.settings.local_identity_enabled,
+                "providers": providers,
+            }))
         })
     })
     .await;
     match result {
-        Ok(providers) => Json(providers).into_response(),
+        Ok(sign_in) => Json(sign_in).into_response(),
         Err(_) => error(ErrorCode::ServerError),
     }
 }

@@ -789,10 +789,11 @@ pub(super) async fn page(
         Err(code) => return error(code),
     };
     let (title, body) = if kind == "reset" {
+        let minimum = engine.server.store().authority.settings.password_min_length;
         (
             "Set a new password",
             format!(
-                r#"<p class="muted">Choose a new password. You'll be signed out everywhere else.</p><form method="post" action="/portal/account/reset"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label class="field" for="password">New password</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="12" maxlength="4096" required><p class="hint">At least 12 characters.</p><button class="primary block">Set password</button></form>"#
+                r#"<p class="muted">Choose a new password. You'll be signed out everywhere else.</p><form method="post" action="/portal/account/reset"><input type="hidden" name="token" value="{token}"><input type="hidden" name="csrf" value="{csrf}"><label class="field" for="password">New password</label><input id="password" name="password" type="password" autocomplete="new-password" minlength="{minimum}" maxlength="4096" required><p class="hint">At least {minimum} characters.</p><button class="primary block">Set password</button></form>"#
             ),
         )
     } else {
@@ -925,7 +926,10 @@ pub(super) async fn submit(
                     crate::clock::unix_now(),
                 )
             })?;
-            let hash = hash_password(&password)?;
+            let hash = hash_password(
+                &password,
+                engine.server.store().authority.settings.password_min_length,
+            )?;
             complete_reset(
                 engine.server.store(),
                 &token,
@@ -1082,7 +1086,7 @@ mod tests {
             .1
             .into_owned();
         let guest = authority.create_portal_session(NOW + 1).unwrap();
-        let replacement = hash_password("administrator setup password").unwrap();
+        let replacement = hash_password("administrator setup password", 12).unwrap();
         assert!(matches!(
             complete_reset(
                 &storage,
@@ -1188,7 +1192,7 @@ mod tests {
             .1
             .into_owned();
         let guest = authority.create_portal_session(now).unwrap();
-        let replacement = hash_password("replacement administrator password").unwrap();
+        let replacement = hash_password("replacement administrator password", 12).unwrap();
         assert!(matches!(
             complete_reset(
                 &storage,

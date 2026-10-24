@@ -1494,6 +1494,8 @@ mod tests {
                 ed25519_dalek::SigningKey::from_bytes(&[21; 32]),
                 super::super::super::sqlite::AuthSettings {
                     avatar_external_fetch_enabled: true,
+                    local_identity_enabled: true,
+                    password_min_length: 12,
                     administration: Default::default(),
                     instance_id: ulid::Ulid::new().to_string(),
                     account: "cimd-retention".into(),

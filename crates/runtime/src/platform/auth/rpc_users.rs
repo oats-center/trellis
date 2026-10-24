@@ -685,7 +685,7 @@ pub(super) fn create_user(
     let hash = input
         .password
         .as_ref()
-        .map(|password| hash_password(password.as_str()))
+        .map(|password| hash_password(password.as_str(), store.settings.password_min_length))
         .transpose()?;
     store.mutate(
         &safe_identity,
@@ -841,8 +841,8 @@ pub(super) fn update_profile(
     )
 }
 
-pub(super) fn hash_password(password: &str) -> Result<String, AuthError> {
-    if !(12..=4096).contains(&password.len()) {
+pub(super) fn hash_password(password: &str, minimum: u16) -> Result<String, AuthError> {
+    if !(usize::from(minimum)..=4096).contains(&password.len()) {
         return Err(AuthError::Invalid("invalid password length".into()));
     }
     let mut bytes = [0_u8; 16];
@@ -920,7 +920,10 @@ pub(super) fn change_password(
             &PasswordHash::new(&hash).map_err(|_| AuthError::Unavailable)?,
         )
         .map_err(|_| AuthError::Denied)?;
-    let replacement = hash_password(input.new_password.as_str())?;
+    let replacement = hash_password(
+        input.new_password.as_str(),
+        store.settings.password_min_length,
+    )?;
     store.mutate(
         &safe_identity,
         "rpc.users.password.change",
