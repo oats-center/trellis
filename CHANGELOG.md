@@ -10,6 +10,9 @@ and this project adheres to
 
 ### Added
 
+- Generated Rust Operation references can cancel an upload with
+  `upload_from_with_cancel(reader, &TransferCancellation)`, matching downloads
+  and the TypeScript client.
 - `trellis-rs` features `native-oauth` and `device`, both on by default. A
   service that connects with its provisioned identity can build with
   `default-features = false`, skipping the HTTPS client, `hyper`, `tower`, and
@@ -279,6 +282,9 @@ grants; capability …; }` bundles of its own
 
 ### Fixed
 
+- A Rust upload cancellation no longer waits until grant expiry for a provider
+  that stops answering: it returns `Timeout` after the client timeout, as the
+  TypeScript client does.
 - A stopping TypeScript service with replicas no longer swallows requests: an
   orderly close unsubscribes every RPC, live, and Operation intake at the broker
   before closing its connections, so the broker routes those requests to a live

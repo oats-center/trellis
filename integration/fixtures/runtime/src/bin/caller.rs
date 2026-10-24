@@ -30,6 +30,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?,
     );
     let runtime = client.runtime_trellis_runtime_v1();
+    if std::env::var("TRELLIS_CALLER_MODE").as_deref() == Ok("cancel-unresponsive-upload") {
+        // Upload from a source that stalls after its first bytes, then cancel
+        // on request while the test keeps the provider frozen.
+        let upload = runtime
+            .upload()
+            .start(&operations::UploadInput {
+                value: "cancel-unresponsive".to_owned(),
+                extra: Default::default(),
+            })
+            .await?;
+        let (mut source, mut reader) = tokio::io::duplex(64 * 1024);
+        let cancellation = trellis_rs::client::TransferCancellation::new();
+        let transfer = upload.upload_from_with_cancel(&mut reader, &cancellation);
+        tokio::pin!(transfer);
+        let feed = async {
+            use tokio::io::AsyncWriteExt as _;
+            source.write_all(&[7; 256 * 1024]).await?;
+            println!("uploading");
+            std::io::stdout().flush()?;
+            use tokio::io::AsyncBufReadExt as _;
+            let mut line = String::new();
+            tokio::io::BufReader::new(tokio::io::stdin())
+                .read_line(&mut line)
+                .await?;
+            Ok::<_, std::io::Error>(())
+        };
+        tokio::select! {
+            result = &mut transfer => {
+                return Err(format!("upload ended before cancellation: {result:?}").into());
+            }
+            fed = feed => fed?,
+        }
+        cancellation.cancel();
+        let started = std::time::Instant::now();
+        let result = transfer.await;
+        println!(
+            "{}",
+            serde_json::json!({
+                "cancelled": format!("{:?}", result.err()),
+                "ms": started.elapsed().as_millis(),
+            })
+        );
+        std::io::stdout().flush()?;
+        return Ok(());
+    }
     let echo = runtime
         .echo(&rpc::EchoInput {
             value: "from TypeScript".to_owned(),

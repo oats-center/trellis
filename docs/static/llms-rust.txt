@@ -223,7 +223,10 @@ and hashes bytes while sending and verifies size and SHA-256 on receipt.
 Download destination writes and upload backend-reader consumption release
 credit. Backend uploads pipeline bounded writes but await required
 acknowledgements and metadata commit before success. Cancellation before commit
-aborts staging; after commit it cannot undo the committed object.
+aborts staging; after commit it cannot undo the committed object. Cancel an
+upload with `upload_from_with_cancel(reader, &TransferCancellation)`: it returns
+`TransferCancelled` once the provider confirms, or `Timeout` after the client
+timeout when it does not, with remote cleanup unconfirmed.
 
 A `stream;` Operation handler takes the caller's live bytes with
 `operation.take_upload_stream()` (an `AsyncRead`, returned once). End of file

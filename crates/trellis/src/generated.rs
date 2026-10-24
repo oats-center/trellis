@@ -1319,6 +1319,34 @@ where
         }
         self.inner.transfer_from(reader).await
     }
+
+    /// Stream the declared Operation upload, cancelling it when `cancellation`
+    /// fires.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::client::TrellisClientError::TransferCancelled`] once the
+    /// provider confirms the cancellation, or
+    /// [`crate::client::TrellisClientError::Timeout`] when it does not confirm
+    /// within the client timeout; local ownership is then released and remote
+    /// cleanup is unconfirmed.
+    pub async fn upload_from_with_cancel<R>(
+        &self,
+        reader: &mut R,
+        cancellation: &crate::client::TransferCancellation,
+    ) -> Result<crate::client::FileInfo, crate::client::TrellisClientError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + ?Sized,
+    {
+        if !D::UPLOAD {
+            return Err(crate::client::TrellisClientError::OperationProtocol(
+                "operation does not declare an upload transfer".to_owned(),
+            ));
+        }
+        self.inner
+            .transfer_from_with_cancel(reader, cancellation)
+            .await
+    }
 }
 
 /// Descriptor implemented by each generated API module.

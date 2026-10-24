@@ -483,6 +483,10 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
     let expiry =
         tokio::time::sleep(transfer::transfer_expiry_delay(&grant.expires_at).map_err(fail)?);
     tokio::pin!(expiry);
+    // A cancellation waits one request timeout for the provider to confirm it;
+    // armed when Cancel is sent.
+    let cancel_settled = tokio::time::sleep(std::time::Duration::ZERO);
+    tokio::pin!(cancel_settled);
     let mut source_done = false;
     let mut complete_sent = false;
     let mut cancelled_sent = false;
@@ -649,7 +653,17 @@ pub(crate) async fn put_upload_grant_from_with_cancel<R: AsyncRead + Unpin + Sen
                     )
                     .await?;
                     cancelled_sent = true;
+                    cancel_settled.as_mut().reset(
+                        tokio::time::Instant::now()
+                            + std::time::Duration::from_millis(client.timeout_ms()),
+                    );
                     staged.take();
+                },
+                // A healthy but unresponsive provider must not hold the caller
+                // until grant expiry; local ownership is released and remote
+                // cleanup is unconfirmed.
+                () = &mut cancel_settled, if cancelled_sent => {
+                    return Err(TrellisClientError::Timeout);
                 },
                 bytes = transfer::read_ready_frame(reader, active.max_frame as usize),
                     if !source_done && staged.is_none() && !cancelled_sent =>
