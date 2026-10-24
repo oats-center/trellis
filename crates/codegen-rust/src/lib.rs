@@ -2567,7 +2567,7 @@ fn collect_expr(graph: &PackageGraph, expression: &TypeExpression, result: &mut 
 }
 
 fn recursive_model_edges(graph: &PackageGraph) -> BTreeSet<(TypeRef, TypeRef)> {
-    let mut edges: BTreeMap<TypeRef, BTreeSet<TypeRef>> = BTreeMap::new();
+    let mut edges: BTreeMap<TypeRef, BTreeSet<(TypeRef, TypeRef)>> = BTreeMap::new();
     for package in graph.packages().values() {
         for (id, definition) in package.types() {
             let TypeDefinition::Model(fields) = definition else {
@@ -2578,31 +2578,57 @@ fn recursive_model_edges(graph: &PackageGraph) -> BTreeSet<(TypeRef, TypeRef)> {
                 id: id.clone(),
             };
             for ModelField { ty, .. } in fields.values() {
-                if let Some(target) = direct_named(ty) {
-                    if matches!(
-                        graph
-                            .package(&target.package)
-                            .and_then(|package| package.types().get(&target.id)),
-                        Some(TypeDefinition::Model(_))
-                    ) {
-                        edges
-                            .entry(source.clone())
-                            .or_default()
-                            .insert(target.clone());
-                    }
+                if let Some((named, model)) = direct_model(graph, ty) {
+                    edges
+                        .entry(source.clone())
+                        .or_default()
+                        .insert((named.clone(), model));
                 }
             }
         }
     }
+    let models: BTreeMap<TypeRef, BTreeSet<TypeRef>> = edges
+        .iter()
+        .map(|(source, targets)| {
+            (
+                source.clone(),
+                targets.iter().map(|(_, model)| model.clone()).collect(),
+            )
+        })
+        .collect();
+    // The boxed edge is the field's named reference, which may be an alias
+    // whose definition reaches the model without indirection.
     let mut recursive = BTreeSet::new();
     for (source, targets) in &edges {
-        for target in targets {
-            if source == target || reachable(&edges, target, source, &mut BTreeSet::new()) {
-                recursive.insert((source.clone(), target.clone()));
+        for (named, model) in targets {
+            if source == model || reachable(&models, model, source, &mut BTreeSet::new()) {
+                recursive.insert((source.clone(), named.clone()));
             }
         }
     }
     recursive
+}
+
+/// The field's named reference and the model it holds without indirection,
+/// following aliases.
+fn direct_model<'a>(
+    graph: &PackageGraph,
+    expression: &'a TypeExpression,
+) -> Option<(&'a TypeRef, TypeRef)> {
+    let named = direct_named(expression)?;
+    let mut current = named.clone();
+    let mut seen = BTreeSet::new();
+    while seen.insert(current.clone()) {
+        match graph
+            .package(&current.package)
+            .and_then(|package| package.types().get(&current.id))?
+        {
+            TypeDefinition::Model(_) => return Some((named, current)),
+            TypeDefinition::Alias(expression) => current = direct_named(expression)?.clone(),
+            TypeDefinition::Enum(_) => return None,
+        }
+    }
+    None
 }
 
 fn direct_named(expression: &TypeExpression) -> Option<&TypeRef> {
@@ -3113,7 +3139,8 @@ fn main() {
     #[test]
     fn generated_crate_compiles_against_current_abi() {
         let graph = graph(
-            "type Name = string; enum Status { ready; } model OldValues {} model \
+            "type Name = string; type Branch = Tree | null; model Tree { label: \
+    string; next?: Branch; } enum Status { ready; } model OldValues {} model \
     Values { name: Name; status: Status; signed: int64; unsigned: uint64; \
     finite: number; bytes: bytes; } api main@v1 { title \"Main\"; \
     description \"Main API.\"; error Bad(Values); rpc Get { input Values; \
@@ -3370,6 +3397,21 @@ fn shared_wire_values_round_trip_between_generated_packages() {
     let decoded: CursorPage<Nullable<Values>> = serde_json::from_value(encoded).unwrap();
     let shared: trellis_rs::__types::CursorPage<trellis_rs::__types::Nullable<Values>> = decoded;
     assert_eq!(shared, page);
+}
+
+#[test]
+fn recursion_through_an_alias_round_trips() {
+    use fixture_sdk::__types::{fixture::Tree, Nullable};
+
+    let wire = serde_json::json!({
+        "label": "root",
+        "next": { "label": "middle", "next": { "label": "leaf" } }
+    });
+    let tree: Tree = serde_json::from_value(wire.clone()).unwrap();
+    let Some(next) = &tree.next else { panic!("missing branch") };
+    let Nullable::Value(middle) = next.as_ref() else { panic!("null branch") };
+    assert_eq!(middle.label, "middle");
+    assert_eq!(serde_json::to_value(&tree).unwrap(), wire);
 }
 
 #[test]
