@@ -63,7 +63,27 @@ export type StateFacade<TState extends RuntimeStateStores> = {
   [K in keyof TState]: ValueStateStoreClient<TState[K]["value"]>;
 };
 
-export const STATE_RUNTIME_RPC = {
+type StateActions = (typeof STATE_API)["actions"];
+
+/** Runtime descriptor for one State RPC, typed by its generated action. */
+type StateRuntimeRpc<
+  K extends "rpc:Register" | "rpc:Get" | "rpc:Put" | "rpc:Delete",
+> = {
+  subject: string;
+  input: StateActions[K]["input"];
+  output: StateActions[K]["output"];
+  callerCapabilities: never[];
+  errors: StateActions[K]["errors"][number]["type"][];
+  declaredErrorTypes: StateActions[K]["errors"][number]["type"][];
+  runtimeErrors: StateActions[K]["errors"];
+};
+
+export const STATE_RUNTIME_RPC: {
+  Register: StateRuntimeRpc<"rpc:Register">;
+  Get: StateRuntimeRpc<"rpc:Get">;
+  Put: StateRuntimeRpc<"rpc:Put">;
+  Delete: StateRuntimeRpc<"rpc:Delete">;
+} = {
   Register: {
     subject: "rpc.v1.state.Register",
     input: STATE_API.actions["rpc:Register"].input,

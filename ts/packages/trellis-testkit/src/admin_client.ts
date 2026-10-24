@@ -244,23 +244,27 @@ export class TrellisTestAdminAutomation {
     });
   }
 
-  async eventsConsumersQuery(input: AdminRpcInput<"eventsConsumersQuery">) {
+  async eventsConsumersQuery(
+    input: AdminRpcInput<"eventsConsumersQuery">,
+  ): Promise<AdminRpc["eventsConsumersQuery"]["output"]> {
     return await this.#rpc("eventsConsumersQuery", input);
   }
 
-  async eventsDeadLettersQuery(input: AdminRpcInput<"eventsDeadLettersQuery">) {
+  async eventsDeadLettersQuery(
+    input: AdminRpcInput<"eventsDeadLettersQuery">,
+  ): Promise<AdminRpc["eventsDeadLettersQuery"]["output"]> {
     return await this.#rpc("eventsDeadLettersQuery", input);
   }
 
   async eventsDeadLettersInspect(
     input: AdminRpcInput<"eventsDeadLettersInspect">,
-  ) {
+  ): Promise<AdminRpc["eventsDeadLettersInspect"]["output"]> {
     return await this.#rpc("eventsDeadLettersInspect", input);
   }
 
   async eventsDeadLettersReplay(
     input: AdminRpcInput<"eventsDeadLettersReplay">,
-  ) {
+  ): Promise<AdminRpc["eventsDeadLettersReplay"]["output"]> {
     return await this.#rpc("eventsDeadLettersReplay", input);
   }
 
