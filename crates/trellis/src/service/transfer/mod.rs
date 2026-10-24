@@ -148,9 +148,11 @@ where
     F: Fn(OperationTransferProgress) + Send + Sync + 'static,
 {
     // The provider receives the upload: admit its granted window first.
-    let reservation = crate::data_plane::budget::ReceiveBudget::process()
-        .reserve(session.plan.grant.window_bytes)
-        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
+    let reservation = Arc::new(
+        crate::data_plane::budget::ReceiveBudget::process()
+            .reserve(session.plan.grant.window_bytes)
+            .ok_or_else(|| error("transfer receive capacity exhausted"))?,
+    );
     let data = lease
         .nats()
         .subscribe(session.plan.grant.data_subject.clone())
@@ -199,10 +201,14 @@ pub async fn spawn_stream_upload_endpoint<F>(
 where
     F: Fn(OperationTransferProgress) + Send + Sync + 'static,
 {
-    // The provider receives the upload: admit its granted window first.
-    let reservation = crate::data_plane::budget::ReceiveBudget::process()
-        .reserve(session.plan.grant.window_bytes)
-        .ok_or_else(|| error("transfer receive capacity exhausted"))?;
+    // The provider receives the upload: admit its granted window first. The
+    // handler's reader shares the reservation: frames it has not read yet stay
+    // admitted after the endpoint itself ends.
+    let reservation = Arc::new(
+        crate::data_plane::budget::ReceiveBudget::process()
+            .reserve(session.plan.grant.window_bytes)
+            .ok_or_else(|| error("transfer receive capacity exhausted"))?,
+    );
     let data = lease
         .nats()
         .subscribe(session.plan.grant.data_subject.clone())
@@ -214,7 +220,7 @@ where
         .await
         .map_err(error)?;
     lease.nats().flush().await.map_err(error)?;
-    let stream = session.open_stream();
+    let stream = session.open_stream(Arc::clone(&reservation));
     let (sender, receiver) = oneshot::channel();
     let (cancel, cancelled) = oneshot::channel();
     let task = tokio::spawn(run_upload::<
@@ -277,8 +283,9 @@ async fn run_upload<C, F>(
     on_progress: F,
     sender: oneshot::Sender<protocol::UploadTransferCompletionResult>,
     mut cancelled: oneshot::Receiver<()>,
-    // Held for the endpoint's whole life and released on every exit path.
-    _reservation: crate::data_plane::budget::ReceiveReservation,
+    // Held for the endpoint's whole life; released on every exit path once any
+    // handler-owned reader has dropped its share too.
+    _reservation: Arc<crate::data_plane::budget::ReceiveReservation>,
 ) -> Result<(), ServerError>
 where
     C: StoreResourceClient,

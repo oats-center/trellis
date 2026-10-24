@@ -37,6 +37,8 @@ pub struct UploadTransferSession {
 /// surfaces as an I/O error instead of end of file.
 pub struct OperationUploadStream {
     inner: FrameReader,
+    /// Frames buffered for this reader remain admitted until it is dropped.
+    _reservation: std::sync::Arc<crate::data_plane::budget::ReceiveReservation>,
 }
 
 impl tokio::io::AsyncRead for OperationUploadStream {
@@ -84,7 +86,10 @@ impl UploadTransferSession {
     ///
     /// Frames still arrive only after authenticated activation; the reader
     /// simply exists before the handler starts.
-    pub(super) fn open_stream(&mut self) -> OperationUploadStream {
+    pub(super) fn open_stream(
+        &mut self,
+        reservation: std::sync::Arc<crate::data_plane::budget::ReceiveReservation>,
+    ) -> OperationUploadStream {
         let (sender, receiver) = mpsc::channel(self.plan.grant.window_frames as usize + 1);
         let (consumed, progress) = watch::channel(Consumed::default());
         self.consumed = progress;
@@ -92,6 +97,7 @@ impl UploadTransferSession {
         self.stream = true;
         OperationUploadStream {
             inner: FrameReader::new(receiver, consumed),
+            _reservation: reservation,
         }
     }
 
@@ -356,5 +362,77 @@ impl std::fmt::Debug for UploadTransferSession {
             .field("transferred_bytes", &self.transferred_bytes)
             .field("complete", &self.complete)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_plane::budget::ReceiveBudget;
+    use tokio::io::AsyncReadExt;
+
+    fn session(window_bytes: u64) -> UploadTransferSession {
+        let grant: super::super::protocol::UploadTransferGrant =
+            serde_json::from_value(serde_json::json!({
+                "format": "trellis.transfer.v2",
+                "type": "UploadTransferGrant",
+                "direction": "send",
+                "service": "fixture",
+                "origin": {
+                    "apiId": "fixture.api@v1",
+                    "action": { "kind": "operation", "name": "Upload", "direction": "call" }
+                },
+                "transferId": "transfer",
+                "expiresAt": "2099-01-01T00:00:00Z",
+                "provider": { "connectionId": "provider", "sessionKey": "provider-key" },
+                "consumer": { "connectionId": "consumer", "sessionKey": "consumer-key" },
+                "dataSubject": "data",
+                "controlSubject": "control",
+                "signalSubject": "signal",
+                "maxFrameBytes": window_bytes,
+                "windowFrames": 1,
+                "windowBytes": window_bytes,
+                "maxBytes": null,
+                "contentType": null,
+                "metadata": {}
+            }))
+            .expect("grant fixture");
+        UploadTransferSession::new(
+            UploadTransferGrantPlan {
+                admission: crate::service::RequestContext::default(),
+                grant,
+                store_alias: String::new(),
+                store: String::new(),
+                key: "key".into(),
+            },
+            "2026-01-01T00:00:00Z",
+        )
+    }
+
+    #[tokio::test]
+    async fn frames_the_handler_has_not_read_stay_admitted_after_the_endpoint_ends() {
+        static BUDGET: ReceiveBudget = ReceiveBudget::new(1024);
+        let reservation = std::sync::Arc::new(BUDGET.reserve(1024).expect("window fits"));
+        let mut endpoint = session(1024);
+        let mut stream = endpoint.open_stream(std::sync::Arc::clone(&reservation));
+        endpoint
+            .admit(1, Bytes::from_static(&[7; 1024]))
+            .expect("frame admitted");
+        // The endpoint ends (completion, abort, or expiry) while the frame is
+        // still buffered for the handler.
+        drop(endpoint);
+        drop(reservation);
+        assert!(
+            BUDGET.reserve(1).is_none(),
+            "an unread frame must keep its capacity admitted"
+        );
+        let mut frame = [0; 1024];
+        stream.read_exact(&mut frame).await.expect("buffered frame");
+        assert_eq!(frame, [7; 1024]);
+        drop(stream);
+        assert!(
+            BUDGET.reserve(1024).is_some(),
+            "capacity returns with the reader"
+        );
     }
 }
