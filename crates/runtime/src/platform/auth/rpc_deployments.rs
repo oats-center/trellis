@@ -754,7 +754,7 @@ pub(super) fn review_api(
                 description: if review.removed_capabilities.contains(name) {
                     "Removed"
                 } else {
-                    "Allows more; users approve again"
+                    "Grants changed; users approve again"
                 }
                 .into(),
                 previous_identity_generation: previous.map(|value| AuthRevision(value.0.into())),

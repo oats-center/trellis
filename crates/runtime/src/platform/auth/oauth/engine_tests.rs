@@ -1136,7 +1136,7 @@ async fn device_code_login_confirmation_and_poll_keep_the_approved_key_and_capab
         .unwrap();
     let changed = SOURCE
         .replace("Read documents.", "Read confidential documents.")
-        .replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
+        .replace("Sees contents.", "Sees confidential contents.");
     accept(&authority, &f.admin, &changed, false, now);
     let stale = http
         .post(format!("{origin}/portal/approve"))
@@ -2095,7 +2095,7 @@ async fn oauth_authorization_redirect_login_consent_and_redemption_bind_the_same
     );
     let changed = SOURCE
         .replace("Read documents.", "Read confidential documents.")
-        .replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
+        .replace("Sees contents.", "Sees confidential contents.");
     accept(&authority, &f.admin, &changed, false, now);
     let stale = http
         .post(format!("{origin}/portal/approve"))

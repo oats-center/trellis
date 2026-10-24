@@ -104,12 +104,10 @@ grants; capability …; }` bundles of its own
 ### Changed
 
 - **Breaking:** Capabilities and groups no longer declare `consent_revision`,
-  and `consequence` is renamed `grants`. Auth advances a capability's consent
-  revision itself when an accepted API makes it allow more, or a group gains a
-  member or a member allows more; users then approve again. Rewording never
-  requires new approval. `AuthCapabilityDefinition.consequence` is now
-  `grants`, and an app approved for a group no longer receives a member that
-  has since grown to allow more.
+  and `consequence` is renamed `grants`. Users approve the `grants` text: Auth
+  asks them again exactly when an accepted API changes a capability's or
+  group's `grants`. Changing a title, description, `allows`, or a group's
+  members does not. `AuthCapabilityDefinition.consequence` is now `grants`.
 - **Breaking:** Built-in model names are PascalCase at every nested segment
   (`HealthInspectResponseInstancesItemLatestSample`, not
   `HealthInspectResponseinstancesItemlatestSample`), and inline copies of the

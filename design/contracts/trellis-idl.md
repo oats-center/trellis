@@ -128,13 +128,15 @@ the `trellis.` namespace. Own-authority and own-session maintenance are fixed
 session rights, not ordinary capability requests.
 
 Every authored capability has a `title`, a `description`, and `grants`: what
-holding it lets the holder do, shown when a user consents. Authors declare no
-revision counter. Auth owns each capability's consent revision and advances it
-when an accepted API makes the capability allow more than before; a user's
-approval then no longer covers it until they approve again. Wording edits and
-narrowing never require new approval. API generation, accepted revision,
-consent revisions, and action/membership introduction revisions are Auth-owned
-acceptance metadata.
+holding it lets the holder do, shown when a user consents. A user approves that
+`grants` statement, and authors keep it honest. Auth owns each capability's
+consent revision and advances it when an accepted API changes the `grants`
+text; a user's approval then no longer covers the capability until they approve
+again. Other compatible changes, including adding actions to `allows`, reach
+approved apps within the same API version; a change that breaks what users
+agreed to belongs in a new API major version. Authors declare no revision
+counter. API generation, accepted revision, consent revisions, and
+action/membership introduction revisions are Auth-owned acceptance metadata.
 
 A group is a developer-defined bundle of an API's capabilities. It is granted,
 assigned to roles, mapped from identity providers, requested by participants,
@@ -161,10 +163,10 @@ needs a title, description, grants, and at least one member, and lists only
 capabilities of the same API. Groups are part of the API's meaning, so they are in both canonical
 forms and change its digest. Whoever holds a group through a grant, role, or
 mapping holds its current members, so a membership change reaches them at once.
-A group's consent revision advances when it gains a member or a member allows
-more. An app keeps the members its user consented to, as they were then, until
-the user approves again; a member that now allows more is withheld from the app
-meanwhile, and removed members are gone everywhere. A group containing an administrative capability is
+Approval of a group covers its `grants` text, exactly as for a capability: an
+approved app gets the group's current members, including new ones, until the
+group's `grants` text changes and the user must approve again. A member's own
+`grants` change does not reopen an approved group. A group containing an administrative capability is
 administrative.
 
 Resource headers are `state`, `kv`, `store`, `job`, or `consumer`, optionally

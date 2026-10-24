@@ -102,23 +102,29 @@ fn holding_a_group_follows_its_membership_live() {
     assert!(holds(&f, &user, &f.write));
 }
 
-#[test]
-fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
-    let f = fixture();
-    accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW);
+/// Grant `editor` to a new user and approve an app for it.
+fn approved_editor(f: &Fixture) -> (String, String) {
     let user = create_user(&f.store, &f.admin, NOW);
     policy(
         &f.store,
         &f.admin,
         PolicyMutation::CapabilityGrant {
             principal_id: user.clone(),
-            capability_id: editor(&f),
+            capability_id: editor(f),
             expected_revision: 0,
             expires_at: None,
         },
         NOW,
     );
-    let grant = approve_editor(&f, &user, NOW);
+    let grant = approve_editor(f, &user, NOW);
+    (user, grant)
+}
+
+#[test]
+fn an_approved_app_gets_a_group_s_new_members_while_its_grants_hold() {
+    let f = fixture();
+    accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW);
+    let (_, grant) = approved_editor(&f);
     assert_eq!(
         app_holds(&f, grant.clone(), NOW),
         std::slice::from_ref(&f.read)
@@ -130,67 +136,34 @@ fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
         false,
         NOW + 1,
     );
-    // The user holds the grown group; the app keeps what was approved.
-    assert!(holds(&f, &user, &f.write));
-    assert_eq!(app_holds(&f, grant, NOW + 1), std::slice::from_ref(&f.read));
-    let regranted = approve_editor(&f, &user, NOW + 2);
     let mut both = vec![f.read.clone(), f.write.clone()];
     both.sort();
-    assert_eq!(app_holds(&f, regranted, NOW + 2), both);
+    assert_eq!(app_holds(&f, grant, NOW + 1), both);
 }
 
 #[test]
-fn an_app_loses_a_group_member_that_now_allows_more_until_asked_again() {
+fn changing_a_group_s_grants_needs_the_user_to_approve_again() {
     let f = fixture();
     accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW);
-    let user = create_user(&f.store, &f.admin, NOW);
-    policy(
-        &f.store,
-        &f.admin,
-        PolicyMutation::CapabilityGrant {
-            principal_id: user.clone(),
-            capability_id: editor(&f),
-            expected_revision: 0,
-            expires_at: None,
-        },
-        NOW,
-    );
-    let grant = approve_editor(&f, &user, NOW);
-    assert_eq!(
-        app_holds(&f, grant.clone(), NOW),
-        std::slice::from_ref(&f.read)
-    );
-    // Reading now also exports: the user approved less than that.
-    let widened =
-        grouped(&["read"]).replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
-    accept(&f.store, &f.admin, &widened, false, NOW + 1);
+    let (user, grant) = approved_editor(&f);
+    let regranted = grouped(&["read"]).replace("Changes documents.", "Publishes documents.");
+    accept(&f.store, &f.admin, &regranted, false, NOW + 1);
+    // The user still holds the group; the app's approval no longer covers it.
     assert!(holds(&f, &user, &f.read));
     assert!(app_holds(&f, grant, NOW + 1).is_empty());
-    let regranted = approve_editor(&f, &user, NOW + 2);
+    let renewed = approve_editor(&f, &user, NOW + 2);
     assert_eq!(
-        app_holds(&f, regranted, NOW + 2),
+        app_holds(&f, renewed, NOW + 2),
         std::slice::from_ref(&f.read)
     );
 }
 
 #[test]
-fn rewording_a_group_member_keeps_the_app_approval() {
+fn a_member_s_new_grants_do_not_reopen_an_approved_group() {
     let f = fixture();
     accept(&f.store, &f.admin, &grouped(&["read"]), false, NOW);
-    let user = create_user(&f.store, &f.admin, NOW);
-    policy(
-        &f.store,
-        &f.admin,
-        PolicyMutation::CapabilityGrant {
-            principal_id: user.clone(),
-            capability_id: editor(&f),
-            expected_revision: 0,
-            expires_at: None,
-        },
-        NOW,
-    );
-    let grant = approve_editor(&f, &user, NOW);
-    let reworded = grouped(&["read"]).replace("Sees contents.", "Sees document contents.");
+    let (_, grant) = approved_editor(&f);
+    let reworded = grouped(&["read"]).replace("Sees contents.", "Sees confidential contents.");
     accept(&f.store, &f.admin, &reworded, false, NOW + 1);
     assert_eq!(app_holds(&f, grant, NOW + 1), std::slice::from_ref(&f.read));
 }

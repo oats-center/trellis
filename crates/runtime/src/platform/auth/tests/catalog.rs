@@ -74,7 +74,7 @@ fn force_replacement_fences_old_providers_but_only_changed_meanings_need_new_con
         .implemented_actions
         .iter()
         .any(|action| action.name == "Archive"));
-    let changed = expansion.replace("allows { rpc Put; }", "allows { rpc Put; rpc Archive; }");
+    let changed = expansion.replace("Changes contents.", "Changes and publishes contents.");
     let start = std::sync::Barrier::new(2);
     let concurrent = std::thread::scope(|threads| {
         let issuer = threads.spawn(|| {
@@ -151,7 +151,7 @@ fn generated_review_request_preserves_canonical_evidence_for_breakage_review() {
 }
 
 #[test]
-fn concurrent_widening_acceptance_keeps_authority_coherent_and_needs_new_consent() {
+fn concurrent_acceptance_preserves_coherent_authority_and_old_membership_limits() {
     let f = fixture();
     let issued = issue_authority(&f.store, &f.admission, None, NOW).unwrap();
     let updated = SOURCE.replace("allows { rpc Get; }", "allows { rpc Get; rpc Export; }");
@@ -167,6 +167,7 @@ fn concurrent_widening_acceptance_keeps_authority_coherent_and_needs_new_consent
                         Some(&issued.authority.unsigned.authorization_session_id),
                         NOW + 1,
                     )
+                    .unwrap()
                 })
                 .collect::<Vec<_>>()
         });
@@ -187,14 +188,7 @@ fn concurrent_widening_acceptance_keeps_authority_coherent_and_needs_new_consent
         )
         .unwrap();
     assert!(!catalog.authorizes(&issued.authority, &action));
-    // Each renewal lands on one side of acceptance. Afterwards the required
-    // capability allows more than the user approved, so the session retires.
     for candidate in concurrent {
-        let candidate = match candidate {
-            Ok(candidate) => candidate,
-            Err(AuthError::Retired) => continue,
-            Err(error) => panic!("unexpected concurrent issuance failure: {error}"),
-        };
         let snapshot = &candidate.authority.unsigned.apis[0];
         let bytes = f
             .store
@@ -217,15 +211,18 @@ fn concurrent_widening_acceptance_keeps_authority_coherent_and_needs_new_consent
         );
         assert_eq!(snapshot.accepted_revision, committed.accepted_revision);
     }
-    assert!(matches!(
-        issue_authority(
-            &f.store,
-            &f.admission,
-            Some(&issued.authority.unsigned.authorization_session_id),
-            NOW + 1,
-        ),
-        Err(AuthError::Retired)
-    ));
+    let renewed = issue_authority(
+        &f.store,
+        &f.admission,
+        Some(&issued.authority.unsigned.authorization_session_id),
+        NOW + 1,
+    )
+    .unwrap();
+    assert_eq!(
+        renewed.authority.unsigned.authorization_session_id,
+        issued.authority.unsigned.authorization_session_id
+    );
+    assert!(catalog.authorizes(&renewed.authority, &action));
 }
 
 #[test]

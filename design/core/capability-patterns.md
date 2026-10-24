@@ -7,9 +7,10 @@ description: Capability approval, exact grants, and deployment policy.
 
 Capabilities are API-owned explanation and approval units. Their identity is
 `<package>.<ApiName>.v<major>:<area>.<action>`; an API's groups bundle them
-under `<package>.<ApiName>.v<major>:<name>`. Approval binds capability identity and Auth's consent
-revision, which advances only when `allows` widens. Title, description, and
-`grants` are presentation; rewording them never requires new approval.
+under `<package>.<ApiName>.v<major>:<name>`. Approval binds capability identity and the `grants`
+statement the user read: Auth's consent revision advances only when that text
+changes. Title and description are presentation, and `allows` may grow within an
+API version; material changes need new `grants` text or a new major version.
 
 Approval does not grant a capability token. Trellis resolves selected actions,
 public membership, approved current-consent capabilities, and the principal's

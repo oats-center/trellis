@@ -156,8 +156,8 @@ fn builtin_api_digests() -> &'static BTreeMap<String, String> {
 
 /// The consent meaning of a capability or group.
 struct Meaning<'a> {
-    /// It now covers more than its users approved.
-    widened: bool,
+    /// Its `grants` wording changed, so users approve it again.
+    regranted: bool,
     title: &'a str,
     description: &'a str,
     grants: &'a str,
@@ -165,7 +165,7 @@ struct Meaning<'a> {
 
 /// Update an active capability or group identity's meaning, or start a new
 /// identity generation. Auth owns the consent revision: it advances only when
-/// the identity covers more. Returns the generation and consent revision.
+/// the `grants` wording changes. Returns the generation and consent revision.
 fn upsert_identity(
     connection: &Connection,
     api_id: &str,
@@ -184,7 +184,7 @@ fn upsert_identity(
         )
         .optional()?;
     if let Some((generation, consent_revision)) = current {
-        let consent_revision = consent_revision + u64::from(meaning.widened);
+        let consent_revision = consent_revision + u64::from(meaning.regranted);
         connection.execute(
             "UPDATE auth_capability_identities \
             SET consent_revision=?1,title=?2,description=?3,grants=?4 \
@@ -299,15 +299,14 @@ impl SqliteAuthorizationStore {
                     .into_iter()
                     .map(|issue| format!("{}: {}", issue.path, issue.message))
                     .collect();
-                // Consent covers what was approved. Allowing more, or a group
-                // gaining a member or a member allowing more, needs approval
-                // again; wording edits and narrowing never do.
-                let mut widened = BTreeSet::new();
+                // Consent covers the `grants` wording the user approved; the
+                // designer changes it when the meaning changes. Other edits,
+                // including what a capability allows or a group's members,
+                // reach approved apps within the same API version.
                 for (capability, definition) in old.definition().capabilities() {
                     match candidate.definition().capabilities().get(capability) {
                         None => review.removed_capabilities.push(capability.to_string()),
-                        Some(next) if !next.allows.is_subset(&definition.allows) => {
-                            widened.insert(capability.clone());
+                        Some(next) if next.grants != definition.grants => {
                             review.consent_changes.push(capability.to_string());
                         }
                         _ => {}
@@ -316,10 +315,7 @@ impl SqliteAuthorizationStore {
                 for (group, definition) in old.definition().groups() {
                     match candidate.definition().groups().get(group) {
                         None => review.removed_capabilities.push(group.to_string()),
-                        Some(next)
-                            if !next.members.is_subset(&definition.members)
-                                || next.members.iter().any(|member| widened.contains(member)) =>
-                        {
+                        Some(next) if next.grants != definition.grants => {
                             review.consent_changes.push(group.to_string());
                         }
                         _ => {}
@@ -599,7 +595,7 @@ impl SqliteAuthorizationStore {
                     name.as_str(),
                     "capability",
                     Meaning {
-                        widened: review.consent_changes.contains(&name.to_string()),
+                        regranted: review.consent_changes.contains(&name.to_string()),
                         title: &definition.title,
                         description: &definition.description,
                         grants: &definition.grants,
@@ -651,33 +647,28 @@ impl SqliteAuthorizationStore {
                 });
             }
             for (id, group) in api.groups() {
-                let (generation, consent_revision) = upsert_identity(
+                let (generation, _) = upsert_identity(
                     connection,
                     &review.api_id,
                     id.as_str(),
                     "group",
                     Meaning {
-                        widened: review.consent_changes.contains(&id.to_string()),
+                        regranted: review.consent_changes.contains(&id.to_string()),
                         title: &group.title,
                         description: &group.description,
                         grants: &group.grants,
                     },
                     now,
                 )?;
-                // Members only shrink within one consent revision. Each row
-                // records the member meaning approved with that revision.
                 connection.execute(
                     "DELETE FROM auth_capability_group_members \
-                    WHERE group_id=?1 AND group_generation=?2 AND consent_revision=?3",
-                    params![id.as_str(), generation, consent_revision],
+                    WHERE group_id=?1 AND group_generation=?2",
+                    params![id.as_str(), generation],
                 )?;
                 for member in &group.members {
                     connection.execute(
-                        "INSERT INTO auth_capability_group_members \
-                        SELECT ?1,?2,?3,capability_id,identity_generation,consent_revision \
-                        FROM auth_capability_identities \
-                        WHERE capability_id=?4 AND state='active'",
-                        params![id.as_str(), generation, consent_revision, member.as_str()],
+                        "INSERT INTO auth_capability_group_members VALUES(?1,?2,?3)",
+                        params![id.as_str(), generation, member.as_str()],
                     )?;
                 }
             }

@@ -150,16 +150,27 @@ pub(super) fn current_members(
     connection: &Connection,
     id: &str,
 ) -> Result<Option<Vec<String>>, AuthError> {
-    let group: Option<(u64, u64)> = connection
+    let generation: Option<u64> = connection
         .query_row(
-            "SELECT identity_generation,consent_revision FROM auth_capability_identities \
+            "SELECT identity_generation FROM auth_capability_identities \
             WHERE capability_id=?1 AND state='active' AND kind='group'",
             [id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .optional()?;
-    group
-        .map(|(generation, revision)| members_at(connection, id, generation, revision))
+    generation
+        .map(|generation| {
+            Ok(connection
+                .prepare(
+                    "SELECT m.capability_id FROM auth_capability_group_members m \
+                    JOIN auth_capability_identities c ON c.capability_id=m.capability_id \
+                    AND c.state='active' \
+                    WHERE m.group_id=?1 AND m.group_generation=?2 \
+                    ORDER BY m.capability_id",
+                )?
+                .query_map(params![id, generation], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        })
         .transpose()
 }
 
@@ -178,28 +189,6 @@ pub(super) fn covers(
         Some(members) => members.iter().any(|member| entitled.contains_key(member)),
         None => entitled.contains_key(id),
     })
-}
-
-/// A group's members as of one consent revision, keeping only those whose
-/// meaning is still the one approved with that revision.
-pub(super) fn members_at(
-    connection: &Connection,
-    id: &str,
-    generation: u64,
-    consent_revision: u64,
-) -> Result<Vec<String>, AuthError> {
-    Ok(connection
-        .prepare(
-            "SELECT m.capability_id FROM auth_capability_group_members m \
-            JOIN auth_capability_identities c ON c.capability_id=m.capability_id \
-            AND c.state='active' \
-            AND c.identity_generation=m.capability_generation \
-            AND c.consent_revision=m.capability_consent_revision \
-            WHERE m.group_id=?1 AND m.group_generation=?2 AND m.consent_revision=?3 \
-            ORDER BY m.capability_id",
-        )?
-        .query_map(params![id, generation, consent_revision], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?)
 }
 
 /// The one entitlement union used by display, approval, issuance and enforcement.
@@ -381,36 +370,17 @@ pub(super) fn evaluate(
         if let (Some(current), Some(members)) =
             (current.as_ref(), current_members(connection, &selected)?)
         {
-            // A group stands for its members. An app keeps the members of the
-            // revision its user consented to, less any since removed.
-            let consented = match root.approved.as_ref() {
-                None => Some(members.clone()),
-                Some(approved) => approved
-                    .iter()
-                    .find(|approval| {
-                        approval.capability_id == selected
-                            && approval.identity_generation == current.identity_generation
-                    })
-                    .map(|approval| {
-                        if approval.consent_revision == current.consent_revision {
-                            Ok(members.clone())
-                        } else {
-                            members_at(
-                                connection,
-                                &selected,
-                                current.identity_generation.get(),
-                                approval.consent_revision.get(),
-                            )
-                            .map(|old| {
-                                old.into_iter()
-                                    .filter(|member| members.contains(member))
-                                    .collect::<Vec<_>>()
-                            })
-                        }
-                    })
-                    .transpose()?,
+            // A group stands for its current members. Approval covers the
+            // group's `grants` wording, exactly as for a capability.
+            let consented = if root
+                .approved
+                .as_ref()
+                .is_none_or(|approved| approved.contains(current))
+            {
+                members
+            } else {
+                Vec::new()
             };
-            let consented = consented.unwrap_or_default();
             let mut granted = 0;
             for member in &consented {
                 if let Some(entitlement) = entitled.get(member) {

@@ -89,10 +89,11 @@ is optional. Required wins when a capability is repeated; `use Api;` selects
 nothing. `required group support;` selects an API's developer-defined group,
 which stands for its current members. Generated callers expose the selected
 actions; check capability availability before using an optional capability,
-because selecting it does not mean it was approved. API authors declare no
-revision counters: Auth advances a capability's consent revision when it allows
-more, and users approve again; rewording `title`, `description`, or `grants`
-does not.
+because selecting it does not mean it was approved. Users approve a capability's or
+group's `grants` text; changing that text makes them approve again, while
+editing `title`, `description`, `allows`, or group members does not. Keep
+`grants` honest, and put changes that break what users agreed to in a new API
+major version. Authors declare no revision counters.
 Participant identity, API identity, API release version, and surface transport
 version are separate concepts.
 

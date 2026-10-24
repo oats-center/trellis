@@ -40,9 +40,8 @@ the current revision and current policy ceiling.
 
 Capability approval is keyed by qualified capability ID, identity generation,
 and Auth's consent revision. Auth advances that revision when an accepted API
-makes the capability allow more actions, which requires new approval. Changing
-its title, description, or `grants` wording, or narrowing what it allows, does
-not. Public
+changes the capability's `grants` text, which requires new approval. Changing
+its title or description, or the actions it allows, does not. Public
 actions remain selected exact actions, not anonymous wildcard grants.
 
 Live observations and Operation observation are declared through this same API/capability
