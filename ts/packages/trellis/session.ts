@@ -1961,6 +1961,9 @@ export class Trellis<
       fn as HandlerFn<TA, MethodsOf<TA>, TA, HandlerTrellis<TA, TRequests>>,
     );
     this.#tasks.add(methodName, task);
+    // On generations the task is just the broker acknowledgement; on a fixed
+    // connection it is the long-running intake and must not be awaited.
+    if (this.#adaptiveTransport) await task;
   }
 
   #handleRPC(
@@ -1989,11 +1992,16 @@ export class Trellis<
       // Logical provider core: the handler is registered once and every
       // admitted generation gets its own queue-grouped ingress subscription,
       // so overlapping generations deliver each request exactly once.
+      const flushed: Promise<void>[] = [];
       for (const ingress of this.#providerIngress.values()) {
         if (ingress.retired) continue;
         ingress.retireFns.push(this.#installRpcIngress(ingress, registration));
+        flushed.push(ingress.nc.flush());
       }
-      return AsyncResult.ok(undefined);
+      // Registration is usable only once the broker has acknowledged SUB.
+      return AsyncResult.try(async () => {
+        await Promise.all(flushed);
+      });
     }
 
     const sub = this.#nats.subscribe(subject, {
