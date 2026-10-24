@@ -1005,12 +1005,12 @@ async fn portal_review(
     engine: &super::OAuthEngine,
     headers: &axum::http::HeaderMap,
     form: &std::collections::BTreeMap<String, String>,
-) -> Result<PortalReview, axum::response::Response> {
+) -> Result<PortalReview, Box<axum::response::Response>> {
     use axum::{http::StatusCode, response::IntoResponse, Json};
     if !super::http::portal_origin(engine, headers) {
-        return Err(super::http::error(
+        return Err(Box::new(super::http::error(
             oauth_as::error::ErrorCode::InvalidRequest,
-        ));
+        )));
     }
     let (Some(csrf), Some(review_id), Some(code), Some(cookie)) = (
         form.get("csrf"),
@@ -1018,20 +1018,22 @@ async fn portal_review(
         form.get("code"),
         super::http::portal_cookie(headers, "__Host-trellis-portal"),
     ) else {
-        return Err(super::http::error(
+        return Err(Box::new(super::http::error(
             oauth_as::error::ErrorCode::InvalidRequest,
-        ));
+        )));
     };
     let store = engine.server.store().authority.clone();
     let csrf = csrf.clone();
     let login = blocking(move || store.portal_login(&cookie, &csrf, crate::clock::unix_now()))
         .await
         .map_err(|_: AuthError| {
-            (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"error":"login_required"})),
+            Box::new(
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error":"login_required"})),
+                )
+                    .into_response(),
             )
-                .into_response()
         })?;
     Ok(PortalReview {
         principal_id: login.principal_id,
@@ -1054,7 +1056,7 @@ pub(super) async fn portal_inspect(
     };
     let review = match portal_review(&engine, &headers, &form).await {
         Ok(review) => review,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let store = engine.server.store().authority.clone();
     let (review_id, code, principal_id) = (
@@ -1120,7 +1122,7 @@ pub(super) async fn portal_decide(
     };
     let review = match portal_review(&engine, &headers, &form).await {
         Ok(review) => review,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let back = |error: &str| {
         Redirect::to(&format!(

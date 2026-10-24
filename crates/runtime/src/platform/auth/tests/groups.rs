@@ -125,7 +125,7 @@ fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
         NOW,
     );
     let grant = approve_editor(&f, &user, NOW);
-    assert_eq!(app_holds(&f, grant.clone(), NOW), [f.read.clone()]);
+    assert_eq!(app_holds(&f, grant.clone(), NOW), std::slice::from_ref(&f.read));
     accept(
         &f.store,
         &f.admin,
@@ -135,7 +135,7 @@ fn an_app_keeps_the_members_its_user_consented_to_until_asked_again() {
     );
     // The user holds the grown group; the app keeps what was approved.
     assert!(holds(&f, &user, &f.write));
-    assert_eq!(app_holds(&f, grant, NOW + 1), [f.read.clone()]);
+    assert_eq!(app_holds(&f, grant, NOW + 1), std::slice::from_ref(&f.read));
     let regranted = approve_editor(&f, &user, NOW + 2);
     let mut both = vec![f.read.clone(), f.write.clone()];
     both.sort();
