@@ -387,8 +387,18 @@ jobs:
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Runner tooling comes from this workflow's revision; the candidate may
+      # predate it.
+      - name: Check out release tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-tooling
+          sparse-checkout: scripts/ensure-ci-zstd.sh
+          sparse-checkout-cone-mode: false
+
       - name: Enable multithreaded Zstandard caching
-        run: bash scripts/ensure-ci-zstd.sh
+        run: bash .release-tooling/scripts/ensure-ci-zstd.sh
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
