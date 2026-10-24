@@ -94,7 +94,7 @@ pub async fn add(format: OutputFormat, args: &AddArgs) -> Result<()> {
         &alias,
         manifest.dependencies.get(&alias),
     )?;
-    let lock = resolve_lock(&root, &manifest).await?;
+    let lock = resolve_lock(&root, &manifest, Some(&edited)).await?;
     let result = commit_and_install(
         &root,
         &manifest,
@@ -125,7 +125,7 @@ pub async fn remove(format: OutputFormat, args: &RmArgs) -> Result<()> {
         .ok_or_else(|| miette!("package '{}' is not in trellis.toml", args.api_id))?;
     manifest.dependencies.remove(&alias);
     let edited = edit_manifest_dependency(&previous_manifest, &alias, None)?;
-    let lock = resolve_lock(&root, &manifest).await?;
+    let lock = resolve_lock(&root, &manifest, Some(&edited)).await?;
     let result = commit_and_install(
         &root,
         &manifest,
@@ -141,7 +141,7 @@ pub async fn remove(format: OutputFormat, args: &RmArgs) -> Result<()> {
 pub async fn check(format: OutputFormat, args: &ProjectRootArgs) -> Result<()> {
     let root = canonical_root(&args.root)?;
     let manifest = read_manifest(&root.join("trellis.toml"))?;
-    let lock = resolve_lock(&root, &manifest).await?;
+    let lock = resolve_lock(&root, &manifest, None).await?;
     let package = lock
         .packages
         .iter()
@@ -190,7 +190,7 @@ pub async fn update(format: OutputFormat, args: &UpdateArgs) -> Result<()> {
             dependency.version = Some(format!("={}", locked.version));
         }
     }
-    let lock = resolve_lock(&root, &resolution_manifest).await?;
+    let lock = resolve_lock(&root, &resolution_manifest, None).await?;
     if let (Some(alias), Some(previous_lock)) = (&args.dependency_alias, previous_lock.as_deref()) {
         let previous = toml::from_slice::<ProjectLock>(previous_lock).into_diagnostic()?;
         previous.validate()?;
@@ -250,7 +250,7 @@ pub async fn install(format: OutputFormat, args: &ProjectRootArgs) -> Result<()>
     let lock_path = root.join("trellis.lock");
     let created = !lock_path.exists();
     let lock = if created {
-        let lock = resolve_lock(&root, &manifest).await?;
+        let lock = resolve_lock(&root, &manifest, None).await?;
         write_lock(&lock_path, &lock)?;
         lock
     } else {
@@ -341,12 +341,19 @@ pub async fn publish(format: OutputFormat, args: &PublishArgs) -> Result<()> {
     }
 }
 
-async fn resolve_lock(root: &Path, manifest: &ProjectManifest) -> Result<ProjectLock> {
+/// Resolve the project's lock. `manifest_bytes` supplies a proposed root
+/// manifest that is not yet on disk; `None` reads the current file.
+async fn resolve_lock(
+    root: &Path,
+    manifest: &ProjectManifest,
+    manifest_bytes: Option<&[u8]>,
+) -> Result<ProjectLock> {
     let mut stack = BTreeSet::new();
     let resolution = resolve_package(
         root,
         root,
         manifest,
+        manifest_bytes,
         LockedSource::Path { path: ".".into() },
         &mut stack,
     )
@@ -362,6 +369,7 @@ fn resolve_package<'a>(
     root: &'a Path,
     package_root: &'a Path,
     manifest: &'a ProjectManifest,
+    manifest_bytes: Option<&'a [u8]>,
     source: LockedSource,
     stack: &'a mut BTreeSet<String>,
 ) -> Pin<Box<dyn Future<Output = Result<Resolution>> + 'a>> {
@@ -450,7 +458,15 @@ fn resolve_package<'a>(
                         .collect(),
                 }
             } else {
-                resolve_package(root, &child_root, &child_manifest, child_source, stack).await?
+                resolve_package(
+                    root,
+                    &child_root,
+                    &child_manifest,
+                    None,
+                    child_source,
+                    stack,
+                )
+                .await?
             };
             direct.push(LockedDependency {
                 name: dependency.package.clone(),
@@ -470,6 +486,10 @@ fn resolve_package<'a>(
         let graph = compile_graph(package_root, manifest, supplied)?;
         let source_package = package_from_root(
             package_root,
+            match manifest_bytes {
+                Some(bytes) => bytes.to_vec(),
+                None => fs::read(package_root.join("trellis.toml")).into_diagnostic()?,
+            },
             manifest,
             graph.root_digest(),
             direct.clone(),
@@ -738,15 +758,13 @@ fn validate_lock(
 
 fn package_from_root(
     root: &Path,
+    manifest_bytes: Vec<u8>,
     manifest: &ProjectManifest,
     digest: &str,
     dependencies: Vec<LockedDependency>,
     packages: Vec<LockedPackage>,
 ) -> Result<oci::SourcePackage> {
-    let mut files = BTreeMap::from([(
-        PathBuf::from("trellis.toml"),
-        fs::read(root.join("trellis.toml")).into_diagnostic()?,
-    )]);
+    let mut files = BTreeMap::from([(PathBuf::from("trellis.toml"), manifest_bytes)]);
     for relative in manifest.sources.values() {
         let path = root.join(relative);
         let metadata = fs::symlink_metadata(&path).into_diagnostic()?;
@@ -807,6 +825,7 @@ fn package_from_lock(
     }
     package_from_root(
         root,
+        fs::read(root.join("trellis.toml")).into_diagnostic()?,
         manifest,
         digest,
         locked.dependencies.clone(),
@@ -984,6 +1003,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_then_remove_locks_the_edited_manifest() {
+        let root = tempfile::tempdir().unwrap();
+        write_package(&root.path().join("child"), "child", "value");
+        fs::write(
+            root.path().join("trellis.toml"),
+            "[package]\nname = \"root\"\nversion = \"1.0.0\"\n[sources]\nmain = \
+            \"main.trellis\"\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("main.trellis"), "model Root {}\n").unwrap();
+        let project = ProjectRootArgs {
+            root: root.path().to_path_buf(),
+        };
+        install(OutputFormat::Text, &project).await.unwrap();
+
+        add(
+            OutputFormat::Text,
+            &AddArgs {
+                source: "child".into(),
+                version: None,
+                registry: None,
+                project: ProjectRootArgs {
+                    root: root.path().to_path_buf(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
+        assert!(manifest.dependencies.contains_key("child"));
+        compile_project(root.path(), &manifest).unwrap();
+
+        remove(
+            OutputFormat::Text,
+            &RmArgs {
+                api_id: "child".into(),
+                project: ProjectRootArgs {
+                    root: root.path().to_path_buf(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+        let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
+        assert!(manifest.dependencies.is_empty());
+        compile_project(root.path(), &manifest).unwrap();
+    }
+
+    #[tokio::test]
     async fn targeted_update_preserves_every_other_locked_path_package() {
         let root = tempfile::tempdir().unwrap();
         write_package(&root.path().join("alpha"), "alpha", "alpha");
@@ -1030,7 +1098,7 @@ mod tests {
         .unwrap();
         fs::write(root.path().join("main.trellis"), "model Root {}\n").unwrap();
         let manifest = read_manifest(&root.path().join("trellis.toml")).unwrap();
-        let mut lock = resolve_lock(root.path(), &manifest).await.unwrap();
+        let mut lock = resolve_lock(root.path(), &manifest, None).await.unwrap();
         let child = lock
             .packages
             .iter_mut()
