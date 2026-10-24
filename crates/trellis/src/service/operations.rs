@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use trellis_protocol::SessionBinding;
 
@@ -751,10 +751,14 @@ where
                     changed = cancellation.next() => {
                         match changed {
                             Some(Ok(current)) if !fence.matches(&current.record) => {
-                                cancel_sender
-                                    .send_replace(Some(OperationCancellationReason::OwnershipLost));
+                                // A retired fence also fails to match.
+                                cancel_sender.send_replace(Some(if fence.is_retired() {
+                                    OperationCancellationReason::ServiceStopping
+                                } else {
+                                    OperationCancellationReason::OwnershipLost
+                                }));
                                 let _ = execution.await;
-                                break "lease_lost";
+                                break if fence.is_retired() { "interrupted" } else { "lease_lost" };
                             }
                             Some(Ok(current)) if current.record.cancellation_requested => {
                                 cancellation_started.get_or_insert_with(std::time::Instant::now);
@@ -778,6 +782,14 @@ where
                                 break "interrupted";
                             }
                         }
+                    }
+                    () = fence.retired() => {
+                        // Authoritative state became unreadable: stop the
+                        // handler and never renew or write with this fence.
+                        cancel_sender
+                            .send_replace(Some(OperationCancellationReason::ServiceStopping));
+                        let _ = execution.await;
+                        break "interrupted";
                     }
                     _ = heartbeat.tick(), if !renewal_due => {
                         renewal_due = true;
@@ -1632,6 +1644,9 @@ where
                         loop {
                             interval.tick().await;
                             let _guard = heartbeat_gate.lock().await;
+                            if heartbeat_fence.is_retired() {
+                                return;
+                            }
                             let now = now_ms();
                             if heartbeat_repository
                                 .renew(
@@ -2442,22 +2457,25 @@ where
     D: OperationDescriptor,
 {
     let _guard = mutation_gate.lock().await;
-    Ok(repository.get(invocation_id).await?.filter(|current| {
-        fence.matches(&current.record)
-            && current.record.api_id == D::API_ID
-            && current.record.operation == D::KEY
-            && current.record.deployment_id == deployment_id
-            && !current.record.snapshot.state.is_terminal()
-            && current
-                .record
-                .lease_expires_at_ms
-                .is_some_and(|expiry| expiry > now_ms())
-            && !current.record.creator_principal_id.is_empty()
-            && current.record.caller.as_ref().is_some_and(|caller| {
-                caller.principal_id == current.record.creator_principal_id
-                    && caller.binding == current.record.creator_binding
-            })
-    }))
+    Ok(fence
+        .read(repository, invocation_id)
+        .await?
+        .filter(|current| {
+            fence.matches(&current.record)
+                && current.record.api_id == D::API_ID
+                && current.record.operation == D::KEY
+                && current.record.deployment_id == deployment_id
+                && !current.record.snapshot.state.is_terminal()
+                && current
+                    .record
+                    .lease_expires_at_ms
+                    .is_some_and(|expiry| expiry > now_ms())
+                && !current.record.creator_principal_id.is_empty()
+                && current.record.caller.as_ref().is_some_and(|caller| {
+                    caller.principal_id == current.record.creator_principal_id
+                        && caller.binding == current.record.creator_binding
+                })
+        }))
 }
 
 #[derive(Debug, Clone)]
@@ -2502,11 +2520,20 @@ fn terminal_state_label(state: OperationState) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct OwnerFence {
     executor_id: String,
     connection_id: String,
     owner_epoch: u64,
+    /// Shared by every clone of this execution's fence.
+    retirement: Arc<FenceRetirement>,
+}
+
+/// Latched once an execution can no longer read its authoritative state.
+#[derive(Debug, Default)]
+struct FenceRetirement {
+    retired: AtomicBool,
+    notify: tokio::sync::Notify,
 }
 
 impl OwnerFence {
@@ -2520,16 +2547,54 @@ impl OwnerFence {
                 ServerError::Nats("operation has no owning connection".to_owned())
             })?,
             owner_epoch: record.owner_epoch,
+            retirement: Arc::default(),
         })
     }
 
     fn matches(&self, record: &DurableOperationRecord) -> bool {
-        record.owner_executor_id.as_deref() == Some(&self.executor_id)
+        !self.is_retired()
+            && record.owner_executor_id.as_deref() == Some(&self.executor_id)
             && record.owner_connection_id.as_deref() == Some(&self.connection_id)
             && record.owner_epoch == self.owner_epoch
             && record
                 .lease_expires_at_ms
                 .is_some_and(|expiry| expiry > now_ms())
+    }
+
+    fn is_retired(&self) -> bool {
+        self.retirement.retired.load(Ordering::Acquire)
+    }
+
+    /// Give up this execution's ownership for good: once authoritative state
+    /// could not be read, no later write may use this fence, even if storage
+    /// recovers within the lease.
+    fn retire(&self) {
+        self.retirement.retired.store(true, Ordering::Release);
+        self.retirement.notify.notify_waiters();
+    }
+
+    /// Resolves once this fence has been retired.
+    async fn retired(&self) {
+        loop {
+            let notified = self.retirement.notify.notified();
+            if self.is_retired() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    /// Read authoritative state, retiring the fence before a failed read
+    /// reaches the handler.
+    async fn read(
+        &self,
+        repository: &KvOperationRepository,
+        operation_id: &str,
+    ) -> Result<Option<RevisionedOperationRecord>, ServerError> {
+        repository
+            .get(operation_id)
+            .await
+            .inspect_err(|_| self.retire())
     }
 }
 
@@ -2612,13 +2677,11 @@ async fn settle_operation_upload(
     staging_key: &str,
 ) -> Result<Option<RevisionedOperationRecord>, ServerError> {
     let _guard = gate.lock().await;
-    let current =
-        repository
-            .get(operation_id)
-            .await?
-            .ok_or_else(|| ServerError::OperationNotFound {
-                operation_id: operation_id.to_owned(),
-            })?;
+    let current = fence.read(repository, operation_id).await?.ok_or_else(|| {
+        ServerError::OperationNotFound {
+            operation_id: operation_id.to_owned(),
+        }
+    })?;
     let upload: DurableOperationUpload =
         serde_json::from_value(current.record.transfer.clone().ok_or_else(|| {
             ServerError::Nats("operation upload staging state is missing".to_owned())
@@ -2645,7 +2708,7 @@ async fn settle_operation_upload(
     // Cancellation forbids every non-Cancelled CAS. Cleanup must not depend
     // on such an intermediate write; the unique attempt key and mutation gate
     // prevent this delete from racing the local final commit or a replacement.
-    let Some(current) = repository.get(operation_id).await? else {
+    let Some(current) = fence.read(repository, operation_id).await? else {
         return Ok(None);
     };
     let mut upload: DurableOperationUpload =
@@ -2683,11 +2746,14 @@ async fn settle_operation_upload(
         Err(ServerError::OperationAlreadyTerminal { state, .. }) if state == "cancelled" => {
             // A real cancellation can win between the read and CAS. Its output
             // is already removed; hand cleanup to the still-current owner.
-            Ok(repository.get(operation_id).await?.filter(|current| {
-                fence.matches(&current.record)
-                    && current.record.cancellation_requested
-                    && !current.record.snapshot.state.is_terminal()
-            }))
+            Ok(fence
+                .read(repository, operation_id)
+                .await?
+                .filter(|current| {
+                    fence.matches(&current.record)
+                        && current.record.cancellation_requested
+                        && !current.record.snapshot.state.is_terminal()
+                }))
         }
         Err(error) => Err(error),
     }
@@ -2892,8 +2958,8 @@ where
     async fn committed_upload(&self) -> Result<Option<(FileTransferInfo, String)>, ServerError> {
         let record = self
             .durable
-            .repository
-            .get(&self.operation_ref.id)
+            .fence
+            .read(&self.durable.repository, &self.operation_ref.id)
             .await?
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: self.operation_ref.id.clone(),
@@ -3016,8 +3082,8 @@ where
         let durable = &self.durable;
         let _guard = durable.mutation_gate.lock().await;
         let current = durable
-            .repository
-            .get(&self.operation_ref.id)
+            .fence
+            .read(&durable.repository, &self.operation_ref.id)
             .await?
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: self.operation_ref.id.clone(),
@@ -3179,8 +3245,8 @@ where
         })?;
         let record = self
             .durable
-            .repository
-            .get(&self.operation_ref.id)
+            .fence
+            .read(&self.durable.repository, &self.operation_ref.id)
             .await?
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: self.operation_ref.id.clone(),
@@ -3212,8 +3278,8 @@ where
         let durable = &self.durable;
         let _guard = durable.mutation_gate.lock().await;
         let current = durable
-            .repository
-            .get(&self.operation_ref.id)
+            .fence
+            .read(&durable.repository, &self.operation_ref.id)
             .await?
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: self.operation_ref.id.clone(),
@@ -3322,8 +3388,8 @@ where
         let durable = &self.durable;
         let _guard = durable.mutation_gate.lock().await;
         let current = durable
-            .repository
-            .get(&self.operation_ref.id)
+            .fence
+            .read(&durable.repository, &self.operation_ref.id)
             .await?
             .ok_or_else(|| ServerError::OperationNotFound {
                 operation_id: self.operation_ref.id.clone(),
@@ -3444,13 +3510,11 @@ where
         cancellation_requested,
     } = update;
     let _guard = gate.lock().await;
-    let current =
-        repository
-            .get(operation_id)
-            .await?
-            .ok_or_else(|| ServerError::OperationNotFound {
-                operation_id: operation_id.to_owned(),
-            })?;
+    let current = fence.read(repository, operation_id).await?.ok_or_else(|| {
+        ServerError::OperationNotFound {
+            operation_id: operation_id.to_owned(),
+        }
+    })?;
     let mut record = current.record;
     if record.snapshot.state.is_terminal() || record.cancellation_requested {
         return Err(operation_terminal_error(&record));
@@ -3508,13 +3572,11 @@ where
     D::Output: DeserializeOwned,
 {
     let _guard = gate.lock().await;
-    let current =
-        repository
-            .get(operation_id)
-            .await?
-            .ok_or_else(|| ServerError::OperationNotFound {
-                operation_id: operation_id.to_owned(),
-            })?;
+    let current = fence.read(repository, operation_id).await?.ok_or_else(|| {
+        ServerError::OperationNotFound {
+            operation_id: operation_id.to_owned(),
+        }
+    })?;
     if current.record.snapshot.state.is_terminal() {
         return typed_snapshot(current.record.snapshot);
     }

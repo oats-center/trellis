@@ -49,6 +49,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 op.started().await?;
                 println!("entered");
                 std::io::stdout().flush().expect("stdout");
+                if input.value == "unreadable-state" {
+                    // Proceed once the test withholds this provider's state reads.
+                    cleanup.notified().await;
+                    op.progress(Update {
+                        value: "unread".to_owned(),
+                        nested: UpdateDetail {
+                            count: runtime_trellis::Int64(1),
+                            payload: vec![1].into(),
+                            extra: Default::default(),
+                        },
+                        extra: Default::default(),
+                    })
+                    .await
+                    .expect_err("an unanswered state read must fail");
+                    assert_eq!(
+                        op.cancellation().cancelled().await,
+                        OperationCancellationReason::ServiceStopping
+                    );
+                    println!("read failed");
+                    std::io::stdout().flush().expect("stdout");
+                    // Storage answers again within the lease: the execution
+                    // that saw its state become unreadable must not write.
+                    cleanup.notified().await;
+                    let completed = op
+                        .complete(Value {
+                            value: "after-interruption".to_owned(),
+                            extra: Default::default(),
+                        })
+                        .await;
+                    println!(
+                        "{}",
+                        if completed.is_err() { "complete refused" } else { "complete accepted" }
+                    );
+                    std::io::stdout().flush().expect("stdout");
+                    return Ok(());
+                }
                 if input.value == "pending-control" {
                     // The real five-second CAS ACK timeout spans heartbeat ten.
                     tokio::time::sleep(std::time::Duration::from_secs(6)).await;

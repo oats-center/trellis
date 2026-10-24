@@ -10,11 +10,21 @@ import {
 import { spawnTracked } from "./_support/process.ts";
 import { rustFixtureArgv, withTrellisRuntime } from "./_support/runtime.ts";
 
-for (const pendingControl of [false, true]) {
+for (const mode of [
+  "lease-loss",
+  "pending-control",
+  "unreadable-state",
+] as const) {
+  const pendingControl = mode === "pending-control";
   test(
-    pendingControl
-      ? "native pending control remains polled while heartbeat awaits its gate"
-      : "native operation lease loss joins cleanup and releases the original provider gate",
+    {
+      "lease-loss":
+        "native operation lease loss joins cleanup and releases the original provider gate",
+      "pending-control":
+        "native pending control remains polled while heartbeat awaits its gate",
+      "unreadable-state":
+        "an execution whose state read failed cannot write after storage recovers",
+    }[mode],
     async () => {
       await withTrellisRuntime(
         async (runtime) => {
@@ -91,64 +101,90 @@ for (const pendingControl of [false, true]) {
               contract: apps.Caller.request,
             });
             const operation = await caller
-              .work({
-                value: pendingControl ? "pending-control" : "lease-loss",
-              })
+              .work({ value: mode })
               .start()
               .orThrow();
             await event("entered");
-            hold = gate.armResponseHold("$KV.", connection.id);
-            let held: Awaited<typeof hold.held> | undefined;
-            const heldReply = hold.held.then((value) => {
-              held = value;
-            });
-            await runtime.waitFor(() => held !== undefined, {
-              timeoutMs: 15_000,
-            });
-            await heldReply;
-            assert(held);
-            assert.deepEqual(held.connectionId, connection.id);
-            assert(held.requestSubject.startsWith("$KV."));
-
-            if (pendingControl) {
-              // Progress starts at six seconds; its held ACK timeout spans heartbeat
-              // ten. The handler must remain polled while renewal waits for its gate.
-              await event("control failed");
-              await hold.release();
+            if (mode === "unreadable-state") {
+              // Withhold this provider's next state read, then let the
+              // handler make it.
+              hold = gate.armResponseHold("$JS.API.DIRECT.GET.", connection.id);
               await writer.write(new TextEncoder().encode("cleanup\n"));
-              const completed = await operation
-                .wait({
-                  observationSignal: AbortSignal.timeout(15_000),
-                })
-                .orThrow();
-              assert.deepEqual(completed.state, "completed");
-              assert.deepEqual(completed.output?.value, "original");
-            } else {
-              // The idle handler makes this write a renewal. Cut TCP only after its
-              // held ACK anchors resume in that branch, then prove cooperative cleanup.
-              runtime.interruptNativeTransport();
-              await event("ownership lost", 45_000);
-              await writer.write(new TextEncoder().encode("cleanup\n"));
-              await event("cleanup complete");
+              await hold.held;
+              await event("read failed", 30_000);
               await hold.release();
-              runtime.restoreNativeTransport();
+              hold = undefined;
+              await writer.write(new TextEncoder().encode("cleanup\n"));
               await runtime.waitFor(
                 () =>
-                  caller.connection.status.phase === "connected" &&
-                  gate
-                    .connections()
-                    .some(
-                      (candidate) =>
-                        !candidate.closed &&
-                        candidate.id !== connection.id &&
-                        candidate.subs.some(
-                          (sub) =>
-                            sub.subject ===
-                            apis.runtime.API.actions["operation:Work"].subject,
-                        ),
-                    ),
-                { timeoutMs: 30_000 },
+                  lines.includes("complete refused") ||
+                  lines.includes("complete accepted"),
+                { timeoutMs: 15_000 },
               );
+              assert(
+                lines.includes("complete refused"),
+                "a retired execution must not complete the operation",
+              );
+              assert.notEqual(
+                (await operation.get().orThrow()).state,
+                "completed",
+              );
+            }
+            if (mode !== "unreadable-state") {
+              hold = gate.armResponseHold("$KV.", connection.id);
+              let held: Awaited<typeof hold.held> | undefined;
+              const heldReply = hold.held.then((value) => {
+                held = value;
+              });
+              await runtime.waitFor(() => held !== undefined, {
+                timeoutMs: 15_000,
+              });
+              await heldReply;
+              assert(held);
+              assert.deepEqual(held.connectionId, connection.id);
+              assert(held.requestSubject.startsWith("$KV."));
+
+              if (pendingControl) {
+                // Progress starts at six seconds; its held ACK timeout spans heartbeat
+                // ten. The handler must remain polled while renewal waits for its gate.
+                await event("control failed");
+                await hold.release();
+                await writer.write(new TextEncoder().encode("cleanup\n"));
+                const completed = await operation
+                  .wait({
+                    observationSignal: AbortSignal.timeout(15_000),
+                  })
+                  .orThrow();
+                assert.deepEqual(completed.state, "completed");
+                assert.deepEqual(completed.output?.value, "original");
+              } else {
+                // The idle handler makes this write a renewal. Cut TCP only after its
+                // held ACK anchors resume in that branch, then prove cooperative cleanup.
+                runtime.interruptNativeTransport();
+                await event("ownership lost", 45_000);
+                await writer.write(new TextEncoder().encode("cleanup\n"));
+                await event("cleanup complete");
+                await hold.release();
+                runtime.restoreNativeTransport();
+                await runtime.waitFor(
+                  () =>
+                    caller.connection.status.phase === "connected" &&
+                    gate
+                      .connections()
+                      .some(
+                        (candidate) =>
+                          !candidate.closed &&
+                          candidate.id !== connection.id &&
+                          candidate.subs.some(
+                            (sub) =>
+                              sub.subject ===
+                              apis.runtime.API.actions["operation:Work"]
+                                .subject,
+                          ),
+                      ),
+                  { timeoutMs: 30_000 },
+                );
+              }
             }
             const fresh = await caller
               .work({ value: "fresh" })
