@@ -903,6 +903,12 @@ fn resolve_api(
     }
     let mut groups = BTreeMap::new();
     for group in &raw.capability_groups {
+        // A group and a capability would share one canonical identity.
+        if group.name == "public" {
+            return Err(miette!(
+                "group name 'public' is reserved for the public capability"
+            ));
+        }
         if !canonical_unit
             && (group.title.is_empty()
                 || group.description.is_empty()

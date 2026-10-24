@@ -157,7 +157,7 @@ service Desk { use orders { required group support; } }
 ```
 
 A group's ID is the API prefix and its one-word name,
-`acme.orders.v1:support`. It needs a title, description, consequence,
+`acme.orders.v1:support`; `public` is reserved for the public capability. It needs a title, description, consequence,
 `consent_revision`, and at least one member, and lists only capabilities of the
 same API. Groups are part of the API's meaning, so they are in both canonical
 forms and change its digest. Whoever holds a group through a grant, role, or

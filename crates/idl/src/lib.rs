@@ -223,6 +223,10 @@ mod tests {
                 r#"group editor { title "T"; description "D"; consequence "C"; consent_revision 1; capability files.missing; }"#,
                 "not a capability of this API",
             ),
+            (
+                r#"public { consent_revision 1; allows { rpc Put; } } group public { title "T"; description "D"; consequence "C"; consent_revision 1; capability files.read; }"#,
+                "reserved for the public capability",
+            ),
         ] {
             let error = compile(grouped_contract(&format!("{READ} {group}"))).unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
