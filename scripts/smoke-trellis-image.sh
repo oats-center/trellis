@@ -27,7 +27,10 @@ container="trellis-smoke-${suffix}"
 bundle_volume="trellis-bundle-${suffix}"
 state_volume="trellis-state-${suffix}"
 
+work="$(mktemp -d)"
+
 cleanup() {
+  rm -rf "${work}"
   docker rm -f "${container}" >/dev/null 2>&1 || true
   docker volume rm "${bundle_volume}" >/dev/null 2>&1 || true
   docker volume rm "${state_volume}" >/dev/null 2>&1 || true
@@ -67,6 +70,10 @@ docker run --rm --user root --entrypoint cp \
 docker run --rm --user root --entrypoint chown \
   -v "${bundle_volume}":/to "${image}" \
   -R 10001:10001 /to
+# The default bundle serves Trellis-generated TLS for localhost; probes trust
+# exactly that installation CA instead of disabling verification.
+docker run --rm --entrypoint cat -v "${bundle_volume}":/etc/trellis:ro "${image}" \
+  /etc/trellis/tls/ca.crt > "${work}/ca.crt"
 
 # 3. Managed-mode run: non-root user, read-only rootfs, read-only bundle volume,
 #    writable state volume. All mutable NATS files go to /var/lib/trellis/nats
@@ -96,9 +103,14 @@ docker run --detach --name "${container}" --read-only --tmpfs /tmp \
 
 # 4. Wait for runtime readiness on the published port.
 runtime_port="$(docker port "${container}" 3000/tcp | cut -d: -f2)"
+probe() {
+  curl --fail --silent --cacert "${work}/ca.crt" \
+    --resolve "localhost:${runtime_port}:127.0.0.1" \
+    "https://localhost:${runtime_port}$1" >/dev/null
+}
 ready=""
 for _ in $(seq 1 90); do
-  if curl --fail --silent "http://127.0.0.1:${runtime_port}/readyz" >/dev/null 2>&1; then
+  if probe /readyz 2>/dev/null; then
     ready=1
     break
   fi
@@ -122,7 +134,7 @@ if grep -Ei 'read-only|readonly|permission denied|failed to (write|create|open)'
   printf '%s\n' "${startup_logs}" >&2
   exit 1
 fi
-curl --fail --silent "http://127.0.0.1:${runtime_port}/healthz" >/dev/null
+probe /healthz
 
 # 5. Graceful stop: SIGTERM, wait up to 30s, then check the exit code.
 docker stop --time 30 "${container}" >/dev/null
