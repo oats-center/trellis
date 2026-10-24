@@ -461,17 +461,21 @@ fn validate_names(
     for package in graph.packages().values() {
         for (id, definition) in package.types() {
             match definition {
+                // Models carry a generated `extra` field for unknown wire
+                // fields and enums an `Unknown` variant for unknown values.
                 TypeDefinition::Model(fields) => reject_collisions(
                     &format!("model {id}"),
                     fields
                         .keys()
-                        .map(|field| (field.as_str(), rust_ident(&key_to_snake(field)))),
+                        .map(|field| (field.as_str(), rust_ident(&key_to_snake(field))))
+                        .chain([("<unknown fields>", "extra".to_owned())]),
                 )?,
                 TypeDefinition::Enum(values) => reject_collisions(
                     &format!("enum {id}"),
                     values
                         .iter()
-                        .map(|value| (value.as_str(), variant_name(value))),
+                        .map(|value| (value.as_str(), variant_name(value)))
+                        .chain([("<unknown values>", "Unknown".to_owned())]),
                 )?,
                 TypeDefinition::Alias(_) => {}
             }
@@ -2865,6 +2869,27 @@ mod tests {
             Err(CodegenRustError::IdentifierCollision { .. })
         ));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn authored_names_cannot_take_generated_member_names() {
+        for (source, wanted) in [
+            ("model Values { extra: string; }", "extra"),
+            ("enum Status { ready; unknown; }", "Unknown"),
+        ] {
+            let graph = graph(source);
+            let output = tempfile::tempdir().unwrap().path().join("generated");
+            let result = generate_rust_package(&graph, &output, "fixture", &[]);
+            assert!(
+                matches!(
+                    &result,
+                    Err(CodegenRustError::IdentifierCollision { identifier, .. })
+                        if identifier == wanted
+                ),
+                "{source}: {result:?}"
+            );
+            assert!(!output.exists());
+        }
     }
 
     #[test]

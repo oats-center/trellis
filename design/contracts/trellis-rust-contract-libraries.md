@@ -63,7 +63,10 @@ Use current Rustdoc/generated source for exact participant-specific methods.
 
 Generation rejects collisions across the complete normalized Client method
 namespace, including API accessors, resource accessors, and runtime methods,
-before replacing last-good output. Device State accessors use an SDK-owned Watch
+before replacing last-good output. Model field and enum value names are checked
+the same way, including against the generated `extra` field that preserves
+unknown wire fields and the `Unknown` variant that preserves unknown enum
+values. Device State accessors use an SDK-owned Watch
 descriptor generated from native State IDL; a State-only device does not need an
 application dependency on the built-in API package.
 
