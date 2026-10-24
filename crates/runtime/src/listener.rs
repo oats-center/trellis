@@ -34,6 +34,7 @@ enum Mode {
         config: RustlsConfig,
         certificate_chain: PathBuf,
         private_key: PathBuf,
+        origin: url::Url,
     },
     Proxy(Arc<[ipnet::IpNet]>),
     Plaintext,
@@ -74,6 +75,7 @@ impl LoadedListener {
                     config,
                     certificate_chain: certificate_chain.clone(),
                     private_key: private_key.clone(),
+                    origin: origin.clone(),
                 }
             }
             ListenerTransport::Proxy { trusted_proxies } => {
@@ -122,9 +124,10 @@ impl LoadedListener {
                 config,
                 certificate_chain,
                 private_key,
+                origin,
             } => {
                 let _reload = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
-                    reload_certificates(config.clone(), certificate_chain, private_key),
+                    reload_certificates(config.clone(), certificate_chain, private_key, origin),
                 ));
                 axum_server::from_tcp_rustls(self.listener, config)?
                     .handle(handle)
@@ -190,12 +193,14 @@ fn check_leaf(certificate_chain: &std::path::Path, origin: &url::Url) -> std::io
 
 /// Replaces the served certificate when renewal rewrites its files.
 ///
-/// A replacement that fails to load is logged and the previous certificate
-/// keeps serving until valid files appear.
+/// A replacement must pass the same expiry and hostname checks as at startup.
+/// One that fails them or does not load is logged, and the previous
+/// certificate keeps serving until valid files appear.
 async fn reload_certificates(
     config: RustlsConfig,
     certificate_chain: PathBuf,
     private_key: PathBuf,
+    origin: url::Url,
 ) {
     let modified = |path: &PathBuf| {
         std::fs::metadata(path)
@@ -210,6 +215,14 @@ async fn reload_certificates(
         interval.tick().await;
         let current = (modified(&certificate_chain), modified(&private_key));
         if current == loaded {
+            continue;
+        }
+        if let Err(error) = check_leaf(&certificate_chain, &origin) {
+            tracing::warn!(
+                certificate = %certificate_chain.display(),
+                error = %error,
+                "replacement TLS certificate rejected; continuing with the previous certificate"
+            );
             continue;
         }
         match config
@@ -445,6 +458,44 @@ mod tests {
         .await
         .expect("the listener must serve the renewed certificate without restarting");
         assert_ne!(renewed, first);
+        stop.cancel();
+    }
+
+    #[tokio::test]
+    async fn tls_reload_keeps_serving_the_last_good_certificate() {
+        let directory = tempfile::tempdir().unwrap();
+        let authority = authority();
+        let later = time::OffsetDateTime::now_utc() + time::Duration::days(30);
+        let (certificate_chain, private_key) =
+            write_leaf(&authority, directory.path(), "trellis.test", later);
+        let (address, stop) = serve(
+            ListenerTransport::Tls {
+                certificate_chain,
+                private_key,
+            },
+            &origin("https://trellis.test"),
+        )
+        .await;
+        let client = trusting(&authority);
+        let first = served_leaf(&client, address).await;
+
+        // A replacement for another host loads as TLS but would fail every
+        // client; it must not displace the certificate being served.
+        write_leaf(&authority, directory.path(), "elsewhere.test", later);
+        let deadline = tokio::time::Instant::now() + TLS_RELOAD_INTERVAL * 3;
+        while tokio::time::Instant::now() < deadline {
+            assert_eq!(served_leaf(&client, address).await, first);
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        write_leaf(&authority, directory.path(), "trellis.test", later);
+        tokio::time::timeout(TLS_RELOAD_INTERVAL * 4, async {
+            while served_leaf(&client, address).await == first {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .expect("a valid replacement must still be picked up after a rejected one");
         stop.cancel();
     }
 
