@@ -7,7 +7,7 @@ required by Trellis.
 
 ## Documentation
 
-Use `docs/static/llms.txt` and `llms-typescript.txt` from the Trellis revision
+Use `docs/static/llms-core.txt` and `llms-typescript.txt` from the Trellis revision
 matching this project's CLI and libraries. With a local checkout, read those
 files there. Use `llms-svelte.txt` if this project uses the Svelte integration.
 Current public APIs are linked from `/api` on the Trellis docs site.

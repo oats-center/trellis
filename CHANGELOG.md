@@ -103,6 +103,11 @@ consequence; consent_revision; capability …; }` bundles of its own
 
 ### Changed
 
+- The LLM guides are structured: `llms.txt` is an index, the new
+  `llms-core.txt` holds the language-neutral guide in sections, the language
+  guides keep only language-specific material, and `llms-full.txt` is generated
+  from them (`node docs/scripts/build_llms_full.ts`, checked by Lint).
+
 - `cargo xtask install` generates the runtime's built-in API bindings, as it
   already does for the SDK and testkit, instead of a build script that compiled
   the IDL compiler and Rust generator into every runtime build. Rerun it after

@@ -13,16 +13,24 @@ api orders@v1 {
   title "Orders";
   description "Minimal service walkthrough.";
   rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
-  capabilities { public { allows { rpc Create; } } }
+  capabilities {
+    capability orders.create {
+      title "Create orders";
+      description "Create an order for a customer.";
+      consequence "The caller may create customer orders.";
+      consent_revision 1;
+      allows { rpc Create; }
+    }
+  }
 }
 
 service OrdersService { implements orders; }
-app OrdersCaller { use orders { rpc Create; } }
+app OrdersCaller { use orders { required capability orders.create; } }
 ```
 
-The service implements the API. The app selects only `Create`; importing types
-alone grants nothing. Run `trellis install` and `trellis generate`, then use the
-configured package's generated `apis` and `participants`. Exact generated names
-are authoritative: the authored API token and generated path remain lowercase
-(`orders`), while generated language symbols may use PascalCase (`Orders`).
-Package version is metadata, not authorization.
+The service implements the API. The app requires only `orders.create`, which
+allows `Create`; importing types alone grants nothing. Run `trellis install` and
+`trellis generate`, then use the configured package's generated `apis` and
+`participants`. Exact generated names are authoritative: the authored API token
+and generated path remain lowercase (`orders`), while generated language symbols
+may use PascalCase (`Orders`). Package version is metadata, not authorization.

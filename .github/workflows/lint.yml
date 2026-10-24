@@ -57,3 +57,6 @@ jobs:
 
       - name: Check formatting
         run: npm exec -- prettier --ignore-path .gitignore --check ts/packages ts/tools
+
+      - name: Check the generated complete LLM guide
+        run: node docs/scripts/build_llms_full.ts --check

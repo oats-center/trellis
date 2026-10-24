@@ -5,7 +5,7 @@ database, DI, code organization, logging, or general development policy.
 
 ## Documentation
 
-Use `docs/static/llms.txt` and `llms-rust.txt` from the Trellis revision
+Use `docs/static/llms-core.txt` and `llms-rust.txt` from the Trellis revision
 matching this project's CLI and libraries. With a local checkout, read those
 files there. Use the docs site's `/api` for current Rustdoc and generated crate
 source for the exact participant-specific methods.

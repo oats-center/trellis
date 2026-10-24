@@ -1,23 +1,15 @@
 # Trellis AI guidance for Svelte browser apps
 
-Directory avatarUrl is a Trellis-hosted image-only bearer lasting at most ten
-minutes. Do not log it. Render with referrerpolicy="no-referrer" and local initials
-on missing/broken images; reread the authorized directory to renew an expired URL.
-The browser never needs to contact Gravatar or an identity-provider image host.
+Svelte and SvelteKit usage of Trellis, for AI coding agents working in a browser
+app repository. Read it with [the Trellis guide](llms-core.txt) and
+[the TypeScript guide](llms-typescript.txt) from the same Trellis revision as the
+installed libraries.
 
-Use the guide from the same Trellis revision as the installed libraries. This
-guide describes the optional Trellis Svelte integration. Trellis does not
+## Overview
+
+This guide describes the optional Trellis Svelte integration. Trellis does not
 require Svelte, a UI design system, a configuration parser, or a particular
 application architecture.
-
-Use this file for AI coding agents working in a Svelte or SvelteKit browser app
-repository that consumes Trellis. The language-neutral guide is:
-
-https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt
-
-The TypeScript service guide is:
-
-https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-typescript.txt
 
 ## Browser app setup
 
@@ -97,8 +89,8 @@ clients. `@oatscenter/trellis-svelte` owns the app context created by
 ## Cross-participant clients
 
 For calls to another API, declare the narrow required or optional `use`
-selection in `contract.trellis`. Generated participant types expose only those
-selections.
+capability selection in `contract.trellis`. Generated participant types expose
+only the actions those capabilities allow.
 
 For labels of other Trellis users, select and obtain consent to `usersRead`,
 then use `Auth.Users.List/Get` for active directory profiles. For owner edits,
@@ -113,10 +105,7 @@ does not grant access to application-owned records; key those rules by immutable
 
 ```trellis
 app Dashboard {
-  implements "acme.dashboard@v1";
-  use orders {
-    call rpc "Orders.Get";
-  }
+  use orders { required capability orders.read; }
 }
 ```
 

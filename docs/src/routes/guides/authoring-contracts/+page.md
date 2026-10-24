@@ -40,16 +40,25 @@ api orders@v1 {
   title "Orders";
   description "Create an order.";
   rpc Create { input CreateOrderRequest; output CreateOrderResponse; }
-  capabilities { public { allows { rpc Create; } } }
+  capabilities {
+    capability orders.create {
+      title "Create orders";
+      description "Create an order for a customer.";
+      consequence "The caller may create customer orders.";
+      consent_revision 1;
+      allows { rpc Create; }
+    }
+  }
 }
 
 service OrdersService { implements orders; }
-app OrdersCaller { use orders { rpc Create; } }
+app OrdersCaller { use orders { required capability orders.create; } }
 ```
 
-The service provides `orders`; the app selects the `Create` action. Merely
-importing an API does not grant permission to call it. See the
-[service walkthrough](/guides/write-a-service) for handlers and a working
+The service provides `orders`; the app requires the `orders.create` capability,
+which allows `Create`. Merely importing an API does not grant permission to call
+it. See the [service walkthrough](/guides/write-a-service) for handlers and a
+working
 [Orders example](https://github.com/OATS-Center/trellis/tree/main/docs/examples/orders).
 
 ## Operations with progress and live updates

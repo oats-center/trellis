@@ -13,9 +13,11 @@ its matching release tag so instructions and library APIs agree. The guides
 cover Trellis-owned contracts and runtime behavior, not your application's
 configuration parser, databases, architecture, or general development policies.
 
-- Short guide:
+- Index:
   <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms.txt>
-- Full guide:
+- Trellis guide (language-neutral):
+  <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-core.txt>
+- Complete guide (every guide in one file):
   <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-full.txt>
 - TypeScript guide:
   <https://raw.githubusercontent.com/oats-center/trellis/main/docs/static/llms-typescript.txt>
@@ -29,14 +31,15 @@ configuration parser, databases, architecture, or general development policies.
 
 ## When to use each file
 
-Use `llms.txt` as a small bootstrap document for every Trellis task. It points
-an agent at the current service model, generated surfaces, and language-specific
-guides.
+Use `llms.txt` as a small bootstrap document for every Trellis task. It is an
+index of the guides and the human documentation.
 
-Use `llms-full.txt` when the agent will change a contract, generated SDK usage,
+Use `llms-core.txt` when the agent will change a contract, generated SDK usage,
 service handlers, browser app wiring, operations, event publication, or
-outbox/inbox code. It links to the language-specific TypeScript, Svelte, and
-Rust guides.
+outbox/inbox code. It holds the language-neutral model in sections (project and
+generation, running Trellis, identity, authorization, surfaces, resources, and
+testing) and pairs with one language guide. `llms-full.txt` is every guide in one
+file, for agents that prefer a single document.
 
 For TypeScript SQL outbox work, `llms-typescript.txt` explains the
 `service.createSqlOutbox(...)` executor and transaction boundary. Database
