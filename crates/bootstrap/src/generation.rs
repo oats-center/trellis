@@ -69,6 +69,18 @@ pub fn generate_trellis_bootstrap(
         ),
         _ => None,
     };
+    if let Some(ca_directory) = &ca_directory {
+        // The CA private key must never be written into, or wiped with, a
+        // bundle that roles mount.
+        let (bundle, ca) = (resolve_path(&options.out)?, resolve_path(ca_directory)?);
+        if bundle.starts_with(&ca) || ca.starts_with(&bundle) {
+            return Err(BootstrapError::InvalidTls(format!(
+                "CA directory '{}' must not overlap the bundle '{}'",
+                ca_directory.display(),
+                options.out.display()
+            )));
+        }
+    }
     if let BootstrapTls::Supplied(supplied) = &options.runtime.tls {
         for path in [
             Some(&supplied.certificate_chain),
@@ -200,6 +212,29 @@ fn default_ca_directory(out: &Path) -> PathBuf {
         .unwrap_or_else(|| "trellis".into());
     name.push("-tls-ca");
     out.with_file_name(name)
+}
+
+/// Resolves `path` to an absolute path with every existing symlink and `..`
+/// resolved, including paths whose trailing directories do not exist yet.
+fn resolve_path(path: &Path) -> Result<PathBuf, BootstrapError> {
+    let mut resolved = std::env::current_dir()?;
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) => resolved = PathBuf::from(component.as_os_str()),
+            std::path::Component::RootDir => resolved.push(component),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::Normal(name) => {
+                resolved.push(name);
+                if fs::symlink_metadata(&resolved).is_ok() {
+                    resolved = fs::canonicalize(&resolved)?;
+                }
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 /// Native NATS terminates its own TLS whenever the bundle uses TLS; only

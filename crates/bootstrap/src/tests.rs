@@ -709,6 +709,43 @@ fn generated_tls_trusts_only_installation_hosts_and_renews_without_changing_trus
 }
 
 #[test]
+fn generated_ca_directory_must_not_overlap_the_bundle() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let bundle = temp.path().join("bundle");
+    fs::create_dir(&bundle).expect("empty bundle directory");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&bundle, temp.path().join("link")).expect("symlink");
+    let mut cases = vec![
+        (bundle.clone(), bundle.join("ca")),
+        (bundle.clone(), bundle.clone()),
+        (bundle.clone(), temp.path().join("elsewhere/../bundle/tls")),
+        (temp.path().join("ca/bundle"), temp.path().join("ca")),
+    ];
+    #[cfg(unix)]
+    cases.push((bundle.clone(), temp.path().join("link/ca")));
+    for (out, ca_directory) in cases {
+        let mut options = trellis_options(&out);
+        options.runtime.tls = BootstrapTls::Generated {
+            ca_directory: Some(ca_directory.clone()),
+        };
+        let result = generate_trellis_bootstrap(&options);
+        assert!(
+            matches!(&result, Err(BootstrapError::InvalidTls(message)) if message.contains("overlap")),
+            "{} with CA {}: {result:?}",
+            out.display(),
+            ca_directory.display()
+        );
+        for directory in [&out, &ca_directory] {
+            assert!(
+                !directory.exists() || fs::read_dir(directory).unwrap().next().is_none(),
+                "{} must stay empty",
+                directory.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn bundle_tls_modes_reject_endpoints_they_cannot_protect() {
     let temp = tempfile::tempdir().expect("temp dir");
     let mut plaintext_broker = trellis_options(temp.path().join("plaintext-broker"));
