@@ -502,6 +502,9 @@ jobs:
       - name: Install Chromium for Rust-owned browser acceptance
         run: npx playwright install --with-deps chromium
 
+      - name: Provide NSS certutil for generated-CA browser trust
+        run: bash scripts/ensure-ci-certutil.sh
+
       # Nextest runs every test binary in parallel instead of one binary at a
       # time; it does not run documentation examples, so those run separately.
       - name: Test Rust workspace
@@ -795,6 +798,9 @@ jobs:
         working-directory: ts
         run: npm exec --yes --package=playwright@1.59.1 -- playwright install --with-deps chromium
 
+      - name: Provide NSS certutil for generated-CA browser trust
+        run: bash scripts/ensure-ci-certutil.sh
+
       - name: Test built-in UI hosting
         env:
           TRELLIS_TEST_SERVER_BIN: ${{ github.workspace }}/target/debug/trellis-server
@@ -846,6 +852,9 @@ jobs:
           set -euo pipefail
           mkdir -p target/debug
           tar -xzf "$RUNNER_TEMP/runtime-binaries/runtime-binaries.tar.gz" -C target/debug
+
+      - name: Provide NSS certutil for generated-CA browser trust
+        run: bash scripts/ensure-ci-certutil.sh
 
       - name: Run console browser suite
         env:
