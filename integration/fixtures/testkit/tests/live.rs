@@ -29,7 +29,8 @@ async fn bare_builder_serves_embedded_apps_and_installs_a_participant() {
         .start()
         .await
         .expect("bare builder");
-    let http = reqwest::Client::builder()
+    let http = runtime
+        .https_client_builder()
         .no_proxy()
         .timeout(Duration::from_secs(10))
         .build()
@@ -279,6 +280,7 @@ async fn ephemeral_events_authenticate_before_yielding_typed_payloads() {
     )
     .await
     .unwrap()
+    .add_root_certificates(runtime.trust_roots()[0].clone())
     .connect(runtime.nats_url())
     .await
     .unwrap();

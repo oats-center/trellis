@@ -115,13 +115,19 @@ try {
       idempotencyKey: ulid(),
     });
     assert(provisioned.provisioningSecret);
+    // Spawned demos trust exactly this runtime's installation CA.
+    const childEnv = { ...env, NODE_EXTRA_CA_CERTS: runtime.caCertificate };
     const rootSecret = Buffer.from(
       crypto.getRandomValues(new Uint8Array(32)),
     ).toString("base64url");
     const service = spawn(
       process.execPath,
       ["service/build/service/src/main.js", runtime.oauthIssuer, identity.seed],
-      { cwd: destination, env, stdio: ["ignore", "inherit", "inherit"] },
+      {
+        cwd: destination,
+        env: childEnv,
+        stdio: ["ignore", "inherit", "inherit"],
+      },
     );
     const serviceExit = once(service, "exit");
     try {
@@ -133,7 +139,7 @@ try {
           rootSecret,
           provisioned.provisioningSecret,
         ],
-        { cwd: destination, env, stdio: ["pipe", "pipe", "inherit"] },
+        { cwd: destination, env: childEnv, stdio: ["pipe", "pipe", "inherit"] },
       );
       const deviceExit = once(device, "exit");
       const timeout = setTimeout(() => device.kill("SIGTERM"), 45_000);
@@ -217,7 +223,12 @@ try {
       const peer = await run(
         process.execPath,
         ["peer.mjs", runtime.oauthIssuer, rootSecret],
-        { cwd: destination, env, timeout: 45_000, maxBuffer: 4 * 1024 * 1024 },
+        {
+          cwd: destination,
+          env: childEnv,
+          timeout: 45_000,
+          maxBuffer: 4 * 1024 * 1024,
+        },
       );
       process.stdout.write(peer.stdout);
       process.stderr.write(peer.stderr);
