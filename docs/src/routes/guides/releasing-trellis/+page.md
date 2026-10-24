@@ -176,7 +176,7 @@ retain protocol/model/native-contract versions; explicit component updates use
 the release preparation flags. Model snapshots require distinct Cargo
 compatibility lines when their native identity/digest or Rust ABI changes.
 `trellis-models` therefore carries its own version, which may lead the workspace
-version (for example `0.101.0-rc.3` beside `0.100.0-rc.3`); do not realign it
+version (for example `0.102.0-rc.4` beside `0.100.0-rc.3`); do not realign it
 by hand.
 Server/compiler/bootstrap implementation crates are private and non-publishable.
 

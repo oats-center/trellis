@@ -126,4 +126,4 @@ tempfile = "3.27.0"
 tokio-util = { version = "0.7.18", features = ["rt"] }
 ulid = "1.2.1"
 trellis-protocol = { path = "crates/protocol", version = "0.100.0-rc.3" }
-trellis-models = { path = "crates/models", version = "0.101.0-rc.3" }
+trellis-models = { path = "crates/models", version = "0.102.0-rc.4" }
