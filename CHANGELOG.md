@@ -103,6 +103,13 @@ consequence; consent_revision; capability …; }` bundles of its own
 
 ### Changed
 
+- **Breaking:** Built-in model names are PascalCase at every nested segment
+  (`HealthInspectResponseInstancesItemLatestSample`, not
+  `HealthInspectResponseinstancesItemlatestSample`), and inline copies of the
+  `Job` models are gone in favour of the named ones. Generated Rust and
+  TypeScript type names and the built-in contract digests change; wire payloads
+  do not.
+
 - The LLM guides are structured: `llms.txt` is an index, the new
   `llms-core.txt` holds the language-neutral guide in sections, the language
   guides keep only language-specific material, and `llms-full.txt` is generated

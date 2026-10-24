@@ -17,26 +17,17 @@ use trellis_rs::jobs::{is_terminal, job_event_subject, reduce_job_event};
 use trellis_runtime_apis::types::{
     JobsCancelRequest, JobsCancelResponse, JobsDismissDLQRequest, JobsDismissDLQResponse,
     JobsGetKeyRequest, JobsGetKeyResponse, JobsInspectRequest, JobsInspectResponse,
-    JobsInspectResponseerrorsItem as JobsInspectResponseErrorsItem,
-    JobsInspectResponserelatedItem as JobsInspectResponseRelatedItem,
-    JobsInspectResponsetimelineItem as JobsInspectResponseTimelineItem,
-    JobsInspectResponsetimelineItemerrorDetail as JobsInspectResponseTimelineItemErrorDetail,
-    JobsListDLQRequest, JobsListDLQResponse, JobsListServicesRequest, JobsListServicesResponse,
-    JobsListServicesResponseentriesItem as JobsListServicesResponseEntriesItem,
-    JobsListServicesResponseentriesItemworkersItem as JobsListServicesResponseEntriesItemWorkersItem,
-    JobsMetricsRequest, JobsMetricsResponse,
-    JobsMetricsResponsebucketsItem as JobsMetricsResponseBucketsItem,
-    JobsMetricsResponsebucketsItemgroupsItem as JobsMetricsResponseBucketsItemGroupsItem,
-    JobsMetricsResponsebucketsItemgroupsItemqueueWait as JobsMetricsResponseBucketsItemGroupsItemQueueWait,
-    JobsMetricsResponsebucketsItemgroupsItemruntime as JobsMetricsResponseBucketsItemGroupsItemRuntime,
-    JobsMetricsResponsesummaryItem as JobsMetricsResponseSummaryItem,
-    JobsMetricsResponsesummaryItemqueueWait as JobsMetricsResponseSummaryItemQueueWait,
-    JobsMetricsResponsesummaryItemruntime as JobsMetricsResponseSummaryItemRuntime,
-    JobsQueryRequest, JobsQueryResponse,
-    JobsQueryResponseentriesItem as JobsQueryResponseEntriesItem,
-    JobsQueryResponsegroupsItem as JobsQueryResponseGroupsItem,
-    JobsQueryResponsestats as JobsQueryResponseStats, JobsReplayDLQRequest, JobsReplayDLQResponse,
-    JobsRetryRequest, JobsRetryResponse, JobsSummaryRequest, JobsSummaryResponse,
+    JobsInspectResponseErrorsItem, JobsInspectResponseRelatedItem, JobsInspectResponseTimelineItem,
+    JobsInspectResponseTimelineItemErrorDetail, JobsListDLQRequest, JobsListDLQResponse,
+    JobsListServicesRequest, JobsListServicesResponse, JobsListServicesResponseEntriesItem,
+    JobsListServicesResponseEntriesItemWorkersItem, JobsMetricsRequest, JobsMetricsResponse,
+    JobsMetricsResponseBucketsItem, JobsMetricsResponseBucketsItemGroupsItem,
+    JobsMetricsResponseBucketsItemGroupsItemQueueWait,
+    JobsMetricsResponseBucketsItemGroupsItemRuntime, JobsMetricsResponseSummaryItem,
+    JobsMetricsResponseSummaryItemQueueWait, JobsMetricsResponseSummaryItemRuntime,
+    JobsQueryRequest, JobsQueryResponse, JobsQueryResponseEntriesItem, JobsQueryResponseGroupsItem,
+    JobsQueryResponseStats, JobsReplayDLQRequest, JobsReplayDLQResponse, JobsRetryRequest,
+    JobsRetryResponse, JobsSummaryRequest, JobsSummaryResponse,
 };
 
 mod resources;
@@ -1243,7 +1234,7 @@ fn parse_metrics_group_by(value: &str) -> Result<JobsWorkbenchGroupBy, JobsQuery
 }
 
 fn parse_workbench_sort(
-    sort: Option<&trellis_runtime_apis::types::JobsQueryRequestsort>,
+    sort: Option<&trellis_runtime_apis::types::JobsQueryRequestSort>,
 ) -> Result<JobsWorkbenchSort, JobsQueryError> {
     let Some(sort) = sort else {
         return Ok(JobsWorkbenchSort::default());

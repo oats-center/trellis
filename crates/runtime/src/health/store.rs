@@ -7,8 +7,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use trellis_runtime_apis::__types::trellis::HealthHeartbeatSample;
 use trellis_runtime_apis::types::{
-    HealthStatusChangedEvent, HealthStatusChangedEventheader as HealthStatusChangedEventHeader,
-    HealthStatusChangedEventparticipant as HealthStatusChangedEventParticipant,
+    HealthStatusChangedEvent, HealthStatusChangedEventHeader, HealthStatusChangedEventParticipant,
 };
 use ulid::Ulid;
 

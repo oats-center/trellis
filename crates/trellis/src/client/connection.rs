@@ -553,7 +553,7 @@ fn build_health_heartbeat(
             instance_id,
             ..
         } => (
-            HealthHeartbeatSampleparticipantKind::Service,
+            HealthHeartbeatSampleParticipantKind::Service,
             participant_id,
             instance_id,
         ),
@@ -562,7 +562,7 @@ fn build_health_heartbeat(
             instance_id,
             ..
         } => (
-            HealthHeartbeatSampleparticipantKind::Device,
+            HealthHeartbeatSampleParticipantKind::Device,
             participant_id,
             instance_id,
         ),
@@ -583,24 +583,24 @@ fn build_health_heartbeat(
         .as_str()
         .ok_or_else(|| TrellisClientError::Bootstrap("missing signed participant digest".into()))?;
     Ok(HealthHeartbeatSample {
-        sample: HealthHeartbeatSamplesample {
+        sample: HealthHeartbeatSampleSample {
             id: ulid::Ulid::new().to_string(),
             time: now_rfc3339(),
             extra: Default::default(),
         },
-        participant: HealthHeartbeatSampleparticipant {
-            name: HealthHeartbeatSampleparticipantName(config.service_name.clone()),
+        participant: HealthHeartbeatSampleParticipant {
+            name: HealthHeartbeatSampleParticipantName(config.service_name.clone()),
             kind,
-            instance_id: HealthHeartbeatSampleparticipantInstanceId(instance_id.clone()),
-            contract_id: HealthHeartbeatSampleparticipantContractId(participant_id.clone()),
-            contract_digest: HealthHeartbeatSampleparticipantContractDigest(digest.into()),
+            instance_id: HealthHeartbeatSampleParticipantInstanceId(instance_id.clone()),
+            contract_id: HealthHeartbeatSampleParticipantContractId(participant_id.clone()),
+            contract_digest: HealthHeartbeatSampleParticipantContractDigest(digest.into()),
             started_at: config.started_at.clone(),
-            publish_interval_ms: HealthHeartbeatSampleparticipantPublishIntervalMs(
+            publish_interval_ms: HealthHeartbeatSampleParticipantPublishIntervalMs(
                 crate::__types::Int64(i64::try_from(config.publish_interval_ms).map_err(|_| {
                     TrellisClientError::Bootstrap("health interval overflow".into())
                 })?),
             ),
-            runtime: HealthHeartbeatSampleparticipantRuntime::Rust,
+            runtime: HealthHeartbeatSampleParticipantRuntime::Rust,
             runtime_version: None,
             version: None,
             info: None,
@@ -608,10 +608,10 @@ fn build_health_heartbeat(
         },
         reported_status: HealthHeartbeatSampleReportedStatus::Healthy,
         summary: None,
-        checks: vec![HealthHeartbeatSamplechecksItem {
-            name: HealthHeartbeatSamplechecksItemName("nats".into()),
-            status: HealthHeartbeatSamplechecksItemStatus::Ok,
-            latency_ms: HealthHeartbeatSamplechecksItemLatencyMs(crate::__types::Number(0.0)),
+        checks: vec![HealthHeartbeatSampleChecksItem {
+            name: HealthHeartbeatSampleChecksItemName("nats".into()),
+            status: HealthHeartbeatSampleChecksItemStatus::Ok,
+            latency_ms: HealthHeartbeatSampleChecksItemLatencyMs(crate::__types::Number(0.0)),
             error: None,
             info: None,
             summary: None,

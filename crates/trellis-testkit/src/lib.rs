@@ -376,7 +376,7 @@ mod tests {
         assert_eq!(sample.online_instances.0, 1);
         assert_eq!(
             sample.effective_status,
-            HealthQueryResponseentriesItemEffectiveStatus::Healthy
+            HealthQueryResponseEntriesItemEffectiveStatus::Healthy
         );
         let observed_at = time::OffsetDateTime::parse(
             &sample.last_seen_at,

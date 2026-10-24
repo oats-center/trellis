@@ -2833,8 +2833,6 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
- "trellis-builtin-contracts",
- "trellis-codegen-rust",
  "trellis-models",
  "trellis-protocol",
  "trellis-rs",

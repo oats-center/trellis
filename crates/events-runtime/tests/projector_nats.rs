@@ -199,16 +199,16 @@ async fn signed_projection_preserves_order_and_durable_retention_gaps() {
         trellis_rs::client::prepare_event::<StatusChanged>(&HealthStatusChangedEvent {
             changed_at: now.clone(),
             last_seen_at: now.clone(),
-            header: HealthStatusChangedEventheader {
-                id: HealthStatusChangedEventheaderId(ulid::Ulid::new().to_string()),
+            header: HealthStatusChangedEventHeader {
+                id: HealthStatusChangedEventHeaderId(ulid::Ulid::new().to_string()),
                 time: now,
                 extra: Default::default(),
             },
-            participant: HealthStatusChangedEventparticipant {
+            participant: HealthStatusChangedEventParticipant {
                 contract_id: publisher_identity.participant_id().into(),
                 deployment_id: publisher_identity.deployment_id().into(),
                 instance_id: publisher_identity.instance_id().into(),
-                kind: HealthStatusChangedEventparticipantKind::Service,
+                kind: HealthStatusChangedEventParticipantKind::Service,
                 name: publisher_identity.name().into(),
                 extra: Default::default(),
             },
