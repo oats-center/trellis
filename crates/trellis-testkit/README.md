@@ -17,12 +17,16 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ## What it needs
 
-- No source checkout or compiler/runtime Cargo dependencies. The default acquires
-  the matching production CLI/server release using the checksums embedded in the
-  testkit archive (currently Linux x86-64). Network is needed on first use;
-  verified cached archives work offline. Set both `TRELLIS_TEST_CLI_BIN` and
-  `TRELLIS_TEST_SERVER_BIN`, or use `.native(NativeSource::Path { cli, server })`,
-  for an explicit exact-version pair. Invalid explicit paths never trigger a download.
+- No source checkout or compiler/runtime Cargo dependencies. The default
+  downloads the latest Trellis release from GitHub (the newest stable release,
+  or the newest prerelease before the first stable one), or the version in
+  `TRELLIS_TEST_VERSION`, and checks it against the checksum published with that
+  release (currently Linux x86-64). Each run reports the `trellis-server`
+  version it tests against. Network is needed on first use; the latest release
+  is rechecked hourly and cached archives work offline. Set both
+  `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, or use
+  `.native(NativeSource::Path { cli, server })`, for explicit binaries; invalid
+  explicit paths never trigger a download.
 - A real NATS executable. By default the bare builder uses the verified pinned
   download (network required on first use). To use a prebuilt broker, set
   `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose

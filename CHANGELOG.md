@@ -60,6 +60,16 @@ grants; capability …; }` bundles of its own
   packaging checks are `cargo xtask release` commands and the scripts use `jq`.
 - **Breaking:** Generated Rust model bindings no longer carry a Rust model ABI
   number; a model package is bound by name, version, and semantic digest.
+- **Breaking:** The testkits no longer pin the Trellis release matching their own
+  version. By default they download the latest release (the newest stable one,
+  or the newest prerelease before the first stable release), checked against
+  the checksum published with it; `TRELLIS_TEST_VERSION` selects another
+  release. Each run reports the `trellis-server` version it tests against, and
+  explicit binaries no longer have to match the testkit version. The TypeScript
+  testkit also honors `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`.
+- One `Pipeline` workflow on GitHub-hosted runners replaces Check, Lint and
+  Release: a `release/v*` push verifies and then publishes the same run's
+  artifacts.
 - Transfer receivers choose their outstanding window, up to 1,024 frames and
   64 MiB, and admit it from one process-wide receive budget, released when the
   transfer ends. A download consumer declares its window at activation; the

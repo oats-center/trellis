@@ -77,8 +77,9 @@ owns the linked production runtime task. Built-in Jobs and Events run in the
 ordinary production runtime. Tests use generated participants from a small
 native-IDL fixture; they do not construct substitute API descriptors. Prebuilt
 server and CLI paths are passed through the explicit native path source by the
-repository integration helper. The released TypeScript testkit defaults to
-exact-version SHA-256-pinned CLI/server acquisition; production `init config`
+repository integration helper. The released TypeScript testkit defaults to the
+latest published CLI/server release, verified against its published checksum;
+production `init config`
 owns bootstrap and `trellis-server --local-nats` owns the broker. The private
 sandbox retains config, data, state, and identity across full-host restart; only
 verified immutable binaries are shared. Seeded admin is the default, with an
@@ -96,8 +97,8 @@ original host releases broker-backed ownership and reap it before normal managed
 restart. There is no shared-runner registry, tenant allocator, artifact
 manifest, or host-wide scheduler.
 
-Rust and TypeScript live tests use ordinary Rust and Node discovery. The normal
-Check runs both discovered suites against real Trellis infrastructure. Focused
+Rust and TypeScript live tests use ordinary Rust and Node discovery. The
+pipeline runs both discovered suites against real Trellis infrastructure. Focused
 local runs select tests through the native Rust and Node test runners rather
 than a second registry or scheduler.
 
@@ -108,8 +109,8 @@ boundaries. The harness owns its administrator connection and server/broker
 children; the test owns generated clients and service tasks. Cancellation/drop
 reaps owned children before sandbox cleanup. Server-only restart retains the
 same running broker and durable installation. Readiness matches the production
-`/readyz` process ID to the owned child. Exact-version binaries can be explicit
-or acquired from checksum-pinned releases, with offline verified-cache reuse.
+`/readyz` process ID to the owned child. Binaries can be explicit or acquired
+from the latest (or `TRELLIS_TEST_VERSION`) release, with offline cache reuse.
 Unexpected child failures remain shutdown errors even when the child has already
 exited, preserving `OnFailure` diagnostics. Source CI stages the CLI and server
 alongside its prebuilt testkit executable; it does not depend on unpublished
@@ -188,11 +189,11 @@ Verification has three explicit tiers:
 - **Tier 2, phase gate:** run preparation when generated artifacts may change,
   workspace formatting, lint and documentation checks, affected package suites,
   and the matching TypeScript and Rust live tests.
-- **Tier 3, integrated gate:** the normal `Check` workflow owns formatting,
+- **Tier 3, integrated gate:** the `Pipeline` workflow owns formatting,
   lint/type checks, generated freshness, package tests, and the complete
-  unfiltered live suites with no hidden skips. The release workflow does not
-  repeat those checks; it verifies release metadata and the exact packages,
-  archives, images, and publication inputs assembled from a green `rs` base.
+  unfiltered live suites with no hidden skips. On a release branch its publish
+  jobs follow the acceptance gate and publish that run's verified packages,
+  archives and images without repeating the checks.
   Trellis supports current stable Rust only; no older compiler compatibility is
   promised.
 

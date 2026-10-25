@@ -354,11 +354,13 @@ checked atomically.
 ## Testing
 
 For live Node tests, `await using runtime = await TrellisTestRuntime.start()`
-from `@oatscenter/trellis-testkit` acquires exact-version production CLI/server
-archives pinned by SHA-256, currently for Linux x86-64 only; no installed
-Trellis executables or nsc are required. Use
-`trellis: { source: { kind: "path", cli, server } }` for an exact-version
-prebuilt pair, with no fallback. `restart()` retains data and identity and
+from `@oatscenter/trellis-testkit` downloads the latest Trellis CLI/server
+release (newest stable, else newest prerelease; `TRELLIS_TEST_VERSION` selects
+another), verified against its published checksum, currently for Linux x86-64
+only; no installed Trellis executables or nsc are required. Use
+`trellis: { source: { kind: "path", cli, server } }`, or set both
+`TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, for a prebuilt pair, with
+no fallback. `restart()` retains data and identity and
 restarts the full host and broker. Stop first requests graceful host shutdown;
 on timeout or host exit, isolated process-group cleanup reclaims remaining owned
 children before sandbox removal. Startup requires `/readyz` metadata's

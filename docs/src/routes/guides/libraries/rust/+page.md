@@ -256,8 +256,10 @@ It needs no Trellis source checkout and no private crate patches. See
 [Test Trellis services](/guides/testing-trellis-services) and the
 [`trellis-testkit` Rustdoc](/api/rust/trellis_testkit/index.html).
 
-The harness acquires exact-version CLI/server and pinned NATS archives with
-SHA-256 verification. Set both `TRELLIS_TEST_CLI_BIN` and
+The harness downloads the latest Trellis release (the newest stable release, or
+the newest prerelease before the first stable one) or `TRELLIS_TEST_VERSION`,
+verified against the checksum published with it, plus a pinned NATS archive. It
+reports the `trellis-server` version it tests against. Set both `TRELLIS_TEST_CLI_BIN` and
 `TRELLIS_TEST_SERVER_BIN`, or select `NativeSource::Path { cli, server }`, to
 use explicit binaries without download fallback. Only verified artifact
 cache is shared (`TRELLIS_TEST_CACHE_DIR`, or the platform cache directory); a warmed

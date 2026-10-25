@@ -164,9 +164,9 @@ inventories, or evidence ledgers to enforce this section.
   exercise unchanged production implementations. Live acceptance uses normal
   builds, real infrastructure, and public behavior; use existing production
   diagnostics when measurements are needed.
-- The normal `Check` workflow owns correctness verification, including the full
-  live suite. Release verification is limited to metadata, packages, archives,
-  images, and publication inputs. Rust supports the current stable toolchain; no
+- The `Pipeline` workflow owns correctness verification, including the full
+  live suite, and on a `release/v*` push publishes that run's verified artifacts
+  after its acceptance gate; publication rebuilds and re-verifies nothing. Rust supports the current stable toolchain; no
   older compiler compatibility is promised.
 - Release work must keep release-managed Trellis versions consistent through the
   Rust xtask release commands, verify `CHANGELOG.md` against changes since the

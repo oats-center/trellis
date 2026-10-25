@@ -26,7 +26,10 @@ export type WaitForOptions = {
   intervalMs?: number;
 };
 
-/** Exact matching production binaries, acquired from release by default. */
+/**
+ * Production binaries. `release` downloads `TRELLIS_TEST_VERSION`, or the latest
+ * stable release (the newest prerelease before the first stable one).
+ */
 export type TrellisNativeSource =
   | { kind: "release" }
   | {

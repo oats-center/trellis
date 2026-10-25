@@ -1,6 +1,6 @@
-name: Check inputs
+name: Pipeline inputs
 description: >-
-  Restores the artifacts the Check producer jobs built and sets up Node, so each
+  Restores the artifacts the pipeline producer jobs built and sets up Node, so each
   consumer job selects what it needs instead of repeating the same steps.
 inputs:
   generated:

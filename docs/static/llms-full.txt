@@ -988,12 +988,14 @@ Choose application testing tools independently. For a test that needs real
 Trellis transport, authority, or restart behavior, `@oatscenter/trellis-testkit`
 (npm) and `trellis-testkit` (crate) each provide a `TrellisTestRuntime`. Both own
 production CLI/server and NATS processes in a private sandbox with a seeded
-administrator, acquire exact-version SHA-256-pinned archives on first use, serve
+administrator, download the latest Trellis release on first use (newest stable,
+else newest prerelease; `TRELLIS_TEST_VERSION` selects another) verified against
+its published checksum, report the server version they test against, serve
 generated installation TLS, and trust each runtime's CA explicitly; never
 disable verification. `TRELLIS_TEST_CACHE_DIR` shares verified artifacts only;
 credentials, broker state, databases, PID files, and logs stay sandbox-local.
 Set both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN` (or the
-language's path source) for explicit exact-version binaries with no fallback.
+language's path source) for explicit binaries with no download fallback.
 Distinct-user tests use ordinary accounts and explicit grants: one app
 registration supports independent real OAuth logins for multiple users, user
 handles expose no password, and explicit-user login never grants or restores
@@ -1364,11 +1366,13 @@ checked atomically.
 ### Testing
 
 For live Node tests, `await using runtime = await TrellisTestRuntime.start()`
-from `@oatscenter/trellis-testkit` acquires exact-version production CLI/server
-archives pinned by SHA-256, currently for Linux x86-64 only; no installed
-Trellis executables or nsc are required. Use
-`trellis: { source: { kind: "path", cli, server } }` for an exact-version
-prebuilt pair, with no fallback. `restart()` retains data and identity and
+from `@oatscenter/trellis-testkit` downloads the latest Trellis CLI/server
+release (newest stable, else newest prerelease; `TRELLIS_TEST_VERSION` selects
+another), verified against its published checksum, currently for Linux x86-64
+only; no installed Trellis executables or nsc are required. Use
+`trellis: { source: { kind: "path", cli, server } }`, or set both
+`TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, for a prebuilt pair, with
+no fallback. `restart()` retains data and identity and
 restarts the full host and broker. Stop first requests graceful host shutdown;
 on timeout or host exit, isolated process-group cleanup reclaims remaining owned
 children before sandbox removal. Startup requires `/readyz` metadata's
@@ -1664,8 +1668,9 @@ the published `trellis-testkit` crate, which owns production server and broker
 processes, chooses loopback ports automatically, and returns the existing SDK
 connection options so generated service and app facades connect normally. No
 source checkout or compiler/runtime Cargo dependencies are required. The bare
-builder acquires SHA-256-pinned exact-version CLI/server and pinned NATS
-archives (network on first use); the verified cache
+builder downloads the latest Trellis CLI/server release (or
+`TRELLIS_TEST_VERSION`), verified against its published checksum, and a pinned
+NATS archive (network on first use); the verified cache
 (`TRELLIS_TEST_CACHE_DIR`, otherwise the platform cache) lets later runtimes
 boot offline. Set `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
 `NatsSource::PathLookup` for a prebuilt broker. Set both `TRELLIS_TEST_CLI_BIN`

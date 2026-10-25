@@ -271,8 +271,9 @@ the published `trellis-testkit` crate, which owns production server and broker
 processes, chooses loopback ports automatically, and returns the existing SDK
 connection options so generated service and app facades connect normally. No
 source checkout or compiler/runtime Cargo dependencies are required. The bare
-builder acquires SHA-256-pinned exact-version CLI/server and pinned NATS
-archives (network on first use); the verified cache
+builder downloads the latest Trellis CLI/server release (or
+`TRELLIS_TEST_VERSION`), verified against its published checksum, and a pinned
+NATS archive (network on first use); the verified cache
 (`TRELLIS_TEST_CACHE_DIR`, otherwise the platform cache) lets later runtimes
 boot offline. Set `TRELLIS_TEST_NATS_BIN`, choose `NatsSource::Path`, or choose
 `NatsSource::PathLookup` for a prebuilt broker. Set both `TRELLIS_TEST_CLI_BIN`

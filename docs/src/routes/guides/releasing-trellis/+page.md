@@ -38,22 +38,22 @@ runtime, fake auth, or fake generated-client workflows to prove Trellis behavior
 Use real SQLite component tests for deterministic transaction invariants; do not
 add synthetic failure controls to the runtime for tests.
 
-Before pushing, run every suite Check runs:
+Before pushing, run every suite the pipeline runs:
 
 ```sh
 npm test
 ```
 
-Check and `npm test` share one script, `scripts/check.sh`: every Check and Lint
+The pipeline and `npm test` share one script, `scripts/check.sh`: every pipeline
 job runs `scripts/check.sh <job>`, and `npm test` runs every job on this host. It
 builds once (contract artifacts, the embedded Console and Portal, npm packages,
 and every executable the jobs launch), then runs formatting, Clippy, the Rust
 workspace, TypeScript checks and package tests, Rust and TypeScript live
 integration, the demo and documented-example consumers, and the browser suite
-concurrently, logging each to `target/test-logs/`. Jobs Check splits across
+concurrently, logging each to `target/test-logs/`. Jobs the pipeline splits across
 runners run whole locally, with concurrency sized from the host's cores
 (`TRELLIS_TEST_CONCURRENCY` and `TRELLIS_BROWSER_CONCURRENCY` override it). Local
-runs use debug builds; Check tests its release build.
+runs use debug builds; the pipeline tests its release build.
 
 `npm test -- --all` adds the slower packaging and container-image jobs: the Rust
 testkit crate bundle and its artifact-only consumer, the npm testkit package,
@@ -80,7 +80,7 @@ scripts/run-rust-tests.sh
 
 Locally it acquires the pinned NATS server, builds the pinned Dex revision
 (`scripts/acquire-test-dex.sh`, which needs Go), builds the CLI, server, and
-Events fixture, and sets every test executable variable. Check stages the same
+Events fixture, and sets every test executable variable. The pipeline stages the same
 executables once and runs the same script; tests never rebuild them.
 
 If the full integration suites cannot be run, record the reason and the last focused checks that did run.
@@ -149,7 +149,7 @@ JavaScript packages are published to npm only.
 
 Release-managed TypeScript packages and Rust crates use one checked-in base version. Stable releases usually bump that checked-in base version. Prerelease tags use a suffix such as `-rc.1`; they normally keep the checked-in base version unchanged.
 
-The GitHub `Release` workflow runs the same Rust release tooling used locally:
+The `Pipeline` workflow runs the same Rust release tooling used locally:
 
 - `release prepare --tag <tag>` rewrites publishable versions for the tagged build
 - `release check-metadata` checks release metadata before expensive verification
@@ -161,7 +161,7 @@ Verify the benchmark with Performance's ordinary command:
 `cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target`.
 Performance consumes that frozen lock; it does not repair it during execution.
 
-The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so `Check` verifies exactly what ships. `Check` is the single build-and-verification pipeline. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds every supported CLI target and assembles and smokes both image architectures; packages the Rust and npm packages; runs the artifact-only package consumer in full mode; and reports through one acceptance gate. Authored-source formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that same graph. `Release` is publication only: it selects the successful `Check` run for the exact candidate commit (never "the latest green Check"), downloads that run's verified artifacts, and publishes crates, npm, canonical APIs, and images without rebuilding the product. After publication gates pass, GitHub Actions creates an unsigned lightweight release tag on the candidate commit. If verification fails, no release tag is created and the same version can be retried.
+The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so the pipeline verifies exactly what ships. `Pipeline` is the one workflow. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds the CLI archive and assembles and smokes the images; packages the Rust and npm packages; runs the artifact-only package consumer; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that graph. On a `release/v*` push the publish jobs follow the acceptance gate in the same run: they publish that run's verified artifacts (crates, npm, canonical APIs, images) without rebuilding the product, and create an unsigned lightweight release tag on the verified commit. If verification fails, nothing is published, no tag is created, and the same version can be retried. The workflow file keeps the name `release.yml` because crates.io and npm trusted publishing name it.
 
 The `Deploy Site to GitHub Pages` workflow is separate from release publishing. It installs each worktree's locked APIs from source before building the released and current guide and Console sites.
 
@@ -172,18 +172,15 @@ The npm publish set is:
 - `@oatscenter/trellis-testkit`
 - `@oatscenter/trellis-svelte`
 
-Check builds and smoke-tests the npm packages and runs npm publication dry-runs
-before the release gate. Release publishes those verified artifacts without
-rebuilding the JavaScript packages.
-
-`typescript-testkit-package` stages the TypeScript testkit only after all supported
-native Check archives exist. It generates exact-version SHA-256 pins, checks/tests
-and dry-runs the unchanged staged package with same-version SDK dependencies in an
-isolated Node project, and uploads `check-testkit-npm`. Release publishes that
-frozen package, not reconstructed source. After the GitHub assets and SDK dependencies
-exist, a fresh-cache default-source smoke creates a user and resolves a password-reset
-flow through real generated RPCs before testkit publication. This smoke never supplies
-local CLI/server paths.
+The pipeline builds and smoke-tests the npm packages and runs npm publication
+dry-runs before the acceptance gate; publication uses those verified packages
+without rebuilding them. `typescript-testkit-package` installs the packed testkit
+with its SDK dependencies into a fresh Node project and runs it against the
+pipeline's CLI and server. The testkits carry no binary pins: by default they
+download the latest Trellis release. After the GitHub release and SDK packages
+exist, a fresh-cache smoke with no local paths acquires the just-published
+release, creates a user and resolves a password-reset flow through generated RPCs
+before the testkit is published.
 
 The published Rust crate set is:
 
@@ -204,29 +201,29 @@ versions. Component versions stay on the release's own version line (for
 example `0.100.0-rc.4`); never invent a minor version that no Trellis release
 has. The registries keep versions immutable but judge no compatibility, so
 choosing each component's version is a release decision (see
-[Choose component versions](#choose-component-versions)). Check runs
+[Choose component versions](#choose-component-versions)). The pipeline runs
 `cargo-semver-checks` for each public crate against its latest stable crates.io
 release, never against an earlier prerelease of the same line: an
 `0.100.0-rc.N` must be a semver-valid successor of the latest stable release.
 Server/compiler/bootstrap implementation crates are private and non-publishable.
 
-`publish-crates` restores `check-generated`, accepted production native archives, and
-`rust-testkit-packages` from the accepted Check run. Check preparation and Cargo
+`publish-crates` restores `check-generated` and `rust-testkit-packages` from the
+same run. Pipeline preparation and Cargo
 publication verification use the same `.cargo/publication.toml` source overrides;
 published production dependencies retain their registry version requirements.
 The SDK's workspace-only testkit development dependency is path-only and is
 omitted from its published manifest. The shared
 `scripts/prepare-rust-publication.sh` explicitly packages each crate into a fresh
 archive, compares every accepted file's contents and permissions (including
-frozen models/bindings, native acquisition metadata, and the lockfile), and runs Cargo's publication dry-run
-with build verification enabled. Check exercises this no-upload sequence from an
-empty target directory before accepting the bundle. Release runs the same
+frozen models/bindings and the lockfile), and runs Cargo's publication dry-run
+with build verification enabled. The pipeline exercises this no-upload sequence
+from an empty target directory before accepting the bundle. Publication runs the same
 preparation before each upload; it neither relies on a publish dry-run's scratch
 archive location nor rebuilds executables or browser applications.
 
 `release prepare` also rewrites the external testkit fixture manifests under
 `integration/fixtures/testkit` so its generated application package carries the
-prepared version. The normal `Check` workflow builds a verification
+prepared version. The pipeline builds a verification
 bundle (the four public Rust crates, verified CLI/server/NATS executables, and the
 fixture) and runs
 `scripts/verify-rust-test-package.sh` with no repository checkout, patching only
@@ -234,8 +231,8 @@ the extracted staged artifacts. The live consumer runs with an empty `PATH` and
 explicit verified executable paths, proving that no source checkout, installed
 Trellis tools, or private server/compiler Cargo dependencies are needed.
 After GitHub assets exist, Rust testkit upload also requires the accepted
-bundle's `--mode smoke`: it acquires public CLI/server/NATS archives into a fresh
-cache, installs a participant through generated RPCs, then repeats with external
+bundle's `--mode smoke`: it acquires the just-published CLI/server release and
+NATS archive into a fresh cache, installs a participant through generated RPCs, then repeats with external
 HTTP access blocked to verify offline cache reuse. This gate runs before the
 testkit crate is uploaded; it never falls back to bundled executable paths.
 Before a first upload a maintainer must confirm each new crate name is available
@@ -250,7 +247,7 @@ no public API or dependencies. Do not relabel the actual model bundle or SDK as
 this bootstrap package. Then configure the crate's trusted publisher for
 `oats-center/trellis`, workflow `release.yml`, with no environment. The ordinary
 release workflow remains OIDC-only and publishes the accepted release package at
-its real version after Check passes.
+its real version after the acceptance gate passes.
 
 ### Database schema baselines
 
@@ -324,7 +321,7 @@ reason:
 - An unchanged component keeps its version.
 
 A prerelease keeps every changed component on the release's prerelease line;
-no marker file records these decisions. `cargo-semver-checks` in Check confirms
+no marker file records these decisions. `cargo-semver-checks` in the pipeline confirms
 the Rust public API against the latest stable release, but it cannot see wire,
 model-snapshot, or behavior changes, so the review remains required:
 
@@ -386,7 +383,7 @@ cargo xtask install --update
 cargo run --manifest-path xtask/Cargo.toml -- release check-versions
 ```
 
-`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so `Check` builds and verifies the exact release versions.
+`release bump` updates release-managed `package.json`, `Cargo.toml`, and Trellis-owned `trellis.toml` manifests while preserving file layout. `cargo xtask install --update` refreshes their dependent IDL locks and generated SDKs. App and demo manifests that intentionally use `0.0.0` are skipped. For prereleases, run `release prepare --tag` and commit the RC versions and the matching `CHANGELOG.md` section to the candidate, so the pipeline builds and verifies the exact release versions.
 
 Do not run `release bump` just to add a prerelease suffix like `-rc.1`. Prerelease suffixes are handled from the tag by `release prepare` in the publish workflow.
 
@@ -414,20 +411,19 @@ less "$tmpdir/release-notes.md"
 
 ## 5. Confirm correctness and package locally
 
-`Check` is the single authoritative verification pipeline: it builds the
-release-profile runtime, every CLI target, and both image architectures;
-packages the Rust and npm packages; runs the artifact-only package consumer; and
-runs authored-source formatting, lint/type, generation, and full live-integration
-suites behind one acceptance gate. It runs for the candidate commit. `Release`
-does not rebuild anything; it publishes the artifacts of the successful `Check`
-run for that exact commit.
+`Pipeline` is the single authoritative verification workflow: it builds the
+release-profile runtime, the CLI archive and the images; packages the Rust and
+npm packages; runs the artifact-only package consumer; and runs formatting,
+lint/type, generation, and full live-integration suites behind one acceptance
+gate. On a release branch, publication follows in the same run from the same
+artifacts; nothing is rebuilt.
 
 Keep the release commit limited to the release preparation listed below. If it
 changes product behavior, return that change to `main`, obtain a new successful
-`Check`, and rebuild the release commit from that base.
+pipeline run, and rebuild the release commit from that base.
 
 For focused package confidence before pushing the release marker, install once
-and run the same package-specific checks used by the Release workflow:
+and run the same package-specific checks the pipeline uses:
 
 ```sh
 cargo xtask install
@@ -445,7 +441,7 @@ bash scripts/release-ts-dry-run.sh
 ```
 
 Rust uses the current stable toolchain only. New workspace members must inherit
-`[lints] workspace = true`; the normal `Check` workflow enforces that policy.
+`[lints] workspace = true`; the pipeline enforces that policy.
 
 For focused local Node loops after one repository install, use package commands instead of rerunning installation before every slice:
 
@@ -528,46 +524,18 @@ git push origin HEAD:refs/heads/release/$RELEASE_TAG
 
 For example, `RELEASE_TAG=v0.100.0-rc.1` pushes `release/v0.100.0-rc.1`.
 
-The `Release` workflow fails early if the final release tag already exists. If the release gate fails, fix the release commit and push the release branch again; the version is not consumed because no tag has been created.
+The pipeline's `release-metadata` job fails early if the final release tag already exists. If verification fails, fix the release commit and push the release branch again; the version is not consumed because no tag has been created.
 
-After the release gate passes, GitHub Actions creates an unsigned lightweight tag for `$RELEASE_TAG` on the marked commit and publishes:
+After the acceptance gate passes, the same run publishes in gated stages:
 
-- the GitHub release with changelog-backed notes
-- npm packages
-- crates.io crates
-- GHCR images
+- `release-metadata` derives the tag from the `release/v*` branch, rejects an existing tag, validates release metadata, and writes the release notes; it runs alongside verification
+- the `build` job compiles the Linux x86-64 runtime executables once in a `rust:bookworm` container (matching the runtime image base); the same executables run every live, browser and demo job and become the CLI archive. Linux arm64 and macOS archives are not built. `verify-images` assembles the linux/amd64 OCI archive from the prebuilt executables without compiling Trellis and smokes the image natively. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
+- `publish-apis` publishes the canonical APIs to GHCR
+- `create-release-tag` tags the verified commit, refusing if the release branch moved
+- `github-release` uploads the CLI archive and checksum, then publishes the release
+- `publish-crates`, `publish-npm`, and `publish-images` publish after the GitHub release exists, so the testkit smokes can acquire it
 
-The unified `Release` workflow publishes in gated stages:
-
-- `resolve-release` derives the final release tag from the `release/v*` branch and rejects already-used tags
-- `prepare-release` resolves the successful `Check` run for the candidate commit, verifies release metadata, and writes release notes; the publish jobs download that run's verified artifacts
-- `package-rust` verifies all publishable workspace crates, while `package-js` builds npm output from the prepared sources, checks the built package surfaces, runs npm publication dry-runs, and uploads the npm package artifact
-- `Check`'s `build` job compiles the Linux x86-64 runtime executables once in a `rust:bookworm` container (matching the runtime image base); the same executables run every live, browser and demo job and are uploaded as the CLI archives. TypeScript testkit release staging currently pins only this verified target; Linux arm64 and macOS archives are not staged. `verify-images` assembles the linux/amd64 OCI archive from the prebuilt executables without compiling Trellis and smokes the image natively. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
-- `create-release-tag` creates the release tag after the release gate passes
-- `github-release` publishes CLI archives and checksums first
-- `publish-crates`, `publish-npm`, and `publish-images` publish downstream artifacts after the GitHub release exists
-
-The workflow is idempotent where practical: npm and crates.io publish steps skip versions that already exist. A registry publish is still not an atomic transaction across registries, so if a late publish step fails, inspect the workflow logs and rerun the workflow after fixing the underlying registry or workflow issue.
-
-If publication needs a workflow repair after the tag already exists, commit the
-repair on a working branch and dispatch that workflow with `publish=true` and the
-existing tag. Recovery checks out the immutable tagged candidate and consumes its
-successful Check artifacts, not artifacts built from the workflow-repair commit.
-Existing GitHub downloads must match those accepted artifacts byte-for-byte.
-Recovery creates a missing release as a draft, verifies any existing asset bytes,
-uploads only missing assets, and publishes the complete release. A byte mismatch
-fails before uploading missing assets; recovery never overwrites the tag or an
-existing asset.
-Images are promoted from the same accepted archive under the tagged candidate's
-SHA, never rebuilt from the workflow-repair commit.
-For npm provenance, publication normalizes only `package.json`'s `repository.url`
-to the canonical GitHub repository identity; implementation files remain the
-accepted Check inputs.
-
-```sh
-gh workflow run release.yml --ref <workflow-repair-branch> \
-  -f publish=true -f tag="$RELEASE_TAG"
-```
+Publication is idempotent: each step skips versions already published and never overwrites published bytes; an existing GitHub asset must match the verified artifact byte-for-byte. A registry publish is still not atomic across registries, so if a publish step fails, fix the cause and use "Re-run failed jobs" on the same run. Images are promoted from the verified archive, never rebuilt. For npm provenance, publication normalizes only `package.json`'s `repository.url` to the canonical GitHub repository identity.
 
 ## 8. Verify the published release
 

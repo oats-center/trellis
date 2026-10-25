@@ -81,8 +81,12 @@ Omitting `user` retains the seeded-admin convenience; service seeds are unchange
 
 ### Runtime lifecycle
 
-The released package acquires the exact-version production CLI and server from
-release archives pinned by SHA-256. Automatic acquisition currently supports
+The package downloads the latest production CLI and server release (the newest
+stable release, or the newest prerelease before the first stable one), verified
+against the checksum published with it; `TRELLIS_TEST_VERSION` selects another
+release, and both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN` select
+local binaries. It reports the `trellis-server` version it tests against.
+Automatic acquisition currently supports
 Linux x86-64 only; other native targets are not staged for release. Production
 `trellis init config` generates configuration and accounts;
 `trellis-server --local-nats` owns the real broker. There is no `nsc` dependency

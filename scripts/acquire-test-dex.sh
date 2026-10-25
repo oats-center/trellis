@@ -4,7 +4,7 @@
 # and installs it executable as `<dest>/dex`.
 #
 # Dex publishes container images but no release binaries, so this builds the
-# pinned source revision with Go. Check and local runs use this one script, so
+# pinned source revision with Go. The pipeline and local runs use this one script, so
 # the pin lives in exactly one place. An existing binary built from the same
 # revision is reused.
 set -euo pipefail

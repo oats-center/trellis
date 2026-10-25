@@ -982,12 +982,14 @@ Choose application testing tools independently. For a test that needs real
 Trellis transport, authority, or restart behavior, `@oatscenter/trellis-testkit`
 (npm) and `trellis-testkit` (crate) each provide a `TrellisTestRuntime`. Both own
 production CLI/server and NATS processes in a private sandbox with a seeded
-administrator, acquire exact-version SHA-256-pinned archives on first use, serve
+administrator, download the latest Trellis release on first use (newest stable,
+else newest prerelease; `TRELLIS_TEST_VERSION` selects another) verified against
+its published checksum, report the server version they test against, serve
 generated installation TLS, and trust each runtime's CA explicitly; never
 disable verification. `TRELLIS_TEST_CACHE_DIR` shares verified artifacts only;
 credentials, broker state, databases, PID files, and logs stay sandbox-local.
 Set both `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN` (or the
-language's path source) for explicit exact-version binaries with no fallback.
+language's path source) for explicit binaries with no download fallback.
 Distinct-user tests use ordinary accounts and explicit grants: one app
 registration supports independent real OAuth logins for multiple users, user
 handles expose no password, and explicit-user login never grants or restores

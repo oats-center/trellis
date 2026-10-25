@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# The verification commands of every Check and Lint job. CI and local runs use
+# The verification commands of every pipeline job. CI and local runs use
 # this one script, so they cannot drift apart:
 #
-#   scripts/check.sh <job> [args]   run one job; each Check and Lint job calls this
+#   scripts/check.sh <job> [args]   run one job; each pipeline job calls this
 #   npm test                        local: build once, run every job concurrently
 #   npm test -- --all               also the packaging and container-image jobs
 #
@@ -186,15 +186,6 @@ job_rust_testkit() {
   semver_checks
   native_archive
   version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-  # Locally the pins describe the debug archive; restore the generated pins
-  # afterwards so later builds of this checkout are unaffected.
-  local pins=crates/trellis-testkit/generated/trellis-binaries.json
-  if [[ -z "${CI:-}" ]]; then
-    mkdir -p "$temp"
-    cp "$pins" "$temp/trellis-binaries.json"
-    trap 'cp "$temp/trellis-binaries.json" "$root/crates/trellis-testkit/generated/trellis-binaries.json"' EXIT
-  fi
-  cargo xtask release native-pins dist/native "$pins" "$version"
   cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
     -p trellis-protocol -p trellis-models -p trellis-rs -p trellis-testkit \
     --config .cargo/publication.toml
@@ -240,16 +231,16 @@ job_rust_testkit_consumer() {
 
 job_typescript_testkit() {
   native_archive
-  # CI stages exactly the packages the demos job verified and uploaded.
+  # CI uses exactly the packages the demos job verified and uploaded.
   [[ -n "${CI:-}" ]] || build_packages
-  node ts/tools/stage_testkit.ts dist/native dist/testkit-npm
-  npm publish --dry-run --access public --tag rc ./dist/testkit-npm
-  rm -rf dist/runtime
-  mkdir -p dist/runtime
-  tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C dist/runtime
-  TRELLIS_TEST_CLI_BIN="$PWD/dist/runtime/trellis" TRELLIS_TEST_SERVER_BIN="$PWD/dist/runtime/trellis-server" \
-    node ts/tools/verify_testkit_package.ts dist/testkit-npm ts/packages/result/npm ts/packages/trellis/npm
-  tar -C dist/testkit-npm -czf dist/testkit-npm.tar.gz .
+  # Outside the repository, which concurrent image builds copy as their context.
+  local runtime
+  mkdir -p "$temp"
+  runtime="$(mktemp -d "$temp/testkit-runtime.XXXXXX")"
+  tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C "$runtime"
+  TRELLIS_TEST_CLI_BIN="$runtime/trellis" TRELLIS_TEST_SERVER_BIN="$runtime/trellis-server" \
+    node ts/tools/verify_testkit_package.ts ts/packages/trellis-testkit/npm \
+    ts/packages/result/npm ts/packages/trellis/npm
 }
 
 # Builds the runtime and Console images and smoke-tests the runtime image's
@@ -261,7 +252,7 @@ job_images() {
   [[ -n "$engine" ]] || { echo "images needs docker or podman" >&2; exit 1; }
   if [[ "${1:-}" != "--smoke-only" ]]; then
     # The image runs the binaries on its Debian base, so they come from the
-    # same container release build Check uses, not the host's debug build.
+    # same container release build the pipeline uses, not the host's debug build.
     mkdir -p "$temp"
     rm -rf "$temp/release" dist/native/amd64
     "$engine" build --file crates/runtime/Containerfile.build \
@@ -285,7 +276,7 @@ run_job() {
   local job="$1"
   shift
   local function="job_${job//-/_}"
-  declare -F "$function" >/dev/null || { echo "unknown Check job: $job" >&2; exit 2; }
+  declare -F "$function" >/dev/null || { echo "unknown pipeline job: $job" >&2; exit 2; }
   "$function" "$@"
 }
 

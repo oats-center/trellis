@@ -121,8 +121,11 @@ package versions remain distinct from wire protocol family versions.
 `trellis-testkit` owns ordinary production CLI/server and NATS processes instead
 of linking server/compiler implementations. Its administrative bindings are
 producer-frozen and package-relative, reusing the selected public model bundle.
-Exact-version CLI/server and pinned NATS archives are checksum-verified and
-cached privately; explicit paths support offline use without fallback downloads.
+By default the testkits download the latest CLI/server release (newest stable,
+else newest prerelease, or `TRELLIS_TEST_VERSION`) and verify it against the
+checksum published with that release; pinned NATS archives are checksum-verified
+too, and both are cached privately. Explicit paths support offline use without
+fallback downloads. Testkits never build Trellis from source.
 Server-only restart preserves the separately owned NATS broker. Internal
 generators, runtime APIs, bootstrap, Jobs, Events, and runtime crates remain
 private and non-publishable. The registry boundary has exactly four package

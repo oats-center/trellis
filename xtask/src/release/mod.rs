@@ -22,13 +22,6 @@ use versioning::{
 pub(crate) enum ReleaseCommand {
     #[command(name = "check-versions")]
     CheckVersions,
-    /// Pin the testkit's native archives to their verified checksums.
-    #[command(name = "native-pins")]
-    NativePins {
-        archives: PathBuf,
-        output: PathBuf,
-        version: String,
-    },
     /// Require a publication archive to match the one Check accepted.
     #[command(name = "compare-crate")]
     CompareCrate {
@@ -143,11 +136,6 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
             println!("All release-managed Trellis versions are {version}.");
             Ok(())
         }
-        ReleaseCommand::NativePins {
-            archives,
-            output,
-            version,
-        } => package::native_pins(&archives, &output, &version),
         ReleaseCommand::CompareCrate {
             accepted,
             publication,

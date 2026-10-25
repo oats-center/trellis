@@ -1,5 +1,5 @@
-//! Release packaging checks: native archive pins, publication archive
-//! comparison, and the artifact-only testkit verification bundle.
+//! Release packaging checks: publication archive comparison and the
+//! artifact-only testkit verification bundle.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -8,14 +8,6 @@ use std::path::Path;
 
 use miette::{miette, IntoDiagnostic, Result};
 use sha2::{Digest, Sha256};
-
-/// Native targets the testkit acquires published CLI/server archives for.
-const NATIVE_TARGETS: [&str; 4] = [
-    "x86_64-unknown-linux-gnu",
-    "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-];
 
 /// The public crates a testkit verification bundle must carry.
 const BUNDLE_CRATES: [&str; 4] = [
@@ -30,60 +22,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-/// Write the testkit's native archive pins after checking each archive
-/// against its published checksum.
-pub(super) fn native_pins(archives: &Path, output: &Path, version: &str) -> Result<()> {
-    let prefix = format!("trellis-{version}-");
-    let mut targets = BTreeMap::new();
-    let mut entries = fs::read_dir(archives)
-        .into_diagnostic()?
-        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
-        .collect::<Result<Vec<_>, _>>()
-        .into_diagnostic()?;
-    entries.sort();
-    for name in entries {
-        let Some(target) = name
-            .strip_prefix(&prefix)
-            .and_then(|rest| rest.strip_suffix(".tar.gz"))
-        else {
-            continue;
-        };
-        if !NATIVE_TARGETS.contains(&target) {
-            return Err(miette!("unsupported native target: {target}"));
-        }
-        let checksum_file = archives.join(format!("checksum-{version}-{target}-trellis.sha256"));
-        let checksum = fs::read_to_string(&checksum_file)
-            .into_diagnostic()?
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_owned();
-        let actual = sha256_hex(&fs::read(archives.join(&name)).into_diagnostic()?);
-        if actual != checksum {
-            return Err(miette!("native archive checksum mismatch: {name}"));
-        }
-        targets.insert(
-            target.to_owned(),
-            serde_json::json!({ "archive": name, "sha256": actual }),
-        );
-    }
-    if targets.is_empty() {
-        return Err(miette!("no native archives for {version}"));
-    }
-    let staged = output.with_extension("tmp");
-    fs::write(
-        &staged,
-        serde_json::to_string_pretty(&serde_json::json!({
-            "version": version,
-            "targets": targets,
-        }))
-        .into_diagnostic()?
-            + "\n",
-    )
-    .into_diagnostic()?;
-    fs::rename(staged, output).into_diagnostic()
 }
 
 /// Each regular file of a `.crate` archive with its mode and SHA-256.

@@ -270,11 +270,6 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         "#[doc(hidden)] #[path = \"src/lib.rs\"] pub mod __bindings;\nuse __bindings::*;\n",
     )
     .into_diagnostic()?;
-    std::fs::copy(
-        root.join("ts/packages/trellis-testkit/src/native/trellis-binaries.json"),
-        testkit_fresh.join("trellis-binaries.json"),
-    )
-    .into_diagnostic()?;
     ensure_generated(&testkit_fresh, &testkit_target)?;
     let runtime_apis = root.join("crates/runtime-apis");
     let (runtime_apis_stage, runtime_apis_fresh, runtime_apis_target) =

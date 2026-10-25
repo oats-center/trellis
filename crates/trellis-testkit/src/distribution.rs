@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-/// Source of the exact-version production CLI and server.
+/// Source of the production CLI and server.
 #[derive(Clone, Debug)]
 pub enum NativeSource {
     /// Explicit executables, also usable offline. Invalid paths never trigger downloads.
@@ -23,7 +23,9 @@ pub enum NativeSource {
         /// Production server executable.
         server: PathBuf,
     },
-    /// Acquire the checksum-pinned release shipped in this testkit's metadata.
+    /// Acquire a published release: `TRELLIS_TEST_VERSION` when set, otherwise
+    /// the latest stable release (the newest prerelease before the first stable
+    /// one), each checked against the checksum published with it.
     Release,
 }
 
@@ -39,14 +41,100 @@ fn error(kind: TrellisTestErrorKind, message: impl Into<String>) -> TrellisTestE
 }
 
 #[derive(Deserialize)]
-struct Asset {
-    archive: String,
-    sha256: String,
+struct GithubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
 }
-#[derive(Deserialize)]
-struct Manifest {
+
+#[derive(Deserialize, serde::Serialize)]
+struct LatestRelease {
     version: String,
-    targets: BTreeMap<String, Asset>,
+    checked_unix: u64,
+}
+
+/// How long a resolved latest release is reused before GitHub is asked again;
+/// unauthenticated API requests are rate limited per address.
+const LATEST_RELEASE_TTL: Duration = Duration::from_secs(3600);
+const RELEASES: &str = "https://github.com/oats-center/trellis/releases/download";
+
+async fn get(url: &str) -> Result<Vec<u8>, TrellisTestError> {
+    let mut request = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .user_agent("trellis-testkit")
+        .build()
+        .map_err(|cause| error(TrellisTestErrorKind::Io, cause.to_string()))?
+        .get(url);
+    if url.starts_with("https://api.github.com/") {
+        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+            request = request.bearer_auth(token);
+        }
+    }
+    let response = request
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|cause| error(TrellisTestErrorKind::Io, format!("{url}: {cause}")))?;
+    Ok(response
+        .bytes()
+        .await
+        .map_err(|cause| error(TrellisTestErrorKind::Io, cause.to_string()))?
+        .to_vec())
+}
+
+/// The release version to test against: `TRELLIS_TEST_VERSION`, or the latest
+/// stable release, falling back to the newest prerelease before the first
+/// stable one. A recent answer is reused, and an unreachable GitHub falls back
+/// to the last answer.
+async fn release_version(cache: &Path) -> Result<String, TrellisTestError> {
+    if let Ok(version) = std::env::var("TRELLIS_TEST_VERSION") {
+        return Ok(version.trim_start_matches('v').to_owned());
+    }
+    let record = cache.join("latest-release.json");
+    let cached = std::fs::read(&record)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LatestRelease>(&bytes).ok());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    if let Some(cached) = &cached {
+        if now.saturating_sub(cached.checked_unix) < LATEST_RELEASE_TTL.as_secs() {
+            return Ok(cached.version.clone());
+        }
+    }
+    let releases =
+        match get("https://api.github.com/repos/oats-center/trellis/releases?per_page=50")
+            .await
+            .and_then(|bytes| {
+                serde_json::from_slice::<Vec<GithubRelease>>(&bytes).map_err(|cause| {
+                    error(
+                        TrellisTestErrorKind::InvalidConfiguration,
+                        cause.to_string(),
+                    )
+                })
+            }) {
+            Ok(releases) => releases,
+            Err(cause) => return cached.map(|cached| cached.version).ok_or(cause),
+        };
+    // GitHub lists releases newest first.
+    let published = releases.iter().filter(|release| !release.draft);
+    let version = published
+        .clone()
+        .find(|release| !release.prerelease)
+        .or_else(|| published.clone().next())
+        .map(|release| release.tag_name.trim_start_matches('v').to_owned())
+        .ok_or_else(|| {
+            error(
+                TrellisTestErrorKind::MissingBinary,
+                "oats-center/trellis has no published release",
+            )
+        })?;
+    let latest = LatestRelease {
+        version: version.clone(),
+        checked_unix: now,
+    };
+    std::fs::write(&record, serde_json::json!(latest).to_string())?;
+    Ok(version)
 }
 #[derive(Deserialize)]
 struct NatsPin {
@@ -77,54 +165,44 @@ pub(crate) async fn resolve(
             }
         },
     };
+    let mut expected = None;
     let (cli, server) = match source {
         NativeSource::Path { cli, server } => (executable(&cli)?, executable(&server)?),
         NativeSource::Release => {
-            let manifest: Manifest = serde_json::from_str(include_str!(
-                "../generated/trellis-binaries.json"
-            ))
-            .map_err(|cause| {
-                error(
-                    TrellisTestErrorKind::InvalidConfiguration,
-                    cause.to_string(),
-                )
-            })?;
-            if manifest.version != env!("CARGO_PKG_VERSION") {
-                return Err(error(
-                    TrellisTestErrorKind::InvalidConfiguration,
-                    "native manifest version does not match testkit",
-                ));
-            }
             let _ = target()?;
+            let cache = cache_dir()?;
+            private_dir(&cache)?;
+            let version = release_version(&cache).await?;
             let platform = if cfg!(target_os = "linux") {
                 "unknown-linux-gnu"
             } else {
                 "apple-darwin"
             };
             let target = format!("{}-{platform}", std::env::consts::ARCH);
-            let asset = manifest.targets.get(&target).ok_or_else(|| {
-                error(
-                    TrellisTestErrorKind::MissingBinary,
-                    "no accepted native archive for this target; use explicit production \
-                    executable paths in a source checkout",
-                )
-            })?;
-            if asset.archive != format!("trellis-{}-{target}.tar.gz", manifest.version) {
-                return Err(error(
-                    TrellisTestErrorKind::InvalidConfiguration,
-                    "invalid native archive name",
-                ));
-            }
+            // Release assets are immutable, so a fetched checksum is kept.
+            let recorded = cache.join(format!("trellis-{version}-{target}.sha256"));
+            let checksum = match std::fs::read_to_string(&recorded) {
+                Ok(checksum) => checksum,
+                Err(_) => {
+                    let url =
+                        format!("{RELEASES}/v{version}/checksum-{version}-{target}-trellis.sha256");
+                    let published = String::from_utf8_lossy(&get(&url).await?)
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_owned();
+                    std::fs::write(&recorded, &published)?;
+                    published
+                }
+            };
             let files = install(
-                &format!(
-                    "https://github.com/oats-center/trellis/releases/download/v{}/{}",
-                    manifest.version, asset.archive
-                ),
-                &asset.sha256,
+                &format!("{RELEASES}/v{version}/trellis-{version}-{target}.tar.gz"),
+                checksum.trim(),
                 &["trellis", "trellis-server"],
-                &cache_dir()?,
+                &cache,
             )
             .await?;
+            expected = Some(version);
             (files[0].clone(), files[1].clone())
         }
     };
@@ -162,11 +240,27 @@ pub(crate) async fn resolve(
                 .unwrap_or_default()
                 .to_owned()
         };
-        if !output.status.success() || actual.split('+').next() != Some(env!("CARGO_PKG_VERSION")) {
+        let actual = actual.split('+').next().unwrap_or_default().to_owned();
+        if !output.status.success() || actual.is_empty() {
             return Err(error(
                 TrellisTestErrorKind::InvalidBinary,
-                "production executable version must match testkit",
+                format!("cannot read the version of {}", path.display()),
             ));
+        }
+        if let Some(expected) = expected.as_ref().filter(|expected| **expected != actual) {
+            return Err(error(
+                TrellisTestErrorKind::InvalidBinary,
+                format!(
+                    "{} reports {actual}, not release {expected}",
+                    path.display()
+                ),
+            ));
+        }
+        if !cli_output {
+            static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+            ANNOUNCED.call_once(|| {
+                eprintln!("trellis-testkit: testing against trellis-server {actual}");
+            });
         }
     }
     let nats = match nats {
@@ -270,19 +364,9 @@ fn cache_dir() -> Result<PathBuf, TrellisTestError> {
         })
 }
 
-async fn install(
-    url: &str,
-    checksum: &str,
-    entries: &[&str],
-    cache: &Path,
-) -> Result<Vec<PathBuf>, TrellisTestError> {
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-    if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(error(
-            TrellisTestErrorKind::InvalidConfiguration,
-            "invalid archive checksum",
-        ));
-    }
+/// Create the cache, refusing one another user could plant executables in.
+fn private_dir(cache: &Path) -> Result<(), TrellisTestError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -297,6 +381,23 @@ async fn install(
             "native cache must be an owned private directory",
         ));
     }
+    Ok(())
+}
+
+async fn install(
+    url: &str,
+    checksum: &str,
+    entries: &[&str],
+    cache: &Path,
+) -> Result<Vec<PathBuf>, TrellisTestError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(error(
+            TrellisTestErrorKind::InvalidConfiguration,
+            "invalid archive checksum",
+        ));
+    }
+    private_dir(cache)?;
     let installed = cache.join(checksum);
     let lock_path = cache.join(format!("{checksum}.lock"));
     let _lock = tokio::task::spawn_blocking(move || -> std::io::Result<std::fs::File> {
@@ -324,22 +425,7 @@ async fn install(
         {
             bytes
         }
-        _ => {
-            let response = reqwest::Client::builder()
-                .timeout(Duration::from_secs(60))
-                .build()
-                .map_err(|cause| error(TrellisTestErrorKind::Io, cause.to_string()))?
-                .get(url)
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(|cause| error(TrellisTestErrorKind::Io, cause.to_string()))?;
-            response
-                .bytes()
-                .await
-                .map_err(|cause| error(TrellisTestErrorKind::Io, cause.to_string()))?
-                .to_vec()
-        }
+        _ => get(url).await?,
     };
     if Sha256::digest(&bytes)
         .iter()

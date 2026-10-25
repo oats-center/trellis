@@ -6,24 +6,24 @@ import { Buffer } from "node:buffer";
 import { Parser, type ReadEntry } from "tar";
 import { z } from "zod";
 import { ulid } from "ulid";
-import packageConfig from "../package.json" with { type: "json" };
-import nativeManifest from "./native/trellis-binaries.json" with { type: "json" };
 import type { TrellisNativeSource } from "./types.ts";
 
 const execFileAsync = promisify(execFile);
 
-const manifestSchema = z.object({
-  version: z.string(),
-  targets: z.record(
-    z.string(),
-    z.object({
-      archive: z.string(),
-      sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    }),
-  ),
-});
+const releases = "https://github.com/oats-center/trellis/releases/download";
+/** Unauthenticated GitHub API requests are rate limited per address. */
+const latestReleaseTtlMs = 3_600_000;
 
-/** Exact-version native production commands resolved by the testkit. */
+const githubReleases = z.array(
+  z.object({
+    tag_name: z.string(),
+    draft: z.boolean(),
+    prerelease: z.boolean(),
+  }),
+);
+const latestRecord = z.object({ version: z.string(), checkedMs: z.number() });
+
+/** Native production commands resolved by the testkit. */
 export type TrellisNativeDistribution = { cli: string; server: string };
 
 /** Maps supported host platforms to targets published by the native Check jobs. */
@@ -56,7 +56,7 @@ export function trellisTestCacheDir(): string {
   );
 }
 
-/** Verify archive integrity against its release-generated pin. */
+/** Verify archive integrity against the checksum published with its release. */
 export async function verifyNativeArchive(
   bytes: Uint8Array,
   expected: string,
@@ -122,8 +122,11 @@ export function extractNativeArchive(
 
 type TrellisNativeDistributionBytes = { cli: Uint8Array; server: Uint8Array };
 
+let announced = false;
+
 async function verifyDistribution(
   paths: TrellisNativeDistribution,
+  expected?: string,
 ): Promise<TrellisNativeDistribution> {
   const canonical = { cli: "", server: "" };
   for (const name of ["cli", "server"] as const) {
@@ -139,60 +142,121 @@ async function verifyDistribution(
       throw new Error(`Cannot verify Trellis ${name} version`);
     });
     const text = output.stdout.trim();
-    if (name === "cli") {
-      // Build provenance is not part of SemVer identity; checkout CLI builds add
-      // +local.<commit>.dirty while retaining the exact package/prerelease version.
-      const version = z
-        .object({
-          version: z
-            .string()
-            .refine(
-              (value) => value.split("+", 1)[0] === packageConfig.version,
-            ),
-        })
-        .safeParse(JSON.parse(text));
-      if (!version.success) {
-        throw new Error(
-          `Trellis CLI must match testkit version ${packageConfig.version}`,
-        );
-      }
-    } else if (text !== `trellis-server ${packageConfig.version}`) {
+    // Build provenance is not part of SemVer identity; checkout builds add
+    // +local.<commit>.dirty.
+    const version = (
+      name === "cli"
+        ? z.object({ version: z.string() }).parse(JSON.parse(text)).version
+        : text.replace(/^trellis-server /, "")
+    ).split("+", 1)[0];
+    if (expected && version !== expected) {
       throw new Error(
-        `Trellis server must match testkit version ${packageConfig.version}`,
+        `Trellis ${name} reports ${version}, not release ${expected}`,
+      );
+    }
+    if (name === "server" && !announced) {
+      announced = true;
+      console.error(
+        `trellis-testkit: testing against trellis-server ${version}`,
       );
     }
   }
   return canonical;
 }
 
-/** Resolve matching production binaries; explicit paths never fall back to downloads. */
+/**
+ * The release to test against: `TRELLIS_TEST_VERSION`, or the latest stable
+ * release, falling back to the newest prerelease before the first stable one.
+ * A recent answer is reused, and an unreachable GitHub falls back to the last.
+ */
+async function releaseVersion(cache: string): Promise<string> {
+  const pinned = process.env.TRELLIS_TEST_VERSION;
+  if (pinned) return pinned.replace(/^v/, "");
+  const record = join(cache, "latest-release.json");
+  const cached = await fs
+    .readFile(record, "utf8")
+    .then((text) => latestRecord.parse(JSON.parse(text)))
+    .catch(() => undefined);
+  if (cached && Date.now() - cached.checkedMs < latestReleaseTtlMs) {
+    return cached.version;
+  }
+  try {
+    const token = process.env.GITHUB_TOKEN;
+    const response = await fetch(
+      "https://api.github.com/repos/oats-center/trellis/releases?per_page=50",
+      {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(60_000),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(`GitHub releases lookup failed (${response.status})`);
+    }
+    // GitHub lists releases newest first.
+    const published = githubReleases
+      .parse(await response.json())
+      .filter((release) => !release.draft);
+    const release =
+      published.find((candidate) => !candidate.prerelease) ?? published[0];
+    if (!release)
+      throw new Error("oats-center/trellis has no published release");
+    const version = release.tag_name.replace(/^v/, "");
+    await fs.writeFile(
+      record,
+      JSON.stringify({ version, checkedMs: Date.now() }),
+    );
+    return version;
+  } catch (error) {
+    if (cached) return cached.version;
+    throw error;
+  }
+}
+
+/**
+ * Resolve production binaries: the requested source, else both
+ * `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`, else a release download.
+ * Explicit paths never fall back to downloads.
+ */
 export async function resolveNativeDistribution(
-  source: TrellisNativeSource = { kind: "release" },
+  requested?: TrellisNativeSource,
 ): Promise<TrellisNativeDistribution> {
+  const cli = process.env.TRELLIS_TEST_CLI_BIN;
+  const server = process.env.TRELLIS_TEST_SERVER_BIN;
+  if (!requested && Boolean(cli) !== Boolean(server)) {
+    throw new Error(
+      "Set both TRELLIS_TEST_CLI_BIN and TRELLIS_TEST_SERVER_BIN",
+    );
+  }
+  const source: TrellisNativeSource =
+    requested ??
+    (cli && server ? { kind: "path", cli, server } : { kind: "release" });
   if (source.kind === "path") return await verifyDistribution(source);
-  const manifest = manifestSchema.parse(nativeManifest);
-  if (manifest.version !== packageConfig.version) {
-    throw new Error(
-      "Native manifest does not match the testkit package version",
-    );
-  }
   const target = nativeTarget(process.platform, process.arch);
-  const asset = manifest.targets[target];
-  if (
-    !asset ||
-    asset.archive !== `trellis-${packageConfig.version}-${target}.tar.gz`
-  ) {
-    throw new Error(
-      `No accepted native ${target} archive in this package; repository tests must use an explicit path source`,
-    );
-  }
-  const parent = join(
-    trellisTestCacheDir(),
-    "trellis",
-    packageConfig.version,
-    target,
-  );
+  const cache = trellisTestCacheDir();
+  await fs.mkdir(cache, { recursive: true, mode: 0o700 });
+  const version = await releaseVersion(cache);
+  const parent = join(cache, "trellis", version, target);
   await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+  // Release assets are immutable, so a fetched checksum is kept.
+  const recorded = join(parent, "archive.sha256");
+  let sha256 = await fs.readFile(recorded, "utf8").catch(() => undefined);
+  if (!sha256) {
+    const response = await fetch(
+      `${releases}/v${version}/checksum-${version}-${target}-trellis.sha256`,
+      { signal: AbortSignal.timeout(60_000) },
+    );
+    if (!response.ok) {
+      throw new Error(
+        `Trellis ${version} has no ${target} checksum (${response.status})`,
+      );
+    }
+    sha256 = (await response.text()).trim().split(/\s+/)[0] ?? "";
+    await fs.writeFile(recorded, sha256);
+  }
+  if (!/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new Error(`Invalid published checksum for Trellis ${version}`);
+  }
+  const asset = { archive: `trellis-${version}-${target}.tar.gz`, sha256 };
   const installed = join(parent, asset.sha256);
   const paths = {
     cli: join(installed, "trellis"),
@@ -222,14 +286,13 @@ export async function resolveNativeDistribution(
         );
       }
     }
-    return await verifyDistribution(paths);
+    return await verifyDistribution(paths, version);
   } catch {
     archive = undefined;
   }
-  const response = await fetch(
-    `https://github.com/oats-center/trellis/releases/download/v${packageConfig.version}/${asset.archive}`,
-    { signal: AbortSignal.timeout(60_000) },
-  );
+  const response = await fetch(`${releases}/v${version}/${asset.archive}`, {
+    signal: AbortSignal.timeout(60_000),
+  });
   if (!response.ok) {
     throw new Error(
       `Trellis native archive download failed (${response.status})`,
@@ -250,10 +313,13 @@ export async function resolveNativeDistribution(
     await fs.writeFile(join(staging, "archive.tar.gz"), archive, {
       mode: 0o600,
     });
-    await verifyDistribution({
-      cli: join(staging, "trellis"),
-      server: join(staging, "trellis-server"),
-    });
+    await verifyDistribution(
+      {
+        cli: join(staging, "trellis"),
+        server: join(staging, "trellis-server"),
+      },
+      version,
+    );
     try {
       await fs.rename(staging, installed);
     } catch (error) {
@@ -292,7 +358,7 @@ export async function resolveNativeDistribution(
         await fs.rename(staging, installed);
       }
     }
-    return await verifyDistribution(paths);
+    return await verifyDistribution(paths, version);
   } finally {
     await fs.rm(staging, { recursive: true }).catch(() => undefined);
     if (quarantine) await fs.rm(quarantine, { recursive: true });

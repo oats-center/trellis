@@ -127,11 +127,13 @@ In a standalone service project (no Trellis executables or `nsc` required on `PA
 node --test service_test.ts
 ```
 
-The released testkit acquires its exact-version native CLI/server from SHA-256-pinned
-release archives. Production commands generate configuration and own managed NATS;
+The testkit downloads the latest Trellis release (the newest stable release, or
+the newest prerelease before the first stable one), verified against the
+checksum published with it; set `TRELLIS_TEST_VERSION` to test another release.
+It reports the `trellis-server` version it tests against. Production commands generate configuration and own managed NATS;
 each test has private state and a seeded administrator. For prebuilt local artifacts,
-pass `trellis: { source: { kind: "path", cli, server } }` with both exact-version
-executables. `restart()` retains data and identity while restarting the full host
+pass `trellis: { source: { kind: "path", cli, server } }`, or set both
+`TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`. `restart()` retains data and identity while restarting the full host
 and broker; `firstAdmin: "browser-flow"` opts into the first-admin browser flow.
 
 Each test runtime serves Trellis-generated TLS, as a default installation does.
@@ -181,8 +183,9 @@ let _ = task.await;
 # }
 ```
 
-Add `trellis-testkit` as a development dependency. The bare builder acquires
-verified exact-version `trellis` and `trellis-server` executables and runs
+Add `trellis-testkit` as a development dependency. The bare builder downloads
+the latest released `trellis` and `trellis-server` (or `TRELLIS_TEST_VERSION`),
+verified against the release's published checksum, and runs
 production processes, choosing loopback ports automatically. It does not link
 the server or compiler into downstream tests. Source CI supplies both executables
 through `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`; no private Cargo
