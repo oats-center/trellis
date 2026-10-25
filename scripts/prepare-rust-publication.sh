@@ -13,17 +13,14 @@ for crate in "$@"; do
     trellis-protocol|trellis-models|trellis-rs|trellis-testkit) ;;
     *) echo "Not a public Rust distribution package: $crate" >&2; exit 2 ;;
   esac
-  version="$(printf '%s' "$versions" | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == sys.argv[1]))' "$crate")"
+  version="$(printf '%s' "$versions" | jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version')"
   archive="$target/package/$crate-$version.crate"
   # Retain compiled dependencies, but never compare a previous package archive.
   rm -f -- "$archive"
   cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
     --target-dir "$target" --config .cargo/publication.toml -p "$crate"
-  python3 scripts/verify-rust-crate-contents.py \
+  cargo xtask release compare-crate \
     "$accepted/$crate-$version.crate" "$archive"
-  if [[ "$crate" == trellis-models ]]; then
-    python3 scripts/verify-model-publication.py "$archive"
-  fi
   cargo publish --allow-dirty --locked --dry-run \
     --target-dir "$target" --config .cargo/publication.toml -p "$crate"
 done

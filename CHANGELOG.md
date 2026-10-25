@@ -54,7 +54,12 @@ grants; capability …; }` bundles of its own
   and Events fixture. Check runs the same script, so the upstream OIDC test runs
   everywhere instead of failing for a missing executable.
 - Check fails when rustfmt leaves a Rust statement unformatted because part of
-  it cannot fit (`scripts/check-rust-width.py`).
+  it cannot fit (`cargo xtask rust-width`).
+- Check runs `cargo-semver-checks` for each public Rust crate against its latest
+  stable crates.io release. Repository tooling no longer needs Python: release
+  packaging checks are `cargo xtask release` commands and the scripts use `jq`.
+- **Breaking:** Generated Rust model bindings no longer carry a Rust model ABI
+  number; a model package is bound by name, version, and semantic digest.
 - Transfer receivers choose their outstanding window, up to 1,024 frames and
   64 MiB, and admit it from one process-wide receive budget, released when the
   transfer ends. A download consumer declares its window at activation; the

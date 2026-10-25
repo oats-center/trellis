@@ -419,7 +419,7 @@ jobs:
           set -euo pipefail
 
           workspace_version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-          python3 scripts/prepare-rust-native.py dist/native crates/trellis-testkit/generated/trellis-binaries.json "$workspace_version"
+          cargo xtask release native-pins dist/native crates/trellis-testkit/generated/trellis-binaries.json "$workspace_version"
           crate_versions="$(cargo metadata --format-version 1 --no-deps --locked)"
           published=()
           skipped=()
@@ -499,7 +499,7 @@ jobs:
           publish_workspace_crate() {
             local crate="$1"
             local version
-            version="$(printf '%s' "$crate_versions" | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == sys.argv[1]))' "$crate")"
+            version="$(printf '%s' "$crate_versions" | jq -r --arg crate "$crate" '.packages[] | select(.name == $crate) | .version')"
 
             if crate_exists "$crate" "$version"; then
               record_skip "$crate" "$version"

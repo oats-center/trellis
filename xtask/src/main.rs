@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, Result, WrapErr};
 
 mod release;
+mod rust_width;
 
 #[derive(Debug, Clone, Eq, PartialEq, Subcommand)]
 enum XtaskCommand {
@@ -31,6 +32,9 @@ enum XtaskCommand {
         #[command(subcommand)]
         command: release::ReleaseCommand,
     },
+    /// Fail when authored Rust has code lines rustfmt could not wrap.
+    #[command(name = "rust-width")]
+    RustWidth { files: Vec<std::path::PathBuf> },
 }
 
 #[derive(Debug, Parser)]
@@ -62,6 +66,7 @@ fn run() -> Result<()> {
         XtaskCommand::ProtocolWasm => generate_protocol_wasm(),
         XtaskCommand::Build { args } => run_build(&args),
         XtaskCommand::Release { command } => release::run_release(&repo_root()?, command),
+        XtaskCommand::RustWidth { files } => rust_width::run(&repo_root()?, files),
     }
 }
 
@@ -207,13 +212,9 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
         for entry in std::fs::read_dir(&models_target).into_diagnostic()? {
             let entry = entry.into_diagnostic()?;
             let bytes = std::fs::read(entry.path()).into_diagnostic()?;
-            let owned_snapshot = entry.file_name() == "models.json"
-                && serde_json::from_slice::<serde_json::Value>(&bytes)
-                    .ok()
-                    .is_some_and(|snapshot| snapshot["format"] == "trellis.rust-models.v1");
             miette::ensure!(
                 entry.file_type().into_diagnostic()?.is_file()
-                    && (bytes.starts_with(HEADER.as_bytes()) || owned_snapshot),
+                    && bytes.starts_with(HEADER.as_bytes()),
                 "refusing to replace non-generated model input {}",
                 entry.path().display()
             );
@@ -227,25 +228,6 @@ fn generate_builtin_package(root: &Path) -> Result<()> {
     std::fs::create_dir(&model_fresh).into_diagnostic()?;
     let types = trellis_codegen_rust::render_rust_models(&graph, &[]).into_diagnostic()?;
     std::fs::write(model_fresh.join("__types.rs"), format!("{HEADER}{types}")).into_diagnostic()?;
-    let packages = graph
-        .packages()
-        .values()
-        .map(|package| {
-            serde_json::json!({
-                "name": package.identity().as_str(), "version": package.version().to_string(),
-                "digest": graph.digest(package.identity()).expect("compiled package digest"),
-            })
-        })
-        .collect::<Vec<_>>();
-    std::fs::write(
-        model_fresh.join("models.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "format": "trellis.rust-models.v1", "rustAbi": trellis_codegen_rust::MODEL_ABI_VERSION,
-            "root": graph.root().as_str(), "packages": packages,
-        }))
-        .into_diagnostic()?,
-    )
-    .into_diagnostic()?;
     let mut modules = String::from("#[doc(hidden)] #[path = \"__types.rs\"] pub mod __types;\n");
     for (module, api, kind, action, visibility) in [
         (

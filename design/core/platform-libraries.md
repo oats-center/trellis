@@ -101,7 +101,7 @@ snapshots do not acquire different SDK-owned primitive types.
 SDK archives include producer-generated, package-relative built-in bindings;
 downstream SDK builds do not compile IDL or generators. Matching native packages
 reuse a separately versioned model bundle through exact identity/version/digest
-and Rust-model-ABI bindings, checked against the compiled provider. Generated
+bindings, checked against the compiled provider. Generated
 crates depend directly on their model bundle; they do not borrow the SDK's
 current snapshot. Old bundles can coexist with the SDK's newer models. Shared
 model metadata is not authority evidence and does not change runtime authorization.
@@ -111,10 +111,11 @@ read the compiler producer's checkout at runtime.
 SDK-only release preparation preserves protocol, native-contract, and model
 versions. `release prepare` accepts explicit `--protocol-version`,
 `--models-version`, and `--contracts-version` component changes; contract changes
-require explicit model selection. Each model Cargo compatibility line retains one
-native snapshot and Rust representation ABI. A new snapshot needs a new incompatible
-Cargo line (`0.MINOR`, or `MAJOR` after 1.0), permitting old and new bundles to
-coexist. Model serialization fixes can remain compatible patch releases. Rust
+require explicit model selection. A model snapshot change that alters generated
+Rust types is an incompatible Cargo change (`0.MINOR`, or `MAJOR` after 1.0),
+permitting old and new bundles to coexist; model serialization fixes can remain
+compatible patch releases. The release review chooses each component's bump, and
+Check runs `cargo-semver-checks` against each crate's latest stable release. Rust
 package versions remain distinct from wire protocol family versions.
 
 `trellis-testkit` owns ordinary production CLI/server and NATS processes instead

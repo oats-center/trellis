@@ -19,7 +19,7 @@ cd "$root"
 [[ "${1:-}" == "--" ]] && shift
 features="trellis-rs/event-store-sqlite,trellis-rs/event-store-postgres"
 
-nats_version="$(python3 -c 'import json; print(json.load(open("crates/local-nats/nats-binaries.json"))["nats-server"]["version"])')"
+nats_version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
 nats_bin="${TRELLIS_TEST_NATS_BIN:-${TRELLIS_NATS_SERVER_BIN:-$root/target/test-nats/$nats_version/nats-server}}"
 dex_bin="${TRELLIS_TEST_DEX_BIN:-$root/target/test-identity/$(bash scripts/acquire-test-dex.sh --print-commit)/dex}"
 cli_bin="${TRELLIS_TEST_CLI_BIN:-$root/target/debug/trellis}"

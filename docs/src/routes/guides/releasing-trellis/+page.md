@@ -202,10 +202,12 @@ no prerelease suffix. A changed component needs a version newer than the one
 already published, because crates.io and `trellis publish` keep published
 versions. Component versions stay on the release's own version line (for
 example `0.100.0-rc.4`); never invent a minor version that no Trellis release
-has. Check's model publication guard refuses a model snapshot or Rust ABI
-change within a Cargo compatibility line that already has a published model,
-because generated clients bound to that line would resolve the new snapshot;
-such a change needs a deliberate release decision, not a new minor line.
+has. The registries keep versions immutable but judge no compatibility, so
+choosing each component's version is a release decision (see
+[Choose component versions](#choose-component-versions)). Check runs
+`cargo-semver-checks` for each public crate against its latest stable crates.io
+release, never against an earlier prerelease of the same line: an
+`0.100.0-rc.N` must be a semver-valid successor of the latest stable release.
 Server/compiler/bootstrap implementation crates are private and non-publishable.
 
 `publish-crates` restores `check-generated`, accepted production native archives, and
@@ -307,6 +309,28 @@ Examples only:
 - prerelease: checked-in base `X.Y.Z`, prerelease version `X.Y.Z-rc.1`, tag `vX.Y.Z-rc.1`
 
 Use stable version numbers without the `v` prefix when passing `--version`, `--from`, or `--to`. Use tag names with the `v` prefix when passing `--since` or `--tag`.
+
+### Choose component versions
+
+The SDK packages, `trellis-protocol`, `trellis-models`, and the built-in APIs
+version independently. Before preparing the release, review the changes since
+the previous release for each component and propose its version bump with the
+reason:
+
+- Breaking public API, wire, or model changes need an incompatible bump (`0.MINOR`
+  before 1.0, `MAJOR` after). Model snapshot changes that alter generated Rust
+  types are breaking for the clients bound to them.
+- Compatible additions and fixes take a patch (or minor after 1.0) bump.
+- An unchanged component keeps its version.
+
+A prerelease keeps every changed component on the release's prerelease line;
+no marker file records these decisions. `cargo-semver-checks` in Check confirms
+the Rust public API against the latest stable release, but it cannot see wire,
+model-snapshot, or behavior changes, so the review remains required:
+
+```sh
+cargo semver-checks check-release -p <crate> --baseline-version <latest-stable>
+```
 
 ## 2. Update the changelog
 

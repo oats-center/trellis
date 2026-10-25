@@ -168,12 +168,12 @@ Generated Rust ABI 2 shares primitive wire wrappers, nullable values, and cursor
 pages in `trellis-protocol`. Authored model identity and wire serialization do
 not change. Regenerate with the matching CLI and SDK; ABI mismatches fail
 compilation. Generated Rust packages select `trellis-models` bundles directly by
-exact native package identity, version, semantic digest, and Rust model ABI;
+exact native package identity, version, and semantic digest;
 compilation rejects a mismatched provider. Model bundles are versioned
 independently of SDK implementation releases: old bundles can coexist with newer
-SDK models, and compatible SDK fixes do not require regeneration. Model Cargo
-compatibility lines preserve one immutable native snapshot and Rust
-representation ABI. Published model and SDK archives contain frozen sources and
+SDK models, and compatible SDK fixes do not require regeneration. A model
+snapshot change that alters generated Rust types takes an incompatible Cargo
+version. Published model and SDK archives contain frozen sources and
 need no compiler or generator build dependencies; bare Git checkouts require
 preparation. Only `trellis-rs`, `trellis-protocol`, `trellis-models`, and
 `trellis-testkit` are registry packages; server, compiler, and bootstrap crates

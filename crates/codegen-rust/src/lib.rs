@@ -109,9 +109,6 @@ impl RustModelBinding {
     }
 }
 
-/// Rust representation ABI of frozen model bundles, separate from SDK execution ABI.
-pub const MODEL_ABI_VERSION: u32 = 1;
-
 /// Render transport-independent models without any SDK dependency.
 ///
 /// # Errors
@@ -544,8 +541,8 @@ fn render_internal_types(graph: &PackageGraph, model_bindings: &[RustModelBindin
             .digest(package.identity())
             .expect("compiled package digest");
         let identity = format!(
-            "trellis_protocol::model::ModelPackage {{ rust_abi: {MODEL_ABI_VERSION}, \
-            name: {:?}, version: {:?}, digest: {digest:?} }}",
+            "trellis_protocol::model::ModelPackage {{ name: {:?}, version: {:?}, \
+            digest: {digest:?} }}",
             package.identity().as_str(),
             package.version().to_string()
         );

@@ -117,7 +117,6 @@ jobs:
       - name: Require installed production dependencies
         run: |
           command -v nats-server
-          command -v python3
           npm exec -- playwright install chromium
           chmod +x dist/performance/trellis dist/performance/trellis-server dist/performance/trellis-performance
       - name: Run isolated sequential repetitions

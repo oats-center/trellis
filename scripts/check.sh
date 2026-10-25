@@ -76,7 +76,7 @@ job_lint() {
     -not -path '*/node_modules/*' -printf ' --ignore-path %p')"
   each \
     "cargo fmt --manifest-path Cargo.toml --all --check" \
-    "python3 scripts/check-rust-width.py" \
+    "cargo xtask rust-width" \
     "npm exec -- prettier $ignores --check ts/packages ts/tools" \
     "node docs/scripts/build_llms_full.ts --check"
 }
@@ -114,7 +114,7 @@ job_live_rust() {
   # pinned one, rather than whatever nats-server is on PATH.
   local nats="${TRELLIS_TEST_NATS_BIN:-$root/target/debug/nats/nats-server}" version
   if [[ ! -x "$nats" ]]; then
-    version="$(python3 -c 'import json; print(json.load(open("crates/local-nats/nats-binaries.json"))["nats-server"]["version"])')"
+    version="$(jq -r '.["nats-server"].version' crates/local-nats/nats-binaries.json)"
     nats="$root/target/test-nats/$version/nats-server"
     [[ -x "$nats" ]] || bash scripts/acquire-test-nats.sh --dest "$(dirname "$nats")"
   fi
@@ -164,9 +164,26 @@ job_browser() {
 # Packages the public crates and stages the artifact-only verification bundle
 # at $1, then (locally, or when CI passes --consume) verifies it from the
 # bundle alone, without this checkout.
+# Each public crate's Rust API must fit its version bump against the latest
+# stable release on crates.io; a release candidate is never the baseline.
+semver_checks() {
+  local crate baseline
+  for crate in trellis-protocol trellis-models trellis-rs trellis-testkit; do
+    baseline="$(curl -fsSL -A "trellis-check (https://github.com/oats-center/trellis)" \
+      "https://crates.io/api/v1/crates/$crate/versions" |
+      jq -r '[.versions[] | select(.yanked | not) | .num | select(contains("-") | not)][0] // empty')"
+    if [[ -z "$baseline" ]]; then
+      echo "$crate has no stable release to compare against"
+      continue
+    fi
+    cargo semver-checks check-release -p "$crate" --baseline-version "$baseline"
+  done
+}
+
 job_rust_testkit() {
   local output="${1:-$temp/rust-testkit-bundle.tar.gz}" version bundle
-  python3 scripts/tests/test_rust_crate_contents.py
+  cargo test --manifest-path xtask/Cargo.toml
+  semver_checks
   native_archive
   version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
   # Locally the pins describe the debug archive; restore the generated pins
@@ -177,7 +194,7 @@ job_rust_testkit() {
     cp "$pins" "$temp/trellis-binaries.json"
     trap 'cp "$temp/trellis-binaries.json" "$root/crates/trellis-testkit/generated/trellis-binaries.json"' EXIT
   fi
-  python3 scripts/prepare-rust-native.py dist/native "$pins" "$version"
+  cargo xtask release native-pins dist/native "$pins" "$version"
   cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
     -p trellis-protocol -p trellis-models -p trellis-rs -p trellis-testkit \
     --config .cargo/publication.toml
@@ -190,15 +207,18 @@ job_rust_testkit() {
   bundle="$temp/testkit-bundle"
   rm -rf "$bundle"
   mkdir -p "$bundle/packages" "$bundle/nats" "$bundle/native" "$bundle/consumer"
-  cp target/package/trellis-protocol-*.crate target/package/trellis-models-*.crate \
-    target/package/trellis-rs-*.crate target/package/trellis-testkit-*.crate "$bundle/packages/"
+  # Exactly the versions just packaged; target/package keeps earlier ones.
+  cargo metadata --format-version 1 --no-deps |
+    jq -r '.packages[] | select(.name | IN("trellis-protocol", "trellis-models",
+      "trellis-rs", "trellis-testkit")) | "target/package/\(.name)-\(.version).crate"' |
+    xargs cp -t "$bundle/packages/"
   tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C "$bundle/native"
   cp -R integration/fixtures/testkit/package-consumer \
     integration/fixtures/testkit/tests integration/fixtures/testkit/crates "$bundle/consumer/"
   cp -R integration/fixtures/compiler-portable "$bundle/consumer/compiler-project"
   bash scripts/acquire-test-nats.sh --dest "$bundle/nats"
   cp scripts/verify-rust-test-package.sh "$bundle/"
-  bash scripts/stage-rust-test-bundle.sh \
+  cargo xtask release stage-testkit-bundle \
     --bundle "$bundle" \
     --output "$output" \
     --source-sha "${GITHUB_SHA:-$(git rev-parse HEAD)}" \

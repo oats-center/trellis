@@ -7,6 +7,7 @@ use miette::{miette, IntoDiagnostic, Result};
 
 mod changelog;
 mod github;
+mod package;
 mod runner;
 mod versioning;
 
@@ -21,6 +22,33 @@ use versioning::{
 pub(crate) enum ReleaseCommand {
     #[command(name = "check-versions")]
     CheckVersions,
+    /// Pin the testkit's native archives to their verified checksums.
+    #[command(name = "native-pins")]
+    NativePins {
+        archives: PathBuf,
+        output: PathBuf,
+        version: String,
+    },
+    /// Require a publication archive to match the one Check accepted.
+    #[command(name = "compare-crate")]
+    CompareCrate {
+        accepted: PathBuf,
+        publication: PathBuf,
+    },
+    /// Write the testkit bundle's artifact manifest and pack the bundle.
+    #[command(name = "stage-testkit-bundle")]
+    StageTestkitBundle {
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        source_sha: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        version: String,
+    },
     #[command(name = "prepare")]
     Prepare {
         #[arg(long)]
@@ -115,6 +143,22 @@ pub(crate) fn run_release(repo_root: &Path, command: ReleaseCommand) -> Result<(
             println!("All release-managed Trellis versions are {version}.");
             Ok(())
         }
+        ReleaseCommand::NativePins {
+            archives,
+            output,
+            version,
+        } => package::native_pins(&archives, &output, &version),
+        ReleaseCommand::CompareCrate {
+            accepted,
+            publication,
+        } => package::compare_crate(&accepted, &publication),
+        ReleaseCommand::StageTestkitBundle {
+            bundle,
+            output,
+            source_sha,
+            target,
+            version,
+        } => package::stage_testkit_bundle(&bundle, &output, &source_sha, &target, &version),
         ReleaseCommand::Prepare {
             tag,
             protocol_version,

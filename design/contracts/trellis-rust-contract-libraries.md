@@ -39,7 +39,7 @@ The binding matches package identity, authored version, and semantic digest,
 including locked dependency identities. Matching packages re-export the provider's
 nominal models instead of emitting copies; other packages remain independently
 generated. Generated constants verify the actual provider's package metadata at
-compilation, including the Rust model ABI. The CLI offers the independently
+compilation. The CLI offers the independently
 versioned `trellis-models` bundle through this generic binding mechanism;
 neither package names alone nor matching API majors select shared models.
 Generated packages declare their model dependency directly, while retaining the

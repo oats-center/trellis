@@ -260,8 +260,14 @@ try {
     ),
   );
   sampler = spawnTracked(
-    "python3",
-    [`${root}/benchmarks/runtime/resources.py`, String(process.pid), output],
+    process.execPath,
+    [
+      "--experimental-transform-types",
+      `${root}/benchmarks/runtime/sampler.ts`,
+      String(process.pid),
+      output,
+      String(cpuTicks),
+    ],
     { stdio: "inherit" },
   );
   let browserOrigin: string | undefined;

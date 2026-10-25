@@ -124,21 +124,8 @@ build_testkit_live() {
     --test live \
     --message-format=json-render-diagnostics > "$json"
   local executable
-  executable="$(python3 - "$json" <<'PY'
-import json, sys
-path = ""
-for line in open(sys.argv[1]):
-    try:
-        message = json.loads(line)
-    except ValueError:
-        continue
-    if message.get("executable"):
-        path = message["executable"]
-if not path:
-    raise SystemExit("failed to locate the testkit live test binary")
-print(path)
-PY
-)"
+  executable="$(jq -r 'select(.executable != null) | .executable' "$json" 2>/dev/null | tail -n1)"
+  [[ -n "$executable" ]] || { echo "failed to locate the testkit live test binary" >&2; exit 1; }
   mkdir -p "$(dirname "$testkit_live")"
   cp "$executable" "$testkit_live"
 }

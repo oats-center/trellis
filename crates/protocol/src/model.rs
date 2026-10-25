@@ -12,8 +12,6 @@ pub use scalars::{
 /// Exact native package identity for compiled models, not authority evidence.
 #[derive(Clone, Copy, Debug)]
 pub struct ModelPackage {
-    /// Rust model representation ABI, independent of transport execution APIs.
-    pub rust_abi: u32,
     /// Native package identity.
     pub name: &'static str,
     /// Authored package version.
@@ -24,10 +22,6 @@ pub struct ModelPackage {
 
 /// Reject a generated binding to different compiled models at compile time.
 pub const fn assert_model_binding(expected: ModelPackage, actual: ModelPackage) {
-    assert!(
-        expected.rust_abi == actual.rust_abi,
-        "generated Trellis model ABI mismatch"
-    );
     let expected = [expected.name, expected.version, expected.digest];
     let actual = [actual.name, actual.version, actual.digest];
     let mut part = 0;

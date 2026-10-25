@@ -796,6 +796,11 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install cargo-semver-checks
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+
       - name: Download production native archives
         uses: actions/download-artifact@v4
         with:
@@ -997,23 +1002,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import json, os, sys
-          needs = json.loads(os.environ["NEEDS"])
           # A prose-only pull request skips verification; nothing may fail.
-          allowed = {"success"} if os.environ["CODE_CHANGED"] == "true" else {"success", "skipped"}
-          if needs["changes"]["result"] != "success":
-              allowed = {"success"}
-          failed = {
-              name: result.get("result")
-              for name, result in needs.items()
-              if result.get("result") not in allowed
-          }
-          if failed:
-              print(f"verification did not all succeed: {failed}", file=sys.stderr)
-              sys.exit(1)
-          if os.environ["CODE_CHANGED"] != "true":
-              print("only documentation changed; build and test verification skipped")
-          else:
-              print(f"all {len(needs)} verification jobs succeeded")
-          PY
+          failed="$(jq -c --arg code "$CODE_CHANGED" '
+            (if $code == "true" or .changes.result != "success"
+              then ["success"] else ["success", "skipped"] end) as $allowed
+            | with_entries(select(.value.result as $result | $allowed | index($result) | not))
+            | map_values(.result)' <<<"$NEEDS")"
+          if [[ "$failed" != "{}" ]]; then
+            echo "verification did not all succeed: $failed" >&2
+            exit 1
+          fi
+          if [[ "$CODE_CHANGED" != "true" ]]; then
+            echo "only documentation changed; build and test verification skipped"
+          else
+            echo "all $(jq length <<<"$NEEDS") verification jobs succeeded"
+          fi
