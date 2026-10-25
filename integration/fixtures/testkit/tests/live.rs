@@ -87,7 +87,22 @@ async fn consumer_first_registration_accepts_consumed_apis_and_calls_later_provi
     let task = tokio::spawn(async move { consumer.run().await });
     let provider = start_provider(&mut runtime, "later provider").await;
     let input = value("consumer registered first");
-    assert_eq!(api.echo(&input).await.unwrap().value, input.value);
+    // The provider subscribes after `run` starts; until then the call has no
+    // responder and executes no handler.
+    let reply = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut readiness = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            readiness.tick().await;
+            match api.echo(&input).await {
+                Ok(reply) => break reply,
+                Err(trellis_rs::client::CallError::ServiceUnavailable(_)) => {}
+                Err(error) => panic!("consumer call failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("the later provider serves the consumer");
+    assert_eq!(reply.value, input.value);
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     drop(api);
     task.abort();
