@@ -99,10 +99,18 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
-      # Keep the build output, never stale generated files or downloads.
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
       - name: Remove untracked files except target/
         if: runner.environment == 'self-hosted'
-        run: git clean -ffdx --exclude=/target/
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -180,10 +188,18 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
-      # Keep the build output, never stale generated files or downloads.
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
       - name: Remove untracked files except target/
         if: runner.environment == 'self-hosted'
-        run: git clean -ffdx --exclude=/target/
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
 
       - name: Expose installed Cargo binaries
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -246,10 +262,18 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
-      # Keep the build output, never stale generated files or downloads.
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
       - name: Remove untracked files except target/
         if: runner.environment == 'self-hosted'
-        run: git clean -ffdx --exclude=/target/
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -293,10 +317,18 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
-      # Keep the build output, never stale generated files or downloads.
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
       - name: Remove untracked files except target/
         if: runner.environment == 'self-hosted'
-        run: git clean -ffdx --exclude=/target/
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -393,10 +425,18 @@ jobs:
           # A self-hosted runner keeps target/ so Cargo rebuilds only what changed.
           clean: ${{ runner.environment == 'github-hosted' }}
 
-      # Keep the build output, never stale generated files or downloads.
+      # Keep the build output, never stale generated files or downloads. A
+      # runner whose environment sets TRELLIS_CI_TARGET_ROOT shares each job's
+      # target/ with the other runners on its host.
       - name: Remove untracked files except target/
         if: runner.environment == 'self-hosted'
-        run: git clean -ffdx --exclude=/target/
+        run: |
+          git clean -ffdx --exclude=/target/
+          if [ -n "${TRELLIS_CI_TARGET_ROOT:-}" ]; then
+            mkdir -p "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB"
+            [ -L target ] || rm -rf target
+            ln -sfn "$TRELLIS_CI_TARGET_ROOT/$GITHUB_JOB" target
+          fi
 
       - name: Restore pipeline inputs
         uses: ./.github/actions/check-inputs
@@ -427,10 +467,15 @@ jobs:
           tar -C "$staging" -czf "$RUNNER_TEMP/runtime-binaries.tar.gz" .
           version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
           target="x86_64-unknown-linux-gnu"
-          archive="trellis-${version}-${target}.tar.gz"
           mkdir -p dist
-          tar -C "$RUNNER_TEMP/release" -czf "dist/$archive" trellis trellis-server
-          sha256sum "dist/$archive" > "dist/checksum-${version}-${target}-trellis.sha256"
+          # One archive per binary, named after it: the CLI's self-update finds
+          # trellis-<version>-<target>.tar.gz.
+          for binary in trellis trellis-server; do
+            archive="${binary}-${version}-${target}.tar.gz"
+            tar -C "$RUNNER_TEMP/release" -czf "dist/$archive" "$binary"
+            # A bare file name, so `sha256sum -c` works beside the download.
+            (cd dist && sha256sum "$archive" > "checksum-${version}-${target}-${binary}.sha256")
+          done
 
       - name: Upload runtime binaries
         uses: actions/upload-artifact@v4
@@ -910,13 +955,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive="$(find "$RUNNER_TEMP/native-runtime" -maxdepth 1 -name 'trellis-*-x86_64-unknown-linux-gnu.tar.gz' | head -n1)"
-          if [ -z "${archive}" ]; then
-            echo "missing native Linux runtime archive for x86_64-unknown-linux-gnu" >&2
-            exit 1
-          fi
           mkdir -p dist/native/amd64
-          tar --no-same-owner -xzf "${archive}" -C dist/native/amd64 trellis trellis-server
+          for binary in trellis trellis-server; do
+            tar --no-same-owner -xzf "$RUNNER_TEMP/native-runtime/${binary}-"[0-9]*-x86_64-unknown-linux-gnu.tar.gz \
+              -C dist/native/amd64 "$binary"
+          done
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -1128,7 +1171,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/bin"
-          tar -xzf "$RUNNER_TEMP/cli/"trellis-*.tar.gz -C "$RUNNER_TEMP/bin" trellis
+          tar -xzf "$RUNNER_TEMP/cli/"trellis-[0-9]*.tar.gz -C "$RUNNER_TEMP/bin" trellis
           cd crates/builtin-contracts
           "$RUNNER_TEMP/bin/trellis" publish
 

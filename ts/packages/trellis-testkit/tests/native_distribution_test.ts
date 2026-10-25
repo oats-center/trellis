@@ -30,38 +30,35 @@ test("native integrity rejects corrupt archives before extraction", async () => 
   );
 });
 
-test("native extraction accepts regular commands and rejects executable symlinks", async () => {
+test("native extraction accepts the one regular command and rejects symlinks or extras", async () => {
   const root = await mkdtemp(join(tmpdir(), "native-archive-security-"));
-  try {
-    await writeFile(join(root, "trellis"), "cli-content");
-    await writeFile(join(root, "trellis-server"), "server-content");
+  const pack = async (file: string, entries: string[]) => {
     await create(
-      {
-        cwd: root,
-        file: join(root, "valid.tar.gz"),
-        gzip: true,
-        portable: true,
-      },
-      ["trellis", "trellis-server"],
+      { cwd: root, file: join(root, file), gzip: true, portable: true },
+      entries,
     );
-    const files = await extractNativeArchive(
-      await readFile(join(root, "valid.tar.gz")),
+    return await readFile(join(root, file));
+  };
+  try {
+    await writeFile(join(root, "trellis-server"), "server-content");
+    await writeFile(join(root, "trellis"), "cli-content");
+    const server = await extractNativeArchive(
+      await pack("valid.tar.gz", ["trellis-server"]),
+      "trellis-server",
     );
-    assert.equal(new TextDecoder().decode(files.cli), "cli-content");
-    assert.equal(new TextDecoder().decode(files.server), "server-content");
+    assert.equal(new TextDecoder().decode(server), "server-content");
+    const extra = await pack("extra.tar.gz", ["trellis-server", "trellis"]);
+    await assert.rejects(
+      () => extractNativeArchive(extra, "trellis-server"),
+      /only a regular trellis-server/,
+    );
     await rm(join(root, "trellis-server"));
     await symlink("trellis", join(root, "trellis-server"));
-    await create(
-      {
-        cwd: root,
-        file: join(root, "unsafe.tar.gz"),
-        gzip: true,
-        portable: true,
-      },
-      ["trellis", "trellis-server"],
+    const unsafe = await pack("unsafe.tar.gz", ["trellis-server"]);
+    await assert.rejects(
+      () => extractNativeArchive(unsafe, "trellis-server"),
+      /only a regular trellis-server/,
     );
-    const unsafe = await readFile(join(root, "unsafe.tar.gz"));
-    await assert.rejects(() => extractNativeArchive(unsafe), /regular trellis/);
   } finally {
     await rm(root, { recursive: true });
   }

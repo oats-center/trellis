@@ -161,9 +161,9 @@ Verify the benchmark with Performance's ordinary command:
 `cargo build --release --locked --manifest-path benchmarks/runtime/native/Cargo.toml --target-dir target`.
 Performance consumes that frozen lock; it does not repair it during execution.
 
-The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so the pipeline verifies exactly what ships. `Pipeline` is the one workflow. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds the CLI archive and assembles and smokes the images; packages the Rust and npm packages; runs the artifact-only package consumer; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that graph. On a `release/v*` push the publish jobs follow the acceptance gate in the same run: they publish that run's verified artifacts (crates, npm, canonical APIs, images) without rebuilding the product, and create an unsigned lightweight release tag on the verified commit. If verification fails, nothing is published, no tag is created, and the same version can be retried. The workflow file keeps the name `release.yml` because crates.io and npm trusted publishing name it.
+The normal release path is a `release/vX.Y.Z` or `release/vX.Y.Z-rc.1` branch marker. Release preparation (the version rewrite and the `CHANGELOG.md` section) is committed to the candidate before it is verified: `release prepare --tag` is run and committed, so the pipeline verifies exactly what ships. `Pipeline` is the one workflow. It runs on `main`, on pull requests, and on `release/*` pushes; builds the release-profile runtime once and reuses it for live, browser, console, and demo tests; builds the CLI and server archives and assembles and smokes the images; packages the Rust and npm packages; runs the artifact-only package consumer; and reports through one acceptance gate. Formatting, lint/type checks, library tests, generation before consumption, and live integration are part of that graph. On a `release/v*` push the publish jobs follow the acceptance gate in the same run: they publish that run's verified artifacts (crates, npm, canonical APIs, images) without rebuilding the product, and create an unsigned lightweight release tag on the verified commit. If verification fails, nothing is published, no tag is created, and the same version can be retried. The workflow file keeps the name `release.yml` because crates.io and npm trusted publishing name it.
 
-The compile-heavy jobs (`install`, `wasm`, `clippy`, `build-fixtures`, `build`) run on the self-hosted runners and keep `target/` between runs (every other untracked file is removed after checkout), so Cargo rebuilds only what changed; on GitHub-hosted runners they restore `target/` from the Actions cache instead. Pull requests from forks run every job on GitHub-hosted runners, so fork code never runs on the self-hosted machines. Tests, images and publication always run on GitHub-hosted runners. A self-hosted runner's `target/` grows over time; clear it in that runner's `_work/trellis/trellis` directory if disk runs low.
+The compile-heavy jobs (`install`, `wasm`, `clippy`, `build-fixtures`, `build`) run on the self-hosted runners and keep `target/` between runs (every other untracked file is removed after checkout), so Cargo rebuilds only what changed; on GitHub-hosted runners they restore `target/` from the Actions cache instead. Pull requests from forks run every job on GitHub-hosted runners, so fork code never runs on the self-hosted machines. Tests, images and publication always run on GitHub-hosted runners. Each runner keeps its own `target/` unless its environment sets `TRELLIS_CI_TARGET_ROOT` (for example in the runner's `.env` file) to a directory every runner on that host can write; then each compile job links `target/` to `$TRELLIS_CI_TARGET_ROOT/<job>`, so a host warms once for all its runners, and Cargo's lock serializes two runners building the same job at once. These directories grow over time; delete them to reclaim disk.
 
 The `Deploy Site to GitHub Pages` workflow is separate from release publishing. It installs each worktree's locked APIs from source before building the released and current guide and Console sites.
 
@@ -410,7 +410,7 @@ less "$tmpdir/release-notes.md"
 ## 5. Confirm correctness and package locally
 
 `Pipeline` is the single authoritative verification workflow: it builds the
-release-profile runtime, the CLI archive and the images; packages the Rust and
+release-profile runtime, the CLI and server archives and the images; packages the Rust and
 npm packages; runs the artifact-only package consumer; and runs formatting,
 lint/type, generation, and full live-integration suites behind one acceptance
 gate. On a release branch, publication follows in the same run from the same
@@ -527,10 +527,10 @@ The pipeline's `release-metadata` job fails early if the final release tag alrea
 After the acceptance gate passes, the same run publishes in gated stages:
 
 - `release-metadata` derives the tag from the `release/v*` branch, rejects an existing tag, validates release metadata, and writes the release notes; it runs alongside verification
-- the `build` job compiles the Linux x86-64 runtime executables once in a `rust:bookworm` container (matching the runtime image base); the same executables run every live, browser and demo job and become the CLI archive. Linux arm64 and macOS archives are not built. `verify-images` assembles the linux/amd64 OCI archive from the prebuilt executables without compiling Trellis and smokes the image natively. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
+- the `build` job compiles the Linux x86-64 runtime executables once in a `rust:bookworm` container (matching the runtime image base); the same executables run every live, browser and demo job and become the `trellis` and `trellis-server` release archives, one per binary with its own checksum. Linux arm64 and macOS archives are not built. `verify-images` assembles the linux/amd64 OCI archive from the prebuilt executables without compiling Trellis and smokes the image natively. The smoke checks the baked nats-server version against `crates/local-nats/nats-binaries.json`, starts the image as its non-root user with a read-only config and writable state volume (`trellis-server --system all --local-nats=/usr/local/bin/nats-server`), waits for runtime readiness, stops it gracefully, and asserts no startup or write errors
 - `publish-apis` publishes the canonical APIs to GHCR
 - `create-release-tag` tags the verified commit, refusing if the release branch moved
-- `github-release` uploads the CLI archive and checksum, then publishes the release
+- `github-release` uploads the CLI and server archives and their checksums, then publishes the release
 - `publish-crates`, `publish-npm`, and `publish-images` publish after the GitHub release exists
 
 `latest` follows the newest prerelease until the first stable release exists:
@@ -550,7 +550,7 @@ Then verify the downstream publishes you care about:
 - npm packages have the expected version and dist-tag
 - crates.io shows the expected crate versions
 - GHCR images have the expected tags such as `$RELEASE_TAG`, `latest`, or `rc`
-- the CLI archive checksums are present and match the published artifacts
+- the CLI and server archive checksums are present and match the published artifacts
 
 ## 9. Prepare for the next cycle
 

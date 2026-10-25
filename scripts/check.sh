@@ -30,31 +30,35 @@ build_packages() {
   [[ -n "${TRELLIS_TEST_STAGED:-}" ]] || npm run build:packages
 }
 
-# The native CLI and server archive, with its checksum, that packaging jobs
-# consume. CI downloads the release build's into dist/native; locally
-# pack_native packs the debug build, once per run when the jobs are staged.
-native_archive_name() {
-  local version
-  version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
-  echo "trellis-${version}-x86_64-unknown-linux-gnu"
+# The native CLI and server archives, one per binary with its checksum, that
+# packaging jobs consume. CI downloads the release build's into dist/native;
+# locally pack_native packs the debug build, once per run when the jobs are
+# staged.
+native_version() {
+  grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2
 }
 
 pack_native() {
-  local name version
-  name="$(native_archive_name)"
-  version="${name#trellis-}"
-  version="${version%-x86_64-unknown-linux-gnu}"
+  local version binary archive
+  version="$(native_version)"
   mkdir -p dist/native
-  tar -C "${1:-target/debug}" -czf "dist/native/$name.tar.gz" trellis trellis-server
-  sha256sum "dist/native/$name.tar.gz" \
-    > "dist/native/checksum-${version}-x86_64-unknown-linux-gnu-trellis.sha256"
+  for binary in trellis trellis-server; do
+    archive="${binary}-${version}-x86_64-unknown-linux-gnu.tar.gz"
+    tar -C "${1:-target/debug}" -czf "dist/native/$archive" "$binary"
+    (cd dist/native && sha256sum "$archive" \
+      > "checksum-${version}-x86_64-unknown-linux-gnu-${binary}.sha256")
+  done
 }
 
+# Extracts both native binaries into the directory $1.
 native_archive() {
   [[ -n "${CI:-}${TRELLIS_TEST_STAGED:-}" ]] || pack_native
-  local archive
-  archive="dist/native/$(native_archive_name).tar.gz"
-  [[ -s "$archive" ]] || { echo "missing native archive $archive" >&2; exit 1; }
+  local binary archive
+  for binary in trellis trellis-server; do
+    archive="dist/native/${binary}-$(native_version)-x86_64-unknown-linux-gnu.tar.gz"
+    [[ -s "$archive" ]] || { echo "missing native archive $archive" >&2; exit 1; }
+    [[ -z "${1:-}" ]] || tar -xzf "$archive" -C "$1"
+  done
 }
 
 # Runs every step even when an earlier one fails, so each failure reports.
@@ -184,7 +188,6 @@ semver_checks() {
 job_rust_testkit() {
   local output="${1:-$temp/rust-testkit-bundle.tar.gz}" version bundle
   semver_checks
-  native_archive
   version="$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)"
   cargo package --manifest-path Cargo.toml --allow-dirty --locked --no-verify \
     -p trellis-protocol -p trellis-models -p trellis-rs -p trellis-testkit \
@@ -203,7 +206,7 @@ job_rust_testkit() {
     jq -r '.packages[] | select(.name | IN("trellis-protocol", "trellis-models",
       "trellis-rs", "trellis-testkit")) | "target/package/\(.name)-\(.version).crate"' |
     xargs cp -t "$bundle/packages/"
-  tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C "$bundle/native"
+  native_archive "$bundle/native"
   cp -R integration/fixtures/testkit/package-consumer \
     integration/fixtures/testkit/tests integration/fixtures/testkit/crates "$bundle/consumer/"
   cp -R integration/fixtures/compiler-portable "$bundle/consumer/compiler-project"
@@ -230,14 +233,13 @@ job_rust_testkit_consumer() {
 }
 
 job_typescript_testkit() {
-  native_archive
   # CI uses exactly the packages the demos job verified and uploaded.
   [[ -n "${CI:-}" ]] || build_packages
   # Outside the repository, which concurrent image builds copy as their context.
   local runtime
   mkdir -p "$temp"
   runtime="$(mktemp -d "$temp/testkit-runtime.XXXXXX")"
-  tar -xzf dist/native/trellis-*-x86_64-unknown-linux-gnu.tar.gz -C "$runtime"
+  native_archive "$runtime"
   TRELLIS_TEST_CLI_BIN="$runtime/trellis" TRELLIS_TEST_SERVER_BIN="$runtime/trellis-server" \
     node ts/tools/verify_testkit_package.ts ts/packages/trellis-testkit/npm \
     ts/packages/result/npm ts/packages/trellis/npm

@@ -8,6 +8,25 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Releases publish `trellis-server` as its own archive,
+  `trellis-server-<version>-<target>.tar.gz`, beside the CLI's
+  `trellis-<version>-<target>.tar.gz`, each with its own
+  `checksum-<version>-<target>-<binary>.sha256`. The CLI archive no longer
+  contains the server, and checksum files name the bare archive so
+  `sha256sum -c` works beside the download. The testkits download the two
+  archives separately.
+- Publication runs no further tests: a version that passed the acceptance gate
+  publishes in full.
+- Until the first stable release, the npm `latest` dist-tag and the `latest`
+  image tag follow the newest prerelease.
+- Compile-heavy pipeline jobs (generated artifacts, protocol WASM, Rust lint and
+  the builds) run on self-hosted runners that keep `target/` between runs, so
+  Cargo rebuilds only what changed; tests, images and publication run on
+  GitHub-hosted runners, and pull requests from forks run entirely on
+  GitHub-hosted runners.
+
 ## [0.100.0-rc.4] - 2026-10-25
 
 ### Added
@@ -68,14 +87,9 @@ grants; capability …; }` bundles of its own
   release. Each run reports the `trellis-server` version it tests against, and
   explicit binaries no longer have to match the testkit version. The TypeScript
   testkit also honors `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`.
-- One `Pipeline` workflow replaces Check, Lint and Release. Compile-heavy jobs
-  (generated artifacts, protocol WASM, Rust lint and the builds) run on
-  self-hosted runners that keep their `target/` between runs, so Cargo rebuilds
-  only what changed; tests, images and publication run on GitHub-hosted
-  runners, and pull requests from forks run entirely on GitHub-hosted runners.
-  A `release/v*` push verifies and then publishes the same run's artifacts. Publication runs no further tests, so a version that passed the
-  acceptance gate publishes in full. Until the first stable release, the npm `latest`
-  dist-tag and the `latest` image tag follow the newest prerelease.
+- One `Pipeline` workflow on GitHub-hosted runners replaces Check, Lint and
+  Release: a `release/v*` push verifies and then publishes the same run's
+  artifacts.
 - Transfer receivers choose their outstanding window, up to 1,024 frames and
   64 MiB, and admit it from one process-wide receive budget, released when the
   transfer ends. A download consumer declares its window at activation; the

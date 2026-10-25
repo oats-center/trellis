@@ -9,20 +9,24 @@ The `trellis` CLI handles runtime and operator tasks such as service deployments
 
 Prebuilt binaries are published as [GitHub Releases](https://github.com/oats-center/trellis/releases) for every tagged version.
 
-Pick the archive that matches your platform:
+Each release publishes one archive per binary, with a checksum file for each:
 
-| Platform      | Archive                                              |
-| ------------- | ---------------------------------------------------- |
-| Linux x86_64  | `trellis-<version>-x86_64-unknown-linux-gnu.tar.gz`  |
-| Linux aarch64 | `trellis-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| Binary           | Archive (Linux x86_64)                                     | Checksum                                                            |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------------------- |
+| `trellis` (CLI)  | `trellis-<version>-x86_64-unknown-linux-gnu.tar.gz`        | `checksum-<version>-x86_64-unknown-linux-gnu-trellis.sha256`        |
+| `trellis-server` | `trellis-server-<version>-x86_64-unknown-linux-gnu.tar.gz` | `checksum-<version>-x86_64-unknown-linux-gnu-trellis-server.sha256` |
 
-Download and extract:
+Linux x86_64 is the only prebuilt target today. Download, verify and extract
+the CLI for a release such as `0.100.0-rc.4`:
 
 ```sh
-curl -LO https://github.com/oats-center/trellis/releases/latest/download/trellis-<version>-<target>.tar.gz
-curl -LO https://github.com/oats-center/trellis/releases/latest/download/trellis-<version>-<target>.tar.gz.sha256
-sha256sum -c trellis-<version>-<target>.tar.gz.sha256
-tar xzf trellis-*.tar.gz
+version=0.100.0-rc.4
+target=x86_64-unknown-linux-gnu
+base=https://github.com/oats-center/trellis/releases/download/v$version
+curl -LO "$base/trellis-$version-$target.tar.gz"
+curl -LO "$base/checksum-$version-$target-trellis.sha256"
+sha256sum -c "checksum-$version-$target-trellis.sha256"
+tar xzf "trellis-$version-$target.tar.gz"
 ```
 
 Move the binary somewhere on your `PATH`:
@@ -31,7 +35,10 @@ Move the binary somewhere on your `PATH`:
 install -m 755 trellis ~/.local/bin/trellis
 ```
 
-Each release also includes a `.sha256` checksum file. Only extract and install the binary after `sha256sum -c` reports `OK`.
+Only extract and install a binary after `sha256sum -c` reports `OK`. The server
+is installed the same way from `trellis-server-$version-$target.tar.gz` and its
+`checksum-$version-$target-trellis-server.sha256`; it is also published as the
+`ghcr.io/oats-center/trellis-server` image.
 
 ## Option B: Install with Cargo
 

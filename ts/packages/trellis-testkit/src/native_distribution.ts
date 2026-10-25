@@ -73,12 +73,13 @@ export async function verifyNativeArchive(
   }
 }
 
-/** Decode only the two regular root-level executables, without extracting any path to disk. */
+/** Decode an archive's one regular root-level executable, without extracting any path to disk. */
 export function extractNativeArchive(
   bytes: Uint8Array,
-): Promise<TrellisNativeDistributionBytes> {
+  name: string,
+): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
-    const files = new Map<string, Uint8Array>();
+    let file: Uint8Array | undefined;
     const parser = new Parser({ strict: true });
     parser.on("error", reject);
     parser.on("meta", () =>
@@ -90,37 +91,32 @@ export function extractNativeArchive(
     parser.on("entry", (entry: ReadEntry) => {
       if (
         entry.type !== "File" ||
-        !["trellis", "trellis-server"].includes(entry.path) ||
-        files.has(entry.path) ||
+        entry.path !== name ||
+        file !== undefined ||
         entry.size <= 0 ||
         entry.size > 1_073_741_824
       ) {
         parser.abort(
           new Error(
-            "Native archive must contain only regular trellis and trellis-server executables",
+            `Native archive must contain only a regular ${name} executable`,
           ),
         );
         entry.resume();
         return;
       }
       const chunks: Uint8Array[] = [];
-      files.set(entry.path, new Uint8Array());
+      file = new Uint8Array();
       entry.on("data", (chunk: Uint8Array) => chunks.push(chunk));
-      entry.on("end", () => files.set(entry.path, Buffer.concat(chunks)));
+      entry.on("end", () => (file = Buffer.concat(chunks)));
       entry.resume();
     });
     parser.on("end", () => {
-      const cli = files.get("trellis");
-      const server = files.get("trellis-server");
-      if (!cli?.length || !server?.length) {
-        reject(new Error("Native archive is missing production executables"));
-      } else resolve({ cli, server });
+      if (!file?.length) reject(new Error(`Native archive is missing ${name}`));
+      else resolve(file);
     });
     parser.end(Buffer.from(bytes));
   });
 }
-
-type TrellisNativeDistributionBytes = { cli: Uint8Array; server: Uint8Array };
 
 let announced = false;
 
@@ -237,128 +233,104 @@ export async function resolveNativeDistribution(
   const version = await releaseVersion(cache);
   const parent = join(cache, "trellis", version, target);
   await fs.mkdir(parent, { recursive: true, mode: 0o700 });
+  return await verifyDistribution(
+    {
+      cli: await installExecutable(parent, version, target, "trellis"),
+      server: await installExecutable(
+        parent,
+        version,
+        target,
+        "trellis-server",
+      ),
+    },
+    version,
+  );
+}
+
+/** Install one release executable, checked against its published checksum. */
+async function installExecutable(
+  parent: string,
+  version: string,
+  target: string,
+  name: string,
+): Promise<string> {
   // Release assets are immutable, so a fetched checksum is kept.
-  const recorded = join(parent, "archive.sha256");
+  const recorded = join(parent, `${name}.sha256`);
   let sha256 = await fs.readFile(recorded, "utf8").catch(() => undefined);
   if (!sha256) {
     const response = await fetch(
-      `${releases}/v${version}/checksum-${version}-${target}-trellis.sha256`,
+      `${releases}/v${version}/checksum-${version}-${target}-${name}.sha256`,
       { signal: AbortSignal.timeout(60_000) },
     );
     if (!response.ok) {
       throw new Error(
-        `Trellis ${version} has no ${target} checksum (${response.status})`,
+        `Trellis ${version} has no ${target} ${name} checksum (${response.status})`,
       );
     }
     sha256 = (await response.text()).trim().split(/\s+/)[0] ?? "";
     await fs.writeFile(recorded, sha256);
   }
   if (!/^[a-f0-9]{64}$/.test(sha256)) {
-    throw new Error(`Invalid published checksum for Trellis ${version}`);
+    throw new Error(
+      `Invalid published ${name} checksum for Trellis ${version}`,
+    );
   }
-  const asset = { archive: `trellis-${version}-${target}.tar.gz`, sha256 };
-  const installed = join(parent, asset.sha256);
-  const paths = {
-    cli: join(installed, "trellis"),
-    server: join(installed, "trellis-server"),
+  const installed = join(parent, sha256);
+  const path = join(installed, name);
+  const matches = async (expected: Uint8Array) => {
+    const info = await fs.lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) return false;
+    const file = await fs.readFile(path);
+    return (
+      file.length === expected.length &&
+      file.every((byte, index) => byte === expected[index])
+    );
   };
-  let archive: Uint8Array | undefined;
   try {
     const info = await fs.lstat(installed);
     if (!info.isDirectory() || info.isSymbolicLink()) {
       throw new Error("Unsafe native cache entry");
     }
-    archive = await fs.readFile(join(installed, "archive.tar.gz"));
-    await verifyNativeArchive(archive, asset.sha256);
-    const extracted = await extractNativeArchive(archive);
-    for (const name of ["cli", "server"] as const) {
-      const info = await fs.lstat(paths[name]);
-      if (!info.isFile() || info.isSymbolicLink()) {
-        throw new Error("Unsafe cached native executable");
-      }
-      const cached = await fs.readFile(paths[name]);
-      if (
-        cached.length !== extracted[name].length ||
-        cached.some((byte, index) => byte !== extracted[name][index])
-      ) {
-        throw new Error(
-          "Cached native executable differs from the verified archive",
-        );
-      }
-    }
-    return await verifyDistribution(paths, version);
+    const archive = await fs.readFile(join(installed, "archive.tar.gz"));
+    await verifyNativeArchive(archive, sha256);
+    if (await matches(await extractNativeArchive(archive, name))) return path;
   } catch {
-    archive = undefined;
+    // Missing or damaged: download again below.
   }
-  const response = await fetch(`${releases}/v${version}/${asset.archive}`, {
-    signal: AbortSignal.timeout(60_000),
-  });
+  const response = await fetch(
+    `${releases}/v${version}/${name}-${version}-${target}.tar.gz`,
+    { signal: AbortSignal.timeout(60_000) },
+  );
   if (!response.ok) {
     throw new Error(
-      `Trellis native archive download failed (${response.status})`,
+      `Trellis ${name} archive download failed (${response.status})`,
     );
   }
-  archive = new Uint8Array(await response.arrayBuffer());
-  await verifyNativeArchive(archive, asset.sha256);
-  const extracted = await extractNativeArchive(archive);
+  const archive = new Uint8Array(await response.arrayBuffer());
+  await verifyNativeArchive(archive, sha256);
+  const executable = await extractNativeArchive(archive, name);
   const staging = await fs.mkdtemp(join(parent, ".install-"));
   let quarantine: string | undefined;
   try {
-    await fs.writeFile(join(staging, "trellis"), extracted.cli, {
-      mode: 0o700,
-    });
-    await fs.writeFile(join(staging, "trellis-server"), extracted.server, {
-      mode: 0o700,
-    });
+    await fs.writeFile(join(staging, name), executable, { mode: 0o700 });
     await fs.writeFile(join(staging, "archive.tar.gz"), archive, {
       mode: 0o600,
     });
-    await verifyDistribution(
-      {
-        cli: join(staging, "trellis"),
-        server: join(staging, "trellis-server"),
-      },
-      version,
-    );
     try {
       await fs.rename(staging, installed);
     } catch (error) {
       const installedInfo = await fs.lstat(installed).catch(() => undefined);
       if (!installedInfo) throw error;
-      // A concurrent installer may have completed while we downloaded. Compare
-      // the winner with the pin, never overwrite a valid executable in use.
-      const existing =
-        installedInfo.isDirectory() && !installedInfo.isSymbolicLink()
-          ? await fs
-              .readFile(join(installed, "archive.tar.gz"))
-              .catch(() => new Uint8Array())
-          : new Uint8Array();
-      let valid = false;
-      try {
-        await verifyNativeArchive(existing, asset.sha256);
-        valid = true;
-        for (const name of ["cli", "server"] as const) {
-          const info = await fs.lstat(paths[name]);
-          const file =
-            info.isFile() && !info.isSymbolicLink()
-              ? await fs.readFile(paths[name])
-              : new Uint8Array();
-          if (
-            file.length !== extracted[name].length ||
-            file.some((byte, index) => byte !== extracted[name][index])
-          )
-            valid = false;
-        }
-      } catch {
-        valid = false;
-      }
+      // A concurrent installer may have completed while we downloaded. Keep a
+      // valid winner, which may be in use; replace only a damaged one.
+      const valid = await matches(executable).catch(() => false);
       if (!valid) {
         quarantine = join(parent, `.corrupt-${ulid()}`);
         await fs.rename(installed, quarantine);
         await fs.rename(staging, installed);
       }
     }
-    return await verifyDistribution(paths, version);
+    return path;
   } finally {
     await fs.rm(staging, { recursive: true }).catch(() => undefined);
     if (quarantine) await fs.rm(quarantine, { recursive: true });

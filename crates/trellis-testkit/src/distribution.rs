@@ -179,29 +179,35 @@ pub(crate) async fn resolve(
                 "apple-darwin"
             };
             let target = format!("{}-{platform}", std::env::consts::ARCH);
+            // Each binary is its own release asset with a published checksum.
             // Release assets are immutable, so a fetched checksum is kept.
-            let recorded = cache.join(format!("trellis-{version}-{target}.sha256"));
-            let checksum = match std::fs::read_to_string(&recorded) {
-                Ok(checksum) => checksum,
-                Err(_) => {
-                    let url =
-                        format!("{RELEASES}/v{version}/checksum-{version}-{target}-trellis.sha256");
-                    let published = String::from_utf8_lossy(&get(&url).await?)
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or_default()
-                        .to_owned();
-                    std::fs::write(&recorded, &published)?;
-                    published
-                }
-            };
-            let files = install(
-                &format!("{RELEASES}/v{version}/trellis-{version}-{target}.tar.gz"),
-                checksum.trim(),
-                &["trellis", "trellis-server"],
-                &cache,
-            )
-            .await?;
+            let mut files = Vec::new();
+            for binary in ["trellis", "trellis-server"] {
+                let recorded = cache.join(format!("{binary}-{version}-{target}.sha256"));
+                let checksum = match std::fs::read_to_string(&recorded) {
+                    Ok(checksum) => checksum,
+                    Err(_) => {
+                        let url = format!(
+                            "{RELEASES}/v{version}/checksum-{version}-{target}-{binary}.sha256"
+                        );
+                        let published = String::from_utf8_lossy(&get(&url).await?)
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned();
+                        std::fs::write(&recorded, &published)?;
+                        published
+                    }
+                };
+                let mut installed = install(
+                    &format!("{RELEASES}/v{version}/{binary}-{version}-{target}.tar.gz"),
+                    checksum.trim(),
+                    &[binary],
+                    &cache,
+                )
+                .await?;
+                files.push(installed.remove(0));
+            }
             expected = Some(version);
             (files[0].clone(), files[1].clone())
         }
