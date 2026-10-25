@@ -687,7 +687,7 @@ mod tests {
             \n    \"@oatscenter/trellis\": \"~0.8.2\"\n  }\n}\n";
         let updated = rewrite_js_internal_npm_dependency_versions(
             original,
-            "0.8.2",
+            Some("0.8.2"),
             "0.9.0",
             std::path::Path::new("package.json"),
         )
@@ -775,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_leaves_ignored_generated_packages_to_regeneration() {
+    fn prepare_moves_the_previous_prerelease_and_leaves_generated_packages() {
         let root = temp_repo_root();
         let generated = "benchmarks/runtime/packages/performance-trellis/package.json";
         for (path, contents) in [
@@ -785,7 +785,7 @@ mod tests {
             ),
             (
                 "ts/packages/trellis/package.json",
-                "{\n  \"name\": \"@oatscenter/trellis\",\n  \"version\": \"0.100.0-rc.3\"\n}\n",
+                "{\n  \"name\": \"@oatscenter/trellis\",\n  \"version\": \"0.100.0-rc.3\",\n  \"dependencies\": {\n    \"@oatscenter/result\": \"^0.100.0-rc.3\"\n  }\n}\n",
             ),
             (
                 generated,
@@ -825,10 +825,14 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(
-            fs::read_to_string(root.join("ts/packages/trellis/package.json"))
-                .unwrap()
-                .contains("0.100.0-rc.4")
+        let trellis: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("ts/packages/trellis/package.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(trellis["version"], "0.100.0-rc.4");
+        assert_eq!(
+            trellis["dependencies"]["@oatscenter/result"],
+            "^0.100.0-rc.4"
         );
         // `cargo xtask install` regenerates the ignored package afterwards.
         assert!(fs::read_to_string(root.join(generated))

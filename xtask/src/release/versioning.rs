@@ -32,7 +32,7 @@ pub(super) fn bump_versions(repo_root: &Path, from: &str, to: &str) -> Result<Ve
             .wrap_err_with(|| format!("failed to read {}", path.display()))?;
         let updated = if is_json_manifest(&path) {
             let updated = rewrite_json_manifest_version(&original, from, to, &path)?;
-            rewrite_js_internal_npm_dependency_versions(&updated, from, to, &path)?
+            rewrite_js_internal_npm_dependency_versions(&updated, Some(from), to, &path)?
         } else if path
             .file_name()
             .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
@@ -64,12 +64,7 @@ pub(super) fn prepare_release(repo_root: &Path, release: &ReleaseVersion) -> Res
                 &release.base_version,
                 &path,
             )?;
-            rewrite_js_internal_npm_dependency_versions(
-                &updated,
-                &release.base_version,
-                &release.version,
-                &path,
-            )?
+            rewrite_js_internal_npm_dependency_versions(&updated, None, &release.version, &path)?
         } else if path
             .file_name()
             .is_some_and(|name| name == "Cargo.toml" || name == "trellis.toml")
@@ -333,9 +328,12 @@ fn collect_js_internal_npm_versions(
     }
 }
 
+/// Point internal npm dependencies at `to`. A bump requires each to be at
+/// `from`; a release (`from` is `None`) accepts any version on `to`'s base, such
+/// as the previous prerelease.
 pub(super) fn rewrite_js_internal_npm_dependency_versions(
     contents: &str,
-    from: &str,
+    from: Option<&str>,
     to: &str,
     path: &Path,
 ) -> Result<String> {
@@ -355,16 +353,25 @@ pub(super) fn rewrite_js_internal_npm_dependency_versions(
             lines.push(line.to_string());
             continue;
         };
-        if version != from {
-            if version == to {
-                lines.push(line.to_string());
-                continue;
+        if version == to {
+            lines.push(line.to_string());
+            continue;
+        }
+        match from {
+            Some(from) if version != from => {
+                return Err(miette!(
+                    "{} dependency {name} uses version {}, expected {from} or {to}",
+                    path.display(),
+                    version
+                ));
             }
-            return Err(miette!(
-                "{} dependency {name} uses version {}, expected {from} or {to}",
-                path.display(),
-                version
-            ));
+            None => require_version_base(
+                &version,
+                &version_base(to)?,
+                path,
+                &format!("dependency {name}"),
+            )?,
+            _ => {}
         }
 
         let replacement = replace_npm_dependency_spec_version(&spec, to);
