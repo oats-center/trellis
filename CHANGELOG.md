@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- A registry dependency failed to install with "root package must use the
+  exact project path in trellis.lock": the CLI checked each pulled package's own
+  lock entry as if it were the project root. Projects can depend on published
+  packages again, including the `trellis` package.
+
 ### Changed
 
 - **Breaking:** Releases publish `trellis-server` as its own archive,

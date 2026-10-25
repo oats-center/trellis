@@ -573,6 +573,15 @@ pub(crate) fn compile_project(
 ) -> Result<trellis_idl::PackageGraph> {
     let lock = read_lock(&root.join("trellis.lock"))
         .wrap_err("trellis.lock is missing; run `trellis update`")?;
+    // A pulled registry package is compiled as its own root too, but its lock
+    // records its registry source; only a project's own lock names itself ".".
+    miette::ensure!(
+        lock.packages
+            .iter()
+            .any(|package| package.name == manifest.package.name
+                && matches!(&package.source, LockedSource::Path { path } if path == ".")),
+        "root package must use the exact project path in trellis.lock"
+    );
     let graph = compile_locked(root, root, manifest, &lock, &mut BTreeSet::new())?;
     validate_lock(manifest, &lock, &graph)?;
     Ok(graph)
@@ -605,12 +614,6 @@ fn compile_locked(
         "package '{}' version differs from trellis.lock",
         manifest.package.name
     );
-    if package_root == root {
-        miette::ensure!(
-            matches!(&locked.source, LockedSource::Path { path } if path == "."),
-            "root package must use the exact project path in trellis.lock"
-        );
-    }
     let mut supplied = BTreeMap::new();
     let mut exact_dependencies = Vec::new();
     for (alias, dependency) in &manifest.dependencies {
