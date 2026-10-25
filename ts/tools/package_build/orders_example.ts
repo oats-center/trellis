@@ -51,6 +51,13 @@ try {
   const bin = join(isolated, "bin");
   await mkdir(bin);
   await symlink(process.execPath, join(bin, "node"));
+  // Package scripts may run nested `npm` commands; hosted runners keep npm
+  // beside node rather than in /usr/bin.
+  await symlink(
+    process.env.npm_execpath ??
+      (await realpath(join(dirname(process.execPath), "npm"))),
+    join(bin, "npm"),
+  );
   const native = join(isolated, "native");
   await mkdir(native);
   for (const [name, variable] of [

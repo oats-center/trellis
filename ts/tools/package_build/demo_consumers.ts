@@ -31,6 +31,9 @@ try {
   const bin = join(isolated, "bin");
   await mkdir(bin);
   await symlink(process.execPath, join(bin, "node"));
+  // Workspace scripts run nested `npm` commands; hosted runners keep npm
+  // beside node rather than in /usr/bin.
+  await symlink(npm, join(bin, "npm"));
   const env = {
     ...process.env,
     PATH: `${bin}:/usr/bin:/bin`,
