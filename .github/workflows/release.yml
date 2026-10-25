@@ -1007,6 +1007,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       tag: ${{ steps.release.outputs.tag }}
+      latest: ${{ steps.release.outputs.latest }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -1014,6 +1015,8 @@ jobs:
       - name: Resolve the release tag
         id: release
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#release/}"
@@ -1026,6 +1029,11 @@ jobs:
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # `latest` follows the newest prerelease until a stable release exists.
+          stable="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases \
+            --limit 1 --json tagName --jq length)"
+          if [[ "$tag" != *-* || "$stable" == 0 ]]; then latest=true; else latest=false; fi
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -1236,6 +1244,7 @@ jobs:
       id-token: write
     env:
       RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+      LATEST: ${{ needs.release-metadata.outputs.latest }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -1258,7 +1267,7 @@ jobs:
         run: |
           set -euo pipefail
           npm_tag=latest
-          if [[ "$RELEASE_TAG" == *-* ]]; then npm_tag=rc; fi
+          if [[ "$LATEST" != true ]]; then npm_tag=rc; fi
           publish() {
             local name version
             name="$(node -p "require('./$1/package.json').name")"
@@ -1286,6 +1295,7 @@ jobs:
       packages: write
     env:
       RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+      LATEST: ${{ needs.release-metadata.outputs.latest }}
     strategy:
       fail-fast: false
       matrix:
@@ -1306,13 +1316,14 @@ jobs:
         run: |
           set -euo pipefail
           owner="$(tr '[:upper:]' '[:lower:]' <<<"$GITHUB_REPOSITORY_OWNER")"
-          channel=latest
-          if [[ "$RELEASE_TAG" == *-* ]]; then channel=rc; fi
+          tags=("$RELEASE_TAG" "sha-${GITHUB_SHA:0:7}")
+          if [[ "$RELEASE_TAG" == *-* ]]; then tags+=(rc); fi
+          if [[ "$LATEST" == true ]]; then tags+=(latest); fi
           command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install --yes skopeo; }
           auth="$RUNNER_TEMP/skopeo-auth.json"
           printf '%s' "$REGISTRY_PASSWORD" |
             skopeo login --authfile "$auth" --username "$REGISTRY_USER" --password-stdin "$REGISTRY"
-          for tag in "$RELEASE_TAG" "sha-${GITHUB_SHA:0:7}" "$channel"; do
+          for tag in "${tags[@]}"; do
             skopeo copy --all --dest-authfile "$auth" \
               "oci-archive:$RUNNER_TEMP/image/$IMAGE.tar" "docker://$REGISTRY/$owner/$IMAGE:$tag"
           done

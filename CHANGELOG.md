@@ -71,7 +71,8 @@ grants; capability …; }` bundles of its own
 - One `Pipeline` workflow on GitHub-hosted runners replaces Check, Lint and
   Release: a `release/v*` push verifies and then publishes the same run's
   artifacts. Publication runs no further tests, so a version that passed the
-  acceptance gate publishes in full.
+  acceptance gate publishes in full. Until the first stable release, the npm `latest`
+  dist-tag and the `latest` image tag follow the newest prerelease.
 - Transfer receivers choose their outstanding window, up to 1,024 frames and
   64 MiB, and admit it from one process-wide receive budget, released when the
   transfer ends. A download consumer declares its window at activation; the

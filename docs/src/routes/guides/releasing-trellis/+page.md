@@ -531,6 +531,12 @@ After the acceptance gate passes, the same run publishes in gated stages:
 - `github-release` uploads the CLI archive and checksum, then publishes the release
 - `publish-crates`, `publish-npm`, and `publish-images` publish after the GitHub release exists
 
+`latest` follows the newest prerelease until the first stable release exists:
+until then npm packages publish under the `latest` dist-tag and images receive
+`latest` as well as `rc`. After a stable release, prereleases publish under the
+npm `rc` dist-tag and the `rc` image tag, and `latest` moves only with stable
+releases.
+
 Publication is idempotent: each step skips versions already published and never overwrites published bytes; an existing GitHub asset must match the verified artifact byte-for-byte. A registry publish is still not atomic across registries, so if a publish step fails, fix the cause and use "Re-run failed jobs" on the same run. Images are promoted from the verified archive, never rebuilt. For npm provenance, publication normalizes only `package.json`'s `repository.url` to the canonical GitHub repository identity.
 
 ## 8. Verify the published release
