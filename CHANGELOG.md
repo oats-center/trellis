@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.100.0-rc.4] - 2026-10-25
+
 ### Added
 
 - Generated Rust Operation references can cancel an upload with
@@ -103,6 +105,27 @@ grants; capability …; }` bundles of its own
   `RuntimeAuthorizationTrust.root_certificates`, a roots argument to
   `discover_native_oauth`, `trellis login --ca-certificate`, and
   `[nats] ca_certificate` for the runtime's own broker connections.
+
+- `trellis login` trusts a deployment's self-generated CA on first use, like an
+  SSH host key: it shows the CA's SHA-256 fingerprint, and once accepted at the
+  prompt or with `--ca-fingerprint <sha256>`, pins it per origin as that
+  deployment's only trust anchor. A later login that meets a different CA is a
+  hard error. Generated leaf certificates now carry their installation CA in
+  the served chain. `--ca-certificate` still trusts a CA file directly.
+- The runtime can serve browser NATS WebSockets on the Console origin at
+  `/nats` (`[http] nats_websocket_upstream`), so a browser trusts one host and
+  certificate. `trellis init config --nats-websocket relay|direct` selects it.
+- `trellis login` prints and QR-encodes the device login link with the code
+  already filled in; the page still shows the code to compare. The issuer
+  returns `verification_uri_complete`, exposed as `verification_uri_complete()`
+  in Rust and `verificationUriComplete` in TypeScript after checking it points
+  at the selected issuer and carries the same code.
+- The device login page formats a typed code as uppercase `XXXX-XXXX`.
+- The testkit's `sameOriginWebsocket` runtime option starts a runtime that
+  relays browser WebSockets on its own origin.
+- `npm test` runs every Check and Lint job locally from the same
+  `scripts/check.sh`, built once and run concurrently; `npm test -- --all` adds
+  the packaging and container-image jobs.
 
 ### Changed
 
@@ -227,6 +250,30 @@ grants; capability …; }` bundles of its own
   application transport is loopback development and binds loopback by default.
 - **Breaking:** `discover_native_oauth` takes the trusted root certificates.
 
+- **Breaking:** `trellis init config` relays browser NATS WebSockets through
+  the runtime by default with generated TLS, so trusting the generated CA once
+  covers the Console and its WebSocket. An explicit `--nats-websocket-url`,
+  `--nats-websocket-behind-proxy`, other TLS modes, or `--nats-websocket direct`
+  keep the broker's own WebSocket listener. With the relay, the broker's
+  WebSocket port serves plaintext and must stay private.
+- Device codes last 15 minutes instead of five, long enough to review a long
+  capability list.
+- Device consent shows the code with a warning to compare it and to stop if
+  someone else sent the code or link, instead of a required checkbox; the
+  server no longer requires `confirm_device`.
+- The initial administrator setup link, printed at initialization and reissued
+  at startup until a password exists, stays valid until it is used once.
+  `--reset-admin` recovery, Users password resets and identity links still
+  expire after five minutes.
+- Generated Rust models reject an authored field named `extra` or an enum value
+  `unknown`, which collide with the generated unknown-field map and
+  `Unknown(String)` variant.
+- A TypeScript RPC mount on a service's admitted generations rejects when the
+  broker never confirms its subscription, instead of resolving with no
+  responder.
+- Native discovery in Rust and TypeScript accepts `ws`/`wss` endpoints served at
+  a path, such as the runtime's `/nats` relay.
+
 ### Removed
 
 - **Breaking:** The `trellis-rs` `runtime-internals` feature. Trellis's own
@@ -319,6 +366,34 @@ grants; capability …; }` bundles of its own
 - Rust transfer providers report their frames and wire bytes, and Rust
   downloads record one transfer duration instead of two. Streamed TypeScript
   downloads record their duration.
+
+- `trellis add` and `trellis rm` no longer reject their own new lockfile: the
+  root package's distribution digest hashed the old manifest.
+- A dependency that relies on `default-registry` no longer panics the CLI.
+- Generated Rust models keep an explicit `null` in an optional nullable field
+  (`Some(Nullable::Null)`) distinct from an omitted one, and box recursion that
+  passes through a type alias instead of producing a type of infinite size.
+- `trellis init config` rejects a generated CA directory that overlaps the
+  bundle, after resolving symlinks and `..`, so the CA key is never mounted
+  with the bundle.
+- TLS hot reload checks a replacement certificate's expiry and hostname, as
+  startup does, and keeps serving the last good certificate otherwise.
+- A Rust Operation handle that could not read its authoritative state retires
+  for good: no later progress, complete, cancel, signal read or signal
+  acknowledgement writes, even if storage recovers within the lease.
+- A Rust stream upload's receive capacity stays reserved until the handler's
+  reader is dropped.
+- The Jobs projector projects only events their publisher's queue owns, and
+  counts rejected and unparsable events toward its processed horizon, so a
+  rejected event at the stream's tail no longer makes key lookups time out.
+- API acceptance applies the platform guard to bundled role edits.
+- Packaged TypeScript declarations type-check under `nodenext` module
+  resolution.
+- A TypeScript download whose source never finishes cancelling no longer holds
+  provider or service shutdown.
+- The Console returns to the protected page after sign-in recovery that passes
+  through the authorization server, ignores a late reply to an earlier Users
+  search, and keeps the Users pager on a later page that shows no rows.
 
 ## [0.100.0-rc.3] - 2026-10-21
 
