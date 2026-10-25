@@ -774,6 +774,69 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn prepare_leaves_ignored_generated_packages_to_regeneration() {
+        let root = temp_repo_root();
+        let generated = "benchmarks/runtime/packages/performance-trellis/package.json";
+        for (path, contents) in [
+            (
+                "Cargo.toml",
+                "[workspace.package]\nversion = \"0.100.0-rc.3\"\n",
+            ),
+            (
+                "ts/packages/trellis/package.json",
+                "{\n  \"name\": \"@oatscenter/trellis\",\n  \"version\": \"0.100.0-rc.3\"\n}\n",
+            ),
+            (
+                generated,
+                "{\n  \"name\": \"performance-trellis\",\n  \"version\": \"0.0.0\",\n  \"dependencies\": {\n    \"@oatscenter/trellis\": \"0.100.0-rc.3\"\n  }\n}\n",
+            ),
+            (".gitignore", "/benchmarks/runtime/packages/performance-trellis/\n"),
+            (
+                "crates/protocol/Cargo.toml",
+                "[package]\nname = \"trellis-protocol\"\nversion = \"0.100.0-rc.3\"\n",
+            ),
+            (
+                "crates/models/Cargo.toml",
+                "[package]\nname = \"trellis-models\"\nversion = \"0.100.0-rc.3\"\n",
+            ),
+            (
+                "crates/builtin-contracts/trellis.toml",
+                "[package]\nname = \"trellis\"\nversion = \"0.100.0-rc.3\"\n",
+            ),
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .unwrap()
+            .success());
+        run_release(
+            &root,
+            ReleaseCommand::Prepare {
+                tag: Some("v0.100.0-rc.4".into()),
+                protocol_version: None,
+                models_version: None,
+                contracts_version: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            fs::read_to_string(root.join("ts/packages/trellis/package.json"))
+                .unwrap()
+                .contains("0.100.0-rc.4")
+        );
+        // `cargo xtask install` regenerates the ignored package afterwards.
+        assert!(fs::read_to_string(root.join(generated))
+            .unwrap()
+            .contains("0.100.0-rc.3"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn temp_repo_root() -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(

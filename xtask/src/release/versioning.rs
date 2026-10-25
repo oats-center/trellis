@@ -164,6 +164,38 @@ fn release_manifest_paths(repo_root: &Path) -> Result<Vec<PathBuf>> {
     }
     paths.sort();
     paths.dedup();
+    // Generated packages are git-ignored build output that `cargo xtask
+    // install` regenerates from the prepared versions; only authored manifests
+    // carry release versions.
+    let mut check = std::process::Command::new("git")
+        .args(["check-ignore", "--stdin"])
+        .current_dir(repo_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .into_diagnostic()?;
+    {
+        use std::io::Write;
+        let input = paths
+            .iter()
+            .map(|path| format!("{}\n", path.display()))
+            .collect::<String>();
+        let mut stdin = check.stdin.take().expect("piped stdin");
+        // Outside a git checkout git exits before reading; nothing is ignored.
+        match stdin.write_all(input.as_bytes()) {
+            Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => {
+                return Err(error).into_diagnostic();
+            }
+            _ => {}
+        }
+    }
+    let ignored =
+        String::from_utf8(check.wait_with_output().into_diagnostic()?.stdout).into_diagnostic()?;
+    let ignored = ignored
+        .lines()
+        .map(PathBuf::from)
+        .collect::<std::collections::HashSet<_>>();
+    paths.retain(|path| !ignored.contains(path));
     Ok(paths)
 }
 
