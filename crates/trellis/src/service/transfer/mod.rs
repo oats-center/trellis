@@ -361,7 +361,13 @@ where
                         .await
                         .map_err(|e| error(format!("upload local authority lost: {e:?}")))?;
                 },
-                backend = async { session.upload_future.as_mut().ok_or_else(|| error("upload backend missing"))?.await }, if activated && !stream => {
+                backend = async {
+                    session
+                        .upload_future
+                        .as_mut()
+                        .ok_or_else(|| error("upload backend missing"))?
+                        .await
+                }, if activated && !stream => {
                     session.upload_future.take();
                     let failure = match backend {
                         Err(failure) => failure,

@@ -1450,7 +1450,9 @@ mod tests {
             "transferId": id(), "expiresAt": "2026-10-04T12:00:00Z",
             "provider": {"connectionId": "provider", "sessionKey": provider_key},
             "consumer": {"connectionId": "consumer", "sessionKey": consumer_key},
-            "dataSubject": subjects.upload_data_subject, "controlSubject": subjects.control_subject, "signalSubject": subjects.signal_subject,
+            "dataSubject": subjects.upload_data_subject,
+            "controlSubject": subjects.control_subject,
+            "signalSubject": subjects.signal_subject,
             "maxFrameBytes": 4096, "windowFrames": TRANSFER_WINDOW_FRAMES, "windowBytes": TRANSFER_WINDOW_BYTES,
         });
         let parsed = parse_transfer_grant(&serde_json::to_vec(&send).unwrap()).unwrap();

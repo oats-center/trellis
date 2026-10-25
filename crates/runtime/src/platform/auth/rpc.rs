@@ -115,47 +115,68 @@ pub(crate) fn register_rpc<P: trellis_rs::generated::ParticipantDescriptor>(
                 .ok_or_else(|| rpc_error(AuthError::Denied))?
                 .caller()
                 .clone();
-            blocking(move || store.transaction(|connection| {
-                let now = crate::clock::unix_now();
-                let principal = super::rpc_policy::read_effective_access(
-                    connection,
-                    &caller.principal_id,
-                    now,
-                )?
-                .principal;
-                let login = if let Some(login) = &caller.login_session_id {
-                    use rusqlite::OptionalExtension;
-                    let row = connection.query_row("SELECT method,provider_id,created_at,expires_at,fresh_until,revoked_at FROM auth_login_sessions WHERE login_session_id=?1 AND principal_id=?2", rusqlite::params![login,caller.principal_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?,row.get::<_,i64>(2)?,row.get::<_,i64>(3)?,row.get::<_,Option<i64>>(4)?,row.get::<_,Option<i64>>(5)?))).optional()?.ok_or(AuthError::NotFound)?;
-                    let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
-                    Some(trellis_runtime_apis::types::AuthLoginSession {
-                        login_session_id: ulid(login)?,
-                        principal_id: ulid(&caller.principal_id)?,
-                        method: row.0.into(),
-                        provider_id: row.1.as_deref().map(ulid).transpose()?,
-                        created_at: super::sqlite::timestamp(row.2)?,
-                        expires_at: super::sqlite::timestamp(row.3)?,
-                        claim_fresh_until: row.4.map(super::sqlite::timestamp).transpose()?,
-                        state: if row.5.is_some() {
-                            trellis_runtime_apis::types::AuthLoginState::Revoked
-                        } else {
-                            trellis_runtime_apis::types::AuthLoginState::Active
-                        },
+            blocking(move || {
+                store.transaction(|connection| {
+                    let now = crate::clock::unix_now();
+                    let principal = super::rpc_policy::read_effective_access(
+                        connection,
+                        &caller.principal_id,
+                        now,
+                    )?
+                    .principal;
+                    let login = if let Some(login) = &caller.login_session_id {
+                        use rusqlite::OptionalExtension;
+                        let row = connection
+                            .query_row(
+                                "SELECT method,provider_id,created_at,expires_at,fresh_until,\
+                            revoked_at FROM auth_login_sessions \
+                            WHERE login_session_id=?1 AND principal_id=?2",
+                                rusqlite::params![login, caller.principal_id],
+                                |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, Option<String>>(1)?,
+                                        row.get::<_, i64>(2)?,
+                                        row.get::<_, i64>(3)?,
+                                        row.get::<_, Option<i64>>(4)?,
+                                        row.get::<_, Option<i64>>(5)?,
+                                    ))
+                                },
+                            )
+                            .optional()?
+                            .ok_or(AuthError::NotFound)?;
+                        let ulid = |value: &str| value.parse().map_err(|_| AuthError::Unavailable);
+                        Some(trellis_runtime_apis::types::AuthLoginSession {
+                            login_session_id: ulid(login)?,
+                            principal_id: ulid(&caller.principal_id)?,
+                            method: row.0.into(),
+                            provider_id: row.1.as_deref().map(ulid).transpose()?,
+                            created_at: super::sqlite::timestamp(row.2)?,
+                            expires_at: super::sqlite::timestamp(row.3)?,
+                            claim_fresh_until: row.4.map(super::sqlite::timestamp).transpose()?,
+                            state: if row.5.is_some() {
+                                trellis_runtime_apis::types::AuthLoginState::Revoked
+                            } else {
+                                trellis_runtime_apis::types::AuthLoginState::Active
+                            },
+                            extra: Default::default(),
+                        })
+                    } else {
+                        None
+                    };
+                    Ok(trellis_runtime_apis::types::AuthSessionsMeResponse {
+                        principal,
+                        login,
+                        authorization_session_id: caller
+                            .authorization_session_id
+                            .parse()
+                            .map_err(|_| AuthError::Unavailable)?,
                         extra: Default::default(),
                     })
-                } else {
-                    None
-                };
-                Ok(trellis_runtime_apis::types::AuthSessionsMeResponse {
-                    principal,
-                    login,
-                    authorization_session_id: caller
-                        .authorization_session_id
-                        .parse()
-                        .map_err(|_| AuthError::Unavailable)?,
-                    extra: Default::default(),
                 })
-            }))
-.await.map_err(rpc_error)
+            })
+            .await
+            .map_err(rpc_error)
         }
     });
 }

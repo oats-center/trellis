@@ -351,11 +351,18 @@ where
                         }
                     }
                 },
-                result = async { backend.as_mut().ok_or_else(|| error("download backend missing"))?.await }, if backend.is_some() => {
+                result = async {
+                    backend.as_mut().ok_or_else(|| error("download backend missing"))?.await
+                }, if backend.is_some() => {
                     backend.take();
                     backend_result = Some(result?);
                 },
-                bytes = async { super::read_ready_frame(reader.as_mut().ok_or_else(|| error("download reader missing"))?, max_frame_bytes as usize).await.map_err(error) }, if activated && !eof && staged.is_none() => {
+                bytes = async {
+                    let reader = reader.as_mut().ok_or_else(|| error("download reader missing"))?;
+                    super::read_ready_frame(reader, max_frame_bytes as usize)
+                        .await
+                        .map_err(error)
+                }, if activated && !eof && staged.is_none() => {
                     let bytes = bytes?;
                     if !bytes.is_empty() {
                         staged = Some(super::telemetry::Payload::new(
@@ -424,7 +431,8 @@ where
                 },
             }
         }
-    }.await;
+    }
+    .await;
     drop(credit_wait);
     backend.take();
     if result.is_err() {

@@ -782,7 +782,10 @@ impl JobsQuery {
                 "page": { "nextCursor": page.next_after
                     .map(|after| trellis_protocol::encode_pagination_cursor(&query_digest, &after))
                     .transpose()
-                    .map_err(|_| JobsQueryError::Validation { field: "page.cursor", details: "invalid pagination".to_owned() })? },
+                    .map_err(|_| JobsQueryError::Validation {
+                        field: "page.cursor",
+                        details: "invalid pagination".to_owned(),
+                    })? },
             }),
             "jobs list DLQ response",
         )
