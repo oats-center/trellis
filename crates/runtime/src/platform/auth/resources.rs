@@ -199,11 +199,38 @@ pub(crate) async fn materialize_native_kv(
                         resource_id: resource_id.clone(),
                         stream: crate::resources::EVENT_STREAM.into(),
                         consumer_name: String::new(),
+                        // A parameterized event publishes on its subject plus one
+                        // token per parameter, so the filter needs one wildcard each.
                         filter_subjects: events
                             .iter()
                             .map(|(api, event)| {
-                                trellis_protocol::derive_event_subject(api.as_str(), event)
-                                    .map_err(|error| AuthError::Invalid(error.to_string()))
+                                let action = trellis_idl::ActionId {
+                                    kind: trellis_idl::ActionKind::Event,
+                                    name: event.clone(),
+                                };
+                                let parameters = match graph.api(api).and_then(|api| {
+                                    match api.definition().actions().get(&action) {
+                                        Some(trellis_idl::ActionDefinition::Event {
+                                            parameters,
+                                            ..
+                                        }) => Some(parameters.len()),
+                                        _ => None,
+                                    }
+                                }) {
+                                    Some(parameters) => parameters,
+                                    None => {
+                                        return Err(AuthError::Invalid(format!(
+                                            "consumer event {}.{event} is not declared",
+                                            api.as_str()
+                                        )))
+                                    }
+                                };
+                                trellis_protocol::derive_event_wildcard_subject(
+                                    api.as_str(),
+                                    event,
+                                    parameters,
+                                )
+                                .map_err(|error| AuthError::Invalid(error.to_string()))
                             })
                             .collect::<Result<_, _>>()?,
                         concurrency: *concurrency,

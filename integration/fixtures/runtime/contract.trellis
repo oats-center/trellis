@@ -33,7 +33,7 @@ api runtime@v1 {
   operation Upload { input Value; output Value; signals { Continue Value; } upload; }
   operation Ingest { input Value; output Value; stream; }
   rpc Generate { input Value; output Value; download; }
-  event Changed { payload Value; }
+  event Changed { payload Value; params [value]; }
   live Watch { input Empty; event Value; }
   capabilities {
     capability transfers.transport { title "Transport"; description "Exercise the runtime transport surfaces."; grants "The caller may invoke and observe the fixture transports."; allows { rpc Echo; operation Work; operation Upload; operation Ingest; publish event Changed; subscribe event Changed; live Watch; } }

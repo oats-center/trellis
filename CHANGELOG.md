@@ -27,6 +27,10 @@ and this project adheres to
   their input JSON Schema (`RpcDescriptor::INPUT_SCHEMA_JSON`), and providers
   reject a violating request with `ValidationError` before the handler runs, as
   TypeScript providers already did. Regenerate Rust packages.
+- Durable consumers never received events declared with `params`: the
+  runtime set each consumer's filter to the bare event subject, while a
+  parameterized event publishes on that subject plus one token per parameter.
+  Consumer filters now carry one wildcard per parameter.
 
 ### Changed
 
