@@ -22,6 +22,58 @@ import {
   wireNatsGate,
 } from "./console_test_support.ts";
 
+test("an empty later page of users still offers the previous page", async () => {
+  await withTrellisRuntime(async (runtime) => {
+    await runtime.ensureAdmin();
+    const suffix = ulid().toLowerCase();
+    // One more than a page, so the list has a second page.
+    for (let index = 0; index < 51; index++)
+      await runtime.callAdminRpc("authUsersCreate", {
+        idempotencyKey: ulid(),
+        displayName: `Paged ${index} ${suffix}`,
+        username: `paged-${index}-${suffix}`,
+      });
+
+    const context = await launchProfile(runtime);
+    try {
+      const page = await context.newPage();
+      await openConsoleAsRuntimeAdmin(page, runtime);
+      await page.goto(`${runtime.trellisUrl}/console/admin/users`, {
+        waitUntil: "domcontentloaded",
+      });
+      await waitForConsoleShell(page);
+      const rows = page.locator(".users-row");
+      await runtime.waitFor(async () => (await rows.count()) === 50, {
+        timeoutMs: 30_000,
+      });
+      await page.getByRole("button", { name: "Next page" }).click();
+      await runtime.waitFor(async () => (await rows.count()) < 50, {
+        timeoutMs: 30_000,
+      });
+
+      // Every user is active, so this page shows nothing when filtered.
+      await page
+        .getByLabel("Filter by status")
+        .selectOption({ label: "Inactive" });
+      await page
+        .getByText("No users found")
+        .waitFor({ state: "visible", timeout: 30_000 });
+      const previous = page.getByRole("button", { name: "Previous page" });
+      await previous.waitFor({ state: "visible", timeout: 5_000 });
+      assert.equal(await previous.isEnabled(), true);
+      await previous.click();
+      await page
+        .getByLabel("Filter by status")
+        .selectOption({ label: "All statuses" });
+      await runtime.waitFor(async () => (await rows.count()) === 50, {
+        timeoutMs: 30_000,
+      });
+    } finally {
+      await context.close();
+    }
+  }, browserRuntimeOptions());
+});
+
 test("a late reply to an earlier user search does not replace newer results", async () => {
   await withTrellisRuntime(async (runtime) => {
     await runtime.ensureAdmin();

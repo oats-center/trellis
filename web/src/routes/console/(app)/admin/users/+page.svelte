@@ -402,6 +402,9 @@
           {/each}
         </tbody>
       </DataTable>
+    {/if}
+    <!-- Outside the results branch: an empty later page still needs Previous. -->
+    {#if !(loading && users.length === 0)}
       <Pager
         summary={`Showing ${visibleUsers.length} user${visibleUsers.length === 1 ? "" : "s"}${nextCursor !== undefined ? " on this page" : ""}`}
         canPrevious={cursorHistory.back.length > 0}
