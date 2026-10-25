@@ -70,7 +70,8 @@ grants; capability …; }` bundles of its own
   testkit also honors `TRELLIS_TEST_CLI_BIN` and `TRELLIS_TEST_SERVER_BIN`.
 - One `Pipeline` workflow on GitHub-hosted runners replaces Check, Lint and
   Release: a `release/v*` push verifies and then publishes the same run's
-  artifacts.
+  artifacts. Publication runs no further tests, so a version that passed the
+  acceptance gate publishes in full.
 - Transfer receivers choose their outstanding window, up to 1,024 frames and
   64 MiB, and admit it from one process-wide receive budget, released when the
   transfer ends. A download consumer declares its window at activation; the

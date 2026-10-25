@@ -225,7 +225,7 @@ job_rust_testkit_consumer() {
   mkdir -p "$temp"
   bundle="$(mktemp -d "$temp/testkit-consumer.XXXXXX")"
   tar -xzf "$archive" -C "$bundle" --no-same-owner
-  bash "$bundle/verify-rust-test-package.sh" --bundle "$bundle" --mode full
+  bash "$bundle/verify-rust-test-package.sh" --bundle "$bundle"
   rm -rf "$bundle"
 }
 

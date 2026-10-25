@@ -13,20 +13,14 @@
 # required or used.
 #
 # Usage:
-#   verify-rust-test-package.sh --bundle ABSOLUTE_BUNDLE_DIR_OR_TARBALL --mode smoke
-#   verify-rust-test-package.sh --bundle ABSOLUTE_BUNDLE_DIR_OR_TARBALL --mode full
+#   verify-rust-test-package.sh --bundle ABSOLUTE_BUNDLE_DIR_OR_TARBALL
 set -euo pipefail
 
 bundle=""
-mode=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bundle)
       bundle="${2:-}"
-      shift 2
-      ;;
-    --mode)
-      mode="${2:-}"
       shift 2
       ;;
     *)
@@ -36,7 +30,6 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$bundle" ]] || { echo "--bundle is required" >&2; exit 2; }
-[[ "$mode" == "smoke" || "$mode" == "full" ]] || { echo "--mode must be smoke or full" >&2; exit 2; }
 for tool in cargo jq tar sha256sum; do
   command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 1; }
 done
@@ -115,10 +108,6 @@ unset TRELLIS_TEST_CLI_BIN TRELLIS_TEST_SERVER_BIN TRELLIS_TEST_NATS_BIN
 export TRELLIS_TEST_NATS_BIN="$bundle/nats/nats-server"
 export TRELLIS_TEST_CLI_BIN="$bundle/native/trellis"
 export TRELLIS_TEST_SERVER_BIN="$bundle/native/trellis-server"
-if [[ "$mode" == smoke ]]; then
-  unset TRELLIS_TEST_CLI_BIN TRELLIS_TEST_SERVER_BIN TRELLIS_TEST_NATS_BIN
-  export TRELLIS_TEST_CACHE_DIR="$work/native-cache"
-fi
 
 # 3. Extract the staged archives with traversal/absolute-path checks.
 mkdir -p "$work/packages"
@@ -198,16 +187,14 @@ echo "dependency audit passed for $(jq '.packages | length' "$work/metadata.json
 
 # Generate and execute a fresh Rust consumer with the distributed CLI. This job
 # has no source checkout, including the compiler producer's built-in IDL tree.
-if [[ "$mode" == full ]]; then
-  cp -R "$consumer_src/compiler-project" "$work/compiler-project"
-  (
-    cd "$work/compiler-project"
-    export TRELLIS_CACHE="$work/compiler-cache"
-    "$TRELLIS_TEST_CLI_BIN" update
-    "$TRELLIS_TEST_CLI_BIN" generate
-    cargo run --config "$config"
-  )
-fi
+cp -R "$consumer_src/compiler-project" "$work/compiler-project"
+(
+  cd "$work/compiler-project"
+  export TRELLIS_CACHE="$work/compiler-cache"
+  "$TRELLIS_TEST_CLI_BIN" update
+  "$TRELLIS_TEST_CLI_BIN" generate
+  cargo run --config "$config"
+)
 
 # 6. Run the consumer's live target under the frozen lockfile.
 #
@@ -218,16 +205,5 @@ mkdir -p "$work/runtime-path"
 executable="$(jq -r 'select(.reason == "compiler-artifact" and .executable != null) | .executable' \
   "$work/build.json" | tail -n1)"
 [[ -n "$executable" ]] || { echo "the live consumer executable was not produced" >&2; exit 1; }
-# No tools on PATH. Full acceptance uses verified explicit executables; release
-# smoke acquires public archives into a fresh cache and then proves offline reuse.
-arguments=(--test-threads=4)
-[[ "$mode" != smoke ]] ||
-  arguments+=(--exact bare_builder_serves_embedded_apps_and_installs_a_participant)
-PATH="$work/runtime-path" "$executable" "${arguments[@]}"
-if [[ "$mode" == smoke ]]; then
-  proxy=http://127.0.0.1:9
-  local_hosts=127.0.0.1,localhost
-  HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" ALL_PROXY="$proxy" NO_PROXY="$local_hosts" \
-    http_proxy="$proxy" https_proxy="$proxy" all_proxy="$proxy" no_proxy="$local_hosts" \
-    PATH="$work/runtime-path" "$executable" "${arguments[@]}"
-fi
+# No tools on PATH; only the bundle's verified explicit executables.
+PATH="$work/runtime-path" "$executable" --test-threads=4

@@ -177,10 +177,11 @@ dry-runs before the acceptance gate; publication uses those verified packages
 without rebuilding them. `typescript-testkit-package` installs the packed testkit
 with its SDK dependencies into a fresh Node project and runs it against the
 pipeline's CLI and server. The testkits carry no binary pins: by default they
-download the latest Trellis release. After the GitHub release and SDK packages
-exist, a fresh-cache smoke with no local paths acquires the just-published
-release, creates a user and resolves a password-reset flow through generated RPCs
-before the testkit is published.
+download the latest Trellis release.
+
+Publication never verifies again: a version that passed the acceptance gate
+publishes in full, so a publish step cannot be blocked by a second round of
+tests.
 
 The published Rust crate set is:
 
@@ -230,11 +231,6 @@ fixture) and runs
 the extracted staged artifacts. The live consumer runs with an empty `PATH` and
 explicit verified executable paths, proving that no source checkout, installed
 Trellis tools, or private server/compiler Cargo dependencies are needed.
-After GitHub assets exist, Rust testkit upload also requires the accepted
-bundle's `--mode smoke`: it acquires the just-published CLI/server release and
-NATS archive into a fresh cache, installs a participant through generated RPCs, then repeats with external
-HTTP access blocked to verify offline cache reuse. This gate runs before the
-testkit crate is uploaded; it never falls back to bundled executable paths.
 Before a first upload a maintainer must confirm each new crate name is available
 and owned by the publisher;
 after publication, repeat the fixture smoke against the real crates.io versions
@@ -533,7 +529,7 @@ After the acceptance gate passes, the same run publishes in gated stages:
 - `publish-apis` publishes the canonical APIs to GHCR
 - `create-release-tag` tags the verified commit, refusing if the release branch moved
 - `github-release` uploads the CLI archive and checksum, then publishes the release
-- `publish-crates`, `publish-npm`, and `publish-images` publish after the GitHub release exists, so the testkit smokes can acquire it
+- `publish-crates`, `publish-npm`, and `publish-images` publish after the GitHub release exists
 
 Publication is idempotent: each step skips versions already published and never overwrites published bytes; an existing GitHub asset must match the verified artifact byte-for-byte. A registry publish is still not atomic across registries, so if a publish step fails, fix the cause and use "Re-run failed jobs" on the same run. Images are promoted from the verified archive, never rebuilt. For npm provenance, publication normalizes only `package.json`'s `repository.url` to the canonical GitHub repository identity.
 

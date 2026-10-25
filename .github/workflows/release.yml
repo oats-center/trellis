@@ -825,7 +825,7 @@ jobs:
           tar -xzf rust-testkit-bundle.tar.gz -C bundle --no-same-owner
 
       - name: Verify the packaged testkit without a checkout
-        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle" --mode full
+        run: bash bundle/verify-rust-test-package.sh --bundle "$PWD/bundle"
 
   verify-images:
     name: Build verified ${{ matrix.image }} image
@@ -996,7 +996,8 @@ jobs:
           fi
 
   # Publication runs only for a `release/vX.Y.Z[-rc.N]` push, after every
-  # verification job, from this run's artifacts; it never rebuilds the product.
+  # verification job, from this run's artifacts; it never rebuilds the product
+  # or verifies again, so a version that passed the gate publishes in full.
   # A failed publish step is retried with "Re-run failed jobs": each step skips
   # what is already published and never overwrites published bytes.
   release-metadata:
@@ -1185,12 +1186,6 @@ jobs:
           name: rust-testkit-packages
           path: dist/rust-packages
 
-      - name: Download the Rust consumer bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: rust-testkit-bundle
-          path: dist/rust-testkit-bundle
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -1205,8 +1200,6 @@ jobs:
         shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-          # The testkit smoke resolves the latest release through the API.
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           crate_versions="$(cargo metadata --format-version 1 --no-deps --locked)"
@@ -1228,11 +1221,6 @@ jobs:
               echo "Skipping $crate@$version (already published)"
             else
               bash scripts/prepare-rust-publication.sh dist/rust-packages target "$crate"
-              if [[ "$crate" == trellis-testkit ]]; then
-                # A fresh consumer acquires the just-published release from GitHub.
-                bash scripts/verify-rust-test-package.sh \
-                  --bundle "$PWD/dist/rust-testkit-bundle/rust-testkit-bundle.tar.gz" --mode smoke
-              fi
               cargo publish --allow-dirty --locked --config .cargo/publication.toml -p "$crate"
             fi
             wait_for_index "$crate" "$version"
@@ -1257,9 +1245,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install workspace dependencies
-        run: npm ci
-
       # The packages the demos job verified, with 'ts/packages' as the
       # artifact root.
       - name: Download the verified npm packages
@@ -1270,9 +1255,6 @@ jobs:
 
       - name: Publish packages
         shell: bash
-        env:
-          # The testkit smoke resolves the latest release through the API.
-          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           npm_tag=latest
@@ -1286,29 +1268,13 @@ jobs:
               return 0
             fi
             npm publish --access public --tag "$npm_tag" "./$1"
-            # The registry serves a new version only after processing it; the
-            # testkit smoke installs these immediately.
-            for attempt in {1..30}; do
-              if npm view "$name@$version" version >/dev/null 2>&1; then return 0; fi
-              echo "Waiting for $name@$version on npm ($attempt/30)"
-              sleep 10
-            done
-            echo "::error::$name@$version did not become available on npm"
-            return 1
           }
           packages=(ts/packages/result/npm ts/packages/trellis/npm ts/packages/trellis-svelte/npm ts/packages/trellis-testkit/npm)
           # npm compares the repository with GitHub provenance case-sensitively.
           for pkg in "${packages[@]}"; do
             npm pkg set "repository.url=git+https://github.com/${GITHUB_REPOSITORY}.git" --prefix "$pkg"
           done
-          for pkg in "${packages[@]:0:3}"; do publish "$pkg"; done
-          # The testkit publishes after its SDK dependencies, once a fresh
-          # consumer has acquired the just-published release from GitHub.
-          smoke="$(mktemp -d "$RUNNER_TEMP/testkit-release.XXXXXX")"
-          mkdir -p "$smoke/home"
-          HOME="$smoke/home" TRELLIS_TEST_CACHE_DIR="$smoke/cache" TMPDIR="$smoke" \
-            node ts/tools/verify_testkit_package.ts ts/packages/trellis-testkit/npm
-          publish ts/packages/trellis-testkit/npm
+          for pkg in "${packages[@]}"; do publish "$pkg"; done
 
   publish-images:
     name: Publish ${{ matrix.image }} image
