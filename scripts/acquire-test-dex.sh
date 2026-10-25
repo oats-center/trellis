@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 #
-# Builds the pinned Dex identity provider the Rust upstream-OIDC test drives,
-# and installs it executable as `<dest>/dex`.
+# Installs the pinned Dex release the Rust upstream-OIDC test drives as
+# `<dest>/dex`.
 #
-# Dex publishes container images but no release binaries, so this builds the
-# pinned source revision with Go. The pipeline and local runs use this one script, so
-# the pin lives in exactly one place. An existing binary built from the same
-# revision is reused.
+# Dex publishes its releases as container images, not archives. Its binary is
+# static, so this fetches the release image's layer straight from the registry
+# (no container engine) and verifies the binary's SHA-256. The pipeline and
+# local runs use this one script, so the pin lives in exactly one place.
 set -euo pipefail
 
-DEX_COMMIT=05a275057112ba93e17db21f600b756f000f1c21
+DEX_VERSION=v2.46.1
+declare -A DEX_SHA256=(
+  [amd64]=e73fe3d2c9efc03551c62fcc5694acec8db1f36a79110f30070d2dc84c2951d1
+)
 
 dest=""
 while [[ $# -gt 0 ]]; do
@@ -18,8 +21,8 @@ while [[ $# -gt 0 ]]; do
       dest="${2:-}"
       shift 2
       ;;
-    --print-commit)
-      echo "$DEX_COMMIT"
+    --print-version)
+      echo "$DEX_VERSION"
       exit 0
       ;;
     *)
@@ -29,19 +32,39 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$dest" ]] || { echo "--dest is required" >&2; exit 2; }
-command -v go >/dev/null || { echo "Go is required to build the pinned Dex" >&2; exit 1; }
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) arch=amd64 ;;
+  *) echo "the pinned Dex is available for Linux x86-64 only" >&2; exit 1 ;;
+esac
 mkdir -p "$dest"
 dest="$(cd "$dest" && pwd)"
-if [[ -x "$dest/dex" && "$(cat "$dest/dex.commit" 2>/dev/null)" == "$DEX_COMMIT" ]]; then
+if [[ -x "$dest/dex" ]] && sha256sum "$dest/dex" | grep -q "^${DEX_SHA256[$arch]} "; then
   exit 0
 fi
 
-source_dir="$(mktemp -d "$dest/dex-source.XXXXXX")"
-trap 'rm -rf "$source_dir"' EXIT
-git -C "$source_dir" init --quiet
-git -C "$source_dir" fetch --quiet --depth 1 https://github.com/dexidp/dex.git "$DEX_COMMIT"
-git -C "$source_dir" checkout --quiet FETCH_HEAD
-# Dex's API is an in-tree module replacement, so build the pinned tree itself.
-(cd "$source_dir" && go build -mod=readonly -trimpath -o "$dest/dex" ./cmd/dex)
-echo "$DEX_COMMIT" > "$dest/dex.commit"
-echo "built dex $DEX_COMMIT"
+work="$(mktemp -d "$dest/dex-image.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+registry=https://ghcr.io/v2/dexidp/dex
+token="$(curl -fsSL "https://ghcr.io/token?scope=repository:dexidp/dex:pull" | jq -r .token)"
+get() {
+  curl -fsSL -H "Authorization: Bearer $token" -H "Accept: $1" "$2"
+}
+digest="$(get "application/vnd.oci.image.index.v1+json" "$registry/manifests/$DEX_VERSION" |
+  jq -r --arg arch "$arch" \
+    '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest' |
+  head -n1)"
+[[ -n "$digest" ]] || { echo "Dex $DEX_VERSION has no linux/$arch image" >&2; exit 1; }
+# The binary is in the top layers; search from the last one.
+for layer in $(get "application/vnd.oci.image.manifest.v1+json" "$registry/manifests/$digest" |
+  jq -r '.layers | reverse | .[].digest'); do
+  get "*/*" "$registry/blobs/$layer" > "$work/layer.tar.gz"
+  if tar -xzf "$work/layer.tar.gz" -C "$work" usr/local/bin/dex 2>/dev/null; then
+    break
+  fi
+done
+[[ -f "$work/usr/local/bin/dex" ]] || { echo "Dex $DEX_VERSION image has no /usr/local/bin/dex" >&2; exit 1; }
+actual="$(sha256sum "$work/usr/local/bin/dex" | cut -d ' ' -f 1)"
+[[ "$actual" == "${DEX_SHA256[$arch]}" ]] ||
+  { echo "Dex $DEX_VERSION checksum mismatch: $actual" >&2; exit 1; }
+install -m 0755 "$work/usr/local/bin/dex" "$dest/dex"
+echo "installed dex $DEX_VERSION"

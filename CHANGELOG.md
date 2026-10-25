@@ -49,10 +49,11 @@ grants; capability …; }` bundles of its own
   `trellis_protocol::model::Timestamp::from_unix_seconds` builds a canonical
   timestamp without a format/parse round trip.
 - `scripts/run-rust-tests.sh` runs the whole Rust test catalog locally with no
-  preset environment: it acquires the pinned NATS server, builds the pinned Dex
-  identity provider (`scripts/acquire-test-dex.sh`), and builds the CLI, server,
-  and Events fixture. Check runs the same script, so the upstream OIDC test runs
-  everywhere instead of failing for a missing executable.
+  preset environment: it downloads the pinned NATS server and Dex v2.46.1
+  identity provider (`scripts/acquire-test-dex.sh`, from the release image with
+  no container engine or Go), and builds the CLI, server, and Events fixture.
+  The pipeline runs the same script, so the upstream OIDC test runs everywhere
+  instead of failing for a missing executable.
 - Check fails when rustfmt leaves a Rust statement unformatted because part of
   it cannot fit (`cargo xtask rust-width`).
 - Check runs `cargo-semver-checks` for each public Rust crate against its latest
